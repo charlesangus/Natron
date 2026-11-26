@@ -58,6 +58,18 @@ public:
     // Null when the node is not a network node.
     NetworkNode* getNetworkNode() const;
 
+    // Whether the node stands in for a network node whose plug-in is missing.
+    bool isMissingPlugin() const;
+
+    // The height of the node's header, which also holds a missing plug-in's caption.
+    double nodeHeaderHeight() const;
+
+    /**
+     * @brief The name of the output of its upstream node that input inputNb of node reads, empty
+     * for the default output: what a network node names, or what a missing one saved.
+     **/
+    static std::string outputReadBy(const NodePtr& node, int inputNb);
+
     // Node coordinates of the centre of the port of input inputNb.
     QPointF inputPortPosition(int inputNb) const;
 

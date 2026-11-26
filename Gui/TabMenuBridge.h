@@ -29,6 +29,9 @@
 #include "Global/Macros.h"
 
 #include <functional>
+#include <optional>
+#include <string>
+#include <vector>
 
 #include <QPointF>
 #include <QString>
@@ -45,6 +48,18 @@ NATRON_NAMESPACE_ENTER
  * GUI thread only; at most one menu is open at a time.
  **/
 namespace TabMenuBridge {
+// Lists network node types instead of the nodes menu's: those supporting the current target.
+struct NetworkFilter {
+    // The targets Shift+Tab switches among, the first current until the user picks another. Empty
+    // lists the network node types of every target.
+    std::vector<std::string> targets;
+    // Names whose current target the menu remembers between launches, such as a builder's.
+    std::string key;
+    // When set, only these node types are listed.
+    std::optional<std::vector<std::string>> pluginIds;
+    bool withBackdrop = true;
+};
+
 /**
  * @brief A launch that lists only the node types that can take some data, and hands the one
  * chosen to the caller.
@@ -59,6 +74,8 @@ struct LaunchContext {
     std::function<void(CreateNodeArgs& args)> decorateArgs;
     // Called with the node created, in the undo step that creates it.
     std::function<void(const NodePtr& created)> created;
+    // When set, inputKind and needsPrimPathKnob are ignored.
+    std::optional<NetworkFilter> network;
 };
 
 // The name the tab menu's adapter knows kind by: "image", "deep", "scene", "polymorphic" or "raw".
@@ -86,6 +103,8 @@ void triggerActionInGraph(QAction* action, NodeGraph* graph, const QPointF& scen
  * node selected in graph outputs the same kind of data, the menu lists only node types with an
  * input other than a mask that takes that kind. Menu commands stay listed, as does any action in
  * the nodes menu with no plug-in behind it.
+ * Inside a network builder's graph the menu lists instead the network node types supporting the
+ * builder's current target, and Backdrop; see NetworkFilter.
  * A Python failure is reported in the Script Editor and on stderr.
  **/
 void launch(NodeGraph* graph);
@@ -97,6 +116,9 @@ void launch(NodeGraph* graph);
  * choice, with the node created selected; the selection the user had before is not restored.
  **/
 void launch(NodeGraph* graph, const LaunchContext& context);
+
+// The filter of a builder's graph: the builder's targets, keyed by its name; null for any other graph.
+std::optional<NetworkFilter> networkFilterOf(NodeGraph* graph);
 
 /**
  * @brief Puts the bundled tabtabtab folder (<bin>/../Resources/tabtabtab) on sys.path, imports the

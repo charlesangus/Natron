@@ -50,6 +50,8 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Dot.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/MissingPluginNode.h"
+#include "Engine/Nodes/Network/NetworkBuilder.h"
 #include "Engine/Nodes/Network/NetworkNode.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
@@ -682,12 +684,14 @@ NodeGraph::createNodeGUI(const NodePtr & node,
     Backdrop* isBd = dynamic_cast<Backdrop*>( node->getEffectInstance().get() );
     NodeGroup* isGrp = dynamic_cast<NodeGroup*>( node->getEffectInstance().get() );
     NetworkNode* isNetwork = dynamic_cast<NetworkNode*>(node->getEffectInstance().get());
+    // A shader whose plug-in is missing keeps its ports, so its pipes stay where they were.
+    const bool isMissingShader = dynamic_cast<MissingPluginNode*>(node->getEffectInstance().get()) && dynamic_cast<NetworkBuilder*>(node->getGroup().get());
 
     if (isDot) {
         node_ui.reset( new DotGui(_imp->_nodeRoot) );
     } else if (isBd) {
         node_ui.reset( new BackdropGui(_imp->_nodeRoot) );
-    } else if (isNetwork) {
+    } else if (isNetwork || isMissingShader) {
         node_ui.reset(new PortNodeGui(_imp->_nodeRoot));
     } else {
         node_ui.reset( new NodeGui(_imp->_nodeRoot) );

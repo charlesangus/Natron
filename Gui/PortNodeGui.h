@@ -118,6 +118,12 @@ public:
 
     void clearPortHighlights();
 
+    // The height of the header the rows start under.
+    double getHeaderHeight() const;
+
+    // Whether the node stands in for a network node whose plug-in is missing.
+    bool isMissingPlugin() const;
+
     const std::vector<QColor>& getTargetColors() const
     {
         return _targetColors;
@@ -161,6 +167,10 @@ private:
     void computeSize(int* w, int* h) const;
 
     void connectPortKnobs();
+
+    void refreshMissingPluginRows();
+
+    void refreshDownstreamPipes();
 
     void rebuildPortItems();
 

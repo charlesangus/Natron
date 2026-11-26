@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <set>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -182,11 +183,20 @@ PortNodeBody::paint(QPainter* painter,
                     QWidget* /*widget*/)
 {
     const QRectF body = _node->bodyRect();
-    const double headerHeight = PortListLayout::headerHeight();
+    const double headerHeight = _node->getHeaderHeight();
     const double rowHeight = PortListLayout::rowHeight();
 
     painter->fillRect(body, QColor(42, 42, 42));
     painter->fillRect(QRectF(body.left(), body.top(), body.width(), std::min(headerHeight, body.height())), _node->getHeaderColor());
+    if (_node->isMissingPlugin()) {
+        const QPen outline = NodeGui::missingPluginOutline();
+        const double inset = outline.widthF() / 2.;
+        painter->save();
+        painter->setPen(outline);
+        painter->setBrush(Qt::NoBrush);
+        painter->drawRect(body.adjusted(inset, inset, -inset, -inset));
+        painter->restore();
+    }
 
     const std::vector<QColor>& stripes = _node->getTargetColors();
     if (!stripes.empty()) {
@@ -384,8 +394,82 @@ PortNodeGui::createGui()
                 _body->update();
             }
         });
+        if (isMissingPlugin()) {
+            // A missing plug-in's outputs are only known from the nodes reading them.
+            QObject::connect(node.get(), &Node::outputsChanged, this, [this]() {
+                refreshPorts();
+                refreshDownstreamPipes();
+            });
+        }
     }
     refreshPorts();
+}
+
+double
+PortNodeGui::getHeaderHeight() const
+{
+    return portLayout()->nodeHeaderHeight();
+}
+
+bool
+PortNodeGui::isMissingPlugin() const
+{
+    return portLayout()->isMissingPlugin();
+}
+
+void
+PortNodeGui::refreshMissingPluginRows()
+{
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    for (int i = 0; i < node->getNInputs(); ++i) {
+        PortNodeRow row;
+        row.name = node->getInputLabel(i);
+        row.label = QString::fromUtf8(row.name.c_str());
+        _inputs.push_back(row);
+    }
+    std::set<std::string> names;
+    for (const NodeWPtr& weakOutput : node->getOutputs()) {
+        NodePtr output = weakOutput.lock();
+        for (int i = 0; output && (i < output->getNInputs()); ++i) {
+            if (output->getInput(i) == node) {
+                names.insert(PortListLayout::outputReadBy(output, i));
+            }
+        }
+    }
+    // With no reader, one unnamed port still shows where the node's output was.
+    if (names.empty()) {
+        names.insert(std::string());
+    }
+    for (const std::string& name : names) {
+        PortNodeRow row;
+        row.name = name;
+        row.label = QString::fromUtf8(name.c_str());
+        _outputs.push_back(row);
+    }
+}
+
+void
+PortNodeGui::refreshDownstreamPipes()
+{
+    NodePtr node = getNode();
+    if (!node) {
+        return;
+    }
+    for (const NodeWPtr& weakOutput : node->getOutputs()) {
+        NodePtr output = weakOutput.lock();
+        NodeGuiPtr gui = output ? std::dynamic_pointer_cast<NodeGui>(output->getNodeGui()) : NodeGuiPtr();
+        if (!gui) {
+            continue;
+        }
+        for (Edge* edge : gui->getInputsArrows()) {
+            if (edge && (edge->getSource().get() == this)) {
+                edge->initLine();
+            }
+        }
+    }
 }
 
 void
@@ -426,6 +510,8 @@ PortNodeGui::refreshPorts()
                 _targetColors.push_back(toQColor(color));
             }
         }
+    } else if (isMissingPlugin()) {
+        refreshMissingPluginRows();
     }
 
     const QFontMetricsF metrics(portFont());
@@ -625,7 +711,7 @@ PortNodeGui::computeSize(int* w,
     width = std::max(width, (double)TO_DPIX(NODE_WIDTH) * 1.5);
 
     const std::size_t rows = std::max(_inputs.size(), _outputs.size());
-    const double height = PortListLayout::headerHeight() + PortListLayout::rowHeight() * rows + (rows ? TO_DPIY(4) : 0);
+    const double height = getHeaderHeight() + PortListLayout::rowHeight() * rows + (rows ? TO_DPIY(4) : 0);
 
     *w = (int)std::ceil(width);
     *h = (int)std::ceil(height);
@@ -656,7 +742,7 @@ PortNodeGui::resizeExtraContent(int /*w*/,
     if (title) {
         const double textHeight = title->boundingRect().height();
         const double headerTop = body.top() + stripeHeight();
-        const double headerHeight = PortListLayout::headerHeight() - stripeHeight();
+        const double headerHeight = getHeaderHeight() - stripeHeight();
         title->setPos(body.left() + textPadding() - title->document()->documentMargin(), headerTop + (headerHeight - textHeight) / 2.);
         title->setZValue(getBaseDepth() + 1);
     }

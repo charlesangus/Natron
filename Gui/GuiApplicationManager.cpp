@@ -67,6 +67,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Merge/Merge.h" // PLUGINID_NATRON_NATIVE_MERGE
+#include "Engine/Nodes/Network/NetworkNode.h"
 #include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Optics/LensKnobs.h"
@@ -248,6 +249,7 @@ GuiApplicationManager::~GuiApplicationManager()
     }
     _imp->previewRenderThread.quitThread(false);
     delete _imp->nodesMenu;
+    delete _imp->networkNodesMenu;
 }
 
 namespace {
@@ -1710,6 +1712,61 @@ GuiApplicationManager::getNodesMenu() const
     return _imp->nodesMenu;
 }
 
+QMenu*
+GuiApplicationManager::getNetworkNodesMenu()
+{
+    if (_imp->networkNodesMenu || !qobject_cast<QApplication*>(QCoreApplication::instance())) {
+        return _imp->networkNodesMenu;
+    }
+    QMenu* root = new Menu(NULL);
+    root->setObjectName(QString::fromUtf8(kNetworkNodesMenuObjectName));
+    _imp->networkNodesMenu = root;
+
+    for (const std::pair<std::string, std::vector<std::string>>& entry : NetworkNode::registeredPlugins()) {
+        const QString pluginID = QString::fromStdString(entry.first);
+        const PluginsMap& plugins = getPluginsList();
+        const PluginsMap::const_iterator found = plugins.find(entry.first);
+        if ((found == plugins.end()) || found->second.empty()) {
+            continue;
+        }
+        const Plugin* plugin = *found->second.rbegin();
+        QMenu* menu = root;
+        for (const QString& grouping : plugin->getGrouping()) {
+            QMenu* submenu = findPluginOwnedSubmenu(menu, grouping);
+            if (!submenu) {
+                submenu = menu->addMenu(escapedMenuText(grouping));
+                submenu->menuAction()->setProperty(kNodesMenuPropPluginOwned, true);
+                submenu->menuAction()->setProperty(kNodesMenuPropGrouping, grouping);
+            }
+            menu = submenu;
+        }
+        QStringList targets;
+        for (const std::string& target : entry.second) {
+            targets.push_back(QString::fromStdString(target));
+        }
+        QAction* action = new QAction(menu);
+        action->setText(escapedMenuText(plugin->getLabelWithoutSuffix()));
+        action->setProperty(kNodesMenuPropPluginOwned, true);
+        action->setProperty(kNodesMenuPropPluginID, pluginID);
+        action->setProperty(kNodesMenuPropPluginMajor, plugin->getMajorVersion());
+        action->setProperty(kNodesMenuPropInputKind, TabMenuBridge::dataKindKey(eDataKindNetwork));
+        action->setProperty(kNodesMenuPropInputKinds, TabMenuBridge::dataKindKey(eDataKindNetwork));
+        action->setProperty(kNodesMenuPropPrimPathKnob, QString());
+        action->setProperty(kNodesMenuPropNetworkTargets, targets.join(QLatin1Char(',')));
+        refreshPluginActionProperties(action, plugin);
+        const int major = plugin->getMajorVersion();
+        const int minor = plugin->getMinorVersion();
+        QObject::connect(action, &QAction::triggered, this, [this, pluginID, major, minor]() {
+            _imp->createNodeFromNodesMenu(pluginID, major, minor);
+        });
+        menu->addAction(action);
+    }
+    orderPluginOwnedActions(root, actionTextLessThan);
+    sortPluginOwnedSubmenus(root);
+
+    return root;
+}
+
 void
 GuiApplicationManager::setNodesMenuTarget(Gui* gui,
                                           QMenu* popup)
@@ -1756,6 +1813,9 @@ GuiApplicationManagerPrivate::clearNodesMenuTarget()
 void
 GuiApplicationManager::refreshNodesMenuPluginProperties(const QString& pluginID)
 {
+    if (_imp->networkNodesMenu) {
+        refreshPluginActionsProperties(_imp->networkNodesMenu, pluginID);
+    }
     if (_imp->nodesMenu) {
         refreshPluginActionsProperties(_imp->nodesMenu, pluginID);
         // The shortcut and colour properties just set send the menu no change event.

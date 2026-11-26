@@ -194,6 +194,15 @@ persistentErrorColor()
     return QColor(128, 0, 0, 255);
 }
 
+QPen
+NodeGui::missingPluginOutline()
+{
+    QPen outline(persistentErrorColor(), TO_DPIX(kMissingPluginOutlineWidth), Qt::DashLine);
+    outline.setJoinStyle(Qt::MiterJoin);
+
+    return outline;
+}
+
 static QColor
 cpuExecutionColor()
 {
@@ -1099,9 +1108,7 @@ NodeGui::createGui()
     _boundingBox = new NodeGraphRectItem(this, cornerRadiusPx);
     _boundingBox->setZValue(depth);
     if (node->getPluginID() == PLUGINID_NATRON_MISSING_PLUGIN) {
-        QPen outline(persistentErrorColor(), TO_DPIX(kMissingPluginOutlineWidth), Qt::DashLine);
-        outline.setJoinStyle(Qt::MiterJoin);
-        _boundingBox->setPen(outline);
+        _boundingBox->setPen(missingPluginOutline());
     }
 
     _userColorBorder = new NodeGraphRectItem(this, cornerRadiusPx);

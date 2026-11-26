@@ -162,6 +162,14 @@ targetColors()
     return colors;
 }
 
+std::map<std::string, std::string>&
+targetLabels()
+{
+    static std::map<std::string, std::string> labels;
+
+    return labels;
+}
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 void
@@ -187,6 +195,25 @@ networkTargetColor(const std::string& target,
     *color = it->second;
 
     return true;
+}
+
+void
+registerNetworkTargetLabel(const std::string& target,
+                           const std::string& label)
+{
+    std::lock_guard<std::mutex> lock(targetColorsMutex());
+
+    targetLabels()[target] = label;
+}
+
+std::string
+networkTargetLabel(const std::string& target)
+{
+    std::lock_guard<std::mutex> lock(targetColorsMutex());
+    const std::map<std::string, std::string>& labels = targetLabels();
+    const auto it = labels.find(target);
+
+    return (it == labels.end()) ? target : it->second;
 }
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER

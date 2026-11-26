@@ -35,6 +35,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Global/Enums.h"
@@ -188,10 +189,14 @@ public:
 
     /**
      * @brief Registers the plug-in of layout, which must have been added or have a builder; only
-     * its plug-in ID, label and grouping are read. It is for internal use only: hidden from menus,
-     * created by ID. Returns null when registration fails.
+     * its plug-in ID, label, grouping and targets are read. It is for internal use only: hidden
+     * from the nodes menu, created by ID or from the menu of a builder's graph. Returns null when
+     * registration fails.
      **/
     static Plugin* registerPlugin(const NetworkNodeLayout& layout);
+
+    // The plug-in ID and targets of every plug-in registerPlugin() registered, in its order.
+    static std::vector<std::pair<std::string, std::vector<std::string>>> registeredPlugins();
 
     const NetworkNodeLayout& layout() const
     {

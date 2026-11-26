@@ -46,6 +46,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/MissingPluginNode.h"
 #include "Engine/Nodes/Network/PortTypes.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
@@ -62,6 +63,8 @@ struct LayoutRegistry {
     std::map<std::string, const NetworkNodeLayout*> byId;
     std::map<std::string, NetworkNode::LayoutBuilder> builders;
     std::deque<std::unique_ptr<NetworkNodeLayout>> storage;
+    // The targets of every registered plug-in, by plug-in ID, in registration order.
+    std::vector<std::pair<std::string, std::vector<std::string>>> registered;
 };
 
 NodePtr
@@ -338,8 +341,22 @@ NetworkNode::registerPlugin(const NetworkNodeLayout& layout)
     plugin->setInputDataKinds({ eDataKindNetwork });
     // Plug-ins registered after AppManager::load() get no script-name label from it.
     plugin->setLabelWithoutSuffix(Plugin::makeLabelWithoutSuffix(label));
+    {
+        LayoutRegistry& registry = layoutRegistry();
+        std::lock_guard<std::mutex> lock(registry.mutex);
+        registry.registered.emplace_back(layout.pluginId, layout.targets);
+    }
 
     return plugin;
+}
+
+std::vector<std::pair<std::string, std::vector<std::string>>>
+NetworkNode::registeredPlugins()
+{
+    LayoutRegistry& registry = layoutRegistry();
+    std::lock_guard<std::mutex> lock(registry.mutex);
+
+    return registry.registered;
 }
 
 NetworkNode::NetworkNode(NodePtr node)
@@ -949,9 +966,12 @@ NetworkNode::onInputChanged(int inputNb)
         return;
     }
     const NetworkNode* upstream = dynamic_cast<const NetworkNode*>(input->getEffectInstance().get());
+    // A missing shader's outputs are unknown, so the name its reader saved is kept for the day
+    // the shader is back.
+    const bool missingUpstream = dynamic_cast<const MissingPluginNode*>(input->getEffectInstance().get()) != NULL;
     // A loader or a paste connects inputs one at a time after all their names are set, with no
     // previous upstream, so only the changed input's entry is checked.
-    if (otherUpstream || !upstream || !upstream->findOutput(output)) {
+    if (otherUpstream || (!upstream && !missingUpstream) || (upstream && !upstream->findOutput(output))) {
         setOutputForInput(label, std::string());
     }
 }

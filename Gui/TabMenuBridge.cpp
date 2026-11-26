@@ -45,6 +45,8 @@
 #include "Engine/Knob.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Network/NetworkBuilder.h"
+#include "Engine/Nodes/Network/PortTypes.h"
 #include "Engine/Settings.h"
 
 #include "Gui/Gui.h"
@@ -189,7 +191,75 @@ struct MenuFilter {
     // Whether the filter says needsPrimPathKnob, true or false.
     bool withPrimPathKnob = false;
     bool needsPrimPathKnob = false;
+    // Replaces the kind filter.
+    const TabMenuBridge::NetworkFilter* network = nullptr;
 };
+
+// A new tuple of Python strings; null when one cannot be made.
+PyObject*
+stringTuple(const std::vector<std::string>& strings)
+{
+    PyObject* tuple = PyTuple_New((Py_ssize_t)strings.size());
+
+    if (!tuple) {
+        return nullptr;
+    }
+    for (std::size_t i = 0; i < strings.size(); ++i) {
+        PyObject* item = PyUnicode_FromString(strings[i].c_str());
+        if (!item) {
+            Py_DECREF(tuple);
+
+            return nullptr;
+        }
+        PyTuple_SetItem(tuple, (Py_ssize_t)i, item);
+    }
+
+    return tuple;
+}
+
+// Sets context[key] to the strings, as a tuple: a list would make the context unhashable.
+void
+setStrings(PyObject* context,
+           const char* key,
+           const std::vector<std::string>& strings)
+{
+    PyObject* tuple = stringTuple(strings);
+
+    if (!tuple) {
+        PyErr_Clear();
+
+        return;
+    }
+    PyDict_SetItemString(context, key, tuple);
+    Py_DECREF(tuple);
+}
+
+// The adapter's network context; see tabtabtab_natron.launch().
+PyObject*
+networkContext(const TabMenuBridge::NetworkFilter& network)
+{
+    PyObject* context = PyDict_New();
+    std::vector<std::string> labels;
+
+    for (const std::string& target : network.targets) {
+        labels.push_back(networkTargetLabel(target));
+    }
+    setStrings(context, "networkTargets", network.targets);
+    setStrings(context, "networkTargetLabels", labels);
+    PyObject* key = PyUnicode_FromString(network.key.c_str());
+    if (key) {
+        PyDict_SetItemString(context, "networkKey", key);
+        Py_DECREF(key);
+    } else {
+        PyErr_Clear();
+    }
+    if (network.pluginIds) {
+        setStrings(context, "networkPluginIds", *network.pluginIds);
+    }
+    PyDict_SetItemString(context, "networkBackdrop", network.withBackdrop ? Py_True : Py_False);
+
+    return context;
+}
 
 void
 openMenu(NodeGraph* graph,
@@ -209,7 +279,11 @@ openMenu(NodeGraph* graph,
         return;
     }
     PyObject* args;
-    if (filter.kindKey) {
+    if (filter.network) {
+        PyObject* context = networkContext(*filter.network);
+        args = PyTuple_Pack(2, appObject, context);
+        Py_DECREF(context);
+    } else if (filter.kindKey) {
         PyObject* context = PyDict_New();
         PyObject* kind = PyUnicode_FromString(TabMenuBridge::dataKindKey(filter.kind).toStdString().c_str());
         PyDict_SetItemString(context, filter.kindKey, kind);
@@ -442,7 +516,10 @@ launch(NodeGraph* graph)
     g_scenePos = graph->mapToScene(graph->mapFromGlobal(QCursor::pos()));
     g_context.reset();
     MenuFilter filter;
-    if (selectedOutputKind(graph, &filter.kind)) {
+    const std::optional<NetworkFilter> network = networkFilterOf(graph);
+    if (network) {
+        filter.network = &*network;
+    } else if (selectedOutputKind(graph, &filter.kind)) {
         filter.kindKey = "selectedKind";
     }
     openMenu(graph, filter);
@@ -460,11 +537,32 @@ launch(NodeGraph* graph,
     g_scenePos = graph->mapToScene(graph->mapFromGlobal(QCursor::pos()));
     g_context = std::make_shared<LaunchContext>(context);
     MenuFilter filter;
-    filter.kindKey = "inputKind";
-    filter.kind = context.inputKind;
-    filter.withPrimPathKnob = true;
-    filter.needsPrimPathKnob = context.needsPrimPathKnob;
+    if (g_context->network) {
+        filter.network = &*g_context->network;
+    } else {
+        filter.kindKey = "inputKind";
+        filter.kind = context.inputKind;
+        filter.withPrimPathKnob = true;
+        filter.needsPrimPathKnob = context.needsPrimPathKnob;
+    }
     openMenu(graph, filter);
+}
+
+std::optional<NetworkFilter>
+networkFilterOf(NodeGraph* graph)
+{
+    NodeCollectionPtr group = graph ? graph->getGroup() : NodeCollectionPtr();
+    NetworkBuilder* builder = dynamic_cast<NetworkBuilder*>(group.get());
+
+    if (!builder) {
+        return std::nullopt;
+    }
+    NetworkFilter filter;
+    filter.targets = builder->getTargets();
+    NodePtr node = builder->getNode();
+    filter.key = node ? node->getFullyQualifiedName() : std::string();
+
+    return filter;
 }
 
 void

@@ -26,6 +26,9 @@
 #include "PortListLayout.h"
 
 #include <algorithm>
+#include <string>
+#include <variant>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -38,11 +41,15 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/MissingPluginNode.h"
 #include "Engine/Nodes/Network/NetworkNode.h"
 
 #include "Gui/Edge.h"
 #include "Gui/NodeGui.h"
 #include "Gui/PortNodeGui.h"
+
+#include "Serialization/KnobSerialization.h"
+#include "Serialization/NodeSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -82,12 +89,58 @@ PortListLayout::getNetworkNode() const
     return node ? dynamic_cast<NetworkNode*>(node->getEffectInstance().get()) : 0;
 }
 
+bool
+PortListLayout::isMissingPlugin() const
+{
+    NodePtr node = _node->getNode();
+
+    return node && dynamic_cast<MissingPluginNode*>(node->getEffectInstance().get());
+}
+
+double
+PortListLayout::nodeHeaderHeight() const
+{
+    return headerHeight() + (isMissingPlugin() ? rowHeight() : 0.);
+}
+
+std::string
+PortListLayout::outputReadBy(const NodePtr& node,
+                             int inputNb)
+{
+    if (!node || (inputNb < 0) || (inputNb >= node->getNInputs())) {
+        return std::string();
+    }
+    const std::string label = node->getInputLabel(inputNb);
+    if (NetworkNode* network = dynamic_cast<NetworkNode*>(node->getEffectInstance().get())) {
+        return network->getOutputForInput(label);
+    }
+    MissingPluginNode* placeholder = dynamic_cast<MissingPluginNode*>(node->getEffectInstance().get());
+    const Serialization::NodeSerializationPtr stored = placeholder ? placeholder->getStoredSerialization() : Serialization::NodeSerializationPtr();
+    if (!stored) {
+        return std::string();
+    }
+    for (const Serialization::KnobSerialization& knob : stored->knobs) {
+        if ((knob.name != kNetworkNodeParamInputOutputs) || knob.dimensions.empty() || !knob.dimensions[0].value) {
+            continue;
+        }
+        const std::string* text = std::get_if<std::string>(&*knob.dimensions[0].value);
+        for (const std::string& entry : text ? networkSplitPorts(*text) : std::vector<std::string>()) {
+            const std::size_t eq = entry.find('=');
+            if ((eq != std::string::npos) && (entry.compare(0, eq, label) == 0) && (eq == label.size())) {
+                return entry.substr(eq + 1);
+            }
+        }
+    }
+
+    return std::string();
+}
+
 QPointF
 PortListLayout::inputPortPosition(int inputNb) const
 {
     const QRectF body = _node->bodyRect();
 
-    return QPointF(body.left(), body.top() + headerHeight() + rowHeight() * (std::max(0, inputNb) + 0.5));
+    return QPointF(body.left(), body.top() + nodeHeaderHeight() + rowHeight() * (std::max(0, inputNb) + 0.5));
 }
 
 QPointF
@@ -95,7 +148,7 @@ PortListLayout::outputPortPosition(int outputIndex) const
 {
     const QRectF body = _node->bodyRect();
 
-    return QPointF(body.right(), body.top() + headerHeight() + rowHeight() * (std::max(0, outputIndex) + 0.5));
+    return QPointF(body.right(), body.top() + nodeHeaderHeight() + rowHeight() * (std::max(0, outputIndex) + 0.5));
 }
 
 int
@@ -104,14 +157,23 @@ PortListLayout::outputIndexOf(const std::string& outputName) const
     if (outputName.empty()) {
         return 0;
     }
-    NetworkNode* network = getNetworkNode();
-    if (!network) {
+    if (NetworkNode* network = getNetworkNode()) {
+        const std::vector<OutputPortDescriptor>& outputs = network->getOutputPorts();
+        for (std::size_t i = 0; i < outputs.size(); ++i) {
+            if (outputs[i].name == outputName) {
+                return (int)i;
+            }
+        }
+
         return -1;
     }
-    const std::vector<OutputPortDescriptor>& outputs = network->getOutputPorts();
-    for (std::size_t i = 0; i < outputs.size(); ++i) {
-        if (outputs[i].name == outputName) {
-            return (int)i;
+    const PortNodeGui* portNode = dynamic_cast<const PortNodeGui*>(_node);
+    if (portNode) {
+        const std::vector<PortNodeRow>& outputs = portNode->getOutputRows();
+        for (std::size_t i = 0; i < outputs.size(); ++i) {
+            if (outputs[i].name == outputName) {
+                return (int)i;
+            }
         }
     }
 
@@ -121,13 +183,7 @@ PortListLayout::outputIndexOf(const std::string& outputName) const
 std::string
 PortListLayout::outputNameForInput(int inputNb) const
 {
-    NodePtr node = _node->getNode();
-    NetworkNode* network = getNetworkNode();
-    if (!network || (inputNb < 0) || (inputNb >= node->getNInputs())) {
-        return std::string();
-    }
-
-    return network->getOutputForInput(node->getInputLabel(inputNb));
+    return outputReadBy(_node->getNode(), inputNb);
 }
 
 void
@@ -207,20 +263,26 @@ PortListLayout::hitTest(const QPointF& scenePos,
         hit.outputName.clear();
         hit.dist2 = d2;
     }
-    NetworkNode* network = getNetworkNode();
-    if (network) {
-        const std::vector<OutputPortDescriptor>& outputs = network->getOutputPorts();
-        const double radius = std::max(grabRadius, portRadius());
-        for (std::size_t i = 0; i < outputs.size(); ++i) {
-            const double d2 = sceneDist2(_node->mapToScene(outputPortPosition((int)i)), scenePos);
-            if ((d2 > radius * radius) || ((hit.kind != eConnectorKindNone) && (d2 >= hit.dist2))) {
-                continue;
-            }
-            hit.kind = eConnectorKindOutput;
-            hit.inputNb = -1;
-            hit.outputName = outputs[i].name;
-            hit.dist2 = d2;
+    std::vector<std::string> outputNames;
+    if (NetworkNode* network = getNetworkNode()) {
+        for (const OutputPortDescriptor& output : network->getOutputPorts()) {
+            outputNames.push_back(output.name);
         }
+    } else if (const PortNodeGui* portNode = dynamic_cast<const PortNodeGui*>(_node)) {
+        for (const PortNodeRow& output : portNode->getOutputRows()) {
+            outputNames.push_back(output.name);
+        }
+    }
+    const double outputRadius = std::max(grabRadius, portRadius());
+    for (std::size_t i = 0; i < outputNames.size(); ++i) {
+        const double d2 = sceneDist2(_node->mapToScene(outputPortPosition((int)i)), scenePos);
+        if ((d2 > outputRadius * outputRadius) || ((hit.kind != eConnectorKindNone) && (d2 >= hit.dist2))) {
+            continue;
+        }
+        hit.kind = eConnectorKindOutput;
+        hit.inputNb = -1;
+        hit.outputName = outputNames[i];
+        hit.dist2 = d2;
     }
 
     return hit;

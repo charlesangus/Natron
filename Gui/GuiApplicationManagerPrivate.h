@@ -68,6 +68,7 @@ struct GuiApplicationManagerPrivate
     GuiApplicationManager* _publicInterface;
     std::list<PluginGroupNodePtr> _topLevelToolButtons;
     QMenu* nodesMenu;
+    QMenu* networkNodesMenu;
     QPointer<Gui> nodesMenuTarget;
     QPointer<QMenu> nodesMenuPopup;
     bool nodesMenuPopupShown;

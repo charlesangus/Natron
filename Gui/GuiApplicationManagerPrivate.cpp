@@ -50,6 +50,7 @@ GuiApplicationManagerPrivate::GuiApplicationManagerPrivate(GuiApplicationManager
     : _publicInterface(publicInterface)
     , _topLevelToolButtons()
     , nodesMenu(NULL)
+    , networkNodesMenu(NULL)
     , nodesMenuTarget()
     , nodesMenuPopup()
     , nodesMenuPopupShown(false)

@@ -1,8 +1,9 @@
 """tabtabtab adapter for Natron.
 
-Node items come from the process-wide nodes menu (natron.nodesMenu()),
-command items from the main window's menu bar, and the preferences from
-Natron's Settings. Every item is a QAction; GuiApp triggers it so that the
+Node items come from the process-wide nodes menu (natron.nodesMenu()), or
+inside a network builder's graph from the network nodes menu
+(natron.networkNodesMenu()), command items from the main window's menu bar,
+and the preferences from Natron's Settings. Every item is a QAction; GuiApp triggers it so that the
 nodes it creates land in the graph the menu was opened over.
 """
 
@@ -97,6 +98,10 @@ _PLUGIN_ID_PROPERTY = "natronPluginID"
 _INPUT_KIND_PROPERTY = "natronInputKind"
 _PRIM_PATH_KNOB_PROPERTY = "natronPrimPathKnob"
 _INPUT_KINDS_PROPERTY = "natronInputKinds"
+_NETWORK_TARGETS_PROPERTY = "natronNetworkTargets"
+
+# PLUGINID_NATRON_BACKDROP, listed in a network builder's graph as well.
+_BACKDROP_PLUGIN_ID = "Backdrop"
 
 # PLUGINID_NATRON_READ and PLUGINID_NATRON_WRITE, whose interactive creation
 # asks for a file first.
@@ -126,18 +131,23 @@ def _string_property(action, name):
 
 
 def _filter_info(action):
-    """What _accepts() reads from a node action, read once per walk."""
+    """What _accepts() and _accepts_network() read from a node action, read
+    once per walk."""
     kinds = tuple(k for k in _string_property(action, _INPUT_KINDS_PROPERTY).split(",") if k)
+    plugin_id = _string_property(action, _PLUGIN_ID_PROPERTY)
+    targets = tuple(t for t in _string_property(action, _NETWORK_TARGETS_PROPERTY).split(",") if t)
     return (
         _string_property(action, _INPUT_KIND_PROPERTY),
-        bool(_string_property(action, _PLUGIN_ID_PROPERTY)),
+        bool(plugin_id),
         kinds,
         bool(_string_property(action, _PRIM_PATH_KNOB_PROPERTY)),
+        plugin_id,
+        targets,
     )
 
 
 def _accepts_info(info, context):
-    input_kind, has_plugin, input_kinds, has_prim_knob = info
+    input_kind, has_plugin, input_kinds, has_prim_knob = info[:4]
     if input_kind == _NETWORK_KIND or _NETWORK_KIND in input_kinds:
         if _NETWORK_KIND not in (context.get('inputKind'), context.get('selectedKind')):
             return False
@@ -344,33 +354,92 @@ def _collect_nodes(menu, parts, items, infos, rewalk=True):
     return cacheable
 
 
-_node_cache = None
+# (version, menu id, items, infos) per natron menu getter.
+_menu_item_caches = {}
 
 # Returned for "no items", never modified: get_items() tells a list unchanged
 # by its identity.
 _NO_ITEMS = []
 
 
-def _node_items():
-    """(items, filter infos) of the nodes menu; the same lists until a
-    watched menu changes."""
-    global _node_cache
+def _menu_items(getter):
+    """(items, filter infos) of the menu natron.<getter>() returns; the same
+    lists until a watched menu changes."""
     try:
-        menu = NatronGui.natron.nodesMenu()
+        menu = getattr(NatronGui.natron, getter)()
     except Exception:
         return _NO_ITEMS, _NO_ITEMS
     if not _is_alive(menu):
         return _NO_ITEMS, _NO_ITEMS
     version = _versions['nodes']
     menu_id = _menu_id(menu)
-    if (_node_cache is not None and _node_cache[0] == version and menu_id is not None
-            and _node_cache[1] == menu_id):
-        return _node_cache[2], _node_cache[3]
+    cached = _menu_item_caches.get(getter)
+    if (cached is not None and cached[0] == version and menu_id is not None
+            and cached[1] == menu_id):
+        return cached[2], cached[3]
     items = []
     infos = []
     if _collect_nodes(menu, (), items, infos) and version == _versions['nodes']:
-        _node_cache = (version, menu_id, items, infos)
+        _menu_item_caches[getter] = (version, menu_id, items, infos)
     return items, infos
+
+
+def _node_items():
+    """(items, filter infos) of the nodes menu."""
+    return _menu_items('nodesMenu')
+
+
+def _network_node_items():
+    """(items, filter infos) of the network nodes menu."""
+    return _menu_items('networkNodesMenu')
+
+
+# The target last made current in the menu, per network context's
+# 'networkKey'.
+_network_current_targets = {}
+
+
+def _is_network_context(context):
+    return bool(context) and 'networkTargets' in context
+
+
+def _network_target(context):
+    """The current target of a network context, None when it has none."""
+    targets = tuple(context.get('networkTargets') or ())
+    if not targets:
+        return None
+    current = _network_current_targets.get(context.get('networkKey'))
+    return current if current in targets else targets[0]
+
+
+def _cycle_network_target(context, step=1):
+    """Make the next of the context's targets current; False when there is
+    no other."""
+    targets = tuple(context.get('networkTargets') or ())
+    if len(targets) < 2:
+        return False
+    current = _network_target(context)
+    index = targets.index(current) if current in targets else 0
+    _network_current_targets[context.get('networkKey')] = targets[(index + step) % len(targets)]
+    return True
+
+
+def _network_target_label(context, target):
+    targets = tuple(context.get('networkTargets') or ())
+    labels = tuple(context.get('networkTargetLabels') or ())
+    if target in targets and targets.index(target) < len(labels):
+        return labels[targets.index(target)]
+    return target
+
+
+def _accepts_network(info, context, target):
+    """Whether the network node type of `info` is listed for a network
+    `context` whose current target is `target`."""
+    plugin_id, targets = info[4], info[5]
+    plugin_ids = context.get('networkPluginIds')
+    if plugin_ids is not None and plugin_id not in plugin_ids:
+        return False
+    return target is None or target in targets
 
 
 def _with_shortcuts(items):
@@ -498,6 +567,8 @@ class NatronPlugin(TabTabTabPlugin):
 
     def get_items(self):
         context = self._context
+        if _is_network_context(context):
+            return self._network_items(context)
         nodes, infos = _node_items()
         # A launch with an input kind creates a node and fills it in once
         # created, so a command has nothing to hand that node.
@@ -514,6 +585,26 @@ class NatronPlugin(TabTabTabPlugin):
         items = _make_menupaths_unique(listed + commands)
         self._items_cache = (nodes, commands, key, items)
         return items
+
+    def _network_items(self, context):
+        """The network node types supporting the current target, and
+        Backdrop when the context says so; no commands."""
+        target = _network_target(context)
+        nodes, infos = _network_node_items()
+        others, other_infos = _node_items() if context.get('networkBackdrop') else (_NO_ITEMS, _NO_ITEMS)
+        key = (_context_key(context), target)
+        cached = self._items_cache
+        if (cached is not None and cached[0] is nodes and cached[1] is others
+                and cached[2] == key):
+            return cached[3]
+        listed = [item for item, info in zip(nodes, infos) if _accepts_network(info, context, target)]
+        listed += [item for item, info in zip(others, other_infos) if info[4] == _BACKDROP_PLUGIN_ID]
+        items = _make_menupaths_unique(listed)
+        self._items_cache = (nodes, others, key, items)
+        return items
+
+    def context(self):
+        return self._context
 
     def get_weights_file(self):
         if self._storage_dir is not None:
@@ -659,6 +750,78 @@ def _watch_popup_close(popup):
     _watched_popup = popup
 
 
+_target_label = None
+_target_key_watcher = None
+_target_watched_input = None
+
+
+def _refresh_target_label(popup):
+    """Show the network context's current target above the input, or hide
+    the label outside a network context."""
+    global _target_label
+    context = _plugin.context()
+    target = _network_target(context) if _is_network_context(context) else None
+    if target is None:
+        if _is_alive(_target_label) and _target_label.isVisible():
+            _target_label.hide()
+            popup.adjustSize()
+        return
+    if not _is_alive(_target_label):
+        _target_label = QtWidgets.QLabel(popup)
+        _target_label.setObjectName("tabMenuNetworkTarget")
+        popup.layout().insertWidget(0, _target_label)
+    text = "Target: %s" % _network_target_label(context, target)
+    if len(tuple(context.get('networkTargets') or ())) > 1:
+        text += "    (Shift+Tab: next target)"
+    _target_label.setText(text)
+    if not _target_label.isVisible():
+        _target_label.show()
+        popup.adjustSize()
+
+
+def _switch_network_target(popup):
+    context = _plugin.context()
+    if not _is_network_context(context) or not _cycle_network_target(context):
+        return
+    items = _plugin.get_items()
+    popup._shown_items = items
+    _plugin.invalidate_color_cache()
+    popup.things_model.refresh_items(items)
+    popup.things_model.invalidate_color_cache()
+    popup.move_selection(where="first")
+    _refresh_target_label(popup)
+
+
+def _watch_target_key(popup):
+    # The core's line edit leaves Shift+Tab to Qt's focus chain, which would
+    # move the focus out of the input.
+    global _target_key_watcher, _target_watched_input
+    line_edit = getattr(popup, 'input', None)
+    if not _is_alive(line_edit) or line_edit is _target_watched_input:
+        return
+    if _target_key_watcher is None:
+        class _TargetKeyWatcher(QtCore.QObject):
+            def eventFilter(self, watched, event):
+                if event.type() not in (QtCore.QEvent.KeyPress, QtCore.QEvent.ShortcutOverride):
+                    return False
+                key = event.key()
+                backtab = key == QtCore.Qt.Key_Backtab or (
+                    key == QtCore.Qt.Key_Tab and event.modifiers() & QtCore.Qt.ShiftModifier)
+                if not backtab or not _is_network_context(_plugin.context()):
+                    return False
+                if event.type() == QtCore.QEvent.ShortcutOverride:
+                    event.accept()
+                    return True
+                popup = _live_popup()
+                if popup is not None:
+                    _switch_network_target(popup)
+                return True
+
+        _target_key_watcher = _TargetKeyWatcher()
+    line_edit.installEventFilter(_target_key_watcher)
+    _target_watched_input = line_edit
+
+
 def launch(app, context=None):
     """Open the tab menu for `app`, the GuiApp whose node graph has focus.
 
@@ -667,6 +830,14 @@ def launch(app, context=None):
     "scene"), 'selectedKind' (the kind the selected nodes output) and
     'needsPrimPathKnob'. Menu commands, and actions scripts added to the
     nodes menu, stay listed unless 'inputKind' is set.
+
+    A network context lists instead the network nodes menu's node types
+    supporting its current target, see _accepts_network(), and no command:
+    'networkTargets' (the targets Shift+Tab switches among, the first
+    current until another is picked), 'networkTargetLabels' (their names),
+    'networkKey' (what the current target is remembered for), and
+    optionally 'networkPluginIds' (the only node types to list) and
+    'networkBackdrop' (whether Backdrop is listed too).
     """
     window = _window_for(app)
     _plugin.set_app(app)
@@ -674,12 +845,20 @@ def launch(app, context=None):
     _plugin.set_window(window)
     _attach_popup_to(window)
     space_mode_order, scroll_enabled = _preferences()
+    popup = _live_popup()
+    if popup is not None:
+        _refresh_target_label(popup)
     tabtabtab_nuke_core.launch(
         _plugin,
         space_mode_order=space_mode_order,
         scroll_enabled=scroll_enabled,
     )
-    _watch_popup_close(tabtabtab_nuke_core._tabtabtab_instance)
+    # A popup the core has just made shows no label yet.
+    popup = _live_popup()
+    if popup is not None:
+        _refresh_target_label(popup)
+    _watch_popup_close(popup)
+    _watch_target_key(popup)
 
 
 _WARM_UP_INTERVAL_MS = 500

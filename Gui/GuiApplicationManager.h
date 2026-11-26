@@ -81,6 +81,10 @@
 // What the plug-in's inputs other than masks take, as dataKindKey()s joined by commas, empty
 // without such inputs.
 #define kNodesMenuPropInputKinds "natronInputKinds"
+// On the network nodes menu's plug-in actions: the targets the plug-in supports, joined by commas.
+#define kNodesMenuPropNetworkTargets "natronNetworkTargets"
+
+#define kNetworkNodesMenuObjectName "NetworkNodesMenu"
 
 // On grouping submenus' menu actions: the grouping's name, unescaped, and the icon the
 // toolbar draws for it.
@@ -125,6 +129,13 @@ public:
      * Null until the plug-ins have loaded. Every window's toolbar and node graph show it.
      **/
     QMenu* getNodesMenu() const;
+
+    /**
+     * @brief The process-wide menu of every network plug-in (see NetworkNode::registerPlugin()),
+     * one submenu per grouping, which the nodes menu leaves out: the tab menu lists it inside a
+     * network builder's graph. Built on the first call; null without a QApplication.
+     **/
+    QMenu* getNetworkNodesMenu();
 
     /**
      * @brief Replaces the plug-in-owned actions of the nodes menu with the current plug-in tree,

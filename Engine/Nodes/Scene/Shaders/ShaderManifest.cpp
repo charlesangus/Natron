@@ -531,7 +531,7 @@ rampCurves(const QJsonArray& attributes,
     }
 }
 
-// What registering a node's plug-in reads: its plug-in ID, label and grouping.
+// What registering a node's plug-in reads: its plug-in ID, label, grouping and targets.
 void
 setIdentity(const std::string& renderer,
             const QJsonObject& node,
@@ -540,6 +540,10 @@ setIdentity(const std::string& renderer,
     layout->pluginId = toStd(node.value(QLatin1String("id")));
     layout->label = shaderLabelFromScriptName(toStd(node.value(QLatin1String("name"))));
     layout->grouping = (renderer == kRendererCycles) ? kShaderGroupCycles : kShaderGroupMoonRay;
+    layout->targets.clear();
+    for (const QJsonValue& target : node.value(QLatin1String("targets")).toArray()) {
+        layout->targets.push_back(toStd(target));
+    }
 }
 
 bool
@@ -554,9 +558,6 @@ buildLayout(const std::string& renderer,
 
     setIdentity(renderer, node, layout);
     layout->description = std::string(cycles ? "Cycles" : "MoonRay") + " " + toStd(node.value(QLatin1String("kind"))) + " " + name + ".";
-    for (const QJsonValue& target : node.value(QLatin1String("targets")).toArray()) {
-        layout->targets.push_back(toStd(target));
-    }
 
     // The page of each attribute a layout group lists, and the pages in their order.
     std::map<std::string, std::string> listedPage;
@@ -862,6 +863,8 @@ registerShaderPortTypeTables()
     moonRay.g = 140;
     moonRay.b = 224;
     registerNetworkTargetColor(kRendererMoonRay, moonRay);
+    registerNetworkTargetLabel(kRendererCycles, "Cycles");
+    registerNetworkTargetLabel(kRendererMoonRay, "MoonRay");
 
     PortConversions conversions;
     conversions.classes = numericPortConversions();

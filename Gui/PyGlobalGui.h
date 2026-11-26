@@ -114,6 +114,13 @@ public:
         return manager ? manager->getNodesMenu() : 0;
     }
 
+    QMenu* networkNodesMenu() const
+    {
+        GuiApplicationManager* manager = dynamic_cast<GuiApplicationManager*>(AppManager::instance());
+
+        return manager ? manager->getNetworkNodesMenu() : 0;
+    }
+
     void addMenuCommand(const QString& grouping,
                         const QString& pythonFunctionName)
     {

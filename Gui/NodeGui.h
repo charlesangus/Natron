@@ -602,6 +602,11 @@ public:
     static QColor contrastingLabelTextColor(const QColor& background);
 
     /**
+     * @brief The dashed outline a node whose plug-in is missing is drawn with.
+     **/
+    static QPen missingPluginOutline();
+
+    /**
      * @brief Recomputes the data-kind colour of this node's input and output edges; @p force
      * recomputes it even when the kind itself is unchanged, e.g. after its colour preference changed.
      **/

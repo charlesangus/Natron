@@ -104,6 +104,13 @@ void registerNetworkTargetColor(const std::string& target,
 bool networkTargetColor(const std::string& target,
                         PortColor* color);
 
+// Makes label the name target is shown by in menus, replacing any it had.
+void registerNetworkTargetLabel(const std::string& target,
+                                const std::string& label);
+
+// The name target is shown by: its registered label, else target itself.
+std::string networkTargetLabel(const std::string& target);
+
 /**
  * @brief The implicit conversions a target allows between ports of different type classes. Ports
  * of the same type always connect, and so do ports of the same class other than custom and

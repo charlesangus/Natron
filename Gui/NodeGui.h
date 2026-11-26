@@ -307,16 +307,12 @@ public:
     void initialize(NodeGraph* dag,
                     const NodePtr & internalNode);
 
-    // Creates the panel if needed, or finishes a buildDeferredPanel() build, so might be expensive.
+    // Creates the panel if needed, so might be expensive.
     void ensurePanelCreated(bool minimized = false, bool hideUnmodified = false);
 
-    // NodeGraph::schedulePanelBuild()'s build: skipped once the node is deleted or undone. The hidden
-    // panel is filled over several passes of the event loop and docked once complete.
+    // NodeGraph::schedulePanelBuild()'s build: skipped once the node is deleted or undone. The panel
+    // is built hidden in one pass and docked once complete.
     void buildDeferredPanel();
-
-    // Throws away a buildDeferredPanel() panel whose knob GUIs are still being built, leaving the node
-    // with no panel; returns whether it did.
-    bool dropUnbuiltPanel();
 
     virtual void destroyGui() OVERRIDE FINAL;
 
@@ -823,15 +819,14 @@ Q_SIGNALS:
 protected:
 
     virtual void createGui();
-    // The panel is created hidden and outside the properties bin; dockPendingPanel() adds an open one.
+    // The panel is created hidden and outside the properties bin; buildPanel() docks an open one.
     virtual NodeSettingsPanel* createPanel(QVBoxLayout* container, const NodeGuiPtr& thisAsShared);
 
 private:
-    void startPanelBuild(bool incremental);
-    void dockPendingPanel();
+    void buildPanel(bool reselect);
     void connectSettingsPanel();
-    void schedulePanelTail();
-    void runPanelTail(bool all);
+    void runPanelViewerStep();
+    void showViewerInterfaceIfPanelShown();
 
 protected:
     virtual bool canMakePreview()
@@ -997,12 +992,8 @@ private:
 
     //True when the settings panel has been  created
     bool _panelCreated;
-    // Set from the creation of the panel until it has been added to the viewer and the editors.
-    bool _panelTailPending = false;
-    bool _panelDockPending = false;
-    bool _panelTailRunning = false;
-    int _panelTailStep = 0;
-    bool _panelTailReselect = false;
+    // Set from the panel's build until its viewer interface, installed after the panel's first frame, is.
+    bool _panelViewerStepPending = false;
     mutable QMutex _currentColorMutex; //< protects _currentColor, _hasUserColor and _userColor
     QColor _currentColor; //< accessed by the serialization thread
     bool _hasUserColor;

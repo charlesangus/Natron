@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <map>
 
 CLANG_DIAG_OFF(deprecated)
@@ -85,6 +86,12 @@ public:
     QVBoxLayout* getContainer() const;
     bool isClosed() const;
     bool isFloating() const;
+
+    /**
+     * @brief Calls fn once the panel's next frame is on screen, at once when the panel is hidden, or
+     * after a short wait when no paint reaches it. A later call replaces a call still waiting.
+     **/
+    void runAfterNextFrame(const std::function<void()>& fn);
     bool isHideUnmodified() const;
 
     /**
@@ -320,8 +327,12 @@ private:
 
     QString helpString() const;
 
+    void runAfterFrameCallback();
+
     std::unique_ptr<DockablePanelPrivate> _imp;
     bool _firstPaintLogged = false;
+    std::function<void()> _afterNextFrame;
+    unsigned _afterNextFrameGeneration = 0;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -639,9 +639,9 @@ NodeGraph::postPanelBuildFlush()
     _imp->panelBuildFlushPosted = true;
     ++_imp->panelBuildGeneration;
     _imp->panelBuildsPosted.swap(_imp->panelBuildsPending);
-    // Two hops: a paint delivered outside the posted-event dispatch, from an expose say, would
-    // otherwise see its first hop run in the same event-loop pass, before the frame is shown.
-    QMetaObject::invokeMethod(this, [this]() { QMetaObject::invokeMethod(this, [this]() { flushPanelBuilds(); }, Qt::QueuedConnection); }, Qt::QueuedConnection);
+    // The window is flushed as the paint that posts this returns, so one queued hop already runs
+    // after the node's frame is shown.
+    QMetaObject::invokeMethod(this, [this]() { flushPanelBuilds(); }, Qt::QueuedConnection);
 }
 
 void

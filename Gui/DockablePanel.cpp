@@ -434,9 +434,48 @@ DockablePanel::~DockablePanel()
     
 }
 
+// A panel outside the properties bin's visible area gets no paint.
+static const int kAfterNextFrameWaitMs = 250;
+
+void
+DockablePanel::runAfterNextFrame(const std::function<void()>& fn)
+{
+    if (!isVisible()) {
+        fn();
+
+        return;
+    }
+    _afterNextFrame = fn;
+    const unsigned generation = ++_afterNextFrameGeneration;
+    QTimer::singleShot(kAfterNextFrameWaitMs, this, [this, generation]() {
+        if (generation == _afterNextFrameGeneration) {
+            runAfterFrameCallback();
+        }
+    });
+}
+
+void
+DockablePanel::runAfterFrameCallback()
+{
+    std::function<void()> fn;
+    fn.swap(_afterNextFrame);
+    if (fn) {
+        fn();
+    }
+}
+
 bool
 DockablePanel::event(QEvent* e)
 {
+    if ((e->type() == QEvent::Paint) && _afterNextFrame) {
+        // The window is flushed as the update request delivering this paint returns, before a call
+        // queued now runs.
+        const unsigned generation = _afterNextFrameGeneration;
+        QMetaObject::invokeMethod(this, [this, generation]() {
+            if (generation == _afterNextFrameGeneration) {
+                runAfterFrameCallback();
+            } }, Qt::QueuedConnection);
+    }
     if (!NodeCreationStageLog::enabled()) {
         return QFrame::event(e);
     }
@@ -1035,34 +1074,6 @@ DockablePanel::setClosedInternal(bool c)
 {
     if (!_imp->_gui) {
         return;
-    }
-
-    {
-        QMutexLocker l(&_imp->_isClosedMutex);
-        if (c == _imp->_isClosed) {
-            return;
-        }
-    }
-
-    // Opening and closing add and remove the node from the editors, which a panel still being built
-    // has yet to do. Finishing a build only to close it would stall whatever closes it, such as the
-    // open-panel limit during a burst of creations, so such a panel is dropped and built afresh when
-    // next opened.
-    NodeSettingsPanel* isBuildingNodePanel = dynamic_cast<NodeSettingsPanel*>(this);
-    if (isBuildingNodePanel) {
-        NodeGuiPtr nodeGui = isBuildingNodePanel->getNode();
-        if (nodeGui) {
-            if (c && nodeGui->dropUnbuiltPanel()) {
-                {
-                    QMutexLocker l(&_imp->_isClosedMutex);
-                    _imp->_isClosed = true;
-                }
-                Q_EMIT closeChanged(true);
-
-                return;
-            }
-            nodeGui->ensurePanelCreated();
-        }
     }
 
     {

@@ -70,19 +70,19 @@ Delete the Legacy render scheduler mode (`renderSchedulerMode`, `Engine/Settings
   - verify: whole ctest green; `FrameRenderContext_Test` gains a case: a context installed without the marker reports no scheduled frame.
   - size: M
 
-- [ ] M199.P2.T2 — Thread frame-args overlay chain, not yet read
+- [x] M199.P2.T2 — Thread frame-args overlay chain, not yet read
   - files: new `Engine/FrameArgsOverlay.{h,cpp}`, `Engine/TLSHolder.{h,cpp}` (`SpawnedThreadScope` gains a head argument), the `SpawnedThreadScope` sites (`Engine/OfxHost.cpp` ~1246,1307, `Engine/EffectInstance.cpp` ~3389, `Engine/Nodes/NativeEffectBase.cpp` ~693), `Tests/FrameRenderContext_Test.cpp`
   - approach: an immutable parent-linked `FrameArgsOverlay` node (one (node, args) entry or a shared setter map) and a `thread_local` head; `FrameArgsScope` saves the head, pushes, and restores the saved head on exit; lookup walks newest-first, then falls back to `currentFrameContext()->getArgs(node)`; spawned threads capture the head at creation (O(1), no race). Scheduler tasks install their context as the chain's base. Nothing calls lookup yet.
   - verify: new cases for nested restore, per-node shadowing, a spawned thread seeing only the captured chain, fallback to the context's key-0 args, and null with no context; whole ctest green.
   - size: M
 
-- [ ] M199.P2.T3 — One scoped push API, still storing on the TLS list
+- [x] M199.P2.T3 — One scoped push API, still storing on the TLS list
   - files: `Engine/EffectInstance.{h,cpp}` (~439-600), `Engine/ParallelRenderArgs.cpp` (setter, `ContextFrameArgsScope` ~1862), `Engine/EffectInstanceRenderDeep.cpp` (~130,266-284), `Engine/EffectInstanceRenderScene.cpp` (~76,187-205), `Engine/ViewerInstance.cpp` (~1540-1550)
   - approach: every frame-args push and pop goes through one RAII token; the two in-place setters (`setNodeRequestThreadLocal`, `setDuringPaintStrokeCreationThreadLocal`) become "push a modified copy". No behaviour change.
   - verify: `rg 'frameArgs\.(push_back|pop_back)' Engine` lists only the token implementation; whole ctest green.
   - size: M
 
-- [ ] M199.P2.T4 — Shadow the overlay chain and count mismatches
+- [x] M199.P2.T4 — Shadow the overlay chain and count mismatches
   - files: the token implementation, the getter (`Engine/EffectInstance.cpp` ~594)
   - approach: each token also pushes a `FrameArgsScope`. The getter still returns the TLS answer, compares it with the chain lookup and counts mismatches (a counter, not an assert: the debug build defines NDEBUG), and logs the maximum chain depth.
   - verify: whole ctest plus `GraphScalingTLS_Test` end with zero mismatches, or every mismatch is listed and explained; the maximum depth on deep Loop and Group graphs is recorded in Decisions.
@@ -143,3 +143,4 @@ Delete the Legacy render scheduler mode (`renderSchedulerMode`, `Engine/Settings
 - 2026-11-25 (PM) — P1.T3 in f8ace4fe7f: deleted ViewerDeviceRoot.InLegacyModeADryRunPublishesAnEmptySnapshot and SwitchingTheSchedulerModeReplansEveryViewer (pinned Legacy only); NativeWriteRange's both-modes test now renders once and checks frames, files and zero unplanned pulls; SchedulerEquivalence's joint reference is each writer rendered alone. About 25 Native tests still say 'BothSchedulerModes' in their names: rename them in P1.T5's sweep.
 - 2026-11-25 — **Frame-args design (user, after a six-design comparison):** a per-thread immutable overlay chain (design 2), scheduler tasks installing their context as the chain base; renders do not install a FrameRenderContext of their own (the planned design hid ContextFrameArgsScope's keyed pushes and would race on the shared context). Explicit argument passing can't be the end state: OFX callbacks and Python reach the host with no render handle, so a per-thread lookup must exist. Phase 2 re-sliced into T2 primitive, T3 one scoped push API, T4 shadow-compare, T5 flip and delete, T6 rename. Follow-up for making every render a scheduler task (design 6) filed to the inbox.
 - 2026-11-25 (PM) — Phase 1 + P2.T1 green: m199-gate4b (debug, full ctest, 59e99c805) after fixing the inverted render-helper ternaries from P1.T3 and the SchedulerEquivalence reference count. Starting P2.T2-T4 as one unit.
+- 2026-11-26 (PM) — P2.T2-T4 done (c9a3e359d, 1bf470ed3). m199-gate6 (debug, full ctest, 978/978) ran with 0 shadow mismatches and 0 out-of-order pops; maxDepth=2 on the Grade chain. The 19 mismatches on gate5 were real: the old list kept the outer frame's args in nested task frames (now follows them), and three tests used softCopy without the chain (softCopy is now private). Starting P2.T5-T6. The max depth on deep Loop/Group graphs is recorded with T5.

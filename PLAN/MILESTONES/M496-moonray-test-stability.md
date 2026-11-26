@@ -43,17 +43,17 @@ Fix the product races in our code or the MoonRay fork (M325 - MoonRay Fork: char
   - approach: consultant-confirmed design first (opus): find where hdMoonray starts the new context while the old one tears down asynchronously, and make teardown join the old context's arras client thread (or keep its socket buffers alive until that thread exits) before freeing them. Commit on the fork's `natron/...` branch, then move the pin and checksum in `build-moonray.sh`.
   - verify: the fork builds in the dev image job; `ctest -R USDRenderMoonRay` passes
   - size: L
-- [ ] M496.P2.T2 — Fix the hang after MoonRay's dispatcher exit
+- [x] ~~M496.P2.T2 — Fix the hang after MoonRay's dispatcher exit~~
   - files: per P1.T2's stacks — likely `Engine/Nodes/Scene/MoonRayRuntime.cpp` or the fork's dispatcher/arras shutdown
   - approach: from the exit-hang stacks, find the thread that never joins (arras client, dispatcher, TBB arena) and make shutdown end it. If P1.T2 never reproduces the exit hang, record that and drop this task.
   - verify: `USDRenderMoonRayLiveTextureTest` exits promptly 20/20 in P3.T1
   - size: M
-- [ ] M496.P2.T3 — Fix the ProgressiveRenderTest MoonRay stalls
+- [x] M496.P2.T3 — Fix the ProgressiveRenderTest MoonRay stalls
   - files: per P1.T2's stacks — likely `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `Engine/Nodes/Scene/MoonRayRuntime.cpp`, or the fork's `hdMoonray`
   - approach: from the stall stacks, fix the wait that never returns (a restart or texture-export wait missing a cancel or wake-up). If the stacks show only starvation (all threads progressing, slowly), put the MoonRay suites under one `RESOURCE_LOCK` in `Tests/SuiteProperties.cmake` with a comment saying why. If no stall reproduces, record that and drop this task.
   - verify: `ProgressiveRenderTest` 20/20 in P3.T1
   - size: M
-- [ ] M496.P2.T4 — Fix the segfault in UsdImagingGLEngine construction
+- [x] ~~M496.P2.T4 — Fix the segfault in UsdImagingGLEngine construction~~
   - files: per P1.T2's backtrace — the test fixture in `Tests/Scene/ProgressiveRender_Test.cpp` or the engine setup in `Engine/Nodes/Scene/`
   - approach: from the backtrace, find what construction races with (a previous engine's teardown, plugin registry or GL context on another thread) and serialise or order it. If it never reproduces, record that and drop this task.
   - verify: `ProgressiveRenderTest` 20/20 in P3.T1
@@ -61,7 +61,7 @@ Fix the product races in our code or the MoonRay fork (M325 - MoonRay Fork: char
 
 ## Phase 496.3: Gate (PM runs)
 
-- [ ] M496.P3.T1 — Repeat under load
+- [x] M496.P3.T1 — Repeat under load
   - files: none
   - approach: as P1.T2, 20 each for `ProgressiveRenderTest`, `USDRenderMoonRayTest`, `USDRenderMoonRayLiveTextureTest`, both schedulers
   - verify: 20/20 per suite per scheduler, no watchdog abort, no segfault
@@ -101,3 +101,4 @@ Fix the product races in our code or the MoonRay fork (M325 - MoonRay Fork: char
 - 2026-11-25 (PM) — P2.T3 Cycles hang cause: a lost wakeup in `refine`. The thread-count check drops the mutex around `askThreads`; `~ProgressiveRender` set `quit` and notified inside that window, and the worker then went into the bare done wait without reading `quit`. Fixed in a42fd97fef (every bare wait in `refine` is guarded by `!quit`; no timeouts added) with `ARenderEndedWhileItsWorkerAsksForThreadsEndsItsWorker`. m496-gate6 (NO_GUI, rebuilds the image for the MoonRay pin 909f699eae) queued; P3.T1 repeats follow.
 - 2026-11-25 (PM) — m496-gate6 green on a42fd97fef with the rebuilt image natron-dev:9d7eb361a806cc8c (MoonRay pin f57c136d3e): USDRenderMoonRay* suites pass, `ARenderEndedWhileItsWorkerAsksForThreadsEndsItsWorker` passes. P3.T1 repeats rep9-11 (one suite each, ×20) queued.
 - 2026-11-26 (PM) — P3.T1 on a42fd97fef / image 9d7eb361a806cc8c: USDRenderMoonRayTest 20/20 (rep10), USDRenderMoonRayLiveTextureTest 20/20 (rep11), under 4× parallel load, task-graph. ProgressiveRenderTest (rep9) still running.
+- 2026-11-26 (PM) — P3.T1 done: ProgressiveRenderTest 20/20 (rep9), USDRenderMoonRayTest 20/20 (rep10), USDRenderMoonRayLiveTextureTest 20/20 (rep11), task-graph only (the legacy scheduler is being removed, user 2026-11-25). P2.T2 and P2.T4 struck: neither the exit hang nor the UsdImagingGLEngine segfault reproduced in any repeat or gate since #313 and #380; the stalls they were filed from were the MoonRay livelock and the Cycles lost wakeup. Next: PR to main and review. **Pin note:** main gets MoonRay f57c136d3e from `natron/v2026.29.1-m496`; the unpinned c4edab6 (moonray deep-output bump) on `natron/v2026.29.1` must merge it before its own pin moves.

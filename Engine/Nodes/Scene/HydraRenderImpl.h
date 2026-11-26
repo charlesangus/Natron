@@ -307,6 +307,10 @@ std::size_t getCpuEngineCount();
 // How many engines, of every delegate, have been made in this process.
 std::uint64_t getEngineBuildCount();
 
+// How many times, in this process, a USDRender MoonRay render read its session's progress past
+// zero: the session is connected and its render process is rendering.
+std::uint64_t getMoonRayProgressReads();
+
 /**
  * @brief Whether Storm renders write the ids of translucent prims into their primId plane, as
  * they do unless turned off; for tests, to compare against Storm's own ids. Read when a render's

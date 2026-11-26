@@ -656,25 +656,136 @@ private:
     std::string _previous;
     bool _had = false;
 };
+
+// Whether pid is a child of this process that Arras has not reaped yet, exited or not.
+bool
+isUnreapedChild(int pid)
+{
+    std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
+    std::string line;
+    if (!std::getline(stat, line)) {
+        return false;
+    }
+    const std::string::size_type close = line.rfind(')');
+    if (close == std::string::npos) {
+        return false;
+    }
+    std::istringstream rest(line.substr(close + 1));
+    std::string state;
+    int ppid = 0;
+    rest >> state >> ppid;
+
+    return ppid == (int)::getpid();
+}
+
+/**
+ * Stops each execComp this process starts once a render has read its session's progress past
+ * zero, so never before its session is connected: one stopped while it connects fails the session's
+ * making instead, and leaves Arras a process whose exit reaches a client already gone. On going it
+ * continues the ones it stopped and waits for Arras to reap them, so that none ends its session
+ * inside a later test.
+ **/
+class RenderProcessStopper {
+public:
+    explicit RenderProcessStopper(std::chrono::milliseconds reapBound)
+        : _before(execCompChildren())
+        , _reapBound(reapBound)
+        , _thread([this]() { run(); })
+    {
+    }
+
+    ~RenderProcessStopper()
+    {
+        (void)stopNoMore();
+        (void)continueAndReap();
+    }
+
+    RenderProcessStopper(const RenderProcessStopper&) = delete;
+    RenderProcessStopper& operator=(const RenderProcessStopper&) = delete;
+
+    // The processes stopped, in the order they were.
+    std::vector<int> stopNoMore()
+    {
+        _running = false;
+        if (_thread.joinable()) {
+            _thread.join();
+        }
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        return _stopped;
+    }
+
+    // False if one of the stopped processes was not reaped within the bound.
+    bool continueAndReap()
+    {
+        const std::vector<int> stopped = stopNoMore();
+        for (int pid : stopped) {
+            if (isUnreapedChild(pid)) {
+                (void)::kill(pid, SIGCONT);
+            }
+        }
+        typedef std::chrono::steady_clock Clock;
+        const Clock::time_point start = Clock::now();
+        for (;;) {
+            const bool anyLeft = std::any_of(stopped.begin(), stopped.end(), isUnreapedChild);
+            if (!anyLeft) {
+                return true;
+            }
+            if (Clock::now() - start >= _reapBound) {
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    }
+
+private:
+    void run()
+    {
+        std::map<int, std::uint64_t> readsWhenSeen;
+        while (_running.load()) {
+            const std::vector<int> children = execCompChildren();
+            // Read after the listing: every read counted by then is of a session older than the
+            // processes listed, whose own reads can only come after.
+            const std::uint64_t reads = HydraRender::getMoonRayProgressReads();
+            for (int pid : children) {
+                if (std::find(_before.begin(), _before.end(), pid) != _before.end()) {
+                    continue;
+                }
+                const std::map<int, std::uint64_t>::iterator it = readsWhenSeen.insert(std::make_pair(pid, reads)).first;
+                std::lock_guard<std::mutex> lock(_mutex);
+                if ((reads > it->second) && (std::find(_stopped.begin(), _stopped.end(), pid) == _stopped.end())) {
+                    if (::kill(pid, SIGSTOP) == 0) {
+                        _stopped.push_back(pid);
+                    }
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+
+    const std::vector<int> _before;
+    const std::chrono::milliseconds _reapBound;
+    std::atomic<bool> _running { true };
+    std::mutex _mutex;
+    std::vector<int> _stopped;
+    std::thread _thread;
+};
 } // anon namespace
 
 // A MoonRay session whose render process stops answering mid-render cannot hold the render: once
 // its progress has held still for NATRON_DELEGATE_STALL_S the engine is made again, and when the
 // next session's progress holds still as long, the render fails and says why. Each execComp the
-// render starts is stopped a moment after it appears, and continued once the render has returned,
-// so that its session's shutdown can end it.
+// render starts is stopped once its session is rendering, and continued once the render has
+// returned, so that its session's shutdown can end it.
 TEST_F(USDRenderMoonRayTest, ARenderProcessThatStopsAnsweringFailsTheRender)
 {
     if (!moonRayOrSkip()) {
         return;
     }
-    typedef std::chrono::steady_clock Clock;
     const int kStallSeconds = 3;
-    // Long enough after an execComp appears for its session to be rendering.
-    const std::chrono::milliseconds kStopAfter(1000);
-    // Two sessions' start on a loaded runner, and the engine's remaking.
-    const std::chrono::seconds kSlack(20);
-    const std::chrono::seconds kExitBound(15);
+    // Two sessions' start and first frame on a loaded runner, and the engine's remaking.
+    const std::chrono::seconds kSlack(60);
+    const std::chrono::seconds kReapBound(15);
     const ScopedEnv stallBound("NATRON_DELEGATE_STALL_S", std::to_string(kStallSeconds).c_str());
     // Enough samples that the frame is still rendering when its process is stopped.
     HydraRender::setRendererSettings(kMoonRayRendererId, pixelSamples(4096));
@@ -685,73 +796,24 @@ TEST_F(USDRenderMoonRayTest, ARenderProcessThatStopsAnsweringFailsTheRender)
     HydraRender::Request request;
     ASSERT_TRUE(moonRayRequest(reader, &owner, &request));
 
-    const std::vector<int> before = execCompChildren();
-    std::mutex stoppedMutex;
-    std::vector<int> stopped;
-    std::atomic<bool> rendering(true);
-    std::thread stopper([&]() {
-        std::map<int, Clock::time_point> seen;
-        while (rendering.load()) {
-            const Clock::time_point now = Clock::now();
-            for (int pid : execCompChildren()) {
-                if (std::find(before.begin(), before.end(), pid) != before.end()) {
-                    continue;
-                }
-                const std::map<int, Clock::time_point>::iterator it = seen.insert(std::make_pair(pid, now)).first;
-                std::lock_guard<std::mutex> lock(stoppedMutex);
-                if ((now - it->second >= kStopAfter) && (std::find(stopped.begin(), stopped.end(), pid) == stopped.end())) {
-                    if (::kill(pid, SIGSTOP) == 0) {
-                        stopped.push_back(pid);
-                    }
-                }
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
-        }
-    });
+    RenderProcessStopper stopper(kReapBound);
     HydraRender::Result result;
     std::string error;
     TestWatchdog::setPhase("render until the stall bound");
+    typedef std::chrono::steady_clock Clock;
     const Clock::time_point start = Clock::now();
     const bool rendered = HydraRender::render(request, &result, &error);
     const double seconds = std::chrono::duration<double>(Clock::now() - start).count();
-    rendering = false;
-    stopper.join();
-    TestWatchdog::setPhase("continue stopped render processes");
-    std::vector<int> wereStopped;
-    {
-        std::lock_guard<std::mutex> lock(stoppedMutex);
-        wereStopped = stopped;
-    }
-    const std::vector<int> children = execCompChildren();
-    for (int pid : wereStopped) {
-        if (std::find(children.begin(), children.end(), pid) != children.end()) {
-            (void)::kill(pid, SIGCONT);
-        }
-    }
+    const std::vector<int> wereStopped = stopper.stopNoMore();
 
     EXPECT_FALSE(rendered) << "the render finished before its render process was stopped";
     EXPECT_NE(std::string::npos, error.find("stopped answering")) << error;
     // The first session's process, then the one its engine was made again with.
     EXPECT_EQ(2u, wereStopped.size());
-    const double bound = 2. * (kStallSeconds + std::chrono::duration<double>(kStopAfter).count()) + std::chrono::duration<double>(kSlack).count();
-    EXPECT_LT(seconds, bound);
+    EXPECT_LT(seconds, 2. * kStallSeconds + std::chrono::duration<double>(kSlack).count());
 
     TestWatchdog::setPhase("stopped render processes exit");
-    const Clock::time_point continuedAt = Clock::now();
-    const auto anyLeft = [&]() {
-        const std::vector<int> now = execCompChildren();
-        for (int pid : wereStopped) {
-            if (std::find(now.begin(), now.end(), pid) != now.end()) {
-                return true;
-            }
-        }
-
-        return false;
-    };
-    while (anyLeft() && (Clock::now() - continuedAt < kExitBound)) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    }
-    EXPECT_FALSE(anyLeft()) << "a stopped render process outlived its session";
+    EXPECT_TRUE(stopper.continueAndReap()) << "a stopped render process outlived its session";
     HydraRender::release(&owner);
 }
 

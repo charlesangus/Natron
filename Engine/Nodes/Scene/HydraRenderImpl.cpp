@@ -250,6 +250,25 @@ samplesOf(const VtDictionary& stats,
     return -1;
 }
 
+// Whether MoonRay's stats show a frame from its render process: hdMoonray's percentDone stays 0 until
+// the first one arrives.
+bool
+moonRayProgressed(const VtDictionary& stats)
+{
+    const VtDictionary::const_iterator percent = stats.find("percentDone");
+    if (percent == stats.end()) {
+        return false;
+    }
+    if (percent->second.IsHolding<float>()) {
+        return percent->second.UncheckedGet<float>() > 0.f;
+    }
+    if (percent->second.IsHolding<double>()) {
+        return percent->second.UncheckedGet<double>() > 0.;
+    }
+
+    return false;
+}
+
 std::int64_t
 countOf(const VtDictionary& stats,
         const char* key)
@@ -408,6 +427,7 @@ HydraGLContextFactory gFactory;
 
 std::atomic<std::size_t> gMemoryBudget(kDefaultMemoryBudget);
 std::atomic<std::uint64_t> gEngineBuilds(0);
+std::atomic<std::uint64_t> gMoonRayProgressReads(0);
 std::atomic<bool> gStormTranslucentIds(true);
 
 typedef std::map<std::string, VtValue> RendererSettings;
@@ -1785,6 +1805,9 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             // synced a texture it gave up on as missing, which the engine would keep: even
             // converged, it goes.
             const VtDictionary stats = engine->GetRenderStats();
+            if (watchStall && moonRayProgressed(stats)) {
+                ++gMoonRayProgressReads;
+            }
             const bool restartSeen = restartWatch.after(stats, samplesOf(stats, 0));
             if (restartSeen && restartWatch.converged() && engine->IsConverged() && !(cancel && cancel->load())) {
                 break;
@@ -2925,6 +2948,12 @@ std::uint64_t
 getEngineBuildCount()
 {
     return gEngineBuilds.load();
+}
+
+std::uint64_t
+getMoonRayProgressReads()
+{
+    return gMoonRayProgressReads.load();
 }
 
 void

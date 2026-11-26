@@ -31,6 +31,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <functional>
@@ -151,6 +152,74 @@ const std::chrono::milliseconds kConvergencePoll(10);
 // How long a delegate may show no sign of a restart in its progress before its engine is made
 // again: until it shows one its buffers may hold the render of before, which is not read.
 const std::chrono::milliseconds kRestartUnseen(2000);
+
+// How long a MoonRay session may hold its progress still, mid-render, before it is taken to have
+// stopped answering: its engine is made once again, and a second such silence fails the render.
+// Any change in what it reports, its progress, clock or status, starts the wait over, so a slow
+// render that moves on never meets it. NATRON_DELEGATE_STALL_S overrides it, in seconds.
+const std::chrono::seconds kDelegateStall(30);
+
+std::chrono::milliseconds
+delegateStallBound()
+{
+    const char* env = std::getenv("NATRON_DELEGATE_STALL_S");
+    if (env && *env) {
+        char* end = nullptr;
+        const double seconds = std::strtod(env, &end);
+        if ((end != env) && (seconds > 0.)) {
+            return std::chrono::milliseconds((long long)std::ceil(seconds * 1000.));
+        }
+    }
+
+    return kDelegateStall;
+}
+
+std::string
+delegateStallError(std::chrono::milliseconds bound)
+{
+    char seconds[32];
+    std::snprintf(seconds, sizeof(seconds), "%g", std::chrono::duration<double>(bound).count());
+
+    return std::string("MoonRay's render session stopped answering: its progress held still for ") + seconds + " s, then again for as long once its session was made again.";
+}
+
+/**
+ * Whether a delegate's progress has held still for delegateStallBound(): its render stats, read
+ * after every pass, the same all along. The wait starts at the first read after a reset.
+ **/
+class ProgressStall {
+public:
+    void reset()
+    {
+        _known = false;
+    }
+
+    bool stalled(const VtDictionary& stats,
+                 std::chrono::steady_clock::time_point now)
+    {
+        if (!_known || (stats != _stats)) {
+            _known = true;
+            _stats = stats;
+            _since = now;
+            _bound = delegateStallBound();
+
+            return false;
+        }
+
+        return now - _since >= _bound;
+    }
+
+    std::chrono::milliseconds bound() const
+    {
+        return _bound;
+    }
+
+private:
+    bool _known = false;
+    VtDictionary _stats;
+    std::chrono::steady_clock::time_point _since;
+    std::chrono::milliseconds _bound = kDelegateStall;
+};
 
 // How long a render waits, before restarting a converged Cycles session, for it to say it is idle:
 // it marks its buffers converged a moment before, and its progress holds still only after.
@@ -1671,6 +1740,27 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             entry.engine.reset();
             entry.rendered = false;
         };
+        // A new engine has no pixels from before to mistake for this render's.
+        const auto remakeEngine = [&]() -> bool {
+            if (!makeEngine(entry, request, renderer, settings, cancel, error)) {
+                return false;
+            }
+            engine = entry.engine.get();
+            engine->SetRenderBufferSize(GfVec2i(width, height));
+            engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
+            engine->SetCameraState(view, projection);
+            if (log) {
+                // What it kept of the session dropped must not fail the new one.
+                log.reset();
+                log.reset(new MoonRayAovs::LogCapture);
+            }
+
+            return true;
+        };
+        // MoonRay shows no restart for kRestartUnseen to catch, nor a session that went silent.
+        const bool watchStall = MoonRayAovs::isMoonRay(renderer);
+        ProgressStall stall;
+        bool stallRemade = false;
         bool passRan = false;
         for (;;) {
             // A cancel during the idle settle or the poll must not cost a sync of the stage.
@@ -1714,20 +1804,29 @@ RenderThread::renderEngine(const HydraRender::Request& request,
                 return nullptr;
             }
             const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-            if (!restartSeen && !restartWatch.restarting() && (now - restarted >= kRestartUnseen)) {
-                // A new engine has no pixels from before to mistake for this render's.
-                if (!makeEngine(entry, request, renderer, settings, cancel, error)) {
+            if (watchStall && stall.stalled(stats, now)) {
+                if (stallRemade) {
+                    *error = delegateStallError(stall.bound());
+                    entry.engine.reset();
+                    entry.rendered = false;
+
                     return nullptr;
                 }
-                engine = entry.engine.get();
-                engine->SetRenderBufferSize(GfVec2i(width, height));
-                engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
-                engine->SetCameraState(view, projection);
-                if (log) {
-                    // What it kept of the session dropped must not fail the new one.
-                    log.reset();
-                    log.reset(new MoonRayAovs::LogCapture);
+                if (!remakeEngine()) {
+                    return nullptr;
                 }
+                stallRemade = true;
+                stall.reset();
+                restartWatch.restart(true);
+                restarted = now;
+                passRan = false;
+                continue;
+            }
+            if (!restartSeen && !restartWatch.restarting() && (now - restarted >= kRestartUnseen)) {
+                if (!remakeEngine()) {
+                    return nullptr;
+                }
+                stall.reset();
                 restartWatch.restart(true);
                 restarted = now;
                 passRan = false;
@@ -3554,6 +3653,10 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
     bool engineRendered = false;
     Clock::time_point restartTime = Clock::now();
     Clock::time_point stallSince = restartTime;
+    // A MoonRay session whose progress holds still is made again once; until an edit, or the
+    // render's end, a second silence fails it.
+    ProgressStall sessionStall;
+    bool sessionStallRemade = false;
     bool done = false;
     bool needRestart = true;
     // The engine is being made again for the same render: the frame shown stays until the new one.
@@ -3564,6 +3667,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
     while (!quit) {
         if (parkPoint(lock)) {
             done = false;
+            sessionStall.reset();
             continue;
         }
         workingRenderer = renderer;
@@ -3590,6 +3694,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                     }
                 }
                 failedRenderer.clear();
+                sessionStallRemade = false;
             }
             if (renderer != failedRenderer) {
                 status.error.clear();
@@ -3708,6 +3813,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
             lock.lock();
             stallSince = Clock::now();
+            sessionStall.reset();
             continue;
         }
 
@@ -3723,6 +3829,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
             pending = false;
             needRestart = true;
+            sessionStallRemade = false;
         }
         if (needRestart) {
             needRestart = false;
@@ -3731,6 +3838,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             status.converged = false;
             restartTime = Clock::now();
             stallSince = restartTime;
+            sessionStall.reset();
             firstPass = true;
             restartWatch.restart(engineFresh || !RestartWatch::watches(engineRenderer));
             engineFresh = false;
@@ -3938,6 +4046,21 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 continue;
             }
         }
+        if (!converged && MoonRayAovs::isMoonRay(engineRenderer) && sessionStall.stalled(stats, now)) {
+            if (sessionStallRemade) {
+                fail(lock, workingRenderer, delegateStallError(sessionStall.bound()), workingEdits);
+                continue;
+            }
+            sessionStallRemade = true;
+            const bool lit = headlit;
+            lock.unlock();
+            dropEngine();
+            lock.lock();
+            carriedHeadlight = lit;
+            ++status.stallRemakes;
+            keepFrame = true;
+            continue;
+        }
         const bool changed = (samples != lastSamples) || (converged != lastConverged);
         if (samples != lastSamples) {
             stallSince = now;
@@ -3986,6 +4109,9 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             frame = read;
         }
         done = finished && publish;
+        if (done) {
+            sessionStallRemade = false;
+        }
         status.converged = done;
         if (publish && listener) {
             lock.unlock();

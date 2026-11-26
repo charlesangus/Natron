@@ -50,6 +50,7 @@
 #include <vector>
 
 #include <dirent.h>
+#include <signal.h>
 #include <unistd.h>
 
 #include <gtest/gtest.h>
@@ -622,6 +623,135 @@ TEST_F(USDRenderMoonRayTest, AbortEndsTheRenderProcessPromptly)
     const double seconds = std::chrono::duration<double>(Clock::now() - abortedAt).count();
     EXPECT_LT(seconds, std::chrono::duration<double>(kShutdownBound).count());
     EXPECT_TRUE(execCompChildren().empty());
+    HydraRender::release(&owner);
+}
+
+namespace {
+// Sets an environment variable for its lifetime, and puts back what it held before.
+class ScopedEnv {
+public:
+    ScopedEnv(const char* name,
+              const char* value)
+        : _name(name)
+    {
+        const char* previous = std::getenv(name);
+        _had = (previous != nullptr);
+        if (_had) {
+            _previous = previous;
+        }
+        ::setenv(name, value, 1);
+    }
+
+    ~ScopedEnv()
+    {
+        if (_had) {
+            ::setenv(_name.c_str(), _previous.c_str(), 1);
+        } else {
+            ::unsetenv(_name.c_str());
+        }
+    }
+
+private:
+    std::string _name;
+    std::string _previous;
+    bool _had = false;
+};
+} // anon namespace
+
+// A MoonRay session whose render process stops answering mid-render cannot hold the render: once
+// its progress has held still for NATRON_DELEGATE_STALL_S the engine is made again, and when the
+// next session's progress holds still as long, the render fails and says why. Each execComp the
+// render starts is stopped a moment after it appears, and continued once the render has returned,
+// so that its session's shutdown can end it.
+TEST_F(USDRenderMoonRayTest, ARenderProcessThatStopsAnsweringFailsTheRender)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    typedef std::chrono::steady_clock Clock;
+    const int kStallSeconds = 3;
+    // Long enough after an execComp appears for its session to be rendering.
+    const std::chrono::milliseconds kStopAfter(1000);
+    // Two sessions' start on a loaded runner, and the engine's remaking.
+    const std::chrono::seconds kSlack(20);
+    const std::chrono::seconds kExitBound(15);
+    const ScopedEnv stallBound("NATRON_DELEGATE_STALL_S", std::to_string(kStallSeconds).c_str());
+    // Enough samples that the frame is still rendering when its process is stopped.
+    HydraRender::setRendererSettings(kMoonRayRendererId, pixelSamples(4096));
+    NodePtr reader;
+    NodePtr node = createGraph(kFixture, &reader);
+    ASSERT_TRUE(bool(node));
+    static const int owner = 0;
+    HydraRender::Request request;
+    ASSERT_TRUE(moonRayRequest(reader, &owner, &request));
+
+    const std::vector<int> before = execCompChildren();
+    std::mutex stoppedMutex;
+    std::vector<int> stopped;
+    std::atomic<bool> rendering(true);
+    std::thread stopper([&]() {
+        std::map<int, Clock::time_point> seen;
+        while (rendering.load()) {
+            const Clock::time_point now = Clock::now();
+            for (int pid : execCompChildren()) {
+                if (std::find(before.begin(), before.end(), pid) != before.end()) {
+                    continue;
+                }
+                const std::map<int, Clock::time_point>::iterator it = seen.insert(std::make_pair(pid, now)).first;
+                std::lock_guard<std::mutex> lock(stoppedMutex);
+                if ((now - it->second >= kStopAfter) && (std::find(stopped.begin(), stopped.end(), pid) == stopped.end())) {
+                    if (::kill(pid, SIGSTOP) == 0) {
+                        stopped.push_back(pid);
+                    }
+                }
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    });
+    HydraRender::Result result;
+    std::string error;
+    TestWatchdog::setPhase("render until the stall bound");
+    const Clock::time_point start = Clock::now();
+    const bool rendered = HydraRender::render(request, &result, &error);
+    const double seconds = std::chrono::duration<double>(Clock::now() - start).count();
+    rendering = false;
+    stopper.join();
+    TestWatchdog::setPhase("continue stopped render processes");
+    std::vector<int> wereStopped;
+    {
+        std::lock_guard<std::mutex> lock(stoppedMutex);
+        wereStopped = stopped;
+    }
+    const std::vector<int> children = execCompChildren();
+    for (int pid : wereStopped) {
+        if (std::find(children.begin(), children.end(), pid) != children.end()) {
+            (void)::kill(pid, SIGCONT);
+        }
+    }
+
+    EXPECT_FALSE(rendered) << "the render finished before its render process was stopped";
+    EXPECT_NE(std::string::npos, error.find("stopped answering")) << error;
+    // The first session's process, then the one its engine was made again with.
+    EXPECT_EQ(2u, wereStopped.size());
+    const double bound = 2. * (kStallSeconds + std::chrono::duration<double>(kStopAfter).count()) + std::chrono::duration<double>(kSlack).count();
+    EXPECT_LT(seconds, bound);
+
+    TestWatchdog::setPhase("stopped render processes exit");
+    const Clock::time_point continuedAt = Clock::now();
+    const auto anyLeft = [&]() {
+        const std::vector<int> now = execCompChildren();
+        for (int pid : wereStopped) {
+            if (std::find(now.begin(), now.end(), pid) != now.end()) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+    while (anyLeft() && (Clock::now() - continuedAt < kExitBound)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    EXPECT_FALSE(anyLeft()) << "a stopped render process outlived its session";
     HydraRender::release(&owner);
 }
 

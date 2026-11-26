@@ -426,6 +426,8 @@ public:
         std::uint64_t engines = 0;
         // Of those, the ones made again for that bound alone, which no edit asked for.
         std::uint64_t unseenRemakes = 0;
+        // Of those, the ones made again because a MoonRay session's progress held still.
+        std::uint64_t stallRemakes = 0;
         std::uint64_t frames = 0;
         // Why the delegate cannot render, empty if it can.
         std::string error;

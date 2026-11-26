@@ -42,9 +42,6 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/ThreadPool.h"
 
-//#define NATRON_PLAYBACK_USES_THREAD_POOL
-
-
 NATRON_NAMESPACE_ENTER
 
 typedef RenderStatsPtr RenderStatsPtr;
@@ -55,12 +52,15 @@ struct BufferedFrame
     double time;
     RenderStatsPtr stats;
     BufferableObjectPtr frame;
+    // Set, with no frame, for a time that has nothing to display: the scheduler moves past it all the same.
+    bool displaysNothing;
 
     BufferedFrame()
         : view(0)
         , time(0)
         , stats()
         , frame()
+        , displaysNothing(false)
     {
     }
 };
@@ -87,56 +87,6 @@ public:
 };
 
 class OutputSchedulerThread;
-
-struct RenderThreadTaskPrivate;
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-class RenderThreadTask
-    :  public QThread
-      , public AbortableThread
-#else
-class RenderThreadTask
-    :  public QRunnable
-#endif
-{
-public:
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    RenderThreadTask(const OutputEffectInstancePtr& output,
-                     OutputSchedulerThread* scheduler);
-#else
-    RenderThreadTask(const OutputEffectInstancePtr& output,
-                     OutputSchedulerThread* scheduler,
-                     const int time,
-                     const bool useRenderStats,
-                     const std::vector<ViewIdx>& viewsToRender);
-#endif
-
-    virtual ~RenderThreadTask();
-
-    virtual void run() OVERRIDE FINAL;
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    /**
-     * @brief Call this to quit the thread whenever it will return to the pickFrameToRender function
-     **/
-    void scheduleForRemoval();
-
-    bool mustQuit() const;
-
-    bool hasQuit() const;
-
-    void notifyIsRunning(bool running);
-#endif
-
-protected:
-
-    /**
-     * @brief Must render the frame
-     **/
-    virtual void renderFrame(int time, const std::vector<ViewIdx>& viewsToRender, bool enableRenderStats) = 0;
-    std::unique_ptr<RenderThreadTaskPrivate> _imp;
-};
 
 enum RenderDirectionEnum
 {
@@ -195,35 +145,32 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
 public:
+enum ProcessFrameModeEnum {
+    eProcessFrameBySchedulerThread = 0, //< the processFrame function will be called by the OutputSchedulerThread thread.
+    eProcessFrameByMainThread //< the processFrame function will be called by the application's main-thread.
+};
 
-    friend class RenderThreadTask;
-    enum ProcessFrameModeEnum
-    {
-        eProcessFrameBySchedulerThread = 0, //< the processFrame function will be called by the OutputSchedulerThread thread.
-        eProcessFrameByMainThread //< the processFrame function will be called by the application's main-thread.
-    };
+OutputSchedulerThread(RenderEngine* engine,
+                      const OutputEffectInstancePtr& effect,
+                      ProcessFrameModeEnum mode);
 
-    OutputSchedulerThread(RenderEngine* engine,
-                          const OutputEffectInstancePtr& effect,
-                          ProcessFrameModeEnum mode);
+virtual ~OutputSchedulerThread();
 
-    virtual ~OutputSchedulerThread();
-
-    /**
-     * @brief When a render thread has finished rendering a frame, it must
-     * append it here for buffering to make sure the output device (Viewer, Writer, etc...) will proceed the frames
-     * in respect to the time parameter.
-     * This wakes up the scheduler thread waiting on the bufCondition. If you need to append several frames
-     * use the other version of this function.
-     **/
-    void appendToBuffer(double time,
-                        ViewIdx view,
-                        const RenderStatsPtr& stats,
-                        const BufferableObjectPtr& frame);
-    void appendToBuffer(double time,
-                        ViewIdx view,
-                        const RenderStatsPtr& stats,
-                        const BufferableObjectPtrList& frames);
+/**
+ * @brief When a render thread has finished rendering a frame, it must
+ * append it here for buffering to make sure the output device (Viewer, Writer, etc...) will proceed the frames
+ * in respect to the time parameter.
+ * This wakes up the scheduler thread waiting on the bufCondition. If you need to append several frames
+ * use the other version of this function.
+ **/
+void appendToBuffer(double time,
+                    ViewIdx view,
+                    const RenderStatsPtr& stats,
+                    const BufferableObjectPtr& frame);
+void appendToBuffer(double time,
+                    ViewIdx view,
+                    const RenderStatsPtr& stats,
+                    const BufferableObjectPtrList& frames);
 
 private:
 
@@ -282,33 +229,14 @@ public:
     void getLastRunArgs(RenderDirectionEnum* direction, std::vector<ViewIdx>* viewsToRender) const;
 
     /**
-     * @brief Returns the current number of render threads
+     * @brief Returns the number of frames admitted that have not ended yet. Readable from any thread.
      **/
-    int getNRenderThreads() const;
+    int getNFramesInFlight() const;
 
     /**
-     * @brief How many threads every OutputSchedulerThread has started besides itself, render and fallback threads
-     * alike, since the process started.
+     * @brief How many fallback workers every OutputSchedulerThread has started since the process started.
      **/
     static int getFrameThreadsStartedForTests();
-
-    /**
-     * @brief Returns the current number of render threads doing work
-     **/
-    int getNActiveRenderThreads() const;
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    /**
-     * @brief Called by render-threads to pick some work to do or to get asleep if there's nothing to do.
-     * Returns false, leaving the queue untouched, once the thread must quit. A frame it returns must be rendered.
-     **/
-    bool pickFrameToRender(RenderThreadTask* thread, int* frame, bool* enableRenderStats, std::vector<ViewIdx>* viewsToRender);
-#endif
-
-    /**
-     * @brief Called by the render-threads when mustQuit() is true on the thread
-     **/
-    void notifyThreadAboutToQuit(RenderThreadTask* thread);
 
     /**
      *@brief The slot called by the GUI to set the requested fps.
@@ -329,11 +257,6 @@ public:
      * otherwise.
      **/
     const IsolatedJob* getRunningIsolatedJob() const;
-
-private Q_SLOTS:
-
-    void onThreadSpawnsTimerTriggered();
-
 
 Q_SIGNALS:
 
@@ -380,17 +303,6 @@ protected:
     virtual int timelineGetTime() const = 0;
 
     /**
-     * @brief Must create a runnable task that will render 1 frame in a separate thread.
-     * The internal thread pool will take care of the thread
-     * The task will pick frames to render until there are no more to be rendered.
-     **/
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    virtual RenderThreadTask* createRunnable() = 0;
-#else
-    virtual RenderThreadTask* createRunnable(int frame, bool useRenderStarts, const std::vector<ViewIdx>& viewsToRender) = 0;
-#endif
-
-    /**
      * @brief Called upon failure of a thread to render an image
      **/
     virtual void handleRenderFailure(const std::string& errorMessage) = 0;
@@ -419,18 +331,13 @@ protected:
     RenderEngine* getEngine() const;
 
     /**
-     * @brief Whether the scheduler thread admits the frames itself, starting each through admitFrame(), rather than
-     * feeding them to render threads.
-     **/
-    virtual bool admitsFramesItself() const { return false; }
-
-    /**
      * @brief Starts rendering the views of time, on the scheduler thread. The frame counts as in flight for admission
      * until endAdmittedFrame() is called for it, which must happen on every path, failures included.
      **/
-    virtual void admitFrame(int /*time*/,
-                            const std::vector<ViewIdx>& /*viewsToRender*/,
-                            bool /*enableRenderStats*/) { }
+    virtual void admitFrame(int time,
+                            const std::vector<ViewIdx>& viewsToRender,
+                            bool enableRenderStats)
+        = 0;
 
     typedef std::function<void()> FrameStepDone;
 
@@ -444,12 +351,28 @@ protected:
 
     /**
      * @brief Runs work on the scheduler's fallback worker, a thread of its own outside the global pool, then calls
-     * done on the scheduler thread. Work queued behind an aborted one is skipped once abortInfo is aborted, and done
-     * is called all the same. Call from the scheduler thread only.
+     * done on the scheduler thread. Work queued behind an aborted one is skipped once any of abortInfos is aborted,
+     * and done is called all the same. Call from the scheduler thread only.
      **/
-    void runOnFallbackWorker(const AbortableRenderInfoPtr& abortInfo,
+    void runOnFallbackWorker(const std::vector<AbortableRenderInfoPtr>& abortInfos,
                              const std::function<void(bool skipped)>& work,
                              const FrameStepDone& done);
+
+    /**
+     * @brief As runOnFallbackWorker(), but runs work as a task of the global pool at runnablePriority. work must not
+     * wait for anything but pool work it runs itself when no other thread does, as parallelForOnGlobalPool() does.
+     **/
+    void runOnGlobalPool(const std::vector<AbortableRenderInfoPtr>& abortInfos,
+                         int runnablePriority,
+                         const std::function<void(bool skipped)>& work,
+                         const FrameStepDone& done);
+
+    /**
+     * @brief Hands the scheduler thread a frame that displays nothing, so that the playback goes on past time.
+     **/
+    void appendNothingToDisplay(double time,
+                                ViewIdx view,
+                                const RenderStatsPtr& stats);
 
     void endAdmittedFrame();
 
@@ -459,6 +382,9 @@ protected:
     bool isStoppingAdmittedFrames() const;
 
 private:
+    std::function<void()> makeFrameStep(const std::vector<AbortableRenderInfoPtr>& abortInfos,
+                                        const std::function<void(bool skipped)>& work,
+                                        const FrameStepDone& done);
     void adjustFrameConcurrency();
     void admitFrames();
     void runFinishedFrameSteps();
@@ -485,40 +411,6 @@ private:
     void startRender();
 
     void stopRender();
-
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    /**
-     * @brief Called by the scheduler threads to wake-up render threads and make them do some work
-     * It calls pushFramesToRenderInternal. It starts pushing frames from lastFramePushedIndex
-     **/
-    void pushFramesToRender(int nThreads);
-
-    /**
-     *@brief Called in startRender() when we need to start pushing frames to render
-     **/
-    void pushFramesToRender(int startingFrame, int nThreads);
-
-
-    void pushFramesToRenderInternal(int startingFrame, int nThreads);
-
-    void pushAllFrameRange();
-
-    /**
-     * @brief Starts/stops more threads according to CPU activity and user preferences
-     * @param optimalNThreads[out] Will be set to the new number of threads
-     **/
-    void adjustNumberOfThreads(int* newNThreads, int *lastNThreads);
-#else
-    void startTasksFromLastStartedFrame();
-    void startTasks(int startingFrame);
-#endif
-
-    /**
-     * @brief Make nThreadsToStop quit running. If 0 then all threads will be destroyed.
-     **/
-    void stopRenderThreads(int nThreadsToStop);
-
 
     std::unique_ptr<OutputSchedulerThreadPrivate> _imp;
 };
@@ -552,19 +444,11 @@ private:
     virtual void getFrameRangeToRender(int& first, int& last) const OVERRIDE FINAL;
     virtual int timelineGetTime() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    virtual RenderThreadTask* createRunnable() OVERRIDE FINAL WARN_UNUSED_RETURN;
-#else
-    virtual RenderThreadTask* createRunnable(int frame, bool useRenderStarts, const std::vector<ViewIdx>& viewsToRender) OVERRIDE FINAL WARN_UNUSED_RETURN;
-#endif
-
     virtual void handleRenderFailure(const std::string& errorMessage) OVERRIDE FINAL;
     virtual SchedulingPolicyEnum getSchedulingPolicy() const OVERRIDE FINAL;
     virtual void aboutToStartRender() OVERRIDE FINAL;
     virtual void onRenderStopped(bool aborted) OVERRIDE FINAL;
     void runAfterRenderCallback(const OutputEffectInstancePtr& effect, bool aborted);
-
-    virtual bool admitsFramesItself() const OVERRIDE FINAL { return true; }
 
     virtual void admitFrame(int time, const std::vector<ViewIdx>& viewsToRender, bool enableRenderStats) OVERRIDE FINAL;
 
@@ -606,17 +490,17 @@ private:
 
     virtual void getFrameRangeToRender(int& first, int& last) const OVERRIDE FINAL;
 
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    virtual RenderThreadTask* createRunnable() OVERRIDE FINAL WARN_UNUSED_RETURN;
-#else
-    virtual RenderThreadTask* createRunnable(int frame, bool useRenderStarts, const std::vector<ViewIdx>& viewsToRender) OVERRIDE FINAL WARN_UNUSED_RETURN;
-#endif
-
     virtual void handleRenderFailure(const std::string& errorMessage) OVERRIDE FINAL;
     virtual SchedulingPolicyEnum getSchedulingPolicy() const OVERRIDE FINAL { return eSchedulingPolicyOrdered; }
 
     virtual int getLastRenderedTime() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void onRenderStopped(bool aborted) OVERRIDE FINAL;
+
+    virtual void admitFrame(int time, const std::vector<ViewIdx>& viewsToRender, bool enableRenderStats) OVERRIDE FINAL;
+
+    struct ViewerFrame;
+    void finishViewerFrame(const std::shared_ptr<ViewerFrame>& frame);
+
     ViewerInstanceWPtr _viewer;
 };
 
@@ -819,9 +703,9 @@ public:
     bool hasThreadsAlive() const;
 
     /**
-     * @brief Returns the number of live frame render threads of the scheduler, 0 if it has none.
+     * @brief Returns the number of frames the scheduler admitted that have not ended yet, 0 if it has none.
      **/
-    int getNRenderThreads() const;
+    int getNFramesInFlight() const;
 
     /**
      * @brief Returns true if the scheduler is active and some render threads are doing work.

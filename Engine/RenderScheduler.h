@@ -595,6 +595,11 @@ public:
      **/
     static int computeTaskBudget(int poolMax, int running, int ready, int cores, int perEffect);
 
+    /**
+     * @brief The global pool priority the tasks of a frame of this priority run at.
+     **/
+    static int runnablePriority(Priority priority);
+
     struct TaskBudgetInputs {
         int poolMax = 0;
         int running = 0;

@@ -495,6 +495,28 @@ TEST_F(SchedulerAbortLatency, ViewerPlaybackAbortReturnsWithinBudget)
     expectAbortWithinBudget(engine);
 }
 
+// Playback renders its frames on the global pool: neither a thread per frame nor the fallback worker is started for a
+// graph the RenderScheduler can render.
+TEST_F(SchedulerAbortLatency, ViewerPlaybackStartsNoFrameThreads)
+{
+    ASSERT_TRUE(createViewer());
+    RenderEnginePtr engine = _viewer->getRenderEngine();
+    ASSERT_TRUE(bool(engine));
+
+    std::atomic<int> framesShown { 0 };
+    QMetaObject::Connection onFrame = QObject::connect(engine.get(), &RenderEngine::frameRendered, engine.get(), [&framesShown](int /*time*/, double /*progress*/) { ++framesShown; }, Qt::DirectConnection);
+    const int threadsBefore = OutputSchedulerThread::getFrameThreadsStartedForTests();
+    engine->renderFromCurrentFrame(false, std::vector<ViewIdx>(1, ViewIdx(0)), eRenderDirectionForward);
+    const bool played = pumpUntil([&framesShown]() { return framesShown.load() >= 5; }, kWatchdogMs);
+    engine->abortRenderingNoRestart();
+    const bool stopped = pumpUntil([&engine]() { return !engine->isDoingSequentialRender(); }, kWatchdogMs);
+    QObject::disconnect(onFrame);
+
+    EXPECT_TRUE(played) << "only " << framesShown.load() << " frame(s) were displayed";
+    EXPECT_TRUE(stopped) << "the playback did not stop once aborted";
+    EXPECT_EQ(0, OutputSchedulerThread::getFrameThreadsStartedForTests() - threadsBefore);
+}
+
 // The current-frame scheduler, whose render runs on its backup thread in Task graph mode, aborted mid-render. The abort
 // must not keep the oldest render: that one is the render in progress, which a keep-oldest abort deliberately lets finish.
 TEST_F(SchedulerAbortLatency, ViewerCurrentFrameAbortReturnsWithinBudget)

@@ -1141,6 +1141,12 @@ RenderScheduler::getLoad(int* running,
 }
 
 int
+RenderScheduler::runnablePriority(Priority priority)
+{
+    return runnablePriorityOf(priority);
+}
+
+int
 RenderScheduler::computeTaskBudget(int poolMax,
                                    int running,
                                    int ready,

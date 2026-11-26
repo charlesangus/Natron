@@ -3612,11 +3612,7 @@ AppManager::getNCPUsAvailableForEffect()
     }
 
     // Threads already running for the multiThreadSuite + parallel renders
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
     const int runningThreadsCount = getNRunningThreads();
-#else
-    const int runningThreadsCount = 0;
-#endif
 
     // better than QThread::idealThreadCount();, because it can be set by a global preference:
     int maxThreadsCount = QThreadPool::globalInstance()->maxThreadCount();

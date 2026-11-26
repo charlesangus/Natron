@@ -355,7 +355,6 @@ Settings::initializeKnobsThreading()
     _numberOfThreads->setDisplayMinimum(-1);
     _threadingPage->addKnob(_numberOfThreads);
 
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
     _numberOfParallelRenders = AppManager::createKnob<KnobInt>( this, tr("Number of parallel renders (0=\"guess\")") );
     _numberOfParallelRenders->setHintToolTip( tr("Controls the number of parallel frame that will be rendered at the same time by the renderer. "
                                                  "A value of 0 indicate that %1 should automatically determine "
@@ -367,7 +366,6 @@ Settings::initializeKnobsThreading()
     _numberOfParallelRenders->setMinimum(0);
     _numberOfParallelRenders->disableSlider();
     _threadingPage->addKnob(_numberOfParallelRenders);
-#endif
 
     _useThreadPool = AppManager::createKnob<KnobBool>( this, tr("Effects use the thread-pool") );
     _useThreadPool->setName("useThreadPool");
@@ -1920,9 +1918,7 @@ Settings::setDefaultValues()
 
     // General/Threading
     _numberOfThreads->setDefaultValue(0, 0);
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
     _numberOfParallelRenders->setDefaultValue(0, 0);
-#endif
     _useThreadPool->setDefaultValue(true);
     _nThreadsPerEffect->setDefaultValue(0);
     _queueRenders->setDefaultValue(false);
@@ -3960,21 +3956,13 @@ Settings::isAutoFixRelativeFilePathEnabled() const
 int
 Settings::getNumberOfParallelRenders() const
 {
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-
     return _numberOfParallelRenders->getValue();
-#else
-
-    return 1;
-#endif
 }
 
 void
 Settings::setNumberOfParallelRenders(int nb)
 {
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
     _numberOfParallelRenders->setValue(nb);
-#endif
 }
 
 bool

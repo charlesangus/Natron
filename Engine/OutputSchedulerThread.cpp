@@ -87,18 +87,6 @@
 
 #define NATRON_FPS_REFRESH_RATE_SECONDS 1.5
 
-/*
-   When defined, parallel frame renders are spawned from a timer so that the frames
-   appear to be rendered all at the same speed.
-   When undefined each time a frame is computed a new thread will be spawned
-   until we reach the maximum allowed parallel frame renders.
- */
-//#define NATRON_SCHEDULER_SPAWN_THREADS_WITH_TIMER
-
-#ifdef NATRON_SCHEDULER_SPAWN_THREADS_WITH_TIMER
-#define NATRON_SCHEDULER_THREADS_SPAWN_DEFAULT_TIMEOUT_MS 500
-#endif
-
 #define NATRON_SCHEDULER_ABORT_AFTER_X_UNSUCCESSFUL_ITERATIONS 5000
 
 NATRON_NAMESPACE_ENTER
@@ -143,16 +131,7 @@ unsupportedOutputKindMessage(const NodePtr& writer)
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
-
 static MetaTypesRegistration registration;
-struct RenderThread
-{
-    RenderThreadTask* thread;
-    bool active;
-};
-
-typedef std::list<RenderThread> RenderThreads;
-
 // The point of a live stroke that a produced frame shows, so the overlay preview stops drawing what the frame already has,
 // or that the frame is a neat stroke render, whose upload ends the stroke's preview.
 struct StrokeDisplayMark {
@@ -284,15 +263,12 @@ private:
     bool _mustQuit;
 };
 
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
 static bool
 isBufferFull(int nbBufferedElement,
              int hardwardIdealThreadCount)
 {
     return nbBufferedElement >= hardwardIdealThreadCount * 3;
 }
-
-#endif
 
 struct OutputSchedulerThreadPrivate
 {
@@ -320,40 +296,10 @@ struct OutputSchedulerThreadPrivate
     std::vector<ViewIdx> lastPlaybackViewsToRender;
     RenderDirectionEnum lastPlaybackRenderDirection;
 
-    ///Worker threads
-    mutable QMutex renderThreadsMutex;
-    RenderThreads renderThreads;
-    QWaitCondition allRenderThreadsInactiveCond; // wait condition to make sure all render threads are asleep
-
-#ifdef NATRON_PLAYBACK_USES_THREAD_POOL
-    QThreadPool* threadPool;
-#else
-
-    QWaitCondition allRenderThreadsQuitCond; //to make sure all render threads have quit
-    std::list<int> framesToRender;
-
-    ///Render threads wait in this condition and the scheduler wake them when it needs to render some frames
-    QWaitCondition framesToRenderNotEmptyCond;
-
-#endif
-
-    ///Work queue filled by the scheduler thread when in playback/render on disk
-    QMutex framesToRenderMutex; // protects framesToRender & currentFrameRequests
-
-    ///index of the last frame pushed (framesToRender.back())
-    ///we store this because when we call pushFramesToRender we need to know what was the last frame that was queued
-    ///Protected by framesToRenderMutex
-    int lastFramePushedIndex;
+    QMutex framesToRenderMutex; // protects expectFrameToRender
     int expectFrameToRender;
     OutputEffectInstanceWPtr outputEffect; //< The effect used as output device
     RenderEngine* engine;
-
-#ifdef NATRON_SCHEDULER_SPAWN_THREADS_WITH_TIMER
-    QTimer threadSpawnsTimer;
-    QMutex lastRecordedFPSMutex;
-    double lastRecordedFPS;
-
-#endif
 
     QMutex bufferedOutputMutex;
     int lastBufferedOutputSize;
@@ -365,13 +311,15 @@ struct OutputSchedulerThreadPrivate
 
     // The abort info of each step that has not ended, for onAbortRequested(), which may run on any thread.
     QMutex pendingStepsMutex;
-    std::map<U64, AbortableRenderInfoPtr> pendingSteps;
+    std::multimap<U64, AbortableRenderInfoPtr> pendingSteps;
     U64 nextStepId;
 
     // Admission state, written by the scheduler thread only.
     std::atomic<int> nAdmittedFrames;
     int nextFrameToAdmit;
     bool admissionExhausted;
+    // The mode admission and display both step with, so that they follow one sequence.
+    PlaybackModeEnum playbackMode;
     bool stoppingAdmittedFrames;
 
     std::unique_ptr<FrameFallbackWorker> fallbackWorker;
@@ -400,26 +348,10 @@ struct OutputSchedulerThreadPrivate
         , lastRunArgsMutex()
         , lastPlaybackViewsToRender()
         , lastPlaybackRenderDirection(eRenderDirectionForward)
-        , renderThreadsMutex()
-        , renderThreads()
-        , allRenderThreadsInactiveCond()
-#ifdef NATRON_PLAYBACK_USES_THREAD_POOL
-        , threadPool(QThreadPool::globalInstance())
-#else
-        , allRenderThreadsQuitCond()
-        , framesToRender()
-        , framesToRenderNotEmptyCond()
-#endif
         , framesToRenderMutex()
-        , lastFramePushedIndex(0)
         , expectFrameToRender(0)
         , outputEffect(effect)
         , engine(engine)
-#ifdef NATRON_SCHEDULER_SPAWN_THREADS_WITH_TIMER
-        , threadSpawnsTimer()
-        , lastRecordedFPSMutex()
-        , lastRecordedFPS(0.)
-#endif
         , bufferedOutputMutex()
         , lastBufferedOutputSize(0)
         , finishedFrameSteps()
@@ -430,6 +362,7 @@ struct OutputSchedulerThreadPrivate
         , nAdmittedFrames(0)
         , nextFrameToAdmit(0)
         , admissionExhausted(true)
+        , playbackMode(ePlaybackModeOnce)
         , stoppingAdmittedFrames(false)
         , fallbackWorker()
     {
@@ -525,9 +458,13 @@ struct OutputSchedulerThreadPrivate
         key.time = time;
         std::pair<FrameBuffer::iterator, FrameBuffer::iterator> range = buf.equal_range(key);
         std::list<std::pair<BufferedFrameKey, BufferedFrame> > toKeep;
+        FrameBuffer::iterator nothingToDisplay = buf.end();
         for (FrameBuffer::iterator it = range.first; it != range.second; ++it) {
             bool keepInBuf = true;
-            if (it->second.frame) {
+            if (it->second.displaysNothing && (nothingToDisplay == buf.end())) {
+                nothingToDisplay = it;
+                keepInBuf = false;
+            } else if (it->second.frame) {
                 ViewUniqueIDPair p;
                 p.view = (int)it->second.view;
                 p.uniqueId = it->second.frame->getUniqueID();
@@ -538,43 +475,22 @@ struct OutputSchedulerThreadPrivate
                 }
             }
 
-
             if (keepInBuf) {
                 toKeep.push_back(*it);
+            }
+        }
+        if (nothingToDisplay != buf.end()) {
+            // Frames and a marker of one time come from different passes through it, each displayed in turn.
+            if (frames.empty()) {
+                frames.push_back(nothingToDisplay->second);
+            } else {
+                toKeep.push_back(*nothingToDisplay);
             }
         }
         if ( range.first != buf.end() ) {
             buf.erase(range.first, range.second);
             buf.insert( toKeep.begin(), toKeep.end() );
         }
-    }
-
-    void appendRunnable(RenderThreadTask* runnable)
-    {
-        assert( !renderThreadsMutex.tryLock() );
-        RenderThread r;
-        r.thread = runnable;
-        r.active = true;
-        renderThreads.push_back(r);
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-        ++gFrameThreadsStarted;
-        runnable->start();
-#else
-        threadPool->start(runnable);
-#endif
-    }
-
-    RenderThreads::iterator getRunnableIterator(RenderThreadTask* runnable)
-    {
-        ///Private shouldn't lock
-        assert( !renderThreadsMutex.tryLock() );
-        for (RenderThreads::iterator it = renderThreads.begin(); it != renderThreads.end(); ++it) {
-            if (it->thread == runnable) {
-                return it;
-            }
-        }
-
-        return renderThreads.end();
     }
 
     int getNBufferedFrames() const
@@ -592,170 +508,23 @@ struct OutputSchedulerThreadPrivate
                                        unsigned int frameStep,
                                        int* nextFrame,
                                        RenderDirectionEnum* newDirection);
+    /**
+     * @brief The frame played after frame, false once the playback ends. Admission and display both step with it, so
+     * the display only ever waits for frames that were admitted.
+     **/
+    static bool getNextFrameToPlay(PlaybackModeEnum pMode,
+                                   RenderDirectionEnum direction,
+                                   int frame,
+                                   int firstFrame,
+                                   int lastFrame,
+                                   int frameStep,
+                                   int* nextFrame,
+                                   RenderDirectionEnum* newDirection);
     static void getNearestInSequence(RenderDirectionEnum direction,
                                      int frame,
                                      int firstFrame,
                                      int lastFrame,
                                      int* nextFrame);
-
-
-    void waitForRenderThreadsToBeDone()
-    {
-        assert( !renderThreadsMutex.tryLock() );
-        while (renderThreads.size() > 0
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-               /*
-                  When not using the thread pool we use the same threads for computing several frames.
-                  When using the thread-pool tasks are actually just removed from renderThreads when they are finisehd
-                */
-               && getNActiveRenderThreads() > 0
-#endif
-               ) {
-            allRenderThreadsInactiveCond.wait(&renderThreadsMutex);
-        }
-    }
-
-    int getNActiveRenderThreads() const
-    {
-        ///Private shouldn't lock
-        assert( !renderThreadsMutex.tryLock() );
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-        int ret = 0;
-        for (RenderThreads::const_iterator it = renderThreads.begin(); it != renderThreads.end(); ++it) {
-            if (it->active) {
-                ++ret;
-            }
-        }
-
-        return ret;
-#else
-
-        /*
-           When not using the thread pool we use the same threads for computing several frames.
-           When using the thread-pool tasks are actually just removed from renderThreads when they are finisehd
-         */
-        return (int)renderThreads.size();
-#endif
-    }
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    int getNLiveRenderThreads() const
-    {
-        assert(!renderThreadsMutex.tryLock());
-        int ret = 0;
-        for (RenderThreads::const_iterator it = renderThreads.begin(); it != renderThreads.end(); ++it) {
-            if (!it->thread->mustQuit()) {
-                ++ret;
-            }
-        }
-
-        return ret;
-    }
-
-    // 0 flags every thread. Otherwise the last live thread is kept, because a quitting thread leaves the queued
-    // frames to the others and the render would wait forever for them.
-    void flagRenderThreadsToQuit(int nThreadsToStop)
-    {
-        assert(!renderThreadsMutex.tryLock());
-        int toStop = nThreadsToStop;
-        if (nThreadsToStop > 0) {
-            toStop = std::min(nThreadsToStop, getNLiveRenderThreads() - 1);
-            if (toStop <= 0) {
-                return;
-            }
-        }
-        int i = 0;
-        for (RenderThreads::iterator it = renderThreads.begin();
-             it != renderThreads.end() && (nThreadsToStop == 0 || i < toStop); ++it) {
-            if (!it->thread->mustQuit()) {
-                it->thread->scheduleForRemoval();
-                ++i;
-            }
-        }
-    }
-
-    void removeQuitRenderThreadsInternal()
-    {
-        for (;; ) {
-            bool hasRemoved = false;
-            for (RenderThreads::iterator it = renderThreads.begin(); it != renderThreads.end(); ++it) {
-                // hasQuit() turns true before run() returns, and the caller holds renderThreadsMutex,
-                // which the quitting thread still takes in notifyThreadAboutToQuit(), so waiting here
-                // could deadlock. A thread that has not finished stays listed until a later sweep or
-                // waitForRenderThreadsToQuit(); deleting it earlier aborts in ~QThread.
-                if (it->thread->hasQuit() && it->thread->isFinished()) {
-                    it->thread->deleteLater();
-                    renderThreads.erase(it);
-                    hasRemoved = true;
-                    break;
-                }
-            }
-
-            if (!hasRemoved) {
-                break;
-            }
-        }
-    }
-
-#endif
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    void removeAllQuitRenderThreads()
-    {
-        ///Private shouldn't lock
-        assert( !renderThreadsMutex.tryLock() );
-
-        removeQuitRenderThreadsInternal();
-
-        ///Wake-up the main-thread if it was waiting for all threads to quit
-        allRenderThreadsQuitCond.wakeOne();
-    }
-
-#endif
-
-    void waitForRenderThreadsToQuit()
-    {
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-        // A render thread that finished a frame just before the last one may still be in
-        // adjustNumberOfThreads() and append a new thread after the caller's stopRenderThreads(0),
-        // so every pass flags whatever is listed now and the wait repeats until the list stays empty.
-        for (;;) {
-            RenderThreads threads;
-            {
-                QMutexLocker l(&renderThreadsMutex);
-                for (RenderThreads::iterator it = renderThreads.begin(); it != renderThreads.end(); ++it) {
-                    if (!it->thread->mustQuit()) {
-                        it->thread->scheduleForRemoval();
-                    }
-                }
-                threads = renderThreads;
-            }
-            if (threads.empty()) {
-                break;
-            }
-            {
-                QMutexLocker framesLocker(&framesToRenderMutex);
-                framesToRenderNotEmptyCond.wakeAll();
-            }
-
-            for (RenderThreads::iterator it = threads.begin(); it != threads.end(); ++it) {
-                it->thread->wait();
-            }
-            {
-                QMutexLocker l(&renderThreadsMutex);
-
-                removeQuitRenderThreadsInternal();
-            }
-        }
-#else
-        /*
-           We don't need the threads to actually quit, just need the runnables to be done
-         */
-        QMutexLocker l(&renderThreadsMutex);
-        waitForRenderThreadsToBeDone();
-#endif
-    }
 };
 
 OutputSchedulerThread::OutputSchedulerThread(RenderEngine* engine,
@@ -766,23 +535,11 @@ OutputSchedulerThread::OutputSchedulerThread(RenderEngine* engine,
 {
     QObject::connect( &_imp->timer, SIGNAL(fpsChanged(double,double)), _imp->engine, SIGNAL(fpsChanged(double,double)) );
 
-
-#ifdef NATRON_SCHEDULER_SPAWN_THREADS_WITH_TIMER
-    QObject::connect( &_imp->threadSpawnsTimer, SIGNAL(timeout()), this, SLOT(onThreadSpawnsTimerTriggered()) );
-#endif
-
     setThreadName("Scheduler thread");
 }
 
 OutputSchedulerThread::~OutputSchedulerThread()
 {
-    ///Wake-up all threads and tell them that they must quit
-    stopRenderThreads(0);
-
-
-    ///Make sure they are all gone, there will be a deadlock here if that's not the case.
-    _imp->waitForRenderThreadsToQuit();
-
     // The scope belongs to the scheduler thread, not this one, whose context it must not change.
     if (_imp->schedulerInJob) {
         _imp->schedulerInJob->detach();
@@ -878,6 +635,28 @@ OutputSchedulerThreadPrivate::getNextFrameInSequence(PlaybackModeEnum pMode,
     return true;
 } // OutputSchedulerThreadPrivate::getNextFrameInSequence
 
+bool
+OutputSchedulerThreadPrivate::getNextFrameToPlay(PlaybackModeEnum pMode,
+                                                 RenderDirectionEnum direction,
+                                                 int frame,
+                                                 int firstFrame,
+                                                 int lastFrame,
+                                                 int frameStep,
+                                                 int* nextFrame,
+                                                 RenderDirectionEnum* newDirection)
+{
+    *newDirection = direction;
+    if ((frameStep <= 0) || ((firstFrame == lastFrame) && (pMode == ePlaybackModeOnce))) {
+        return false;
+    }
+    if (!getNextFrameInSequence(pMode, direction, frame, firstFrame, lastFrame, frameStep, nextFrame, newDirection)) {
+        return false;
+    }
+
+    // Played once, a range whose length is not a multiple of the step ends at its last multiple, not past it.
+    return (pMode != ePlaybackModeOnce) || ((*nextFrame >= firstFrame) && (*nextFrame <= lastFrame));
+}
+
 void
 OutputSchedulerThreadPrivate::getNearestInSequence(RenderDirectionEnum direction,
                                                    int frame,
@@ -899,362 +678,6 @@ OutputSchedulerThreadPrivate::getNearestInSequence(RenderDirectionEnum direction
         } else {
             *nextFrame = firstFrame;
         }
-    }
-}
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-void
-OutputSchedulerThread::pushFramesToRender(int startingFrame,
-                                          int nThreads)
-{
-    QMutexLocker l(&_imp->framesToRenderMutex);
-
-    _imp->lastFramePushedIndex = startingFrame;
-
-    pushFramesToRenderInternal(startingFrame, nThreads);
-}
-
-void
-OutputSchedulerThread::pushFramesToRenderInternal(int startingFrame,
-                                                  int nThreads)
-{
-    // QMutexLocker l(&_imp->framesToRenderMutex); already locked (check below)
-    assert( !_imp->framesToRenderMutex.tryLock() );
-
-    ///Make sure at least 1 frame is pushed
-    if (nThreads <= 0) {
-        nThreads = 1;
-    }
-
-    RenderDirectionEnum direction;
-    int firstFrame, lastFrame, frameStep;
-    OutputSchedulerThreadStartArgsPtr runArgs = _imp->runArgs.lock();
-    assert(runArgs);
-    direction = runArgs->pushTimelineDirection;
-    firstFrame = runArgs->firstFrame;
-    lastFrame = runArgs->lastFrame;
-    frameStep = runArgs->frameStep;
-
-    PlaybackModeEnum pMode = _imp->engine->getPlaybackMode();
-    RenderDirectionEnum newDirection = direction;
-    if (firstFrame == lastFrame) {
-        _imp->framesToRender.push_back(startingFrame);
-#ifdef TRACE_SCHEDULER
-        qDebug() << "Scheduler Thread: Pushing frame to render: " << startingFrame;
-#endif
-        _imp->lastFramePushedIndex = startingFrame;
-    } else {
-        ///Push 2x the count of threads to be sure no one will be waiting
-        while ( (int)_imp->framesToRender.size() < nThreads * 2 ) {
-            _imp->framesToRender.push_back(startingFrame);
-#ifdef TRACE_SCHEDULER
-            QString pushDirectionStr = newDirection == eRenderDirectionForward ? QLatin1String("Forward") : QLatin1String("Backward");
-            qDebug() << "Scheduler Thread:  Pushing frame to render: " << startingFrame << ", new push direction is " << pushDirectionStr;
-#endif
-            _imp->lastFramePushedIndex = startingFrame;
-            runArgs->pushTimelineDirection = newDirection;
-
-            if ( !OutputSchedulerThreadPrivate::getNextFrameInSequence(pMode, newDirection, startingFrame,
-                                                                       firstFrame, lastFrame, frameStep, &startingFrame, &newDirection) ) {
-                break;
-            }
-        }
-    }
-
-
-    ///Wake up render threads to notify them there's work to do
-    _imp->framesToRenderNotEmptyCond.wakeAll();
-}
-
-void
-OutputSchedulerThread::pushAllFrameRange()
-{
-    QMutexLocker l(&_imp->framesToRenderMutex);
-    RenderDirectionEnum direction;
-    int firstFrame, lastFrame, frameStep;
-    OutputSchedulerThreadStartArgsPtr runArgs = _imp->runArgs.lock();
-
-    assert(runArgs);
-    direction = runArgs->pushTimelineDirection;
-    firstFrame = runArgs->firstFrame;
-    lastFrame = runArgs->lastFrame;
-    frameStep = runArgs->frameStep;
-
-
-    if (direction == eRenderDirectionForward) {
-        for (int i = firstFrame; i <= lastFrame; i += frameStep) {
-#ifdef TRACE_SCHEDULER
-            qDebug() << "Scheduler Thread: Pushing frame to render: " << i;
-#endif
-            _imp->framesToRender.push_back(i);
-        }
-    } else {
-        for (int i = lastFrame; i >= firstFrame; i -= frameStep) {
-#ifdef TRACE_SCHEDULER
-            qDebug() << "Scheduler Thread: Pushing frame to render: " << i;
-#endif
-            _imp->framesToRender.push_back(i);
-        }
-    }
-    ///Wake up render threads to notify them there's work to do
-    _imp->framesToRenderNotEmptyCond.wakeAll();
-}
-
-void
-OutputSchedulerThread::pushFramesToRender(int nThreads)
-{
-    QMutexLocker l(&_imp->framesToRenderMutex);
-    RenderDirectionEnum direction;
-    int firstFrame, lastFrame, frameStep;
-    OutputSchedulerThreadStartArgsPtr runArgs = _imp->runArgs.lock();
-
-    assert(runArgs);
-    direction = runArgs->pushTimelineDirection;
-    firstFrame = runArgs->firstFrame;
-    lastFrame = runArgs->lastFrame;
-    frameStep = runArgs->frameStep;
-
-    PlaybackModeEnum pMode = _imp->engine->getPlaybackMode();
-    int frame = _imp->lastFramePushedIndex;
-
-    if ( (firstFrame == lastFrame) && (frame == firstFrame) ) {
-        return;
-    }
-    RenderDirectionEnum newDirection = direction;
-    ///If startingTime is already taken into account in the framesToRender, push new frames from the last one in the stack instead
-    bool canContinue = OutputSchedulerThreadPrivate::getNextFrameInSequence(pMode, direction, frame,
-                                                                            firstFrame, lastFrame, frameStep, &frame, &newDirection);
-
-    if ( canContinue && (direction != newDirection) ) {
-        runArgs->pushTimelineDirection = newDirection;
-    }
-    if (canContinue) {
-        pushFramesToRenderInternal(frame, nThreads);
-    } else {
-        ///Still wake up threads that may still sleep
-        _imp->framesToRenderNotEmptyCond.wakeAll();
-    }
-}
-
-bool
-OutputSchedulerThread::pickFrameToRender(RenderThreadTask* thread,
-                                         int* frame,
-                                         bool* enableRenderStats,
-                                         std::vector<ViewIdx>* viewsToRender)
-{
-    ///Flag the thread as inactive
-    {
-        QMutexLocker l(&_imp->renderThreadsMutex);
-        RenderThreads::iterator found = _imp->getRunnableIterator(thread);
-        assert( found != _imp->renderThreads.end() );
-        found->active = false;
-
-        ///Wake up the scheduler if it is waiting for all threads do be inactive
-        _imp->allRenderThreadsInactiveCond.wakeOne();
-    }
-
-    bool gotFrame = false;
-    {
-        QMutexLocker l(&_imp->framesToRenderMutex);
-        while ( _imp->framesToRender.empty() && !thread->mustQuit() ) {
-            ///Notify that we're no longer doing work
-            thread->notifyIsRunning(false);
-
-            _imp->framesToRenderNotEmptyCond.wait(l.mutex());
-        }
-
-        // A quitting thread leaves the queued frames to the others.
-        if (!_imp->framesToRender.empty() && !thread->mustQuit()) {
-            ///Notify that we're running for good, will do nothing if flagged already running
-            thread->notifyIsRunning(true);
-
-            *frame = _imp->framesToRender.front();
-
-            _imp->framesToRender.pop_front();
-
-            gotFrame = true;
-        }
-    }
-
-    // thread is quitting, make sure we notified the application it is no longer running
-    if (!gotFrame) {
-        thread->notifyIsRunning(false);
-
-        *enableRenderStats = false;
-
-        return false;
-    } else {
-        ///Flag the thread as active
-        {
-            QMutexLocker l(&_imp->renderThreadsMutex);
-            RenderThreads::iterator found = _imp->getRunnableIterator(thread);
-            assert( found != _imp->renderThreads.end() );
-            found->active = true;
-        }
-
-        OutputSchedulerThreadStartArgsPtr args = _imp->runArgs.lock();
-        *enableRenderStats = args->enableRenderStats;
-        *viewsToRender = args->viewsToRender;
-
-        return true;
-    }
-} // OutputSchedulerThread::pickFrameToRender
-
-#else // NATRON_PLAYBACK_USES_THREAD_POOL
-
-void
-OutputSchedulerThread::startTasksFromLastStartedFrame()
-{
-    int frame;
-    bool canContinue;
-
-    {
-        QMutexLocker l(&_imp->framesToRenderMutex);
-        RenderDirectionEnum direction;
-        int firstFrame, lastFrame, frameStep;
-        {
-            QMutexLocker l(&_imp->runArgsMutex);
-            direction = _imp->livingRunArgs.timelineDirection;
-            firstFrame = _imp->livingRunArgs.firstFrame;
-            lastFrame = _imp->livingRunArgs.lastFrame;
-            frameStep = _imp->livingRunArgs.frameStep;
-        }
-        PlaybackModeEnum pMode = _imp->engine->getPlaybackMode();
-
-        frame = _imp->lastFramePushedIndex;
-        if ( (firstFrame == lastFrame) && (frame == firstFrame) ) {
-            return;
-        }
-        RenderDirectionEnum newDirection = direction;
-        ///If startingTime is already taken into account in the framesToRender, push new frames from the last one in the stack instead
-        canContinue = OutputSchedulerThreadPrivate::getNextFrameInSequence(pMode, direction, frame,
-                                                                           firstFrame, lastFrame, frameStep, &frame, &newDirection);
-        if (newDirection != direction) {
-            QMutexLocker l(&_imp->runArgsMutex);
-            _imp->livingRunArgs.timelineDirection = newDirection;
-        }
-    }
-
-    if (canContinue) {
-        QMutexLocker l(&_imp->renderThreadsMutex);
-        startTasks(frame);
-    }
-}
-
-void
-OutputSchedulerThread::startTasks(int startingFrame)
-{
-    int maxThreads = _imp->threadPool->maxThreadCount();
-    int activeThreads = _imp->getNActiveRenderThreads();
-
-    //This thread is from the thread pool so do not count it as it is probably done anyway
-    if (QThread::currentThread() != this) {
-        activeThreads -= 1;
-    }
-
-
-    int nFrames;
-#ifdef NATRON_SCHEDULER_SPAWN_THREADS_WITH_TIMER
-    //We check every now and then if we need to start new threads
-    {
-        int nbAvailableThreads = maxThreads  - activeThreads;
-        if (nbAvailableThreads <= 0) {
-            return;
-        }
-        nFrames = 1;
-    }
-#else
-    //Start one more thread until we use all the thread pool.
-    //We leave some CPU available so that the multi-thread suite can take advantage of it
-    nFrames = MathUtils::clamp(maxThreads - activeThreads, 1, 1);
-#endif
-
-
-    RenderDirectionEnum direction;
-    int firstFrame, lastFrame, frameStep;
-    bool useStats;
-    std::vector<int> viewsToRender;
-    {
-        QMutexLocker l(&_imp->runArgsMutex);
-        direction = _imp->livingRunArgs.timelineDirection;
-        firstFrame = _imp->livingRunArgs.firstFrame;
-        lastFrame = _imp->livingRunArgs.lastFrame;
-        frameStep = _imp->livingRunArgs.frameStep;
-        useStats = _imp->livingRunArgs.enableRenderStats;
-        viewsToRender = _imp->livingRunArgs.viewsToRender;
-    }
-    PlaybackModeEnum pMode = _imp->engine->getPlaybackMode();
-    if (firstFrame == lastFrame) {
-        RenderThreadTask* task = createRunnable(startingFrame, useStats, viewsToRender);
-        _imp->appendRunnable(task);
-
-        QMutexLocker k(&_imp->framesToRenderMutex);
-        _imp->lastFramePushedIndex = startingFrame;
-    } else {
-        int frame = startingFrame;
-        RenderDirectionEnum newDirection = direction;
-        for (int i = 0; i < nFrames; ++i) {
-            RenderThreadTask* task = createRunnable(frame, useStats, viewsToRender);
-            _imp->appendRunnable(task);
-
-
-            {
-                QMutexLocker k(&_imp->framesToRenderMutex);
-                _imp->lastFramePushedIndex = frame;
-            }
-
-            if ( !OutputSchedulerThreadPrivate::getNextFrameInSequence(pMode, direction, frame,
-                                                                       firstFrame, lastFrame, frameStep, &frame, &newDirection) ) {
-                break;
-            }
-        }
-        if (newDirection != direction) {
-            QMutexLocker l(&_imp->runArgsMutex);
-            _imp->livingRunArgs.timelineDirection = newDirection;
-        }
-    }
-} // OutputSchedulerThread::startTasks
-
-#endif //NATRON_PLAYBACK_USES_THREAD_POOL
-
-
-void
-OutputSchedulerThread::onThreadSpawnsTimerTriggered()
-{
-#ifdef NATRON_SCHEDULER_SPAWN_THREADS_WITH_TIMER
-
-#ifdef NATRON_PLAYBACK_USES_THREAD_POOL
-    startTasksFromLastStartedFrame();
-#else
-    ///////////
-    /////If we were analysing the CPU activity, now set the appropriate number of threads to render.
-    int newNThreads, lastNThreads;
-    adjustNumberOfThreads(&newNThreads, &lastNThreads);
-
-    ///////////
-    /////Append render requests for the render threads
-    pushFramesToRender(newNThreads);
-#endif
-
-#endif
-}
-
-void
-OutputSchedulerThread::notifyThreadAboutToQuit(RenderThreadTask* thread)
-{
-    QMutexLocker l(&_imp->renderThreadsMutex);
-    RenderThreads::iterator found = _imp->getRunnableIterator(thread);
-
-    if ( found != _imp->renderThreads.end() ) {
-        found->active = false;
-#ifdef NATRON_PLAYBACK_USES_THREAD_POOL
-        _imp->renderThreads.erase(found);
-#endif
-        _imp->allRenderThreadsInactiveCond.wakeOne();
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-        _imp->allRenderThreadsQuitCond.wakeOne();
-#endif
     }
 }
 
@@ -1284,9 +707,11 @@ OutputSchedulerThread::startRender()
     forward = args->pushTimelineDirection == eRenderDirectionForward;
 
     _imp->endIsolatedJob();
+    bool isViewer = false;
     {
         OutputEffectInstancePtr output = _imp->outputEffect.lock();
-        if (output && !dynamic_cast<ViewerInstance*>(output.get())) {
+        isViewer = output && dynamic_cast<ViewerInstance*>(output.get());
+        if (output && !isViewer) {
             _imp->isolatedJob.reset(new IsolatedJob(output->getNode(), "render"));
             _imp->schedulerInJob.reset(new IsolatedJob::ThreadScope(_imp->isolatedJob.get()));
             _imp->runningJob.store(_imp->isolatedJob.get());
@@ -1298,43 +723,20 @@ OutputSchedulerThread::startRender()
     ///Notify everyone that the render is started
     _imp->engine->s_renderStarted(forward);
 
-    const bool admitsItself = admitsFramesItself();
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    int nThreads = 0;
-    if (!admitsItself) {
-        {
-            QMutexLocker l(&_imp->renderThreadsMutex);
-            _imp->removeAllQuitRenderThreads();
-            nThreads = (int)_imp->renderThreads.size();
-        }
-
-        /// Start with one thread if it doesn't exist
-        if (nThreads == 0) {
-            int lastNThreads;
-            adjustNumberOfThreads(&nThreads, &lastNThreads);
-        }
-    }
-#endif
-
-    QMutexLocker l(&_imp->renderThreadsMutex);
-
-
     ///If the output effect is sequential (only WriteFFMPEG for now)
     EffectInstancePtr effect = _imp->outputEffect.lock();
     SequentialPreferenceEnum pref = effect->getSequentialPreference();
     if ( (pref == eSequentialPreferenceOnlySequential) || (pref == eSequentialPreferencePreferSequential) ) {
-        if (effect->beginSequenceRender_public( firstFrame, lastFrame,
-                                                frameStep,
-                                                false,
-                                                RenderScale::identity, true,
-                                                true,
-                                                false,
-                                                ViewIdx(0),
-                                                false /*useOpenGL*/,
-                                                EffectInstance::OpenGLContextEffectDataPtr() ) == eStatusFailed) {
-            l.unlock();
-
-
+        if (effect->beginSequenceRender_public(firstFrame, lastFrame,
+                                               frameStep,
+                                               false,
+                                               RenderScale::identity, true,
+                                               true,
+                                               false,
+                                               ViewIdx(0),
+                                               false /*useOpenGL*/,
+                                               EffectInstance::OpenGLContextEffectDataPtr())
+            == eStatusFailed) {
             _imp->engine->abortRenderingNoRestart();
 
             return;
@@ -1345,33 +747,16 @@ OutputSchedulerThread::startRender()
         QMutexLocker k(&_imp->framesToRenderMutex);
         _imp->expectFrameToRender = startingFrame;
     }
-    SchedulingPolicyEnum policy = getSchedulingPolicy();
-    if (admitsItself) {
-        assert(_imp->nAdmittedFrames == 0);
-        _imp->stoppingAdmittedFrames = false;
-        _imp->nextFrameToAdmit = forward ? firstFrame : lastFrame;
-        _imp->admissionExhausted = (frameStep <= 0) || (firstFrame > lastFrame);
-    } else if (policy == eSchedulingPolicyFFA) {
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-        ///push all frame range and let the threads deal with it
-        pushAllFrameRange();
-#endif
+    assert(_imp->nAdmittedFrames == 0);
+    _imp->stoppingAdmittedFrames = false;
+    _imp->admissionExhausted = (frameStep <= 0) || (firstFrame > lastFrame);
+    _imp->playbackMode = _imp->engine->getPlaybackMode();
+    if (isViewer) {
+        // The display waits for the frames in its own sequence, which starts at the timeline's frame.
+        _imp->nextFrameToAdmit = startingFrame;
     } else {
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-        ///Push as many frames as there are threads
-        pushFramesToRender(startingFrame, nThreads);
-#endif
+        _imp->nextFrameToAdmit = forward ? firstFrame : lastFrame;
     }
-
-#ifdef NATRON_PLAYBACK_USES_THREAD_POOL
-    startTasks(startingFrame);
-#endif
-
-#ifdef NATRON_SCHEDULER_SPAWN_THREADS_WITH_TIMER
-    QMutexLocker k(&_imp->lastRecordedFPSMutex);
-    double timeoutMS = _imp->lastRecordedFPS == 0. ? NATRON_SCHEDULER_THREADS_SPAWN_DEFAULT_TIMEOUT_MS : (1. / _imp->lastRecordedFPS) * 1000;
-    _imp->threadSpawnsTimer.start(timeoutMS);
-#endif
 } // OutputSchedulerThread::startRender
 
 void
@@ -1379,31 +764,7 @@ OutputSchedulerThread::stopRender()
 {
     _imp->timer.playState = ePlayStatePause;
 
-#ifdef NATRON_SCHEDULER_SPAWN_THREADS_WITH_TIMER
-    QMutexLocker k(&_imp->lastRecordedFPSMutex);
-    _imp->lastRecordedFPS = _imp->timer.getActualFrameRate();
-    _imp->threadSpawnsTimer.stop();
-#endif
-
-    if (admitsFramesItself()) {
-        stopAdmittedFrames();
-    }
-
-    ///Wait for all render threads to be done
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    ///Clear the work queue
-    {
-        QMutexLocker framesLocker (&_imp->framesToRenderMutex);
-        _imp->framesToRender.clear();
-    }
-#endif
-
-    ///Remove all current threads so the new render doesn't have many threads concurrently trying to do the same thing at the same time
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    stopRenderThreads(0);
-#endif
-    _imp->waitForRenderThreadsToQuit();
+    stopAdmittedFrames();
 
     ///If the output effect is sequential (only WriteFFMPEG for now)
     EffectInstancePtr effect = _imp->outputEffect.lock();
@@ -1467,12 +828,9 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
 
     startRender();
 
-    const bool admitsItself = admitsFramesItself();
     for (;; ) {
-        if (admitsItself) {
-            runFinishedFrameSteps();
-            admitFrames();
-        }
+        runFinishedFrameSteps();
+        admitFrames();
 
         ///When set to true, we don't sleep in the bufEmptyCondition but in the startCondition instead, indicating
         ///we finished a render
@@ -1559,10 +917,13 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
                 RenderDirectionEnum timelineDirection;
                 int frameStep;
 
+                const PlaybackModeEnum pMode = _imp->engine->getPlaybackMode();
+                const bool sequenceChanged = (firstFrame != args->firstFrame) || (lastFrame != args->lastFrame) || (pMode != _imp->playbackMode);
+
                 ///Refresh the firstframe/lastFrame as they might have changed on the timeline
                 args->firstFrame = firstFrame;
                 args->lastFrame = lastFrame;
-
+                _imp->playbackMode = pMode;
 
                 timelineDirection = args->processTimelineDirection;
                 frameStep = args->frameStep;
@@ -1571,15 +932,9 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
                 ///////////
                 ///Determine if we finished rendering or if we should just increment/decrement the timeline
                 ///or just loop/bounce
-                PlaybackModeEnum pMode = _imp->engine->getPlaybackMode();
-                if ( (firstFrame == lastFrame) && (pMode == ePlaybackModeOnce) ) {
-                    renderFinished = true;
-                    newDirection = eRenderDirectionForward;
-                } else {
-                    renderFinished = !OutputSchedulerThreadPrivate::getNextFrameInSequence(pMode, timelineDirection,
-                                                                                           expectedTimeToRender, firstFrame,
-                                                                                           lastFrame, frameStep, &nextFrameToRender, &newDirection);
-                }
+                renderFinished = !OutputSchedulerThreadPrivate::getNextFrameToPlay(pMode, timelineDirection,
+                                                                                   expectedTimeToRender, firstFrame, lastFrame, frameStep,
+                                                                                   &nextFrameToRender, &newDirection);
 
                 if (newDirection != timelineDirection) {
                     args->processTimelineDirection = newDirection;
@@ -1590,37 +945,13 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
                         QMutexLocker k(&_imp->framesToRenderMutex);
                         _imp->expectFrameToRender = nextFrameToRender;
                     }
-
-#ifndef NATRON_SCHEDULER_SPAWN_THREADS_WITH_TIMER
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-                    ///////////
-                    /////If we were analysing the CPU activity, now set the appropriate number of threads to render.
-                    int newNThreads, lastNThreads;
-                    adjustNumberOfThreads(&newNThreads, &lastNThreads);
-
-                    ///////////
-                    /////Append render requests for the render threads
-
-                    ///Simple heuristic to limit the size of the internal buffer.
-                    ///If the buffer grows too much, we will keep shared ptr to images, hence keep them in RAM which
-                    ///can lead to RAM issue for the end user.
-                    ///We can end up in this situation for very simple graphs where the rendering of the output node (the writer or viewer)
-                    ///is much slower than things upstream, hence the buffer grows quickly, and fills up the RAM.
-                    bool bufferFull;
-                    {
-                        QMutexLocker k(&_imp->bufMutex);
-                        int nbThreadsHardware = appPTR->getHardwareIdealThreadCount();
-                        bufferFull = isBufferFull(_imp->buf.size(), nbThreadsHardware);
+                    if (sequenceChanged) {
+                        // The frames admitted ahead followed the old sequence, which the display no longer does:
+                        // admission resumes from the frame the display now waits for.
+                        _imp->nextFrameToAdmit = nextFrameToRender;
+                        args->pushTimelineDirection = newDirection;
+                        _imp->admissionExhausted = false;
                     }
-                    if (!bufferFull) {
-                        pushFramesToRender(newNThreads);
-                    }
-#else
-                    startTasksFromLastStartedFrame();
-#endif
-
-#endif
                 }
             } // if (!renderFinished) {
 
@@ -1713,40 +1044,8 @@ OutputSchedulerThread::threadLoopOnce(const GenericThreadStartArgsPtr &inArgs)
 void
 OutputSchedulerThread::onAbortRequested(bool /*keepOldestRender*/)
 {
-    ///We make sure the render-threads don't wait for the main-thread to process a frame
-    ///This function (abortRendering) was probably called from a user event that was posted earlier in the
-    ///event-loop, we just flag that the next event that will process the frame should NOT process it by
-    ///resetting the processRunning flag
-    // Flag directly all threads that they are aborted, this enables each thread to have a shorter code-path
-    // when checking for abortion and will generally abort faster
-    std::vector<AbortableRenderInfoPtr> abortedRenders;
-    {
-        QMutexLocker l(&_imp->renderThreadsMutex);
-        for (RenderThreads::iterator it = _imp->renderThreads.begin(); it != _imp->renderThreads.end(); ++it) {
-            AbortableThread* isAbortableThread = dynamic_cast<AbortableThread*>(it->thread);
-            if (isAbortableThread) {
-                bool userInteraction;
-                AbortableRenderInfoPtr abortInfo;
-                EffectInstancePtr treeRoot;
-                isAbortableThread->getAbortInfo(&userInteraction, &abortInfo, &treeRoot);
-                if (abortInfo) {
-                    abortInfo->setAborted();
-                    abortedRenders.push_back(abortInfo);
-                }
-            }
-        }
-    }
-
     // Otherwise the queued tasks of a frame submitted to the RenderScheduler are only dropped as they are popped, and
-    // its future finishes late. Not tied to the current mode, which may have changed since the frames were submitted.
-    // Outside renderThreadsMutex so that no lock is held while the scheduler's is taken.
-    if (!abortedRenders.empty() && appPTR->hasRenderScheduler()) {
-        RenderScheduler* renderScheduler = appPTR->getRenderScheduler();
-        for (std::vector<AbortableRenderInfoPtr>::const_iterator it = abortedRenders.begin(); it != abortedRenders.end(); ++it) {
-            renderScheduler->abort(*it);
-        }
-    }
-
+    // its future finishes late.
     abortPendingFrameSteps();
 
     ///If the scheduler is asleep waiting for the buffer to be filling up, we post a fake request
@@ -1763,7 +1062,7 @@ OutputSchedulerThread::abortPendingFrameSteps()
     std::vector<AbortableRenderInfoPtr> pending;
     {
         QMutexLocker l(&_imp->pendingStepsMutex);
-        for (std::map<U64, AbortableRenderInfoPtr>::const_iterator it = _imp->pendingSteps.begin(); it != _imp->pendingSteps.end(); ++it) {
+        for (std::multimap<U64, AbortableRenderInfoPtr>::const_iterator it = _imp->pendingSteps.begin(); it != _imp->pendingSteps.end(); ++it) {
             if (it->second) {
                 pending.push_back(it->second);
             }
@@ -1799,7 +1098,7 @@ OutputSchedulerThread::awaitFrameFuture(const FrameFuturePtr& future,
     {
         QMutexLocker l(&_imp->pendingStepsMutex);
         stepId = _imp->nextStepId++;
-        _imp->pendingSteps[stepId] = abortInfo;
+        _imp->pendingSteps.insert(std::make_pair(stepId, abortInfo));
     }
     {
         QMutexLocker l(&_imp->bufMutex);
@@ -1815,30 +1114,34 @@ OutputSchedulerThread::awaitFrameFuture(const FrameFuturePtr& future,
     });
 }
 
-void
-OutputSchedulerThread::runOnFallbackWorker(const AbortableRenderInfoPtr& abortInfo,
-                                           const std::function<void(bool skipped)>& work,
-                                           const FrameStepDone& done)
+std::function<void()>
+OutputSchedulerThread::makeFrameStep(const std::vector<AbortableRenderInfoPtr>& abortInfos,
+                                     const std::function<void(bool skipped)>& work,
+                                     const FrameStepDone& done)
 {
     assert(QThread::currentThread() == this);
     U64 stepId;
     {
         QMutexLocker l(&_imp->pendingStepsMutex);
         stepId = _imp->nextStepId++;
-        _imp->pendingSteps[stepId] = abortInfo;
+        for (std::vector<AbortableRenderInfoPtr>::const_iterator it = abortInfos.begin(); it != abortInfos.end(); ++it) {
+            _imp->pendingSteps.insert(std::make_pair(stepId, *it));
+        }
     }
     {
         QMutexLocker l(&_imp->bufMutex);
         ++_imp->nFrameStepsOutstanding;
     }
-    if (!_imp->fallbackWorker) {
-        _imp->fallbackWorker.reset(new FrameFallbackWorker);
-    }
     const IsolatedJob* job = getRunningIsolatedJob();
-    _imp->fallbackWorker->push([this, stepId, abortInfo, work, done, job]() {
+
+    return [this, stepId, abortInfos, work, done, job]() {
         try {
             IsolatedJob::ThreadScope inJob(job);
-            work(abortInfo && abortInfo->isAborted());
+            bool aborted = false;
+            for (std::vector<AbortableRenderInfoPtr>::const_iterator it = abortInfos.begin(); it != abortInfos.end(); ++it) {
+                aborted |= *it && (*it)->isAborted();
+            }
+            work(aborted);
         } catch (...) {
             // done must run on every path, or stopRender() waits for this step forever.
         }
@@ -1847,7 +1150,57 @@ OutputSchedulerThread::runOnFallbackWorker(const AbortableRenderInfoPtr& abortIn
             _imp->pendingSteps.erase(stepId);
         }
         postFinishedFrameStep(done);
-    });
+    };
+}
+
+void
+OutputSchedulerThread::runOnFallbackWorker(const std::vector<AbortableRenderInfoPtr>& abortInfos,
+                                           const std::function<void(bool skipped)>& work,
+                                           const FrameStepDone& done)
+{
+    const std::function<void()> step = makeFrameStep(abortInfos, work, done);
+    if (!_imp->fallbackWorker) {
+        _imp->fallbackWorker.reset(new FrameFallbackWorker);
+    }
+    _imp->fallbackWorker->push(step);
+}
+
+void
+OutputSchedulerThread::runOnGlobalPool(const std::vector<AbortableRenderInfoPtr>& abortInfos,
+                                       int runnablePriority,
+                                       const std::function<void(bool skipped)>& work,
+                                       const FrameStepDone& done)
+{
+    const std::function<void()> step = makeFrameStep(abortInfos, work, done);
+    QThreadPool::globalInstance()->start([step, runnablePriority]() {
+        // The outermost scope of the task, so the pool thread leaves it with its TLS cleaned up.
+        AppTLS::FrameContextScope scope(nullptr, 0, runnablePriority);
+        step();
+    },
+                                         runnablePriority);
+}
+
+void
+OutputSchedulerThread::appendNothingToDisplay(double time,
+                                              ViewIdx view,
+                                              const RenderStatsPtr& stats)
+{
+    QMutexLocker l(&_imp->bufMutex);
+    BufferedFrameKey key;
+    key.time = time;
+    BufferedFrame value;
+    value.time = time;
+    value.view = view;
+    value.stats = stats;
+    value.displaysNothing = true;
+    _imp->buf.insert(std::make_pair(key, value));
+    _imp->wakeBufEmptyCondition();
+}
+
+int
+OutputSchedulerThread::getNFramesInFlight() const
+{
+    return _imp->nAdmittedFrames.load();
 }
 
 void
@@ -1888,6 +1241,13 @@ OutputSchedulerThread::admitFrames()
         return;
     }
     while (!_imp->admissionExhausted && !_imp->stoppingAdmittedFrames && !isBeingAborted() && !mustQuitThread()) {
+        {
+            // Frames the output has not taken yet hold their images, so a slow output stops admission before RAM runs out.
+            QMutexLocker l(&_imp->bufMutex);
+            if (isBufferFull((int)_imp->buf.size() + _imp->nAdmittedFrames, appPTR->getHardwareIdealThreadCount())) {
+                return;
+            }
+        }
         if (_imp->nAdmittedFrames > 0) {
             // The frames only wait for the RenderScheduler, which runs their work on the global pool, so another frame
             // is admitted only while the work already queued cannot keep every pool thread busy.
@@ -1907,13 +1267,11 @@ OutputSchedulerThread::admitFrames()
         }
 
         const int time = _imp->nextFrameToAdmit;
-        if (args->pushTimelineDirection == eRenderDirectionForward) {
-            _imp->nextFrameToAdmit += args->frameStep;
-            _imp->admissionExhausted = _imp->nextFrameToAdmit > args->lastFrame;
-        } else {
-            _imp->nextFrameToAdmit -= args->frameStep;
-            _imp->admissionExhausted = _imp->nextFrameToAdmit < args->firstFrame;
-        }
+        RenderDirectionEnum newDirection;
+        _imp->admissionExhausted = !OutputSchedulerThreadPrivate::getNextFrameToPlay(_imp->playbackMode, args->pushTimelineDirection,
+                                                                                     time, args->firstFrame, args->lastFrame, args->frameStep,
+                                                                                     &_imp->nextFrameToAdmit, &newDirection);
+        args->pushTimelineDirection = newDirection;
         ++_imp->nAdmittedFrames;
         admitFrame(time, args->viewsToRender, args->enableRenderStats);
     }
@@ -1951,55 +1309,6 @@ OutputSchedulerThread::executeOnMainThread(const GenericThreadExecOnMainThreadAr
     assert(args);
     processFrame(args->frames);
 }
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-void
-OutputSchedulerThread::adjustNumberOfThreads(int* newNThreads,
-                                             int *lastNThreads)
-{
-    ///How many parallel renders the user wants
-    int userSettingParallelThreads = appPTR->getCurrentSettings()->getNumberOfParallelRenders();
-
-    // The load is read before renderThreadsMutex is taken so that this lock is never held while the
-    // RenderScheduler's is. Counting and creating or flagging under one lock keeps two finishing frame
-    // threads from both acting on the same count.
-    QThreadPool* pool = QThreadPool::globalInstance();
-    const int poolActive = pool->activeThreadCount();
-    bool stoppedOne = false;
-
-    // The frame threads only wait for the scheduler, which runs the frames' work on the global pool, so another
-    // frame is opened only while the work already queued cannot keep every pool thread busy.
-    const int poolMax = std::max(1, pool->maxThreadCount());
-    const int cap = (userSettingParallelThreads > 0) ? userSettingParallelThreads : poolMax;
-    int schedulerRunning = 0;
-    int schedulerReady = 0;
-    appPTR->getRenderScheduler()->getLoad(&schedulerRunning, &schedulerReady);
-    const bool loadAllowsMore = (schedulerRunning + schedulerReady < poolMax) && (poolActive < poolMax);
-
-    {
-        QMutexLocker l(&_imp->renderThreadsMutex);
-        const int live = _imp->getNLiveRenderThreads();
-        *lastNThreads = live;
-        if ((live == 0) || ((live < cap) && loadAllowsMore)) {
-            _imp->appendRunnable(createRunnable());
-            *newNThreads = live + 1;
-        } else if (live > cap) {
-            _imp->flagRenderThreadsToQuit(1);
-            _imp->removeAllQuitRenderThreads();
-            *newNThreads = live - 1;
-            stoppedOne = true;
-        } else {
-            *newNThreads = live;
-        }
-    }
-
-    if (stoppedOne) {
-        QMutexLocker framesLocker(&_imp->framesToRenderMutex);
-        _imp->framesToRenderNotEmptyCond.wakeAll();
-    }
-}
-
-#endif // ifndef NATRON_PLAYBACK_USES_THREAD_POOL
 
 void
 OutputSchedulerThread::notifyFrameRendered(int frame,
@@ -2051,21 +1360,6 @@ OutputSchedulerThread::notifyFrameRendered(int frame,
                 _imp->appendBufferedFrame( 0, viewIndex, RenderStatsPtr(), BufferableObjectPtr() );
                 _imp->wakeBufEmptyCondition();
             }
-        } else {
-            l.unlock();
-
-#ifndef NATRON_SCHEDULER_SPAWN_THREADS_WITH_TIMER
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-            if (!admitsFramesItself()) {
-                int newNThreads, nbCurParallelRenders;
-                adjustNumberOfThreads(&newNThreads, &nbCurParallelRenders);
-            }
-#else
-            startTasksFromLastStartedFrame();
-#endif
-
-#endif
         }
         //renderingIsFinished = _imp->renderFinished;
     } else {
@@ -2333,54 +1627,6 @@ OutputSchedulerThread::getCurrentRunArgs() const
     return _imp->runArgs.lock();
 }
 
-int
-OutputSchedulerThread::getNRenderThreads() const
-{
-    if (admitsFramesItself()) {
-        return _imp->nAdmittedFrames.load();
-    }
-    QMutexLocker l(&_imp->renderThreadsMutex);
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    return _imp->getNLiveRenderThreads();
-#else
-    return (int)_imp->renderThreads.size();
-#endif
-}
-
-int
-OutputSchedulerThread::getNActiveRenderThreads() const
-{
-    QMutexLocker l(&_imp->renderThreadsMutex);
-
-    return _imp->getNActiveRenderThreads();
-}
-
-void
-OutputSchedulerThread::stopRenderThreads(int nThreadsToStop)
-{
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    {
-        QMutexLocker l(&_imp->renderThreadsMutex);
-        _imp->flagRenderThreadsToQuit(nThreadsToStop);
-
-        ///Clean-up remaining zombie threads that are no longer useful
-        _imp->removeAllQuitRenderThreads();
-    }
-
-    ///Wake-up all threads to make sure that they are notified that they must quit
-    {
-        QMutexLocker framesLocker(&_imp->framesToRenderMutex);
-        _imp->framesToRenderNotEmptyCond.wakeAll();
-    }
-
-#else
-    Q_UNUSED(nThreadsToStop);
-    QMutexLocker l(&_imp->renderThreadsMutex);
-    _imp->waitForRenderThreadsToBeDone();
-#endif
-}
-
 RenderEngine*
 OutputSchedulerThread::getEngine() const
 {
@@ -2417,173 +1663,6 @@ OutputSchedulerThread::runCallbackWithVariables(const QString& callback)
 
 ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////
-//////////////////////// RenderThreadTask ////////////
-
-struct RenderThreadTaskPrivate
-{
-    OutputSchedulerThread* scheduler;
-    OutputEffectInstanceWPtr output;
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    QMutex mustQuitMutex;
-    bool mustQuit;
-    bool hasQuit;
-    QMutex runningMutex;
-    bool running;
-#else
-    int time;
-    bool useRenderStats;
-    std::vector<int> viewsToRender;
-#endif
-
-
-    RenderThreadTaskPrivate(const OutputEffectInstancePtr& output,
-                            OutputSchedulerThread* scheduler
-                            #ifdef NATRON_PLAYBACK_USES_THREAD_POOL
-                            ,
-                            const int time,
-                            const bool useRenderStats,
-                            const std::vector<int>& viewsToRender
-                            #endif
-                            )
-        : scheduler(scheduler)
-        , output(output)
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-        , mustQuitMutex()
-        , mustQuit(false)
-        , hasQuit(false)
-        , runningMutex()
-        , running(false)
-#else
-        , time(time)
-        , useRenderStats(useRenderStats)
-        , viewsToRender(viewsToRender)
-#endif
-    {
-    }
-};
-
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-RenderThreadTask::RenderThreadTask(const OutputEffectInstancePtr& output,
-                                   OutputSchedulerThread* scheduler)
-    : QThread()
-    , AbortableThread(this)
-    , _imp( new RenderThreadTaskPrivate(output, scheduler) )
-{
-    setThreadName("Parallel render thread");
-}
-
-#else
-RenderThreadTask::RenderThreadTask(const OutputEffectInstancePtr& output,
-                                   OutputSchedulerThread* scheduler,
-                                   const int time,
-                                   const bool useRenderStats,
-                                   const std::vector<int>& viewsToRender)
-    : QRunnable()
-    , _imp( new RenderThreadTaskPrivate(output, scheduler, time, useRenderStats, viewsToRender) )
-{
-}
-
-#endif
-RenderThreadTask::~RenderThreadTask()
-{
-}
-
-void
-RenderThreadTask::run()
-{
-#ifdef DEBUG
-    boost_adaptbx::floating_point::exception_trapping trap(boost_adaptbx::floating_point::exception_trapping::division_by_zero |
-                                                           boost_adaptbx::floating_point::exception_trapping::invalid |
-                                                           boost_adaptbx::floating_point::exception_trapping::overflow);
-#endif
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    notifyIsRunning(true);
-
-    for (;; ) {
-        bool enableRenderStats;
-        std::vector<ViewIdx> viewsToRender;
-        int time = 0;
-
-        // A frame picked before a concurrent scheduleForRemoval() is rendered all the same: it is off the
-        // queue, and dropping it would leave the render waiting forever for its count of frames.
-        if (!_imp->scheduler->pickFrameToRender(this, &time, &enableRenderStats, &viewsToRender)) {
-            break;
-        }
-
-#ifdef TRACE_SCHEDULER
-        qDebug() << "Parallel Render Thread: Picking frame to render: " << time;
-#endif
-        boost_adaptbx::floating_point::follow_software_renderer();
-        renderFrame(time, viewsToRender, enableRenderStats);
-
-        appPTR->getAppTLS()->cleanupTLSForThread();
-
-        if ( mustQuit() ) {
-            break;
-        }
-    }
-
-    {
-        QMutexLocker l(&_imp->mustQuitMutex);
-        _imp->hasQuit = true;
-    }
-    notifyIsRunning(false);
-    _imp->scheduler->notifyThreadAboutToQuit(this);
-#else // NATRON_PLAYBACK_USES_THREAD_POOL
-    renderFrame(_imp->time, _imp->viewsToRender, _imp->useRenderStats);
-    _imp->scheduler->notifyThreadAboutToQuit(this);
-#endif
-}
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-bool
-RenderThreadTask::hasQuit() const
-{
-    QMutexLocker l(&_imp->mustQuitMutex);
-
-    return _imp->hasQuit;
-}
-
-void
-RenderThreadTask::scheduleForRemoval()
-{
-    QMutexLocker l(&_imp->mustQuitMutex);
-
-    assert(!_imp->mustQuit);
-    _imp->mustQuit = true;
-}
-
-bool
-RenderThreadTask::mustQuit() const
-{
-    QMutexLocker l(&_imp->mustQuitMutex);
-
-    return _imp->mustQuit;
-}
-
-void
-RenderThreadTask::notifyIsRunning(bool running)
-{
-    {
-        QMutexLocker l(&_imp->runningMutex);
-        if (_imp->running == running) {
-            return;
-        }
-        _imp->running = running;
-    }
-
-    appPTR->fetchAndAddNRunningThreads(running ? 1 : -1);
-}
-
-#endif
-
-////////////////////////////////////////////////////////////
-////////////////////////////////////////////////////////////
-//////////////////////// DefaultScheduler ////////////
-
-
 DefaultScheduler::DefaultScheduler(RenderEngine* engine,
                                    const OutputEffectInstancePtr& effect)
     : OutputSchedulerThread(engine, effect, eProcessFrameBySchedulerThread)
@@ -2800,7 +1879,7 @@ DefaultScheduler::startWriterView(const std::shared_ptr<WriterFrame>& frame)
         return;
     }
     if (onWorker || frame->fallbackReason) {
-        runOnFallbackWorker(frame->abortInfo, [this, frame](bool skipped) {
+        runOnFallbackWorker(std::vector<AbortableRenderInfoPtr>(1, frame->abortInfo), [this, frame](bool skipped) {
             if (skipped) {
                 frame->retCode = EffectInstance::eRenderRoIRetCodeAborted;
             } else {
@@ -3038,25 +2117,6 @@ DefaultScheduler::finishWriterView(const std::shared_ptr<WriterFrame>& frame)
     endAdmittedFrame();
 }
 
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-RenderThreadTask*
-DefaultScheduler::createRunnable()
-{
-    // Writers admit their frames themselves and never ask for render threads.
-    return NULL;
-}
-
-#else
-RenderThreadTask*
-DefaultScheduler::createRunnable(int /*frame*/,
-                                 bool /*useRenderStarts*/,
-                                 const std::vector<int>& /*viewsToRender*/)
-{
-    return NULL;
-}
-
-#endif
-
 void
 DefaultScheduler::timelineStepOne(RenderDirectionEnum direction)
 {
@@ -3281,14 +2341,18 @@ ViewerDisplayScheduler::processFrame(const BufferedFrames& frames)
 {
     ViewerInstancePtr viewer = _viewer.lock();
 
-    if ( !frames.empty() ) {
-        viewer->aboutToUpdateTextures();
-    }
-    if ( !frames.empty() ) {
-        for (BufferedFrames::const_iterator it = frames.begin(); it != frames.end(); ++it) {
+    std::list<UpdateViewerParamsPtr> toDisplay;
+    for (BufferedFrames::const_iterator it = frames.begin(); it != frames.end(); ++it) {
+        if (it->frame) {
             UpdateViewerParamsPtr params = std::dynamic_pointer_cast<UpdateViewerParams>(it->frame);
             assert(params);
-            viewer->updateViewer(params);
+            toDisplay.push_back(params);
+        }
+    }
+    if (!toDisplay.empty()) {
+        viewer->aboutToUpdateTextures();
+        for (std::list<UpdateViewerParamsPtr>::iterator it = toDisplay.begin(); it != toDisplay.end(); ++it) {
+            viewer->updateViewer(*it);
         }
         viewer->redrawViewerNow();
     } else {
@@ -3334,168 +2398,111 @@ ViewerDisplayScheduler::getFrameRangeToRender(int &first,
     v->getTimelineBounds(&first, &last);
 }
 
-class ViewerRenderFrameRunnable
-    : public RenderThreadTask
-{
-    ViewerInstanceWPtr _viewer;
-
-public:
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-    ViewerRenderFrameRunnable(const ViewerInstancePtr& viewer,
-                              OutputSchedulerThread* scheduler)
-        : RenderThreadTask(viewer, scheduler)
-        , _viewer(viewer)
-    {
-    }
-
-#else
-    ViewerRenderFrameRunnable(const ViewerInstancePtr& viewer,
-                              OutputSchedulerThread* scheduler,
-                              const int frame,
-                              const bool useRenderStarts,
-                              const std::vector<int>& viewsToRender)
-        : RenderThreadTask(viewer, scheduler, frame, useRenderStarts, viewsToRender)
-        , _viewer(viewer)
-    {
-    }
-
-#endif
-
-
-    virtual ~ViewerRenderFrameRunnable()
-    {
-    }
-
-private:
-
-    virtual void renderFrame(int time,
-                             const std::vector<ViewIdx>& viewsToRender,
-                             bool enableRenderStats)
-    {
-        RenderStatsPtr stats;
-
-        if (enableRenderStats) {
-            stats = std::make_shared<RenderStats>(enableRenderStats);
-        }
-        ///The viewer always uses the scheduler thread to regulate the output rate, @see ViewerInstance::renderViewer_internal
-        ///it calls appendToBuffer by itself
-        ViewerInstance::ViewerRenderRetCode stat = ViewerInstance::eViewerRenderRetCodeRedraw;
-
-        //Viewer can only render 1 view for now
-        assert(viewsToRender.size() == 1);
-        ViewIdx view = viewsToRender.front();
-        ViewerInstancePtr viewer = _viewer.lock();
-        U64 viewerHash = viewer->getHash();
-        ViewerArgsPtr args[2];
-        ViewerInstance::ViewerRenderRetCode status[2] = {
-            ViewerInstance::eViewerRenderRetCodeFail, ViewerInstance::eViewerRenderRetCodeFail
-        };
-        bool clearTexture[2] = { false, false };
-        BufferableObjectPtrList toAppend;
-
-        for (int i = 0; i < 2; ++i) {
-            args[i] = std::make_shared<ViewerArgs>();
-            status[i] = viewer->getRenderViewerArgsAndCheckCache_public( time, true, view, i, viewerHash, true, NodePtr(), stats, args[i].get() );
-            clearTexture[i] = status[i] == ViewerInstance::eViewerRenderRetCodeFail || status[i] == ViewerInstance::eViewerRenderRetCodeBlack;
-            if (status[i] == ViewerInstance::eViewerRenderRetCodeFail) {
-                //Just clear the viewer, nothing to do
-                args[i]->params.reset();
-                args[i].reset();
-            } else if (status[i] == ViewerInstance::eViewerRenderRetCodeBlack) {
-                if (args[i]->params) {
-                    args[i]->params->tiles.clear();
-                    toAppend.push_back(args[i]->params);
-                    args[i]->params.reset();
-                }
-                args[i].reset();
-            }
-        }
-
-        if ( (status[0] == ViewerInstance::eViewerRenderRetCodeFail) && (status[1] == ViewerInstance::eViewerRenderRetCodeFail) ) {
-            viewer->disconnectViewer();
-            return;
-        }
-
-        if (clearTexture[0]) {
-            viewer->disconnectTexture(0, status[0] == ViewerInstance::eViewerRenderRetCodeFail);
-        }
-        if (clearTexture[0]) {
-            viewer->disconnectTexture(1, status[1] == ViewerInstance::eViewerRenderRetCodeFail);
-        }
-
-        if ( ( (status[0] == ViewerInstance::eViewerRenderRetCodeRedraw) && !args[0]->params->isViewerPaused ) &&
-                    ( ( status[1] == ViewerInstance::eViewerRenderRetCodeRedraw) && !args[1]->params->isViewerPaused ) ) {
-            return;
-        } else {
-            for (int i = 0; i < 2; ++i) {
-                if (args[i] && args[i]->params) {
-                    if ( ( (args[i]->params->nbCachedTile > 0) && ( args[i]->params->nbCachedTile == (int)args[i]->params->tiles.size() ) ) || args[i]->params->isViewerPaused ) {
-                        toAppend.push_back(args[i]->params);
-                        args[i].reset();
-                    }
-                }
-            }
-        }
-
-
-        if ( ( args[0] && (status[0] != ViewerInstance::eViewerRenderRetCodeFail) ) || ( args[1] && (status[1] != ViewerInstance::eViewerRenderRetCodeFail) ) ) {
-            U64 renderAges[2] = { 0, 0 };
-            bool hadRender[2] = { false, false };
-            for (int i = 0; i < 2; ++i) {
-                if (args[i] && args[i]->params && args[i]->params->abortInfo) {
-                    renderAges[i] = args[i]->params->abortInfo->getRenderAge();
-                    hadRender[i] = true;
-                }
-            }
-            try {
-                stat = viewer->renderViewer(view, false, true, viewerHash, true, NodePtr(), true,  args, ViewerCurrentFrameRequestSchedulerStartArgsPtr(), stats);
-            } catch (...) {
-                stat = ViewerInstance::eViewerRenderRetCodeFail;
-            }
-            if (stat == ViewerInstance::eViewerRenderRetCodeFail) {
-                for (int i = 0; i < 2; ++i) {
-                    if (hadRender[i]) {
-                        viewer->renderFailed(i, renderAges[i]);
-                    }
-                }
-            }
-        }
-        if (stat == ViewerInstance::eViewerRenderRetCodeFail) {
-            ///Don't report any error message otherwise we will flood the viewer with irrelevant messages such as
-            ///"Render failed", instead we let the plug-in that failed post an error message which will be more helpful.
-            _imp->scheduler->notifyRenderFailure( std::string() );
-        } else {
-            for (int i = 0; i < 2; ++i) {
-                if (args[i] && args[i]->params) {
-                    toAppend.push_back(args[i]->params);
-                    args[i].reset();
-                }
-            }
-        }
-        _imp->scheduler->appendToBuffer(time, view, stats, toAppend);
-    } // renderFrame
+struct ViewerDisplayScheduler::ViewerFrame {
+    ViewerInstancePtr viewer;
+    ViewerInstance::PlaybackFrame playback;
+    // Aborted before its finish ran: whatever it left undone is no failure.
+    bool skipped = false;
 };
 
-
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-RenderThreadTask*
-ViewerDisplayScheduler::createRunnable()
+void
+ViewerDisplayScheduler::admitFrame(int time,
+                                   const std::vector<ViewIdx>& viewsToRender,
+                                   bool enableRenderStats)
 {
-    return new ViewerRenderFrameRunnable(_viewer.lock(), this);
-}
+    std::shared_ptr<ViewerFrame> frame = std::make_shared<ViewerFrame>();
+    frame->viewer = _viewer.lock();
+    if (!frame->viewer || viewsToRender.empty()) {
+        notifyRenderFailure(std::string());
+        endAdmittedFrame();
 
-#else
-RenderThreadTask*
-ViewerDisplayScheduler::createRunnable(int frame,
-                                       bool useRenderStarts,
-                                       const std::vector<int>& viewsToRender)
+        return;
+    }
+    ViewerInstance::PlaybackFrame& playback = frame->playback;
+    playback.time = time;
+    // A viewer displays one view.
+    playback.view = viewsToRender.front();
+    if (enableRenderStats) {
+        playback.stats = std::make_shared<RenderStats>(enableRenderStats);
+    }
+
+    ViewerInstance::PlaybackFrameStageEnum stage = ViewerInstance::ePlaybackFrameStageDone;
+    try {
+        stage = frame->viewer->preparePlaybackFrame(&playback);
+    } catch (...) {
+        playback.failed = true;
+        stage = ViewerInstance::ePlaybackFrameStageDone;
+        // Nothing waits for what was submitted before the throw any more.
+        for (std::vector<AbortableRenderInfoPtr>::const_iterator it = playback.abortInfos.begin(); it != playback.abortInfos.end(); ++it) {
+            (*it)->setAborted();
+            if (appPTR->hasRenderScheduler()) {
+                appPTR->getRenderScheduler()->abort(*it);
+            }
+        }
+    }
+
+    switch (stage) {
+    case ViewerInstance::ePlaybackFrameStageAwaitFutures: {
+        playback.futuresOutstanding = (int)playback.futures.size();
+        for (std::size_t i = 0; i < playback.futures.size(); ++i) {
+            awaitFrameFuture(playback.futures[i], playback.futureAbortInfos[i], [this, frame]() {
+                if (--frame->playback.futuresOutstanding > 0) {
+                    return;
+                }
+                if (isStoppingAdmittedFrames()) {
+                    frame->skipped = true;
+                    finishViewerFrame(frame);
+
+                    return;
+                }
+                // Off this thread, which would convert the frames one at a time, and on the pool, since the futures
+                // it completes have finished.
+                runOnGlobalPool(frame->playback.abortInfos, RenderScheduler::runnablePriority(RenderScheduler::Priority::Interactive), [frame](bool skipped) {
+                    if (skipped) {
+                        frame->skipped = true;
+                    } else {
+                        frame->viewer->finishPlaybackFrame(frame->playback);
+                    } }, [this, frame]() { finishViewerFrame(frame); });
+            });
+        }
+        break;
+    }
+    case ViewerInstance::ePlaybackFrameStageFallback:
+        // An input that pulls its own inputs waits on them, which a pool thread must not do.
+        runOnFallbackWorker(playback.abortInfos, [frame](bool skipped) {
+            if (skipped) {
+                frame->skipped = true;
+            } else {
+                frame->viewer->finishPlaybackFrame(frame->playback);
+            } }, [this, frame]() { finishViewerFrame(frame); });
+        break;
+    case ViewerInstance::ePlaybackFrameStageDone:
+        finishViewerFrame(frame);
+        break;
+    }
+} // ViewerDisplayScheduler::admitFrame
+
+void
+ViewerDisplayScheduler::finishViewerFrame(const std::shared_ptr<ViewerFrame>& frame)
 {
-    return new ViewerRenderFrameRunnable(_viewer.lock(), this, frame, useRenderStarts, viewsToRender);
+    ViewerInstance::PlaybackFrame& playback = frame->playback;
+
+    if (playback.failed && !frame->skipped) {
+        // The plug-in that failed posts its own, more helpful, error message.
+        notifyRenderFailure(std::string());
+    }
+    if (playback.toAppend.empty()) {
+        appendNothingToDisplay(playback.time, playback.view, playback.stats);
+    } else {
+        appendToBuffer(playback.time, playback.view, playback.stats, playback.toAppend);
+    }
+    // The callbacks of the futures hold the frame.
+    playback.futures.clear();
+    for (int i = 0; i < 2; ++i) {
+        playback.pending[i].reset();
+    }
+    endAdmittedFrame();
 }
-
-#endif
-
 
 void
 ViewerDisplayScheduler::handleRenderFailure(const std::string& /*errorMessage*/)
@@ -3844,9 +2851,9 @@ RenderEngine::isSequentialRenderBeingAborted() const
 }
 
 int
-RenderEngine::getNRenderThreads() const
+RenderEngine::getNFramesInFlight() const
 {
-    return _imp->scheduler ? _imp->scheduler->getNRenderThreads() : 0;
+    return _imp->scheduler ? _imp->scheduler->getNFramesInFlight() : 0;
 }
 
 bool

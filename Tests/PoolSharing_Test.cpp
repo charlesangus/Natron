@@ -596,11 +596,7 @@ TEST_F(PoolSharing, NCPUsOutsideATaskUseTheLegacyFormula)
     ASSERT_NE(-1, nThreadsToRender) << "rendering is set single-threaded";
 
     ASSERT_EQ(0, AppTLS::currentThreadBudget());
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
     const int running = appPTR->getNRunningThreads();
-#else
-    const int running = 0;
-#endif
     const int perEffect = (nThreadsPerEffect > 0) ? nThreadsPerEffect : std::min(4, appPTR->getHardwareIdealThreadCount());
     EXPECT_EQ(AppManager::computeNCPUsAvailable(4, QThreadPool::globalInstance()->activeThreadCount(), running, std::max(1, perEffect)),
               appPTR->getNCPUsAvailableForEffect());

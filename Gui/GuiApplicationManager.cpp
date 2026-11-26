@@ -1756,10 +1756,10 @@ GuiApplicationManager::getNetworkNodesMenu()
         refreshPluginActionProperties(action, plugin);
         const int major = plugin->getMajorVersion();
         const int minor = plugin->getMinorVersion();
-        // Network node types are registered for internal use only, which keeps them out of the
-        // nodes menu; this menu is the one place a user creates them from.
+        // The types are for internal use only: AppInstance creates them only in a network builder
+        // with one of their targets, wherever this menu is triggered from.
         QObject::connect(action, &QAction::triggered, this, [this, pluginID, major, minor]() {
-            _imp->createNodeFromNodesMenu(pluginID, major, minor, true);
+            _imp->createNodeFromNodesMenu(pluginID, major, minor);
         });
         menu->addAction(action);
     }
@@ -1837,8 +1837,7 @@ GuiApplicationManager::swapNodesMenuArgsDecorator(const NodesMenuArgsDecorator& 
 void
 GuiApplicationManagerPrivate::createNodeFromNodesMenu(const QString& pluginID,
                                                       int major,
-                                                      int minor,
-                                                      bool internalPlugin)
+                                                      int minor)
 {
     GuiAppInstancePtr app;
     // A window with a node creation context set, such as the tab menu's, decides where the node goes.
@@ -1875,9 +1874,6 @@ GuiApplicationManagerPrivate::createNodeFromNodesMenu(const QString& pluginID,
     args.setProperty<int>(kCreateNodeArgsPropPluginVersion, major, 0);
     args.setProperty<int>(kCreateNodeArgsPropPluginVersion, minor, 1);
     args.setProperty<bool>(kCreateNodeArgsPropDeferSettingsPanel, true);
-    if (internalPlugin) {
-        args.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
-    }
     if (nodesMenuArgsDecorator) {
         nodesMenuArgsDecorator(args);
     }

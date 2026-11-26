@@ -27,6 +27,8 @@
 
 #include <algorithm>
 
+#include "Engine/Nodes/Network/NetworkNode.h"
+
 NATRON_NAMESPACE_ENTER
 
 NetworkBuilder::NetworkBuilder(const NodePtr& node,
@@ -44,6 +46,25 @@ bool
 NetworkBuilder::supportsTarget(const std::string& target) const
 {
     return std::find(_targets.begin(), _targets.end(), target) != _targets.end();
+}
+
+bool
+NetworkBuilder::hostsPlugin(const std::string& pluginId) const
+{
+    for (const std::pair<std::string, std::vector<std::string>>& registered : NetworkNode::registeredPlugins()) {
+        if (registered.first != pluginId) {
+            continue;
+        }
+        for (const std::string& target : registered.second) {
+            if (supportsTarget(target)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    return false;
 }
 
 NATRON_NAMESPACE_EXIT

@@ -85,6 +85,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Merge/Switch.h"
+#include "Engine/Nodes/Network/NetworkBuilder.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
 #include "Engine/ProcessHandler.h"
@@ -298,6 +299,13 @@ public:
     }
 
     void applyNodeCreationContext(const Plugin* plugin, CreateNodeArgs& args);
+
+    // The collection a node made from args goes in once applyNodeCreationContext() ran, null for
+    // the project.
+    NodeCollectionPtr creationCollectionOf(const CreateNodeArgs& args) const;
+
+    // Whether the user may create plugin, which is not user creatable, where args put it.
+    bool hostsInternalPlugin(const Plugin& plugin, const CreateNodeArgs& args) const;
 
     void declareCurrentAppVariable_Python();
 
@@ -1412,17 +1420,51 @@ AppInstance::getNodeCreationContextCollection() const
     return _imp->creationContext.collection.lock();
 }
 
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+// Plug-ins' internal nodes are created out of the project, with no collection.
+bool
+takesNodeCreationContext(const CreateNodeArgs& args)
+{
+    return !args.getProperty<bool>(kCreateNodeArgsPropOutOfProject) && !args.getProperty<bool>(kCreateNodeArgsPropNoNodeGUI) && !args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization);
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+NodeCollectionPtr
+AppInstancePrivate::creationCollectionOf(const CreateNodeArgs& args) const
+{
+    NodeCollectionPtr collection = args.getProperty<NodeCollectionPtr>(kCreateNodeArgsPropGroupContainer);
+
+    if (collection || !takesNodeCreationContext(args)) {
+        return collection;
+    }
+
+    return _publicInterface->getNodeCreationContextCollection();
+}
+
+bool
+AppInstancePrivate::hostsInternalPlugin(const Plugin& plugin,
+                                        const CreateNodeArgs& args) const
+{
+    if (!plugin.getIsForInternalUseOnly() || !plugin.isActivated() || plugin.getIsDeprecated()) {
+        return false;
+    }
+    // Network node types are for internal use only, which keeps them out of the main graph's
+    // menus; a network builder's graph is where every user path creates its targets' types.
+    const NodeCollectionPtr collection = creationCollectionOf(args);
+    const NetworkBuilder* builder = dynamic_cast<const NetworkBuilder*>(collection.get());
+
+    return builder && builder->hostsPlugin(plugin.getPluginID().toStdString());
+}
+
 void
 AppInstancePrivate::applyNodeCreationContext(const Plugin* plugin,
                                              CreateNodeArgs& args)
 {
     NodeCollectionPtr collection = _publicInterface->getNodeCreationContextCollection();
 
-    if (!collection) {
-        return;
-    }
-    // Plug-ins' internal nodes are created out of the project, with no collection.
-    if (args.getProperty<bool>(kCreateNodeArgsPropOutOfProject) || args.getProperty<bool>(kCreateNodeArgsPropNoNodeGUI) || args.getProperty<Serialization::NodeSerializationPtr>(kCreateNodeArgsPropNodeSerialization)) {
+    if (!collection || !takesNodeCreationContext(args)) {
         return;
     }
     NodeCollectionPtr argsGroup = args.getProperty<NodeCollectionPtr>(kCreateNodeArgsPropGroupContainer);
@@ -1504,7 +1546,7 @@ AppInstance::createNodeInternal(CreateNodeArgs& args,
     }
 
     bool allowUserCreatablePlugins = args.getProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins);
-    if ( !plugin->getIsUserCreatable() && !allowUserCreatablePlugins ) {
+    if (!plugin->getIsUserCreatable() && !allowUserCreatablePlugins && !_imp->hostsInternalPlugin(*plugin, args)) {
         //The plug-in should not be instantiable by the user
         qDebug() << "Attempt to create" << argsPluginID << "which is not user creatable";
 

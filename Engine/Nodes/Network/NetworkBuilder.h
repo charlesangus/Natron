@@ -56,6 +56,13 @@ public:
 
     bool supportsTarget(const std::string& target) const;
 
+    /**
+     * @brief Whether pluginId is a network node type (see NetworkNode::registerPlugin()) with one of
+     * this builder's targets: the types a user creates inside its graph, though they are for
+     * internal use only.
+     **/
+    bool hostsPlugin(const std::string& pluginId) const;
+
     virtual bool isSubGraphUserVisible() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return true;

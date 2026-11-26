@@ -32,7 +32,7 @@ try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QMetaObject, QPointF, Qt, QTimer
     from PySide6.QtGui import QFocusEvent, QMouseEvent
-    from PySide6.QtWidgets import QApplication, QDialogButtonBox, QPushButton, QTabWidget
+    from PySide6.QtWidgets import QApplication, QMessageBox, QPushButton, QTabWidget
 
     import guitest as gt
     from guitest import check
@@ -137,7 +137,8 @@ try:
         return [f.isReadOnly() for f in fields]
 
     def answer_question(seen):
-        """Polls, from inside the question's own modal loop, for the question and answers Yes."""
+        """Polls, from inside the question's own modal loop, for the question (a QMessageBox) and
+        answers Yes; closes whatever modal is up instead once the polls run out, so the click returns."""
         timer = QTimer()
         timer.setInterval(QUESTION_POLL_MS)
         polls = {"left": QUESTION_POLLS}
@@ -146,15 +147,17 @@ try:
             try:
                 polls["left"] -= 1
                 dialogs = [w for w in QApplication.topLevelWidgets()
-                           if w.isVisible() and gt.class_name(w) == "MessageBox"]
+                           if w.isVisible() and w.inherits("QMessageBox")]
                 if not dialogs:
                     if polls["left"] <= 0:
                         timer.stop()
+                        modal = QApplication.activeModalWidget()
+                        if modal is not None:
+                            modal.close()
                     return
                 timer.stop()
                 seen["question"] = True
-                boxes = dialogs[0].findChildren(QDialogButtonBox)
-                yes = boxes[0].button(QDialogButtonBox.Yes) if boxes else None
+                yes = dialogs[0].button(QMessageBox.Yes)
                 if yes is not None:
                     seen["yes"] = True
                     yes.click()

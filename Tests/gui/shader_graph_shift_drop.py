@@ -126,7 +126,7 @@ try:
         require(popup is not None, "a shift-drop on empty space opens the tab menu")
         context = tabtabtab_natron._plugin.context() or {}
         report("NOTE shift-drop menu targets %r" % (tuple(context.get("networkTargets") or ()),))
-        if not choose(line_edit, list_view, "closure", MIX):
+        if not choose(line_edit, list_view, "mix", MIX):
             sg.close_tab_menu(popup)
             return None
         ok = yield ("until", lambda: len(children_of(builder, MIX)) > before, sg.POLL_TIMEOUT_S)

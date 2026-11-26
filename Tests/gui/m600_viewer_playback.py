@@ -45,7 +45,8 @@ TOLERANCE = 1e-4
 
 try:
     import NatronEngine
-    from PySide6.QtCore import QTimer
+    from PySide6.QtCore import QPoint, QTimer
+    from PySide6.QtGui import QGuiApplication
     from PySide6.QtWidgets import QApplication, QWidget
 
     from guitest import check, finish, plugin_problem, report, require, run, shot, viewer_up
@@ -118,10 +119,14 @@ try:
 
     def flat_frame():
         # Grey is the background with nothing on it: one colour over a coarse grid of the frame.
+        # Read from the screen: the bundle has no QOpenGLWidget wrapper, and a widget grab of the
+        # GL view can come out blank under llvmpipe.
         v = view()
         if v is None:
             return True
-        image = v.grabFramebuffer()
+        QApplication.processEvents()
+        origin = v.mapToGlobal(QPoint(0, 0))
+        image = QGuiApplication.primaryScreen().grabWindow(0, origin.x(), origin.y(), v.width(), v.height()).toImage()
         if image.isNull() or image.width() < 2 or image.height() < 2:
             return True
         colours = set()
@@ -223,6 +228,8 @@ try:
         delay.setValue(0)
         try:
             count.setValue(SCATTER_COUNT)
+            # connectInput refuses an input that is already connected.
+            viewer.disconnectInput(0)
             require(viewer.connectInput(0, scatter), "connect the Viewer to the GeoScatter")
             ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
             require(ok, "the 3D view shows the scatter (%r)" % (prop("natronSceneError"),))

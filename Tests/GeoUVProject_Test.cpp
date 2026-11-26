@@ -375,7 +375,9 @@ TEST(GeoUVProject, PointGroupOnScatteredPointsWritesOnlyThosePoints)
     const GeoAttribute* numberedUV = numbered.findAttribute(eGeoAttribClassPoint, "uv");
     ASSERT_NE(nullptr, numberedUV);
     EXPECT_EQ(0.f, numberedUV->get<float>((std::size_t)first, 0));
-    EXPECT_NEAR(0.6, numberedUV->get<float>((std::size_t)(first + 2), 0), 1e-6);
+    EXPECT_NEAR(0.6, numberedUV->get<float>((std::size_t)(first + 1), 0), 1e-6);
+    EXPECT_NEAR(0.7, numberedUV->get<float>((std::size_t)(first + 2), 0), 1e-6);
+    EXPECT_EQ(0.f, numberedUV->get<float>((std::size_t)(first + 3), 0));
 }
 
 TEST(GeoUVProject, PrimitiveGroupSkipsFreePoints)

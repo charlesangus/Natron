@@ -138,6 +138,14 @@ try:
             parent = found
         return found
 
+    def ancestor_of_class(widget, name):
+        w = widget
+        while w is not None:
+            if w.metaObject().className().split("::")[-1] == name:
+                return w
+            w = w.parentWidget()
+        return None
+
     def row_menu(path, action_name):
         """Opens the row menu on path and triggers action_name."""
         def act():
@@ -252,6 +260,17 @@ try:
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
         require(ok, "the scene view shows the scene (%r)" % (prop("natronSceneError"),))
         require(panel() is not None, "the Scene Graph panel exists")
+
+        # A hidden panel defers reading its rows, and the default layout does not dock it. Dock it
+        # before the first frame so both foreground counts see the same viewport size.
+        home = ancestor_of_class(view(), "TabWidget")
+        require(home is not None, "the scene view is in a pane")
+        split = app.getTabWidget(home.objectName()).splitHorizontally()
+        require(split is not None, "split the viewer's pane")
+        require(app.moveTab("sceneGraph", split), "move the Scene Graph panel beside the viewer")
+        split = None
+        ok = yield ("until", lambda: panel().isVisible() and scene_drawn(), POLL_TIMEOUT_S)
+        require(ok, "the Scene Graph panel shows beside the drawn scene")
 
         state = {}
         sub = yield from open_renderer_submenu(state)

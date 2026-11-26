@@ -1523,10 +1523,10 @@ A node that overrides `offersRenderContinuation()` to return `true` is never pla
   memory its own pending inputs hold. The continuation then runs on the thread
   that renders the node, and both read the requested outputs as store hits
   with `pullRenderContinuationRequest()`.
-- **Legacy scheduler, frames the task graph does not take, unplanned pulls.**
+- **Frames the task graph does not take, unplanned pulls.**
   `renderRoI()` runs the probe inline, pulls each request one after the other
   on the probing thread, keeps the images for the render, then runs the
-  continuation. Both schedulers give bit-identical output.
+  continuation. Planned and direct pulls give bit-identical output.
 - **Lifetime.** The probe must not keep the images it reads past its return.
   Whatever the continuation captures lives until it has run or the render was
   dropped. An aborted frame drops its pending extension and never runs the

@@ -319,6 +319,18 @@ protected:
      **/
     void requestExecutionOnMainThread(const GenericThreadExecOnMainThreadArgsPtr& inArgs);
 
+    /**
+     * @brief Makes the current or next requestExecutionOnMainThread() call serviceWhileWaitingForMainThread()
+     * before it goes on waiting. Callable from any thread.
+     **/
+    void requestServiceWhileWaitingForMainThread();
+
+    /**
+     * @brief Called on this thread from within requestExecutionOnMainThread(), after
+     * requestServiceWhileWaitingForMainThread(), while the main thread has not finished the request.
+     **/
+    virtual void serviceWhileWaitingForMainThread() { }
+
 private:
 
     virtual void run() OVERRIDE FINAL;

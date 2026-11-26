@@ -107,6 +107,8 @@ struct GenericSchedulerThreadPrivate
     // Read by a main-thread abort waiter while it holds abortRequestedMutex, which must not be
     // nested with executingOnMainThreadMutex, hence an atomic rather than a protected field.
     std::atomic<bool> mainThreadRequestPending;
+    // Under executingOnMainThreadMutex.
+    bool serviceWhileWaitingRequested;
     QWaitCondition executingOnMainThreadCond;
     QMutex executingOnMainThreadMutex;
 
@@ -139,6 +141,7 @@ struct GenericSchedulerThreadPrivate
         , mainThreadRequestId(0)
         , mainThreadRequestArgs()
         , mainThreadRequestPending(false)
+        , serviceWhileWaitingRequested(false)
         , executingOnMainThreadCond()
         , executingOnMainThreadMutex()
         , blockingOperationWatcher()
@@ -692,8 +695,25 @@ GenericSchedulerThread::requestExecutionOnMainThread(const GenericThreadExecOnMa
 
     QMutexLocker processLocker(&_imp->executingOnMainThreadMutex);
     while (_imp->executingOnMainThread) {
+        if (_imp->serviceWhileWaitingRequested) {
+            _imp->serviceWhileWaitingRequested = false;
+            processLocker.unlock();
+            serviceWhileWaitingForMainThread();
+            processLocker.relock();
+            continue;
+        }
         _imp->executingOnMainThreadCond.wait(processLocker.mutex());
     }
+}
+
+void
+GenericSchedulerThread::requestServiceWhileWaitingForMainThread()
+{
+    QMutexLocker processLocker(&_imp->executingOnMainThreadMutex);
+
+    // Kept when nothing waits yet, so that a request made just before the wait starts is not lost.
+    _imp->serviceWhileWaitingRequested = true;
+    _imp->executingOnMainThreadCond.wakeOne();
 }
 
 bool

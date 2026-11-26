@@ -37,6 +37,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "Engine/BufferableObject.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Raw/RawDisplay.h"
 #include "Engine/OutputEffectInstance.h"
@@ -519,6 +520,48 @@ public:
                                      ViewerArgsPtr args[2],
                                      const ViewerCurrentFrameRequestSchedulerStartArgsPtr& request,
                                      const RenderStatsPtr& stats) WARN_UNUSED_RETURN;
+
+    struct PendingViewerRender;
+
+    /**
+     * @brief One playback frame of the A and B inputs, rendered without any thread waiting on the RenderScheduler:
+     * preparePlaybackFrame() runs on the scheduler thread and submits the inputs, finishPlaybackFrame() converts what
+     * they rendered once their futures finished.
+     **/
+    struct PlaybackFrame {
+        int time = 0;
+        ViewIdx view;
+        RenderStatsPtr stats;
+        U64 viewerHash = 0;
+        ViewerArgsPtr args[2];
+        bool inputRenders[2] = { false, false };
+        bool hadRender[2] = { false, false };
+        U64 renderAges[2] = { 0, 0 };
+        std::shared_ptr<PendingViewerRender> pending[2];
+        // An input that must render synchronously, which only finishPlaybackFrame() on the fallback worker may do.
+        bool deferred[2] = { false, false };
+        ViewerRenderRetCode ret[2] = { eViewerRenderRetCodeRedraw, eViewerRenderRetCodeRedraw };
+        std::vector<FrameFuturePtr> futures;
+        std::vector<AbortableRenderInfoPtr> futureAbortInfos;
+        // Those of every input that renders.
+        std::vector<AbortableRenderInfoPtr> abortInfos;
+        int futuresOutstanding = 0;
+        BufferableObjectPtrList toAppend;
+        bool failed = false;
+    };
+
+    enum PlaybackFrameStageEnum {
+        // Nothing is left to render: toAppend holds what to display.
+        ePlaybackFrameStageDone,
+        // finishPlaybackFrame() may run once every future finished.
+        ePlaybackFrameStageAwaitFutures,
+        // finishPlaybackFrame() must run on the fallback worker.
+        ePlaybackFrameStageFallback
+    };
+
+    PlaybackFrameStageEnum preparePlaybackFrame(PlaybackFrame* frame) WARN_UNUSED_RETURN;
+
+    void finishPlaybackFrame(PlaybackFrame& frame);
 
     ViewerRenderRetCode getViewerArgsAndRenderViewer(SequenceTime time,
                                                      bool canAbort,
@@ -1008,6 +1051,22 @@ private:
     /*******************************************/
 
     ViewerRenderRetCode evaluateSceneInput(ViewerArgs& inArgs) WARN_UNUSED_RETURN;
+
+    ViewerRenderRetCode prepareViewerRender(ViewIdx view,
+                                            bool singleThreaded,
+                                            bool isSequentialRender,
+                                            U64 viewerHash,
+                                            const NodePtr& rotoPaintNode,
+                                            bool useTLS,
+                                            const ViewerCurrentFrameRequestSchedulerStartArgsPtr& request,
+                                            const RenderStatsPtr& stats,
+                                            GpuPlacementSnapshotBuilder* placementBuilder,
+                                            ViewerArgs& inArgs,
+                                            PendingViewerRender* pending) WARN_UNUSED_RETURN;
+
+    ViewerRenderRetCode completeViewerRender(PendingViewerRender& pending) WARN_UNUSED_RETURN;
+
+    void finishPlaybackInput(PlaybackFrame& frame, int i);
 
     ViewerRenderRetCode renderViewer_internal(ViewIdx view,
                                               bool singleThreaded,

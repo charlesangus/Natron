@@ -1116,31 +1116,7 @@ public:
     typedef std::shared_ptr<NotifyRenderingStarted_RAII> NotifyRenderingStarted_RAIIPtr;
 
     /**
-     * @brief Sets render preferences for the rendering of a frame for the current thread.
-     * This is thread-local storage. This is NOT local to a call to renderRoI
-     **/
-    void setParallelRenderArgsTLS(double time,
-                                  ViewIdx view,
-                                  bool isRenderUserInteraction,
-                                  bool isSequential,
-                                  U64 nodeHash,
-                                  const AbortableRenderInfoPtr& abortInfo,
-                                  const NodePtr& treeRoot,
-                                  int visitsCount,
-                                  const NodeFrameRequestPtr& nodeRequest,
-                                  const OSGLContextPtr& glContext,
-                                  int textureIndex,
-                                  const TimeLine* timeline,
-                                  bool isAnalysis,
-                                  bool isDuringPaintStrokeCreation,
-                                  const NodesList& rotoPaintNodes,
-                                  RenderSafetyEnum currentThreadSafety,
-                                  PluginOpenGLRenderSupport currentOpenGLSupport,
-                                  bool draftMode,
-                                  const RenderStatsPtr& stats);
-
-    /**
-     * @brief The frame args setParallelRenderArgsTLS() would install, without installing them.
+     * @brief Frame args for the rendering of a frame, to install on the effect with a FrameArgsToken.
      **/
     ParallelRenderArgsPtr createParallelRenderArgs(double time,
                                                    ViewIdx view,
@@ -1167,23 +1143,24 @@ public:
      **/
     const TLSHolderBase* getTLSHolder() const;
 
-    void setDuringPaintStrokeCreationThreadLocal(bool duringPaintStroke);
-
-    void setNodeRequestThreadLocal(const NodeFrameRequestPtr & nodeRequest);
-
-    void setParallelRenderArgsTLS(const ParallelRenderArgsPtr & args);
+    /**
+     * @brief A copy of the current thread's frame args of the effect with isDuringPaintStrokeCreation set to
+     * duringPaintStroke; null when the thread has none.
+     **/
+    ParallelRenderArgsPtr copyFrameArgsDuringPaintStroke(bool duringPaintStroke) const;
 
     /**
-     *@returns whether the effect was flagged with canSetValue = true or false
+     * @brief Pushes copyFrameArgsDuringPaintStroke() for the token's lifetime; the token is empty when the thread
+     * has no frame args for the effect.
      **/
-    void invalidateParallelRenderArgsTLS();
+    FrameArgsToken setDuringPaintStrokeCreationThreadLocal(bool duringPaintStroke) WARN_UNUSED_RETURN;
 
     /**
-     * @brief Pops the frame args setParallelRenderArgsTLS() pushed last, leaving the rotopaint tree's alone.
+     * @brief The frame args of the effect on the current thread: the innermost a FrameArgsToken pushed for it on the
+     * thread's FrameArgsOverlay chain, else those of the frame the thread renders (the scheduler task's frame, or the
+     * innermost AppTLS::FrameContextScope's), else none. A lock-free walk of the chain; it creates no thread-local data.
      **/
-    void popParallelRenderArgsTLS();
-
-    ParallelRenderArgsPtr getParallelRenderArgsTLS() const;
+    ParallelRenderArgsPtr getFrameArgs() const;
 
     /**
      * @brief Whether the calling thread renders this node: its frame args are installed and are not
@@ -2476,7 +2453,7 @@ public:
      * scheduler the requests are planned by an incremental request pass, rendered as tasks in parallel under the
      * frame's budget, and continuation runs on the thread that then renders the effect, where it and the render
      * read the requested outputs with pullRenderContinuationRequest() as store hits. A request for an output the
-     * frame already holds over the region is served from it without a task. Under the legacy scheduler, on a frame
+     * frame already holds over the region is served from it without a task. On a frame
      * the task graph does not take, and for an effect pulled unplanned, the requests are rendered one after the
      * other on the probing thread, then continuation runs inline.
      *
@@ -3718,10 +3695,6 @@ public:
         std::list<bool> canSetValue;
 #endif
 
-        ///Recursive because it may be set recursively in such situation:
-        ///knobChanged : set ParallelRenderArgs TLS for analysis
-        ///timelineGoTo calls getRenderviewerArgs on the MT which overrides this TLS
-        std::list<ParallelRenderArgsPtr> frameArgs;
         EffectInstance::RenderArgs currentRenderArgs;
 
         std::vector<std::string> userLayerStrings;
@@ -3747,7 +3720,6 @@ public:
 #ifdef DEBUG
             , canSetValue()
 #endif
-            , frameArgs()
             , currentRenderArgs()
             , userLayerStrings()
             , resolvingLayersPassThrough(false)

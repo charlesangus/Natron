@@ -669,6 +669,7 @@ DockablePanel::onPageIndexChanged(int index)
             }
         }
     }
+    notifyForegroundChanged();
 }
 
 void
@@ -1134,11 +1135,12 @@ DockablePanel::setClosedInternal(bool c)
         _imp->_isClosed = c;
     }
 
-
-    if (_imp->_floating) {
-        floatPanel();
-
-        return;
+    if (_imp->_floating && c) {
+        // Docking the panel back would reopen it on top of the bin and could evict another panel.
+        releaseFloatingWindow();
+        if (_imp->_container) {
+            setParent(_imp->_container->parentWidget());
+        }
     }
 
     if (!c) {
@@ -1242,6 +1244,7 @@ DockablePanel::setClosedInternal(bool c)
         }
     }
 
+    notifyForegroundChanged();
     Q_EMIT closeChanged(c);
 } // DockablePanel::setClosedInternal
 
@@ -1303,6 +1306,7 @@ DockablePanel::minimizeOrMaximize(bool toggled)
         Q_EMIT maximized();
     }
     _imp->_rightContainer->setVisible(!_imp->_minimized);
+    notifyForegroundChanged();
     std::vector<QWidget*> _panels;
     for (int i = 0; i < _imp->_container->count(); ++i) {
         if ( QWidget * myItem = dynamic_cast <QWidget*>( _imp->_container->itemAt(i) ) ) {
@@ -1368,12 +1372,12 @@ DockablePanel::restoreMinimizedState(bool minimized)
 FloatingWidget*
 DockablePanel::floatPanel()
 {
-    _imp->_floating = !_imp->_floating;
     {
         QMutexLocker k(&_imp->_isClosedMutex);
         _imp->_isClosed = false;
     }
-    if (_imp->_floating) {
+    if (!_imp->_floating) {
+        _imp->_floating = true;
         assert(!_imp->_floatingWidget);
 
         QSize curSize = sizeHint();
@@ -1386,20 +1390,27 @@ DockablePanel::floatPanel()
         _imp->_floatingWidget->resize(curSize);
         _imp->_gui->registerFloatingWindow(_imp->_floatingWidget);
     } else {
-        assert(_imp->_floatingWidget);
-        _imp->_gui->unregisterFloatingWindow(_imp->_floatingWidget);
-        _imp->_floatingWidget->removeEmbeddedWidget();
-        //setParent( _imp->_container->parentWidget() );
-        //_imp->_container->insertWidget(0, this);
+        releaseFloatingWindow();
         _imp->_gui->addVisibleDockablePanel(this);
-        _imp->_floatingWidget->deleteLater();
-        _imp->_floatingWidget = 0;
     }
     Gui* gui = getGui();
     if (gui) {
         gui->buildTabFocusOrderPropertiesBin();
     }
+    notifyForegroundChanged();
+
     return _imp->_floatingWidget;
+}
+
+void
+DockablePanel::releaseFloatingWindow()
+{
+    assert(_imp->_floating && _imp->_floatingWidget);
+    _imp->_floating = false;
+    _imp->_gui->unregisterFloatingWindow(_imp->_floatingWidget);
+    _imp->_floatingWidget->removeEmbeddedWidget();
+    _imp->_floatingWidget->deleteLater();
+    _imp->_floatingWidget = 0;
 }
 
 void
@@ -1475,6 +1486,74 @@ bool
 DockablePanel::isFloating() const
 {
     return _imp->_floating;
+}
+
+bool
+DockablePanel::isInForeground() const
+{
+    if (isClosed() || isMinimized()) {
+        return false;
+    }
+    if (_imp->_floating) {
+        return true;
+    }
+    if (!_imp->_container) {
+        return false;
+    }
+    for (int i = 0; i < _imp->_container->count(); ++i) {
+        QLayoutItem* item = _imp->_container->itemAt(i);
+        DockablePanel* panel = item ? qobject_cast<DockablePanel*>(item->widget()) : 0;
+        if (panel && !panel->isHidden() && !panel->isClosed() && !panel->isMinimized()) {
+            return panel == this;
+        }
+    }
+
+    return false;
+}
+
+bool
+DockablePanel::isPageVisible(const KnobPagePtr& page) const
+{
+    if (!_imp->_tabWidget) {
+        return true;
+    }
+    if (!page) {
+        return false;
+    }
+    QWidget* current = _imp->_tabWidget->currentWidget();
+    if (!current) {
+        return false;
+    }
+    const PagesMap& pages = getPages();
+    PagesMap::const_iterator found = pages.find(page);
+
+    return found != pages.end() && found->second && found->second->tab == current;
+}
+
+bool
+DockablePanel::isKnobOnVisiblePage(const KnobIPtr& knob) const
+{
+    return knob && isPageVisible(knob->getTopLevelPage()) && areEnclosingTabsCurrent(knob);
+}
+
+bool
+DockablePanel::isWidgetOnVisiblePage(const QWidget* widget) const
+{
+    if (!widget || !_imp->_tabWidget || !_imp->_tabWidget->isAncestorOf(widget)) {
+        return true;
+    }
+    QWidget* current = _imp->_tabWidget->currentWidget();
+
+    return current && (current == widget || current->isAncestorOf(widget));
+}
+
+void
+DockablePanel::notifyForegroundChanged() const
+{
+    Gui* gui = getGui();
+    if (gui) {
+        gui->notifyPanelForegroundChanged();
+    }
 }
 
 bool

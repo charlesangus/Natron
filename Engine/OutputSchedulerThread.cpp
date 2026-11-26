@@ -1152,17 +1152,20 @@ OutputSchedulerThread::abortPendingFrameSteps()
 }
 
 void
-OutputSchedulerThread::postFinishedFrameStep(const FrameStepDone& done)
+OutputSchedulerThread::postFinishedFrameStep(FrameStepDone done)
 {
     {
         QMutexLocker l(&_imp->bufMutex);
 
-        _imp->finishedFrameSteps.push_back(done);
-        --_imp->nFrameStepsOutstanding;
+        _imp->finishedFrameSteps.push_back(std::move(done));
         _imp->wakeBufEmptyCondition();
     }
     // The display of a frame can keep this thread waiting for the main thread for longer than a frame takes.
     requestServiceWhileWaitingForMainThread();
+    // Only now: once no step is outstanding, stopRender() returns and this scheduler may be destroyed.
+    QMutexLocker l(&_imp->bufMutex);
+    --_imp->nFrameStepsOutstanding;
+    _imp->wakeBufEmptyCondition();
 }
 
 void
@@ -1181,15 +1184,30 @@ OutputSchedulerThread::awaitFrameFuture(const FrameFuturePtr& future,
         QMutexLocker l(&_imp->bufMutex);
         ++_imp->nFrameStepsOutstanding;
     }
-    // The callback may run on a pool thread, so it only hands done over to this thread.
-    future->onFinished([this, stepId, done](EffectInstance::RenderRoIRetCode /*retCode*/) {
+    // The callback may run on a pool thread, so it only hands done over to this thread. It hands its own copy over,
+    // since the future destroys the callback after it returned, by when this scheduler may be gone.
+    future->onFinished([this, stepId, done = FrameStepDone(done)](EffectInstance::RenderRoIRetCode /*retCode*/) mutable {
         {
             QMutexLocker l(&_imp->pendingStepsMutex);
             _imp->pendingSteps.erase(stepId);
         }
-        postFinishedFrameStep(done);
+        FrameStepDone posted;
+        posted.swap(done);
+        postFinishedFrameStep(std::move(posted));
     });
 }
+
+namespace {
+
+struct FrameStepState {
+    U64 id = 0;
+    std::vector<AbortableRenderInfoPtr> abortInfos;
+    std::function<void(bool skipped)> work;
+    std::function<void()> done;
+    const IsolatedJob* job = nullptr;
+};
+
+} // namespace
 
 std::function<void()>
 OutputSchedulerThread::makeFrameStep(const std::vector<AbortableRenderInfoPtr>& abortInfos,
@@ -1197,36 +1215,46 @@ OutputSchedulerThread::makeFrameStep(const std::vector<AbortableRenderInfoPtr>& 
                                      const FrameStepDone& done)
 {
     assert(QThread::currentThread() == this);
-    U64 stepId;
+    std::shared_ptr<FrameStepState> state = std::make_shared<FrameStepState>();
     {
         QMutexLocker l(&_imp->pendingStepsMutex);
-        stepId = _imp->nextStepId++;
+        state->id = _imp->nextStepId++;
         for (std::vector<AbortableRenderInfoPtr>::const_iterator it = abortInfos.begin(); it != abortInfos.end(); ++it) {
-            _imp->pendingSteps.insert(std::make_pair(stepId, *it));
+            _imp->pendingSteps.insert(std::make_pair(state->id, *it));
         }
     }
     {
         QMutexLocker l(&_imp->bufMutex);
         ++_imp->nFrameStepsOutstanding;
     }
-    const IsolatedJob* job = getRunningIsolatedJob();
+    state->abortInfos = abortInfos;
+    state->work = work;
+    state->done = done;
+    state->job = getRunningIsolatedJob();
 
-    return [this, stepId, abortInfos, work, done, job]() {
+    // The thread running the step destroys it once it returned, by when this scheduler may be gone: what work holds
+    // is released before the step ends, and done is handed over rather than copied.
+    return [this, state]() {
         try {
-            IsolatedJob::ThreadScope inJob(job);
+            IsolatedJob::ThreadScope inJob(state->job);
             bool aborted = false;
-            for (std::vector<AbortableRenderInfoPtr>::const_iterator it = abortInfos.begin(); it != abortInfos.end(); ++it) {
+            for (std::vector<AbortableRenderInfoPtr>::const_iterator it = state->abortInfos.begin(); it != state->abortInfos.end(); ++it) {
                 aborted |= *it && (*it)->isAborted();
             }
+            std::function<void(bool skipped)> work;
+            work.swap(state->work);
             work(aborted);
         } catch (...) {
             // done must run on every path, or stopRender() waits for this step forever.
         }
+        state->abortInfos.clear();
         {
             QMutexLocker l(&_imp->pendingStepsMutex);
-            _imp->pendingSteps.erase(stepId);
+            _imp->pendingSteps.erase(state->id);
         }
-        postFinishedFrameStep(done);
+        FrameStepDone posted;
+        posted.swap(state->done);
+        postFinishedFrameStep(std::move(posted));
     };
 }
 
@@ -2061,7 +2089,7 @@ DefaultScheduler::startWriterView(const std::shared_ptr<WriterFrame>& frame)
 
     if (!onWorker && runWriterView(*frame, false)) {
         awaitFrameFuture(frame->future, frame->abortInfo, [this, frame]() {
-            frame->retCode = frame->future->wait();
+            frame->retCode = frame->future->result();
             frame->renderingFlag.reset();
             frame->future.reset();
             finishWriterView(frame);

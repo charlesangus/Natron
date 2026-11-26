@@ -62,6 +62,7 @@
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
+#include "Engine/RenderScheduler.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/UpdateViewerParams.h"
@@ -611,6 +612,7 @@ TEST_F(SchedulerAbortLatency, ViewerPlaybackStartsNoFrameThreads)
     std::atomic<int> framesShown { 0 };
     QMetaObject::Connection onFrame = QObject::connect(engine.get(), &RenderEngine::frameRendered, engine.get(), [&framesShown](int /*time*/, double /*progress*/) { ++framesShown; }, Qt::DirectConnection);
     const int threadsBefore = OutputSchedulerThread::getFrameThreadsStartedForTests();
+    const int poolWaitsBefore = FrameFuture::getPoolThreadWaitsForTests();
     engine->renderFromCurrentFrame(false, std::vector<ViewIdx>(1, ViewIdx(0)), eRenderDirectionForward);
     const bool played = pumpUntil([&framesShown]() { return framesShown.load() >= 5; }, kWatchdogMs);
     engine->abortRenderingNoRestart();
@@ -620,6 +622,8 @@ TEST_F(SchedulerAbortLatency, ViewerPlaybackStartsNoFrameThreads)
     EXPECT_TRUE(played) << "only " << framesShown.load() << " frame(s) were displayed";
     EXPECT_TRUE(stopped) << "the playback did not stop once aborted";
     EXPECT_EQ(0, OutputSchedulerThread::getFrameThreadsStartedForTests() - threadsBefore);
+    // The pool threads that finish the frames read what the frames rendered without waiting for them.
+    EXPECT_EQ(0, FrameFuture::getPoolThreadWaitsForTests() - poolWaitsBefore);
 }
 
 // The current-frame scheduler, whose render runs on its backup thread in Task graph mode, aborted mid-render. The abort

@@ -396,7 +396,8 @@ private:
     void reseedAdmission(int fromTime, RenderDirectionEnum direction);
     void abortPendingFrameSteps();
     void stopAdmittedFrames();
-    void postFinishedFrameStep(const FrameStepDone& done);
+    // The last the ending step does with this scheduler, which stopRender() may let go of as soon as it returns.
+    void postFinishedFrameStep(FrameStepDone done);
 
     virtual void onAbortRequested(bool keepOldestRender) OVERRIDE FINAL;
     virtual void executeOnMainThread(const GenericThreadExecOnMainThreadArgsPtr& inArgs) OVERRIDE FINAL;

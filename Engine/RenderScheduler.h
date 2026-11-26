@@ -256,7 +256,16 @@ public:
      **/
     EffectInstance::RenderRoIRetCode wait();
 
+    // The calls to wait() made on a thread of the global pool, which debug builds also assert against.
+    static int getPoolThreadWaitsForTests();
+
     bool isFinished() const;
+
+    /**
+     * @brief The outcome of a frame that finished, without blocking, for the threads wait() is forbidden to:
+     * eRenderRoIRetCodeFailed before it finished.
+     **/
+    EffectInstance::RenderRoIRetCode result() const;
 
     /**
      * @brief What the root task rendered; empty unless the frame finished with eRenderRoIRetCodeOk.

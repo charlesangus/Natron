@@ -59,6 +59,7 @@
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Project.h"
+#include "Engine/RenderScheduler.h"
 #include "Engine/RenderStats.h"
 #include "Engine/ViewIdx.h"
 
@@ -494,4 +495,26 @@ TEST_F(NativeWriteRangeTest, WritesEveryFrameOfTheRangeWithoutUnplannedPulls)
     for (std::size_t i = 0; i < observed->size(); ++i) {
         EXPECT_EQ(0, (*observed)[i].unplannedPulls) << "frame " << (*observed)[i].time;
     }
+}
+
+// The pool thread that ends a frame is still in the writer's scheduler for a moment after the blocking render
+// returns; destroying the writer at once, again and again, gives a scheduler that let go of it too early the chance to
+// crash.
+TEST_F(NativeWriteRangeTest, DestroyingTheWriterRightAfterItsRenderIsSafe)
+{
+    const int kRounds = 30;
+    const int poolWaitsBefore = FrameFuture::getPoolThreadWaitsForTests();
+
+    for (int round = 0; round < kRounds; ++round) {
+        SCOPED_TRACE(round);
+        NodePtr writer = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE), PLUGIN_MAJOR_NATRON_WRITE);
+        ASSERT_TRUE(bool(writer));
+        connectNodes(_checker, writer, 0, true);
+        const std::string name = "teardown" + std::to_string(round);
+        setFile(writer, pathOf(name + ".####.exr"));
+        render(writer, 1, 2, 1);
+        EXPECT_TRUE(fileExists(numbered(name, 2)));
+        writer->destroyNode(true, false);
+    }
+    EXPECT_EQ(0, FrameFuture::getPoolThreadWaitsForTests() - poolWaitsBefore);
 }

@@ -4416,7 +4416,9 @@ ViewerInstance::completeViewerRender(PendingViewerRender& pending)
                     future = submitViewerFrameToRenderScheduler(frameArgs.get(), requestPassData, inArgs, bool(rotoPaintNode), view, splitRoi[rectIndex], requestedComponents, imageDepth, stats, _imp->uiContext, placementBuilder, true, &frameContext);
                 }
                 if (future) {
-                    retCode = future->wait();
+                    // A playback frame is completed on a pool thread, where wait() is forbidden, once its futures
+                    // finished; the fallback worker completes one whose other input it renders itself, and waits.
+                    retCode = future->isFinished() ? future->result() : future->wait();
                     if (placementBuilder) {
                         const std::unordered_set<const Node*> renderedNodes = frameContext ? frameContext->renderedNodes() : std::unordered_set<const Node*>();
                         placementBuilder->finishGraph(retCode, future->getRegionFallbacks(), frameContext ? &renderedNodes : nullptr);

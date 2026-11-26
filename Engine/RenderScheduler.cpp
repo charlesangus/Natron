@@ -97,9 +97,19 @@ FrameFuture::~FrameFuture()
 {
 }
 
+namespace {
+
+std::atomic<int> gPoolThreadWaits { 0 };
+
+} // namespace
+
 EffectInstance::RenderRoIRetCode
 FrameFuture::wait()
 {
+    if (QThreadPool::globalInstance()->contains(QThread::currentThread())) {
+        ++gPoolThreadWaits;
+        qWarning("RenderScheduler: a frame was waited for on a thread of the global pool, which may deadlock");
+    }
     assert(!QThreadPool::globalInstance()->contains(QThread::currentThread()));
 
     QMutexLocker k(&_mutex);
@@ -110,12 +120,32 @@ FrameFuture::wait()
     return _retCode;
 }
 
+int
+FrameFuture::getPoolThreadWaitsForTests()
+{
+    return gPoolThreadWaits.load();
+}
+
 bool
 FrameFuture::isFinished() const
 {
     QMutexLocker k(&_mutex);
 
     return _finished;
+}
+
+EffectInstance::RenderRoIRetCode
+FrameFuture::result() const
+{
+    QMutexLocker k(&_mutex);
+
+    if (!_finished) {
+        qWarning("RenderScheduler: the result of a frame was read before it finished");
+
+        return EffectInstance::eRenderRoIRetCodeFailed;
+    }
+
+    return _retCode;
 }
 
 std::map<ImageLayerDesc, ImagePtr>

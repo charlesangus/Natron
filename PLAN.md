@@ -229,7 +229,7 @@ future core work has solid ground to build on.
 | M402 | Geometry Loops | done | M180, M181, M190, M359, M360 |  | E22 | F18 | | [M402-geometry-loops.md](PLAN/MILESTONES/M402-geometry-loops.md) |
 | M403 | Geometry File Cache | done | M54, M359 |  | E22 | F18 | | [M403-geometry-file-cache.md](PLAN/MILESTONES/M403-geometry-file-cache.md) |
 | M404 | Geometry Solver | done | M402, M403 | | E22 | F18 | | [M404-geometry-solver.md](PLAN/MILESTONES/M404-geometry-solver.md) |
-| M615 | Geometry Loops UAT Round 1 | doing | - | bosley-executor | E22 | F18 | | [M615-geometry-loops-uat-round-1.md](PLAN/MILESTONES/M615-geometry-loops-uat-round-1.md) |
+| M615 | Geometry Loops UAT Round 1 | done | - | bosley-executor | E22 | F18 | | [M615-geometry-loops-uat-round-1.md](PLAN/MILESTONES/M615-geometry-loops-uat-round-1.md) |
 | M405 | Particle Solver Core | todo | M404, M359 |  | E22 | F19 | | [M405-particle-solver-core.md](PLAN/MILESTONES/M405-particle-solver-core.md) |
 | M406 | Particle Forces And Wrangle | todo | M405, M360 |  | E22 | F19 | | [M406-particle-forces-and-wrangle.md](PLAN/MILESTONES/M406-particle-forces-and-wrangle.md) |
 | M407 | Particle Collisions | todo | M405, M418 |  | E22 | F19 | | [M407-particle-collisions.md](PLAN/MILESTONES/M407-particle-collisions.md) |

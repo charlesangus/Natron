@@ -19,17 +19,17 @@ Fixes from the user's UAT of the F18 - Geometry Loops And Solver AppImage (2026-
 
 ## Phase 615.1: Loop blocks
 
-- [ ] M615.P1.T1 — Hulls and default loop names for geometry loops and solvers
+- [x] M615.P1.T1 — Hulls and default loop names for geometry loops and solvers
   - files: the image loop hull drawing and naming (M180), GeoForEachBegin/End, GeoSolverBegin/End
   - approach: register the geometry begin/end pairs with whatever the image loops use for hull drawing and default naming
   - verify: GUI script creates a For-Each and a Solver and checks the hull is drawn (screenshot) and each has a non-empty default loop name
   - size: M
-- [ ] M615.P1.T2 — Loop variables, drive from loop and the driven table
+- [x] M615.P1.T2 — Loop variables, drive from loop and the driven table
   - files: M181 loop drivers, GeoForEachEnd, GeoSolverEnd, the loop variable registry
   - approach: the Solver publishes every image-loop variable that has a meaning for it, plus its own; "Drive from loop" in a knob's menu works for knobs inside geometry loops/solvers; their End nodes carry the driven-from-loop table knob
   - verify: ctest for the solver's variables; GUI script drives a GeoTransform from the solver and from a For-Each via the menu and checks the table rows
   - size: L
-- [ ] M615.P1.T3 — Solver progress and cache visibility
+- [x] M615.P1.T3 — Solver progress and cache visibility
   - files: GeoSolverEnd's solve walk, the progress reporting used by long renders, the viewer timeline cache line
   - approach: the solve walk reports progress (frames solved of frames needed) through the existing progress UI, cancellable; solved frames held in the sim cache appear on the timeline cache line, and the viewer shows when it is serving a cached sim frame
   - verify: GUI script jumps ahead on a slow solver, sees progress and cancels it; checks the cache line marks the solved frames
@@ -37,7 +37,7 @@ Fixes from the user's UAT of the F18 - Geometry Loops And Solver AppImage (2026-
 
 ## Phase 615.2: GeoFile and GeoFileCache
 
-- [ ] M615.P2.T1 — Sequences, filters and frame handling
+- [x] M615.P2.T1 — Sequences, filters and frame handling
   - files: GeoFile, GeoFileCache, the file dialog sequence support Read uses
   - approach: GeoFile's file knob uses the same sequence-aware file dialog as Read, with `*.ngeo` as the default filter; GeoFileCache's dialog defaults to `*.ngeo`; GeoFile gets Read's frame handling knobs (first/last frame, before/after, offset, missing frames) with the same behaviour
   - verify: ctest for frame handling; GUI script opens each dialog and checks the filter and a sequence entry

@@ -228,7 +228,7 @@ future core work has solid ground to build on.
 | M363 | Geometry Display Extras | todo | M358, M376, M607 |  | E9 |  | | [M363-geometry-display-extras.md](PLAN/MILESTONES/M363-geometry-display-extras.md) |
 | M402 | Geometry Loops | done | M180, M181, M190, M359, M360 |  | E22 | F18 | | [M402-geometry-loops.md](PLAN/MILESTONES/M402-geometry-loops.md) |
 | M403 | Geometry File Cache | done | M54, M359 |  | E22 | F18 | | [M403-geometry-file-cache.md](PLAN/MILESTONES/M403-geometry-file-cache.md) |
-| M404 | Geometry Solver | doing | M402, M403 | bosley-executor | E22 | F18 | | [M404-geometry-solver.md](PLAN/MILESTONES/M404-geometry-solver.md) |
+| M404 | Geometry Solver | done | M402, M403 | | E22 | F18 | | [M404-geometry-solver.md](PLAN/MILESTONES/M404-geometry-solver.md) |
 | M405 | Particle Solver Core | todo | M404, M359 |  | E22 | F19 | | [M405-particle-solver-core.md](PLAN/MILESTONES/M405-particle-solver-core.md) |
 | M406 | Particle Forces And Wrangle | todo | M405, M360 |  | E22 | F19 | | [M406-particle-forces-and-wrangle.md](PLAN/MILESTONES/M406-particle-forces-and-wrangle.md) |
 | M407 | Particle Collisions | todo | M405, M418 |  | E22 | F19 | | [M407-particle-collisions.md](PLAN/MILESTONES/M407-particle-collisions.md) |
@@ -725,7 +725,7 @@ future core work has solid ground to build on.
 | F15 | Native Geometry | shipping | bosley-executor |  | feature/f15-native-geometry | A SOP-style native geometry context: a Houdini-like detail, bridges to USD, operators, Python and VEX-like wrangles, point editing and a geometry spreadsheet. |
 | F16 | User Knob Editor | shipping | bosley-executor | uat | feature/f16-user-knob-editor | Create and manage user knobs in place on the properties panel, with type changes, undo, button scripts, drag-in links and copy/paste. |
 | F17 | OpenNucleon Flag Day | open |  |  | feature/f17-opennucleon-flag-day | Rename Natron to OpenNucleon/Nucleon throughout, code included, with new art and the GPLv3 relicence, landed in one switchover at a quiet time the user chooses. |
-| F18 | Geometry Loops And Solver | open |  |  | feature/f18-geometry-loops-and-solver | Loop and solve native geometry: For-Each blocks on render contexts, a native geometry file cache, and a Solver SOP with a sim cache. |
+| F18 | Geometry Loops And Solver | shipping | bosley-executor |  | feature/f18-geometry-loops-and-solver | Loop and solve native geometry: For-Each blocks on render contexts, a native geometry file cache, and a Solver SOP with a sim cache. |
 | F19 | Particles | open |  |  | feature/f19-particles | A POP-style particle system on native geometry, with sources, forces, interaction, collisions, a GPU path and 2D image particles. Waits for F22 - Native VDB to land, for collisions. |
 | F20 | 2D Fluids | open |  |  | feature/f20-2d-fluids | Grid smoke and fire simulated in image space from image sources and motion vectors, with a shading node. |
 | F21 | Geometry Operators | open |  |  | feature/f21-geometry-operators | Houdini SOP operator batches: modeling, advanced modeling, attribute, deformer and time ops, PolyExtrude/Boolean/Fuse, and a Bezier curve primitive. |

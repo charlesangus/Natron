@@ -88,13 +88,13 @@ Delete the Legacy render scheduler mode (`renderSchedulerMode`, `Engine/Settings
   - verify: whole ctest plus `GraphScalingTLS_Test` end with zero mismatches, or every mismatch is listed and explained; the maximum depth on deep Loop and Group graphs is recorded in Decisions.
   - size: M
 
-- [ ] M199.P2.T5 — Flip reads to the chain, then delete the TLS list
+- [x] M199.P2.T5 — Flip reads to the chain, then delete the TLS list
   - files: `Engine/EffectInstance.h` (~3724,3750 `EffectTLSData::frameArgs`), `Engine/TLSHolderImpl.h` (~55-71,164-185), `Engine/TLSHolder.cpp` (the outermost-scope wipe must no longer be what clears frame args), `Engine/FrameRenderContext.*` (`getArgsForHolder`/`_argsByHolder` if unused), the shadow counter, `Tests/GraphScalingTLS_Test.cpp`, `Tests/FrameRenderContext_Test.cpp`
   - approach: the getter reads the chain only; remove `frameArgs`, the lazy fill, the copy-on-spawn and the shadow code; rewrite both suites to the chain model.
   - verify: `rg frameArgs Engine/EffectInstance.h Engine/TLSHolder*` is empty; whole ctest green incl. `GroupDirectRender_Test`, `Tests/Native/NativeLoop*`, `RenderContinuation_Test`; the scaling test shows no regression.
   - size: L
 
-- [ ] M199.P2.T6 — Rename `getParallelRenderArgsTLS` to `getFrameArgs`
+- [x] M199.P2.T6 — Rename `getParallelRenderArgsTLS` to `getFrameArgs`
   - files: callers from `rg -l getParallelRenderArgsTLS Engine Gui Tests` (`Engine/EffectInstance.*`, `ParallelRenderArgs.*`, `EffectInstanceRenderRoI.cpp`, `RenderScheduler.cpp`, `PyRFV.cpp`, `OfxEffectInstance.cpp`, `Node.cpp`, `Nodes/Loop/LoopBegin.cpp`, `Nodes/Loop/LoopEnd.cpp`, `Nodes/RFV/RFVSwitch.cpp`, `Nodes/Transform/SplineWarp/SplineWarp.cpp`)
   - approach: Mechanical rename, no behaviour change; update the doc comment.
   - verify: `rg getParallelRenderArgsTLS` is empty; `tools/ci/local/syntax-check.py` clean on the touched TUs; whole ctest green.
@@ -144,3 +144,4 @@ Delete the Legacy render scheduler mode (`renderSchedulerMode`, `Engine/Settings
 - 2026-11-25 — **Frame-args design (user, after a six-design comparison):** a per-thread immutable overlay chain (design 2), scheduler tasks installing their context as the chain base; renders do not install a FrameRenderContext of their own (the planned design hid ContextFrameArgsScope's keyed pushes and would race on the shared context). Explicit argument passing can't be the end state: OFX callbacks and Python reach the host with no render handle, so a per-thread lookup must exist. Phase 2 re-sliced into T2 primitive, T3 one scoped push API, T4 shadow-compare, T5 flip and delete, T6 rename. Follow-up for making every render a scheduler task (design 6) filed to the inbox.
 - 2026-11-25 (PM) — Phase 1 + P2.T1 green: m199-gate4b (debug, full ctest, 59e99c805) after fixing the inverted render-helper ternaries from P1.T3 and the SchedulerEquivalence reference count. Starting P2.T2-T4 as one unit.
 - 2026-11-26 (PM) — P2.T2-T4 done (c9a3e359d, 1bf470ed3). m199-gate6 (debug, full ctest, 978/978) ran with 0 shadow mismatches and 0 out-of-order pops; maxDepth=2 on the Grade chain. The 19 mismatches on gate5 were real: the old list kept the outer frame's args in nested task frames (now follows them), and three tests used softCopy without the chain (softCopy is now private). Starting P2.T5-T6. The max depth on deep Loop/Group graphs is recorded with T5.
+- 2026-11-25 (PM) — P2.T5-T6 done (6e44299bc3); m199-gate7 (debug --tests, task-graph) 978/978. The remaining `frameArgs` hits in EffectInstance.h are parameter names, not the TLS list. Chain depth: nested loops 2x3 maxDepth=5 direct / 3 scheduled, nested groups (8) 2 / 2, Grade chain (50) 2; no out-of-order pops. Phase 199.3 dispatched as one unit.

@@ -50,6 +50,7 @@
 #include <vector>
 
 #include <dirent.h>
+#include <signal.h>
 #include <unistd.h>
 
 #include <gtest/gtest.h>
@@ -107,9 +108,15 @@
 #include "RenderBothWays.h"
 #include "RenderSettingsTestUtils.h"
 #include "Tests/Native/NativeGolden.h"
+#include "Tests/Scene/MoonRayTestProcesses.h"
+#include "Tests/TestWatchdog.h"
 #include "ofxNatron.h"
 
 NATRON_NAMESPACE_USING
+
+using MoonRayTestProcesses::execCompChildren;
+using MoonRayTestProcesses::RenderProcessStopper;
+using MoonRayTestProcesses::ScopedEnv;
 
 /*
  * Renders of Tests/fixtures/scene-moonray.usda through a USDRender set to MoonRay, headless,
@@ -248,46 +255,6 @@ pixelSamples(int samples)
     return settings;
 }
 
-// The ids of this process's children named execComp: the processes Arras renders in.
-std::vector<int>
-execCompChildren()
-{
-    std::vector<int> children;
-    DIR* proc = ::opendir("/proc");
-    if (!proc) {
-        return children;
-    }
-    const int self = (int)::getpid();
-    while (struct dirent* entry = ::readdir(proc)) {
-        const int pid = std::atoi(entry->d_name);
-        if (pid <= 0) {
-            continue;
-        }
-        std::ifstream stat(std::string("/proc/") + entry->d_name + "/stat");
-        std::string line;
-        if (!std::getline(stat, line)) {
-            continue;
-        }
-        // pid (comm) state ppid ...
-        const std::string::size_type open = line.find('(');
-        const std::string::size_type close = line.rfind(')');
-        if ((open == std::string::npos) || (close == std::string::npos)) {
-            continue;
-        }
-        const std::string comm = line.substr(open + 1, close - open - 1);
-        std::istringstream rest(line.substr(close + 1));
-        std::string state;
-        int ppid = 0;
-        rest >> state >> ppid;
-        if ((ppid == self) && (comm == "execComp") && (state != "Z")) {
-            children.push_back(pid);
-        }
-    }
-    ::closedir(proc);
-
-    return children;
-}
-
 int
 threadCount(int pid)
 {
@@ -333,17 +300,28 @@ class USDRenderMoonRayTest
 protected:
     virtual void SetUp() OVERRIDE
     {
+        _watchdog.start();
+        TestWatchdog::setPhase("setup");
         BaseTest::SetUp();
         HydraRender::setRendererSettings(kMoonRayRendererId, pixelSamples(2));
+        TestWatchdog::setPhase("test body");
     }
 
     virtual void TearDown() OVERRIDE
     {
+        _watchdog.start();
+        TestWatchdog::setPhase("teardown: renderer settings");
         HydraRender::setRendererSettings(kMoonRayRendererId, std::map<std::string, PXR_NS::VtValue>());
+        TestWatchdog::setPhase("teardown: release cpu engines");
         HydraRender::releaseAllCpuEngines();
+        TestWatchdog::setPhase("teardown: release scene queries");
         SceneQueryPool::instance().releaseIdle();
+        TestWatchdog::setPhase("teardown: base");
         BaseTest::TearDown();
+        _watchdog.stop();
     }
+
+    TestWatchdog _watchdog;
 
     template <typename KNOB>
     static KNOB* knob(const NodePtr& node,
@@ -419,7 +397,9 @@ protected:
         if (keepEngine) {
             appPTR->clearAllCaches();
         }
+        TestWatchdog::setPhase("render");
         const bool ok = renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), allPlanes(), planes, &error, !keepEngine);
+        TestWatchdog::setPhase("test body");
         EXPECT_TRUE(ok) << error;
         if (!ok) {
             return false;
@@ -596,7 +576,9 @@ TEST_F(USDRenderMoonRayTest, AbortEndsTheRenderProcessPromptly)
     };
     HydraRender::Result result;
     std::string error;
+    TestWatchdog::setPhase("render until abort");
     EXPECT_FALSE(HydraRender::render(request, &result, &error));
+    TestWatchdog::setPhase("abort shutdown");
     ASSERT_TRUE(abortSeen) << "the render ended before it was aborted: " << error;
     EXPECT_NE(std::string::npos, error.find("cancelled")) << error;
     const std::chrono::milliseconds kShutdownBound(2500);
@@ -606,6 +588,54 @@ TEST_F(USDRenderMoonRayTest, AbortEndsTheRenderProcessPromptly)
     const double seconds = std::chrono::duration<double>(Clock::now() - abortedAt).count();
     EXPECT_LT(seconds, std::chrono::duration<double>(kShutdownBound).count());
     EXPECT_TRUE(execCompChildren().empty());
+    HydraRender::release(&owner);
+}
+
+// A MoonRay session whose render process stops answering mid-render cannot hold the render: once
+// its progress has held still for NATRON_DELEGATE_STALL_S the engine is made again, and when the
+// next session's progress holds still as long, the render fails and says why. Each execComp the
+// render starts is stopped once its session is rendering, and continued once the render has
+// returned, so that its session's shutdown can end it. The startup bound stays long: a session
+// slow to start on a loaded runner must not meet it before its process is stopped.
+TEST_F(USDRenderMoonRayTest, ARenderProcessThatStopsAnsweringFailsTheRender)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const int kStallSeconds = 3;
+    // Two sessions' start and first frame on a loaded runner, and the engine's remaking.
+    const std::chrono::seconds kSlack(60);
+    const std::chrono::seconds kReapBound(15);
+    const int kStartupStallSeconds = 120;
+    const ScopedEnv stallBound("NATRON_DELEGATE_STALL_S", std::to_string(kStallSeconds).c_str());
+    const ScopedEnv startupStallBound("NATRON_DELEGATE_STARTUP_STALL_S", std::to_string(kStartupStallSeconds).c_str());
+    // Enough samples that the frame is still rendering when its process is stopped.
+    HydraRender::setRendererSettings(kMoonRayRendererId, pixelSamples(4096));
+    NodePtr reader;
+    NodePtr node = createGraph(kFixture, &reader);
+    ASSERT_TRUE(bool(node));
+    static const int owner = 0;
+    HydraRender::Request request;
+    ASSERT_TRUE(moonRayRequest(reader, &owner, &request));
+
+    RenderProcessStopper stopper(kReapBound);
+    HydraRender::Result result;
+    std::string error;
+    TestWatchdog::setPhase("render until the stall bound");
+    typedef std::chrono::steady_clock Clock;
+    const Clock::time_point start = Clock::now();
+    const bool rendered = HydraRender::render(request, &result, &error);
+    const double seconds = std::chrono::duration<double>(Clock::now() - start).count();
+    const std::vector<int> wereStopped = stopper.stopNoMore();
+
+    EXPECT_FALSE(rendered) << "the render finished before its render process was stopped";
+    EXPECT_NE(std::string::npos, error.find("stopped answering")) << error;
+    // The first session's process, then the one its engine was made again with.
+    EXPECT_EQ(2u, wereStopped.size());
+    EXPECT_LT(seconds, 2. * kStallSeconds + std::chrono::duration<double>(kSlack).count());
+
+    TestWatchdog::setPhase("stopped render processes exit");
+    EXPECT_TRUE(stopper.continueAndReap()) << "a stopped render process outlived its session";
     HydraRender::release(&owner);
 }
 
@@ -1621,6 +1651,7 @@ protected:
 
     virtual void TearDown() OVERRIDE
     {
+        TestWatchdog::setPhase("teardown: live textures");
         LiveTextureStore::instance().clear();
         USDRenderMoonRayTest::TearDown();
     }

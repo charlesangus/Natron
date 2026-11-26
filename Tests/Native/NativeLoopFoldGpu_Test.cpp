@@ -154,14 +154,10 @@ protected:
     {
         BaseTest::SetUp();
         getApp()->getProject()->reset(false, true);
-        _savedMode = appPTR->getRenderSchedulerMode();
-        // LoopEnd folds as tasks, and so renders on the GPU, only under the task graph.
-        appPTR->setRenderSchedulerMode(eRenderSchedulerModeTaskGraph);
     }
 
     virtual void TearDown() OVERRIDE
     {
-        appPTR->setRenderSchedulerMode(_savedMode);
         getApp()->getProject()->reset(false, true);
         BaseTest::TearDown();
     }
@@ -261,9 +257,6 @@ protected:
 
         return node;
     }
-
-private:
-    RenderSchedulerModeEnum _savedMode = eRenderSchedulerModeTaskGraph;
 };
 
 // Every operation, in both orders, folds the five iterations of a pattern on the GPU as the CPU does. Min and max

@@ -416,26 +416,20 @@ setForceCaching(const NodePtr& node,
 
 // The caches are emptied on entry and on exit, so every render under it reaches render() and no
 // cached image outlives the test.
-class LegacyModeGuard {
+class CacheClearScope {
 public:
-    LegacyModeGuard()
-        : _saved(appPTR->getRenderSchedulerMode())
+    CacheClearScope()
     {
-        appPTR->setRenderSchedulerMode(eRenderSchedulerModeLegacy);
         appPTR->clearAllCaches();
     }
 
-    ~LegacyModeGuard()
+    ~CacheClearScope()
     {
-        appPTR->setRenderSchedulerMode(_saved);
         appPTR->clearAllCaches();
     }
 
-    LegacyModeGuard(const LegacyModeGuard&) = delete;
-    LegacyModeGuard& operator=(const LegacyModeGuard&) = delete;
-
-private:
-    RenderSchedulerModeEnum _saved;
+    CacheClearScope(const CacheClearScope&) = delete;
+    CacheClearScope& operator=(const CacheClearScope&) = delete;
 };
 
 struct CachedRender {
@@ -756,7 +750,7 @@ protected:
         ASSERT_TRUE(setForceCaching(node, true)) << caseName;
         {
             DisableUnreachableRAMPurging noPurge;
-            LegacyModeGuard legacy;
+            CacheClearScope clearCaches;
 
             const CachedRender first = renderCached(node, window, AbortableRenderInfo::create(false, 0));
             expectCachedImage(first, window, reference[0].pixels, caseName + ", first window");
@@ -783,7 +777,7 @@ TEST_F(NativeDirectOutputTest, CachedRenderHandsTheEffectTheCachedImage)
 
     const RectI window(7, 5, 44, 34);
     DisableUnreachableRAMPurging noPurge;
-    LegacyModeGuard legacy;
+    CacheClearScope clearCaches;
     DirectOutputProbeLog::reset();
 
     const CachedRender render = renderCached(probe, window, AbortableRenderInfo::create(false, 0));
@@ -801,7 +795,7 @@ TEST_F(NativeDirectOutputTest, EffectThatMayWriteOutsideTheWindowGetsATemporary)
 
     const RectI window(7, 5, 44, 34);
     DisableUnreachableRAMPurging noPurge;
-    LegacyModeGuard legacy;
+    CacheClearScope clearCaches;
     DirectOutputProbeLog::reset();
 
     const CachedRender render = renderCached(probe, window, AbortableRenderInfo::create(false, 0));
@@ -821,7 +815,7 @@ TEST_F(NativeDirectOutputTest, AbortedDirectRenderIsRenderedAgain)
 
     const RectI window(7, 5, 44, 34);
     DisableUnreachableRAMPurging noPurge;
-    LegacyModeGuard legacy;
+    CacheClearScope clearCaches;
     DirectOutputProbeLog::reset();
 
     AbortableRenderInfoPtr abortedRender = AbortableRenderInfo::create(true, 0);
@@ -860,7 +854,7 @@ expectUnsuccessfulRenderIsRenderedAgain(const NodePtr& probe,
 
     const RectI window(7, 5, 44, 34);
     DisableUnreachableRAMPurging noPurge;
-    LegacyModeGuard legacy;
+    CacheClearScope clearCaches;
     DirectOutputProbeLog::reset();
 
     if (how == eUnsuccessfulRenderFails) {
@@ -1010,7 +1004,7 @@ TEST_F(NativeDirectOutputTest, ConcurrentDisjointWindowsOfOneCachedNode)
 
     ASSERT_TRUE(setForceCaching(grade, true));
     DisableUnreachableRAMPurging noPurge;
-    LegacyModeGuard legacy;
+    CacheClearScope clearCaches;
 
     for (int iteration = 0; iteration < 8; ++iteration) {
         appPTR->clearAllCaches();

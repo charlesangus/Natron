@@ -26,6 +26,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -102,12 +103,29 @@ public:
         eKnobsEnumerationInvert
     };
 
+    /**
+     * @brief Fills the frame the knobs' transform applies in, at time, in canonical coordinates.
+     * Returns false when it is the identity.
+     **/
+    typedef std::function<bool(double time, Transform::Matrix3x3* frame)> FrameGetter;
+
     HostOverlayKnobsTransform()
         : HostOverlayKnobs() {}
 
     virtual ~HostOverlayKnobsTransform() {}
 
+    void setFrameGetter(const FrameGetter& getter)
+    {
+        _frameGetter = getter;
+    }
+
+    const FrameGetter& getFrameGetter() const
+    {
+        return _frameGetter;
+    }
+
 private:
+    FrameGetter _frameGetter;
 
     virtual void describeOverlayKnobs() OVERRIDE FINAL;
 };

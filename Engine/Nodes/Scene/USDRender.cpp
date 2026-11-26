@@ -1264,6 +1264,7 @@ USDRender::prepareRender(double time,
 
         return true;
     }
+    RenderSettingsPrim::addDomeLightCameraVisibility(stage, RenderSettingsPrim::domeLights(stage), active.time, &setup->request.settings);
     const double aspect = (format.width() * par) / format.height();
     if (!HydraRender::cameraFrustum(stage, cameraPath, active.time, aspect, fit, &setup->request.frustum, error)) {
         return false;

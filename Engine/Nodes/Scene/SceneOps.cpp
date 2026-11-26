@@ -2812,6 +2812,35 @@ beginPrimDefinition(const SceneStage& stage,
     return beginPrimDefinition(prim);
 }
 
+ScenePrimElements
+readPrimElements(const ScenePrimElementsStageReader& readStage,
+                 const std::string& primPath,
+                 double frame,
+                 double framesPerSecond,
+                 const std::atomic<bool>* cancelled)
+{
+    ScenePrimElementsRead read(primPath, frame, framesPerSecond);
+    ScenePrimElements result;
+    bool more = true;
+
+    while (more) {
+        if (cancelled && cancelled->load()) {
+            result.status = eScenePrimElementsStatusCancelled;
+
+            return result;
+        }
+        if (!readStage([&](const SceneStage* stage) { more = read.step(stage); })) {
+            result.status = eScenePrimElementsStatusCancelled;
+
+            return result;
+        }
+    }
+    result.status = read.getStatus();
+    result.source = read.takeSource();
+
+    return result;
+}
+
 void
 flattenPropertyInto(const PXR_NS::UsdStageRefPtr& definition,
                     const SceneStage& stage,

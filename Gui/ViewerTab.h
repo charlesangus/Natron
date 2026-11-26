@@ -495,6 +495,9 @@ public Q_SLOTS:
     void onSetDownPlaybackButtonsTimeout();
 
     void onViewerStaleChanged(bool stale);
+    void onSceneOutOfDateChanged(bool outOfDate);
+    // Feeds the timing the viewer's staleness, or'ed with the 3D view's while it is shown.
+    void applyStaleCueInput();
     void onStaleCueTimeout();
     // Pushes the timing's visibility to the selected style and re-arms the timer at its next deadline.
     void refreshStaleCue();
@@ -575,6 +578,14 @@ private:
 
     // The fps playback runs at: the input's or the project's while the fps is locked.
     double getLockedFps() const;
+
+    /**
+     * @brief Hands the scene the viewer last evaluated for A to the scene view at @p frame. With
+     * @p onlyNewGeometry, geometry is handed over only when the viewer has geometry evaluated at
+     * @p frame it has not shown yet, so the frames playback evaluates ahead wait for the timeline.
+     **/
+    void showEvaluatedScene(int frame,
+                            bool onlyNewGeometry);
 
     void abortViewersAndRefresh();
 

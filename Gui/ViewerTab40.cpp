@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <stdexcept>
 
 #include <QDebug>
@@ -1181,25 +1182,17 @@ ViewerTab::onSyncViewersButtonPressed(bool clicked)
 void
 ViewerTab::zoomIn()
 {
-    double factor = _imp->viewer->getZoomFactor();
-
-    factor *= 1.1;
-    factor *= 100;
-    _imp->viewer->zoomSlot(factor);
-    QString text = QString::number( std::floor(factor + 0.5) ) + QLatin1Char('%');
-    _imp->zoomCombobox->setCurrentText_no_emit(text);
+    _imp->viewer->stepZoomPresets(1, QPointF(_imp->viewer->width() / 2., _imp->viewer->height() / 2.));
+    // A step at the zoom bound reports nothing, and picking + from the menu would otherwise leave
+    // that entry shown.
+    updateZoomComboBox(std::max(1, (int)std::lround(100 * _imp->viewer->getZoomFactor())));
 }
 
 void
 ViewerTab::zoomOut()
 {
-    double factor = _imp->viewer->getZoomFactor();
-
-    factor *= 0.9;
-    factor *= 100;
-    _imp->viewer->zoomSlot(factor);
-    QString text = QString::number( std::floor(factor + 0.5) ) + QLatin1Char('%');
-    _imp->zoomCombobox->setCurrentText_no_emit(text);
+    _imp->viewer->stepZoomPresets(-1, QPointF(_imp->viewer->width() / 2., _imp->viewer->height() / 2.));
+    updateZoomComboBox(std::max(1, (int)std::lround(100 * _imp->viewer->getZoomFactor())));
 }
 
 void

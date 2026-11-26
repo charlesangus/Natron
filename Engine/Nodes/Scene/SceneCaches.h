@@ -73,6 +73,13 @@ void releaseRenderEnginesGpuMemory();
 void releaseCpuRenderEngines();
 
 /**
+ * @brief The same, waiting up to timeoutMs for the engines to be gone: for the end of the process,
+ * which would otherwise cut short a delegate's teardown, such as MoonRay's stopping of its render
+ * process. False if they were not gone by then. MT-safe.
+ **/
+bool releaseCpuRenderEnginesAndWait(int timeoutMs);
+
+/**
  * @brief Waits up to timeoutMs for the viewers' background render workers that outlived their
  * viewer to end: they stop their delegates on their own, after the viewer has gone. False, with a
  * warning, if some still run then. MT-safe.

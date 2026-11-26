@@ -213,6 +213,38 @@ AbortableThread::getAbortInfo(bool* isRenderResponseToUserInteraction,
     return true;
 }
 
+ScopedThreadAbortInfo::ScopedThreadAbortInfo(bool isRenderResponseToUserInteraction,
+                                             const AbortableRenderInfoPtr& abortInfo,
+                                             const EffectInstancePtr& treeRoot)
+    : _thread(dynamic_cast<AbortableThread*>(QThread::currentThread()))
+    , _hadPrevious(false)
+    , _previousIsRenderResponseToUserInteraction(false)
+    , _previousAbortInfo()
+    , _previousTreeRoot()
+{
+    if (!_thread) {
+        return;
+    }
+    AbortableRenderInfoPtr previousAbortInfo;
+    EffectInstancePtr previousTreeRoot;
+    _hadPrevious = _thread->getAbortInfo(&_previousIsRenderResponseToUserInteraction, &previousAbortInfo, &previousTreeRoot);
+    _previousAbortInfo = previousAbortInfo;
+    _previousTreeRoot = previousTreeRoot;
+    _thread->setAbortInfo(isRenderResponseToUserInteraction, abortInfo, treeRoot);
+}
+
+ScopedThreadAbortInfo::~ScopedThreadAbortInfo()
+{
+    if (!_thread) {
+        return;
+    }
+    // Unregisters the scope's render from the thread before the previous one goes back.
+    _thread->clearAbortInfo();
+    if (_hadPrevious) {
+        _thread->setAbortInfo(_previousIsRenderResponseToUserInteraction, _previousAbortInfo.lock(), _previousTreeRoot.lock());
+    }
+}
+
 // We patched Qt to be able to derive QThreadPool to control the threads that are spawned to improve performances
 // of the EffectInstance::aborted() function
 #ifdef QT_CUSTOM_THREADPOOL

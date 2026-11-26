@@ -38,6 +38,9 @@ HEADLIGHT = 2
 HUD_MARGIN = 28
 UTILITY_ID = "HdNatronUtilityRendererPlugin"
 STORM_ID = "HdStormRendererPlugin"
+# USDRead's Initial Draw options. Its default, BBox, draws each top-level prim as a box, which no colour
+# count or renderer frame here could tell apart; Full draws the prims themselves.
+INITIAL_DRAW = ["bbox", "levels", "toKind", "full", "fullLoad"]
 # Pixels of a colour below this count are noise (antialiasing, the HUD).
 MIN_PIXELS = 40
 HEAVY_GRID = 1000
@@ -192,6 +195,8 @@ try:
     usd = app.createNode("USDRead")
     require(usd is not None, "create USDRead", plugin_problem("USDRead"))
     usd.setPosition(0, 0)
+    require(usd.getParam("initialDraw") is not None, "USDRead has an initialDraw parameter")
+    usd.getParam("initialDraw").setValue(INITIAL_DRAW.index("full"))
     usd.getParam("filename").setValue(scene_path)
     viewer = app.getNode("Viewer1")
     if viewer is None:
@@ -634,6 +639,7 @@ try:
         textured = app.createNode("USDRead")
         require(textured is not None, "create a USDRead for the textured card", plugin_problem("USDRead"))
         textured.setPosition(300, 0)
+        textured.getParam("initialDraw").setValue(INITIAL_DRAW.index("full"))
         textured.getParam("filename").setValue(stage_path)
         checker = app.createNode("CheckerBoard")
         require(checker is not None, "create CheckerBoard", plugin_problem("CheckerBoard"))

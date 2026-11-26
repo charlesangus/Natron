@@ -41,6 +41,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
@@ -214,6 +215,84 @@ TEST_F(ShaderPromoteTest, ALinkedKnobStaysDisabledWhenItsPortIsDisconnected)
     bsdf->disconnectInput(input);
     for (int i = 0; i < knob->getDimension(); ++i) {
         EXPECT_FALSE(knob->isEnabled(i)) << i;
+    }
+}
+
+TEST_F(ShaderPromoteTest, ALinkedShaderKnobSurvivesASaveAndLoadAlongsideItsPort)
+{
+    ProjectPtr project = getApp()->getProject();
+    NodePtr master = create(kPrincipledBsdf);
+    NodePtr bsdf = create(kPrincipledBsdf);
+    NodePtr texture = create(kImageTexture);
+
+    ASSERT_TRUE(master && bsdf && texture);
+    const int input = bsdf->getInputNumberFromLabel("base_color");
+    ASSERT_GE(input, 0);
+    KnobColorPtr masterKnob = std::dynamic_pointer_cast<KnobColor>(master->getKnobByName("base_color"));
+    KnobColorPtr knob = std::dynamic_pointer_cast<KnobColor>(bsdf->getKnobByName("base_color"));
+    ASSERT_TRUE(masterKnob != nullptr);
+    ASSERT_TRUE(knob != nullptr);
+    const int dims = knob->getDimension();
+    ASSERT_GE(dims, 3);
+
+    ASSERT_TRUE(knob->linkTo(-1, masterKnob, -1));
+    masterKnob->setValue(0.125, ViewSpec::all(), 0);
+    masterKnob->setValue(0.5, ViewSpec::all(), 1);
+    masterKnob->setValue(0.75, ViewSpec::all(), 2);
+    ASSERT_TRUE(bsdf->connectInput(texture, input));
+    for (int i = 0; i < dims; ++i) {
+        ASSERT_TRUE(bool(knob->getLinkGroup(i))) << i;
+        ASSERT_FALSE(knob->isEnabled(i)) << i;
+    }
+
+    const std::string masterName = master->getScriptName();
+    const std::string bsdfName = bsdf->getScriptName();
+    const std::string textureName = texture->getScriptName();
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    std::string yaml;
+    ASSERT_TRUE(saveProjectBundle(project, tmp, QString::fromUtf8("linkedshader.ntpz"), &yaml));
+
+    masterKnob.reset();
+    knob.reset();
+    master.reset();
+    bsdf.reset();
+    texture.reset();
+    project->reset(false, true);
+
+    ASSERT_TRUE(project->loadProject(tmp.path() + QLatin1Char('/'), QString::fromUtf8("linkedshader.ntpz")));
+    NodePtr master2 = getApp()->getNodeByFullySpecifiedName(masterName);
+    NodePtr bsdf2 = getApp()->getNodeByFullySpecifiedName(bsdfName);
+    NodePtr texture2 = getApp()->getNodeByFullySpecifiedName(textureName);
+    ASSERT_TRUE(master2 && bsdf2 && texture2);
+    KnobColorPtr masterKnob2 = std::dynamic_pointer_cast<KnobColor>(master2->getKnobByName("base_color"));
+    KnobColorPtr knob2 = std::dynamic_pointer_cast<KnobColor>(bsdf2->getKnobByName("base_color"));
+    ASSERT_TRUE(masterKnob2 != nullptr);
+    ASSERT_TRUE(knob2 != nullptr);
+    const int input2 = bsdf2->getInputNumberFromLabel("base_color");
+    ASSERT_GE(input2, 0);
+    EXPECT_EQ(texture2, bsdf2->getInput(input2));
+
+    const double expected[3] = { 0.125, 0.5, 0.75 };
+    for (int i = 0; i < 3; ++i) {
+        ASSERT_TRUE(bool(masterKnob2->getLinkGroup(i))) << i;
+        EXPECT_TRUE(masterKnob2->getLinkGroup(i) == knob2->getLinkGroup(i)) << i;
+        EXPECT_TRUE(masterKnob2->isLinked(i)) << i;
+        EXPECT_TRUE(knob2->isLinked(i)) << i;
+        EXPECT_DOUBLE_EQ(expected[i], masterKnob2->getValue(i)) << i;
+        EXPECT_DOUBLE_EQ(expected[i], knob2->getValue(i)) << i;
+        EXPECT_FALSE(knob2->isEnabled(i)) << i;
+        EXPECT_TRUE(masterKnob2->isEnabled(i)) << i;
+    }
+
+    masterKnob2->setValue(0.875, ViewSpec::all(), 1);
+    EXPECT_DOUBLE_EQ(0.875, knob2->getValue(1));
+
+    bsdf2->disconnectInput(input2);
+    for (int i = 0; i < 3; ++i) {
+        EXPECT_TRUE(knob2->isEnabled(i)) << i;
+        EXPECT_TRUE(knob2->isLinked(i)) << i;
+        EXPECT_TRUE(masterKnob2->getLinkGroup(i) == knob2->getLinkGroup(i)) << i;
     }
 }
 

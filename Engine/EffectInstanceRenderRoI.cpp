@@ -256,7 +256,7 @@ optimizeRectsToRender(EffectInstance* self,
                       const RenderScale & renderMappedScale,
                       std::list<EffectInstance::RectToRender>* finalRectsToRender)
 {
-    const ParallelRenderArgsPtr selfArgs = self->getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr selfArgs = self->getFrameArgs();
     const RenderContextPtr consumerContext = selfArgs ? selfArgs->context : RenderContextPtr();
     for (std::list<RectI>::const_iterator it = rectsToRender.begin(); it != rectsToRender.end(); ++it) {
         std::vector<RectI> splits = it->splitIntoSmallerRects(0);
@@ -558,8 +558,8 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     assert(tls);
     OSGLContextPtr glContext;
     AbortableRenderInfoPtr abortInfo;
-    ParallelRenderArgsPtr  frameArgs;
-    if ( tls->frameArgs.empty() ) {
+    ParallelRenderArgsPtr frameArgs = getFrameArgs();
+    if (!frameArgs) {
         qDebug() << QThread::currentThread() << "[BUG]:" << getScriptName_mt_safe().c_str() <<  "Thread-storage for the render of the frame was not set.";
 
         frameArgs = std::make_shared<ParallelRenderArgs>();
@@ -575,8 +575,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         frameArgs->isRenderResponseToUserInteraction = true;
         FrameArgsToken(this, frameArgs).leaveInstalled();
     } else {
-        //The hash must not have changed if we did a pre-pass.
-        frameArgs = tls->frameArgs.back();
+        // The hash must not have changed if we did a pre-pass.
         abortInfo = frameArgs->abortInfo.lock();
         assert(!frameArgs->request || frameArgs->nodeHash == frameArgs->request->nodeHash);
     }
@@ -1428,7 +1427,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                 if (!input) {
                     continue;
                 }
-                ParallelRenderArgsPtr inputFrameArgs = input->getParallelRenderArgsTLS();
+                ParallelRenderArgsPtr inputFrameArgs = input->getFrameArgs();
                 U64 inputHash = (inputFrameArgs) ? inputFrameArgs->nodeHash : input->getHash();
                 StatusEnum stat = input->getRegionOfDefinition_public(inputHash, args.time, args.scale, args.view, &inputRod, nullptr);
                 if ( (stat != eStatusOK) && !inputRod.isNull() ) {

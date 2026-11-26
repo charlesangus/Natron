@@ -68,11 +68,6 @@ protected:
      * @brief Must clean-up any data stored for the given thread 'curThread'
      **/
     virtual void cleanupPerThreadData(const QThread* curThread) const = 0;
-
-    /**
-     * @brief Called on the current thread when its frame changes, see AppTLS::FrameContextScope.
-     **/
-    virtual void followFrameContext(const QThread* /*curThread*/) const { }
 };
 
 /**
@@ -85,7 +80,7 @@ public:
     enum SpawnKindEnum {
         // The spawned thread runs a plug-in thread function: it inherits all the data.
         eSpawnKindMultiThreadSuite = 0,
-        // The spawned thread sets up its own render args: it inherits only the frame args and counters.
+        // The spawned thread sets up its own render args: it inherits only the counters.
         eSpawnKindHostFrameThreading
     };
 
@@ -122,8 +117,8 @@ public:
     static std::size_t getNumHoldersWithDataForCurrentThread();
 
     /**
-     * @brief The frame installed on the current thread by the innermost FrameContextScope, or null. An effect without
-     * data on this thread that no spawner provides gets its frame args from it.
+     * @brief The frame installed on the current thread by the innermost FrameContextScope, or null. A frame-args
+     * lookup that no link of the thread's FrameArgsOverlay chain answers answers from it.
      **/
     static const FrameRenderContext* currentFrameContext();
 
@@ -147,10 +142,10 @@ public:
 
     /**
      * @brief Unless the current thread is fromThread itself: calls softCopy() from the current thread and installs
-     * frameContext as the current thread's frame, frameArgsHead as the head of its frame-args chain, job as its
+     * frameContext as the current thread's frame, chainHead as the head of its frame-args chain, job as its
      * IsolatedJob context, a thread budget of 1 and an OpenMP nthreads ICV of 1 on construction, then restores the
      * previous frame, chain, job context, budget and ICV and calls cleanupTLSForThread() on destruction. frameContext,
-     * frameArgsHead and job must be the spawner's currentFrameContext(), FrameArgsOverlay::currentHead() and
+     * chainHead and job must be the spawner's currentFrameContext(), FrameArgsOverlay::currentHead() and
      * IsolatedJob::current(), read on the spawner before it hands the work out, since another thread cannot read the
      * spawner's.
      *
@@ -162,7 +157,7 @@ public:
     public:
         SpawnedThreadScope(QThread* fromThread,
                            const FrameRenderContext* frameContext,
-                           const std::shared_ptr<const FrameArgsOverlay>& frameArgsHead,
+                           const std::shared_ptr<const FrameArgsOverlay>& chainHead,
                            const IsolatedJob* job,
                            SpawnKindEnum kind = eSpawnKindMultiThreadSuite,
                            bool scheduledTask = false);
@@ -175,7 +170,7 @@ public:
     private:
         bool _spawned;
         const FrameRenderContext* _previousFrameContext;
-        std::shared_ptr<const FrameArgsOverlay> _previousFrameArgsHead;
+        std::shared_ptr<const FrameArgsOverlay> _previousChainHead;
         const IsolatedJob* _previousJob;
         int _previousBudget;
         int _previousOpenMPThreads;
@@ -187,9 +182,9 @@ public:
      * a task, and puts the thread in the context of the frame's IsolatedJob, or in none if the frame has none. A
      * null context leaves the thread's job context as it is. scheduledTask marks the thread as running a scheduler
      * task (see isRunningScheduledTask()) and makes the frame the base of a frame-args chain of its own, so that the
-     * task reads no args pushed by whatever ran it inline. The thread-local frame args of effects that no
-     * FrameArgsToken pushed on this thread follow the frame in and out of the scope, as the chain's base does. The
-     * outermost scope cleans up the thread's TLS on destruction.
+     * task reads no args pushed by whatever ran it inline. The scope makes the chain head it found current again on
+     * destruction, which drops any args left installed under it. The outermost scope cleans up the thread's TLS on
+     * destruction.
      **/
     class FrameContextScope {
     public:
@@ -204,14 +199,12 @@ public:
         FrameContextScope& operator=(const FrameContextScope&) = delete;
 
     private:
-        const FrameRenderContext* _context;
         const FrameRenderContext* _previous;
-        std::shared_ptr<const FrameArgsOverlay> _previousFrameArgsHead;
+        std::shared_ptr<const FrameArgsOverlay> _previousChainHead;
         const IsolatedJob* _previousJob;
         int _previousBudget;
         int _previousPriority;
         bool _previousScheduledTask;
-        bool _installedFrameArgsBase;
     };
 
     /**
@@ -236,17 +229,11 @@ private:
      * its task. A holder touched by toThread without data for it copies the data of the closest
      * thread up the spawner chain that has some. Any data toThread still holds from a previous
      * task is dropped first. Only SpawnedThreadScope calls it, so that a spawned thread never gets
-     * its spawner's thread-local frame args without its frame and frame-args chain.
+     * its spawner's thread-local data without its frame and frame-args chain.
      **/
     void softCopy(QThread* fromThread, QThread* toThread, SpawnKindEnum kind);
 
     static void cleanupHoldersOfCurrentThread(const QThread* curThread);
-
-    /**
-     * @brief Makes the frame args of the current thread's data that no FrameArgsToken pushed follow
-     * currentFrameContext(), as data created under it would have.
-     **/
-    static void followFrameContextOfCurrentThread();
 
     struct SpawnEntry {
         const QThread* spawner;
@@ -289,11 +276,9 @@ public:
 
 private:
     virtual void cleanupPerThreadData(const QThread* curThread) const OVERRIDE FINAL;
-    virtual void followFrameContext(const QThread* curThread) const OVERRIDE FINAL;
 
     std::shared_ptr<T> findDataForThread(const QThread* curThread) const WARN_UNUSED_RETURN;
     std::shared_ptr<T> inheritFromSpawner(const QThread* curThread) const WARN_UNUSED_RETURN;
-    std::shared_ptr<T> createFromFrameContext(const QThread* curThread) const WARN_UNUSED_RETURN;
     std::shared_ptr<T> insertForThread(const QThread* curThread, const std::shared_ptr<T>& value) const WARN_UNUSED_RETURN;
 
     mutable QReadWriteLock perThreadDataMutex;

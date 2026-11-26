@@ -199,26 +199,25 @@ TEST_F(FrameRenderContextTest, TaskThreadGetsFrameArgsFromContext)
     EXPECT_TRUE(bool(context->getArgs(grade1)));
     EXPECT_TRUE(bool(context->getArgs(grade2)));
 
-    FrameArgsOverlay::resetStats();
     ParallelRenderArgsPtr argsBeforeScope, workerArgs, nestedArgs, argsAfterScope;
     std::size_t holdersAfterScope = 0;
     QFuture<void> future = QtConcurrent::run([&]() {
         QThread* worker = QThread::currentThread();
 
-        argsBeforeScope = constantEffect->getParallelRenderArgsTLS();
+        argsBeforeScope = constantEffect->getFrameArgs();
         {
             AppTLS::FrameContextScope scope(context.get());
-            workerArgs = constantEffect->getParallelRenderArgsTLS();
+            workerArgs = constantEffect->getFrameArgs();
             const FrameRenderContext* workerFrame = AppTLS::currentFrameContext();
             const FrameArgsOverlayPtr workerHead = FrameArgsOverlay::currentHead();
 
             runOnNewThread([&]() {
                 AppTLS::SpawnedThreadScope spawned(worker, workerFrame, workerHead, NULL);
-                nestedArgs = constantEffect->getParallelRenderArgsTLS();
+                nestedArgs = constantEffect->getFrameArgs();
             });
         }
         holdersAfterScope = AppTLS::getNumHoldersWithDataForCurrentThread();
-        argsAfterScope = constantEffect->getParallelRenderArgsTLS();
+        argsAfterScope = constantEffect->getFrameArgs();
     });
     future.waitForFinished();
 
@@ -227,11 +226,10 @@ TEST_F(FrameRenderContextTest, TaskThreadGetsFrameArgsFromContext)
     EXPECT_EQ(constantArgs.get(), nestedArgs.get());
     EXPECT_EQ(0u, holdersAfterScope);
     EXPECT_FALSE(bool(argsAfterScope));
-    EXPECT_FALSE(bool(constantEffect->getParallelRenderArgsTLS())) << "the context must not install args on the thread that created it";
-    EXPECT_EQ(0u, FrameArgsOverlay::stats().mismatches);
+    EXPECT_FALSE(bool(constantEffect->getFrameArgs())) << "the context must not install args on the thread that created it";
 }
 
-TEST_F(FrameRenderContextTest, ThreadLocalFrameArgsFollowANestedTaskFrame)
+TEST_F(FrameRenderContextTest, FrameArgsFollowANestedTaskFrame)
 {
     NodePtr constant = createNode(QString::fromUtf8(kConstantPluginID));
     NodePtr grade = createNode(QString::fromUtf8(kGradePluginID));
@@ -251,25 +249,24 @@ TEST_F(FrameRenderContextTest, ThreadLocalFrameArgsFollowANestedTaskFrame)
     ASSERT_NE(outerArgs.get(), extensionArgs.get());
     ParallelRenderArgsPtr pushed = std::make_shared<ParallelRenderArgs>(*outerArgs);
 
-    FrameArgsOverlay::resetStats();
     ParallelRenderArgsPtr beforeNested, insideNested, insideNestedGrade, afterNested, pushedInside, pushedAfter;
     QFuture<void> future = QtConcurrent::run([&]() {
         AppTLS::FrameContextScope task(outer.get(), 1, 0, true);
-        beforeNested = constantEffect->getParallelRenderArgsTLS();
+        beforeNested = constantEffect->getFrameArgs();
         {
             FrameArgsToken token(gradeEffect.get(), pushed);
             {
                 AppTLS::FrameContextScope nested(extension.get(), 1, 0, true);
-                insideNested = constantEffect->getParallelRenderArgsTLS();
+                insideNested = constantEffect->getFrameArgs();
             }
-            pushedInside = gradeEffect->getParallelRenderArgsTLS();
+            pushedInside = gradeEffect->getFrameArgs();
         }
         {
             AppTLS::FrameContextScope nested(extension.get(), 1, 0, true);
-            insideNestedGrade = gradeEffect->getParallelRenderArgsTLS();
+            insideNestedGrade = gradeEffect->getFrameArgs();
         }
-        afterNested = constantEffect->getParallelRenderArgsTLS();
-        pushedAfter = gradeEffect->getParallelRenderArgsTLS();
+        afterNested = constantEffect->getFrameArgs();
+        pushedAfter = gradeEffect->getFrameArgs();
     });
     future.waitForFinished();
 
@@ -279,7 +276,6 @@ TEST_F(FrameRenderContextTest, ThreadLocalFrameArgsFollowANestedTaskFrame)
     EXPECT_EQ(extension->getArgs(grade).get(), insideNestedGrade.get());
     EXPECT_EQ(outerArgs.get(), afterNested.get()) << "args taken from the nested frame must not outlive it";
     EXPECT_EQ(outer->getArgs(grade).get(), pushedAfter.get());
-    EXPECT_EQ(0u, FrameArgsOverlay::stats().mismatches);
 }
 
 TEST_F(FrameRenderContextTest, ContextWithoutSchedulerMarkerReportsNoScheduledTask)
@@ -472,6 +468,104 @@ TEST_F(FrameRenderContextTest, FrameArgsChainFallsBackToTheContext)
         EXPECT_EQ(outerStray.get(), FrameArgsOverlay::lookup(s).get());
     }
     EXPECT_FALSE(bool(FrameArgsOverlay::currentHead()));
+}
+
+namespace {
+
+bool
+isAtTimeTwo(const ParallelRenderArgsPtr& args)
+{
+    return args->time == 2.;
+}
+
+bool
+isNotAtTimeThree(const ParallelRenderArgsPtr& args)
+{
+    return args->time != 3.;
+}
+
+bool
+rejectsAll(const ParallelRenderArgsPtr& /*args*/)
+{
+    return false;
+}
+
+} // namespace
+
+TEST_F(FrameRenderContextTest, FrameArgsChainFilteredLookupSkipsRejectedArgs)
+{
+    NodePtr constant = createNode(QString::fromUtf8(kConstantPluginID));
+    NodePtr grade = createNode(QString::fromUtf8(kGradePluginID));
+    ASSERT_TRUE(bool(constant) && bool(grade));
+    connectNodes(constant, grade, 0, true);
+    const TLSHolderBase* a = constant->getEffectInstance()->getTLSHolder();
+    const TLSHolderBase* b = grade->getEffectInstance()->getTLSHolder();
+
+    FrameRenderContextPtr context = makeContext(grade);
+    ASSERT_TRUE(bool(context));
+    ParallelRenderArgsPtr constantArgs = context->getArgs(constant);
+    ASSERT_TRUE(bool(constantArgs));
+    ASSERT_NE(2., constantArgs->time);
+    ParallelRenderArgsPtr atTwo = std::make_shared<ParallelRenderArgs>();
+    atTwo->time = 2.;
+    ParallelRenderArgsPtr atThree = std::make_shared<ParallelRenderArgs>();
+    atThree->time = 3.;
+    ParallelRenderArgsPtr otherAtTwo = std::make_shared<ParallelRenderArgs>();
+    otherAtTwo->time = 2.;
+
+    {
+        AppTLS::FrameContextScope plain(context.get());
+        EXPECT_FALSE(bool(FrameArgsOverlay::lookup(a, isAtTimeTwo)));
+        EXPECT_EQ(constantArgs.get(), FrameArgsOverlay::lookup(a, isNotAtTimeThree).get()) << "with nothing pushed the frame answers";
+        EXPECT_FALSE(bool(FrameArgsOverlay::lookup(a, rejectsAll)));
+        FrameArgsScope outer(a, atTwo);
+        FrameArgsScope unrelated(b, otherAtTwo);
+        FrameArgsScope inner(a, atThree);
+        EXPECT_EQ(atThree.get(), FrameArgsOverlay::lookup(a).get());
+        EXPECT_EQ(atTwo.get(), FrameArgsOverlay::lookup(a, isAtTimeTwo).get()) << "an outer push of the effect answers past a rejected inner one";
+        EXPECT_FALSE(bool(FrameArgsOverlay::lookup(a, rejectsAll)));
+    }
+    {
+        AppTLS::FrameContextScope task(context.get(), 1, 0, true);
+        FrameArgsScope inner(a, atThree);
+        EXPECT_EQ(constantArgs.get(), FrameArgsOverlay::lookup(a, isNotAtTimeThree).get()) << "the base's frame answers last";
+    }
+}
+
+TEST_F(FrameRenderContextTest, FrameContextScopeDropsArgsLeftInstalled)
+{
+    NodePtr constant = createNode(QString::fromUtf8(kConstantPluginID));
+    NodePtr grade = createNode(QString::fromUtf8(kGradePluginID));
+    ASSERT_TRUE(bool(constant) && bool(grade));
+    connectNodes(constant, grade, 0, true);
+    EffectInstancePtr constantEffect = constant->getEffectInstance();
+    ASSERT_TRUE(bool(constantEffect));
+
+    FrameRenderContextPtr context = makeContext(grade);
+    ASSERT_TRUE(bool(context));
+    ParallelRenderArgsPtr constantArgs = context->getArgs(constant);
+    ASSERT_TRUE(bool(constantArgs));
+    ParallelRenderArgsPtr leftInstalled = std::make_shared<ParallelRenderArgs>();
+
+    ParallelRenderArgsPtr inside, afterScope, afterTask;
+    QFuture<void> future = QtConcurrent::run([&]() {
+        {
+            AppTLS::FrameContextScope plain(context.get());
+            FrameArgsToken(constantEffect.get(), leftInstalled).leaveInstalled();
+            inside = constantEffect->getFrameArgs();
+        }
+        afterScope = constantEffect->getFrameArgs();
+        {
+            AppTLS::FrameContextScope task(context.get(), 1, 0, true);
+            FrameArgsToken(constantEffect.get(), leftInstalled).leaveInstalled();
+        }
+        afterTask = constantEffect->getFrameArgs();
+    });
+    future.waitForFinished();
+
+    EXPECT_EQ(leftInstalled.get(), inside.get());
+    EXPECT_FALSE(bool(afterScope)) << "args left installed must not outlive the frame scope they were pushed under";
+    EXPECT_FALSE(bool(afterTask)) << "args left installed must not outlive the task they were pushed in";
 }
 
 TEST_F(FrameRenderContextTest, FrameArgsChainIsEmptyWithoutAContext)

@@ -706,7 +706,7 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
             getOutputComponents(effect, nodeRequest->second->nodeHash, task.key.time, task.key.view, *metadata, &task.components);
         }
 
-        ParallelRenderArgsPtr frameArgs = effect->getParallelRenderArgsTLS();
+        ParallelRenderArgsPtr frameArgs = effect->getFrameArgs();
 
         // renderRoI renders at full scale then downscales for eSupportsNo, and also for eSupportsMaybe, which it
         // switches to full scale once the identity check is done.

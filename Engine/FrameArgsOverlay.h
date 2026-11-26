@@ -61,12 +61,13 @@ public:
     typedef std::pair<Key, ParallelRenderArgsPtr> Entry;
     typedef std::vector<Entry> Entries;
 
+    typedef bool (*Filter)(const ParallelRenderArgsPtr& args);
+
     /**
-     * @brief Counters of the chains of all threads since the last resetStats(), for the code that reads the args from
-     * another source as well to report how often the chain disagreed with it.
+     * @brief Counters of the chains of all threads since the last resetStats(): scopes popped out of order and the
+     * deepest chain made.
      **/
     struct Stats {
-        std::uint64_t mismatches;
         std::uint64_t outOfOrderPops;
         std::size_t maxDepth;
     };
@@ -107,9 +108,11 @@ public:
                                         const FrameRenderContext* fallback);
 
     /**
-     * @brief Counts a lookup that disagreed with another source of the same args and returns the count so far.
+     * @brief As lookup(key), skipping the args accept rejects: the innermost args of the effect accept takes, the
+     * frame's last, or none.
      **/
-    static std::uint64_t noteMismatch();
+    static ParallelRenderArgsPtr lookup(Key key,
+                                        Filter accept);
 
     static void noteOutOfOrderPop();
 

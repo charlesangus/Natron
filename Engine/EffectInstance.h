@@ -1155,7 +1155,12 @@ public:
      **/
     FrameArgsToken setDuringPaintStrokeCreationThreadLocal(bool duringPaintStroke) WARN_UNUSED_RETURN;
 
-    ParallelRenderArgsPtr getParallelRenderArgsTLS() const;
+    /**
+     * @brief The frame args of the effect on the current thread: the innermost a FrameArgsToken pushed for it on the
+     * thread's FrameArgsOverlay chain, else those of the frame the thread renders (the scheduler task's frame, or the
+     * innermost AppTLS::FrameContextScope's), else none. A lock-free walk of the chain; it creates no thread-local data.
+     **/
+    ParallelRenderArgsPtr getFrameArgs() const;
 
     /**
      * @brief Whether the calling thread renders this node: its frame args are installed and are not
@@ -1346,7 +1351,6 @@ protected:
     virtual void onCurrentFrameMetadataChanged(const NodeMetadata& /*metadata*/) { }
 
     friend class ClipPreferencesRunning_RAII;
-    friend class FrameArgsToken;
     // Returns the previous state, so that the scopes nest.
     bool setClipPreferencesRunning(bool running);
 
@@ -3691,12 +3695,6 @@ public:
         std::list<bool> canSetValue;
 #endif
 
-        ///Recursive because it may be set recursively in such situation:
-        ///knobChanged : set ParallelRenderArgs TLS for analysis
-        ///timelineGoTo calls getRenderviewerArgs on the MT which overrides this TLS
-        std::list<ParallelRenderArgsPtr> frameArgs;
-        // Whether frameArgs.front() came from the thread's frame rather than from a FrameArgsToken.
-        bool frameArgsSeeded;
         EffectInstance::RenderArgs currentRenderArgs;
 
         std::vector<std::string> userLayerStrings;
@@ -3722,8 +3720,6 @@ public:
 #ifdef DEBUG
             , canSetValue()
 #endif
-            , frameArgs()
-            , frameArgsSeeded(false)
             , currentRenderArgs()
             , userLayerStrings()
             , resolvingLayersPassThrough(false)

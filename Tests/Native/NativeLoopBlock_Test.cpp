@@ -29,6 +29,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <functional>
 #include <list>
 #include <map>
@@ -52,6 +53,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/FrameArgsOverlay.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -705,6 +707,46 @@ TEST_F(NativeLoopBlockTest, NestedLoopsSeeBothLoopsVariables)
     EXPECT_TRUE(message.isEmpty()) << message.toStdString();
 }
 
+TEST_F(NativeLoopBlockTest, NestedLoopsRecordTheFrameArgsChainDepthWithEachPull)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr outerBegin = createLoopBegin();
+    NodePtr innerBegin = createLoopBegin();
+    NodePtr innerGain = createDrivenGrade(kKnobDriverDefaultVariable, 1., 2.);
+    NodePtr outerGain = createDrivenGrade("loops.outer.t", 1., 3.);
+    NodePtr innerEnd = createLoopEnd(3, kLoopEndParamOperationMean);
+    NodePtr outerEnd = createLoopEnd(2, kLoopEndParamOperationSum);
+    ASSERT_TRUE(constant && outerBegin && innerBegin && innerGain && outerGain && innerEnd && outerEnd);
+    ASSERT_TRUE(setLoopName(outerEnd, "outer"));
+    ASSERT_TRUE(setLoopName(innerEnd, "inner"));
+    ASSERT_TRUE(outerBegin->connectInput(constant, 0));
+    ASSERT_TRUE(innerBegin->connectInput(outerBegin, 0));
+    ASSERT_TRUE(innerGain->connectInput(innerBegin, 0));
+    ASSERT_TRUE(outerGain->connectInput(innerGain, 0));
+    ASSERT_TRUE(innerEnd->connectInput(outerGain, 0));
+    ASSERT_TRUE(outerEnd->connectInput(innerEnd, 0));
+
+    for (int scheduled = 0; scheduled < 2; ++scheduled) {
+        const char* const where = scheduled ? "scheduled" : "direct";
+        appPTR->clearAllCaches();
+        const FrameArgsOverlayPtr headBefore = FrameArgsOverlay::currentHead();
+        FrameArgsOverlay::resetStats();
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        const bool ok = scheduled ? renderNodePlanesScheduled(outerEnd, kTime, ViewIdx(0), 0, fullWindow(), true, &planes, &error)
+                                  : renderNodePlanesDirect(outerEnd, kTime, ViewIdx(0), 0, fullWindow(), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, true);
+        const FrameArgsOverlay::Stats stats = FrameArgsOverlay::stats();
+        std::printf("FRAMEARGS_DEPTH nested-loops-2x3-%s maxDepth=%llu outOfOrderPops=%llu\n", where, (unsigned long long)stats.maxDepth, (unsigned long long)stats.outOfOrderPops);
+        std::fflush(stdout);
+
+        ASSERT_TRUE(ok) << where << ": " << error;
+        ASSERT_FALSE(planes.empty() || planes[0].pixels.empty()) << where;
+        EXPECT_NEAR(6., planes[0].pixels[0], 1e-4) << where;
+        EXPECT_EQ(0u, stats.outOfOrderPops) << where;
+        EXPECT_EQ(headBefore.get(), FrameArgsOverlay::currentHead().get()) << where << ": the render left args on the thread";
+    }
+}
+
 // A Python expression reads loop.t through the loop object: it gives 10 * t at each iteration,
 // reads loop.t and nothing else, and the mean over the loop is the midpoint.
 TEST_F(NativeLoopBlockTest, AnExpressionReadsTheLoopVariable)
@@ -856,7 +898,7 @@ TEST_F(NativeLoopBlockTest, AnExpressionReadInKnobChangedReadsThePreviewIteratio
             return;
         }
         ++calls;
-        underActionArgs = effect->getParallelRenderArgsTLS() != nullptr;
+        underActionArgs = effect->getFrameArgs() != nullptr;
         rendering = effect->isRenderingTLS();
         try {
             read = value->getValueAtTime(time, 0);
@@ -872,7 +914,7 @@ TEST_F(NativeLoopBlockTest, AnExpressionReadInKnobChangedReadsThePreviewIteratio
     EXPECT_FALSE(rendering);
     EXPECT_FALSE(threw);
     EXPECT_NEAR(20., read, 1e-9);
-    EXPECT_FALSE(effect->getParallelRenderArgsTLS() != nullptr);
+    EXPECT_FALSE(effect->getFrameArgs() != nullptr);
     EXPECT_NEAR(20., value->getValueAtTime(kTime, 0), 1e-9);
 }
 

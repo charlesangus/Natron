@@ -551,9 +551,8 @@ private:
 };
 
 /**
- * @brief Frame args pushed on effects' thread-local frame args for the token's lifetime and popped in the reverse
- * order on destruction; every push and pop of frame args goes through one. The args are pushed on the thread's
- * FrameArgsOverlay chain too, all of a token's as one link.
+ * @brief Frame args pushed on the current thread's FrameArgsOverlay chain for the token's lifetime, all of a token's
+ * as one link, and popped on destruction; every push and pop of frame args goes through one.
  **/
 class FrameArgsToken {
 public:
@@ -576,30 +575,18 @@ public:
 
     bool isInstalled() const
     {
-        return bool(_first);
+        return _installed;
     }
 
     /**
-     * @brief Leaves the args pushed once the token is gone, for the render that installs args it never pops.
+     * @brief Leaves the args pushed once the token is gone, for the render that installs args it never pops: they
+     * stay until the scope that installed the thread's frame or chain ends.
      **/
     void leaveInstalled();
 
-    /**
-     * @brief Makes args, the thread's frame's args, the only thread-local frame args of a thread on which no token
-     * pushed any, without a token to pop them; none when args is null. *seeded tells whether frameArgs holds such
-     * args.
-     **/
-    static void seed(std::list<ParallelRenderArgsPtr>* frameArgs,
-                     bool* seeded,
-                     const ParallelRenderArgsPtr& args);
-
 private:
-    void pop();
-
-    // EffectInstance's thread-local data, which this header cannot name since EffectInstance.h includes it.
-    std::shared_ptr<void> _first;
-    std::vector<std::shared_ptr<void>> _rest;
     FrameArgsScope _chain;
+    bool _installed;
 };
 
 /**
@@ -722,7 +709,7 @@ public:
 
     /**
      * @brief Creates the frame args the first constructor installs, without installing them. out maps each node to
-     * the args getParallelRenderArgsTLS() returns once they are installed. installSequence, when given, receives
+     * the args getFrameArgs() returns once they are installed. installSequence, when given, receives
      * every installation in order, including a node installed twice, and collectedNodes the nodes whose args the
      * destructor invalidates.
      **/
@@ -759,7 +746,7 @@ public:
 
     /**
      * @brief The frame args the first constructor installed on this thread, each node mapped to the args
-     * getParallelRenderArgsTLS() returns for it. Empty when built from an existing args map.
+     * getFrameArgs() returns for it. Empty when built from an existing args map.
      **/
     const std::map<NodePtr, ParallelRenderArgsPtr>& getInstalledArgs() const
     {

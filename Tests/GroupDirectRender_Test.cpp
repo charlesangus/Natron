@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstdio>
 #include <list>
 #include <string>
 #include <vector>
@@ -39,6 +40,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/FrameArgsOverlay.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
@@ -815,5 +817,51 @@ TEST_F(GroupDirectRender, InnerAndExternalMarksInOneFlushReachTheGroupsConsumers
         for (std::size_t i = 0; i < expectedDirty.size(); ++i) {
             EXPECT_NE(before[i], expectedDirty[i]->getHashMarkCount()) << where << ": " << expectedDirty[i]->getScriptName_mt_safe() << " was not marked";
         }
+    }
+}
+
+TEST_F(GroupDirectRender, DeeplyNestedGroupsRecordTheFrameArgsChainDepthWithEachPull)
+{
+    const int kLevels = 8;
+    const int kDotsPerLevel = 2;
+
+    std::vector<NodePtr> groups;
+    groups.push_back(createGroup());
+    ASSERT_TRUE(groups.back() != nullptr);
+    for (int i = 1; i < kLevels; ++i) {
+        groups.push_back(createGroupInside(groups.back()));
+        ASSERT_TRUE(groups.back() != nullptr);
+    }
+    NodePtr upstream = createSourceInside(groups.back(), 90);
+    ASSERT_TRUE(upstream != nullptr);
+    for (int i = kLevels - 1; i >= 0; --i) {
+        for (int d = 0; d < kDotsPerLevel; ++d) {
+            NodePtr dot = createInside(groups[i], PLUGINID_NATRON_DOT);
+            ASSERT_TRUE(dot != nullptr);
+            ASSERT_TRUE(dot->connectInput(upstream, 0));
+            upstream = dot;
+        }
+        NodePtr output = createInside(groups[i], PLUGINID_NATRON_OUTPUT);
+        ASSERT_TRUE(output != nullptr);
+        ASSERT_TRUE(output->connectInput(upstream, 0));
+        upstream = groups[i];
+    }
+
+    for (Pull mode : { ePullDirect, ePullScheduled }) {
+        const std::string where = pullName(mode);
+        appPTR->clearAllCaches();
+        const FrameArgsOverlayPtr headBefore = FrameArgsOverlay::currentHead();
+        FrameArgsOverlay::resetStats();
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        const bool ok = render(groups.front(), mode, true, &planes, &error);
+        const FrameArgsOverlay::Stats stats = FrameArgsOverlay::stats();
+        std::printf("FRAMEARGS_DEPTH nested-groups-%d-%s maxDepth=%llu outOfOrderPops=%llu\n", kLevels, where.c_str(), (unsigned long long)stats.maxDepth, (unsigned long long)stats.outOfOrderPops);
+        std::fflush(stdout);
+
+        ASSERT_TRUE(ok) << where << ": " << error;
+        EXPECT_FALSE(planes.empty()) << where;
+        EXPECT_EQ(0u, stats.outOfOrderPops) << where;
+        EXPECT_EQ(headBefore.get(), FrameArgsOverlay::currentHead().get()) << where << ": the render left args on the thread";
     }
 }

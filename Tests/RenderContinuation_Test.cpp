@@ -528,7 +528,7 @@ TEST_F(RenderContinuation, ProbeRendersOnlyTheDataDependentSubset)
         EXPECT_EQ(subset, full);
         expectPoolDrained();
     }
-    EXPECT_EQ(0u, FrameArgsOverlay::stats().mismatches) << "every task must read the args of the frame it runs under";
+    EXPECT_EQ(0u, FrameArgsOverlay::stats().outOfOrderPops) << "every frame-args scope of a task must end inside the task";
 }
 
 TEST_F(RenderContinuation, DirectPullRunsTheContinuationInlineAndMatchesTheTaskGraph)

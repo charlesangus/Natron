@@ -239,60 +239,80 @@ TEST_F(GraphScalingTLS, InheritsOnlyTouchedHolders)
     AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
     ParallelRenderArgsPtr argsA = makeFrameArgs(7., abortInfo, nodeA);
     ParallelRenderArgsPtr argsOthers = makeFrameArgs(3., abortInfo, nodeA);
+    const FrameArgsOverlayPtr underTokens = FrameArgsOverlay::currentHead();
     FrameArgsToken tokenA(effectA.get(), argsA);
     FrameArgsToken::Pushes othersPushes;
     for (std::size_t i = 0; i < others.size(); ++i) {
         othersPushes.push_back(std::make_pair(others[i].get(), argsOthers));
     }
     FrameArgsToken tokenOthers(othersPushes);
-    ASSERT_EQ(argsA.get(), effectA->getParallelRenderArgsTLS().get());
+    ASSERT_EQ(argsA.get(), effectA->getFrameArgs().get());
 
-    FrameArgsOverlay::resetStats();
+    // Thread-local data on main for every effect, which a spawned thread copies only for the effects it touches.
+    const double kActionTime = 5.;
+    std::unique_ptr<EffectInstance::ActionTimeViewScope> actionTimeA(new EffectInstance::ActionTimeViewScope(effectA.get(), kActionTime, ViewIdx(0)));
+    std::vector<std::shared_ptr<EffectInstance::ActionTimeViewScope>> actionTimeOthers;
+    for (std::size_t i = 0; i < others.size(); ++i) {
+        actionTimeOthers.push_back(std::make_shared<EffectInstance::ActionTimeViewScope>(others[i].get(), kActionTime, ViewIdx(0)));
+    }
+
     QThread* mainThread = QThread::currentThread();
     const FrameArgsOverlayPtr mainHead = FrameArgsOverlay::currentHead();
     ParallelRenderArgsPtr workerArgsA, workerArgsB, nestedArgsA;
+    std::size_t workerArgsCopies = 1;
     std::size_t workerCopies = 0;
     std::size_t nestedCopies = 0;
+    double workerTimeA = 0.;
+    double nestedTimeA = 0.;
     runOnNewThread([&]() {
         QThread* worker = QThread::currentThread();
         AppTLS::SpawnedThreadScope spawned(mainThread, NULL, mainHead, NULL);
         const FrameArgsOverlayPtr workerHead = FrameArgsOverlay::currentHead();
 
-        // The worker has not touched A, so the nested thread must find A's data on main through the chain.
+        // The worker has not touched A, so the nested thread must find A's data on main through the spawner chain.
         runOnNewThread([&]() {
             AppTLS::SpawnedThreadScope nested(worker, NULL, workerHead, NULL);
+            nestedArgsA = effectA->getFrameArgs();
             const std::size_t before = AppTLS::getNumInheritedCopies();
-            nestedArgsA = effectA->getParallelRenderArgsTLS();
+            nestedTimeA = effectA->getCurrentTime();
             nestedCopies = AppTLS::getNumInheritedCopies() - before;
         });
 
-        const std::size_t before = AppTLS::getNumInheritedCopies();
-        workerArgsA = effectA->getParallelRenderArgsTLS();
+        std::size_t before = AppTLS::getNumInheritedCopies();
+        workerArgsA = effectA->getFrameArgs();
+        workerArgsB = effectB->getFrameArgs();
+        workerArgsCopies = AppTLS::getNumInheritedCopies() - before;
+        before = AppTLS::getNumInheritedCopies();
+        workerTimeA = effectA->getCurrentTime();
         workerCopies = AppTLS::getNumInheritedCopies() - before;
-        workerArgsB = effectB->getParallelRenderArgsTLS();
     });
 
     EXPECT_EQ(argsA.get(), workerArgsA.get());
     EXPECT_FALSE(bool(workerArgsB));
+    EXPECT_EQ(0u, workerArgsCopies) << "frame args come from the captured chain, without copying thread-local data";
+    EXPECT_EQ(kActionTime, workerTimeA);
     EXPECT_EQ(1u, workerCopies) << "a worker that touches one holder must copy exactly one";
     EXPECT_EQ(argsA.get(), nestedArgsA.get());
+    EXPECT_EQ(kActionTime, nestedTimeA);
     EXPECT_EQ(1u, nestedCopies);
 
+    actionTimeOthers.clear();
+    actionTimeA.reset();
     tokenOthers = FrameArgsToken();
     tokenA = FrameArgsToken();
-    ASSERT_FALSE(bool(effectA->getParallelRenderArgsTLS()));
+    ASSERT_FALSE(bool(effectA->getFrameArgs()));
+    EXPECT_EQ(underTokens.get(), FrameArgsOverlay::currentHead().get()) << "popping the tokens restores the chain under them";
 
     ParallelRenderArgsPtr freshArgsA;
     bool freshArgsRead = false;
     const FrameArgsOverlayPtr poppedHead = FrameArgsOverlay::currentHead();
     runOnNewThread([&]() {
         AppTLS::SpawnedThreadScope spawned(mainThread, NULL, poppedHead, NULL);
-        freshArgsA = effectA->getParallelRenderArgsTLS();
+        freshArgsA = effectA->getFrameArgs();
         freshArgsRead = true;
     });
     EXPECT_TRUE(freshArgsRead);
     EXPECT_FALSE(bool(freshArgsA)) << "a worker spawned after main popped its args must not see them";
-    EXPECT_EQ(0u, FrameArgsOverlay::stats().mismatches);
 }
 
 TEST_F(GraphScalingTLS, MultithreadedPixelsMatchSingleThreaded)
@@ -341,7 +361,7 @@ TEST_F(GraphScalingTLS, MultithreadedPixelsMatchSingleThreaded)
                                  << multiThreaded[firstMismatch < multiThreaded.size() ? firstMismatch : 0];
 }
 
-TEST_F(GraphScalingTLS, FrameArgsChainShadowsTheThreadLocalList)
+TEST_F(GraphScalingTLS, FrameArgsChainStaysShallowOnAGradeChain)
 {
     const int kSize = 512;
     const int kNumGrades = 50;
@@ -356,6 +376,7 @@ TEST_F(GraphScalingTLS, FrameArgsChainShadowsTheThreadLocalList)
     appPTR->clearAllCaches();
 
     FrameArgsOverlay::resetStats();
+    const FrameArgsOverlayPtr headBefore = FrameArgsOverlay::currentHead();
     std::vector<float> pixels;
     std::string error;
     const bool ok = renderWindow(grades.back(), 10., kSize, kSize, &pixels, &error);
@@ -363,11 +384,10 @@ TEST_F(GraphScalingTLS, FrameArgsChainShadowsTheThreadLocalList)
 
     QThreadPool::globalInstance()->setMaxThreadCount(savedMaxThreads);
 
-    std::printf("FRAMEARGS_SHADOW mismatches=%llu maxDepth=%llu\n", (unsigned long long)stats.mismatches, (unsigned long long)stats.maxDepth);
-    std::printf("FRAMEARGS_SHADOW outOfOrderPops=%llu\n", (unsigned long long)stats.outOfOrderPops);
+    std::printf("FRAMEARGS_DEPTH grade-chain-%d maxDepth=%llu outOfOrderPops=%llu\n", kNumGrades, (unsigned long long)stats.maxDepth, (unsigned long long)stats.outOfOrderPops);
     std::fflush(stdout);
 
     ASSERT_TRUE(ok) << error;
-    EXPECT_EQ(0u, stats.mismatches);
     EXPECT_EQ(0u, stats.outOfOrderPops);
+    EXPECT_EQ(headBefore.get(), FrameArgsOverlay::currentHead().get()) << "the render leaves no args on the thread";
 }

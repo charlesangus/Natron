@@ -238,13 +238,11 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
 
     PullFreshRecorder freshRecorder;
 
-    EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
-    assert(tls);
-    ParallelRenderArgsPtr frameArgs;
+    ParallelRenderArgsPtr frameArgs = getFrameArgs();
     // Popped when the call returns: a second direct call would otherwise find this call's stale
     // hash and time still on the thread and key its cache lookup with them.
     FrameArgsToken fallbackFrameArgs;
-    if (tls->frameArgs.empty()) {
+    if (!frameArgs) {
         // No pre-pass set this render up (a direct call, e.g. from a test or a script). Build the
         // minimal frame args renderRoI() builds in the same situation so that the hash used for
         // the cache key and the abort flag both have somewhere to live.
@@ -260,8 +258,6 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
         frameArgs->isSequentialRender = false;
         frameArgs->isRenderResponseToUserInteraction = true;
         fallbackFrameArgs = FrameArgsToken(this, frameArgs);
-    } else {
-        frameArgs = tls->frameArgs.back();
     }
     const CacheRetentionSignalsPtr retention = getNode()->getRetentionSignals();
     const AbortableRenderInfoPtr retentionAbortInfo = frameArgs->abortInfo.lock();
@@ -653,16 +649,15 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
         return _imp->mainInstance->renderDeepRoIFlattened(args, layers, outputImages, outputDeepImage);
     }
 
-    EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
     // No fallback frame args here, deliberately, unlike renderDeepRoI(): the hash this keys the
     // flattened Image with must be the one the scheduler assigned this node, the content hash of
     // the state being rendered. A hash read here instead could name a state the node has moved
     // to since, and the entry would then be served for a state it was not rendered in.
-    assert(tls && !tls->frameArgs.empty());
-    if (!tls || tls->frameArgs.empty()) {
+    const ParallelRenderArgsPtr frameArgs = getFrameArgs();
+    assert(frameArgs);
+    if (!frameArgs) {
         return eRenderRoIRetCodeFailed;
     }
-    const ParallelRenderArgsPtr frameArgs = tls->frameArgs.back();
 
     if (aborted()) {
         return eRenderRoIRetCodeAborted;

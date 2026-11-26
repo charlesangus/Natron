@@ -209,7 +209,7 @@ protected:
                                                  false /*draftMode*/,
                                                  RenderStatsPtr());
         const EffectInstancePtr effect = node->getEffectInstance();
-        const ParallelRenderArgsPtr base = effect->getParallelRenderArgsTLS();
+        const ParallelRenderArgsPtr base = effect->getFrameArgs();
         KnobDouble* asDouble = dynamic_cast<KnobDouble*>(knob.get());
         if (!base || !asDouble) {
             ADD_FAILURE() << "no frame args or not a double knob";

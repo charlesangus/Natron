@@ -1553,7 +1553,7 @@ LoopEnd::crossFrameImageWith(const EffectInstance* consumer,
         }
     }
 
-    const ParallelRenderArgsPtr frameArgs = consumer->getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr frameArgs = consumer->getFrameArgs();
     const AbortableRenderInfoPtr render = frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
     QThread* const self = QThread::currentThread();
     std::shared_ptr<CrossFrameChain> chain;
@@ -1910,7 +1910,7 @@ LoopEnd::feedbackImage(const EffectInstance* consumer,
     };
     double time0 = 0.;
     const U64 contextKey = restrictContextToNode(iterationAt(0, &time0), step.tail, 0);
-    const ParallelRenderArgsPtr frameArgs = consumer ? consumer->getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
+    const ParallelRenderArgsPtr frameArgs = consumer ? consumer->getFrameArgs() : ParallelRenderArgsPtr();
     const AbortableRenderInfoPtr render = frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
     QThread* const self = QThread::currentThread();
 
@@ -2930,7 +2930,7 @@ LoopEnd::evaluateStop(const Resolved& resolved,
     KnobStringPtr stopCondition = _stopCondition.lock();
     // The request pass, the render and every action of one frame agree on where the loop stops,
     // under each context the render asks under: rfv reads the context of the render that asks.
-    const ParallelRenderArgsPtr frameArgs = isRenderingTLS() ? getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
+    const ParallelRenderArgsPtr frameArgs = isRenderingTLS() ? getFrameArgs() : ParallelRenderArgsPtr();
     const AbortableRenderInfoPtr render = frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
     // Enclosing loops' variables reach the expression as loops.<name>.*, so where the loop stops
     // can change with the iteration of an enclosing loop: they key the result along with what the
@@ -3582,7 +3582,7 @@ LoopEnd::takePreviousStep(const RenderActionArgs& args,
 bool
 LoopEnd::abortIfEditedSinceFrameStart() const
 {
-    const ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr frameArgs = getFrameArgs();
     if (!frameArgs || !frameArgs->isRenderResponseToUserInteraction) {
         return false;
     }

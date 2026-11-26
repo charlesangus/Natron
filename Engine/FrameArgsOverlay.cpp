@@ -38,7 +38,6 @@ NATRON_NAMESPACE_ANONYMOUS_ENTER
 thread_local FrameArgsOverlayPtr tHead;
 
 // Written only when a counter moves, so the threads pushing and looking up share these lines read-only.
-std::atomic<std::uint64_t> gMismatches(0);
 std::atomic<std::uint64_t> gOutOfOrderPops(0);
 std::atomic<std::size_t> gMaxDepth(0);
 
@@ -175,10 +174,25 @@ FrameArgsOverlay::lookup(const FrameArgsOverlay* head,
     return fallback ? fallback->getArgsForHolder(key) : ParallelRenderArgsPtr();
 }
 
-std::uint64_t
-FrameArgsOverlay::noteMismatch()
+ParallelRenderArgsPtr
+FrameArgsOverlay::lookup(Key key,
+                         Filter accept)
 {
-    return gMismatches.fetch_add(1, std::memory_order_relaxed) + 1;
+    for (const FrameArgsOverlay* link = tHead.get(); link; link = link->_parent.get()) {
+        if (link->_isBase) {
+            const ParallelRenderArgsPtr args = link->_base ? link->_base->getArgsForHolder(key) : ParallelRenderArgsPtr();
+
+            return (args && accept(args)) ? args : ParallelRenderArgsPtr();
+        }
+        ParallelRenderArgsPtr args;
+        if (link->find(key, &args) && args && accept(args)) {
+            return args;
+        }
+    }
+    const FrameRenderContext* fallback = AppTLS::currentFrameContext();
+    const ParallelRenderArgsPtr args = fallback ? fallback->getArgsForHolder(key) : ParallelRenderArgsPtr();
+
+    return (args && accept(args)) ? args : ParallelRenderArgsPtr();
 }
 
 void
@@ -192,7 +206,6 @@ FrameArgsOverlay::stats()
 {
     Stats ret;
 
-    ret.mismatches = gMismatches.load(std::memory_order_relaxed);
     ret.outOfOrderPops = gOutOfOrderPops.load(std::memory_order_relaxed);
     ret.maxDepth = gMaxDepth.load(std::memory_order_relaxed);
 
@@ -202,7 +215,6 @@ FrameArgsOverlay::stats()
 void
 FrameArgsOverlay::resetStats()
 {
-    gMismatches.store(0, std::memory_order_relaxed);
     gOutOfOrderPops.store(0, std::memory_order_relaxed);
     gMaxDepth.store(0, std::memory_order_relaxed);
 }

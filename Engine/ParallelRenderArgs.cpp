@@ -363,7 +363,7 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
     PreRenderFrames framesToRender;
     collectPreRenderFrames(node, framesNeeded, reroutesMap, time, view, false /*includeRotoPaintTree*/, &framesToRender);
 
-    const ParallelRenderArgsPtr effectArgs = effect->getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr effectArgs = effect->getFrameArgs();
     const RenderContextPtr effectContext = effectArgs ? effectArgs->context : RenderContextPtr();
 
     for (PreRenderFrames::const_iterator it = framesToRender.begin(); it != framesToRender.end(); ++it) {
@@ -400,7 +400,7 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
         ///What region are we interested in for this input effect ? (This is in Canonical coords)
         RectD roi;
         bool roiIsInRequestPass = false;
-        ParallelRenderArgsPtr frameArgs = inputContext.args() ? inputContext.args() : inputEffect->getParallelRenderArgsTLS();
+        ParallelRenderArgsPtr frameArgs = inputContext.args() ? inputContext.args() : inputEffect->getFrameArgs();
         if (frameArgs && frameArgs->request) {
             roiIsInRequestPass = true;
         }
@@ -762,7 +762,7 @@ passContextArgs(const EffectInstancePtr& effect,
     if (found != passArgs->end()) {
         return found->second;
     }
-    const ParallelRenderArgsPtr base = effect->getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr base = effect->getFrameArgs();
     if (!base) {
         return ParallelRenderArgsPtr();
     }
@@ -1529,7 +1529,7 @@ reportContextCount(const NodePtr& treeRoot,
 
     U64 renderSequence = 0;
     const EffectInstancePtr rootEffect = treeRoot ? treeRoot->getEffectInstance() : EffectInstancePtr();
-    const ParallelRenderArgsPtr rootArgs = rootEffect ? rootEffect->getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
+    const ParallelRenderArgsPtr rootArgs = rootEffect ? rootEffect->getFrameArgs() : ParallelRenderArgsPtr();
     const AbortableRenderInfoPtr abortInfo = rootArgs ? rootArgs->abortInfo.lock() : AbortableRenderInfoPtr();
     if (abortInfo) {
         renderSequence = abortInfo->getRenderSequence();
@@ -1887,7 +1887,7 @@ InputContextArgs::InputContextArgs(const EffectInstance* consumer,
     }
     RenderContextPtr context;
     const bool scoped = InputContextScope::current(consumer, &context);
-    const ParallelRenderArgsPtr consumerArgs = consumer->getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr consumerArgs = consumer->getFrameArgs();
     if (!scoped) {
         const RenderContextPtr consumerContext = consumerArgs ? consumerArgs->context : RenderContextPtr();
         // An input the consumer requests under one context of its own is pulled under it, as the
@@ -1919,7 +1919,7 @@ InputContextArgs::InputContextArgs(const EffectInstance* consumer,
     }
     // The request pass did not plan this pull: it renders under a copy of the input's own args with
     // no request.
-    const ParallelRenderArgsPtr base = input->getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr base = input->getFrameArgs();
     if (!base) {
         // Outside a frame render there are no args to give a context to.
         _contextKey = 0;
@@ -2315,7 +2315,7 @@ ParallelRenderArgsSetter::updateNodesRequest(const FrameRequestMap& request)
             return;
         }
         const EffectInstancePtr effect = node->getEffectInstance();
-        const ParallelRenderArgsPtr current = effect ? effect->getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
+        const ParallelRenderArgsPtr current = effect ? effect->getFrameArgs() : ParallelRenderArgsPtr();
         if (!current) {
             return;
         }
@@ -2359,7 +2359,7 @@ ParallelRenderArgsSetter::updateNodesRequest(const FrameRequestMap& request)
     request.installContextArgs([](const NodePtr& node) {
         const EffectInstancePtr effect = node->getEffectInstance();
 
-        return effect ? effect->getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
+        return effect ? effect->getFrameArgs() : ParallelRenderArgsPtr();
     });
 }
 

@@ -161,12 +161,10 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         return eRenderRoIRetCodeAborted;
     }
 
-    EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
-    assert(tls);
-    ParallelRenderArgsPtr frameArgs;
+    ParallelRenderArgsPtr frameArgs = getFrameArgs();
     // Popped when the call returns, so a later direct call does not find this call's hash on the thread.
     FrameArgsToken fallbackFrameArgs;
-    if (tls->frameArgs.empty()) {
+    if (!frameArgs) {
         // A direct call (a test, a script, the viewer asking for a stage): give the hash the
         // identity cache keys on and the abort flag somewhere to live, as renderDeepRoI() does.
         frameArgs = std::make_shared<ParallelRenderArgs>();
@@ -182,8 +180,6 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         frameArgs->isRenderResponseToUserInteraction = true;
         frameArgs->abortInfo = args.abortInfo;
         fallbackFrameArgs = FrameArgsToken(this, frameArgs);
-    } else {
-        frameArgs = tls->frameArgs.back();
     }
 
     if (aborted()) {

@@ -38,9 +38,10 @@
 
 NATRON_NAMESPACE_ENTER
 
-// Only effect data is inherited: a spawned thread needs the frame args of the effects it renders
-// or evaluates (abort state, render time, request pass), while every other holder's data is
-// per-thread state that starts fresh.
+// Only effect data is inherited: a spawned thread needs the action counters of the effects it renders or evaluates,
+// and a plug-in thread function the render args of the effect that spawned it, while every other holder's data is
+// per-thread state that starts fresh. Frame args reach a spawned thread through the FrameArgsOverlay chain head its
+// SpawnedThreadScope installs.
 template <typename T>
 struct TLSInheritsFromSpawner
     : std::false_type {
@@ -67,8 +68,6 @@ makeInheritedTLSData(const EffectInstance::EffectTLSData& from,
 #ifdef DEBUG
     ret->canSetValue = from.canSetValue;
 #endif
-    ret->frameArgs = from.frameArgs;
-    ret->frameArgsSeeded = from.frameArgsSeeded;
 
     return ret;
 }
@@ -164,43 +163,6 @@ TLSHolder<T>::inheritFromSpawner([[maybe_unused]] const QThread* curThread) cons
 
 template <typename T>
 std::shared_ptr<T>
-TLSHolder<T>::createFromFrameContext([[maybe_unused]] const QThread* curThread) const
-{
-    if constexpr (!std::is_same<T, EffectInstance::EffectTLSData>::value) {
-        return std::shared_ptr<T>();
-    } else {
-        const FrameRenderContext* context = AppTLS::currentFrameContext();
-        if (!context) {
-            return std::shared_ptr<T>();
-        }
-        ParallelRenderArgsPtr args = context->getArgsForHolder(this);
-        if (!args) {
-            return std::shared_ptr<T>();
-        }
-
-        std::shared_ptr<T> data = std::make_shared<T>();
-        FrameArgsToken::seed(&data->frameArgs, &data->frameArgsSeeded, args);
-
-        return insertForThread(curThread, data);
-    }
-}
-
-template <typename T>
-void
-TLSHolder<T>::followFrameContext([[maybe_unused]] const QThread* curThread) const
-{
-    if constexpr (std::is_same<T, EffectInstance::EffectTLSData>::value) {
-        const std::shared_ptr<T> data = findDataForThread(curThread);
-        if (!data || (data->frameArgs.size() != (data->frameArgsSeeded ? 1u : 0u))) {
-            return;
-        }
-        const FrameRenderContext* context = AppTLS::currentFrameContext();
-        FrameArgsToken::seed(&data->frameArgs, &data->frameArgsSeeded, context ? context->getArgsForHolder(this) : ParallelRenderArgsPtr());
-    }
-}
-
-template <typename T>
-std::shared_ptr<T>
 TLSHolder<T>::getTLSData() const
 {
     QThread* curThread  = QThread::currentThread();
@@ -210,14 +172,7 @@ TLSHolder<T>::getTLSData() const
         return ret;
     }
 
-    ret = inheritFromSpawner(curThread);
-    if (ret) {
-        return ret;
-    }
-
-    // Even a const read installs the frame's args on this thread, so peeking at another effect's args belongs in the
-    // FrameRenderContext. On a task thread, null args mean the frame does not reach this effect, not that nothing renders.
-    return createFromFrameContext(curThread);
+    return inheritFromSpawner(curThread);
 }
 
 template <typename T>
@@ -232,11 +187,6 @@ TLSHolder<T>::getOrCreateTLSData() const
     }
 
     ret = inheritFromSpawner(curThread);
-    if (ret) {
-        return ret;
-    }
-
-    ret = createFromFrameContext(curThread);
     if (ret) {
         return ret;
     }

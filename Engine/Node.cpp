@@ -10024,7 +10024,7 @@ addIdentityNodesRecursively(const Node* caller,
 
 
     if (caller != node) {
-        ParallelRenderArgsPtr inputFrameArgs = node->getEffectInstance()->getParallelRenderArgsTLS();
+        ParallelRenderArgsPtr inputFrameArgs = node->getEffectInstance()->getFrameArgs();
         const FrameViewRequest* request = 0;
         bool isIdentity = false;
         if (inputFrameArgs && inputFrameArgs->request) {

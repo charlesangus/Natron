@@ -67,7 +67,7 @@ plannedAt(const EffectInstance* effect,
           double time,
           ViewIdx view)
 {
-    const ParallelRenderArgsPtr args = effect->getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr args = effect->getFrameArgs();
 
     return args && args->request && args->request->getFrameViewRequest(time, view);
 }

@@ -142,7 +142,7 @@ def build_graph():
     if viewer is None:
         viewer = app.createNode("fr.inria.built-in.Viewer")
     global constant
-    constant = app.createNode("net.sf.openfx.ConstantPlugin")
+    constant = app.createNode("Constant")
     constant.getParam("color").set(0.2, 0.6, 0.3, 1.0)
     viewer.connectInput(0, constant)
     wait_for_viewer()

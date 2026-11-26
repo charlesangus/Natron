@@ -164,6 +164,15 @@ try:
             keep["v"] = app.getViewer(viewer.getScriptName())
         return keep["v"]
 
+    def diag(label):
+        v = view()
+        if v is None:
+            report("NOTE diag %s: no view" % label)
+            return
+        report("NOTE diag %s: timeline=%r pv=%r geoFrame=%r refreshes=%r sceneShown=%r (no playing-state API)"
+               % (label, app.timelineGetTime(), pv().getCurrentFrame(), v.property("natronGeoFrame"),
+                  v.property("natronGeoRefreshes"), v.property("natronSceneShown")))
+
     def drag_and_nudge():
         require(viewer.connectInput(0, transform), "connect the Viewer to the GeoTransform")
         ok = yield ("until", lambda: viewer_up() or view() is not None, STARTUP_TIMEOUT_S)
@@ -266,8 +275,16 @@ try:
         budget_ms = period_ms + SAMPLE_MS
         stall_ms = 2. * period_ms
         for pass_index in range(2):
+            diag("pass %d before seeks" % pass_index)
+            # seek() returns early when the timeline is already on the frame, so leave it first to
+            # make the seek to FIRST always render.
+            other = FIRST + 11
+            pv().seek(other)
+            ok = yield ("until", lambda: prop("natronGeoFrame") == other, POLL_TIMEOUT_S)
+            report("NOTE pass %d: view reached frame %d before seeking back: %r" % (pass_index, other, ok))
             pv().seek(FIRST)
             ok = yield ("until", lambda: scene_drawn() and prop("natronGeoFrame") == FIRST, POLL_TIMEOUT_S)
+            diag("pass %d after seeks" % pass_index)
             check(ok, "pass %d: the view is on frame %d before playing" % (pass_index, FIRST))
             yield ("sleep", SETTLE_MS)
             resyncs = int(prop("natronGeoRefreshResyncs", 0) or 0)
@@ -275,6 +292,7 @@ try:
             started = time.time()
             start_sampling(samples, started)
             pv().startForward()
+            diag("pass %d just after start" % pass_index)
 
             def at_end():
                 shown = [s[2] for s in samples if s[2] is not None]
@@ -284,6 +302,12 @@ try:
             yield ("until", at_end, PLAY_TIMEOUT_S + 5)
             pv().pause()
             stop_sampling()
+            diag("pass %d just after pause" % pass_index)
+            if pass_index == 1:
+                for k in range(0, len(samples), 5):
+                    t, tl, gf, cue, shown = samples[k]
+                    report("NOTE pass 1 sample %d: t=%.0f ms timeline=%r geoFrame=%r staleCue=%r sceneShown=%r"
+                           % (k, 1000. * t, tl, gf, cue, shown))
             shown_at = []
             last = None
             for t, _, frame, _, _ in samples:

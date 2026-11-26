@@ -30,6 +30,8 @@ import traceback
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
 
 POLL_TIMEOUT_S = 30.0
+# How long a renderer error left from before an edit may take to clear once the render restarts.
+STALE_ERROR_TIMEOUT_S = 10.0
 SETTLE_MS = 700
 STARTUP_TIMEOUT_S = 60.0
 CTRL_TUMBLE_NAVIGATION = 0
@@ -513,7 +515,12 @@ try:
         ids = options(device_menu)
         require(device in ids, "the Device menu lists %r (%r)" % (device, ids))
         frames_before = prop("natronSceneRefineFrames") or 0
+        stale = prop("natronSceneRendererError")
         device_menu.set(ids.index(device))
+        if stale:
+            # The last device's failure shows until the render restarts under the new one; a failure
+            # that is still the same once the wait is up is the new device's too.
+            yield ("until", lambda: prop("natronSceneRendererError") != stale, STALE_ERROR_TIMEOUT_S)
         # Natron Utility publishes finished frames only: a new one is the new device's.
         ok = yield ("until", lambda: bool(prop("natronSceneRendererError")) or (
             (prop("natronSceneRefineFrames") or 0) > frames_before and bool(prop("natronSceneRefineConverged"))
@@ -601,7 +608,10 @@ try:
                       "the GPU frame matches the CPU one: %.4f%% of pixels beyond %d levels (at most %.2f%%)" % (
                           share * 100.0, DEVICE_PIXEL_TOLERANCE, DEVICE_MAX_DIFFERING * 100.0))
 
-        yield from render_on(device_menu, "auto", "auto")
+        # Auto takes the CPU wherever the GPU is not usable, such as a host whose only Vulkan device is a
+        # CPU one that NATRON_GPU_DEVICE does not name.
+        _, error = yield from render_on(device_menu, "auto", "auto")
+        check(not error, "Natron Utility renders with Device auto (%r)" % (error,))
         require(show_in_viewer(usd), "connect the Viewer back to the USDRead")
         settings.destroy()
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)

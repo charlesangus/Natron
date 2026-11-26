@@ -1839,6 +1839,17 @@ TEST_F(USDRenderUtilityGpuTest, AGpuGradeReadsTheGpuFrameOnTheDeviceAndTheCpuMap
     EXPECT_GT(covered, 100u) << "the frame is empty, which proves nothing";
 }
 
+namespace {
+// Whether native takes the GPU for query, asked off the main thread: the main thread is given the
+// settings summary stored before the last edit until a worker reads the new one.
+bool
+canRenderOnGpuOffTheMainThread(const NativeEffectBase* native,
+                               const GpuQuery& query)
+{
+    return std::async(std::launch::async, [native, &query]() { return native->canRenderOnGpu(query); }).get();
+}
+} // anon namespace
+
 // An Auto frame that ran out of GPU memory keeps later Auto frames off the GPU, but not a frame the
 // Device setting forces onto it.
 TEST_F(USDRenderUtilityGpuTest, AnAutoFallbackDoesNotRefuseAForcedGpuRender)
@@ -1872,19 +1883,19 @@ TEST_F(USDRenderUtilityGpuTest, AnAutoFallbackDoesNotRefuseAForcedGpuRender)
     query.plane = ImageLayerDesc::getRGBAComponents();
     query.nComps = 4;
     query.bitDepth = eImageBitDepthFloat;
-    ASSERT_TRUE(native->canRenderOnGpu(query));
+    ASSERT_TRUE(canRenderOnGpuOffTheMainThread(native, query));
 
     SchedulerFrame run;
     std::string error;
 
     ASSERT_TRUE(renderFrame(render, { render }, &run, &error)) << error;
-    ASSERT_FALSE(native->canRenderOnGpu(query)) << "the Auto frame did not fall back to the CPU, which proves nothing";
+    ASSERT_FALSE(canRenderOnGpuOffTheMainThread(native, query)) << "the Auto frame did not fall back to the CPU, which proves nothing";
 
     ASSERT_TRUE(selectUtilityDevice(settings, kUtilityDeviceGpu));
-    EXPECT_TRUE(native->canRenderOnGpu(query)) << "an Auto fallback refused a frame forced onto the GPU";
+    EXPECT_TRUE(canRenderOnGpuOffTheMainThread(native, query)) << "an Auto fallback refused a frame forced onto the GPU";
 
     ASSERT_TRUE(selectUtilityDevice(settings, kUtilityDeviceAuto));
-    EXPECT_FALSE(native->canRenderOnGpu(query));
+    EXPECT_FALSE(canRenderOnGpuOffTheMainThread(native, query));
     HydraRender::releaseAll();
 }
 
@@ -1969,7 +1980,7 @@ TEST_F(USDRenderRendererTest, TheMetadataFollowsThePurposeKnobs)
         char key[32];
         std::snprintf(key, sizeof(key), kUSDRenderMetadataPrimIdPrefix "%08x", HydraRender::primPathHash(path));
 
-        return effect->getOutputMetadata(1., ViewIdx(0)).getString(key).has_value();
+        return outputMetadataOffTheMainThread(effect).getString(key).has_value();
     };
 
     EXPECT_TRUE(named("/World/Default"));

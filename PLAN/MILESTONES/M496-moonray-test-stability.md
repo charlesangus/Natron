@@ -78,3 +78,14 @@ Fix the product races in our code or the MoonRay fork (M325 - MoonRay Fork: char
 - 2026-11-25 — **Flake diagnostics on main first (user):** land the watchdog (P1.T1) on main now so every gate and PR CI run dumps stacks on the known flakes, ahead of the fixes. Branch milestone/m496-flake-diagnostics off main with 6c18ea6ad cherry-picked (c4f6ae1db), extended to a process-wide fatal-signal dump and a per-test stall dump that fires before ctest's 300 s timeout; its own PR into main. This milestone's branch merges main afterwards.
 - 2026-11-25 (PM, user) — Picked up orphan PR #313 (fix/moonray-livetexture-exit-hang, no board row): ~AppManager releases CPU render engines and ends leftover MoonRay execComp children before exit, the suspected cause of the USDRenderMoonRay* 300 s timeouts and the 'shutdown stalled 30 s' exits. Main merged in (20338b65c), gate and Claude review running; it lands on main on its own PR.
 - 2026-11-25 (PM) — The flake diagnostics (#380: fatal-signal and pre-timeout stack dumps) and #313 (MoonRay children end with the app) are on main. Next: collect stacks from the next MoonRay timeouts or segfaults in any main-based gate or PR CI, then take P2.T2-T4 from them. If #313 alone stops the USDRenderMoonRay* timeouts, note that against P2.T2.
+- 2026-11-26 (PM, opus consultant) — **First watchdog stacks:** USDRenderMoonRayTest.PlainTexturesMatchTheirMaketxConversion stalled 150 s in 'render' on f16-gate3. The dump is at `.local/tmp/recover/m496-stall-f16gate3.txt`.
+  - **Cause:** a Natron-side livelock, not a mutex deadlock. HydraRenderImpl's renderEngine polls IsConverged() every 10 ms with no liveness bound (`:1675-1738`; MoonRay has no restart watch, so the kRestartUnseen remake never fires).
+  - **Why it never converges:** hdMoonray's ArrasRenderer never sees a FINISHED frame (the Arras client sits idle in recv), and the session's death or stall isn't reported through sessionFailure.
+  - **Ruled out:** the earlier endUpdate-mutex hypothesis.
+  - **Leading cause of the silence:** endUpdate returns early when !isEngineReady(), leaving the update pending. A stall in execComp's prep is also possible; it needs the child's stacks.
+  - **Fix:**
+    - a MoonRay no-progress bound (GetRenderStats signature unchanged for 30 s → remake the engine once, then fail with "MoonRay's render session stopped answering"), in the refine path too, for P2.T3;
+    - hdMoonray status for "waiting for engine";
+    - the watchdog dumps execComp children's stacks and the last render stats;
+    - a SIGSTOP-execComp test proving the bound.
+  - P2.T2 (exit hang) stays open on its own evidence.

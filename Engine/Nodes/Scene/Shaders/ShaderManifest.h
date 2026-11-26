@@ -39,6 +39,10 @@
 #define kShaderGroupCycles "Shader/Cycles"
 #define kShaderGroupMoonRay "Shader/MoonRay"
 
+// The target name of each renderer, as network layouts and builders list it.
+#define kShaderTargetCycles "cycles"
+#define kShaderTargetMoonRay "moonray"
+
 NATRON_NAMESPACE_ENTER
 
 /**
@@ -69,7 +73,8 @@ bool parseShaderManifest(const QByteArray& manifest,
                          std::string* error);
 
 /**
- * @brief Registers the type table of each renderer the manifests cover. Main thread.
+ * @brief Registers the type table and the stripe colour of each renderer the manifests cover.
+ * Main thread.
  **/
 void registerShaderPortTypeTables();
 

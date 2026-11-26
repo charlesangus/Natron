@@ -21,6 +21,8 @@
 
 #include <cmath>
 #include <cstdint>
+#include <map>
+#include <mutex>
 
 NATRON_NAMESPACE_ENTER
 
@@ -139,6 +141,51 @@ PortLook
 portLookFor(const PortDescriptor& port)
 {
     return portLookFor(port.typeClass, port.type, port.array, port.varying);
+}
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+std::mutex&
+targetColorsMutex()
+{
+    static std::mutex mutex;
+
+    return mutex;
+}
+
+std::map<std::string, PortColor>&
+targetColors()
+{
+    static std::map<std::string, PortColor> colors;
+
+    return colors;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+void
+registerNetworkTargetColor(const std::string& target,
+                           const PortColor& color)
+{
+    std::lock_guard<std::mutex> lock(targetColorsMutex());
+
+    targetColors()[target] = color;
+}
+
+bool
+networkTargetColor(const std::string& target,
+                   PortColor* color)
+{
+    std::lock_guard<std::mutex> lock(targetColorsMutex());
+    const std::map<std::string, PortColor>& colors = targetColors();
+    const auto it = colors.find(target);
+
+    if (it == colors.end()) {
+        return false;
+    }
+    *color = it->second;
+
+    return true;
 }
 
 NATRON_NAMESPACE_EXIT

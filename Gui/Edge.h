@@ -72,6 +72,21 @@ public:
      **/
     static double dist2ToSegment(const QLineF& line, const QPointF& point);
 
+    /**
+     * @brief Squared distance from point to the closest point on path, flattened to segments.
+     * Both must be in the same coordinate space.
+     **/
+    static double dist2ToPath(const QPainterPath& path, const QPointF& point);
+
+    /**
+     * @brief Whether the edge is drawn as a curve between two ports, which happens when both of its
+     * nodes lay their connectors out as port lists.
+     **/
+    bool isPipe() const;
+
+    // The curve of a pipe in item coordinates, empty when the edge is not one.
+    QPainterPath getPipePath() const;
+
     void setSource(const NodeGuiPtr & src);
 
     void setSourceAndDestination(const NodeGuiPtr & src, const NodeGuiPtr & dst);
@@ -147,6 +162,10 @@ public:
     QPen getDrawnPen() const;
 
 private:
+    // Lays the edge out as a pipe when both of its nodes are port lists; false otherwise.
+    bool buildPipe(const NodeGuiPtr& source, const NodeGuiPtr& dest);
+
+    void dropPipe();
 
     virtual void paint(QPainter *painter, const QStyleOptionGraphicsItem *options, QWidget *parent = 0) OVERRIDE FINAL;
 

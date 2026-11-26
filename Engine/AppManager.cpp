@@ -171,6 +171,7 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Scene/Shaders/ShaderManifest.h"
+#include "Engine/Nodes/Scene/USDMaterialBuilder.h"
 #include "Engine/Nodes/Test/OverlayImageGuiTestNode.h"
 #include "Engine/Nodes/Test/OverlayTestNode.h"
 #include "Engine/Nodes/Test/PortTestNode.h"
@@ -2253,6 +2254,7 @@ AppManager::loadBuiltinNodePlugins()
     registerBuiltInPlugin<RotoSmear>(QString::fromUtf8(""), false, true);
     registerBuiltInPlugin<PrecompNode>(QString::fromUtf8(NATRON_IMAGES_PATH "precompNodeIcon.png"), false, false);
     registerBuiltInPlugin<TrackerNode>(QString::fromUtf8(NATRON_IMAGES_PATH "trackerNodeIcon.png"), false, false);
+    registerBuiltInPlugin<USDMaterialBuilder>(QString::fromUtf8(NATRON_IMAGES_PATH "group_icon.png"), false, false);
     registerBuiltInPlugin<JoinViewsNode>(QString::fromUtf8(NATRON_IMAGES_PATH "joinViewsNode.png"), false, false);
     registerBuiltInPlugin<OneViewNode>(QString::fromUtf8(NATRON_IMAGES_PATH "oneViewNode.png"), false, false);
 

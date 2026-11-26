@@ -41,12 +41,14 @@
 #include <QJsonParseError>
 #include <QJsonValue>
 
+#include "Engine/Nodes/Network/PortTypes.h"
+
 NATRON_NAMESPACE_ENTER
 
 NATRON_NAMESPACE_ANONYMOUS_ENTER
 
-const char* const kRendererCycles = "cycles";
-const char* const kRendererMoonRay = "moonray";
+const char* const kRendererCycles = kShaderTargetCycles;
+const char* const kRendererMoonRay = kShaderTargetMoonRay;
 
 // Attributes no group lists go on this page, or on kControlsPage when the node has no groups.
 const char* const kOtherPage = "Other";
@@ -849,6 +851,17 @@ registerShaderPortTypeTables()
 {
     registerPortTypeTable(kRendererCycles, cyclesTypeTable());
     registerPortTypeTable(kRendererMoonRay, moonRayTypeTable());
+
+    PortColor cycles;
+    cycles.r = 232;
+    cycles.g = 125;
+    cycles.b = 13;
+    registerNetworkTargetColor(kRendererCycles, cycles);
+    PortColor moonRay;
+    moonRay.r = 64;
+    moonRay.g = 140;
+    moonRay.b = 224;
+    registerNetworkTargetColor(kRendererMoonRay, moonRay);
 }
 
 std::size_t

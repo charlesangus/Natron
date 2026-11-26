@@ -50,6 +50,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Dot.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Network/NetworkNode.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
@@ -66,6 +67,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/NodeGraphLowDetailLayer.h"
 #include "Gui/NodeGraphTextItem.h"
 #include "Gui/NodeGui.h"
+#include "Gui/PortNodeGui.h"
 #include "Gui/UndoHistory.h"
 
 #include "Global/QtCompat.h"
@@ -679,12 +681,14 @@ NodeGraph::createNodeGUI(const NodePtr & node,
     Dot* isDot = dynamic_cast<Dot*>( node->getEffectInstance().get() );
     Backdrop* isBd = dynamic_cast<Backdrop*>( node->getEffectInstance().get() );
     NodeGroup* isGrp = dynamic_cast<NodeGroup*>( node->getEffectInstance().get() );
-
+    NetworkNode* isNetwork = dynamic_cast<NetworkNode*>(node->getEffectInstance().get());
 
     if (isDot) {
         node_ui.reset( new DotGui(_imp->_nodeRoot) );
     } else if (isBd) {
         node_ui.reset( new BackdropGui(_imp->_nodeRoot) );
+    } else if (isNetwork) {
+        node_ui.reset(new PortNodeGui(_imp->_nodeRoot));
     } else {
         node_ui.reset( new NodeGui(_imp->_nodeRoot) );
     }

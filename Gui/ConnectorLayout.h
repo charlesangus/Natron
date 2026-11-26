@@ -104,6 +104,15 @@ public:
     virtual ConnectorAnchor outputAnchor(const std::string& outputName, const QGraphicsItem* space) const = 0;
 
     /**
+     * @brief Whether the node has an output edge: the stub drawn below an unconnected output, which
+     * is picked up to connect it.
+     **/
+    virtual bool hasOutputEdge() const
+    {
+        return true;
+    }
+
+    /**
      * @brief The node's connector nearest scenePos among those within reach of it, or a hit of
      * kind eConnectorKindNone. An unconnected input is reached from unconnectedInputGrabRadius,
      * anything else from grabRadius.

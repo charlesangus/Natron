@@ -541,7 +541,7 @@ NodeGui::initialize(NodeGraph* dag,
     ///Make the output edge
     EffectInstancePtr iseffect = internalNode->getEffectInstance();
     Backdrop* isBd = dynamic_cast<Backdrop*>( iseffect.get() );
-    if ( !isBd && !internalNode->isOutputNode() ) {
+    if (!isBd && !internalNode->isOutputNode() && _connectorLayout->hasOutputEdge()) {
         _outputEdge = new Edge(thisAsShared, edgeParent());
     }
 

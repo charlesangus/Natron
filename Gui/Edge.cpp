@@ -27,16 +27,23 @@
 
 #include <algorithm> // min, max
 #include <cmath>
+#include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
-#include <QSize>
-#include <QPainter>
 #include <QApplication>
 #include <QGraphicsScene>
+#include <QLinearGradient>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPainterPathStroker>
+#include <QSize>
 
 #include "Engine/Image.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Network/NetworkNode.h"
+#include "Engine/Nodes/Network/PortTypes.h"
 #include "Engine/Settings.h"
 #include "Engine/ViewerInstance.h"
 #include "Global/Enums.h"
@@ -46,6 +53,7 @@
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGraphTextItem.h"
 #include "Gui/NodeGui.h"
+#include "Gui/PortListLayout.h"
 
 #ifndef M_PI
 #define M_PI        3.14159265358979323846264338327950288   /* pi             */
@@ -96,6 +104,13 @@ struct EdgePrivate
     bool hasKindTint;
     QColor kindTint;
     QPointF middlePoint; //updated only when dest && source are valid
+    bool isPipe;
+    QPainterPath pipe;
+    QColor pipeSourceColor;
+    QColor pipeDestColor;
+    // The two ends' type classes differ, so the pipe fades from one colour to the other.
+    bool pipeConverts;
+    bool pipeArray;
 
     EdgePrivate(Edge* publicInterface,
                 int inputNb)
@@ -123,6 +138,12 @@ struct EdgePrivate
         , hasKindTint(false)
         , kindTint()
         , middlePoint()
+        , isPipe(false)
+        , pipe()
+        , pipeSourceColor()
+        , pipeDestColor()
+        , pipeConverts(false)
+        , pipeArray(false)
     {
     }
 
@@ -320,6 +341,9 @@ Edge::selectionColorWithAlpha(int alpha)
 void
 Edge::setIsSpliceHint(bool hint)
 {
+    if (hint && _imp->isPipe) {
+        return;
+    }
     _imp->isSpliceHint = hint;
     appearanceChanged();
 }
@@ -327,7 +351,19 @@ Edge::setIsSpliceHint(bool hint)
 bool
 Edge::isBendPointVisible() const
 {
-    return _imp->paintBendPoint;
+    return _imp->paintBendPoint && !_imp->isPipe;
+}
+
+bool
+Edge::isPipe() const
+{
+    return _imp->isPipe;
+}
+
+QPainterPath
+Edge::getPipePath() const
+{
+    return _imp->isPipe ? _imp->pipe : QPainterPath();
 }
 
 bool
@@ -376,6 +412,10 @@ Edge::computeVisibility() const
 
     // A deactivated node keeps its edges in the scene, hidden until the node is shown again.
     if (!dst->isVisibleTo(dst->parentItem())) {
+        return false;
+    }
+
+    if (!_imp->isOutputEdge && !_imp->source.lock() && dynamic_cast<PortListLayout*>(dst->getConnectorLayout())) {
         return false;
     }
 
@@ -477,6 +517,80 @@ makeEdges(const QRectF & bbox,
                              topLeft.y() ) );
 }
 
+static QColor
+pipeColor(PortTypeClass typeClass)
+{
+    const PortColor color = portTypeColor(typeClass);
+
+    return QColor(color.r, color.g, color.b);
+}
+
+bool
+Edge::buildPipe(const NodeGuiPtr& source,
+                const NodeGuiPtr& dest)
+{
+    if (!source || !dest || _imp->isOutputEdge) {
+        return false;
+    }
+    PortListLayout* sourceLayout = dynamic_cast<PortListLayout*>(source->getConnectorLayout());
+    PortListLayout* destLayout = dynamic_cast<PortListLayout*>(dest->getConnectorLayout());
+    if (!sourceLayout || !destLayout) {
+        return false;
+    }
+
+    const std::string outputName = destLayout->outputNameForInput(_imp->inputNb);
+    const ConnectorAnchor sourceAnchor = sourceLayout->outputAnchor(outputName, this);
+    const ConnectorAnchor destAnchor = destLayout->inputAnchor(_imp->inputNb, this);
+    const QPointF start = sourceAnchor.point;
+    const QPointF end = destAnchor.point;
+    const double reach = std::max(std::abs(end.x() - start.x()) / 2., (double)TO_DPIX(40));
+
+    prepareGeometryChange();
+    QPainterPath path(start);
+    path.cubicTo(start + sourceAnchor.tangent * reach, end + destAnchor.tangent * reach, end);
+    _imp->pipe = path;
+    _imp->isPipe = true;
+    setLine(QLineF(end, start));
+    _imp->middlePoint = _imp->pipe.pointAtPercent(0.5);
+    _imp->arrowHead.clear();
+    _imp->paintBendPoint = false;
+    _imp->bendPointHiddenAutomatically = false;
+    _imp->isSpliceHint = false;
+    if (_imp->label) {
+        _imp->label->hide();
+        _imp->enoughSpaceToShowLabel = false;
+    }
+
+    NetworkNode* sourceNetwork = sourceLayout->getNetworkNode();
+    NetworkNode* destNetwork = destLayout->getNetworkNode();
+    const OutputPortDescriptor* output = sourceNetwork ? sourceNetwork->findOutput(outputName) : NULL;
+    if (!output && sourceNetwork && !sourceNetwork->getOutputPorts().empty()) {
+        output = &sourceNetwork->getOutputPorts().front();
+    }
+    const std::optional<PortDescriptor> input = destNetwork ? destNetwork->getInputPortDescriptor(_imp->inputNb) : std::optional<PortDescriptor>();
+    const PortTypeClass sourceClass = output ? output->typeClass : PortTypeClass::Custom;
+    const PortTypeClass destClass = input ? input->typeClass : sourceClass;
+    _imp->pipeSourceColor = pipeColor(sourceClass);
+    _imp->pipeDestColor = pipeColor(destClass);
+    _imp->pipeConverts = (sourceClass != destClass);
+    _imp->pipeArray = output ? output->array : false;
+
+    reportGeometryToGraph(this);
+
+    return true;
+} // Edge::buildPipe
+
+void
+Edge::dropPipe()
+{
+    if (!_imp->isPipe) {
+        return;
+    }
+    prepareGeometryChange();
+    _imp->isPipe = false;
+    _imp->pipe = QPainterPath();
+}
+
 void
 Edge::initLine()
 {
@@ -498,6 +612,15 @@ Edge::initLineNow()
 
     if (!source && !dest) {
         return;
+    }
+
+    if (buildPipe(source, dest)) {
+        return;
+    }
+    if (_imp->isPipe) {
+        prepareGeometryChange();
+        _imp->isPipe = false;
+        _imp->pipe = QPainterPath();
     }
 
     double sc = scale();
@@ -714,6 +837,11 @@ strokedLineBounds(const QLineF& line,
 QRectF
 Edge::boundingRect() const
 {
+    if (_imp->isPipe) {
+        const qreal margin = getDrawnPen().widthF();
+
+        return _imp->pipe.boundingRect().adjusted(-margin, -margin, margin, margin);
+    }
     // The arrow head is painted, stroked with the same pen, outside the line's own rect, exactly
     // as shape() below already accounts for.
     QRectF rect = strokedLineBounds(line(), pen().widthF());
@@ -730,6 +858,12 @@ Edge::boundingRect() const
 QPainterPath
 Edge::shape() const
 {
+    if (_imp->isPipe) {
+        QPainterPathStroker stroker;
+        stroker.setWidth(std::max(getDrawnPen().widthF(), (qreal)kGraphicalContainerOffset));
+
+        return stroker.createStroke(_imp->pipe);
+    }
     QPainterPath path = QGraphicsLineItem::shape();
 
     path.addPolygon(_imp->arrowHead);
@@ -780,9 +914,31 @@ Edge::dist2ToSegment(const QLineF& line,
 bool
 Edge::contains(const QPointF &point) const
 {
-    double d2 = dist2ToSegment(line(), point);
+    double d2 = _imp->isPipe ? dist2ToPath(_imp->pipe, point) : dist2ToSegment(line(), point);
 
     return d2 <= kGraphicalContainerOffset * kGraphicalContainerOffset;
+}
+
+double
+Edge::dist2ToPath(const QPainterPath& path,
+                  const QPointF& point)
+{
+    double best = -1.;
+    const QList<QPolygonF> polygons = path.toSubpathPolygons();
+
+    for (const QPolygonF& polygon : polygons) {
+        for (int i = 0; (i + 1) < polygon.size(); ++i) {
+            const double d2 = dist2ToSegment(QLineF(polygon[i], polygon[i + 1]), point);
+            if ((best < 0.) || (d2 < best)) {
+                best = d2;
+            }
+        }
+        if ((polygon.size() == 1) && ((best < 0.) || (dist2(polygon[0], point) < best))) {
+            best = dist2(polygon[0], point);
+        }
+    }
+
+    return (best < 0.) ? std::numeric_limits<double>::infinity() : best;
 }
 
 bool
@@ -825,6 +981,7 @@ pickNearestEdgeCandidate(const QPointF& scenePos,
 void
 Edge::dragSource(const QPointF & src)
 {
+    dropPipe();
     setLine( QLineF(line().p1(), src) );
 
     double a = std::acos( line().dx() / std::max( EDGE_LENGTH_MIN, line().length() ) );
@@ -853,6 +1010,7 @@ Edge::dragSource(const QPointF & src)
 void
 Edge::dragDest(const QPointF & dst)
 {
+    dropPipe();
     setLine( QLineF( dst, line().p2() ) );
 
     double a = std::acos( line().dx() / std::max( EDGE_LENGTH_MIN, line().length() ) );
@@ -889,6 +1047,9 @@ Edge::setBendPointVisible(bool visible)
 bool
 Edge::isNearbyBendPoint(const QPointF & scenePoint)
 {
+    if (_imp->isPipe) {
+        return false;
+    }
     assert( _imp->source.lock() && _imp->dest.lock() );
     QPointF pos = mapFromScene(scenePoint);
     if ( ( pos.x() >= (_imp->middlePoint.x() - 10) ) && ( pos.x() <= (_imp->middlePoint.x() + 10) ) &&
@@ -984,10 +1145,18 @@ Edge::getDrawnPen() const
         color = Qt::white;
     } else if (_imp->useRenderingColor) {
         color = _imp->renderingColor;
+    } else if (_imp->isPipe) {
+        color = _imp->pipeSourceColor;
     } else {
         color = _imp->hasKindTint ? _imp->kindTint : _imp->defaultColor;
     }
     myPen.setColor(color);
+    if (_imp->isPipe) {
+        myPen.setCapStyle(Qt::RoundCap);
+        if (_imp->pipeArray) {
+            myPen.setWidthF(myPen.widthF() * 2.);
+        }
+    }
 
     return myPen;
 }
@@ -1014,6 +1183,24 @@ Edge::paint(QPainter* painter,
 
     QPen myPen = getDrawnPen();
     const QColor color = myPen.color();
+
+    if (_imp->isPipe) {
+        const bool overridden = _imp->isSpliceHint || _imp->useHighlight || _imp->useSelected || _imp->useRenderingColor;
+        if (_imp->pipeConverts && !overridden) {
+            const QPointF start = _imp->pipe.pointAtPercent(0.);
+            const QPointF end = _imp->pipe.pointAtPercent(1.);
+            QLinearGradient gradient(start, end);
+            gradient.setColorAt(0., _imp->pipeSourceColor);
+            gradient.setColorAt(1., _imp->pipeDestColor);
+            myPen.setBrush(gradient);
+        }
+        painter->setPen(myPen);
+        painter->setBrush(Qt::NoBrush);
+        painter->drawPath(_imp->pipe);
+
+        return;
+    }
+
     painter->setPen(myPen);
 
 

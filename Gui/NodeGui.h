@@ -623,6 +623,8 @@ protected:
 
     virtual bool wantsLabelWrap() const { return true; }
 
+    NodeGraphTextItem* getNameItem() const { return _nameItem; }
+
     virtual void getInitialSize(int *w, int *h) const;
 
     void getSizeWithPreview(int *w, int *h) const;

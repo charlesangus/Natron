@@ -88,6 +88,20 @@ PortLook portLookFor(PortTypeClass typeClass,
 
 PortLook portLookFor(const PortDescriptor& port);
 
+/**
+ * @brief Makes color the stripe colour drawn for target on the nodes and builders that list it,
+ * replacing any it had.
+ **/
+void registerNetworkTargetColor(const std::string& target,
+                                const PortColor& color);
+
+/**
+ * @brief Writes target's stripe colour to *color. False, leaving it untouched, when target has
+ * none registered.
+ **/
+bool networkTargetColor(const std::string& target,
+                        PortColor* color);
+
 NATRON_NAMESPACE_EXIT
 
 #endif // Engine_Nodes_Network_PortTypes_h

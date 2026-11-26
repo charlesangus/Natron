@@ -872,8 +872,9 @@ EffectInstance::getAbortState(bool* isRenderResponseToUserInteraction,
     const ParallelRenderArgsPtr args = (tls && !tls->frameArgs.empty()) ? tls->frameArgs.back() : ParallelRenderArgsPtr();
     AbortableRenderInfoPtr argsAbortInfo = args ? args->abortInfo.lock() : AbortableRenderInfoPtr();
 
-    // Frame args a direct evaluation made up on a pool thread know no render: the lent one is it.
-    if (!argsAbortInfo && tInheritedAbort.abortInfo) {
+    // Frame args a direct evaluation made up on a pool thread know no render, or carry the lent
+    // one: it is answered without being cached on the thread, where it would outlive its scope.
+    if (tInheritedAbort.abortInfo && (!argsAbortInfo || (argsAbortInfo == tInheritedAbort.abortInfo))) {
         *isRenderResponseToUserInteraction = tInheritedAbort.isRenderResponseToUserInteraction;
         *abortInfo = tInheritedAbort.abortInfo;
         *treeRoot = tInheritedAbort.treeRoot;
@@ -924,6 +925,17 @@ adoptThreadAbortState(ParallelRenderArgs* args)
     args->isRenderResponseToUserInteraction = isRenderUserInteraction;
     args->abortInfo = abortInfo;
     args->treeRoot = treeRoot ? treeRoot->getNode() : NodePtr();
+}
+
+void
+adoptInheritedAbortState(ParallelRenderArgs* args)
+{
+    if (!args || !tInheritedAbort.abortInfo) {
+        return;
+    }
+    args->isRenderResponseToUserInteraction = tInheritedAbort.isRenderResponseToUserInteraction;
+    args->abortInfo = tInheritedAbort.abortInfo;
+    args->treeRoot = tInheritedAbort.treeRoot ? tInheritedAbort.treeRoot->getNode() : NodePtr();
 }
 
 bool

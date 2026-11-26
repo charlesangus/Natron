@@ -52,6 +52,7 @@
 #include "Engine/Nodes/Loop/GeoForEachBegin.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
+#include "Engine/Nodes/Loop/LoopEndCooks.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/PyRFV.h"
 #include "Engine/TLSHolder.h"
@@ -61,86 +62,12 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 
-typedef std::pair<Node*, int> WalkStep;
-
-// Counts the loops it enters: a GeoForEachEnd met going up opens a nested loop, whose own
-// GeoForEachBegins close it, so only a GeoForEachBegin met at depth 0 pairs. A nested
-// GeoForEachEnd's Piece input is outside its loop and is walked at the depth outside it.
-void
-collectPairedBegins(const NodePtr& from,
-                    std::set<Node*>* found)
+const LoopEndKind&
+forEachKind()
 {
-    std::set<WalkStep> visited;
-    std::vector<std::pair<NodePtr, int>> pending;
+    static const LoopEndKind kind = { &GeoForEachBegin::isGeoForEachBegin, &GeoForEachEnd::isGeoForEachEnd };
 
-    pending.push_back(std::make_pair(from, 0));
-    while (!pending.empty()) {
-        const NodePtr node = pending.back().first;
-        int depth = pending.back().second;
-        pending.pop_back();
-        if (!node || !visited.insert(WalkStep(node.get(), depth)).second) {
-            continue;
-        }
-        if (GeoForEachBegin::isGeoForEachBegin(node)) {
-            if (depth == 0) {
-                found->insert(node.get());
-                continue;
-            }
-            --depth;
-        } else if (GeoForEachEnd::isGeoForEachEnd(node)) {
-            NodePtr piece = node->getInput(1);
-            if (piece) {
-                pending.push_back(std::make_pair(piece, depth));
-            }
-            NodePtr body = node->getInput(0);
-            if (body) {
-                pending.push_back(std::make_pair(body, depth + 1));
-            }
-            continue;
-        }
-        for (int i = 0, n = node->getNInputs(); i < n; ++i) {
-            NodePtr input = node->getInput(i);
-            if (input) {
-                pending.push_back(std::make_pair(input, depth));
-            }
-        }
-    }
-}
-
-void
-collectPairedEnds(const NodePtr& begin,
-                  std::set<Node*>* found)
-{
-    std::set<WalkStep> visited;
-    std::vector<std::pair<NodePtr, int>> pending;
-    std::vector<NodePtr> outputs;
-
-    begin->appendOutputsWithGroupRedirection(&outputs);
-    for (NodePtr& output : outputs) {
-        pending.push_back(std::make_pair(std::move(output), 0));
-    }
-    while (!pending.empty()) {
-        const NodePtr node = pending.back().first;
-        int depth = pending.back().second;
-        pending.pop_back();
-        if (!node || !visited.insert(WalkStep(node.get(), depth)).second) {
-            continue;
-        }
-        if (GeoForEachEnd::isGeoForEachEnd(node)) {
-            if (depth == 0) {
-                found->insert(node.get());
-                continue;
-            }
-            --depth;
-        } else if (GeoForEachBegin::isGeoForEachBegin(node)) {
-            ++depth;
-        }
-        outputs.clear();
-        node->appendOutputsWithGroupRedirection(&outputs);
-        for (NodePtr& output : outputs) {
-            pending.push_back(std::make_pair(std::move(output), depth));
-        }
-    }
+    return kind;
 }
 
 struct FeedbackRegistry {
@@ -197,6 +124,7 @@ private:
 
 GeoForEachEnd::GeoForEachEnd(NodePtr node)
     : NativeEffectBase(node)
+    , _pairing(forEachKind())
 {
 }
 
@@ -219,66 +147,15 @@ GeoForEachEnd::isGeoForEachEnd(const NodePtr& node)
 std::shared_ptr<GeoForEachEnd>
 GeoForEachEnd::pairedEndOf(const NodePtr& begin)
 {
-    if (!begin) {
-        return std::shared_ptr<GeoForEachEnd>();
-    }
-    std::set<Node*> found;
-    collectPairedEnds(begin, &found);
-    if (found.size() != 1) {
-        return std::shared_ptr<GeoForEachEnd>();
-    }
-    Node* end = *found.begin();
+    const NodePtr end = loopPairedEnd(forEachKind(), begin);
 
-    return std::dynamic_pointer_cast<GeoForEachEnd>(end->getEffectInstance());
+    return end ? std::dynamic_pointer_cast<GeoForEachEnd>(end->getEffectInstance()) : std::shared_ptr<GeoForEachEnd>();
 }
 
 std::vector<NodePtr>
 GeoForEachEnd::getBegins() const
 {
-    const U64 generation = LoopEnd::getGraphGeneration();
-    {
-        QMutexLocker k(&_pairingMutex);
-        if (_pairingValid && (_pairingGeneration == generation)) {
-            std::vector<NodePtr> begins;
-            bool expired = false;
-            for (const NodeWPtr& weak : _begins) {
-                NodePtr begin = weak.lock();
-                if (!begin) {
-                    expired = true;
-                    break;
-                }
-                begins.push_back(std::move(begin));
-            }
-            if (!expired) {
-                return begins;
-            }
-        }
-    }
-
-    std::vector<NodePtr> begins;
-    const NodePtr self = getNode();
-    const NodePtr source = self ? self->getInput(0) : NodePtr();
-    if (source) {
-        std::set<Node*> found;
-        collectPairedBegins(source, &found);
-        for (Node* node : found) {
-            // Only those that pair with this node alone open its loop.
-            NodePtr begin = node->shared_from_this();
-            std::set<Node*> ends;
-            collectPairedEnds(begin, &ends);
-            if ((ends.size() == 1) && (*ends.begin() == self.get())) {
-                begins.push_back(std::move(begin));
-            }
-        }
-    }
-    std::sort(begins.begin(), begins.end(), [](const NodePtr& a, const NodePtr& b) { return a->getScriptName_mt_safe() < b->getScriptName_mt_safe(); });
-
-    QMutexLocker k(&_pairingMutex);
-    _begins.assign(begins.begin(), begins.end());
-    _pairingGeneration = generation;
-    _pairingValid = true;
-
-    return begins;
+    return _pairing.getBegins(getNode());
 }
 
 std::string
@@ -909,101 +786,18 @@ GeoForEachEnd::evaluateStop(const std::vector<Iteration>& iterations,
     return stopAt;
 } // GeoForEachEnd::evaluateStop
 
-class GeoForEachEnd::RunningCookScope {
-public:
-    explicit RunningCookScope(GeoForEachEnd* end)
-        : _end(end)
-    {
-        bool userInteraction = false;
-        AbortableRenderInfoPtr abortInfo;
-        EffectInstancePtr treeRoot;
-        if (!end->getAbortState(&userInteraction, &abortInfo, &treeRoot) || !userInteraction || !abortInfo || !abortInfo->canAbort()) {
-            return;
-        }
-        _cook.startHash = end->getContextFreeRenderHash();
-        _cook.abortInfo = abortInfo;
-        QMutexLocker k(&end->_runningMutex);
-        _entry = end->_running.insert(end->_running.end(), _cook);
-        _registered = true;
-    }
-
-    ~RunningCookScope()
-    {
-        if (_registered) {
-            QMutexLocker k(&_end->_runningMutex);
-            _end->_running.erase(_entry);
-        }
-    }
-
-    RunningCookScope(const RunningCookScope&) = delete;
-    RunningCookScope& operator=(const RunningCookScope&) = delete;
-
-    // onNodeHashChanged() only hears of an edit once something rehashes the node.
-    bool editedSinceStart() const
-    {
-        return _registered && _end->abortIfEditedSince(_cook);
-    }
-
-private:
-    GeoForEachEnd* _end;
-    RunningCook _cook;
-    std::list<RunningCook>::iterator _entry;
-    bool _registered = false;
-};
-
-bool
-GeoForEachEnd::abortIfEditedSince(const RunningCook& cook) const
-{
-    // A drag keeps its oldest render, as it keeps any render.
-    const AppInstancePtr app = getApp();
-    if (app && app->isDraftRenderEnabled()) {
-        return false;
-    }
-    const NodePtr node = getNode();
-    U64 current = 0;
-    const bool madeBeforeEdit = cook.abortInfo->getRenderSequence() <= _editedAtRenderSequence.load();
-    if (!node || (!madeBeforeEdit && node->getHashValueIfUpToDate(&current) && (current == cook.startHash))) {
-        return false;
-    }
-    cook.abortInfo->setAborted();
-
-    return true;
-}
-
 void
 GeoForEachEnd::onNodeHashChanged(U64 hash)
 {
     NativeEffectBase::onNodeHashChanged(hash);
 
-    abortRunningCooks(&hash);
+    _cooks.onHashChanged(hash);
 }
 
 void
 GeoForEachEnd::abortCooksStaleAfterEdit()
 {
-    noteEditAtLatestRenderSequence(&_editedAtRenderSequence);
-    abortRunningCooks(nullptr);
-}
-
-void
-GeoForEachEnd::abortRunningCooks(const U64* keepHash)
-{
-    const AppInstancePtr app = getApp();
-    if (app && app->isDraftRenderEnabled()) {
-        return;
-    }
-    std::vector<AbortableRenderInfoPtr> stale;
-    {
-        QMutexLocker k(&_runningMutex);
-        for (const RunningCook& cook : _running) {
-            if (!keepHash || (cook.startHash != *keepHash)) {
-                stale.push_back(cook.abortInfo);
-            }
-        }
-    }
-    for (const AbortableRenderInfoPtr& abortInfo : stale) {
-        abortInfo->setAborted();
-    }
+    _cooks.abortStaleAfterEdit();
 }
 
 StatusEnum
@@ -1011,7 +805,7 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
                               GeoDetailConstPtr* outputDetail,
                               std::string* errorMessage)
 {
-    const RunningCookScope running(this);
+    const LoopEndCooks::Scope running(&_cooks);
     const Settings s = readSettings();
     const std::string loopName = getLoopName();
     const bool pieces = (s.iteration == eGeoForEachIteratePieces);
@@ -1155,15 +949,14 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
         return eStatusOK;
     }
 
-    std::vector<RenderContextPtr> contexts(run.size());
-    for (std::size_t j = 0; j < run.size(); ++j) {
-        contexts[j] = iterationContext(base, loopName, iterations[run[j]], numIterations, pieces, GeoDetailConstPtr());
-    }
     std::vector<GeoDetailConstPtr> results(run.size());
     std::vector<std::string> errors(run.size());
     std::vector<RenderRoIRetCode> codes(run.size(), eRenderRoIRetCodeOk);
+    // Each iteration builds its own context as it starts, so an abort is not held up behind a
+    // context for every iteration: at the largest counts that alone takes seconds.
     const auto cook = [&](std::size_t j) {
-        codes[j] = body->evaluateGeometry(EvaluateGeometryArgs(args.time, args.view, args.byPassCache, contexts[j]), &results[j], &errors[j]);
+        const RenderContextPtr context = iterationContext(base, loopName, iterations[run[j]], numIterations, pieces, GeoDetailConstPtr());
+        codes[j] = body->evaluateGeometry(EvaluateGeometryArgs(args.time, args.view, args.byPassCache, context), &results[j], &errors[j]);
     };
 
     // The first iteration cooks alone, so what every iteration shares upstream of the
@@ -1208,13 +1001,16 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
     }
 
     std::vector<std::string> warnings;
-    GeoDetail merged = GeoMerge::merge(std::span<const GeoDetailConstPtr>(results), &warnings);
+    std::optional<GeoDetail> merged = GeoMerge::merge(std::span<const GeoDetailConstPtr>(results), &warnings, [this, &running]() { return running.editedSinceStart() || aborted(); });
+    if (!merged) {
+        return eStatusFailed;
+    }
     if (warnings.empty()) {
         postMessage(eMessageTypeInfo, std::string());
     } else {
         postMessage(eMessageTypeWarning, getScriptName_mt_safe() + ": " + warnings.front());
     }
-    *outputDetail = std::make_shared<const GeoDetail>(std::move(merged));
+    *outputDetail = std::make_shared<const GeoDetail>(std::move(*merged));
 
     return eStatusOK;
 } // GeoForEachEnd::renderGeometry

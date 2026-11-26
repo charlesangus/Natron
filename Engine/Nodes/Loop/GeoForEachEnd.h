@@ -40,6 +40,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/GeoDetail.h"
 #include "Engine/Nodes/Loop/GeoForEachPieces.h"
+#include "Engine/Nodes/Loop/LoopEndCooks.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RenderContext.h"
 
@@ -238,31 +239,12 @@ private:
     KnobStringWPtr _stopCondition;
     KnobStringWPtr _stopAttribute;
 
-    mutable QMutex _pairingMutex;
-    mutable U64 _pairingGeneration = 0;
-    mutable bool _pairingValid = false;
-    mutable std::vector<NodeWPtr> _begins;
+    LoopEndPairing _pairing;
 
     QMutex _messageMutex;
     std::string _posted;
 
-    // A viewer cook of this node and the hash it started under. An edit keeps the oldest viewer
-    // render running, and a loop can cook for minutes, so the cook is aborted once the hash moves
-    // or an edit of this node or its body is held back by the render it cooks in.
-    struct RunningCook {
-        U64 startHash = 0;
-        AbortableRenderInfoPtr abortInfo;
-    };
-    class RunningCookScope;
-
-    bool abortIfEditedSince(const RunningCook& cook) const WARN_UNUSED_RETURN;
-    // Aborts the running cooks, but those started under keepHash when one is given; not during a drag.
-    void abortRunningCooks(const U64* keepHash);
-
-    QMutex _runningMutex;
-    std::list<RunningCook> _running;
-    // See noteEditAtLatestRenderSequence().
-    std::atomic<U64> _editedAtRenderSequence { 0 };
+    LoopEndCooks _cooks { this };
 };
 
 NATRON_NAMESPACE_EXIT

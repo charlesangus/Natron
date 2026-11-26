@@ -34,6 +34,7 @@
 #include <set>
 #include <string>
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
 #include "Engine/GeoDetail.h"
 #include "Engine/GeoDetailCacheEntry.h"
@@ -110,8 +111,10 @@ collectGeometryFramesForInput(const FramesNeededMap& framesNeeded,
 // hash and time.
 class ScopedGeometryFallbackFrameArgs {
 public:
-    explicit ScopedGeometryFallbackFrameArgs(const EffectInstance::EffectTLSDataPtr& tls)
+    ScopedGeometryFallbackFrameArgs(const EffectInstance::EffectTLSDataPtr& tls,
+                                    const AbortableRenderInfoPtr& ownedAbortInfo)
         : _tls(tls)
+        , _ownedAbortInfo(ownedAbortInfo)
     {
     }
 
@@ -124,6 +127,8 @@ public:
 
 private:
     EffectInstance::EffectTLSDataPtr _tls;
+    // The frame args hold their abort info weakly.
+    AbortableRenderInfoPtr _ownedAbortInfo;
 };
 
 void
@@ -333,8 +338,17 @@ EffectInstance::evaluateGeometry(const EvaluateGeometryArgs& args,
         // The viewer's scene path sets up no frame args, but its render is on the thread, and is
         // the one an edit aborts: nodes reading the abort flag from these args must see it.
         adoptThreadAbortState(frameArgs.get());
+        if (!frameArgs->abortInfo.lock()) {
+            adoptInheritedAbortState(frameArgs.get());
+        }
+        // Only when no render is known: an info of its own would hide the lent one from aborted().
+        AbortableRenderInfoPtr ownedAbortInfo;
+        if (!frameArgs->abortInfo.lock()) {
+            ownedAbortInfo = AbortableRenderInfo::create(true, 0);
+            frameArgs->abortInfo = ownedAbortInfo;
+        }
         tls->frameArgs.push_back(frameArgs);
-        fallbackFrameArgs.reset(new ScopedGeometryFallbackFrameArgs(tls));
+        fallbackFrameArgs.reset(new ScopedGeometryFallbackFrameArgs(tls, ownedAbortInfo));
     } else {
         frameArgs = tls->frameArgs.back();
     }
@@ -430,7 +444,7 @@ EffectInstance::evaluateGeometry(const EvaluateGeometryArgs& args,
     cacheRequest.time = args.time;
     cacheRequest.view = args.view;
     cacheRequest.timeVaries = frameArgs->isFrameVaryingOrAnimated;
-    cacheRequest.useCache = !args.byPassCache && (!isWriter() || !isRenderingOwnSequence());
+    cacheRequest.useCache = !args.byPassCache && (!isWriter() || !isRenderingOwnSequence()) && !renderContextHasOneUseVariables(frameArgs->context);
     cacheRequest.clean = &clean;
 
     const GeometryRenderFunc render = [&](GeoDetailConstPtr* renderedDetail) -> RenderRoIRetCode {

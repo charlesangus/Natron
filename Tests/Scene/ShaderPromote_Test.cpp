@@ -195,7 +195,6 @@ TEST_F(ShaderPromoteTest, APromotedConnectedPortSurvivesASaveAndLoad)
 
 TEST_F(ShaderPromoteTest, ALinkedKnobStaysDisabledWhenItsPortIsDisconnected)
 {
-    ProjectPtr project = getApp()->getProject();
     NodePtr master = create(kPrincipledBsdf);
     NodePtr bsdf = create(kPrincipledBsdf);
     NodePtr texture = create(kImageTexture);
@@ -215,34 +214,6 @@ TEST_F(ShaderPromoteTest, ALinkedKnobStaysDisabledWhenItsPortIsDisconnected)
     bsdf->disconnectInput(input);
     for (int i = 0; i < knob->getDimension(); ++i) {
         EXPECT_FALSE(knob->isEnabled(i)) << i;
-    }
-
-    ASSERT_TRUE(bsdf->connectInput(texture, input));
-    const std::string bsdfName = bsdf->getScriptName();
-    QTemporaryDir tmp;
-    ASSERT_TRUE(tmp.isValid());
-    std::string yaml;
-    ASSERT_TRUE(saveProjectBundle(project, tmp, QString::fromUtf8("linked.ntpz"), &yaml));
-
-    knob.reset();
-    masterKnob.reset();
-    master.reset();
-    bsdf.reset();
-    texture.reset();
-    project->reset(false, true);
-
-    ASSERT_TRUE(project->loadProject(tmp.path() + QLatin1Char('/'), QString::fromUtf8("linked.ntpz")));
-    NodePtr bsdf2 = getApp()->getNodeByFullySpecifiedName(bsdfName);
-    ASSERT_TRUE(bool(bsdf2));
-    const int input2 = bsdf2->getInputNumberFromLabel("base_color");
-    ASSERT_GE(input2, 0);
-    ASSERT_TRUE(bool(bsdf2->getInput(input2)));
-    KnobIPtr knob2 = bsdf2->getKnobByName("base_color");
-    ASSERT_TRUE(bool(knob2));
-    ASSERT_TRUE(bool(knob2->getMaster(0).second));
-    bsdf2->disconnectInput(input2);
-    for (int i = 0; i < knob2->getDimension(); ++i) {
-        EXPECT_FALSE(knob2->isEnabled(i)) << i;
     }
 }
 

@@ -62,14 +62,15 @@ NATRON_NAMESPACE_USING
 /**
  * Instances rendered through the Cycles delegate land where USD puts them: each copy is scaled
  * and rotated about its own origin before it moves to its point, and only then does the
- * instancer's transform apply. Composed the other way round, a copy at point p with scale s
- * lands near s * p, so every copy of a small prototype bunches up at the origin.
+ * instancer's transform apply; a nested instancer's copies move with each copy of the instancer
+ * that holds them. Composed the other way round, a copy at point p with scale s lands near s * p,
+ * so every copy of a small prototype bunches up at the origin.
  *
  * The scenes are seen by an orthographic camera at z = 10 looking down -Z with a 10 x 10 window,
  * rendered kSize x kSize, so a scene unit is kSize / 10 pixels.
  **/
 namespace {
-const int kSize = 128;
+const int kSize = 256;
 const double kWindow = 10.;
 const double kCameraZ = 10.;
 const char* const kCameraPath = "/Cam";
@@ -78,20 +79,86 @@ const U64 kInstancerLayerHash = 0x4d36313601ull;
 const U64 kCameraLayerHash = 0x4d36313602ull;
 const float kCovered = 0.5f;
 
-// The prototype box is 4 x 2 x 2, so a copy scaled by 0.25 is 1 unit wide, half a unit tall and
-// deep, its front face at z = 0.25.
-const double kInstanceScale = 0.25;
-const double kHalfLength = 0.5;
-const double kHalfWidth = 0.25;
-const double kFrontZ = 0.25;
-// Probes kProbe along each of a copy's axes: inside its half-length, outside its half-width, each
-// more than a pixel filter's width from the edge.
-const double kProbe = 0.4;
+// Probes sit this far inside or outside a copy's edges, about 8 pixels, well clear of the pixel
+// filter.
+const double kMargin = 0.3;
+// Nothing may be covered this close to the origin; every copy here stays clear of it.
+const double kEmptyRadius = 1.;
 
-struct Expected {
-    PXR_NS::GfVec3d centre; // in world space
-    bool rotated = false; // 90 degrees about Z, so the long side runs along Y
-};
+// A copy is the 2-unit cube, centred on its origin, carried to world by a matrix (row vectors).
+// Every copy here keeps its X and Y axes square to each other and in the XY plane.
+typedef PXR_NS::GfMatrix4d Copy;
+
+PXR_NS::GfMatrix4d
+scaleMatrix(const PXR_NS::GfVec3d& s)
+{
+    PXR_NS::GfMatrix4d m(1.);
+
+    return m.SetScale(s);
+}
+
+PXR_NS::GfMatrix4d
+turnAboutZ(double degrees)
+{
+    PXR_NS::GfMatrix4d m(1.);
+
+    return m.SetRotate(PXR_NS::GfRotation(PXR_NS::GfVec3d(0., 0., 1.), degrees));
+}
+
+PXR_NS::GfMatrix4d
+translateMatrix(const PXR_NS::GfVec3d& t)
+{
+    PXR_NS::GfMatrix4d m(1.);
+
+    return m.SetTranslate(t);
+}
+
+// A 2-unit cube stretched to 4 x 2 x 2 by its own transform, which applies before the instance's.
+bool
+defineBox(const PXR_NS::UsdStageRefPtr& stage,
+          const PXR_NS::SdfPath& path)
+{
+    PXR_NS::UsdGeomCube box = PXR_NS::UsdGeomCube::Define(stage, path);
+    if (!box) {
+        return false;
+    }
+    box.CreateSizeAttr(PXR_NS::VtValue(2.));
+    box.AddScaleOp().Set(PXR_NS::GfVec3f(2.f, 1.f, 1.f));
+
+    return true;
+}
+
+// One copy of prototype 0 per point, turned degrees about Z when turns is not empty.
+void
+setPoints(PXR_NS::UsdGeomPointInstancer& instancer,
+          const std::vector<PXR_NS::GfVec3f>& positions,
+          const std::vector<PXR_NS::GfVec3f>& scales,
+          const std::vector<double>& turns)
+{
+    instancer.CreateProtoIndicesAttr(PXR_NS::VtValue(PXR_NS::VtIntArray(positions.size(), 0)));
+    instancer.CreatePositionsAttr(PXR_NS::VtValue(PXR_NS::VtVec3fArray(positions.begin(), positions.end())));
+    instancer.CreateScalesAttr(PXR_NS::VtValue(PXR_NS::VtVec3fArray(scales.begin(), scales.end())));
+    if (turns.empty()) {
+        return;
+    }
+    PXR_NS::VtQuathArray orientations;
+    for (double degrees : turns) {
+        const PXR_NS::GfQuatd q = PXR_NS::GfRotation(PXR_NS::GfVec3d(0., 0., 1.), degrees).GetQuat();
+        orientations.push_back(PXR_NS::GfQuath(PXR_NS::GfHalf((float)q.GetReal()), PXR_NS::GfVec3h(q.GetImaginary())));
+    }
+    instancer.CreateOrientationsAttr(PXR_NS::VtValue(orientations));
+}
+
+// USD's own transform for each of instancer's copies, prototype transform included.
+PXR_NS::VtMatrix4dArray
+instanceTransforms(const PXR_NS::UsdGeomPointInstancer& instancer)
+{
+    PXR_NS::VtMatrix4dArray xforms;
+    const PXR_NS::UsdTimeCode time(1.);
+    EXPECT_TRUE(instancer.ComputeInstanceTransformsAtTime(&xforms, time, time));
+
+    return xforms;
+}
 
 // A layer holding only the orthographic camera.
 PXR_NS::SdfLayerRefPtr
@@ -137,6 +204,33 @@ cyclesRequest(const ScenePayload& scene,
     return true;
 }
 
+// Renders geometry with Cycles, seen by the orthographic camera.
+bool
+renderWithCamera(const ScenePayload& geometry,
+                 const void* owner,
+                 HydraRender::Request* request,
+                 HydraRender::Result* result)
+{
+    const PXR_NS::SdfLayerRefPtr camera = cameraLayer();
+    if (!camera) {
+        ADD_FAILURE() << "no camera layer";
+
+        return false;
+    }
+    const ScenePayload scene = SceneOps::appendLayer(geometry, camera, kCameraLayerHash);
+    if (!cyclesRequest(scene, camera, owner, request)) {
+        return false;
+    }
+    std::string error;
+    if (!HydraRender::render(*request, result, &error)) {
+        ADD_FAILURE() << error;
+
+        return false;
+    }
+
+    return true;
+}
+
 // Where world lands in the render, in pixels, rows from the bottom as Natron's are.
 PXR_NS::GfVec2d
 project(const HydraRender::Request& request,
@@ -165,13 +259,16 @@ coveredAt(const HydraRender::Result& result,
 }
 
 /**
- * Each copy covers its centre, at the depth of its front face, reaches kProbe along its long side
- * and not along its short one; every covered pixel lies on a copy, so none is near the origin.
+ * Each copy covers its centre, at the depth of its front face, and its four corners pulled
+ * kMargin inside along its own axes; it does not cover its corners or edge midpoints pushed
+ * kMargin outside. A turn of the wrong sign, or a scale applied after the turn, moves at least one
+ * of those probes across an edge. Every covered pixel lies on a copy, and none lies near the
+ * origin, where copies composed in the wrong order bunch up.
  **/
 void
 expectCopiesAt(const HydraRender::Request& request,
                const HydraRender::Result& result,
-               const std::vector<Expected>& copies)
+               const std::vector<Copy>& copies)
 {
     const std::size_t pixels = (std::size_t)kSize * (std::size_t)kSize;
     ASSERT_EQ(pixels * 4, result.rgba.size());
@@ -179,26 +276,43 @@ expectCopiesAt(const HydraRender::Request& request,
     const double pixelsPerUnit = kSize / kWindow;
 
     std::vector<PXR_NS::GfVec2d> centres;
-    for (const Expected& copy : copies) {
-        const PXR_NS::GfVec2d centre = project(request, copy.centre);
-        centres.push_back(centre);
-        SCOPED_TRACE("copy at " + std::to_string(copy.centre[0]) + ", " + std::to_string(copy.centre[1]));
-        ASSERT_TRUE(coveredAt(result, centre));
-        EXPECT_NEAR(kCameraZ - kFrontZ, result.depth[pixelAt(centre)], 0.02);
+    std::vector<double> reaches;
+    for (const Copy& copy : copies) {
+        const PXR_NS::GfVec3d centre = copy.Transform(PXR_NS::GfVec3d(0.));
+        SCOPED_TRACE("copy at " + std::to_string(centre[0]) + ", " + std::to_string(centre[1]));
+        const double ax = copy.TransformDir(PXR_NS::GfVec3d(1., 0., 0.)).GetLength();
+        const double ay = copy.TransformDir(PXR_NS::GfVec3d(0., 1., 0.)).GetLength();
+        ASSERT_GT(ax, kMargin);
+        ASSERT_GT(ay, kMargin);
 
-        const PXR_NS::GfVec3d along = copy.rotated ? PXR_NS::GfVec3d(0., kProbe, 0.) : PXR_NS::GfVec3d(kProbe, 0., 0.);
-        const PXR_NS::GfVec3d across = copy.rotated ? PXR_NS::GfVec3d(kProbe, 0., 0.) : PXR_NS::GfVec3d(0., kProbe, 0.);
-        for (double side : { -1., 1. }) {
-            EXPECT_TRUE(coveredAt(result, project(request, copy.centre + side * along))) << side;
-            EXPECT_FALSE(coveredAt(result, project(request, copy.centre + side * across))) << side;
+        const PXR_NS::GfVec3d front = copy.Transform(PXR_NS::GfVec3d(0., 0., 1.));
+        const PXR_NS::GfVec2d centrePixel = project(request, front);
+        ASSERT_TRUE(coveredAt(result, centrePixel));
+        EXPECT_NEAR(kCameraZ - front[2], result.depth[pixelAt(centrePixel)], 0.02);
+
+        const double inX = 1. - kMargin / ax;
+        const double inY = 1. - kMargin / ay;
+        const double outX = 1. + kMargin / ax;
+        const double outY = 1. + kMargin / ay;
+        double reach = 0.;
+        for (double sx : { -1., 1. }) {
+            for (double sy : { -1., 1. }) {
+                EXPECT_TRUE(coveredAt(result, project(request, copy.Transform(PXR_NS::GfVec3d(sx * inX, sy * inY, 1.))))) << sx << ", " << sy;
+                EXPECT_FALSE(coveredAt(result, project(request, copy.Transform(PXR_NS::GfVec3d(sx * outX, sy * outY, 0.))))) << sx << ", " << sy;
+                reach = std::max(reach, (copy.Transform(PXR_NS::GfVec3d(sx, sy, 0.)) - centre).GetLength());
+            }
         }
+        for (double side : { -1., 1. }) {
+            EXPECT_FALSE(coveredAt(result, project(request, copy.Transform(PXR_NS::GfVec3d(side * outX, 0., 0.))))) << side;
+            EXPECT_FALSE(coveredAt(result, project(request, copy.Transform(PXR_NS::GfVec3d(0., side * outY, 0.))))) << side;
+        }
+        ASSERT_GT(PXR_NS::GfVec2d(centre[0], centre[1]).GetLength() - reach, kEmptyRadius);
+        centres.push_back(project(request, centre));
+        reaches.push_back((reach + 0.15) * pixelsPerUnit);
     }
 
-    // A copy's farthest corner is under 0.6 units from its centre; the origin is over 2 units
-    // from every copy, so nothing within 1.5 units of it may be covered.
     const PXR_NS::GfVec2d origin = project(request, PXR_NS::GfVec3d(0.));
-    const double reach = (std::hypot(kHalfLength, kHalfWidth) + 0.1) * pixelsPerUnit;
-    const double emptyRadius = 1.5 * pixelsPerUnit;
+    const double emptyRadius = kEmptyRadius * pixelsPerUnit;
     int strays = 0;
     int nearOrigin = 0;
     for (int y = 0; y < kSize; ++y) {
@@ -211,8 +325,8 @@ expectCopiesAt(const HydraRender::Request& request,
                 ++nearOrigin;
             }
             bool onACopy = false;
-            for (const PXR_NS::GfVec2d& centre : centres) {
-                onACopy = onACopy || ((p - centre).GetLength() < reach);
+            for (std::size_t i = 0; i < centres.size(); ++i) {
+                onACopy = onACopy || ((p - centres[i]).GetLength() < reaches[i]);
             }
             if (!onACopy) {
                 ++strays;
@@ -265,7 +379,8 @@ private:
     std::vector<NodePtr> _nodes;
 };
 
-// A PointInstancer, itself moved, whose box prototype has a transform of its own.
+// A PointInstancer, itself moved, whose box prototype has a transform of its own. One copy is
+// scaled unevenly and turned 30 degrees, another turned -45 degrees.
 TEST_F(USDRenderCyclesInstancerTest, PointInstancerCopiesLandOnTheirPoints)
 {
     if (!CyclesTestUtils::cyclesOrSkip()) {
@@ -273,53 +388,88 @@ TEST_F(USDRenderCyclesInstancerTest, PointInstancerCopiesLandOnTheirPoints)
     }
     const PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("instancer");
     ASSERT_TRUE(layer != nullptr);
-    const PXR_NS::GfVec3d instancerOffset(0.5, 0., 0.);
-    const std::vector<PXR_NS::GfVec3f> positions = { PXR_NS::GfVec3f(3.f, 2.f, 0.f), PXR_NS::GfVec3f(-3.f, 2.f, 0.f), PXR_NS::GfVec3f(0.f, -3.f, 0.f) };
-    const int rotatedIndex = 1;
+    std::vector<Copy> copies;
     {
         PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer);
         ASSERT_TRUE(stage != nullptr);
         PXR_NS::UsdGeomPointInstancer instancer = PXR_NS::UsdGeomPointInstancer::Define(stage, PXR_NS::SdfPath("/World/Instancer"));
         ASSERT_TRUE(bool(instancer));
-        instancer.AddTranslateOp().Set(instancerOffset);
-        // A 2-unit cube stretched to 4 x 2 x 2 by its own transform, which applies before the
-        // instance's.
-        PXR_NS::UsdGeomCube box = PXR_NS::UsdGeomCube::Define(stage, PXR_NS::SdfPath("/World/Instancer/Prototypes/Box"));
-        ASSERT_TRUE(bool(box));
-        box.CreateSizeAttr(PXR_NS::VtValue(2.));
-        box.AddScaleOp().Set(PXR_NS::GfVec3f(2.f, 1.f, 1.f));
-        instancer.CreatePrototypesRel().SetTargets({ box.GetPath() });
+        instancer.AddTranslateOp().Set(PXR_NS::GfVec3d(0.5, 0., 0.));
+        const PXR_NS::SdfPath box("/World/Instancer/Prototypes/Box");
+        ASSERT_TRUE(defineBox(stage, box));
+        instancer.CreatePrototypesRel().SetTargets({ box });
+        setPoints(instancer,
+                  { PXR_NS::GfVec3f(3.f, 2.f, 0.f), PXR_NS::GfVec3f(-3.f, 2.f, 0.f), PXR_NS::GfVec3f(0.f, -3.f, 0.f) },
+                  { PXR_NS::GfVec3f(0.5f), PXR_NS::GfVec3f(0.8f, 0.35f, 0.5f), PXR_NS::GfVec3f(0.4f) },
+                  { 0., 30., -45. });
 
-        const PXR_NS::GfQuatd quarterTurn = PXR_NS::GfRotation(PXR_NS::GfVec3d(0., 0., 1.), 90.).GetQuat();
-        PXR_NS::VtQuathArray orientations(positions.size(), PXR_NS::GfQuath::GetIdentity());
-        orientations[rotatedIndex] = PXR_NS::GfQuath(PXR_NS::GfHalf((float)quarterTurn.GetReal()), PXR_NS::GfVec3h(quarterTurn.GetImaginary()));
-        PXR_NS::VtVec3fArray pointPositions;
-        for (const PXR_NS::GfVec3f& p : positions) {
-            pointPositions.push_back(p);
+        const PXR_NS::GfMatrix4d instancerToWorld = instancer.ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(1.));
+        for (const PXR_NS::GfMatrix4d& m : instanceTransforms(instancer)) {
+            copies.push_back(m * instancerToWorld);
         }
-        instancer.CreateProtoIndicesAttr(PXR_NS::VtValue(PXR_NS::VtIntArray(positions.size(), 0)));
-        instancer.CreatePositionsAttr(PXR_NS::VtValue(pointPositions));
-        instancer.CreateScalesAttr(PXR_NS::VtValue(PXR_NS::VtVec3fArray(positions.size(), PXR_NS::GfVec3f((float)kInstanceScale))));
-        instancer.CreateOrientationsAttr(PXR_NS::VtValue(orientations));
+        ASSERT_EQ(3u, copies.size());
     }
-    const PXR_NS::SdfLayerRefPtr camera = cameraLayer();
-    ASSERT_TRUE(camera != nullptr);
-    const ScenePayload scene = SceneOps::appendLayer(SceneOps::appendLayer(ScenePayload(), layer, kInstancerLayerHash), camera, kCameraLayerHash);
+    const ScenePayload geometry = SceneOps::appendLayer(ScenePayload(), layer, kInstancerLayerHash);
 
     const int owner = 0;
     HydraRender::Request request;
-    ASSERT_TRUE(cyclesRequest(scene, camera, &owner, &request));
     HydraRender::Result result;
-    std::string error;
-    ASSERT_TRUE(HydraRender::render(request, &result, &error)) << error;
+    ASSERT_TRUE(renderWithCamera(geometry, &owner, &request, &result));
+    expectCopiesAt(request, result, copies);
+    HydraRender::release(&owner);
+}
 
-    std::vector<Expected> copies;
-    for (std::size_t i = 0; i < positions.size(); ++i) {
-        Expected copy;
-        copy.centre = PXR_NS::GfVec3d(positions[i]) + instancerOffset;
-        copy.rotated = ((int)i == rotatedIndex);
-        copies.push_back(copy);
+// An instancer whose prototype is another instancer: each inner copy is scaled and moved within
+// the inner instancer, then carried by every outer copy's scale and move, then by the outer
+// instancer's transform.
+TEST_F(USDRenderCyclesInstancerTest, NestedInstancerCopiesLandOnTheirPoints)
+{
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
     }
+    const PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("instancer");
+    ASSERT_TRUE(layer != nullptr);
+    std::vector<Copy> copies;
+    {
+        PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer);
+        ASSERT_TRUE(stage != nullptr);
+        PXR_NS::UsdGeomPointInstancer outer = PXR_NS::UsdGeomPointInstancer::Define(stage, PXR_NS::SdfPath("/World/Outer"));
+        PXR_NS::UsdGeomPointInstancer inner = PXR_NS::UsdGeomPointInstancer::Define(stage, PXR_NS::SdfPath("/World/Outer/Prototypes/Inner"));
+        ASSERT_TRUE(bool(outer));
+        ASSERT_TRUE(bool(inner));
+        outer.AddTranslateOp().Set(PXR_NS::GfVec3d(0.25, 0., 0.));
+        const PXR_NS::SdfPath box("/World/Outer/Prototypes/Inner/Prototypes/Box");
+        ASSERT_TRUE(defineBox(stage, box));
+        inner.CreatePrototypesRel().SetTargets({ box });
+        outer.CreatePrototypesRel().SetTargets({ inner.GetPath() });
+        setPoints(inner,
+                  { PXR_NS::GfVec3f(1.5f, 0.f, 0.f), PXR_NS::GfVec3f(-1.5f, 0.f, 0.f) },
+                  { PXR_NS::GfVec3f(0.4f), PXR_NS::GfVec3f(0.25f, 0.5f, 0.5f) },
+                  {});
+        setPoints(outer,
+                  { PXR_NS::GfVec3f(0.f, 2.5f, 0.f), PXR_NS::GfVec3f(0.f, -2.5f, 0.f) },
+                  { PXR_NS::GfVec3f(1.f), PXR_NS::GfVec3f(1.5f, 0.8f, 1.f) },
+                  {});
+
+        // USD places a point of an inner copy through the inner instance's transform, then the
+        // outer instance's, which includes the inner instancer's own, then the outer instancer's.
+        const PXR_NS::GfMatrix4d outerToWorld = outer.ComputeLocalToWorldTransform(PXR_NS::UsdTimeCode(1.));
+        const PXR_NS::VtMatrix4dArray innerXforms = instanceTransforms(inner);
+        const PXR_NS::VtMatrix4dArray outerXforms = instanceTransforms(outer);
+        ASSERT_EQ(2u, innerXforms.size());
+        ASSERT_EQ(2u, outerXforms.size());
+        for (const PXR_NS::GfMatrix4d& o : outerXforms) {
+            for (const PXR_NS::GfMatrix4d& i : innerXforms) {
+                copies.push_back(i * o * outerToWorld);
+            }
+        }
+    }
+    const ScenePayload geometry = SceneOps::appendLayer(ScenePayload(), layer, kInstancerLayerHash);
+
+    const int owner = 0;
+    HydraRender::Request request;
+    HydraRender::Result result;
+    ASSERT_TRUE(renderWithCamera(geometry, &owner, &request, &result));
     expectCopiesAt(request, result, copies);
     HydraRender::release(&owner);
 }
@@ -347,15 +497,16 @@ TEST_F(USDRenderCyclesInstancerTest, PackedCopiesToPointsLandOnTheirPoints)
     size->setValue(2., ViewSpec::all(), 2);
 
     // The default card's four corners, moved away from the origin; orient (x, y, z, w) is set on
-    // every point so that no copy takes its orientation from the card's normal.
+    // every point so that no copy takes its orientation from the card's normal. Point 1 is scaled
+    // unevenly and turned 30 degrees about Z, point 3 turned -45 degrees.
     KnobString* snippet = knob<KnobString>(wrangle, kGeoWrangleParamSnippet);
     ASSERT_TRUE(snippet != nullptr);
-    snippet->setValue(std::string("f@pscale = 0.25;\n"
+    snippet->setValue(std::string("f@pscale = 0.5;\n"
                                   "p@orient = {0, 0, 0, 1};\n"
                                   "if (@ptnum == 0) { @P = {3, 2, 0}; }\n"
-                                  "if (@ptnum == 1) { @P = {-3, 2, 0}; p@orient = {0, 0, 0.70710678, 0.70710678}; }\n"
+                                  "if (@ptnum == 1) { @P = {-3, 2, 0}; v@scale = {1.6, 0.7, 1}; p@orient = {0, 0, 0.25881905, 0.96592583}; }\n"
                                   "if (@ptnum == 2) { @P = {0, -3, 0}; }\n"
-                                  "if (@ptnum == 3) { @P = {3, -3, 0}; }\n"));
+                                  "if (@ptnum == 3) { @P = {3, -3, 0}; p@orient = {0, 0, -0.38268343, 0.92387953}; }\n"));
     KnobBool* pack = knob<KnobBool>(copy, kGeoCopyToPointsParamPackAndInstance);
     ASSERT_TRUE(pack != nullptr);
     pack->setValue(true);
@@ -380,23 +531,25 @@ TEST_F(USDRenderCyclesInstancerTest, PackedCopiesToPointsLandOnTheirPoints)
         }
         ASSERT_TRUE(hasInstancer);
     }
-    const PXR_NS::SdfLayerRefPtr camera = cameraLayer();
-    ASSERT_TRUE(camera != nullptr);
-    const ScenePayload scene = SceneOps::appendLayer(geometry, camera, kCameraLayerHash);
-
     const int owner = 0;
     HydraRender::Request request;
-    ASSERT_TRUE(cyclesRequest(scene, camera, &owner, &request));
     HydraRender::Result result;
-    ASSERT_TRUE(HydraRender::render(request, &result, &error)) << error;
+    ASSERT_TRUE(renderWithCamera(geometry, &owner, &request, &result));
 
-    const double corners[4][2] = { { 3., 2. }, { -3., 2. }, { 0., -3. }, { 3., -3. } };
-    std::vector<Expected> copies;
-    for (int i = 0; i < 4; ++i) {
-        Expected c;
-        c.centre = PXR_NS::GfVec3d(corners[i][0], corners[i][1], 0.);
-        c.rotated = (i == 1);
-        copies.push_back(c);
+    // The 4 x 2 x 2 box scaled by scale * pscale and turned about its centre, then moved to its
+    // point.
+    struct Point {
+        PXR_NS::GfVec3d position;
+        PXR_NS::GfVec3d scale;
+        double turn;
+    };
+    const Point layout[4] = { { PXR_NS::GfVec3d(3., 2., 0.), PXR_NS::GfVec3d(0.5), 0. },
+                              { PXR_NS::GfVec3d(-3., 2., 0.), PXR_NS::GfVec3d(0.8, 0.35, 0.5), 30. },
+                              { PXR_NS::GfVec3d(0., -3., 0.), PXR_NS::GfVec3d(0.5), 0. },
+                              { PXR_NS::GfVec3d(3., -3., 0.), PXR_NS::GfVec3d(0.5), -45. } };
+    std::vector<Copy> copies;
+    for (const Point& point : layout) {
+        copies.push_back(scaleMatrix(PXR_NS::GfVec3d(2., 1., 1.)) * scaleMatrix(point.scale) * turnAboutZ(point.turn) * translateMatrix(point.position));
     }
     expectCopiesAt(request, result, copies);
     HydraRender::release(&owner);

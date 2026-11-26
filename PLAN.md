@@ -662,9 +662,15 @@ future core work has solid ground to build on.
 | M600 | Native Geometry UAT Round 2 | doing | - | bosley-executor | E9 | F15 | | [M600-native-geometry-uat-round-2.md](PLAN/MILESTONES/M600-native-geometry-uat-round-2.md) |
 | M616 | Packed Instances In Viewer Cycles | todo | M600 |  | E9 | | | [M616-packed-instances-in-viewer-cycles.md](PLAN/MILESTONES/M616-packed-instances-in-viewer-cycles.md) |
 | M617 | Native Geometry Viewer Architecture Spike | done | - | | E9 | | | [M617-native-geometry-viewer-architecture-spike.md](PLAN/MILESTONES/M617-native-geometry-viewer-architecture-spike.md) |
-| M618 | Native Geometry Viewer Flash Measurement | todo | M617 |  | E9 | | | [M618-native-geometry-viewer-flash-measurement.md](PLAN/MILESTONES/M618-native-geometry-viewer-flash-measurement.md) |
-| M619 | Native Geometry Viewer Flash Fixes | todo | M618 |  | E9 | | | [M619-native-geometry-viewer-flash-fixes.md](PLAN/MILESTONES/M619-native-geometry-viewer-flash-fixes.md) |
-| M620 | Native Geometry Points Scene Index Prototype | todo | M619 |  | E9 | | | [M620-native-geometry-points-scene-index-prototype.md](PLAN/MILESTONES/M620-native-geometry-points-scene-index-prototype.md) |
+| M618 | ~~Native Geometry Viewer Flash Measurement~~ | cancelled | M617 |  | E9 | | | [M618-native-geometry-viewer-flash-measurement.md](PLAN/MILESTONES/M618-native-geometry-viewer-flash-measurement.md) |
+| M619 | ~~Native Geometry Viewer Flash Fixes~~ | cancelled | M618 |  | E9 | | | [M619-native-geometry-viewer-flash-fixes.md](PLAN/MILESTONES/M619-native-geometry-viewer-flash-fixes.md) |
+| M620 | ~~Native Geometry Points Scene Index Prototype~~ | cancelled | M619 |  | E9 | | | [M620-native-geometry-points-scene-index-prototype.md](PLAN/MILESTONES/M620-native-geometry-points-scene-index-prototype.md) |
+| M622 | Native Geometry Scene Index Core | todo | M600 |  | E9 | F41 | | [M622-native-geometry-scene-index-core.md](PLAN/MILESTONES/M622-native-geometry-scene-index-core.md) |
+| M623 | Native Geometry Scene Index Instancing | todo | M622 |  | E9 | F41 | | [M623-native-geometry-scene-index-instancing.md](PLAN/MILESTONES/M623-native-geometry-scene-index-instancing.md) |
+| M624 | Native Geometry Viewer Cutover | todo | M622, M623 |  | E9 | F41 | | [M624-native-geometry-viewer-cutover.md](PLAN/MILESTONES/M624-native-geometry-viewer-cutover.md) |
+| M625 | Native Geometry Viewer Stage Readers | todo | M622 |  | E9 | F41 | | [M625-native-geometry-viewer-stage-readers.md](PLAN/MILESTONES/M625-native-geometry-viewer-stage-readers.md) |
+| M626 | Native Geometry Viewer Bench And Checks | todo | M624, M625 |  | E9 | F41 | | [M626-native-geometry-viewer-bench-and-checks.md](PLAN/MILESTONES/M626-native-geometry-viewer-bench-and-checks.md) |
+| M627 | Native Geometry Viewer Cook Fixes | todo | M600 |  | E9 | | | [M627-native-geometry-viewer-cook-fixes.md](PLAN/MILESTONES/M627-native-geometry-viewer-cook-fixes.md) |
 | M601 | Every Render A Scheduler Task | todo | M199 |  | E14 | | | [M601-every-render-a-scheduler-task.md](PLAN/MILESTONES/M601-every-render-a-scheduler-task.md) |
 | M602 | 3D Viewer Toolbars | todo | M376, M361 |  | E28 | F40 | | [M602-3d-viewer-toolbars.md](PLAN/MILESTONES/M602-3d-viewer-toolbars.md) |
 | M603 | Combined Transform Handle | todo | M602 |  | E28 | F40 | | [M603-combined-transform-handle.md](PLAN/MILESTONES/M603-combined-transform-handle.md) |
@@ -756,6 +762,7 @@ future core work has solid ground to build on.
 | F38 | Scene Authoring And Lighting | open |  |  | feature/f38-scene-authoring-and-lighting | The survey-driven scene authoring and lighting set (M562–M581): relationship, tweak, metadata and layer editing, collections, light linking and mixing, render attributes and regions, catalogue, restructure, instances, constraints, queries, inspection and load masks. |
 | F39 | Edge Extend Family | open |  |  | feature/f39-edge-extend-family | Native edge-extend nodes (EdgePush, EdgeClamp, EdgeSmear, EdgePushVector, EdgeDistort) on a shared fill kit, plus EdgeDetail for restoring detail. |
 | F40 | 3D Viewer Tools | open |  |  | feature/f40-3d-viewer-tools | Three-bar 3D viewer toolbars, a combined transform handle, geometry handles and component transforms, snapping, marker controls and group pickers, accepted in one UAT. |
+| F41 | Native Geometry Scene Index | open |  |  | feature/f41-native-geometry-scene-index | Storm draws native geometry from a Hydra scene index built from GeoUsdConvert, with no USD staging in the viewer, no flash frames and faster drags on heavy geometry. Waits for F15 - Native Geometry to land. |
 
 # Open questions
 - **M104 - Merge Resolution UI (2026-11-22):** Keep Both Keys puts theirs' key one frame after mine, or halfway to the next key when that's closer. Confirm, or give the rule you want.

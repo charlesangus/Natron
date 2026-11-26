@@ -21,3 +21,4 @@ Stage 1 of the M617 - Native Geometry Viewer Architecture Spike plan (`PLAN/DESI
   - size: L
 
 ## Decisions
+- 2026-11-26 — Cancelled (user): replaced by F41 - Native Geometry Scene Index (M622-M626), going straight to a native Hydra scene index instead of measure, fix, then prototype. Small viewer bugs moved to M627 - Native Geometry Viewer Cook Fixes.

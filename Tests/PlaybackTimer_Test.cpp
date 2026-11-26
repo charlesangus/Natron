@@ -65,3 +65,23 @@ TEST(PlaybackTimerTest, FramesAfterAnIdleTimerArePacedFromTheFirstFrame)
     // made up for would leave about two frames' time for these frames.
     EXPECT_GE(elapsedS, (kFrames - 1) / kFps);
 }
+
+// A playback restarted right after a frame was shown, as an abort with auto-restart does, keeps the
+// frame rate: its first frame waits for its time rather than following the last one at once.
+TEST(PlaybackTimerTest, ARestartWithinAFrameKeepsThePacing)
+{
+    Timer timer;
+    timer.setDesiredFrameRate(kFps);
+    timer.startPlaying();
+    for (int i = 0; i < kFrames; ++i) {
+        timer.waitUntilNextFrameIsDue();
+    }
+
+    timer.playState = ePlayStatePause;
+    timer.startPlaying();
+    const auto start = std::chrono::steady_clock::now();
+    timer.waitUntilNextFrameIsDue();
+    const double firstS = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+
+    EXPECT_GE(firstS, 0.5 / kFps);
+}

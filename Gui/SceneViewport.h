@@ -1275,7 +1275,8 @@ public:
     static GeoComponentSelection convertedComponentSelection(const GeoDetail& detail, const GeoComponentSelection& selection, GeoComponentEnum type);
 
     // @p selection as the group pattern that selects it in @p detail; empty when it is empty.
-    static std::string componentSelectionPattern(const GeoDetail& detail, const GeoComponentSelection& selection);
+    // @p collapseFull false writes a full point or primitive selection as explicit numbers, not "*".
+    static std::string componentSelectionPattern(const GeoDetail& detail, const GeoComponentSelection& selection, bool collapseFull = true);
 
     /**
      * @brief The numbers of @p type (points, edges or primitives) that the group @p pattern selects

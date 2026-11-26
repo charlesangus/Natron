@@ -12129,7 +12129,8 @@ SceneViewport::pickComponentsIn(const QRect& rect,
 
 std::string
 SceneViewport::componentSelectionPattern(const GeoDetail& detail,
-                                         const GeoComponentSelection& selection)
+                                         const GeoComponentSelection& selection,
+                                         bool collapseFull)
 {
     if (selection.empty()) {
         return std::string();
@@ -12144,7 +12145,7 @@ SceneViewport::componentSelectionPattern(const GeoDetail& detail,
     }
     const GeoAttribClassEnum cls = (selection.type == eGeoComponentPoints) ? eGeoAttribClassPoint : eGeoAttribClassPrimitive;
 
-    return geoEncodePattern(detail, cls, maskFromNumbers(detail, cls, selection.elements), true);
+    return geoEncodePattern(detail, cls, maskFromNumbers(detail, cls, selection.elements), true, collapseFull);
 }
 
 GeoComponentSelection

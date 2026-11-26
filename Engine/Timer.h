@@ -88,9 +88,11 @@ public:
 
     void    waitUntilNextFrameIsDue ();
 
-    // Sets playState to ePlayStateRunning: the next waitUntilNextFrameIsDue() returns at once and
-    // the frame rate is kept from it. Without it, the time since the last playback would make the
-    // first frames show back to back to catch up.
+    // Sets playState to ePlayStateRunning. When a frame's time has gone by since the last frame
+    // shown, the next waitUntilNextFrameIsDue() returns at once and the frame rate is kept from it,
+    // rather than the frames after an idle timer showing back to back to catch up. A playback
+    // restarted within a frame of the last one shown, as an abort with auto-restart does
+    // mid-playback, keeps the pacing it had, so the restart does not show two frames back to back.
     void startPlaying();
 
     //-------------------------------------------------

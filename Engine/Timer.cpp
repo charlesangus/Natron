@@ -145,7 +145,6 @@ Timer::~Timer()
 void
 Timer::startPlaying()
 {
-    resetTiming();
     _startPending = true;
     playState = ePlayStateRunning;
 }
@@ -172,14 +171,6 @@ Timer::waitUntilNextFrameIsDue ()
 
         return;
     }
-    if (_startPending) {
-        // The first frame of a playback is shown as soon as it is ready, and the frame rate is
-        // kept from there.
-        _startPending = false;
-        resetTiming();
-
-        return;
-    }
 
     double spf;
     {
@@ -197,6 +188,14 @@ Timer::waitUntilNextFrameIsDue ()
                                 (now.tv_usec - _lastFrameTime.tv_usec) * 1e-6f;
     if (timeSinceLastFrame < 0) {
         timeSinceLastFrame = 0;
+    }
+    if (_startPending) {
+        _startPending = false;
+        if (timeSinceLastFrame >= spf) {
+            resetTiming();
+
+            return;
+        }
     }
     double timeToSleep = spf - timeSinceLastFrame - _timingError;
 

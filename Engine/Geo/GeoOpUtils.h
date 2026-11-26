@@ -194,12 +194,14 @@ bool geoSelectElementsInDomain(std::size_t count,
  * strides "A-B:step", and "*" when every live element is selected. A term is only coalesced
  * from three elements up. An empty selection is "" when @p emptyMeansEverything (the caller
  * reads a blank pattern as every element) and "^*" otherwise, which removes everything from a
- * selection that is already empty.
+ * selection that is already empty. With @p collapseFull false a selection of every element is
+ * written as explicit numbers ("0-3") instead of "*", so it stays fixed when elements are added later.
  **/
 std::string geoEncodePattern(const GeoDetail& detail,
                              GeoAttribClassEnum cls,
                              const GeoElementMask& mask,
-                             bool emptyMeansEverything = false);
+                             bool emptyMeansEverything = false,
+                             bool collapseFull = true);
 
 /**
  * @brief The pattern that geoSelectEdges() reads back as @p edges: point paths such as

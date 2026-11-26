@@ -341,6 +341,21 @@ ViewerTab::abortRendering()
 void
 ViewerTab::onViewerStaleChanged(bool stale)
 {
+    _imp->viewerNodeStale = stale;
+    applyStaleCueInput();
+}
+
+void
+ViewerTab::onSceneOutOfDateChanged(bool outOfDate)
+{
+    _imp->sceneOutOfDate = outOfDate;
+    applyStaleCueInput();
+}
+
+void
+ViewerTab::applyStaleCueInput()
+{
+    const bool stale = _imp->viewerNodeStale || (_imp->sceneOutOfDate && isShowingScene());
     const qint64 now = _imp->staleCueClock.elapsed();
     if (stale && !_imp->staleCueTiming.stale()) {
         if (_imp->viewer) {
@@ -368,6 +383,9 @@ ViewerTab::refreshStaleCue()
     const bool visible = (style != eStaleCueStyleOff) && _imp->staleCueTiming.visible();
     if (_imp->viewer) {
         _imp->viewer->setStaleCue(style, visible);
+    }
+    if (_imp->sceneViewport) {
+        _imp->sceneViewport->setStaleCue(style, visible);
     }
 
     const std::optional<std::int64_t> deadline = _imp->staleCueTiming.nextDeadlineMs();
@@ -609,6 +627,10 @@ ViewerTab::onTimeLineTimeChanged(SequenceTime time,
 
     if (isShowingScene()) {
         _imp->sceneViewport->setFrame(time, app->getProjectFrameRate());
+        // Playback evaluated this frame's geometry ahead of the timeline.
+        if (_imp->viewerNode && (_imp->viewerNode->getActiveInputDataKind() == eDataKindGeometry)) {
+            showEvaluatedScene(time, true);
+        }
     }
 
     if ( _imp->timeLineGui->getTimeline() != app->getTimeLine() ) {

@@ -89,8 +89,8 @@ TEST_F(GraphScalingExpressionDeps, DependencyGetsFrameArgs)
     EffectInstancePtr inputEffect = input->getEffectInstance();
     EffectInstancePtr gradeEffect = grade->getEffectInstance();
     ASSERT_TRUE(unconnectedEffect && inputEffect && gradeEffect);
-    EXPECT_FALSE(bool(unconnectedEffect->getParallelRenderArgsTLS()));
-    EXPECT_FALSE(bool(inputEffect->getParallelRenderArgsTLS()));
+    EXPECT_FALSE(bool(unconnectedEffect->getFrameArgs()));
+    EXPECT_FALSE(bool(inputEffect->getFrameArgs()));
 
     {
         AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
@@ -107,11 +107,11 @@ TEST_F(GraphScalingExpressionDeps, DependencyGetsFrameArgs)
                                         false,
                                         RenderStatsPtr());
 
-        ParallelRenderArgsPtr gradeArgs = gradeEffect->getParallelRenderArgsTLS();
+        ParallelRenderArgsPtr gradeArgs = gradeEffect->getFrameArgs();
         ASSERT_TRUE(bool(gradeArgs));
         EXPECT_EQ(1, gradeArgs->visitsCount);
 
-        ParallelRenderArgsPtr depArgs = unconnectedEffect->getParallelRenderArgsTLS();
+        ParallelRenderArgsPtr depArgs = unconnectedEffect->getFrameArgs();
         ASSERT_TRUE(bool(depArgs)) << "a node read only through an expression got no frame args";
         EXPECT_EQ(grade.get(), depArgs->treeRoot.get());
         EXPECT_EQ(1., depArgs->time);
@@ -120,13 +120,13 @@ TEST_F(GraphScalingExpressionDeps, DependencyGetsFrameArgs)
 
         // The setter's node set is private, so a node reachable both as an input and through an expression is
         // checked to be counted once by its visit count.
-        ParallelRenderArgsPtr inputArgs = inputEffect->getParallelRenderArgsTLS();
+        ParallelRenderArgsPtr inputArgs = inputEffect->getFrameArgs();
         ASSERT_TRUE(bool(inputArgs));
         EXPECT_EQ(grade.get(), inputArgs->treeRoot.get());
         EXPECT_EQ(1, inputArgs->visitsCount);
     }
 
-    EXPECT_FALSE(bool(unconnectedEffect->getParallelRenderArgsTLS()));
-    EXPECT_FALSE(bool(inputEffect->getParallelRenderArgsTLS()));
-    EXPECT_FALSE(bool(gradeEffect->getParallelRenderArgsTLS()));
+    EXPECT_FALSE(bool(unconnectedEffect->getFrameArgs()));
+    EXPECT_FALSE(bool(inputEffect->getFrameArgs()));
+    EXPECT_FALSE(bool(gradeEffect->getFrameArgs()));
 }

@@ -233,6 +233,16 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickwalkChild);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickwalkPrevSibling);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickwalkNextSibling);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickObjects);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickPoints);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickEdges);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DPickPrimitives);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DGrowSelection);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DShrinkSelection);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DConvertToPoints);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DConvertToEdges);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DConvertToPrimitives);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DReselect);
 
     QString actionIDStr = QString::fromUtf8( actionID.c_str() );
     std::list<QKeySequence> seq = getKeybind(_group, actionIDStr);
@@ -565,6 +575,17 @@ getViewer3DDefaultKeyBindings()
         { kShortcutIDActionViewer3DPickwalkChild, kShortcutDescActionViewer3DPickwalkChild, Qt::AltModifier, Qt::Key_Right, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DPickwalkPrevSibling, kShortcutDescActionViewer3DPickwalkPrevSibling, Qt::AltModifier, Qt::Key_Up, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DPickwalkNextSibling, kShortcutDescActionViewer3DPickwalkNextSibling, Qt::AltModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
+        // Function keys: the digits, with or without Alt or Ctrl, already belong to the Viewer.
+        { kShortcutIDActionViewer3DPickObjects, kShortcutDescActionViewer3DPickObjects, Qt::NoModifier, Qt::Key_F8, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DPickPoints, kShortcutDescActionViewer3DPickPoints, Qt::NoModifier, Qt::Key_F9, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DPickEdges, kShortcutDescActionViewer3DPickEdges, Qt::NoModifier, Qt::Key_F10, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DPickPrimitives, kShortcutDescActionViewer3DPickPrimitives, Qt::NoModifier, Qt::Key_F11, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DGrowSelection, kShortcutDescActionViewer3DGrowSelection, Qt::ControlModifier, Qt::Key_Up, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DShrinkSelection, kShortcutDescActionViewer3DShrinkSelection, Qt::ControlModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DConvertToPoints, kShortcutDescActionViewer3DConvertToPoints, Qt::ControlModifier, Qt::Key_F9, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DConvertToEdges, kShortcutDescActionViewer3DConvertToEdges, Qt::ControlModifier, Qt::Key_F10, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DConvertToPrimitives, kShortcutDescActionViewer3DConvertToPrimitives, Qt::ControlModifier, Qt::Key_F11, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DReselect, kShortcutDescActionViewer3DReselect, Qt::NoModifier, Qt::Key_QuoteLeft, Qt::NoModifier, Qt::Key(0) },
     };
 
     return bindings;

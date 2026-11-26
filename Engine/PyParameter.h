@@ -1440,6 +1440,14 @@ public:
 
 
     void trigger();
+
+    /**
+     * @brief The Python script a user button runs when pressed, before the node's
+     * onParamChanged callback, with thisNode, thisParam, thisGroup and app declared.
+     **/
+    void setScript(const QString& script);
+
+    QString getScript() const;
 };
 
 

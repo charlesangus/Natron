@@ -517,6 +517,7 @@ enum DataKindEnum {
     eDataKindScene,
     eDataKindPolymorphic,
     eDataKindRaw,
+    eDataKindGeometry,
 };
 
 enum NodeCategoryEnum {
@@ -544,11 +545,6 @@ enum RenderSafetyEnum
     eRenderSafetyInstanceSafe = 1,
     eRenderSafetyFullySafe = 2,
     eRenderSafetyFullySafeFrame = 3,
-};
-
-enum RenderSchedulerModeEnum {
-    eRenderSchedulerModeLegacy = 0,
-    eRenderSchedulerModeTaskGraph = 1,
 };
 
 enum GpuComputeModeEnum {

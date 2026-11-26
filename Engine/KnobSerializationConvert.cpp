@@ -458,7 +458,165 @@ applyUserKnobRange(K* knob,
     knob->setDisplayMinimumsAndMaximums(displayMinimums, displayMaximums);
 }
 
+void
+applyUserProperties(KnobI* knob,
+                    const Serialization::KnobUserPropertiesSerialization& properties)
+{
+    if (KnobInt* isInt = dynamic_cast<KnobInt*>(knob)) {
+        if (properties.isRectangle) {
+            isInt->setAsRectangle();
+        }
+        if (properties.sliderDisabled) {
+            isInt->disableSlider();
+        }
+    } else if (KnobDouble* isDouble = dynamic_cast<KnobDouble*>(knob)) {
+        if (properties.isRectangle) {
+            isDouble->setAsRectangle();
+        }
+        if (properties.sliderDisabled) {
+            isDouble->disableSlider();
+        }
+        isDouble->setSpatial(properties.spatial);
+        for (int i = 0; i < isDouble->getDimension(); ++i) {
+            const int state = (i < (int)properties.valueIsNormalized.size()) ? properties.valueIsNormalized[i] : (int)eValueIsNormalizedNone;
+            const bool known = (state == (int)eValueIsNormalizedX) || (state == (int)eValueIsNormalizedY);
+            isDouble->setValueIsNormalized(i, known ? (ValueIsNormalizedEnum)state : eValueIsNormalizedNone);
+        }
+    } else if (KnobString* isString = dynamic_cast<KnobString*>(knob)) {
+        isString->setPreferredRows(properties.preferredRows);
+    } else if (KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(knob)) {
+        isLayerSelect->setAllowNone(properties.allowNone);
+        isLayerSelect->setAllowAll(properties.allowAll);
+        isLayerSelect->setAllLabel(properties.allLabel);
+    }
+    if (!dynamic_cast<KnobParametric*>(knob)) {
+        for (int i = 0; (i < knob->getDimension()) && (i < (int)properties.dimensionNames.size()); ++i) {
+            knob->setDimensionName(i, properties.dimensionNames[i]);
+        }
+    }
+}
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+void
+userKnobExtraToSerialization(KnobI& knob,
+                             Serialization::KnobSerialization* serialization)
+{
+    KnobString* isString = dynamic_cast<KnobString*>(&knob);
+    KnobDouble* isDouble = dynamic_cast<KnobDouble*>(&knob);
+    KnobInt* isIntKnob = dynamic_cast<KnobInt*>(&knob);
+    KnobColor* isColor = dynamic_cast<KnobColor*>(&knob);
+    KnobFile* isFile = dynamic_cast<KnobFile*>(&knob);
+    KnobOutputFile* isOutputFile = dynamic_cast<KnobOutputFile*>(&knob);
+    KnobPath* isPath = dynamic_cast<KnobPath*>(&knob);
+    KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(&knob);
+    KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(&knob);
+    KnobParametric* isParametricKnob = dynamic_cast<KnobParametric*>(&knob);
+    KnobButton* isButton = dynamic_cast<KnobButton*>(&knob);
+
+    if (isString) {
+        Serialization::KnobTextExtraSerialization textData;
+        textData.isLabel = isString->isLabel();
+        textData.isMultiLine = isString->isMultiLine();
+        textData.usesRichText = isString->usesRichText();
+        serialization->extraData = textData;
+    } else if (isDouble || isIntKnob || isColor) {
+        Serialization::KnobValueRangeSerialization rangeData;
+        if (isDouble) {
+            rangeData.minimum = isDouble->getMinimum();
+            rangeData.maximum = isDouble->getMaximum();
+            rangeData.displayMinimum = isDouble->getDisplayMinimum();
+            rangeData.displayMaximum = isDouble->getDisplayMaximum();
+        } else if (isIntKnob) {
+            rangeData.minimum = isIntKnob->getMinimum();
+            rangeData.maximum = isIntKnob->getMaximum();
+            rangeData.displayMinimum = isIntKnob->getDisplayMinimum();
+            rangeData.displayMaximum = isIntKnob->getDisplayMaximum();
+        } else {
+            rangeData.minimum = isColor->getMinimum();
+            rangeData.maximum = isColor->getMaximum();
+            rangeData.displayMinimum = isColor->getDisplayMinimum();
+            rangeData.displayMaximum = isColor->getDisplayMaximum();
+        }
+        serialization->extraData = rangeData;
+    } else if (isFile || isOutputFile) {
+        Serialization::KnobFileExtraSerialization fileData;
+        fileData.useSequences = isFile ? isFile->isInputImageFile() : isOutputFile->isOutputImageFile();
+        serialization->extraData = fileData;
+    } else if (isPath) {
+        Serialization::KnobPathExtraSerialization pathData;
+        pathData.multiPath = isPath->isMultiPath();
+        serialization->extraData = pathData;
+    } else if (isLayerSelect) {
+        Serialization::KnobLayerSelectExtraSerialization layerSelectData;
+        layerSelectData.withChannelButtons = isLayerSelect->getWithChannelButtons();
+        serialization->extraData = layerSelectData;
+    } else if (isChannelSet) {
+        Serialization::KnobLayerSelectExtraSerialization channelButtonsData;
+        channelButtonsData.withChannelButtons = isChannelSet->getWithChannelButtons();
+        serialization->extraData = channelButtonsData;
+    } else if (isParametricKnob) {
+        Serialization::KnobParametricExtraSerialization parametricData;
+        for (int i = 0; i < knob.getDimension(); ++i) {
+            parametricData.curveLabels.push_back(knob.getDimensionName(i));
+            std::vector<double> color(3);
+            isParametricKnob->getCurveColor(i, &color[0], &color[1], &color[2]);
+            parametricData.curveColors.push_back(color);
+        }
+        const std::pair<double, double> range = isParametricKnob->getParametricRange();
+        parametricData.rangeMinimum = range.first;
+        parametricData.rangeMaximum = range.second;
+        serialization->extraData = parametricData;
+    } else if (isButton) {
+        Serialization::KnobButtonExtraSerialization buttonData;
+        buttonData.script = isButton->getScript();
+        serialization->extraData = buttonData;
+    }
+
+    if (isDouble && (knob.getDimension() == 2)) {
+        serialization->useHostOverlayHandle = isDouble->getHasHostOverlayHandle();
+    }
+
+    Serialization::KnobUserPropertiesSerialization& properties = serialization->userProperties;
+    properties = Serialization::KnobUserPropertiesSerialization();
+    if (isIntKnob) {
+        properties.isRectangle = isIntKnob->isRectangle();
+        properties.sliderDisabled = isIntKnob->isSliderDisabled() && !properties.isRectangle;
+    } else if (isDouble) {
+        properties.isRectangle = isDouble->isRectangle();
+        properties.sliderDisabled = isDouble->isSliderDisabled();
+        properties.spatial = isDouble->getIsSpatial();
+        bool hasNormalized = false;
+        for (int i = 0; i < knob.getDimension(); ++i) {
+            hasNormalized = hasNormalized || (isDouble->getValueIsNormalized(i) != eValueIsNormalizedNone);
+        }
+        if (hasNormalized) {
+            for (int i = 0; i < knob.getDimension(); ++i) {
+                properties.valueIsNormalized.push_back((int)isDouble->getValueIsNormalized(i));
+            }
+        }
+    } else if (isString) {
+        properties.preferredRows = isString->getPreferredRows();
+    } else if (isLayerSelect) {
+        properties.allowNone = isLayerSelect->getAllowNone();
+        properties.allowAll = isLayerSelect->getAllowAll();
+        const std::string allLabel = isLayerSelect->getAllLabel();
+        if (allLabel != "All") {
+            properties.allLabel = allLabel;
+        }
+    }
+    if (!isParametricKnob) {
+        bool hasNamedDimension = false;
+        for (int i = 0; i < knob.getDimension(); ++i) {
+            hasNamedDimension = hasNamedDimension || (knob.getDimensionName(i) != defaultKnobDimensionName(isColor != NULL, i));
+        }
+        if (hasNamedDimension) {
+            for (int i = 0; i < knob.getDimension(); ++i) {
+                properties.dimensionNames.push_back(knob.getDimensionName(i));
+            }
+        }
+    }
+}
 
 bool
 KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
@@ -617,57 +775,7 @@ KnobHelper::toSerialization(Serialization::KnobSerialization* serialization)
     }
 
     if (serialization->isUserKnob) {
-        KnobString* isString = dynamic_cast<KnobString*>(this);
-        KnobDouble* isDouble = dynamic_cast<KnobDouble*>(this);
-        KnobInt* isIntKnob = dynamic_cast<KnobInt*>(this);
-        KnobColor* isColor = dynamic_cast<KnobColor*>(this);
-        KnobFile* isFile = dynamic_cast<KnobFile*>(this);
-        KnobOutputFile* isOutputFile = dynamic_cast<KnobOutputFile*>(this);
-        KnobPath* isPath = dynamic_cast<KnobPath*>(this);
-        KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(this);
-
-        if (isString) {
-            Serialization::KnobTextExtraSerialization textData;
-            textData.isLabel = isString->isLabel();
-            textData.isMultiLine = isString->isMultiLine();
-            textData.usesRichText = isString->usesRichText();
-            serialization->extraData = textData;
-        } else if (isDouble || isIntKnob || isColor) {
-            Serialization::KnobValueRangeSerialization rangeData;
-            if (isDouble) {
-                rangeData.minimum = isDouble->getMinimum();
-                rangeData.maximum = isDouble->getMaximum();
-                rangeData.displayMinimum = isDouble->getDisplayMinimum();
-                rangeData.displayMaximum = isDouble->getDisplayMaximum();
-            } else if (isIntKnob) {
-                rangeData.minimum = isIntKnob->getMinimum();
-                rangeData.maximum = isIntKnob->getMaximum();
-                rangeData.displayMinimum = isIntKnob->getDisplayMinimum();
-                rangeData.displayMaximum = isIntKnob->getDisplayMaximum();
-            } else {
-                rangeData.minimum = isColor->getMinimum();
-                rangeData.maximum = isColor->getMaximum();
-                rangeData.displayMinimum = isColor->getDisplayMinimum();
-                rangeData.displayMaximum = isColor->getDisplayMaximum();
-            }
-            serialization->extraData = rangeData;
-        } else if (isFile || isOutputFile) {
-            Serialization::KnobFileExtraSerialization fileData;
-            fileData.useSequences = isFile ? isFile->isInputImageFile() : isOutputFile->isOutputImageFile();
-            serialization->extraData = fileData;
-        } else if (isPath) {
-            Serialization::KnobPathExtraSerialization pathData;
-            pathData.multiPath = isPath->isMultiPath();
-            serialization->extraData = pathData;
-        } else if (isLayerSelect) {
-            Serialization::KnobLayerSelectExtraSerialization layerSelectData;
-            layerSelectData.withChannelButtons = isLayerSelect->getWithChannelButtons();
-            serialization->extraData = layerSelectData;
-        }
-
-        if (isDouble && (dimension == 2)) {
-            serialization->useHostOverlayHandle = isDouble->getHasHostOverlayHandle();
-        }
+        userKnobExtraToSerialization(*this, serialization);
     }
 
     // KnobChannelSet::hasModificationsForSerialization() always returns true: its default
@@ -969,13 +1077,27 @@ createUserKnobFromSerialization(KnobHolder* holder,
         }
         knob = k;
     } else if (typeName == KnobButton::typeNameStatic()) {
-        knob = createOrReuseUserKnob<KnobButton>(holder, serialization, existingKnob);
+        KnobButtonPtr k = createOrReuseUserKnob<KnobButton>(holder, serialization, existingKnob);
+        if (!k) {
+            return KnobIPtr();
+        }
+        const Serialization::KnobButtonExtraSerialization* buttonData = std::get_if<Serialization::KnobButtonExtraSerialization>(&serialization.extraData);
+        k->setScript(buttonData ? buttonData->script : std::string());
+        knob = k;
     } else if (typeName == KnobSeparator::typeNameStatic()) {
         knob = createOrReuseUserKnob<KnobSeparator>(holder, serialization, existingKnob);
     } else if (typeName == KnobParametric::typeNameStatic()) {
         knob = createOrReuseUserKnob<KnobParametric>(holder, serialization, existingKnob);
     } else if (typeName == KnobChannelSet::typeNameStatic()) {
-        knob = createOrReuseUserKnob<KnobChannelSet>(holder, serialization, existingKnob);
+        KnobChannelSetPtr k = createOrReuseUserKnob<KnobChannelSet>(holder, serialization, existingKnob);
+        if (!k) {
+            return KnobIPtr();
+        }
+        const Serialization::KnobLayerSelectExtraSerialization* channelButtonsData = std::get_if<Serialization::KnobLayerSelectExtraSerialization>(&serialization.extraData);
+        if (channelButtonsData) {
+            k->setWithChannelButtons(channelButtonsData->withChannelButtons);
+        }
+        knob = k;
     } else if (typeName == KnobLayerSelect::typeNameStatic()) {
         KnobLayerSelectPtr k = createOrReuseUserKnob<KnobLayerSelect>(holder, serialization, existingKnob);
         if (!k) {
@@ -1008,12 +1130,29 @@ createUserKnobFromSerialization(KnobHolder* holder,
         knob->clone(serializedKnob.get());
     }
     restoreDimensionsFoldState(knob.get(), serialization);
+    // After the clone, which gives the curves the detached knob's range.
+    KnobParametric* isParametric = dynamic_cast<KnobParametric*>(knob.get());
+    const Serialization::KnobParametricExtraSerialization* parametricData = std::get_if<Serialization::KnobParametricExtraSerialization>(&serialization.extraData);
+    if (isParametric && parametricData) {
+        for (int i = 0; i < isParametric->getDimension(); ++i) {
+            if (i < (int)parametricData->curveLabels.size()) {
+                isParametric->setDimensionName(i, parametricData->curveLabels[i]);
+            }
+            if ((i < (int)parametricData->curveColors.size()) && (parametricData->curveColors[i].size() == 3)) {
+                const std::vector<double>& color = parametricData->curveColors[i];
+                isParametric->setCurveColor(i, color[0], color[1], color[2]);
+            }
+        }
+        isParametric->setParametricRange(parametricData->rangeMinimum, parametricData->rangeMaximum);
+    }
+    applyUserProperties(knob.get(), serialization.userProperties);
     knob->setAsUserKnob(true);
     knob->setIsPersistent(serialization.isPersistent);
     knob->setAnimationEnabled(serialization.animationEnabled);
     knob->setEvaluateOnChange(serialization.evaluatesOnChange);
     knob->setName(serialization.name);
     knob->setHintToolTip(serialization.tooltip);
+    knob->setSecret(serialization.secret);
     if (!serialization.triggerNewLine) {
         knob->setAddNewLine(false);
     }

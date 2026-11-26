@@ -318,6 +318,16 @@ RotoLayer::toSerialization(Serialization::RotoLayerSerialization* serialization)
         items = _imp->items;
     }
 
+    serialization->knobs.clear();
+    // Most layers keep the identity, which a default knob restores without being written.
+    for (const KnobIPtr& knob : _imp->knobs) {
+        if (!knob->hasModifications()) {
+            continue;
+        }
+        serialization->knobs.push_back(Serialization::KnobSerialization());
+        knob->toSerialization(&serialization->knobs.back());
+    }
+
     serialization->children.clear();
     for (RotoItems::const_iterator it = items.begin(); it != items.end(); ++it) {
         BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
@@ -348,6 +358,21 @@ RotoLayer::fromSerialization(const Serialization::RotoLayerSerialization& serial
 
     assert(thisLayer);
     RotoItem::fromSerialization(serialization);
+    for (const Serialization::KnobSerialization& saved : serialization.knobs) {
+        for (const KnobIPtr& knob : _imp->knobs) {
+            if (knob->getName() != saved.name) {
+                continue;
+            }
+            KnobIPtr savedKnob = createDetachedKnobFromSerialization(completeKnobSerializationForKnob(*knob, saved));
+            if (savedKnob) {
+                KnobSignalSlotHandlerPtr handler = knob->getSignalSlotHandler();
+                handler->blockSignals(true);
+                knob->clone(savedKnob.get());
+                handler->blockSignals(false);
+            }
+            break;
+        }
+    }
     for (std::list<Serialization::RotoLayerChildSerialization>::const_iterator it = serialization.children.begin(); it != serialization.children.end(); ++it) {
         switch (it->type) {
         case Serialization::eRotoLayerChildTypeBezier: {

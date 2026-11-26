@@ -29,10 +29,14 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/IO/ReadTimeDomain.h"
+#include "Engine/Nodes/IO/ReadTimeDomainKnobs.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 
 #define PLUGINID_NATRON_DEEPREAD "DeepRead"
@@ -46,6 +50,9 @@ NATRON_NAMESPACE_ENTER
  * file stores them in, and every channel the file carries becomes a channel of the same
  * name on the output, so deep AOVs need nothing of their own here. The output is therefore
  * never declared tidy, whatever the file happens to contain.
+ *
+ * A sequence has the time domain of the image reader: its first and last frame, what comes
+ * before and after them, and what stands in for a missing frame.
  **/
 class DeepRead
     : public NativeEffectBase {
@@ -71,6 +78,7 @@ public:
     explicit DeepRead(NodePtr node)
         : NativeEffectBase(node)
         , _filename()
+        , _timeDomain()
     {
     }
 
@@ -90,6 +98,8 @@ public:
      **/
     virtual void purgeCaches() OVERRIDE FINAL;
 
+    virtual void getFrameRange(double* first, double* last) OVERRIDE FINAL;
+
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
@@ -103,9 +113,39 @@ private:
 
     virtual StatusEnum renderDeep(const DeepRenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    std::string getFilenameAt(double time, ViewIdx view) const WARN_UNUSED_RETURN;
+    virtual bool knobChanged(KnobI* k,
+                             ValueChangedReasonEnum reason,
+                             ViewSpec view,
+                             double time,
+                             bool originatedFromMainThread) OVERRIDE FINAL;
+
+    virtual void onKnobsLoaded() OVERRIDE FINAL;
+
+    struct FrameListing {
+        std::string pattern;
+        bool singleImage = true;
+        std::set<int> frames;
+    };
+
+    /**
+     * @brief The file to read at \p time. A black or failing time still names a file of the
+     * sequence, whose format and channels it takes.
+     **/
+    struct Source {
+        ReadTimeDomain::Result::Kind kind = ReadTimeDomain::Result::eFile;
+        std::string path;
+        std::string message; // set when kind == eError
+    };
+
+    std::shared_ptr<const FrameListing> frameListing() const WARN_UNUSED_RETURN;
+    void invalidateFrameListing();
+    Source sourceAt(double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     KnobFileWPtr _filename;
+    ReadTimeDomainKnobs _timeDomain;
+
+    mutable std::mutex _listingMutex;
+    mutable std::shared_ptr<const FrameListing> _listing;
 
     // The header of the last file asked about, so scrubbing between uncached queries of one
     // frame does not reopen it each time. Kept until Reload, like the file's stamp, so a file

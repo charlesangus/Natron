@@ -68,6 +68,7 @@ RotoCurveInteract::RotoCurveInteract(EffectInstance* host)
     , cpsPivotSelection()
     , sketchSamples()
     , closingTangentDrag(false)
+    , smoothingInsertedPoint(false)
     , transformMode()
     , builtBezier()
     , bezierBeingDragged()
@@ -2223,6 +2224,53 @@ RotoCurveInteract::handleControlPointSelection(const std::pair<BezierCPPtr,
 }
 
 void
+RotoCurveInteract::insertPointAndDrag(const BezierPtr& curve,
+                                      int index,
+                                      double t)
+{
+    const int countBefore = curve->getControlPointsCount();
+    pushUndoCommand(new AddPointUndoCommand(shared_from_this(), curve, index, t));
+    evaluateOnPenUp = true;
+
+    BezierCPPtr cp = curve->getControlPointAtIndex(index + 1);
+    if (!cp || (curve->getControlPointsCount() != countBefore + 1)) {
+        return;
+    }
+    cpBeingDragged = std::make_pair(cp, curve->getFeatherPointAtIndex(index + 1));
+    smoothingInsertedPoint = true;
+    state = eEventStateDraggingControlPoint;
+}
+
+void
+RotoCurveInteract::closeDragGesture()
+{
+    smoothingInsertedPoint = false;
+    undoGesture.end();
+    _openDragCommand.reset();
+    endDragRender();
+}
+
+bool
+RotoCurveInteract::abandonInsertedPointDrag()
+{
+    if (!smoothingInsertedPoint || (state != eEventStateDraggingControlPoint)) {
+        return false;
+    }
+    closeDragGesture();
+    if (evaluateOnPenUp) {
+        getCurveContext()->evaluateChange();
+        _host->getApp()->triggerAutoSave();
+        redrawOverlays();
+        evaluateOnPenUp = false;
+    }
+    cpBeingDragged.first.reset();
+    cpBeingDragged.second.reset();
+    state = eEventStateNone;
+
+    return true;
+}
+
+void
 RotoCurveInteract::showMenuForControlPoint(const BezierCPPtr& cp)
 {
     KnobChoicePtr menu = rightClickMenuKnob.lock();
@@ -3912,6 +3960,7 @@ RotoCurveInteract::onOverlayPenDown(double time,
     const bool altPress = altPressClaimed;
     altPressClaimed = false;
     featherBarKeepsTangents = false;
+    smoothingInsertedPoint = false;
 
     // Every command this press and the drag after it push is one undo step, closed at pen up.
     undoGesture.begin();
@@ -4088,8 +4137,7 @@ RotoCurveInteract::onOverlayPenDown(double time,
                 }
                 if (pen == ePenTypeLMB || pen == ePenTypeMMB) {
                     if (ctrlDown && altDown && !shiftDown) {
-                        pushUndoCommand(new AddPointUndoCommand(shared_from_this(), nearbyBezier, nearbyBezierCPIndex, nearbyBezierT));
-                        evaluateOnPenUp = true;
+                        insertPointAndDrag(nearbyBezier, nearbyBezierCPIndex, nearbyBezierT);
                     } else {
                         state = eEventStateDraggingSelectedControlPoints;
                         bezierBeingDragged = nearbyBezier;
@@ -4138,8 +4186,7 @@ RotoCurveInteract::onOverlayPenDown(double time,
                 showMenuForCurve(nearbyBezier);
             } else {
                 if (ctrlDown && altDown && !shiftDown) {
-                    pushUndoCommand(new AddPointUndoCommand(shared_from_this(), nearbyBezier, nearbyBezierCPIndex, nearbyBezierT));
-                    evaluateOnPenUp = true;
+                    insertPointAndDrag(nearbyBezier, nearbyBezierCPIndex, nearbyBezierT);
                 }
             }
             didSomething = true;
@@ -4168,8 +4215,7 @@ RotoCurveInteract::onOverlayPenDown(double time,
                 if (nearbyCP.first) {
                     handleControlPointSelection(nearbyCP);
                 } else {
-                    pushUndoCommand(new AddPointUndoCommand(shared_from_this(), nearbyBezier, nearbyBezierCPIndex, nearbyBezierT));
-                    evaluateOnPenUp = true;
+                    insertPointAndDrag(nearbyBezier, nearbyBezierCPIndex, nearbyBezierT);
                 }
                 didSomething = true;
             }
@@ -4515,7 +4561,11 @@ RotoCurveInteract::onOverlayPenMotion(double time,
         } else {
             std::list<SelectedCP> toDrag;
             toDrag.push_back(cpBeingDragged);
-            pushDragCommand(std::make_shared<MoveControlPointsUndoCommand>(shared_from_this(), toDrag, dx, dy, time));
+            std::shared_ptr<MoveControlPointsUndoCommand> move = std::make_shared<MoveControlPointsUndoCommand>(shared_from_this(), toDrag, dx, dy, time);
+            if (smoothingInsertedPoint) {
+                move->setSmoothsMovedPoints(pixelScale);
+            }
+            pushDragCommand(move);
         }
         evaluateOnPenUp = true;
         computeSelectedCpsBBOX();
@@ -4738,9 +4788,7 @@ RotoCurveInteract::onOverlayPenUp()
     // A claimed Alt press that another overlay took first must not make the next press an Alt one.
     altPressClaimed = false;
 
-    undoGesture.end();
-    _openDragCommand.reset();
-    endDragRender();
+    closeDragGesture();
 
     if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
         return objectSelect->penUp();
@@ -4805,6 +4853,11 @@ RotoCurveInteract::onOverlayKeyDown(Key key)
         ++ctrlDown;
     } else if ((key == Key_Alt_L) || (key == Key_Alt_R)) {
         ++altDown;
+    }
+
+    // The point stays where the last motion put it; undo removes it.
+    if ((key == Key_Escape) && abandonInsertedPointDrag()) {
+        return true;
     }
 
     if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
@@ -4888,6 +4941,7 @@ RotoCurveInteract::onOverlayFocusLost()
     shiftDown = 0;
     ctrlDown = 0;
     altDown = 0;
+    abandonInsertedPointDrag();
 
     return true;
 } // onOverlayFocusLost

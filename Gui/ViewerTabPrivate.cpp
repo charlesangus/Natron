@@ -71,6 +71,7 @@ ViewerTabPrivate::ViewerTabPrivate(ViewerTab* publicInterface,
     , refinementPausedButton(NULL)
     , renderEverythingButton(NULL)
     , refineSamplesLabel(NULL)
+    , geoDisplayRow(NULL)
     , layerChoice(NULL)
     , alphaChannelChoice(NULL)
     , layerMenuTime(0.)

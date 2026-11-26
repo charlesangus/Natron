@@ -175,6 +175,24 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
 
 **Verification gate:** ctest (SceneViewBudget, SceneDrawFilter, SceneDrawBoxes) and `Tests/gui/scene_viewer_budget.py` plus the existing `scene_draw_*`/`scene_viewer_*` GUI scripts pass. `budget_orbit` passes on the GPU host or a cloud VM. The user accepts the behaviour on Island.
 
+## Phase 481.5: UAT round 1 fixes
+
+- [ ] M481.P5.T1 — No main-thread stall when the budget applies
+  - files: `Gui/SceneViewport.cpp`, `Engine/Nodes/Scene/SceneDrawFilter.*`, `Gui/SceneDrawBoxes.*`, the budget apply path
+  - approach: on Island every camera stop freezes the UI about 1.65 s and the budget takes 11-14 s to reach the screen (bench and user, both objectionable). Profile where the main thread spends the stop (draw-filter change delivery, stand-in box upload, Storm re-sync, the budgetMutex copy) and move or slice it so no stop blocks the main thread more than 100 ms; Storm's own sync cost must be spread across frames or kept incremental (send only the demotion delta since the last applied budget)
+  - verify: budget_orbit on Island: per-stop stall ≤ 100 ms, orbit ≥ 30 fps; GUI script still passes
+  - size: L
+- [ ] M481.P5.T2 — Counted figure is plausible
+  - files: SceneViewBudget, the box-worker unit counts, the HUD line
+  - approach: Island's HUD shows about 13.8 billion counted; find the overcount (instances multiplied twice, nested instancers, or overflow) and fix it
+  - verify: ctest with a nested PointInstancer fixture checks the counted figure; Island's figure is in the low hundreds of millions at most
+  - size: M
+- [ ] M481.P5.T3 — Viewer draw matches the Scene Graph's draw states
+  - files: the Scene Graph panel's Draw column, `SceneDrawStates.h`, `SceneDrawFilter.*`, the budget layer
+  - approach: with only USDRead → Viewer, prims marked Hidden sometimes still drew, and prims set Full with Load All sometimes did not draw (user, UAT round 1). Find how the budget layer and the draw-state layer disagree (budget state applied over a stale draw state, a budget result solved against old draw states then applied after a draw-state change, a restore that re-shows Hidden prims, or Full/loaded prims left demoted without the budget tint); Hidden must always win, and a draw-state change must re-solve the budget
+  - verify: GUI script on a budget-engaged scene toggles Hidden/Full/Load All from the Scene Graph and checks the viewer's drawn set each time
+  - size: L
+
 ## Decisions
 
 - 2026-11-17 — Re-evaluate on camera idle with hysteresis, never per frame (user): changing what Storm draws costs up to about 1 s at 1M prims (M336 rounds 3-5). M336's interaction stand-in covers the tumble.
@@ -220,3 +238,4 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
   - **Outside budget_orbit:** Island's load_all stalls 2.9 s.
   - **Status:** put to the user (Needs: response).
 - 2026-11-26 (PM) — The user tests on their own GPU before any more VM runs. The UAT AppImage `build/appimages/Natron-m481-viewer-polygon-budgets.AppImage` (release 384091515) and its steps .md are staged; Needs: uat.
+- 2026-11-25 — **UAT round 1 (user, own GPU):** the budget keeps the viewer feeling good aside from the stalls. The camera-stop stalls are confirmed and objectionable. Draw states disagreed between the viewer and the Scene Graph with only USDRead → Viewer: some Hidden prims still drew, some Full + Load All prims did not draw. Filed as phase 481.5 (stall, counted figure, draw-state disconnect).

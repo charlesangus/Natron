@@ -29,3 +29,4 @@ Fixes from the user's UAT of the F16 - User Knob Editor AppImage (2026-11-26), n
 
 ## Decisions
 - 2026-11-26 (PM) — Claimed; lane `.worktrees/m614` off the feature branch; all tasks dispatched to one opus implementer.
+- 2026-11-26 (PM) — m614-gate1 green (09fd6f0179, --appimage; the M373 scripts, m70_rfv and m614_delete pass). Screenshots sent; round-2 UAT AppImage staged as Natron-f16-user-knob-editor.AppImage (F16 + M614). Merges into F16 after the user's OK.

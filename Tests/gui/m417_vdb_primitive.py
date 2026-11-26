@@ -9,15 +9,16 @@ float grid named "density"; $NATRON_M417_VDB overrides its path. The script chec
     framed view differs from the empty view's background;
   - with Viewer1 on the USDRender (Storm) showing alpha, the render's centre differs from its
     corner;
-  - packed copies: the volume copied by a GeoCopyToPoints (Pack And Instance on) onto a row of
+  - packed copies: the volume copied by a GeoCopyToPoints (Pack And Instance on) onto a grid of
     points spread along X, through a second GeoToUSD, is drawn at every copy: with the view framed on
-    everything, each vertical third of it differs from the background outside the guide colour.
+    everything, the neutral pixels that differ from the background, below the heads-up text and
+    outside the guide's yellow, form one horizontal span per copy position along X.
     The stage's PointInstancer instance count and its distinct .vdb file paths are reported when
-    pxr is importable. The coverage check repeats on Cycles at a low Max Samples when the build has
-    it, and is skipped with a NOTE when it does not.
+    pxr is importable. The copies check repeats on Cycles and then MoonRay at a low Max Samples, each
+    skipped with a NOTE when the build does not have it.
 
 Screenshots for sign-off: m417-volume-scene, m417-volume-drawn, m417-volume-empty, m417-volume-render,
-m417-copies-storm, m417-copies-cycles.
+m417-copies-storm, m417-copies-cycles, m417-copies-moonray.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -37,13 +38,24 @@ COLOUR_DIFFERENCE = 24
 PATCH_RADIUS = 4
 COPY_COLUMNS = 2
 COPY_ROWS = 1
+# A grid of N columns has N + 1 points per row; the rows sit COPY_DEPTH apart and overlap on screen.
+COPY_POSITIONS_X = COPY_COLUMNS + 1
 COPY_SPACING = 6.0
 COPY_DEPTH = 0.1
-# The fraction of a third of the view that must differ from the background for a copy to count as drawn.
-MIN_COVERAGE = 0.002
+# The heads-up text ("Shaded | Free camera ...") occupies the top rows of the view and is not scene content.
+HUD_ROWS = 32
+# Columns with no copy pixels narrower than this do not split a copy, so a guide line drawn over a copy
+# cannot make two of it; the copies themselves are tens of pixels apart.
+SPAN_GAP = 8
+# A span narrower than this is noise, not a copy.
+MIN_SPAN_WIDTH = 4
+# How far red and green may sit above blue before a pixel counts as the yellow guide or its antialiasing.
+GUIDE_TINT = 30
 CYCLES_ID = "HdCyclesPlugin"
-CYCLES_SAMPLES = 8
-CYCLES_TIMEOUT_S = 120.0
+MOONRAY_ID = "HdMoonrayRendererPlugin"
+# Path-traced delegates refine up to this many samples; a few are enough to show an absorbing volume.
+RENDER_SAMPLES = 8
+RENDER_TIMEOUT_S = 120.0
 VOLUME_GAIN_STOPS = 3.0
 # The Viewer's displayChannels entry that shows the alpha channel.
 DISPLAY_ALPHA = 5
@@ -213,20 +225,33 @@ try:
         close_menus()
         yield ("until", lambda: state.get("closed", False), POLL_TIMEOUT_S)
 
-    def coverage(image, background):
-        """Per vertical third, the fraction of pixels that differ from background and are not guide-coloured."""
-        fractions = []
-        width = image.width()
-        for third in range(3):
-            x0, x1 = third * width // 3, (third + 1) * width // 3
-            hits = 0
-            for y in range(0, image.height(), 2):
-                for x in range(x0, x1, 2):
-                    c = image.pixelColor(x, y)
-                    if not is_guide_colour(c) and differs((c.red(), c.green(), c.blue()), background):
-                        hits += 1
-            fractions.append(hits / float(max(1, ((x1 - x0 + 1) // 2) * ((image.height() + 1) // 2))))
-        return fractions
+    def copy_spans(image, background):
+        """The horizontal pixel spans holding copies: columns with a neutral pixel that differs from background.
+
+        A fixed split of the view cannot locate the copies: the framing fits the scene's bounding sphere
+        to the view's height, so in a wide view every copy lands in the middle of it. The volume is grey,
+        so the yellow guide and its antialiased edges are told apart by their tint.
+        """
+        def is_copy(c):
+            tinted = c.red() - c.blue() > GUIDE_TINT and c.green() - c.blue() > GUIDE_TINT
+            return not tinted and differs((c.red(), c.green(), c.blue()), background)
+
+        columns = [any(is_copy(image.pixelColor(x, y)) for y in range(HUD_ROWS, image.height(), 2))
+                   for x in range(image.width())]
+        spans = []
+        start = last = None
+        for x, hit in enumerate(columns):
+            if not hit:
+                continue
+            if start is not None and x - last > SPAN_GAP:
+                spans.append((start, last))
+                start = None
+            if start is None:
+                start = x
+            last = x
+        if start is not None:
+            spans.append((start, last))
+        return [span for span in spans if span[1] - span[0] + 1 >= MIN_SPAN_WIDTH]
 
     def corner_background(image):
         samples = [rgb(image, x, y) for y in range(8, 8 + 2 * PATCH_RADIUS) for x in range(8, 8 + 2 * PATCH_RADIUS)]
@@ -267,6 +292,43 @@ try:
                 files.add(str(getattr(value, "path", value)))
         report("NOTE PointInstancers (path, instances) %r, distinct .vdb filePaths %d %r"
                % (counts, len(files), sorted(files)))
+
+    def copies_on(label, slug, renderer_id, samples_reported):
+        """Switches the view to a path-traced delegate and checks every packed copy draws there.
+
+        samples_reported says whether the delegate publishes its drawn sample count; one that does not is
+        given the timeout to refine instead, and only the copies are checked.
+        """
+        section("packed copies on " + label)
+        state = {}
+        sub = yield from open_renderer_submenu(state)
+        labels = [a.text().replace("&", "") for a in sub.actions() if not a.isSeparator()] if sub is not None else []
+        found = [a for a in sub.actions() if a.text().replace("&", "").lower().startswith(slug)] if sub is not None else []
+        if not found or not found[0].isEnabled() or "unavailable" in found[0].text():
+            yield from finish_menu(state)
+            report("NOTE %s is not available in this build (%r); its copies check is skipped" % (label, labels))
+            return
+        found[0].trigger()
+        yield from finish_menu(state)
+        ok = yield ("until", lambda: prop("natronSceneRenderer") == renderer_id, POLL_TIMEOUT_S)
+        require(ok, "picking %s switches the view (%r)" % (label, prop("natronSceneRenderer")))
+        check(not prop("natronSceneRendererError"), "no renderer error on %s (%r)" % (label, prop("natronSceneRendererError")))
+        viewer.getParam("maxSamples").setValue(RENDER_SAMPLES)
+        ok = yield ("until", lambda: prop("natronSceneMaxSamples") == RENDER_SAMPLES, POLL_TIMEOUT_S)
+        check(ok, "Max Samples takes %d (%r)" % (RENDER_SAMPLES, prop("natronSceneMaxSamples")))
+        ok = yield ("until", lambda: (prop("natronSceneDrawnSamples") or 0) >= RENDER_SAMPLES or prop("natronSceneRefineConverged"),
+                    RENDER_TIMEOUT_S)
+        if samples_reported:
+            check(ok, "%s draws %d samples (%r)" % (label, RENDER_SAMPLES, prop("natronSceneDrawnSamples")))
+        elif not ok:
+            report("NOTE %s reported %r drawn samples after %.0f s" % (label, prop("natronSceneDrawnSamples"), RENDER_TIMEOUT_S))
+        yield settle()
+        image = save(view(), "m417-copies-" + slug)
+        background = corner_background(image)
+        spans = copy_spans(image, background)
+        report("NOTE %s copies: background %r, horizontal spans %r" % (label, background, spans))
+        check(len(spans) == COPY_POSITIONS_X,
+              "%s draws a copy at each of the %d positions along X (%d spans)" % (label, COPY_POSITIONS_X, len(spans)))
 
     def steps():
         require(viewer.connectInput(0, merge), "connect the Viewer to the merge")
@@ -365,37 +427,13 @@ try:
         report_stage(copies_usd)
         image = save(v, "m417-copies-storm")
         background = corner_background(image)
-        fractions = coverage(image, background)
-        report("NOTE Storm copies: background %r, coverage per third %r" % (background, fractions))
-        for i, fraction in enumerate(fractions):
-            check(fraction >= MIN_COVERAGE, "Storm draws a copy in third %d of the view (%.4f of its pixels)" % (i + 1, fraction))
+        spans = copy_spans(image, background)
+        report("NOTE Storm copies: background %r, horizontal spans %r" % (background, spans))
+        check(len(spans) == COPY_POSITIONS_X,
+              "Storm draws a copy at each of the %d positions along X (%d spans)" % (COPY_POSITIONS_X, len(spans)))
 
-        section("packed copies on Cycles")
-        state = {}
-        sub = yield from open_renderer_submenu(state)
-        labels = [a.text().replace("&", "") for a in sub.actions() if not a.isSeparator()] if sub is not None else []
-        cycles = [a for a in sub.actions() if a.text().replace("&", "").startswith("Cycles")] if sub is not None else []
-        if not cycles or not cycles[0].isEnabled() or "unavailable" in cycles[0].text():
-            yield from finish_menu(state)
-            report("NOTE Cycles is not available in this build (%r); the Cycles coverage check is skipped" % (labels,))
-            return
-        cycles[0].trigger()
-        yield from finish_menu(state)
-        ok = yield ("until", lambda: prop("natronSceneRenderer") == CYCLES_ID, POLL_TIMEOUT_S)
-        require(ok, "picking Cycles switches the view (%r)" % (prop("natronSceneRenderer"),))
-        check(not prop("natronSceneRendererError"), "no renderer error on Cycles (%r)" % (prop("natronSceneRendererError"),))
-        viewer.getParam("maxSamples").setValue(CYCLES_SAMPLES)
-        ok = yield ("until", lambda: prop("natronSceneMaxSamples") == CYCLES_SAMPLES, POLL_TIMEOUT_S)
-        check(ok, "Max Samples takes %d (%r)" % (CYCLES_SAMPLES, prop("natronSceneMaxSamples")))
-        ok = yield ("until", lambda: (prop("natronSceneDrawnSamples") or 0) >= CYCLES_SAMPLES, CYCLES_TIMEOUT_S)
-        check(ok, "Cycles draws %d samples (%r)" % (CYCLES_SAMPLES, prop("natronSceneDrawnSamples")))
-        yield settle()
-        image = save(view(), "m417-copies-cycles")
-        background = corner_background(image)
-        fractions = coverage(image, background)
-        report("NOTE Cycles copies: background %r, coverage per third %r" % (background, fractions))
-        for i, fraction in enumerate(fractions):
-            check(fraction >= MIN_COVERAGE, "Cycles draws a copy in third %d of the view (%.4f of its pixels)" % (i + 1, fraction))
+        yield from copies_on("Cycles", "cycles", CYCLES_ID, True)
+        yield from copies_on("MoonRay", "moonray", MOONRAY_ID, False)
 
     run(steps())
 except Exception:

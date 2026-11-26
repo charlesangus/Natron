@@ -67,3 +67,4 @@ Fixes from the user's second UAT pass over the F15 - Native Geometry AppImage (2
 ## Decisions
 
 - GeoUVProject's Group selects what gets uv: blank means every element of the attribute class, free points included. A point group writes only those points. A primitive group writes only those primitives' points or vertices. When in doubt, match Houdini. (User, 2026-11-25)
+- 2026-11-26 (PM) — m600-gate2 (8c85fa55f5, run finished 2026-11-25 20:48Z) failed and went unhandled overnight. Failures: ctest GeoUVProject (numbered uv 0.7 vs 0.6 after the Group change), and GUI m600_cycles_payload_load (Scene Graph doesn't list /World), m600_nodes_selection (breadcrumb: view the GeoToUSD), m600_viewer_playback (script error); the other 20 GUI scripts pass. Being fixed; round-3 UAT AppImage follows a green gate.

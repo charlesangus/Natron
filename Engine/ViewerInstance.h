@@ -1043,7 +1043,12 @@ private:
     bool evaluateGeometryInput(ViewerArgs& inArgs,
                                ScenePayload* scene,
                                std::string* error,
-                               bool* aborted);
+                               bool* aborted,
+                               std::unique_lock<std::mutex>& publish,
+                               bool* superseded);
+
+    bool claimScenePublish(const ViewerArgs& inArgs,
+                           std::unique_lock<std::mutex>& publish);
 
     ViewerRenderRetCode renderViewer_internal(ViewIdx view,
                                               bool singleThreaded,

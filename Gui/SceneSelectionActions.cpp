@@ -831,7 +831,8 @@ setGroupFromComponents(Gui* gui,
     }
     const GeoComponentSelection carried = SceneViewport::convertedComponentSelection(*detail, selection, type);
     // A selection the class keeps nothing of selects nothing, where an empty pattern would select everything.
-    const std::string pattern = carried.empty() ? std::string("^*") : SceneViewport::componentSelectionPattern(*detail, carried);
+    // A full selection keeps its explicit numbers: "*" would also take in elements added upstream later.
+    const std::string pattern = carried.empty() ? std::string("^*") : SceneViewport::componentSelectionPattern(*detail, carried, false);
 
     KnobChoicePtr typeKnob;
     int typeIndex = -1;

@@ -1569,6 +1569,7 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->sceneViewport = new SceneViewport(_imp->viewerSubContainer);
         _imp->sceneViewport->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         _imp->sceneViewport->hide();
+        QObject::connect(_imp->sceneViewport, &SceneViewport::outOfDateChanged, this, &ViewerTab::onSceneOutOfDateChanged);
         const int index = _imp->viewerSubContainerLayout->indexOf(_imp->viewer);
         _imp->sceneBreadcrumbBar = new SceneBreadcrumbBar(_imp->sceneViewport, _imp->viewerSubContainer);
         _imp->sceneBreadcrumbBar->hide();
@@ -1712,6 +1713,7 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->viewer->show();
     }
     refreshSceneRenderRow();
+    applyStaleCueInput();
     Q_EMIT sceneViewChanged();
 } // onActiveInputDataKindChanged
 
@@ -2081,6 +2083,10 @@ ViewerTab::refreshSceneRenderRow()
     // Without geometry, as downstream of a conversion to a scene, only prims are picked.
     if (_imp->sceneViewport) {
         _imp->sceneViewport->setGeometryContext(geometry);
+    }
+    // Geometry is shown as prims named after its pieces, not a scene to walk through by path.
+    if (_imp->sceneBreadcrumbBar) {
+        _imp->sceneBreadcrumbBar->setVisible(isShowingScene() && !geometry);
     }
     refreshRefineSamplesLabel();
     if (toggled) {

@@ -4977,11 +4977,15 @@ SceneViewportRenderer::serviceStageLoads(const std::function<bool()>& cancelled)
     const bool serviced = stage->serviceLoads([imp](const std::function<void()>& section) {
         SceneWriteBarrier::ReadScope read;
         std::shared_lock<std::shared_mutex> lock = imp->lockShared();
-        section(); }, [imp, stage, committed](const std::function<void()>& section) {
+        section(); }, [imp, stage, committed, restart](const std::function<void()>& section) {
         SceneWriteBarrier::ReadScope read;
         const std::unique_lock<std::shared_mutex> lock = imp->lockExclusive();
+        const U64 loadEditsBefore = stage->getLoadEditCount();
         section();
         imp->stageLoadEditCount = stage->getLoadEditCount();
+        if (*restart || (imp->stageLoadEditCount != loadEditsBefore)) {
+            imp->progressive->invalidate();
+        }
         if (stage->isValid()) {
             imp->publishLoadRules();
         }
@@ -5008,9 +5012,6 @@ SceneViewportRenderer::serviceStageLoads(const std::function<bool()>& cancelled)
         if (committed) {
             committed(committedLoadSet, reevaluate);
         } }, cancelled, prepare);
-    if (*restart) {
-        imp->progressive->invalidate();
-    }
     if (cancelled && cancelled()) {
         return serviced;
     }
@@ -8537,6 +8538,9 @@ struct SceneViewport::Implementation {
     GeoComponentSelection reselectSelection;
     // The geometry the engine's component highlight was mapped onto.
     std::shared_ptr<const GeoUsdConvert> highlightConvert;
+    // natronGeoPick was published while no geometry was synced, as a selection made on the scene
+    // shown before the geometry's sync landed is.
+    bool geoPickOwed = false;
 
     // The thread requests for payload loads are serviced on. It waits under this mutex's condition
     // for the stage to have requests; a request only needs to wake it.
@@ -8984,6 +8988,13 @@ struct SceneViewport::Implementation {
     }
     QElapsedTimer composingClock;
     QTimer* composingTimer = nullptr;
+
+    StaleCueStyleEnum staleCueStyle = eStaleCueStyleOff;
+    bool staleCueVisible = false;
+    // The isOutOfDate() last announced by outOfDateChanged().
+    bool outOfDatePublished = false;
+    // The conversion natronGeoBounds was last published for, while a script asks for them.
+    std::weak_ptr<const GeoUsdConvert> boundsConvert;
 
     // Main thread: holds the paints from now, before any update() after the post can compose.
     std::function<void()> renderJobPosted;
@@ -9740,6 +9751,9 @@ SceneViewport::onSynced(U64 serial,
         }
         refreshComponentState();
     }
+    if (_imp->geoPickOwed && _imp->geoDisplay->hasGeometry()) {
+        publishGeoPick();
+    }
     serviceDeferredInput();
     if (serial != _imp->requestedSerial) {
         // A newer request is on its way, but this one is drawn meanwhile: in playback each frame's
@@ -10371,6 +10385,108 @@ SceneViewport::paintComposingStatus()
     painter.setPen(QColor(200, 200, 200));
     painter.drawText(box, Qt::AlignCenter, text);
     painter.end();
+}
+
+void
+SceneViewport::setStaleCue(StaleCueStyleEnum style,
+                           bool visible)
+{
+    if ((_imp->staleCueStyle == style) && (_imp->staleCueVisible == visible)) {
+        return;
+    }
+    _imp->staleCueStyle = style;
+    _imp->staleCueVisible = visible;
+    setProperty("natronStaleCueVisible", visible);
+    update();
+}
+
+bool
+SceneViewport::isStaleCueVisible() const
+{
+    return _imp->staleCueVisible;
+}
+
+bool
+SceneViewport::isOutOfDate() const
+{
+    if (_imp->requestedPayload.isEmpty() && _imp->requestedError.isEmpty() && !_imp->renderer.hasScene()) {
+        return false;
+    }
+
+    return (_imp->syncedSerial < _imp->requestedSerial) || _imp->stageAwaitsTakeIn() || _imp->composesScene();
+}
+
+void
+SceneViewport::publishOutOfDate()
+{
+    const bool outOfDate = isOutOfDate();
+    if (outOfDate == _imp->outOfDatePublished) {
+        return;
+    }
+    _imp->outOfDatePublished = outOfDate;
+    setProperty("natronSceneOutOfDate", outOfDate);
+    Q_EMIT outOfDateChanged(outOfDate);
+}
+
+void
+SceneViewport::publishGeoBounds()
+{
+    // Off unless a script sets natronGeoPublishBounds: the points of the geometry on screen, once
+    // per conversion, so it can tell which edit the view ended on.
+    const std::shared_ptr<const GeoUsdConvert> convert = _imp->geoDisplay->componentConvert();
+    if (convert == _imp->boundsConvert.lock()) {
+        return;
+    }
+    _imp->boundsConvert = convert;
+    if (!convert || !convert->detail() || convert->detail()->pointMap().empty()) {
+        setProperty("natronGeoBounds", QVariant());
+
+        return;
+    }
+    const GeoDetail& detail = *convert->detail();
+    double low[3] = { std::numeric_limits<double>::max(), std::numeric_limits<double>::max(), std::numeric_limits<double>::max() };
+    double high[3] = { std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest(), std::numeric_limits<double>::lowest() };
+    detail.pointMap().forEachLive([&](GeoIndex /*index*/, GeoOffset point) {
+        const std::array<double, 3> p = detail.pointPosition(point);
+        for (int i = 0; i < 3; ++i) {
+            low[i] = std::min(low[i], p[i]);
+            high[i] = std::max(high[i], p[i]);
+        }
+    });
+    setProperty("natronGeoBounds", QVariantList { low[0], low[1], low[2], high[0], high[1], high[2] });
+}
+
+void
+SceneViewport::paintStaleCue(QPainter& painter)
+{
+    if (!_imp->staleCueVisible) {
+        return;
+    }
+    const QRectF bounds(rect());
+    switch (_imp->staleCueStyle) {
+    case eStaleCueStyleSubtleOutline: {
+        const QColor colour = QColor::fromRgbF(StaleCueLook::kRed, StaleCueLook::kGreen, StaleCueLook::kBlue, StaleCueLook::kOutlineAlpha);
+        const double width = StaleCueLook::kOutlineWidth;
+        painter.fillRect(QRectF(bounds.left(), bounds.top(), bounds.width(), width), colour);
+        painter.fillRect(QRectF(bounds.left(), bounds.bottom() - width, bounds.width(), width), colour);
+        painter.fillRect(QRectF(bounds.left(), bounds.top() + width, width, bounds.height() - 2. * width), colour);
+        painter.fillRect(QRectF(bounds.right() - width, bounds.top() + width, width, bounds.height() - 2. * width), colour);
+        break;
+    }
+    case eStaleCueStyleCornerDot: {
+        const double radius = StaleCueLook::kDotRadius;
+        const QPointF centre(bounds.right() - (StaleCueLook::kDotInset + radius), bounds.top() + (StaleCueLook::kDotInset + radius));
+        painter.save();
+        painter.setRenderHint(QPainter::Antialiasing);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor::fromRgbF(StaleCueLook::kRed, StaleCueLook::kGreen, StaleCueLook::kBlue, StaleCueLook::kDotAlpha));
+        painter.drawEllipse(centre, radius, radius);
+        painter.restore();
+        break;
+    }
+    case eStaleCueStyleOff:
+        break;
+    }
 }
 
 namespace {
@@ -11066,6 +11182,7 @@ SceneViewport::publishState()
     setProperty("natronSceneShown", _imp->renderer.hasScene());
     setProperty("natronSceneSynced", isSceneSynced());
     setProperty("natronSceneComposing", isComposing());
+    publishOutOfDate();
     // The payload loads: whether requests wait, how many commits edited the stage, how long the last
     // batch held the viewer lock, and each failed prim's path and error.
     setProperty("natronSceneLoadsPending", _imp->renderer.hasPendingStageLoads());
@@ -11635,22 +11752,28 @@ SceneViewport::setSelection(const QStringList& paths)
     }
     _imp->renderer.setSelectedPrims(p);
     setProperty("natronSceneSelection", paths);
-    {
-        QVariantList picks;
-        for (const std::string& path : p) {
-            GeoViewerLayer::Pick pick;
-            if (_imp->geoDisplay->pickPrimitives(path, &pick)) {
-                QVariantList primitives;
-                for (GeoIndex index : pick.primitives) {
-                    primitives.push_back(QVariant::fromValue<qlonglong>(index));
-                }
-                picks.push_back(QVariantList { QString::fromStdString(pick.primPath), primitives });
-            }
-        }
-        setProperty("natronGeoPick", picks);
-    }
+    publishGeoPick();
     update();
     Q_EMIT selectionChanged(paths);
+}
+
+void
+SceneViewport::publishGeoPick()
+{
+    const std::vector<std::string> paths = _imp->renderer.getSelectedPrims();
+    QVariantList picks;
+    for (const std::string& path : paths) {
+        GeoViewerLayer::Pick pick;
+        if (_imp->geoDisplay->pickPrimitives(path, &pick)) {
+            QVariantList primitives;
+            for (GeoIndex index : pick.primitives) {
+                primitives.push_back(QVariant::fromValue<qlonglong>(index));
+            }
+            picks.push_back(QVariantList { QString::fromStdString(pick.primPath), primitives });
+        }
+    }
+    setProperty("natronGeoPick", picks);
+    _imp->geoPickOwed = !paths.empty() && !_imp->geoDisplay->hasGeometry();
 }
 
 QStringList
@@ -11717,6 +11840,12 @@ SceneViewport::setGeometryContext(bool geometry)
     _imp->geometryContext = geometry;
     clearSceneComponentHighlight();
     refreshComponentState();
+}
+
+bool
+SceneViewport::isGeometryContext() const
+{
+    return _imp->geometryContext;
 }
 
 bool
@@ -12000,7 +12129,8 @@ SceneViewport::pickComponentsIn(const QRect& rect,
 
 std::string
 SceneViewport::componentSelectionPattern(const GeoDetail& detail,
-                                         const GeoComponentSelection& selection)
+                                         const GeoComponentSelection& selection,
+                                         bool collapseFull)
 {
     if (selection.empty()) {
         return std::string();
@@ -12015,7 +12145,7 @@ SceneViewport::componentSelectionPattern(const GeoDetail& detail,
     }
     const GeoAttribClassEnum cls = (selection.type == eGeoComponentPoints) ? eGeoAttribClassPoint : eGeoAttribClassPrimitive;
 
-    return geoEncodePattern(detail, cls, maskFromNumbers(detail, cls, selection.elements), true);
+    return geoEncodePattern(detail, cls, maskFromNumbers(detail, cls, selection.elements), true, collapseFull);
 }
 
 GeoComponentSelection
@@ -12029,6 +12159,24 @@ SceneViewport::convertedComponentSelection(const GeoDetail& detail,
 void
 SceneViewport::createFromSelection(const QStringList& paths)
 {
+    if (!componentsPickable()) {
+        createFromPrims(paths);
+
+        return;
+    }
+    if (!_imp->selectionActions.createFromComponents) {
+        return;
+    }
+    const std::shared_ptr<const GeoUsdConvert> convert = _imp->geoDisplay->componentConvert();
+    const GeoDetailConstPtr detail = convert ? convert->detail() : GeoDetailConstPtr();
+    // Without the geometry the numbers were picked on, they can't be carried to another class.
+    const GeoComponentSelection selection = detail ? _imp->componentSelection : GeoComponentSelection();
+    _imp->selectionActions.createFromComponents(detail, selection);
+}
+
+void
+SceneViewport::createFromPrims(const QStringList& paths)
+{
     if (!_imp->geometryContext) {
         if (_imp->selectionActions.createFromSelection) {
             _imp->selectionActions.createFromSelection(paths);
@@ -12041,8 +12189,17 @@ SceneViewport::createFromSelection(const QStringList& paths)
     }
     const std::shared_ptr<const GeoUsdConvert> convert = _imp->geoDisplay->componentConvert();
     const GeoDetailConstPtr detail = convert ? convert->detail() : GeoDetailConstPtr();
-    // Without the geometry the numbers were picked on, they can't be carried to another class.
-    const GeoComponentSelection selection = detail ? _imp->componentSelection : GeoComponentSelection();
+    GeoComponentSelection selection;
+    selection.type = eGeoComponentPrimitives;
+    if (detail) {
+        for (const QString& path : paths) {
+            GeoViewerLayer::Pick pick;
+            if (GeoViewerLayer::pickPrimitives(*convert, path.toStdString(), &pick)) {
+                selection.elements.insert(selection.elements.end(), pick.primitives.begin(), pick.primitives.end());
+            }
+        }
+        selection.normalize();
+    }
     _imp->selectionActions.createFromComponents(detail, selection);
 }
 
@@ -12818,7 +12975,7 @@ SceneViewport::paintGL()
             imp->standInRefillTimer->start(std::max<int>(0, int(imp->standInRefillDelayMs - imp->viewStillClock.elapsed())) + 1);
         }
         if (!imp->frontFrame && !blank && !standInShown) {
-            if (!imp->presentedScene || (imp->composingClock.isValid() && (imp->composingClock.elapsed() >= kComposingStatusDelayMs))) {
+            if (!imp->presentedScene || (imp->composingShowsStatus() && imp->composingClock.isValid() && (imp->composingClock.elapsed() >= kComposingStatusDelayMs))) {
                 paintComposingStatus();
             }
 
@@ -13010,6 +13167,9 @@ SceneViewport::paintGL()
         setProperty("natronGeoRefreshResyncs", QVariant::fromValue<qulonglong>(_imp->geoDisplay->getRefreshResyncCount()));
         int geoFrame = 0;
         setProperty("natronGeoFrame", _imp->geoDisplay->getRefreshFrame(&geoFrame) ? QVariant(geoFrame) : QVariant());
+        if (property("natronGeoPublishBounds").toBool()) {
+            publishGeoBounds();
+        }
     }
     if (!_imp->error.isEmpty() || !rendererError.isEmpty()) {
         painter.setPen(QColor(230, 90, 80));
@@ -13074,7 +13234,9 @@ SceneViewport::paintGL()
         painter.setBrush(QColor(255, 255, 255, 30));
         painter.drawRect(QRect(_imp->pressPos, _imp->lastPos).normalized());
     }
+    paintStaleCue(painter);
     painter.end();
+    publishOutOfDate();
     if (converged) {
         // When the last finished frame was drawn, for benchmarks and scripts.
         setProperty("natronSceneLastPaintMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));

@@ -3987,9 +3987,11 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
     std::string error;
     bool ok = false;
     const SceneEvaluationContext context(_imp->sceneContextId, getSceneLoadSet(), std::make_shared<SceneLoadReach>());
+    std::unique_lock<std::mutex> publish(_imp->scenePublishMutex, std::defer_lock);
+    bool superseded = false;
     if (inArgs.geometryUpstream) {
         bool aborted = false;
-        ok = evaluateGeometryInput(inArgs, &scene, &error, &aborted);
+        ok = evaluateGeometryInput(inArgs, &scene, &error, &aborted, publish, &superseded);
         if (aborted) {
             renderEndedWithoutImage(textureIndex, inArgs.params->abortInfo->getRenderAge());
 
@@ -4020,6 +4022,13 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
     if (!ok && error.empty()) {
         error = inArgs.activeInputToRender->getScriptName_mt_safe() + ": scene evaluation failed";
     }
+    if (!superseded && !publish.owns_lock()) {
+        superseded = !claimScenePublish(inArgs, publish);
+    }
+    if (superseded) {
+        // A newer evaluation is already shown: publishing this one would bring an older edit back.
+        return eViewerRenderRetCodeRedraw;
+    }
     if ((textureIndex == 0) || (textureIndex == 1)) {
         {
             std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
@@ -4029,6 +4038,7 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
             _imp->lastSceneLoadSet[textureIndex] = context.loadSet;
             _imp->lastSceneReach[textureIndex] = context.reach;
         }
+        publish.unlock();
         Q_EMIT sceneEvaluated(textureIndex);
     }
 
@@ -4041,7 +4051,9 @@ bool
 ViewerInstance::evaluateGeometryInput(ViewerArgs& inArgs,
                                       ScenePayload* scene,
                                       std::string* error,
-                                      bool* aborted)
+                                      bool* aborted,
+                                      std::unique_lock<std::mutex>& publish,
+                                      bool* superseded)
 {
     const int textureIndex = inArgs.params->textureIndex;
     // Read before evaluating, so an edit made during the evaluation leaves the detail outdated.
@@ -4070,9 +4082,27 @@ ViewerInstance::evaluateGeometryInput(ViewerArgs& inArgs,
         }
         layer = _imp->geometryLayers[textureIndex];
     }
+    if (!claimScenePublish(inArgs, publish)) {
+        *superseded = true;
+
+        return false;
+    }
 
     return layer->serveFrame(detail, inArgs.params->time, inArgs.params->isSequential, scene, error, sourceNode, sourceHash);
 } // ViewerInstance::evaluateGeometryInput
+
+bool
+ViewerInstance::claimScenePublish(const ViewerArgs& inArgs,
+                                  std::unique_lock<std::mutex>& publish)
+{
+    publish.lock();
+    // Playback shows every frame in order; only interactive renders can finish out of order.
+    if (inArgs.params->isSequential) {
+        return true;
+    }
+
+    return _imp->checkAndUpdateDisplayAge(inArgs.params->textureIndex, inArgs.params->abortInfo->getRenderAge());
+}
 
 ViewerInstance::ViewerRenderRetCode
 ViewerInstance::renderViewer_internal(ViewIdx view,

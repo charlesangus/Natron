@@ -88,6 +88,12 @@ public:
 
     void    waitUntilNextFrameIsDue ();
 
+    // Sets playState to ePlayStateRunning. When a frame's time has gone by since the last frame
+    // shown, the next waitUntilNextFrameIsDue() returns at once and the frame rate is kept from it,
+    // rather than the frames after an idle timer showing back to back to catch up. A playback
+    // restarted within a frame of the last one shown, as an abort with auto-restart does
+    // mid-playback, keeps the pacing it had, so the restart does not show two frames back to back.
+    void startPlaying();
 
     //-------------------------------------------------
     // Set and get the frame rate, in frames per second
@@ -110,12 +116,14 @@ Q_SIGNALS:
     void fpsChanged(double actualfps, double desiredfps);
 
 private:
+    void resetTiming();
 
     double _spf;                 // desired frame rate,
     // in seconds per frame
     timeval _lastFrameTime;         // time when we displayed the
     // last frame
     double _timingError;             // cumulative timing error
+    bool _startPending;
     timeval _lastFpsFrameTime;      // state to keep track of the
     int _framesSinceLastFpsFrame;       // actual frame rate, averaged
     double _actualFrameRate;         // over several frames

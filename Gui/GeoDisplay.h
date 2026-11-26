@@ -105,6 +105,9 @@ public:
     // The frame the viewed geometry last synced was evaluated at; false before any.
     bool getRefreshFrame(int* frame) const;
 
+    // Whether any geometry has been synced since the view last showed none.
+    bool hasGeometry() const;
+
     // The primitives the prim at @p primPath of the geometry last synced was made from.
     bool pickPrimitives(const std::string& primPath,
                         GeoViewerLayer::Pick* pick) const;

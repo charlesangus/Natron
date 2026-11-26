@@ -197,6 +197,7 @@ set(Tests_SOURCES
     NodeColorSampler_Test.cpp
     OSGLContext_Test.cpp
     PersistentMessage_Test.cpp
+    PlaybackTimer_Test.cpp
     PluginIdentity_Test.cpp
     ImagePasteBands_Test.cpp
     PoolParallelFor_Test.cpp

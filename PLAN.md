@@ -556,7 +556,7 @@ future core work has solid ground to build on.
 | M456 | File Dialog Toolbar And Split | done | - | | E10 |  F29 | | [M456-file-dialog-toolbar-and-split.md](PLAN/MILESTONES/M456-file-dialog-toolbar-and-split.md) |
 | M457 | ColorWarp Space Spike | done | - | | E3 | F28 | | [M457-colorwarp-space-spike.md](PLAN/MILESTONES/M457-colorwarp-space-spike.md) |
 | M458 | ColorWarp Node | done | M457 | | E3 | F28 | | [M458-colorwarp-node.md](PLAN/MILESTONES/M458-colorwarp-node.md) |
-| M459 | ColorWarp 3D View | doing | M458 | bosley-executor | E3 | F28 | | [M459-colorwarp-3d-view.md](PLAN/MILESTONES/M459-colorwarp-3d-view.md) |
+| M459 | ColorWarp 3D View | done | M458 | bosley-executor | E3 | F28 | | [M459-colorwarp-3d-view.md](PLAN/MILESTONES/M459-colorwarp-3d-view.md) |
 | M482 | Geometry VOP Node | todo | M351, M360 |  | E25 | | | [M482-geometry-vop-node.md](PLAN/MILESTONES/M482-geometry-vop-node.md) |
 | M483 | Particle VOP Node | todo | M482, M406 |  | E25 | | | [M483-particle-vop-node.md](PLAN/MILESTONES/M483-particle-vop-node.md) |
 | M484 | Image Kernel Binding And Wrangle | todo | M360, M408 |  | E25 | | | [M484-image-kernel-binding-and-wrangle.md](PLAN/MILESTONES/M484-image-kernel-binding-and-wrangle.md) |
@@ -749,7 +749,7 @@ future core work has solid ground to build on.
 | F25 | Overlay Flow | open |  |  | feature/f25-overlay-flow | Overlays deform through every warp and onto projected geometry, with CardProject25D's 2.5D projection carrying them through. |
 | F26 | MaterialX Rendering | open |  |  | feature/f26-materialx-rendering | Render MaterialX materials in Cycles and MoonRay through native translation, with .mtlx input and a USDOpenPBR lookdev node. |
 | F27 | USD Layer Authoring | open |  |  | feature/f27-usd-layer-authoring | Control which USD layers an export writes: layer breaks for delta-only files, named and nested layer files from one USDWrite, and a live preview of what will be written. |
-| F28 | Colour Warp | open | bosley-executor |  | feature/f28-colour-warp | A ColorWarp node: pick colours in the viewer and push them through colour space like warp pins, with a 3D colour-space view. |
+| F28 | Colour Warp | shipping | bosley-executor |  | feature/f28-colour-warp | A ColorWarp node: pick colours in the viewer and push them through colour space like warp pins, with a 3D colour-space view. |
 | F29 | UI Polish Batch | landed |  |  | feature/f29-ui-polish-batch | Ship five small UI fixes — snapped viewer zoom, node error and warning display, Roto insert-point drag, keyframe markers for visible pages and the file dialog toolbar — on one build and one merge. |
 | F30 | Lens Optics Base | landed | | | feature/f30-lens-optics-base | One optics base for traced bokeh and lens flares: a shared lens library, the bundled lens database and browser, and a shared aperture model. |
 | F31 | Lens Flares | open | bosley-executor |  | feature/f31-lens-flares | A physically based, ray-traced LensFlare node with ghosts, starburst, layers and USD lights on CPU and GPU, with lens browser previews. Waits for F30 - Lens Optics Base to land. |

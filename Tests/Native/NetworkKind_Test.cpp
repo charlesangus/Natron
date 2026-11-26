@@ -267,7 +267,8 @@ TEST_F(NetworkKindTest, ANetworkNodeIsNeverRendered)
 }
 
 // A real shader node, wired into a Viewer as a loaded project can wire it (connecting refuses it),
-// shows what a Viewer with nothing connected shows: no image, and no error on either node.
+// renders nothing and reaches no render: no image, no tiles, and the kind-mismatch message on the
+// Viewer alone.
 TEST_F(NetworkKindTest, AViewerWiredToAShaderShowsNothing)
 {
     NodePtr shader = createShaderNode(getApp(), "cycles_principled_bsdf", getApp()->getProject());
@@ -289,7 +290,7 @@ TEST_F(NetworkKindTest, AViewerWiredToAShaderShowsNothing)
     EXPECT_EQ(ViewerInstance::eViewerRenderRetCodeFail, ret);
     EXPECT_FALSE(args.params && !args.params->tiles.empty());
     EXPECT_FALSE(shader->hasPersistentMessage());
-    EXPECT_FALSE(viewerNode->hasPersistentMessage());
+    EXPECT_TRUE(viewerNode->hasPersistentMessage());
 
     int width = 64;
     int height = 64;

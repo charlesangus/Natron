@@ -50,6 +50,8 @@ try:
         return found
 
     def steps():
+        if app.getNode("Viewer1") is None:
+            app.createNode("Viewer")
         ok = yield ("until", gt.viewer_up, STARTUP_TIMEOUT_S)
         require(ok, "the main window is up")
         shaders = shader_ids()

@@ -3670,6 +3670,8 @@ namespace {
 } // anon namespace
 
 // Returns with lock held. Its record of the render's progress dies with a failure, as the engine does.
+// Each wait reads quit first: a step that lets go of mutex, as asking for the Cycles thread
+// count does, may miss the destructor's notify.
 void
 ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
 {
@@ -3730,7 +3732,9 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
             if (idle || (renderer == failedRenderer)) {
                 keepFrame = false;
-                wake.wait(lock);
+                if (!quit) {
+                    wake.wait(lock);
+                }
                 continue;
             }
             const std::string id = renderer;
@@ -3823,7 +3827,9 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
             status.stopped = true;
             status.paused = true;
-            wake.wait(lock);
+            if (!quit) {
+                wake.wait(lock);
+            }
             continue;
         }
         status.stopped = false;
@@ -3873,7 +3879,9 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             engineFresh = false;
         }
         if (done) {
-            wake.wait(lock);
+            if (!quit) {
+                wake.wait(lock);
+            }
             continue;
         }
         if (parkPoint(lock)) {
@@ -4053,7 +4061,9 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         }
         if (!rendered) {
             // No stage yet: the sync that brings one edits it, and restarts.
-            wake.wait(lock);
+            if (!quit) {
+                wake.wait(lock);
+            }
             continue;
         }
         if (readsRestart) {

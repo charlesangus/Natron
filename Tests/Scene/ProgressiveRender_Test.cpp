@@ -861,6 +861,63 @@ TEST_F(ProgressiveRenderTest, RefinesToTheCapAndStops)
     EXPECT_EQ(liveBefore, ProgressiveRender::getLiveCount());
 }
 
+// A finished render's worker woken asks for its Cycles thread count without the render's lock. A
+// render destroyed while it asks still ends its worker: the destructor's wake-up comes before the
+// worker waits again.
+TEST_F(ProgressiveRenderTest, ARenderEndedWhileItsWorkerAsksForThreadsEndsItsWorker)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+
+    // Shared, as the worker holds the threads function past the test's end if it does not end.
+    struct Gate {
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool armed = true;
+        bool asking = false;
+        bool released = false;
+    };
+    const std::shared_ptr<Gate> gate = std::make_shared<Gate>();
+    const std::function<int()> threads = [gate]() {
+        std::unique_lock<std::mutex> lock(gate->mutex);
+        if (gate->armed) {
+            gate->armed = false;
+            gate->asking = true;
+            gate->changed.notify_all();
+            gate->changed.wait(lock, [&gate]() { return gate->released; });
+        }
+
+        return 2;
+    };
+    // setThreads wakes the worker; one woken before it waits again would miss a single call.
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
+    bool asking = false;
+    while (!asking && (std::chrono::steady_clock::now() < end)) {
+        _render->setThreads(threads);
+        std::unique_lock<std::mutex> lock(gate->mutex);
+        asking = gate->changed.wait_for(lock, std::chrono::milliseconds(50), [&gate]() { return gate->asking; });
+    }
+    ASSERT_TRUE(asking) << "the worker never asked for its threads";
+
+    _listened = nullptr;
+    ProgressiveRender* ending = _render.release();
+    std::thread ender([ending]() { delete ending; });
+    // The destructor sets quit at once, then waits for the threads function to return. Released
+    // early, the worker is waiting again when quit comes and the test passes without the race.
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    {
+        std::lock_guard<std::mutex> lock(gate->mutex);
+        gate->released = true;
+    }
+    gate->changed.notify_all();
+    ender.join();
+    EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
+}
+
 // Ten edits while the render refines restart it once, and no frame of the scene before them is
 // published after them: every later frame shows the near cube where the last edit put it. The
 // render is held in its listener while the edits come, so that it cannot restart between them.

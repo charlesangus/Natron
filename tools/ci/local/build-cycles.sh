@@ -88,6 +88,18 @@ test -f "${nanovdb_root}/include/nanovdb/NanoVDB.h"
 find_usd="${src}/src/cmake/Modules/FindUSDPixar.cmake"
 grep -q '^  set(WITH_CYCLES_NANOVDB OFF)$' "$find_usd"
 sed -i -e '/NanoVDB is not part of the USD package/d' -e '/^  set(WITH_CYCLES_NANOVDB OFF)$/d' "$find_usd"
+# FindNanoVDB.cmake finds <root>/include/nanovdb/NanoVDB.h and sets NANOVDB_INCLUDE_DIR to
+# <root>/include, which only the bf::dependencies::optional::nanovdb target carries. cycles_util
+# compiles util/nanovdb.cpp without linking that target, relying on OpenVDB's include directory to
+# hold NanoVDB as well, as Blender's precompiled OpenVDB does; the image's does not. cycles_util
+# takes it PUBLIC, as it does OpenVDB, so scene and hydra sources that reach util/nanovdb.h get it
+# too. Applied only when missing, so a source that has caught up builds unpatched.
+util_cmake="${src}/src/util/CMakeLists.txt"
+if ! grep -q 'bf::dependencies::optional::nanovdb' "$util_cmake"; then
+    grep -q '^  PUBLIC bf::dependencies::optional::openvdb$' "$util_cmake"
+    sed -i '/^  PUBLIC bf::dependencies::optional::openvdb$/a\  PUBLIC bf::dependencies::optional::nanovdb' "$util_cmake"
+fi
+grep -q '^  PUBLIC bf::dependencies::optional::nanovdb$' "$util_cmake"
 
 # The image's pxrConfig.cmake still names the Conan build tree for each dependency's <Pkg>_DIR;
 # point them at the image's installs, as cmake/NatronUsd.cmake does for Natron's own configure.
@@ -148,6 +160,12 @@ cmake -S "$src" -B "$build" -G Ninja \
     -DWITH_GTESTS=OFF
 # WITH_NANOVDB is a plain variable, not a cache entry; its compile definition is the proof it held.
 grep -q -- '-DWITH_NANOVDB' "${build}/build.ninja"
+# The define alone compiled util/nanovdb.cpp without the headers' directory; its compile line must
+# carry both.
+nanovdb_edge="$(awk '/^build src\/util\/CMakeFiles\/cycles_util\.dir\/nanovdb\.cpp\.o:/ { on = 1 }
+    on && /^$/ { exit } on' "${build}/build.ninja")"
+grep -q -- '-DWITH_NANOVDB' <<<"$nanovdb_edge"
+grep -Eq -- "(-I|-isystem )${nanovdb_root}/include( |\$)" <<<"$nanovdb_edge"
 
 # The CPU kernel translation units each take several GB to compile; one job per 3 GB of RAM keeps
 # a 16 GB CI runner out of the OOM killer.

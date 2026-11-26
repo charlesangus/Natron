@@ -94,7 +94,9 @@ containsName(const std::vector<std::string>& names,
 // The widest names run to 35 characters, which would make the toolbar row wider than a typical
 // screen. Cap each combo's width and elide the middle of the text; the tooltip and the popup
 // list keep the full names. A fixed width also stops the combo resizing as the selection changes.
-const int kMenuMaxWidth = 180;
+// The cap is small enough that the second row, Colour Space and Output toggles included, fits
+// the viewer of a 1920x1080 window.
+const int kMenuMaxWidth = 150;
 
 void
 fitMenuToItems(ComboBox* menu)

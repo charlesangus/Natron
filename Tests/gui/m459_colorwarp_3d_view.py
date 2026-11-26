@@ -209,6 +209,12 @@ try:
     def close(a, b, tolerance=1e-4):
         return a is not None and b is not None and all(abs(x - y) <= tolerance for x, y in zip(a, b))
 
+    def within_bounds(p, lo, hi):
+        # The view keeps its bounds in float32 while the probe answers in double, so a point
+        # the bounds were grown to include can sit one float32 rounding step outside them.
+        return (len(p) == 3 and len(lo) == 3 and len(hi) == 3
+                and all(lo[k] - 1e-6 * abs(lo[k]) <= p[k] <= hi[k] + 1e-6 * abs(hi[k]) for k in range(3)))
+
     def nearest(rgb):
         return float(probe(rgb).get("nearest", -1.0))
 
@@ -354,7 +360,7 @@ try:
         hdr = probe(BOXES[2]).get("warp", [])
         lo = s.get("boundsMin", [])
         hi = s.get("boundsMax", [])
-        check(len(hdr) == 3 and all(lo[k] - 1e-6 * abs(lo[k]) <= hdr[k] <= hi[k] + 1e-6 * abs(hi[k]) for k in range(3)),
+        check(within_bounds(hdr, lo, hi),
               "the axes reach the colour above 1 (%r in %r..%r)" % (hdr, lo, hi))
         output_toggle = button("colorSpaceViewOutput")
         check(output_toggle is not None and output_toggle.isVisible(), "the Output toggle shows with the mode")
@@ -522,7 +528,7 @@ try:
         s = state()
         lo = s.get("boundsMin", [])
         hi = s.get("boundsMax", [])
-        check(len(lo) == 3 and all(lo[k] <= far_warp[k] <= hi[k] for k in range(3)),
+        check(within_bounds(far_warp, lo, hi),
               "the view's bounds grow to the new target (%r in %r..%r)" % (far_warp, lo, hi))
         gt.shot("m459-pin-from-python.png")
         pins.setPinTarget(moved, knob_before[0], knob_before[1], knob_before[2], app.timelineGetTime())

@@ -647,13 +647,14 @@ try:
         check(summary == "Collapsed 5,101 rows", "Collapse All Below on the wide stage says what it did (got %r)" % summary)
         check(not is_open(WIDE) and not is_open(last), "Collapse All Below closes the wide stage")
 
-        # Esc stops a long expansion.
+        # Esc stops a long expansion. The rows are read by now and a slice lays nothing out, so a
+        # few slices open the whole stage: Esc goes in after the click's own slice, before the
+        # event loop runs another, rather than after a sleep the run can outlast.
         select_rows([WIDE])
-        expand_button().click()
-        yield ("sleep", 50)
-        running = expanding()
-        check(running, "the wide expansion is still running 50 ms in (status %r)" % status())
         focus_tree()
+        expand_button().click()
+        running = expanding()
+        check(running, "the wide expansion is still running after its first slice (status %r)" % status())
         QTest.keyClick(tree(), Qt.Key_Escape)
         ok = yield ("until", lambda: not expanding(), POLL_TIMEOUT_S)
         check(ok, "Esc stops the expansion")
@@ -666,14 +667,14 @@ try:
         # Showing another node stops an expansion under way.
         select_rows([WIDE])
         expand_button().click()
-        yield ("sleep", 50)
         running = expanding()
-        check(running, "the second wide expansion is running 50 ms in")
+        check(running, "the second wide expansion is running after its first slice (status %r)" % status())
         require(view_input(usd), "connect the Viewer back to the island's USDRead")
         ok = yield ("until", lambda: not expanding(), POLL_TIMEOUT_S)
         check(ok, "showing another node stops the expansion")
         ok = yield ("until", lambda: [path_of(i) for i in rows()] == [WORLD], POLL_TIMEOUT_S)
-        check(ok, "the panel lists /World again")
+        check(ok, "the panel lists /World again (rows %r, status %r, scene drawn %r)"
+              % ([path_of(i) for i in rows()], status(), scene_drawn()))
 
     run(steps())
 except Exception:

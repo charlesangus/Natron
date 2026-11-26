@@ -42,6 +42,7 @@
 #include "Engine/EngineFwd.h"
 #include "Engine/GeoDetail.h"
 #include "Engine/Nodes/Loop/GeoSimCache.h"
+#include "Engine/Nodes/Loop/LoopEndCooks.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RenderContext.h"
 
@@ -65,14 +66,15 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief Closes a geometry solver opened by the GeoSolverBegin nodes found walking up from its
  * Source input. At a frame past Start Frame, Source cooks Substeps times, each under a context
- * whose hidden variable "geoSolver.<loop name>.prev" holds the content hash of the result the
+ * whose hidden variable "oneUse.geoSolver.<loop name>.prev" holds the content hash of the result the
  * substep starts from (GeoForEachEnd::publishFeedback()), which GeoSolverBegins set to Prev
  * Frame output. The frame before starts it, and the first frame after Start Frame starts from
  * the Prev Frame GeoSolverBegin's input at Start Frame.
  *
  * Solved frames are kept in a GeoSimCache by (hash, context key, view, frame), so a frame
  * starts from the nearest earlier one kept and solves forward one frame at a time, never by
- * recursion. One solve walks a series at a time; a second request of it waits for the first.
+ * recursion. One solve walks a series at a time; a second request of it waits for the first,
+ * but for a frame already kept, which it is given at once.
  **/
 class GeoSolverEnd
     : public NativeEffectBase {
@@ -180,21 +182,8 @@ private:
                                     int substeps,
                                     const GeoDetailConstPtr& previous) const;
 
-    // A viewer cook of this node and the hash it started under. An edit keeps the oldest viewer
-    // render running, and a solve can walk many frames for minutes, so the cook is aborted once
-    // the hash moves or an edit of this node or its body is held back by the render it cooks in.
-    struct RunningCook {
-        U64 startHash = 0;
-        AbortableRenderInfoPtr abortInfo;
-    };
-    class RunningCookScope;
-
-    bool abortIfEditedSince(const RunningCook& cook) const WARN_UNUSED_RETURN;
-    // Aborts the running cooks, but those started under keepHash when one is given; not during a drag.
-    void abortRunningCooks(const U64* keepHash);
-
     // Solves frame from previous, the result of the frame before, into *result.
-    StatusEnum solveFrame(const RunningCookScope& running,
+    StatusEnum solveFrame(const LoopEndCooks::Scope& running,
                           const EffectInstancePtr& body,
                           const GeoRenderActionArgs& args,
                           const RenderContextPtr& base,
@@ -215,10 +204,7 @@ private:
     KnobBoolWPtr _spillToDisk;
     KnobStringWPtr _loopName;
 
-    mutable QMutex _pairingMutex;
-    mutable U64 _pairingGeneration = 0;
-    mutable bool _pairingValid = false;
-    mutable std::vector<NodeWPtr> _begins;
+    LoopEndPairing _pairing;
 
     QMutex _messageMutex;
     std::string _posted;
@@ -230,10 +216,7 @@ private:
     std::mutex _walksMutex;
     std::map<GeoSimSeries, std::shared_ptr<std::timed_mutex>> _walks;
 
-    QMutex _runningMutex;
-    std::list<RunningCook> _running;
-    // See noteEditAtLatestRenderSequence().
-    std::atomic<U64> _editedAtRenderSequence { 0 };
+    LoopEndCooks _cooks { this };
 };
 
 NATRON_NAMESPACE_EXIT

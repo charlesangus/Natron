@@ -47,82 +47,18 @@
 #include "Engine/Nodes/Loop/GeoSolverBegin.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
+#include "Engine/Nodes/Loop/LoopEndCooks.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
 
-typedef std::pair<Node*, int> WalkStep;
-
-// Counts the solvers it enters: a GeoSolverEnd met going up opens a nested solver, whose own
-// GeoSolverBegins close it, so only a GeoSolverBegin met at depth 0 pairs.
-void
-collectPairedBegins(const NodePtr& from,
-                    std::set<Node*>* found)
+const LoopEndKind&
+solverKind()
 {
-    std::set<WalkStep> visited;
-    std::vector<std::pair<NodePtr, int>> pending;
+    static const LoopEndKind kind = { &GeoSolverBegin::isGeoSolverBegin, &GeoSolverEnd::isGeoSolverEnd };
 
-    pending.push_back(std::make_pair(from, 0));
-    while (!pending.empty()) {
-        const NodePtr node = pending.back().first;
-        int depth = pending.back().second;
-        pending.pop_back();
-        if (!node || !visited.insert(WalkStep(node.get(), depth)).second) {
-            continue;
-        }
-        if (GeoSolverBegin::isGeoSolverBegin(node)) {
-            if (depth == 0) {
-                found->insert(node.get());
-                continue;
-            }
-            --depth;
-        } else if (GeoSolverEnd::isGeoSolverEnd(node)) {
-            ++depth;
-        }
-        for (int i = 0, n = node->getNInputs(); i < n; ++i) {
-            NodePtr input = node->getInput(i);
-            if (input) {
-                pending.push_back(std::make_pair(input, depth));
-            }
-        }
-    }
-}
-
-void
-collectPairedEnds(const NodePtr& begin,
-                  std::set<Node*>* found)
-{
-    std::set<WalkStep> visited;
-    std::vector<std::pair<NodePtr, int>> pending;
-    std::vector<NodePtr> outputs;
-
-    begin->appendOutputsWithGroupRedirection(&outputs);
-    for (NodePtr& output : outputs) {
-        pending.push_back(std::make_pair(std::move(output), 0));
-    }
-    while (!pending.empty()) {
-        const NodePtr node = pending.back().first;
-        int depth = pending.back().second;
-        pending.pop_back();
-        if (!node || !visited.insert(WalkStep(node.get(), depth)).second) {
-            continue;
-        }
-        if (GeoSolverEnd::isGeoSolverEnd(node)) {
-            if (depth == 0) {
-                found->insert(node.get());
-                continue;
-            }
-            --depth;
-        } else if (GeoSolverBegin::isGeoSolverBegin(node)) {
-            ++depth;
-        }
-        outputs.clear();
-        node->appendOutputsWithGroupRedirection(&outputs);
-        for (NodePtr& output : outputs) {
-            pending.push_back(std::make_pair(std::move(output), depth));
-        }
-    }
+    return kind;
 }
 
 std::string
@@ -135,6 +71,7 @@ spillParent()
 
 GeoSolverEnd::GeoSolverEnd(NodePtr node)
     : NativeEffectBase(node)
+    , _pairing(solverKind())
     , _simCache(new GeoSimCache((std::size_t)kGeoSolverEndDefaultCacheMemoryMB << 20))
 {
 }
@@ -158,65 +95,15 @@ GeoSolverEnd::isGeoSolverEnd(const NodePtr& node)
 std::shared_ptr<GeoSolverEnd>
 GeoSolverEnd::pairedEndOf(const NodePtr& begin)
 {
-    if (!begin) {
-        return std::shared_ptr<GeoSolverEnd>();
-    }
-    std::set<Node*> found;
-    collectPairedEnds(begin, &found);
-    if (found.size() != 1) {
-        return std::shared_ptr<GeoSolverEnd>();
-    }
+    const NodePtr end = loopPairedEnd(solverKind(), begin);
 
-    return std::dynamic_pointer_cast<GeoSolverEnd>((*found.begin())->getEffectInstance());
+    return end ? std::dynamic_pointer_cast<GeoSolverEnd>(end->getEffectInstance()) : std::shared_ptr<GeoSolverEnd>();
 }
 
 std::vector<NodePtr>
 GeoSolverEnd::getBegins() const
 {
-    const U64 generation = LoopEnd::getGraphGeneration();
-    {
-        QMutexLocker k(&_pairingMutex);
-        if (_pairingValid && (_pairingGeneration == generation)) {
-            std::vector<NodePtr> begins;
-            bool expired = false;
-            for (const NodeWPtr& weak : _begins) {
-                NodePtr begin = weak.lock();
-                if (!begin) {
-                    expired = true;
-                    break;
-                }
-                begins.push_back(std::move(begin));
-            }
-            if (!expired) {
-                return begins;
-            }
-        }
-    }
-
-    std::vector<NodePtr> begins;
-    const NodePtr self = getNode();
-    const NodePtr source = self ? self->getInput(0) : NodePtr();
-    if (source) {
-        std::set<Node*> found;
-        collectPairedBegins(source, &found);
-        for (Node* node : found) {
-            // Only those that pair with this node alone open its solver.
-            NodePtr begin = node->shared_from_this();
-            std::set<Node*> ends;
-            collectPairedEnds(begin, &ends);
-            if ((ends.size() == 1) && (*ends.begin() == self.get())) {
-                begins.push_back(std::move(begin));
-            }
-        }
-    }
-    std::sort(begins.begin(), begins.end(), [](const NodePtr& a, const NodePtr& b) { return a->getScriptName_mt_safe() < b->getScriptName_mt_safe(); });
-
-    QMutexLocker k(&_pairingMutex);
-    _begins.assign(begins.begin(), begins.end());
-    _pairingGeneration = generation;
-    _pairingValid = true;
-
-    return begins;
+    return _pairing.getBegins(getNode());
 }
 
 std::string
@@ -231,7 +118,8 @@ GeoSolverEnd::getLoopName() const
 RenderContextName
 GeoSolverEnd::hiddenVariable(const std::string& loopName)
 {
-    return RenderContextName("geoSolver." + loopName, kGeoSolverHiddenPrevious);
+    // One use: a substep's body output is never asked for again, so the geometry cache does not keep it.
+    return RenderContextName::oneUse("geoSolver." + loopName, kGeoSolverHiddenPrevious);
 }
 
 const std::vector<std::string>&
@@ -521,105 +409,24 @@ GeoSolverEnd::substepContext(const RenderContextPtr& base,
     return builder.build();
 }
 
-class GeoSolverEnd::RunningCookScope {
-public:
-    explicit RunningCookScope(GeoSolverEnd* end)
-        : _end(end)
-    {
-        bool userInteraction = false;
-        AbortableRenderInfoPtr abortInfo;
-        EffectInstancePtr treeRoot;
-        if (!end->getAbortState(&userInteraction, &abortInfo, &treeRoot) || !userInteraction || !abortInfo || !abortInfo->canAbort()) {
-            return;
-        }
-        _cook.startHash = end->getContextFreeRenderHash();
-        _cook.abortInfo = abortInfo;
-        QMutexLocker k(&end->_runningMutex);
-        _entry = end->_running.insert(end->_running.end(), _cook);
-        _registered = true;
-    }
-
-    ~RunningCookScope()
-    {
-        if (_registered) {
-            QMutexLocker k(&_end->_runningMutex);
-            _end->_running.erase(_entry);
-        }
-    }
-
-    RunningCookScope(const RunningCookScope&) = delete;
-    RunningCookScope& operator=(const RunningCookScope&) = delete;
-
-    // onNodeHashChanged() only hears of an edit once something rehashes the node.
-    bool editedSinceStart() const
-    {
-        return _registered && _end->abortIfEditedSince(_cook);
-    }
-
-private:
-    GeoSolverEnd* _end;
-    RunningCook _cook;
-    std::list<RunningCook>::iterator _entry;
-    bool _registered = false;
-};
-
-bool
-GeoSolverEnd::abortIfEditedSince(const RunningCook& cook) const
-{
-    // A drag keeps its oldest render, as it keeps any render.
-    const AppInstancePtr app = getApp();
-    if (app && app->isDraftRenderEnabled()) {
-        return false;
-    }
-    const NodePtr node = getNode();
-    U64 current = 0;
-    const bool madeBeforeEdit = cook.abortInfo->getRenderSequence() <= _editedAtRenderSequence.load();
-    if (!node || (!madeBeforeEdit && node->getHashValueIfUpToDate(&current) && (current == cook.startHash))) {
-        return false;
-    }
-    cook.abortInfo->setAborted();
-
-    return true;
-}
-
 void
 GeoSolverEnd::onNodeHashChanged(U64 hash)
 {
     NativeEffectBase::onNodeHashChanged(hash);
 
-    abortRunningCooks(&hash);
+    _cooks.onHashChanged(hash);
+    // The frames of the series this node has left are of no further use.
+    _simCache->retainHash(hash);
 }
 
 void
 GeoSolverEnd::abortCooksStaleAfterEdit()
 {
-    noteEditAtLatestRenderSequence(&_editedAtRenderSequence);
-    abortRunningCooks(nullptr);
-}
-
-void
-GeoSolverEnd::abortRunningCooks(const U64* keepHash)
-{
-    const AppInstancePtr app = getApp();
-    if (app && app->isDraftRenderEnabled()) {
-        return;
-    }
-    std::vector<AbortableRenderInfoPtr> stale;
-    {
-        QMutexLocker k(&_runningMutex);
-        for (const RunningCook& cook : _running) {
-            if (!keepHash || (cook.startHash != *keepHash)) {
-                stale.push_back(cook.abortInfo);
-            }
-        }
-    }
-    for (const AbortableRenderInfoPtr& abortInfo : stale) {
-        abortInfo->setAborted();
-    }
+    _cooks.abortStaleAfterEdit();
 }
 
 StatusEnum
-GeoSolverEnd::solveFrame(const RunningCookScope& running,
+GeoSolverEnd::solveFrame(const LoopEndCooks::Scope& running,
                          const EffectInstancePtr& body,
                          const GeoRenderActionArgs& args,
                          const RenderContextPtr& base,
@@ -680,7 +487,7 @@ GeoSolverEnd::renderGeometry(const GeoRenderActionArgs& args,
                              GeoDetailConstPtr* outputDetail,
                              std::string* errorMessage)
 {
-    const RunningCookScope running(this);
+    const LoopEndCooks::Scope running(&_cooks);
     const Settings s = readSettings();
     const std::string loopName = getLoopName();
     const RenderContextPtr base = getCurrentRenderContext();
@@ -702,22 +509,35 @@ GeoSolverEnd::renderGeometry(const GeoRenderActionArgs& args,
         return fail(tr("no GeoSolverBegin of this solver is set to Prev Frame: there is nothing to start the simulation from.").toStdString(), errorMessage);
     }
     const EffectInstancePtr source = startBegin->getInput(0);
+    // Failed, or eStatusOK with *detail set; an abort posts no error.
     const auto evaluateSource = [&](double time,
                                     GeoDetailConstPtr* detail) {
         if (!source || !source->producesGeometryData()) {
             *detail = std::make_shared<const GeoDetail>();
 
-            return eRenderRoIRetCodeOk;
+            return eStatusOK;
+        }
+        std::string sourceError;
+        const RenderRoIRetCode code = source->evaluateGeometry(EvaluateGeometryArgs(time, args.view, args.byPassCache, base), detail, &sourceError);
+        if (code == eRenderRoIRetCodeOk) {
+            return eStatusOK;
+        }
+        if ((code == eRenderRoIRetCodeAborted) || aborted()) {
+            return eStatusFailed;
         }
 
-        return source->evaluateGeometry(EvaluateGeometryArgs(time, args.view, args.byPassCache, base), detail, errorMessage);
+        return fail(tr("the input of %1 failed at frame %2: %3")
+                        .arg(QString::fromUtf8(startBegin->getScriptName_mt_safe().c_str()))
+                        .arg(time)
+                        .arg(QString::fromUtf8(sourceError.c_str()))
+                        .toStdString(),
+                    errorMessage);
     };
 
     // A time between frames shows the frame before it: the simulation only has whole frames.
     const int frame = (int)std::floor(args.time);
     if (frame <= s.startFrame) {
-        const RenderRoIRetCode code = evaluateSource((frame < s.startFrame) ? args.time : (double)s.startFrame, outputDetail);
-        if (code != eRenderRoIRetCodeOk) {
+        if (evaluateSource((frame < s.startFrame) ? args.time : (double)s.startFrame, outputDetail) != eStatusOK) {
             return eStatusFailed;
         }
         postMessage(eMessageTypeInfo, std::string());
@@ -732,14 +552,32 @@ GeoSolverEnd::renderGeometry(const GeoRenderActionArgs& args,
     series.hash = getContextFreeRenderHash();
     series.contextKey = getCurrentRenderContextKey();
     series.view = (int)args.view;
-    // An edit anywhere above makes a new series; what the old one solved is of no further use.
-    _simCache->retainHash(series.hash);
+    // An edit anywhere above makes a new series; what the old one solved is of no further use. A
+    // render started before the edit would forget the new one's instead.
+    const NodePtr node = getNode();
+    U64 current = 0;
+    if (node && node->getHashValueIfUpToDate(&current) && (current == series.hash)) {
+        _simCache->retainHash(series.hash);
+    }
 
+    // A frame kept is shown without waiting for a walk of the series to another one.
+    *outputDetail = _simCache->find(series, frame);
+    if (*outputDetail) {
+        postMessage(eMessageTypeInfo, std::string());
+
+        return eStatusOK;
+    }
     const std::shared_ptr<std::timed_mutex> walk = walkMutex(series);
     std::unique_lock<std::timed_mutex> walking(*walk, std::defer_lock);
-    while (!walking.try_lock_for(std::chrono::milliseconds(50))) {
+    while (!walking.try_lock_for(std::chrono::milliseconds(20))) {
         if (running.editedSinceStart() || aborted()) {
             return eStatusFailed;
+        }
+        *outputDetail = _simCache->find(series, frame);
+        if (*outputDetail) {
+            postMessage(eMessageTypeInfo, std::string());
+
+            return eStatusOK;
         }
     }
 
@@ -760,7 +598,7 @@ GeoSolverEnd::renderGeometry(const GeoRenderActionArgs& args,
     }
     if (!previous) {
         from = s.startFrame;
-        if (evaluateSource((double)s.startFrame, &previous) != eRenderRoIRetCodeOk) {
+        if (evaluateSource((double)s.startFrame, &previous) != eStatusOK) {
             return eStatusFailed;
         }
         _simCache->insert(series, from, previous);

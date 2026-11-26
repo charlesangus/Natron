@@ -12,12 +12,16 @@ Sections:
   - scrub: back to frame 10, the stage holds the cube at frame 10's height;
   - edit: the body's snippet changes to move by twice the velocity; frame 10 then holds the cube
     risen twice as far, so the simulation started over;
+  - seek: with SEEK_SUBSTEPS substeps and frames 1 to SEEK_KEPT_FRAME solved, the timeline jumps
+    to JUMP_FRAME and, with no edit, back to SEEK_KEPT_FRAME after LONG_COOK_MS. The kept frame
+    must show within SEEK_TIMEOUT_S, while the jump would still be solving, and the longest
+    heartbeat gap must stay under MAX_GAP_MS;
   - cancel: with a heartbeat running (a 5 ms Qt timer on the main thread, recording the wall-clock
     gap between ticks), the timeline jumps to JUMP_FRAME with SLOW_SUBSTEPS substeps, then back to
     frame 10 after LONG_COOK_MS. The scene view must show frame 10 within CANCEL_TIMEOUT_S, and the
     longest heartbeat gap must stay under MAX_GAP_MS.
-Screenshots: m404_geo_solver_f1.png, m404_geo_solver_f24.png, m404_geo_solver_f48.png and
-m404_geo_solver_cancelled.png in $NATRON_GUI_TEST_OUT.
+Screenshots: m404_geo_solver_f1.png, m404_geo_solver_f24.png, m404_geo_solver_f48.png,
+m404_geo_solver_seek.png and m404_geo_solver_cancelled.png in $NATRON_GUI_TEST_OUT.
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m404_geo_solver.py
 """
@@ -38,6 +42,9 @@ LAST_FRAME = 48
 SCRUB_FRAME = 10
 JUMP_FRAME = 500
 SLOW_SUBSTEPS = 20000
+SEEK_SUBSTEPS = int(os.environ.get("NATRON_TEST_SEEK_SUBSTEPS", "2000"))
+SEEK_KEPT_FRAME = 3
+SEEK_TIMEOUT_S = float(os.environ.get("NATRON_TEST_SEEK_TIMEOUT_S", "1"))
 SPEED = 2.0
 TOLERANCE = 1e-3
 SHOT_FRAMES = (1, 24, 48)
@@ -208,7 +215,39 @@ try:
         risen(SCRUB_FRAME, 2.0)
         risen(LAST_FRAME, 2.0)
 
+        section("seek")
+        param(end, "substeps").setValue(SEEK_SUBSTEPS)
+        for frame in range(1, SEEK_KEPT_FRAME + 1):
+            yield from show(frame)
+        gaps["last"] = None
+        gaps["max_ms"] = 0.0
+        gaps["ticks"] = 0
+        heartbeat.start()
+        jump_ms = now_ms()
+        py_viewer.seek(JUMP_FRAME)
+        yield ("sleep", LONG_COOK_MS)
+        check(synced_at_ms() < jump_ms,
+              "the jump to frame %d is still solving after %d ms (no scene synced since)" % (JUMP_FRAME, LONG_COOK_MS))
+        started = time.monotonic()
+        back_ms = now_ms()
+        py_viewer.seek(SEEK_KEPT_FRAME)
+        ok = yield ("until", lambda: app.timelineGetTime() == SEEK_KEPT_FRAME and synced_at_ms() >= back_ms and scene_drawn(),
+                    SEEK_TIMEOUT_S)
+        took = time.monotonic() - started
+        heartbeat.stop()
+        report("NOTE kept frame %d shown %.2f s after seeking back from the jump; longest heartbeat gap %.1f ms over %d ticks"
+               % (SEEK_KEPT_FRAME, took, gaps["max_ms"], gaps["ticks"]))
+        check(ok, "the kept frame %d shows within %g s of seeking back from the jump" % (SEEK_KEPT_FRAME, SEEK_TIMEOUT_S))
+        check(gaps["max_ms"] < MAX_GAP_MS,
+              "the GUI thread never stalls for %g ms or more (%.1f ms)" % (MAX_GAP_MS, gaps["max_ms"]))
+        yield ("sleep", SETTLE_MS)
+        shot("m404_geo_solver_seek.png")
+        risen(SEEK_KEPT_FRAME, 2.0)
+
         section("cancel")
+        gaps["last"] = None
+        gaps["max_ms"] = 0.0
+        gaps["ticks"] = 0
         heartbeat.start()
         param(end, "substeps").setValue(SLOW_SUBSTEPS)
         long_edit_ms = now_ms()

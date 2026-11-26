@@ -29,9 +29,12 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <list>
 #include <map>
 #include <mutex>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/GeoDetail.h"
@@ -71,25 +74,28 @@ struct GeoSimSeries {
  * least recently used go to files in the native geometry format under the spill directory, or
  * are dropped when there is none, and solve again when asked for. The frame inserted last is
  * never evicted by its own insertion, so a frame larger than the budget still lets a simulation
- * advance. Thread-safe.
+ * advance. Thread-safe. Files are written and read back outside the lock, and only by insert()
+ * and find(); every other call returns without touching the disk, a background thread
+ * unlinking the files it drops.
  **/
 class GeoSimCache {
 public:
     explicit GeoSimCache(std::size_t budget);
 
-    /** @brief Removes the files this cache spilled and its directory. */
+    /** @brief Removes the files this cache spilled and its directory, in the background. */
     ~GeoSimCache();
 
     GeoSimCache(const GeoSimCache&) = delete;
     GeoSimCache& operator=(const GeoSimCache&) = delete;
 
-    /** @brief The RAM the frames may hold, in bytes; evicts down to it. */
+    /** @brief The RAM the frames may hold, in bytes; the next insert() or find() evicts down to it. */
     void setBudget(std::size_t budget);
     std::size_t getBudget() const WARN_UNUSED_RETURN;
 
     /**
      * @brief Spills into a directory of this cache's own under parent; empty stops spilling and
-     * removes what was spilled.
+     * removes what was spilled. The first directory set under a parent also removes the ones
+     * there of processes no longer running.
      **/
     void setSpillParent(const std::string& parent);
 
@@ -126,33 +132,63 @@ public:
     std::size_t ramFrameCount() const WARN_UNUSED_RETURN;
     std::size_t spilledFrameCount() const WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Removes the spill directories under parent, named "<pid>-<n>", of processes no
+     * longer running. Waits on the disk.
+     **/
+    static void removeOrphanedSpills(const std::string& parent);
+
 private:
+    typedef std::pair<GeoSimSeries, int> Key;
+
     struct Entry {
         GeoDetailConstPtr detail;
         std::size_t bytes = 0;
-        U64 lastUse = 0;
+        std::list<Key>::iterator lru;
+    };
+
+    // Evicted and being written; the token tells the write apart from a later one of the frame.
+    struct Spilling {
+        GeoDetailConstPtr detail;
+        U64 token = 0;
     };
 
     struct Frames {
         std::map<int, Entry> ram;
+        std::map<int, Spilling> spilling;
         std::map<int, std::string> spilled;
     };
+
+    struct SpillWrite {
+        Key key;
+        GeoDetailConstPtr detail;
+        U64 token = 0;
+        std::string directory;
+        std::string path;
+    };
+
+    typedef std::map<GeoSimSeries, Frames>::iterator SeriesIt;
 
     void insertLocked(const GeoSimSeries& series,
                       int frame,
                       const GeoDetailConstPtr& detail);
-    void evictLocked(const GeoSimSeries& kept,
-                     int keptFrame);
+    void evictLocked(const Key& kept,
+                     std::vector<SpillWrite>* writes);
+    void writeSpills(const std::vector<SpillWrite>& writes);
     void forgetLocked(Frames* frames,
                       std::map<int, Entry>::iterator ram);
-    void removeSpilledLocked(Frames* frames);
+    void dropSeriesLocked(SeriesIt series,
+                          std::vector<std::string>* files);
+    void eraseIfEmptyLocked(SeriesIt series);
     std::string spillPathLocked(const GeoSimSeries& series,
                                 int frame) const;
 
     mutable std::mutex _mutex;
     std::size_t _budget;
     std::size_t _bytes = 0;
-    U64 _clock = 0;
+    U64 _nextToken = 0;
+    // Least recently used first.
+    std::list<Key> _lru;
     std::string _spillDirectory;
     std::map<GeoSimSeries, Frames> _series;
 };

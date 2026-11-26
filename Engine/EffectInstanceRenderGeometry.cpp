@@ -430,7 +430,7 @@ EffectInstance::evaluateGeometry(const EvaluateGeometryArgs& args,
     cacheRequest.time = args.time;
     cacheRequest.view = args.view;
     cacheRequest.timeVaries = frameArgs->isFrameVaryingOrAnimated;
-    cacheRequest.useCache = !args.byPassCache && (!isWriter() || !isRenderingOwnSequence());
+    cacheRequest.useCache = !args.byPassCache && (!isWriter() || !isRenderingOwnSequence()) && !renderContextHasOneUseVariables(frameArgs->context);
     cacheRequest.clean = &clean;
 
     const GeometryRenderFunc render = [&](GeoDetailConstPtr* renderedDetail) -> RenderRoIRetCode {

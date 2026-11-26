@@ -26,11 +26,20 @@
 #include "GeoSimCache.h"
 
 #include <atomic>
+#include <cerrno>
+#include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
+#include <deque>
 #include <filesystem>
+#include <functional>
 #include <iterator>
+#include <set>
 #include <system_error>
+#include <thread>
 
+#include <signal.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include "Engine/Geo/GeoFileFormat.h"
@@ -41,11 +50,85 @@ namespace {
 
 std::atomic<U64> gNextCacheId { 0 };
 
+// One thread, in order: a directory queued after its files is removed once they are.
+class DiskJobs {
+public:
+    static DiskJobs& instance()
+    {
+        // Never destroyed: the detached worker may still be running at exit.
+        static DiskJobs* jobs = new DiskJobs();
+
+        return *jobs;
+    }
+
+    void post(std::function<void()> job)
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        _jobs.push_back(std::move(job));
+        if (!_started) {
+            _started = true;
+            std::thread([this]() { run(); }).detach();
+        }
+        _wake.notify_one();
+    }
+
+    // True the first time parent is asked about.
+    bool firstUseOf(const std::string& parent)
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        return _parents.insert(parent).second;
+    }
+
+private:
+    void run()
+    {
+        for (;;) {
+            std::function<void()> job;
+            {
+                std::unique_lock<std::mutex> lock(_mutex);
+                _wake.wait(lock, [this]() { return !_jobs.empty(); });
+                job = std::move(_jobs.front());
+                _jobs.pop_front();
+            }
+            try {
+                job();
+            } catch (...) {
+            }
+        }
+    }
+
+    std::mutex _mutex;
+    std::condition_variable _wake;
+    std::deque<std::function<void()>> _jobs;
+    std::set<std::string> _parents;
+    bool _started = false;
+};
+
+// Removes files and empty directories, in order, in the background.
 void
-removeFile(const std::string& path)
+removeLater(std::vector<std::string> paths)
 {
-    std::error_code ec;
-    std::filesystem::remove(std::filesystem::path(path), ec);
+    if (paths.empty()) {
+        return;
+    }
+    DiskJobs::instance().post([paths = std::move(paths)]() {
+        for (const std::string& path : paths) {
+            std::error_code ec;
+            std::filesystem::remove(std::filesystem::path(path), ec);
+        }
+    });
+}
+
+bool
+processIsRunning(long pid)
+{
+    if (pid <= 0) {
+        return true;
+    }
+
+    return (::kill((pid_t)pid, 0) == 0) || (errno == EPERM);
 }
 
 } // anonymous namespace
@@ -57,17 +140,23 @@ GeoSimCache::GeoSimCache(std::size_t budget)
 
 GeoSimCache::~GeoSimCache()
 {
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::vector<std::string> files;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
 
-    for (std::map<GeoSimSeries, Frames>::iterator it = _series.begin(); it != _series.end(); ++it) {
-        removeSpilledLocked(&it->second);
+        for (SeriesIt it = _series.begin(); it != _series.end(); ++it) {
+            for (std::map<int, std::string>::const_iterator f = it->second.spilled.begin(); f != it->second.spilled.end(); ++f) {
+                files.push_back(f->second);
+            }
+        }
+        _series.clear();
+        _lru.clear();
+        if (!_spillDirectory.empty()) {
+            // Only an empty directory goes: never anything this cache did not write.
+            files.push_back(_spillDirectory);
+        }
     }
-    _series.clear();
-    if (!_spillDirectory.empty()) {
-        // Only when empty: never anything this cache did not write.
-        std::error_code ec;
-        std::filesystem::remove(std::filesystem::path(_spillDirectory), ec);
-    }
+    removeLater(std::move(files));
 }
 
 void
@@ -76,7 +165,6 @@ GeoSimCache::setBudget(std::size_t budget)
     std::lock_guard<std::mutex> lock(_mutex);
 
     _budget = budget;
-    evictLocked(GeoSimSeries(), 0);
 }
 
 std::size_t
@@ -90,28 +178,44 @@ GeoSimCache::getBudget() const
 void
 GeoSimCache::setSpillParent(const std::string& parent)
 {
-    std::lock_guard<std::mutex> lock(_mutex);
-    const std::filesystem::path current(_spillDirectory);
+    std::vector<std::string> files;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        const std::filesystem::path current(_spillDirectory);
 
-    if (!_spillDirectory.empty() && (current.parent_path() == std::filesystem::path(parent))) {
-        return;
+        if (!_spillDirectory.empty() && (current.parent_path() == std::filesystem::path(parent))) {
+            return;
+        }
+        if (_spillDirectory.empty() && parent.empty()) {
+            return;
+        }
+        for (SeriesIt it = _series.begin(); it != _series.end();) {
+            Frames& frames = it->second;
+            for (std::map<int, std::string>::const_iterator f = frames.spilled.begin(); f != frames.spilled.end(); ++f) {
+                files.push_back(f->second);
+            }
+            frames.spilled.clear();
+            // A write still running finds its frame gone and removes its file.
+            frames.spilling.clear();
+            const SeriesIt next = std::next(it);
+            eraseIfEmptyLocked(it);
+            it = next;
+        }
+        if (!_spillDirectory.empty()) {
+            files.push_back(_spillDirectory);
+        }
+        if (parent.empty()) {
+            _spillDirectory.clear();
+        } else {
+            char name[64];
+            std::snprintf(name, sizeof(name), "%ld-%llu", (long)::getpid(), (unsigned long long)gNextCacheId.fetch_add(1));
+            _spillDirectory = (std::filesystem::path(parent) / name).string();
+        }
     }
-    for (std::map<GeoSimSeries, Frames>::iterator it = _series.begin(); it != _series.end();) {
-        removeSpilledLocked(&it->second);
-        it = it->second.ram.empty() ? _series.erase(it) : std::next(it);
+    removeLater(std::move(files));
+    if (!parent.empty() && DiskJobs::instance().firstUseOf(parent)) {
+        DiskJobs::instance().post([parent]() { GeoSimCache::removeOrphanedSpills(parent); });
     }
-    if (!_spillDirectory.empty()) {
-        std::error_code ec;
-        std::filesystem::remove(current, ec);
-    }
-    if (parent.empty()) {
-        _spillDirectory.clear();
-
-        return;
-    }
-    char name[64];
-    std::snprintf(name, sizeof(name), "%ld-%llu", (long)::getpid(), (unsigned long long)gNextCacheId.fetch_add(1));
-    _spillDirectory = (std::filesystem::path(parent) / name).string();
 }
 
 std::string
@@ -120,6 +224,36 @@ GeoSimCache::spillDirectory() const
     std::lock_guard<std::mutex> lock(_mutex);
 
     return _spillDirectory;
+}
+
+void
+GeoSimCache::removeOrphanedSpills(const std::string& parent)
+{
+    std::error_code ec;
+    std::filesystem::directory_iterator it(std::filesystem::path(parent), ec);
+
+    if (ec) {
+        return;
+    }
+    const long self = (long)::getpid();
+    for (; it != std::filesystem::directory_iterator(); it.increment(ec)) {
+        if (ec) {
+            return;
+        }
+        std::error_code typeError;
+        if (!it->is_directory(typeError)) {
+            continue;
+        }
+        const std::string name = it->path().filename().string();
+        char* rest = NULL;
+        errno = 0;
+        const long pid = std::strtol(name.c_str(), &rest, 10);
+        if ((errno != 0) || (rest == name.c_str()) || (*rest != '-') || (pid == self) || processIsRunning(pid)) {
+            continue;
+        }
+        std::error_code removeError;
+        std::filesystem::remove_all(it->path(), removeError);
+    }
 }
 
 std::string
@@ -141,10 +275,14 @@ GeoSimCache::insert(const GeoSimSeries& series,
     if (!detail) {
         return;
     }
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::vector<SpillWrite> writes;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
 
-    insertLocked(series, frame, detail);
-    evictLocked(series, frame);
+        insertLocked(series, frame, detail);
+        evictLocked(Key(series, frame), &writes);
+    }
+    writeSpills(writes);
 }
 
 void
@@ -155,14 +293,16 @@ GeoSimCache::insertLocked(const GeoSimSeries& series,
     Frames& frames = _series[series];
     std::map<int, Entry>::iterator found = frames.ram.find(frame);
 
-    if (found != frames.ram.end()) {
+    if (found == frames.ram.end()) {
+        found = frames.ram.insert(std::make_pair(frame, Entry())).first;
+        found->second.lru = _lru.insert(_lru.end(), Key(series, frame));
+    } else {
         _bytes -= found->second.bytes;
+        _lru.splice(_lru.end(), _lru, found->second.lru);
     }
-    Entry& entry = frames.ram[frame];
-    entry.detail = detail;
-    entry.bytes = detail->getSizeInBytes();
-    entry.lastUse = ++_clock;
-    _bytes += entry.bytes;
+    found->second.detail = detail;
+    found->second.bytes = detail->getSizeInBytes();
+    _bytes += found->second.bytes;
 }
 
 void
@@ -170,54 +310,114 @@ GeoSimCache::forgetLocked(Frames* frames,
                           std::map<int, Entry>::iterator ram)
 {
     _bytes -= ram->second.bytes;
+    _lru.erase(ram->second.lru);
     frames->ram.erase(ram);
 }
 
 void
-GeoSimCache::removeSpilledLocked(Frames* frames)
+GeoSimCache::dropSeriesLocked(SeriesIt series,
+                              std::vector<std::string>* files)
 {
-    for (std::map<int, std::string>::const_iterator it = frames->spilled.begin(); it != frames->spilled.end(); ++it) {
-        removeFile(it->second);
+    Frames& frames = series->second;
+
+    for (std::map<int, Entry>::iterator e = frames.ram.begin(); e != frames.ram.end(); ++e) {
+        _bytes -= e->second.bytes;
+        _lru.erase(e->second.lru);
     }
-    frames->spilled.clear();
+    for (std::map<int, std::string>::const_iterator f = frames.spilled.begin(); f != frames.spilled.end(); ++f) {
+        files->push_back(f->second);
+    }
+    _series.erase(series);
 }
 
 void
-GeoSimCache::evictLocked(const GeoSimSeries& kept,
-                         int keptFrame)
+GeoSimCache::eraseIfEmptyLocked(SeriesIt series)
 {
-    while (_bytes > _budget) {
-        std::map<GeoSimSeries, Frames>::iterator oldestSeries = _series.end();
-        std::map<int, Entry>::iterator oldest;
-        for (std::map<GeoSimSeries, Frames>::iterator s = _series.begin(); s != _series.end(); ++s) {
-            for (std::map<int, Entry>::iterator e = s->second.ram.begin(); e != s->second.ram.end(); ++e) {
-                if ((s->first == kept) && (e->first == keptFrame)) {
-                    continue;
-                }
-                if ((oldestSeries == _series.end()) || (e->second.lastUse < oldest->second.lastUse)) {
-                    oldestSeries = s;
-                    oldest = e;
+    const Frames& frames = series->second;
+
+    if (frames.ram.empty() && frames.spilling.empty() && frames.spilled.empty()) {
+        _series.erase(series);
+    }
+}
+
+void
+GeoSimCache::evictLocked(const Key& kept,
+                         std::vector<SpillWrite>* writes)
+{
+    std::list<Key>::iterator it = _lru.begin();
+
+    while ((_bytes > _budget) && (it != _lru.end())) {
+        if (*it == kept) {
+            ++it;
+            continue;
+        }
+        const Key key = *it;
+        ++it;
+        const SeriesIt s = _series.find(key.first);
+        Frames& frames = s->second;
+        const std::map<int, Entry>::iterator e = frames.ram.find(key.second);
+        const GeoDetailConstPtr detail = e->second.detail;
+        forgetLocked(&frames, e);
+        const bool onDisk = (frames.spilled.find(key.second) != frames.spilled.end()) || (frames.spilling.find(key.second) != frames.spilling.end());
+        if (!_spillDirectory.empty() && !onDisk) {
+            SpillWrite write;
+            write.key = key;
+            write.detail = detail;
+            write.token = ++_nextToken;
+            write.directory = _spillDirectory;
+            write.path = spillPathLocked(key.first, key.second);
+            Spilling& spilling = frames.spilling[key.second];
+            spilling.detail = detail;
+            spilling.token = write.token;
+            writes->push_back(std::move(write));
+        } else {
+            eraseIfEmptyLocked(s);
+        }
+    }
+}
+
+void
+GeoSimCache::writeSpills(const std::vector<SpillWrite>& writes)
+{
+    GeoFileWriteOptions options;
+    // Scratch data: a frame lost to a crash is solved again.
+    options.durable = false;
+
+    for (const SpillWrite& write : writes) {
+        bool written = false;
+        try {
+            std::error_code ec;
+            std::filesystem::create_directories(std::filesystem::path(write.directory), ec);
+            geoFileWrite(*write.detail, write.path, options);
+            written = true;
+        } catch (const std::exception&) {
+            // A frame that cannot be spilled (disk full, say) is solved again when asked for.
+        }
+        bool kept = false;
+        bool stale = false;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            const SeriesIt s = _series.find(write.key.first);
+            if (s != _series.end()) {
+                Frames& frames = s->second;
+                std::map<int, Spilling>::iterator spilling = frames.spilling.find(write.key.second);
+                if ((spilling != frames.spilling.end()) && (spilling->second.token == write.token)) {
+                    frames.spilling.erase(spilling);
+                    if (written && (write.directory == _spillDirectory)) {
+                        frames.spilled[write.key.second] = write.path;
+                        kept = true;
+                    }
+                    eraseIfEmptyLocked(s);
                 }
             }
+            stale = (write.directory != _spillDirectory);
         }
-        if (oldestSeries == _series.end()) {
-            return;
-        }
-        Frames& frames = oldestSeries->second;
-        if (!_spillDirectory.empty() && (frames.spilled.find(oldest->first) == frames.spilled.end())) {
-            const std::string path = spillPathLocked(oldestSeries->first, oldest->first);
-            try {
-                std::error_code ec;
-                std::filesystem::create_directories(std::filesystem::path(_spillDirectory), ec);
-                geoFileWrite(*oldest->second.detail, path);
-                frames.spilled[oldest->first] = path;
-            } catch (const GeoFileError&) {
-                // A frame that cannot be spilled (disk full, say) is solved again when asked for.
+        if (written && !kept) {
+            std::vector<std::string> files(1, write.path);
+            if (stale) {
+                files.push_back(write.directory);
             }
-        }
-        forgetLocked(&frames, oldest);
-        if (frames.ram.empty() && frames.spilled.empty()) {
-            _series.erase(oldestSeries);
+            removeLater(std::move(files));
         }
     }
 }
@@ -226,36 +426,72 @@ GeoDetailConstPtr
 GeoSimCache::find(const GeoSimSeries& series,
                   int frame)
 {
-    std::lock_guard<std::mutex> lock(_mutex);
-    std::map<GeoSimSeries, Frames>::iterator s = _series.find(series);
+    std::string path;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        const SeriesIt s = _series.find(series);
 
-    if (s == _series.end()) {
-        return GeoDetailConstPtr();
-    }
-    std::map<int, Entry>::iterator ram = s->second.ram.find(frame);
-    if (ram != s->second.ram.end()) {
-        ram->second.lastUse = ++_clock;
+        if (s == _series.end()) {
+            return GeoDetailConstPtr();
+        }
+        Frames& frames = s->second;
+        const std::map<int, Entry>::iterator ram = frames.ram.find(frame);
+        if (ram != frames.ram.end()) {
+            _lru.splice(_lru.end(), _lru, ram->second.lru);
 
-        return ram->second.detail;
+            return ram->second.detail;
+        }
+        const std::map<int, Spilling>::const_iterator spilling = frames.spilling.find(frame);
+        if (spilling != frames.spilling.end()) {
+            return spilling->second.detail;
+        }
+        const std::map<int, std::string>::const_iterator spilled = frames.spilled.find(frame);
+        if (spilled == frames.spilled.end()) {
+            return GeoDetailConstPtr();
+        }
+        path = spilled->second;
     }
-    std::map<int, std::string>::iterator spilled = s->second.spilled.find(frame);
-    if (spilled == s->second.spilled.end()) {
-        return GeoDetailConstPtr();
-    }
+
     GeoDetailConstPtr detail;
     try {
-        detail = std::make_shared<const GeoDetail>(geoFileRead(spilled->second));
+        detail = std::make_shared<const GeoDetail>(geoFileRead(path));
     } catch (const GeoFileError&) {
-        removeFile(spilled->second);
-        s->second.spilled.erase(spilled);
-        if (s->second.ram.empty() && s->second.spilled.empty()) {
-            _series.erase(s);
+    }
+
+    std::vector<SpillWrite> writes;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        const SeriesIt s = _series.find(series);
+
+        if (s == _series.end()) {
+            return GeoDetailConstPtr();
         }
+        Frames& frames = s->second;
+        const std::map<int, Entry>::iterator ram = frames.ram.find(frame);
+        if (ram != frames.ram.end()) {
+            _lru.splice(_lru.end(), _lru, ram->second.lru);
+
+            return ram->second.detail;
+        }
+        const std::map<int, std::string>::iterator spilled = frames.spilled.find(frame);
+        if ((spilled == frames.spilled.end()) || (spilled->second != path)) {
+            // Forgotten while it was read.
+            return GeoDetailConstPtr();
+        }
+        if (!detail) {
+            frames.spilled.erase(spilled);
+            eraseIfEmptyLocked(s);
+        } else {
+            insertLocked(series, frame, detail);
+            evictLocked(Key(series, frame), &writes);
+        }
+    }
+    if (!detail) {
+        removeLater(std::vector<std::string>(1, path));
 
         return GeoDetailConstPtr();
     }
-    insertLocked(series, frame, detail);
-    evictLocked(series, frame);
+    writeSpills(writes);
 
     return detail;
 }
@@ -273,22 +509,20 @@ GeoSimCache::latest(const GeoSimSeries& series,
         return false;
     }
     bool found = false;
-    std::map<int, Entry>::const_iterator ram = s->second.ram.upper_bound(last);
-    if (ram != s->second.ram.begin()) {
-        --ram;
-        if (ram->first >= first) {
-            *frame = ram->first;
+    const auto consider = [&](const auto& frames) {
+        auto it = frames.upper_bound(last);
+        if (it == frames.begin()) {
+            return;
+        }
+        --it;
+        if ((it->first >= first) && (!found || (it->first > *frame))) {
+            *frame = it->first;
             found = true;
         }
-    }
-    std::map<int, std::string>::const_iterator spilled = s->second.spilled.upper_bound(last);
-    if (spilled != s->second.spilled.begin()) {
-        --spilled;
-        if ((spilled->first >= first) && (!found || (spilled->first > *frame))) {
-            *frame = spilled->first;
-            found = true;
-        }
-    }
+    };
+    consider(s->second.ram);
+    consider(s->second.spilling);
+    consider(s->second.spilled);
 
     return found;
 }
@@ -297,63 +531,75 @@ void
 GeoSimCache::retainOnly(const GeoSimSeries& series,
                         int frame)
 {
-    std::lock_guard<std::mutex> lock(_mutex);
-    std::map<GeoSimSeries, Frames>::iterator s = _series.find(series);
+    std::vector<std::string> files;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        const SeriesIt s = _series.find(series);
 
-    if (s == _series.end()) {
-        return;
-    }
-    Frames& frames = s->second;
-    for (std::map<int, Entry>::iterator it = frames.ram.begin(); it != frames.ram.end();) {
-        if (it->first == frame) {
-            ++it;
-        } else {
-            std::map<int, Entry>::iterator next = std::next(it);
-            forgetLocked(&frames, it);
-            it = next;
+        if (s == _series.end()) {
+            return;
         }
-    }
-    for (std::map<int, std::string>::iterator it = frames.spilled.begin(); it != frames.spilled.end();) {
-        if (it->first == frame) {
-            ++it;
-        } else {
-            removeFile(it->second);
-            it = frames.spilled.erase(it);
+        Frames& frames = s->second;
+        for (std::map<int, Entry>::iterator it = frames.ram.begin(); it != frames.ram.end();) {
+            if (it->first == frame) {
+                ++it;
+            } else {
+                const std::map<int, Entry>::iterator next = std::next(it);
+                forgetLocked(&frames, it);
+                it = next;
+            }
         }
+        for (std::map<int, Spilling>::iterator it = frames.spilling.begin(); it != frames.spilling.end();) {
+            it = (it->first == frame) ? std::next(it) : frames.spilling.erase(it);
+        }
+        for (std::map<int, std::string>::iterator it = frames.spilled.begin(); it != frames.spilled.end();) {
+            if (it->first == frame) {
+                ++it;
+            } else {
+                files.push_back(it->second);
+                it = frames.spilled.erase(it);
+            }
+        }
+        eraseIfEmptyLocked(s);
     }
-    if (frames.ram.empty() && frames.spilled.empty()) {
-        _series.erase(s);
-    }
+    removeLater(std::move(files));
 }
 
 void
 GeoSimCache::retainHash(U64 hash)
 {
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::vector<std::string> files;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
 
-    for (std::map<GeoSimSeries, Frames>::iterator it = _series.begin(); it != _series.end();) {
-        if (it->first.hash == hash) {
-            ++it;
-            continue;
+        for (SeriesIt it = _series.begin(); it != _series.end();) {
+            const SeriesIt next = std::next(it);
+            if (it->first.hash != hash) {
+                dropSeriesLocked(it, &files);
+            }
+            it = next;
         }
-        removeSpilledLocked(&it->second);
-        for (std::map<int, Entry>::const_iterator e = it->second.ram.begin(); e != it->second.ram.end(); ++e) {
-            _bytes -= e->second.bytes;
-        }
-        it = _series.erase(it);
     }
+    removeLater(std::move(files));
 }
 
 void
 GeoSimCache::clear()
 {
-    std::lock_guard<std::mutex> lock(_mutex);
+    std::vector<std::string> files;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
 
-    for (std::map<GeoSimSeries, Frames>::iterator it = _series.begin(); it != _series.end(); ++it) {
-        removeSpilledLocked(&it->second);
+        for (SeriesIt it = _series.begin(); it != _series.end(); ++it) {
+            for (std::map<int, std::string>::const_iterator f = it->second.spilled.begin(); f != it->second.spilled.end(); ++f) {
+                files.push_back(f->second);
+            }
+        }
+        _series.clear();
+        _lru.clear();
+        _bytes = 0;
     }
-    _series.clear();
-    _bytes = 0;
+    removeLater(std::move(files));
 }
 
 std::size_t
@@ -368,13 +614,8 @@ std::size_t
 GeoSimCache::ramFrameCount() const
 {
     std::lock_guard<std::mutex> lock(_mutex);
-    std::size_t count = 0;
 
-    for (std::map<GeoSimSeries, Frames>::const_iterator it = _series.begin(); it != _series.end(); ++it) {
-        count += it->second.ram.size();
-    }
-
-    return count;
+    return _lru.size();
 }
 
 std::size_t

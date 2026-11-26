@@ -148,9 +148,6 @@ GeoKernelRunResult geoKernelRun(const KernelProgram& program,
 /** @brief Whether a program compiled against GeoKernelBinding reads @Frame or @Time. */
 bool geoKernelReadsTime(const KernelProgram& program);
 
-/** @brief Whether a program compiled against GeoKernelBinding reads @TimeInc. */
-bool geoKernelReadsTimeInc(const KernelProgram& program);
-
 /**
  * @brief Compiles source against GeoKernelBinding(runOver, options.parameters) and runs it; a
  * compile error fails the run.

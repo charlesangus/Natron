@@ -30,11 +30,14 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <memory>
 #include <span>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <unistd.h>
 
 #include <gtest/gtest.h>
 
@@ -598,15 +601,17 @@ TEST_F(GeoSolverTest, WithoutSpillToDiskATinyBudgetSolvesAgain)
 TEST_F(GeoSolverTest, ACancelledFrameIsNotKeptAndTheNextRequestResumes)
 {
     const int last = 3000;
-    NodePtr sim = risingSolver(1.);
+    NodePtr sim = risingSolver(0.25);
+    setInt(sim, kGeoSolverEndParamSubsteps, 4);
     const std::shared_ptr<GeoSolverEnd> effect = solver(sim);
 
     AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
     std::atomic<bool> done(false);
     std::thread aborter([&]() {
         while (!done.load() && (effect->getSolvedFrameCount() < 20)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            std::this_thread::yield();
         }
+        // Most likely between two substeps of the frame after.
         abortInfo->setAborted();
     });
     GeoDetailConstPtr result;
@@ -614,11 +619,169 @@ TEST_F(GeoSolverTest, ACancelledFrameIsNotKeptAndTheNextRequestResumes)
     const EffectInstance::RenderRoIRetCode code = pull(sim, (double)last, &result, &error, true, abortInfo);
     done = true;
     aborter.join();
-    if (code != EffectInstance::eRenderRoIRetCodeOk) {
-        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, code) << error;
-        EXPECT_LT(effect->getSolvedFrameCount(), (std::uint64_t)(last - 1));
-    }
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, code) << error;
+    const std::uint64_t solved = effect->getSolvedFrameCount();
+    EXPECT_GE(solved, 20u);
+    EXPECT_LT(solved, (std::uint64_t)(last - 1));
+    // The start frame and every whole frame, but not the one the abort cut short.
+    EXPECT_EQ(solved + 1, effect->getSimCache().ramFrameCount());
+    EXPECT_EQ(0u, effect->getSimCache().spilledFrameCount());
+
     EXPECT_NEAR((double)(last - 1), rise(sim, (double)last), 1e-1);
-    // Every frame solved once: none was kept half-solved, and the second request started where the first stopped.
+    // Every frame solved once: the second request started where the first stopped.
     EXPECT_EQ((std::uint64_t)(last - 1), effect->getSolvedFrameCount());
+}
+
+TEST_F(GeoSolverTest, AKeptFrameIsShownWhileAnotherRequestWalksOn)
+{
+    const int last = 100000;
+    NodePtr sim = risingSolver(1.);
+    const std::shared_ptr<GeoSolverEnd> effect = solver(sim);
+
+    EXPECT_NEAR(9., rise(sim, 10.), 1e-3);
+    ASSERT_EQ(9u, effect->getSolvedFrameCount());
+
+    AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+    EffectInstance::RenderRoIRetCode code = EffectInstance::eRenderRoIRetCodeFailed;
+    std::thread walker([&]() {
+        GeoDetailConstPtr result;
+        std::string error;
+        code = pull(sim, (double)last, &result, &error, true, abortInfo);
+    });
+    const std::chrono::steady_clock::time_point waitStart = std::chrono::steady_clock::now();
+    while ((effect->getSolvedFrameCount() < 30) && (std::chrono::steady_clock::now() - waitStart < std::chrono::seconds(30))) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    const std::uint64_t walkedBefore = effect->getSolvedFrameCount();
+    const std::chrono::steady_clock::time_point askedAt = std::chrono::steady_clock::now();
+    const double kept = rise(sim, 5.);
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - askedAt).count();
+    const std::uint64_t walkedAfter = effect->getSolvedFrameCount();
+    abortInfo->setAborted();
+    walker.join();
+
+    EXPECT_GE(walkedBefore, 30u) << "the long request never started walking";
+    EXPECT_NEAR(4., kept, 1e-3);
+    EXPECT_LT(ms, 500.) << "the kept frame waited " << ms << " ms for the walk";
+    EXPECT_LT(walkedAfter, (std::uint64_t)(last - 1)) << "the walk finished before the kept frame was asked for";
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, code);
+}
+
+TEST_F(GeoSolverTest, AnEditHeldBackByALongSolveAbortsIt)
+{
+    struct QueueWritesScope {
+        QueueWritesScope() { EffectInstance::setQueuesWritesDuringBackgroundRendersForTesting(true); }
+        ~QueueWritesScope() { EffectInstance::setQueuesWritesDuringBackgroundRendersForTesting(false); }
+    };
+
+    for (int editBody = 0; editBody < 2; ++editBody) {
+        SCOPED_TRACE(editBody ? "body" : "solver");
+        NodePtr move;
+        NodePtr sim = risingSolver(1., &move);
+        ASSERT_TRUE(sim != NULL);
+        KnobIntPtr substeps = std::dynamic_pointer_cast<KnobInt>(sim->getKnobByName(kGeoSolverEndParamSubsteps));
+        KnobDoublePtr translate = std::dynamic_pointer_cast<KnobDouble>(move->getKnobByName(kGeoTransformParamTranslate));
+        ASSERT_TRUE(substeps != NULL);
+        ASSERT_TRUE(translate != NULL);
+
+        const QueueWritesScope queueWrites;
+        std::unique_ptr<RenderingFlagSetter> rendering(new RenderingFlagSetter(sim));
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+        EffectInstance::RenderRoIRetCode code = EffectInstance::eRenderRoIRetCodeFailed;
+        std::string error;
+        std::chrono::steady_clock::time_point returnedAt;
+        std::thread cook([&]() {
+            GeoDetailConstPtr result;
+            code = pull(sim, 100000., &result, &error, true, abortInfo);
+            returnedAt = std::chrono::steady_clock::now();
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        const std::chrono::steady_clock::time_point editedAt = std::chrono::steady_clock::now();
+        if (editBody) {
+            translate->setValue(2., ViewSpec::all(), 1);
+        } else {
+            substeps->setValue(2);
+        }
+        const bool heldBack = editBody ? (translate->getRawValue(1) == 1.) : (substeps->getRawValue(0) == 1);
+        cook.join();
+        rendering.reset();
+
+        EXPECT_TRUE(heldBack) << "the edit applied while the solver rendered";
+        if ((code == EffectInstance::eRenderRoIRetCodeOk) && (returnedAt <= editedAt)) {
+            // A machine fast enough to finish before the edit has nothing left to abort.
+            continue;
+        }
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, code) << error;
+        EXPECT_TRUE(abortInfo->isAborted());
+        const double ms = std::chrono::duration<double, std::milli>(returnedAt - editedAt).count();
+        EXPECT_LT(ms, 2000.) << "the solve went on for " << ms << " ms after the edit";
+    }
+}
+
+TEST_F(GeoSolverTest, ASourceFailureAtTheStartFrameIsAnError)
+{
+    NodePtr previous = begin(NodePtr());
+    NodePtr bad = wrangle(_cube, "@P.y += ;");
+    connectNodes(bad, previous, 0, true);
+    NodePtr move = transform(previous);
+    NodePtr sim = end(move);
+
+    GeoDetailConstPtr result;
+    std::string error;
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeFailed, pull(sim, 5., &result, &error));
+    EXPECT_NE(std::string::npos, error.find(sim->getScriptName_mt_safe())) << error;
+}
+
+TEST_F(GeoSolverTest, LoweringTheBudgetEvictsAtTheNextInsertion)
+{
+    GeoDetailConstPtr detail;
+    std::string error;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, pull(_cube, 1., &detail, &error)) << error;
+    ASSERT_TRUE(detail != NULL);
+    ASSERT_GT(detail->getSizeInBytes(), 0u);
+    GeoSimCache cache(detail->getSizeInBytes() * 16);
+    GeoSimSeries series;
+    series.hash = 1;
+
+    for (int f = 1; f <= 4; ++f) {
+        cache.insert(series, f, detail);
+    }
+    EXPECT_EQ(4u, cache.ramFrameCount());
+    cache.setBudget(0);
+    EXPECT_EQ(4u, cache.ramFrameCount());
+    cache.insert(series, 5, detail);
+    // Only the frame just inserted stays; there is no spill directory.
+    EXPECT_EQ(1u, cache.ramFrameCount());
+    EXPECT_TRUE(cache.find(series, 5) != NULL);
+    EXPECT_TRUE(cache.find(series, 1) == NULL);
+    cache.setBudget(detail->getSizeInBytes() * 2);
+    cache.insert(series, 6, detail);
+    // Read after 6 was inserted, 5 outlives it: 6 is then the least recently used.
+    EXPECT_TRUE(cache.find(series, 5) != NULL);
+    cache.insert(series, 7, detail);
+    EXPECT_TRUE(cache.find(series, 5) != NULL);
+    EXPECT_TRUE(cache.find(series, 6) == NULL);
+    EXPECT_TRUE(cache.find(series, 7) != NULL);
+}
+
+TEST_F(GeoSolverTest, SpillDirectoriesOfDeadProcessesAreRemoved)
+{
+    const std::filesystem::path parent = std::filesystem::temp_directory_path() / ("natron-geosolver-test-" + std::to_string((long)::getpid()));
+    const std::filesystem::path dead = parent / "2147483600-0";
+    const std::filesystem::path own = parent / (std::to_string((long)::getpid()) + "-3");
+    const std::filesystem::path other = parent / "notapid";
+    std::error_code ec;
+
+    std::filesystem::create_directories(dead, ec);
+    std::filesystem::create_directories(own, ec);
+    std::filesystem::create_directories(other, ec);
+    std::FILE* file = std::fopen((dead / "frame.ngeo").string().c_str(), "wb");
+    ASSERT_TRUE(file != NULL);
+    std::fclose(file);
+
+    GeoSimCache::removeOrphanedSpills(parent.string());
+    EXPECT_FALSE(std::filesystem::exists(dead));
+    EXPECT_TRUE(std::filesystem::exists(own));
+    EXPECT_TRUE(std::filesystem::exists(other));
+    std::filesystem::remove_all(parent, ec);
 }

@@ -77,6 +77,11 @@ public:
 struct GeoFileWriteOptions {
     /** @brief zstd level for dense pages; 1 favours speed. */
     int compressionLevel = 1;
+    /**
+     * @brief Syncs the file and its directory entry before returning; off for scratch files a
+     * crash may lose.
+     **/
+    bool durable = true;
 };
 
 struct GeoFileReadOptions {

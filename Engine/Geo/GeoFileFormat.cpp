@@ -1441,7 +1441,7 @@ geoFileWrite(const GeoDetail& detail,
         if (std::fflush(file) != 0) {
             throw GeoFileError(osError(path, "write", errno));
         }
-        if (::fsync(::fileno(file)) != 0) {
+        if (options.durable && (::fsync(::fileno(file)) != 0)) {
             throw GeoFileError(osError(path, "write", errno));
         }
     } catch (...) {
@@ -1458,6 +1458,9 @@ geoFileWrite(const GeoDetail& detail,
         const int err = errno;
         std::remove(temp.c_str());
         throw GeoFileError(osError(path, "replace", err));
+    }
+    if (!options.durable) {
+        return;
     }
     // The rename is durable only once the directory entry is.
     const std::string dir = std::filesystem::path(path).parent_path().string();

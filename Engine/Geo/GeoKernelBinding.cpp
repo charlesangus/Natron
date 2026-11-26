@@ -1597,17 +1597,6 @@ geoKernelRun(const KernelProgram& program, GeoAttribClassEnum runOver, std::span
 }
 
 bool
-geoKernelReadsTimeInc(const KernelProgram& program)
-{
-    for (const KernelProgramBinding& b : program.bindings) {
-        if (b.variable.kind == KernelVariableKind::eBuiltin && Builtin(b.variable.id) == Builtin::eTimeInc) {
-            return true;
-        }
-    }
-    return false;
-}
-
-bool
 geoKernelReadsTime(const KernelProgram& program)
 {
     for (const KernelProgramBinding& b : program.bindings) {

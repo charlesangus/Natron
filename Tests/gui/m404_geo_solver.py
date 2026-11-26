@@ -249,9 +249,11 @@ try:
         gaps["max_ms"] = 0.0
         gaps["ticks"] = 0
         heartbeat.start()
+        # The timeline is at the jump before the edit, so the edit's own refresh is the jump and no
+        # shorter solve (the kept frame's) can finish and sync inside the wait.
+        py_viewer.seek(JUMP_FRAME)
         param(end, "substeps").setValue(SLOW_SUBSTEPS)
         long_edit_ms = now_ms()
-        py_viewer.seek(JUMP_FRAME)
         yield ("sleep", LONG_COOK_MS)
         # scene_drawn() stays true on the previous scene while a new one cooks, so it cannot show a cook running.
         check(synced_at_ms() < long_edit_ms,

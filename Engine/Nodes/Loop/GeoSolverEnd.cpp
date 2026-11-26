@@ -456,7 +456,9 @@ GeoSolverEnd::solveFrame(const LoopEndCooks::Scope& running,
             return fail(what.toStdString(), errorMessage);
         }
         current = next;
-        if (running.editedSinceStart() || aborted()) {
+        // A superseded render is aborted here as well as by an edit: the render thread it holds
+        // is where the newer request, a kept frame say, is queued.
+        if (running.editedSinceStart() || aborted() || abortIfSuperseded()) {
             return eStatusFailed;
         }
     }
@@ -570,7 +572,7 @@ GeoSolverEnd::renderGeometry(const GeoRenderActionArgs& args,
     const std::shared_ptr<std::timed_mutex> walk = walkMutex(series);
     std::unique_lock<std::timed_mutex> walking(*walk, std::defer_lock);
     while (!walking.try_lock_for(std::chrono::milliseconds(20))) {
-        if (running.editedSinceStart() || aborted()) {
+        if (running.editedSinceStart() || aborted() || abortIfSuperseded()) {
             return eStatusFailed;
         }
         *outputDetail = _simCache->find(series, frame);

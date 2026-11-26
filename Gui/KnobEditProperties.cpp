@@ -43,6 +43,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
+#include <QPushButton>
 #include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
@@ -146,6 +147,7 @@ KnobEditProperties::KnobEditProperties(KnobEditMode* mode,
     , _mode(mode)
     , _knob()
     , _header(0)
+    , _deleteButton(0)
     , _body(0)
     , _form()
     , _formLayout(0)
@@ -172,7 +174,21 @@ KnobEditProperties::KnobEditProperties(KnobEditMode* mode,
     _header->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     _header->setToolTip(tr("Show or hide the properties of the selected parameter."));
     QObject::connect(_header, SIGNAL(clicked()), this, SLOT(onToggleExpanded()));
-    layout->addWidget(_header);
+    _deleteButton = new QPushButton(tr("Delete"), this);
+    _deleteButton->setObjectName(QString::fromUtf8("KnobEditPropertiesDelete"));
+    // Without the focus, a field being edited is not committed just before its knob goes.
+    _deleteButton->setFocusPolicy(Qt::NoFocus);
+    _deleteButton->setEnabled(false);
+    _deleteButton->setToolTip(tr("Delete the selected parameter, group or page. Dropping a parameter on the palette above deletes it too."));
+    QObject::connect(_deleteButton, &QPushButton::clicked, this, [this]() {
+        QMetaObject::invokeMethod(_mode, "deleteSelection", Qt::QueuedConnection);
+    });
+    QHBoxLayout* headerLayout = new QHBoxLayout;
+    headerLayout->setContentsMargins(0, 0, 4, 0);
+    headerLayout->setSpacing(4);
+    headerLayout->addWidget(_header);
+    headerLayout->addWidget(_deleteButton);
+    layout->addLayout(headerLayout);
     _body = new QWidget(this);
     QVBoxLayout* bodyLayout = new QVBoxLayout(_body);
     bodyLayout->setContentsMargins(8, 0, 8, 4);
@@ -204,6 +220,7 @@ KnobEditProperties::setKnob(const KnobIPtr& knob)
         setError(QString());
     }
     _knob = knob;
+    _deleteButton->setEnabled((bool)knob);
     scheduleRebuild();
 }
 

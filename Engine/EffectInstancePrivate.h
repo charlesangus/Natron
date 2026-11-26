@@ -636,6 +636,14 @@ private:
  **/
 void adoptThreadAbortState(ParallelRenderArgs* args);
 
+/**
+ * @brief Gives frame args made up on a pool thread the render an InheritedAbortScope lent it, so
+ * the effects cooked there, and the context args derived from these, see that render's abort.
+ * getAbortState() answers it without caching it on the thread. Leaves args as they are when no
+ * scope is open.
+ **/
+void adoptInheritedAbortState(ParallelRenderArgs* args);
+
 NATRON_NAMESPACE_EXIT
 
 #endif // Engine_EffectInstancePrivate_h

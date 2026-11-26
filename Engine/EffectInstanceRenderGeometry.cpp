@@ -338,6 +338,10 @@ EffectInstance::evaluateGeometry(const EvaluateGeometryArgs& args,
         // The viewer's scene path sets up no frame args, but its render is on the thread, and is
         // the one an edit aborts: nodes reading the abort flag from these args must see it.
         adoptThreadAbortState(frameArgs.get());
+        if (!frameArgs->abortInfo.lock()) {
+            adoptInheritedAbortState(frameArgs.get());
+        }
+        // Only when no render is known: an info of its own would hide the lent one from aborted().
         AbortableRenderInfoPtr ownedAbortInfo;
         if (!frameArgs->abortInfo.lock()) {
             ownedAbortInfo = AbortableRenderInfo::create(true, 0);

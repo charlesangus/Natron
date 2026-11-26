@@ -33,6 +33,7 @@ DARK_MAX = 20
 LIT_MIN = 25
 GREY_SPREAD = 14
 WHITE_MIN = 150
+MATTED_MIN = 100
 AGREE_TOLERANCE = 2
 NO_LAYER_ITEM = "-"
 COLOUR_PLANE_ITEM = "rgba"
@@ -74,8 +75,11 @@ try:
     def white(c):
         return min(c) > WHITE_MIN
 
-    def bright(c):
-        return min(c) > 120
+    # groups8.psd stores 200/210/220 at alpha 128 matted against white; with the matte removed
+    # the premultiplied composite is 73/83/93, which shows a little above the 64 grey Background.
+    # A value still carrying the matte would show far above MATTED_MIN.
+    def unmatted(c):
+        return LIT_MIN < c[0] < c[1] < c[2] < MATTED_MIN
 
     def red_only(c):
         return c[0] > 15 and c[1] < 15 and c[2] < 15
@@ -111,7 +115,7 @@ try:
             "layers": ["Background", "Group_A_Inner", "Group_A_Masked", "Top_Layer"],
             "absent": ["Empty", "Group_A_Empty", "Levels"],
             "states": [
-                (None, [(0, 0, bright)], None),
+                (None, [(0, 0, unmatted)], None),
                 ("Background", [(0, 0, grey)], None),
                 ("Group_A_Inner", [(2, 1, green), (0, 0, dark)], None),
                 ("Group_A_Masked", [(4, 3, red), (6, 3, dark)], None),

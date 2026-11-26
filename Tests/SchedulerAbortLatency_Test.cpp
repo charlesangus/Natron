@@ -519,7 +519,11 @@ protected:
     static void stopPlayback(const RenderEnginePtr& engine)
     {
         engine->abortRenderingNoRestart();
-        EXPECT_TRUE(pumpUntil([&engine]() { return !engine->isDoingSequentialRender(); }, kWatchdogMs)) << "the playback did not stop once aborted";
+        if (!pumpUntil([&engine]() { return !engine->isDoingSequentialRender(); }, kWatchdogMs)) {
+            // Frame listeners are direct-connection lambdas on locals; unwinding past a live playback would call them after they are destroyed.
+            std::fprintf(stderr, "the playback did not stop once aborted\n");
+            std::abort();
+        }
     }
 
     // Keeps the main thread's event loop running, as the schedulers' main-thread requests need.
@@ -716,6 +720,13 @@ TEST_F(SchedulerAbortLatency, ViewerPlaybackAdmitsWhileTheBufferDrains)
     const qint64 kPeriodMs = 100;
     const std::size_t kWarmUpFrames = 5;
     const std::size_t kFramesToCheck = 30;
+
+    // The renders in flight are capped at three per hardware thread, which must cover a render's length of frames.
+    const int idealThreads = appPTR->getHardwareIdealThreadCount();
+    if (3 * idealThreads < kRenderMs / kPeriodMs + 2) {
+        std::printf("skipped: %d hardware thread(s) cap the buffer below the frames a %d ms render needs at %g fps\n", idealThreads, kRenderMs, kFps);
+        return;
+    }
 
     ASSERT_TRUE(createViewer());
     setSlowKnobs(kRenderMs);

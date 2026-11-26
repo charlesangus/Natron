@@ -317,8 +317,10 @@ struct OutputSchedulerThreadPrivate
 
     // Admission state, written by the scheduler thread only.
     std::atomic<int> nAdmittedFrames;
-    // How many frames may be in flight without asking the RenderScheduler's load. Only a passing load check adds one,
-    // so a frame ending frees its slot for the next frame even while the frames left keep the pool busy.
+    // How many frames may be in flight without asking the RenderScheduler's load. A slot is added whenever the load test
+    // passes at an admission pass below the cap, including when filling a free slot, and slots never shrink below the cap,
+    // as the frame threads of the old scheduler did. A frame ending frees its slot for the next frame; the buffer
+    // back-pressure bounds the memory.
     int admissionSlots;
     // The most frames in flight at once since startRender(), for tests.
     std::atomic<int> maxAdmittedFrames;
@@ -439,16 +441,19 @@ struct OutputSchedulerThreadPrivate
     }
 
     // A frame the display will not reach again would hold its image and a buffer slot until the playback ends.
+    // The erased entries go to `erased`, so the caller frees their images after unlocking bufMutex.
     void eraseUnreachableBufferedFrames(int fromTime,
                                         RenderDirectionEnum direction,
                                         int firstFrame,
-                                        int lastFrame)
+                                        int lastFrame,
+                                        std::list<BufferedFrame>* erased)
     {
         assert(!bufMutex.tryLock());
         for (FrameBuffer::iterator it = buf.begin(); it != buf.end();) {
             if (isFrameReachable(roundTime(it->first.time), fromTime, direction, firstFrame, lastFrame)) {
                 ++it;
             } else {
+                erased->push_back(it->second);
                 buf.erase(it++);
             }
         }
@@ -1352,8 +1357,10 @@ OutputSchedulerThread::serviceAdmittedFrames()
             expected = _imp->expectFrameToRender;
         }
         // Frames in flight when the range changed arrive afterwards.
+        std::list<BufferedFrame> erased;
         QMutexLocker l(&_imp->bufMutex);
-        _imp->eraseUnreachableBufferedFrames(expected, args->processTimelineDirection, args->firstFrame, args->lastFrame);
+        _imp->eraseUnreachableBufferedFrames(expected, args->processTimelineDirection, args->firstFrame, args->lastFrame, &erased);
+        l.unlock();
     }
     admitFrames();
 }
@@ -1394,9 +1401,10 @@ OutputSchedulerThread::reseedAdmission(int fromTime,
         return;
     }
     _imp->admissionSkips.clear();
+    std::list<BufferedFrame> erased;
     {
         QMutexLocker l(&_imp->bufMutex);
-        _imp->eraseUnreachableBufferedFrames(fromTime, direction, args->firstFrame, args->lastFrame);
+        _imp->eraseUnreachableBufferedFrames(fromTime, direction, args->firstFrame, args->lastFrame, &erased);
 
         // The display takes one entry per view and input of a time at once, and a nothing-to-display entry on its own.
         std::map<int, int> nothingEntries;

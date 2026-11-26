@@ -276,7 +276,7 @@ TEST_F(NativeColorMathTest, UnversionedRequestsGetTheNativeNodes)
     }
 }
 
-TEST_F(NativeColorMathTest, BothSchedulerModesAgreeWithNoUnplannedPull)
+TEST_F(NativeColorMathTest, DirectAndScheduledAgreeWithNoUnplannedPull)
 {
     const std::vector<ColorMathCase> cases = allCases();
     std::vector<int> poolSizes;

@@ -104,26 +104,6 @@ private:
     int _saved;
 };
 
-class SchedulerModeGuard {
-public:
-    explicit SchedulerModeGuard(RenderSchedulerModeEnum mode)
-        : _saved(appPTR->getRenderSchedulerMode())
-    {
-        appPTR->setRenderSchedulerMode(mode);
-    }
-
-    ~SchedulerModeGuard()
-    {
-        appPTR->setRenderSchedulerMode(_saved);
-    }
-
-    SchedulerModeGuard(const SchedulerModeGuard&) = delete;
-    SchedulerModeGuard& operator=(const SchedulerModeGuard&) = delete;
-
-private:
-    RenderSchedulerModeEnum _saved;
-};
-
 class ParallelRendersGuard {
 public:
     explicit ParallelRendersGuard(int parallelRenders)
@@ -342,12 +322,11 @@ protected:
         run->future = _scheduler->submit(run->context, std::move(run->graph), RenderScheduler::Priority::Interactive);
     }
 
-    // Renders root on this thread through renderRoI with the Legacy scheduler, as the reference image.
-    bool renderLegacy(const NodePtr& root,
+    // Renders root on this thread through renderRoI, as the reference image.
+    bool renderDirect(const NodePtr& root,
                       Pixels* out,
                       std::string* error)
     {
-        SchedulerModeGuard mode(eRenderSchedulerModeLegacy);
         const double time = 1.;
         AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(false, 0);
         ParallelRenderArgsSetter frameArgs(time,
@@ -365,7 +344,7 @@ protected:
         FrameRequestMap request;
         const RectD window(0., 0., kCountingTestSize, kCountingTestSize);
         if (EffectInstance::computeRequestPass(time, ViewIdx(0), 0 /*mipmapLevel*/, window, root, request) == eStatusFailed) {
-            *error = "legacy request pass failed";
+            *error = "direct request pass failed";
 
             return false;
         }
@@ -388,7 +367,7 @@ protected:
                                            time);
         std::map<ImageLayerDesc, ImagePtr> planes;
         if ((root->getEffectInstance()->renderRoI(args, &planes) != EffectInstance::eRenderRoIRetCodeOk) || planes.empty()) {
-            *error = "legacy renderRoI failed";
+            *error = "direct renderRoI failed";
 
             return false;
         }
@@ -427,7 +406,7 @@ TEST_F(RenderSchedulerAbortTiming, AbortDropsQueuedTasksAndWaitsForRunningOnes)
 
     Pixels legacy;
     std::string error;
-    ASSERT_TRUE(renderLegacy(root, &legacy, &error)) << error;
+    ASSERT_TRUE(renderDirect(root, &legacy, &error)) << error;
 
     for (std::size_t p = 0; p < sizeof(kPoolSizes) / sizeof(kPoolSizes[0]); ++p) {
         const int poolSize = kPoolSizes[p];
@@ -581,9 +560,8 @@ TEST_F(RenderSchedulerAbortTiming, AbortOfAnUnknownRenderDoesNothing)
 
 // Aborting a writer's range render from the engine after its first frame ends the render promptly, and only the
 // frames already started by then may still be written. The render threads abort the frame they are on and the
-// scheduler queues twice as many frames as threads ahead of them, which bounds what may still land on disk. With the
-// Task graph mode the engine's abort reaches the RenderScheduler through the frame's AbortableRenderInfo; the
-// assertions hold on the Legacy path as well.
+// scheduler queues twice as many frames as threads ahead of them, which bounds what may still land on disk. The
+// engine's abort reaches the RenderScheduler through the frame's AbortableRenderInfo.
 TEST_F(RenderSchedulerAbortTiming, WriterRangeStopsSoonAfterEngineAbort)
 {
     const int parallelRenders = 2;
@@ -612,7 +590,6 @@ TEST_F(RenderSchedulerAbortTiming, WriterRangeStopsSoonAfterEngineAbort)
 
     PoolSizeGuard pool(parallelRenders);
     ParallelRendersGuard parallel(parallelRenders);
-    SchedulerModeGuard mode(eRenderSchedulerModeTaskGraph);
 
     RenderEnginePtr engine = writerEffect->getRenderEngine();
     QElapsedTimer clock;

@@ -209,7 +209,7 @@ protected:
                                                  false /*draftMode*/,
                                                  RenderStatsPtr());
         const EffectInstancePtr effect = node->getEffectInstance();
-        const ParallelRenderArgsPtr base = effect->getParallelRenderArgsTLS();
+        const ParallelRenderArgsPtr base = effect->getFrameArgs();
         KnobDouble* asDouble = dynamic_cast<KnobDouble*>(knob.get());
         if (!base || !asDouble) {
             ADD_FAILURE() << "no frame args or not a double knob";
@@ -250,14 +250,13 @@ protected:
         return stat;
     }
 
-    // Renders root's RGBA through the given scheduler and returns its first pixel's red, or -1.
-    float renderFirstPixel(const NodePtr& root,
-                           RenderSchedulerModeEnum mode)
+    // Renders root's RGBA through the scheduler and returns its first pixel's red, or -1.
+    float renderFirstPixel(const NodePtr& root)
     {
         std::vector<RenderedPlane> planes;
         std::string error;
         const RectI roi(0, 0, kCountingTestSize, kCountingTestSize);
-        if (!renderNodePlanesInMode(root, 1., ViewIdx(0), 0 /*mipmapLevel*/, roi, std::list<ImageLayerDesc>(), mode, true /*byPassCache*/, &planes, &error)) {
+        if (!renderNodePlanesScheduled(root, 1., ViewIdx(0), 0 /*mipmapLevel*/, roi, true /*byPassCache*/, &planes, &error)) {
             ADD_FAILURE() << error;
 
             return -1.f;
@@ -402,7 +401,7 @@ TEST_F(RenderContextRequest, ReaderRendersOncePerDistinctKey)
         ASSERT_TRUE(buildFanOutGraph(2, 0, false, &ancestor, &reader, &fanOut));
         CountingTestRegistry::reset();
         // Each reader holds v + 1 + 1.
-        EXPECT_EQ(2.f + 3.f, renderFirstPixel(fanOut, eRenderSchedulerModeTaskGraph));
+        EXPECT_EQ(2.f + 3.f, renderFirstPixel(fanOut));
         EXPECT_EQ(2, CountingTestRegistry::renders(reader));
         EXPECT_EQ(1, CountingTestRegistry::renders(ancestor));
         EXPECT_EQ(1, CountingTestRegistry::renders(fanOut));
@@ -412,23 +411,22 @@ TEST_F(RenderContextRequest, ReaderRendersOncePerDistinctKey)
         NodePtr ancestor, reader, fanOut;
         ASSERT_TRUE(buildFanOutGraph(2, 1, true, &ancestor, &reader, &fanOut));
         CountingTestRegistry::reset();
-        EXPECT_EQ(3.f + 3.f, renderFirstPixel(fanOut, eRenderSchedulerModeTaskGraph));
+        EXPECT_EQ(3.f + 3.f, renderFirstPixel(fanOut));
         EXPECT_EQ(1, CountingTestRegistry::renders(reader));
         EXPECT_EQ(1, CountingTestRegistry::renders(ancestor));
     }
 }
 
-// The legacy scheduler pulls each context serially from the fan-out's render.
-TEST_F(RenderContextRequest, LegacyPullsEachContext)
+// The fan-out's render pulls each of its contexts.
+TEST_F(RenderContextRequest, FanOutPullsEachContext)
 {
     NodePtr ancestor, reader, fanOut;
     ASSERT_TRUE(buildFanOutGraph(3, 0, false, &ancestor, &reader, &fanOut));
-    EXPECT_EQ(2.f + 3.f + 4.f, renderFirstPixel(fanOut, eRenderSchedulerModeLegacy));
-    EXPECT_EQ(2.f + 3.f + 4.f, renderFirstPixel(fanOut, eRenderSchedulerModeTaskGraph));
+    EXPECT_EQ(2.f + 3.f + 4.f, renderFirstPixel(fanOut));
 }
 
-// Both schedulers, and the task graph on one and several pool threads, render the fan-out alike.
-TEST_F(RenderContextRequest, FanOutRendersAlikeAcrossSchedulersAndPoolSizes)
+// The direct pull, and the scheduler on one and several pool threads, render the fan-out alike.
+TEST_F(RenderContextRequest, FanOutRendersAlikeAcrossPullsAndPoolSizes)
 {
     NodePtr ancestor, reader, fanOut;
     ASSERT_TRUE(buildFanOutGraph(3, 0, false, &ancestor, &reader, &fanOut));
@@ -482,7 +480,7 @@ TEST_F(RenderContextRequest, ActionsCacheKeepsEveryContextOfTheFrame)
     ContextTestRegistry::reset();
 
     // Each reader holds v + 1 + 1.
-    EXPECT_EQ(float(count * (count + 1) / 2 + 2 * count), renderFirstPixel(fanOut, eRenderSchedulerModeTaskGraph));
+    EXPECT_EQ(float(count * (count + 1) / 2 + 2 * count), renderFirstPixel(fanOut));
     for (int v = 1; v <= count; ++v) {
         EXPECT_EQ(1, ContextTestRegistry::regionsOfDefinition(reader.get(), v)) << "v = " << v;
     }
@@ -514,7 +512,7 @@ TEST_F(RenderContextRequest, RunawayContextCountWarnsOncePerRender)
     const QString warning = QString::fromUtf8("contexts, more than the");
     appPTR->clearErrorLog_mt_safe();
     // The sum over a < 2, b < 64, c < 64 of the reader's a + b + c + 1.
-    EXPECT_EQ(528384.f, renderFirstPixel(outer, eRenderSchedulerModeTaskGraph));
+    EXPECT_EQ(528384.f, renderFirstPixel(outer));
     EXPECT_EQ(1, errorLogEntriesWith(warning));
     EXPECT_TRUE(outer->hasPersistentMessage());
     EXPECT_FALSE(middle->hasPersistentMessage());
@@ -525,7 +523,7 @@ TEST_F(RenderContextRequest, RunawayContextCountWarnsOncePerRender)
     ASSERT_TRUE(outerCount != NULL);
     outerCount->setValue(1);
     appPTR->clearErrorLog_mt_safe();
-    EXPECT_EQ(262144.f, renderFirstPixel(outer, eRenderSchedulerModeTaskGraph));
+    EXPECT_EQ(262144.f, renderFirstPixel(outer));
     EXPECT_EQ(0, errorLogEntriesWith(warning));
     EXPECT_FALSE(outer->hasPersistentMessage());
 }
@@ -554,14 +552,12 @@ TEST_F(RenderContextRequest, InputRegionIsReadUnderTheConsumersContext)
         EXPECT_EQ(ContextRegionTestEffect::regionWidthUnder(v), frameView->globalData.rod.x2) << "v = " << v;
     }
 
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeTaskGraph, eRenderSchedulerModeLegacy }) {
-        ContextTestRegistry::reset();
-        // Each context's region node holds v.
-        EXPECT_EQ(1.f + 2.f, renderFirstPixel(fanOut, mode)) << (int)mode;
-        for (double v : { 1., 2. }) {
-            for (double right : ContextTestRegistry::regionRights(unionNode.get(), v)) {
-                EXPECT_EQ(ContextRegionTestEffect::regionWidthUnder(v), right) << "v = " << v << ", mode " << (int)mode;
-            }
+    ContextTestRegistry::reset();
+    // Each context's region node holds v.
+    EXPECT_EQ(1.f + 2.f, renderFirstPixel(fanOut));
+    for (double v : { 1., 2. }) {
+        for (double right : ContextTestRegistry::regionRights(unionNode.get(), v)) {
+            EXPECT_EQ(ContextRegionTestEffect::regionWidthUnder(v), right) << "v = " << v;
         }
     }
 }
@@ -641,8 +637,7 @@ TEST_F(RenderContextRequest, SameKeyRequestAtThePreviousFrameIsAllowed)
     EXPECT_TRUE(chainEntries.front()->findFrameViewRequest(1., ViewIdx(0)) != NULL);
     EXPECT_TRUE(chainEntries.front()->findFrameViewRequest(0., ViewIdx(0)) != NULL);
 
-    EXPECT_EQ(2.f, renderFirstPixel(fanOut, eRenderSchedulerModeTaskGraph));
-    EXPECT_EQ(2.f, renderFirstPixel(fanOut, eRenderSchedulerModeLegacy));
+    EXPECT_EQ(2.f, renderFirstPixel(fanOut));
 }
 
 // An effect requesting its input under a single context of its own through getInputContexts()
@@ -662,9 +657,8 @@ TEST_F(RenderContextRequest, SingleInputContextIsPulledWithoutAScope)
 
     // The reader holds its value 1 plus v = 5.
     CountingTestRegistry::reset();
-    EXPECT_EQ(6.f, renderFirstPixel(set, eRenderSchedulerModeTaskGraph));
+    EXPECT_EQ(6.f, renderFirstPixel(set));
     EXPECT_EQ(1, CountingTestRegistry::renders(reader));
-    EXPECT_EQ(6.f, renderFirstPixel(set, eRenderSchedulerModeLegacy));
 }
 
 // A fan-out nested in another setting the same variable reads nothing of it from upstream: it
@@ -687,10 +681,9 @@ TEST_F(RenderContextRequest, NestedFanOutsSettingOneVariableRenderTheInnerOnce)
 
     // Twice the inner's sum over v < 3 of v + 1.
     CountingTestRegistry::reset();
-    EXPECT_EQ(12.f, renderFirstPixel(outer, eRenderSchedulerModeTaskGraph));
+    EXPECT_EQ(12.f, renderFirstPixel(outer));
     EXPECT_EQ(1, CountingTestRegistry::renders(inner));
     EXPECT_EQ(3, CountingTestRegistry::renders(reader));
-    EXPECT_EQ(12.f, renderFirstPixel(outer, eRenderSchedulerModeLegacy));
 }
 
 // Past the threshold, the warning goes on the fan-out under the empty context whose own contexts

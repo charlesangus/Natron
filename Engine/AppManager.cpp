@@ -631,15 +631,6 @@ AppManager::AppManager()
     assert(!_instance);
     _instance = this;
 
-    // Read before the settings load: CI selects the scheduler per job through the environment.
-    {
-        std::optional<RenderSchedulerModeEnum> envMode = parseRenderSchedulerModeEnv(std::getenv("NATRON_RENDER_SCHEDULER"));
-        if (envMode) {
-            _imp->renderSchedulerMode = (int)*envMode;
-            _imp->renderSchedulerEnvOverride = true;
-        }
-    }
-
     CacheRetention::readAdmissionPolicyOverrideFromEnvironment();
 
     QObject::connect( this, SIGNAL(s_requestOFXDialogOnMainThread(OfxImageEffectInstance*,void*)), this, SLOT(onOFXDialogOnMainThreadReceived(OfxImageEffectInstance*,void*)) );
@@ -1240,7 +1231,6 @@ AppManager::loadInternal(const CLArgs& cl)
 
         return ok;
     }
-    onRenderSchedulerModeSettingChanged(_imp->_settings->getRenderSchedulerMode());
     {
         const GpuResolvedMode gpuMode = GpuContext::resolveMode(_imp->_settings->getGpuComputeMode(), std::getenv("NATRON_GPU"));
         const std::string gpuDeviceId = _imp->_settings->getGpuDevice();
@@ -3557,35 +3547,6 @@ AppManager::setNThreadsPerEffect(int nThreadsPerEffect)
     _imp->nThreadsPerEffect = nThreadsPerEffect;
 }
 
-std::optional<RenderSchedulerModeEnum>
-AppManager::parseRenderSchedulerModeEnv(const char* value)
-{
-    if (!value) {
-        return std::nullopt;
-    }
-    const std::string str(value);
-    if (str == "legacy") {
-        return eRenderSchedulerModeLegacy;
-    }
-    if (str == "taskgraph") {
-        return eRenderSchedulerModeTaskGraph;
-    }
-
-    return std::nullopt;
-}
-
-RenderSchedulerModeEnum
-AppManager::getRenderSchedulerMode() const
-{
-    return (RenderSchedulerModeEnum)_imp->renderSchedulerMode.load();
-}
-
-void
-AppManager::setRenderSchedulerMode(RenderSchedulerModeEnum mode)
-{
-    _imp->renderSchedulerMode = (int)mode;
-}
-
 GpuContext*
 AppManager::getGpuContext() const
 {
@@ -3647,18 +3608,6 @@ AppManager::swapGpuContextForTests(std::unique_ptr<GpuContext> context)
 }
 
 void
-AppManager::onRenderSchedulerModeSettingChanged(RenderSchedulerModeEnum mode)
-{
-    if (_imp->renderSchedulerEnvOverride) {
-        return;
-    }
-    _imp->renderSchedulerMode = (int)mode;
-
-    // Real renders in legacy mode keep the last placement, so nothing else would clear the regions of the old mode.
-    ViewerInstance::requestGpuPlacementDryRunForEveryViewer();
-}
-
-void
 AppManager::setUseThreadPool(bool useThreadPool)
 {
     QMutexLocker l(&_imp->nThreadsMutex);
@@ -3702,11 +3651,7 @@ AppManager::getNCPUsAvailableForEffect()
     }
 
     // Threads already running for the multiThreadSuite + parallel renders
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
     const int runningThreadsCount = getNRunningThreads();
-#else
-    const int runningThreadsCount = 0;
-#endif
 
     // better than QThread::idealThreadCount();, because it can be set by a global preference:
     int maxThreadsCount = QThreadPool::globalInstance()->maxThreadCount();

@@ -463,7 +463,7 @@ TEST_F(CacheRetentionCacheTest, OnlyARenderServedByTheEntryCountsAsReuse)
 
     RenderedPlane plane;
     std::string error;
-    ASSERT_TRUE(renderProbe(constant, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &plane, &error)) << error;
+    ASSERT_TRUE(renderProbeDirect(constant, 1., 0, kWindow, false, &plane, &error)) << error;
 
     const ImagePtr entry = std::dynamic_pointer_cast<Image>(appPTR->getNodeCacheHostTier().demotionCandidate());
     ASSERT_TRUE(bool(entry));
@@ -475,7 +475,7 @@ TEST_F(CacheRetentionCacheTest, OnlyARenderServedByTheEntryCountsAsReuse)
     ASSERT_TRUE(appPTR->getImage(entry->getKey(), &found));
     EXPECT_EQ(0u, header.reuseCount.load());
 
-    ASSERT_TRUE(renderProbe(constant, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &plane, &error)) << error;
+    ASSERT_TRUE(renderProbeDirect(constant, 1., 0, kWindow, false, &plane, &error)) << error;
     EXPECT_EQ(1u, header.reuseCount.load());
 
     EXPECT_GT(constant->getRetentionSignals()->priority(CacheRetention::nowNs()), CacheRetention::kForcedWeight);
@@ -496,13 +496,13 @@ TEST_F(CacheRetentionCacheTest, AnEntryStoredUnderAllServesANodeNowBelowTheFloor
 
     CacheRetention::setAdmissionPolicyOverride(CacheRetention::eAdmissionPolicyPriorityFloor);
     EXPECT_FALSE(constant->getEffectInstance()->shouldCacheOutput(true, 1., ViewIdx(0), 0));
-    ASSERT_TRUE(renderProbe(constant, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &plane, &error)) << error;
+    ASSERT_TRUE(renderProbeDirect(constant, 1., 0, kWindow, false, &plane, &error)) << error;
     EXPECT_EQ(EffectInstance::eRenderCacheStateBypass, EffectInstance::takeLastRenderCacheState());
     EXPECT_FALSE(bool(appPTR->getNodeCacheHostTier().demotionCandidate()));
 
     CacheRetention::setAdmissionPolicyOverride(CacheRetention::eAdmissionPolicyAll);
     EXPECT_TRUE(constant->getEffectInstance()->shouldCacheOutput(true, 1., ViewIdx(0), 0));
-    ASSERT_TRUE(renderProbe(constant, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &plane, &error)) << error;
+    ASSERT_TRUE(renderProbeDirect(constant, 1., 0, kWindow, false, &plane, &error)) << error;
     EXPECT_EQ(EffectInstance::eRenderCacheStateMiss, EffectInstance::takeLastRenderCacheState());
 
     const ImagePtr entry = std::dynamic_pointer_cast<Image>(appPTR->getNodeCacheHostTier().demotionCandidate());
@@ -510,7 +510,7 @@ TEST_F(CacheRetentionCacheTest, AnEntryStoredUnderAllServesANodeNowBelowTheFloor
     const CacheEntryHeader& header = *entry->getEntryHeader();
     EXPECT_EQ(0u, header.reuseCount.load());
 
-    ASSERT_TRUE(renderProbe(constant, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &plane, &error)) << error;
+    ASSERT_TRUE(renderProbeDirect(constant, 1., 0, kWindow, false, &plane, &error)) << error;
     EXPECT_EQ(EffectInstance::eRenderCacheStateHit, EffectInstance::takeLastRenderCacheState());
     EXPECT_EQ(1u, header.reuseCount.load());
 
@@ -518,7 +518,7 @@ TEST_F(CacheRetentionCacheTest, AnEntryStoredUnderAllServesANodeNowBelowTheFloor
     constant->getRetentionSignals()->rememberCost(0.f);
     CacheRetention::setAdmissionPolicyOverride(CacheRetention::eAdmissionPolicyPriorityFloor);
     EXPECT_FALSE(constant->getEffectInstance()->shouldCacheOutput(true, 1., ViewIdx(0), 0));
-    ASSERT_TRUE(renderProbe(constant, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &plane, &error)) << error;
+    ASSERT_TRUE(renderProbeDirect(constant, 1., 0, kWindow, false, &plane, &error)) << error;
     EXPECT_EQ(EffectInstance::eRenderCacheStateHit, EffectInstance::takeLastRenderCacheState());
     EXPECT_EQ(2u, header.reuseCount.load());
 }

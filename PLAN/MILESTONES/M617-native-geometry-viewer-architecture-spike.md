@@ -18,7 +18,7 @@ From the user's F15 - Native Geometry UAT (2026-11-26): the viewer still flashes
 
 ## Phase 617.1: Spike
 
-- [ ] M617.P1.T1 — Measure the drag path and write the options report
+- [x] M617.P1.T1 — Measure the drag path and write the options report
   - files: the native geometry viewer path (GeoViewerLayer, GeoUsdConvert, GeoSdfFileFormat, SceneViewport, the scene index chain), docs in .local/docs (USD/Hydra), Gaffer and the reference DCC's viewer architecture where documented
   - approach: instrument a GeoTransform drag on light and heavy geometry (timings per stage, frames shown grey or stale); prototype the cheapest fix inside the current path if one is obvious; write `build/m617-viewer-architecture.md` with findings, the options table with trade-offs and costs, and a recommendation
   - verify: the report goes to the user with the measurements
@@ -27,3 +27,4 @@ From the user's F15 - Native Geometry UAT (2026-11-26): the viewer still flashes
 **Verification gate:** the user picks a direction; follow-up milestones are filed.
 
 ## Decisions
+- 2026-11-26 (PM, opus consultant) — Report `build/m617-viewer-architecture.md` sent to the user. Recommendation: keep Hydra/Storm. Measure the flashes first: per-stage timers and a presented-frame flash detector. Fix them in the current path (option 1); the likely sources are a failed cook clearing the scene, prims re-admitted over several fill frames, placeholder paints, and the stale cue toggling per step. Prototype a native points-only scene index (option 3, Blender's approach) only if heavy-geometry timings show the Sdf diff plus USD change processing above ~40% of a drag step. No own GL drawer, no Storm fork. **Needs: user decision.**

@@ -72,6 +72,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/NodeMetadata.h"
 #include "Engine/OfxClipInstance.h"
 #include "Engine/OfxImageEffectInstance.h"
+#include "Engine/OfxLayerMapping.h"
 #include "Engine/OfxMultiplaneChoice.h"
 #include "Engine/OfxOverlayInteract.h"
 #include "Engine/OfxParamInstance.h"
@@ -1863,19 +1864,7 @@ OfxEffectInstance::onTimeInvariantMetadataDerived(const NodeMetadata& metadata)
             }
             int inputNb = clip->getInputNb();
 
-            std::string ofxClipComponentStr;
-            std::string componentsType = metadata.getComponentsType(inputNb);
-            int nComps = metadata.getNComps(inputNb);
-            ImageLayerDesc natronLayer = ImageLayerDesc::mapNCompsToColorLayer(nComps);
-            if (componentsType == kNatronColorLayerID) {
-                ofxClipComponentStr = ImageLayerDesc::mapLayerToOFXComponentsTypeString(natronLayer);
-            } else if (componentsType == kNatronDisparityComponentsLabel) {
-                ofxClipComponentStr = kFnOfxImageComponentStereoDisparity;
-            } else if (componentsType == kNatronMotionComponentsLabel) {
-                ofxClipComponentStr = kFnOfxImageComponentMotionVectors;
-            } else {
-                ofxClipComponentStr = ImageLayerDesc::mapLayerToOFXComponentsTypeString(natronLayer);
-            }
+            const std::string ofxClipComponentStr = OfxLayerMapping::componentsTypeToComponents(metadata.getComponentsType(inputNb), metadata.getNComps(inputNb));
 
             clip->setComponents(ofxClipComponentStr);
             clip->setPixelDepth( OfxClipInstance::natronsDepthToOfxDepth( metadata.getBitDepth(inputNb) ) );
@@ -2223,7 +2212,7 @@ OfxEffectInstance::findFrameAnswer(double time,
     if (mayDerive) {
         metadata = getRenderMetadata(time, view);
     } else {
-        metadata = findRenderMetadata(getParallelRenderArgsTLS(), time, view);
+        metadata = findRenderMetadata(getFrameArgs(), time, view);
     }
     if (!metadata) {
         return OfxClipsFrameAnswerPtr();
@@ -2905,9 +2894,9 @@ OfxEffectInstance::render(const RenderActionArgs& args)
          it != args.outputLayers.end(); ++it) {
         if (!multiPlanar) {
             // When not multi-planar, the components of the image will be the color layer
-            ofxPlanes.push_back(ImageLayerDesc::mapLayerToOFXPlaneString(it->second->getComponents()));
+            ofxPlanes.push_back(OfxLayerMapping::layerToPlane(it->second->getComponents()));
         } else {
-            ofxPlanes.push_back(ImageLayerDesc::mapLayerToOFXPlaneString(it->first));
+            ofxPlanes.push_back(OfxLayerMapping::layerToPlane(it->first));
         }
     }
 
@@ -3677,7 +3666,7 @@ OfxEffectInstance::addAcceptedComponents(int inputNb,
         for (U32 i = 0; i < supportedComps.size(); ++i) {
             try {
                 ImageLayerDesc comp, pairedComp;
-                ImageLayerDesc::mapOFXComponentsTypeStringToLayers(supportedComps[i], &comp, &pairedComp);
+                OfxLayerMapping::componentsToLayers(supportedComps[i], &comp, &pairedComp);
                 comps->push_back(ImageLayerDesc::mapNCompsToColorLayer(comp.getNumComponents()));
             } catch (const std::runtime_error &e) {
                 // ignore unsupported components
@@ -3691,7 +3680,7 @@ OfxEffectInstance::addAcceptedComponents(int inputNb,
         for (U32 i = 0; i < supportedComps.size(); ++i) {
             try {
                 ImageLayerDesc comp, pairedComp;
-                ImageLayerDesc::mapOFXComponentsTypeStringToLayers(supportedComps[i], &comp, &pairedComp);
+                OfxLayerMapping::componentsToLayers(supportedComps[i], &comp, &pairedComp);
                 comps->push_back(ImageLayerDesc::mapNCompsToColorLayer(comp.getNumComponents()));
             } catch (const std::runtime_error &e) {
                 // ignore unsupported components
@@ -3760,7 +3749,7 @@ OfxEffectInstance::getComponentsNeededAndProduced(double time,
                         if ((*it2) == kFnOfxImagePlaneColour) {
                             layer = ImageLayerDesc::mapNCompsToColorLayer(getNCompsFromMetadata(*getMetadata(time, view), index));
                         } else {
-                            layer = ImageLayerDesc::mapOFXPlaneStringToLayer(*it2);
+                            layer = OfxLayerMapping::planeToLayer(*it2);
                         }
                         if (layer.getNumComponents() > 0) {
                             compNeeded.push_back(layer);

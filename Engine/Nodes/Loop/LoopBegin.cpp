@@ -67,7 +67,7 @@ plannedAt(const EffectInstance* effect,
           double time,
           ViewIdx view)
 {
-    const ParallelRenderArgsPtr args = effect->getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr args = effect->getFrameArgs();
 
     return args && args->request && args->request->getFrameViewRequest(time, view);
 }
@@ -432,8 +432,8 @@ LoopBegin::render(const RenderActionArgs& args)
         }
         if (src->getComponents() != dst->getComponents()) {
             conformMessage = tr("The iteration or frame before outputs %1 where the loop's input has %2: it is converted.")
-                                 .arg(QString::fromUtf8(src->getComponents().getChannelsLabel().c_str()))
-                                 .arg(QString::fromUtf8(dst->getComponents().getChannelsLabel().c_str()))
+                                 .arg(QString::fromUtf8(src->getComponents().getUserFacingLabel().c_str()))
+                                 .arg(QString::fromUtf8(dst->getComponents().getUserFacingLabel().c_str()))
                                  .toStdString();
         }
         const int srcComps = (int)src->getComponentsCount();
@@ -447,9 +447,6 @@ LoopBegin::render(const RenderActionArgs& args)
 bool
 LoopBegin::canRenderOnGpu(const GpuQuery& query) const
 {
-    if (appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph) {
-        return false;
-    }
     if ((query.bitDepth != eImageBitDepthFloat) || query.hasMask || (query.mix != 1.) || query.hasConcatenatedInput) {
         return false;
     }

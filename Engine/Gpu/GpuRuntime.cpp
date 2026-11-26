@@ -495,6 +495,10 @@ GpuRuntime::teardown()
     stopKeepAlive();
     keepAlive_.reset();
     preparer_.reset();
+    // Before the check below: retiring work that never finishes is abandoned here.
+    if (device_) {
+        device_->finishRetiring();
+    }
     if (device_ && device_->hasAbandonedWork()) {
         // The abandoned work may still use the pipelines, the pool's buffers, the command pools and the device, and
         // the buffers its callers destroy later still point at the device, so all of it is parked instead.

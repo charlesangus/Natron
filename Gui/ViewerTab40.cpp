@@ -28,6 +28,7 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
 #include <stdexcept>
 
 #include <QDebug>
@@ -645,6 +646,15 @@ ViewerTab::onCheckerboardButtonClicked()
     refreshFromViewerKnob(kViewerParamCheckerboard);
 }
 
+void
+ViewerTab::onMapSiblingOverlaysButtonClicked(bool mapped)
+{
+    editViewerKnobs(tr("Map Sibling Overlays"), [this, mapped]() {
+        _imp->setViewerValue<bool>(kViewerParamMapSiblingOverlays, mapped);
+    });
+    refreshMapSiblingOverlaysFromKnob();
+}
+
 bool
 ViewerTab::isCheckerboardEnabled() const
 {
@@ -800,18 +810,6 @@ ViewerTab::onInternalNodeScriptNameChanged(const QString& /*name*/)
     }
 }
 
-static ChoiceOption
-viewerLayerChoiceOption(const ImageLayerDesc& layer)
-{
-    // A colour view's label is its own ID ("rgba", not "rgba." + a channels label): getLayerOption()
-    // appends getChannelsLabel(), which views leave empty.
-    if (ImageLayerDesc::isColorViewID(layer.getLayerID())) {
-        return ChoiceOption(layer.getLayerID(), layer.getLayerLabel(), "");
-    }
-
-    return layer.getLayerOption();
-}
-
 // The alpha menu entry, counting the leading "-", of layer's last channel. A colour view's channel
 // is listed under the one view the alpha menu keeps for the stream's layout, and is absent when
 // that layout lacks it.
@@ -950,7 +948,7 @@ ViewerTab::refreshLayerAndAlphaChannelComboBoxAtTime(double time)
     int firstColorIndex = -1;
     int index = 1;
     for (std::list<ImageLayerDesc>::iterator it = components.begin(); it != components.end(); ++it, ++index) {
-        _imp->layerChoice->addItem(QString::fromUtf8(viewerLayerChoiceOption(*it).label.c_str()));
+        _imp->layerChoice->addItem(QString::fromUtf8(it->getLayerID().c_str()));
         if ((layerIndex == -1) && (it->getLayerID() == layerID)) {
             layerIndex = index;
         }
@@ -1184,25 +1182,17 @@ ViewerTab::onSyncViewersButtonPressed(bool clicked)
 void
 ViewerTab::zoomIn()
 {
-    double factor = _imp->viewer->getZoomFactor();
-
-    factor *= 1.1;
-    factor *= 100;
-    _imp->viewer->zoomSlot(factor);
-    QString text = QString::number( std::floor(factor + 0.5) ) + QLatin1Char('%');
-    _imp->zoomCombobox->setCurrentText_no_emit(text);
+    _imp->viewer->stepZoomPresets(1, QPointF(_imp->viewer->width() / 2., _imp->viewer->height() / 2.));
+    // A step at the zoom bound reports nothing, and picking + from the menu would otherwise leave
+    // that entry shown.
+    updateZoomComboBox(std::max(1, (int)std::lround(100 * _imp->viewer->getZoomFactor())));
 }
 
 void
 ViewerTab::zoomOut()
 {
-    double factor = _imp->viewer->getZoomFactor();
-
-    factor *= 0.9;
-    factor *= 100;
-    _imp->viewer->zoomSlot(factor);
-    QString text = QString::number( std::floor(factor + 0.5) ) + QLatin1Char('%');
-    _imp->zoomCombobox->setCurrentText_no_emit(text);
+    _imp->viewer->stepZoomPresets(-1, QPointF(_imp->viewer->width() / 2., _imp->viewer->height() / 2.));
+    updateZoomComboBox(std::max(1, (int)std::lround(100 * _imp->viewer->getZoomFactor())));
 }
 
 void

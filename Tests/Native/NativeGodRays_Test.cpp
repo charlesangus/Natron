@@ -704,7 +704,7 @@ TEST_F(NativeGodRaysTest, RenderScalesKeepTheSourceRange)
     for (unsigned int mipmapLevel = 1; mipmapLevel <= 3; ++mipmapLevel) {
         std::vector<float> input;
         std::string error;
-        ASSERT_TRUE(renderBlurRangePlane(source, kTime, mipmapLevel, pixelRoDAt(source, mipmapLevel), eRenderSchedulerModeLegacy, true, &input, &error)) << error;
+        ASSERT_TRUE(renderBlurRangePlane(source, kTime, mipmapLevel, pixelRoDAt(source, mipmapLevel), false, true, &input, &error)) << error;
         BlurRange range;
         range.include(input);
         ASSERT_GT(range.high, 100.f);
@@ -715,7 +715,7 @@ TEST_F(NativeGodRaysTest, RenderScalesKeepTheSourceRange)
                 NodePtr node = makeBrightRays(source, filter.id, blackOutside, takeMax);
                 ASSERT_TRUE(bool(node));
                 std::vector<float> output;
-                ASSERT_TRUE(renderBlurRangePlane(node, kTime, mipmapLevel, pixelRoDAt(node, mipmapLevel), eRenderSchedulerModeLegacy, true, &output, &error)) << error;
+                ASSERT_TRUE(renderBlurRangePlane(node, kTime, mipmapLevel, pixelRoDAt(node, mipmapLevel), false, true, &output, &error)) << error;
                 EXPECT_EQ(std::string(), blurRangeViolation(output, range, filter.lobes)) << filter.id << (takeMax ? " max" : "") << (blackOutside ? "" : " edge repeat") << ", mipmap " << mipmapLevel;
             }
         }
@@ -763,27 +763,27 @@ TEST_F(NativeGodRaysTest, ZoomingOutOverACachedFullScaleRenderKeepsTheSourceRang
     resetProject();
     NodePtr source = makeBrightSource();
     ASSERT_TRUE(bool(source));
-    for (const RenderSchedulerModeEnum schedulerMode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+    for (const bool scheduled : { false, true }) {
         NodePtr node = makeBrightRays(source, "cubic", true, false);
         ASSERT_TRUE(bool(node));
         const RectI fullRoD = pixelRoDAt(node, 0);
         const RectI quarter(fullRoD.x1 + fullRoD.width() / 4, fullRoD.y1 + fullRoD.height() / 4, fullRoD.x1 + fullRoD.width() / 2, fullRoD.y1 + fullRoD.height() / 2);
         std::string error;
         std::vector<float> input;
-        ASSERT_TRUE(renderBlurRangePlane(source, kTime, 0, pixelRoDAt(source, 0), eRenderSchedulerModeLegacy, true, &input, &error)) << error;
+        ASSERT_TRUE(renderBlurRangePlane(source, kTime, 0, pixelRoDAt(source, 0), false, true, &input, &error)) << error;
         BlurRange range;
         range.include(input);
         for (unsigned int mipmapLevel = 1; mipmapLevel <= 3; ++mipmapLevel) {
-            ASSERT_TRUE(renderBlurRangePlane(source, kTime, mipmapLevel, pixelRoDAt(source, mipmapLevel), eRenderSchedulerModeLegacy, true, &input, &error)) << error;
+            ASSERT_TRUE(renderBlurRangePlane(source, kTime, mipmapLevel, pixelRoDAt(source, mipmapLevel), false, true, &input, &error)) << error;
             range.include(input);
         }
         for (unsigned int mipmapLevel = 1; mipmapLevel <= 3; ++mipmapLevel) {
             appPTR->clearAllCaches();
             std::vector<float> atFullScale;
-            ASSERT_TRUE(renderBlurRangePlane(node, kTime, 0, quarter, schedulerMode, false, &atFullScale, &error)) << error;
+            ASSERT_TRUE(renderBlurRangePlane(node, kTime, 0, quarter, scheduled, false, &atFullScale, &error)) << error;
             std::vector<float> zoomedOut;
-            ASSERT_TRUE(renderBlurRangePlane(node, kTime, mipmapLevel, pixelRoDAt(node, mipmapLevel), schedulerMode, false, &zoomedOut, &error)) << error;
-            EXPECT_EQ(std::string(), blurRangeViolation(zoomedOut, range, kBlurRangeNoLobes)) << "mipmap " << mipmapLevel << ((schedulerMode == eRenderSchedulerModeLegacy) ? ", legacy" : ", task graph");
+            ASSERT_TRUE(renderBlurRangePlane(node, kTime, mipmapLevel, pixelRoDAt(node, mipmapLevel), scheduled, false, &zoomedOut, &error)) << error;
+            EXPECT_EQ(std::string(), blurRangeViolation(zoomedOut, range, kBlurRangeNoLobes)) << "mipmap " << mipmapLevel << (scheduled ? ", scheduled" : ", direct");
         }
         appPTR->clearAllCaches();
     }

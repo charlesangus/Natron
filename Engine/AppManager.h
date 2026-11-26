@@ -474,13 +474,6 @@ public:
     bool getUseThreadPool() const;
 
     /**
-     * @brief Parses a NATRON_RENDER_SCHEDULER value: "legacy" or "taskgraph". Returns nothing for anything else.
-     **/
-    static std::optional<RenderSchedulerModeEnum> parseRenderSchedulerModeEnv(const char* value);
-
-    RenderSchedulerModeEnum getRenderSchedulerMode() const;
-
-    /**
      * @brief The GPU context, null before the settings are loaded. It reports unavailable while it initializes
      * on its own thread and whenever no suitable device exists.
      **/
@@ -498,16 +491,6 @@ public:
      * through GpuContext::holdRuntime() while it uses the tier.
      **/
     std::shared_ptr<CacheDeviceTier> getDeviceCacheTier() const;
-
-    /**
-     * @brief Overrides the mode, whatever its source, until the next Settings change.
-     **/
-    void setRenderSchedulerMode(RenderSchedulerModeEnum mode);
-
-    /**
-     * @brief Called by the Settings when the knob changes. Ignored while the environment variable override is active.
-     **/
-    void onRenderSchedulerModeSettingChanged(RenderSchedulerModeEnum mode);
 
     /**
      * @brief Updates the global runningThreadsCount maintained across the whole application
@@ -1027,6 +1010,21 @@ public:
     PythonGILUnlocker();
 
     ~PythonGILUnlocker();
+};
+
+// Releases the Python GIL for the lifetime of the object, only if the calling thread holds it.
+// Use it around a blocking wait: the thread being waited on may need the GIL to finish.
+class PythonUnlockedWhileWaiting {
+public:
+    PythonUnlockedWhileWaiting();
+
+    ~PythonUnlockedWhileWaiting();
+
+    PythonUnlockedWhileWaiting(const PythonUnlockedWhileWaiting&) = delete;
+    PythonUnlockedWhileWaiting& operator=(const PythonUnlockedWhileWaiting&) = delete;
+
+private:
+    PyThreadState* _state;
 };
 
 NATRON_NAMESPACE_EXIT

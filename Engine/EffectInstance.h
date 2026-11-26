@@ -48,6 +48,7 @@
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
 #include "Engine/RenderStats.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
 
@@ -687,6 +688,15 @@ public:
         return false;
     }
 
+    /**
+     * @brief Whether the node graph draws inputNb on the node's left side, ahead of its other
+     * side inputs, so it can be reached without connecting the inputs that come before it.
+     **/
+    virtual bool isInputFirstOnSide(int /*inputNb*/) const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
     virtual int getRotoBrushInputIndex() const WARN_UNUSED_RETURN
     {
         return -1;
@@ -1017,17 +1027,29 @@ public:
         // is the same at every time.
         double time;
         ViewIdx view;
+        // Who the scene is for, and which payloads it is matched against.
+        SceneEvaluationContext context;
+        // Lets a call made outside of a render, which has no abort flag of its own, be aborted:
+        // every node it evaluates checks it between steps. Inside a render the render's flag
+        // is checked instead.
+        AbortableRenderInfoPtr abortInfo;
 
         EvaluateSceneArgs()
             : time(0)
             , view(0)
+            , context()
+            , abortInfo()
         {
         }
 
         EvaluateSceneArgs(double time_,
-                          ViewIdx view_)
+                          ViewIdx view_,
+                          const SceneEvaluationContext& context_ = SceneEvaluationContext(),
+                          const AbortableRenderInfoPtr& abortInfo_ = AbortableRenderInfoPtr())
             : time(time_)
             , view(view_)
+            , context(context_)
+            , abortInfo(abortInfo_)
         {
         }
     };
@@ -1094,31 +1116,7 @@ public:
     typedef std::shared_ptr<NotifyRenderingStarted_RAII> NotifyRenderingStarted_RAIIPtr;
 
     /**
-     * @brief Sets render preferences for the rendering of a frame for the current thread.
-     * This is thread-local storage. This is NOT local to a call to renderRoI
-     **/
-    void setParallelRenderArgsTLS(double time,
-                                  ViewIdx view,
-                                  bool isRenderUserInteraction,
-                                  bool isSequential,
-                                  U64 nodeHash,
-                                  const AbortableRenderInfoPtr& abortInfo,
-                                  const NodePtr& treeRoot,
-                                  int visitsCount,
-                                  const NodeFrameRequestPtr& nodeRequest,
-                                  const OSGLContextPtr& glContext,
-                                  int textureIndex,
-                                  const TimeLine* timeline,
-                                  bool isAnalysis,
-                                  bool isDuringPaintStrokeCreation,
-                                  const NodesList& rotoPaintNodes,
-                                  RenderSafetyEnum currentThreadSafety,
-                                  PluginOpenGLRenderSupport currentOpenGLSupport,
-                                  bool draftMode,
-                                  const RenderStatsPtr& stats);
-
-    /**
-     * @brief The frame args setParallelRenderArgsTLS() would install, without installing them.
+     * @brief Frame args for the rendering of a frame, to install on the effect with a FrameArgsToken.
      **/
     ParallelRenderArgsPtr createParallelRenderArgs(double time,
                                                    ViewIdx view,
@@ -1145,23 +1143,24 @@ public:
      **/
     const TLSHolderBase* getTLSHolder() const;
 
-    void setDuringPaintStrokeCreationThreadLocal(bool duringPaintStroke);
-
-    void setNodeRequestThreadLocal(const NodeFrameRequestPtr & nodeRequest);
-
-    void setParallelRenderArgsTLS(const ParallelRenderArgsPtr & args);
+    /**
+     * @brief A copy of the current thread's frame args of the effect with isDuringPaintStrokeCreation set to
+     * duringPaintStroke; null when the thread has none.
+     **/
+    ParallelRenderArgsPtr copyFrameArgsDuringPaintStroke(bool duringPaintStroke) const;
 
     /**
-     *@returns whether the effect was flagged with canSetValue = true or false
+     * @brief Pushes copyFrameArgsDuringPaintStroke() for the token's lifetime; the token is empty when the thread
+     * has no frame args for the effect.
      **/
-    void invalidateParallelRenderArgsTLS();
+    FrameArgsToken setDuringPaintStrokeCreationThreadLocal(bool duringPaintStroke) WARN_UNUSED_RETURN;
 
     /**
-     * @brief Pops the frame args setParallelRenderArgsTLS() pushed last, leaving the rotopaint tree's alone.
+     * @brief The frame args of the effect on the current thread: the innermost a FrameArgsToken pushed for it on the
+     * thread's FrameArgsOverlay chain, else those of the frame the thread renders (the scheduler task's frame, or the
+     * innermost AppTLS::FrameContextScope's), else none. A lock-free walk of the chain; it creates no thread-local data.
      **/
-    void popParallelRenderArgsTLS();
-
-    ParallelRenderArgsPtr getParallelRenderArgsTLS() const;
+    ParallelRenderArgsPtr getFrameArgs() const;
 
     /**
      * @brief Whether the calling thread renders this node: its frame args are installed and are not
@@ -1789,12 +1788,18 @@ public:
         // The payload of each connected input that produces a scene, by input number.
         std::map<int, ScenePayload> inputScenes;
         bool isRenderResponseToUserInteraction;
+        SceneEvaluationContext context;
+        // The context of each input evaluated on another load set than context's, by input
+        // number (see getSceneInputContext()).
+        std::map<int, SceneEvaluationContext> inputContexts;
 
         SceneRenderActionArgs()
             : time(0)
             , view(0)
             , inputScenes()
             , isRenderResponseToUserInteraction(false)
+            , context()
+            , inputContexts()
         {
         }
 
@@ -1803,6 +1808,13 @@ public:
          * not produce a scene.
          **/
         ScenePayload getInputScene(int inputNb) const;
+
+        /**
+         * @brief The context inputNb was evaluated on, which a node reading that input's scene
+         * borrows its stage with and adds the reach of its matches to: context unless the input
+         * evaluated on a load set of its own.
+         **/
+        const SceneEvaluationContext& getInputContext(int inputNb) const;
     };
 
 protected:
@@ -1852,6 +1864,44 @@ protected:
         return eStatusReplyDefault;
     }
 
+    /**
+     * @brief The context scene input inputNb evaluates on when this node evaluates on ctx: ctx
+     * itself by default. Load sets are on the paths of the node's output, so a node showing an
+     * input's prims at other paths (a graft, a wrap, a reference) maps ctx's set onto the
+     * input's paths, erring towards loading more, null when it cannot tell.
+     *
+     * Only the load set of the result counts, and whether its reach is ctx's: a node whose input
+     * paths differ from its output's returns another reach (null will do), so that the input's
+     * reach is mapped even where the two sets happen to include the same payloads. When the set or
+     * the reach differs from ctx's, evaluateScene() gives the input an id kept for this node,
+     * inputNb and ctx's id, so that a node reached both through the mapping and directly memoizes
+     * each apart, and a reach of its own that mapSceneInputReach() brings back to ctx.
+     **/
+    virtual SceneEvaluationContext getSceneInputContext(int /*inputNb*/,
+                                                        const SceneEvaluationContext& ctx,
+                                                        double /*time*/,
+                                                        ViewIdx /*view*/) const
+    {
+        return ctx;
+    }
+
+    /**
+     * @brief Sets *out to the reach in, gathered on input inputNb's paths when the node evaluated
+     * at time and view, as paths of this node's output; *out starts empty. Called by evaluateScene() for an input that evaluated on a load
+     * set of its own, after renderScene() and with the node's own context current
+     * (SceneEvaluationContext::current()), so that it may map through what renderScene() memoized
+     * for that context. A path it cannot map should become a prefix above every place the input's
+     * prims can land, "/" at worst. The default copies in.
+     **/
+    virtual void mapSceneInputReach(int /*inputNb*/,
+                                    double /*time*/,
+                                    ViewIdx /*view*/,
+                                    const std::vector<std::string>& in,
+                                    std::vector<std::string>* out) const
+    {
+        *out = in;
+    }
+
     virtual StatusEnum getTransform(double /*time*/,
                                     const RenderScale & /*renderScale*/,
                                     bool /*draftRender*/,
@@ -1860,6 +1910,22 @@ protected:
                                     Transform::Matrix3x3* /*transform*/) WARN_UNUSED_RETURN
     {
         return eStatusReplyDefault;
+    }
+
+    /**
+     * @brief The matrix an overlay drawn upstream follows through this node, in the form
+     * getTransform answers. getTransform refuses wherever the matrix alone would not reproduce the
+     * render, a partial mix for one, since concatenation would drop what it leaves out; an overlay
+     * follows the matrix whenever the node moves the image at all. The default is getTransform.
+     **/
+    virtual StatusEnum getOverlayTransform(double time,
+                                           const RenderScale& renderScale,
+                                           bool draftRender,
+                                           ViewIdx view,
+                                           EffectInstancePtr* inputToTransform,
+                                           Transform::Matrix3x3* transform) WARN_UNUSED_RETURN
+    {
+        return getTransform(time, renderScale, draftRender, view, inputToTransform, transform);
     }
 
 public:
@@ -1872,7 +1938,62 @@ public:
                                    ViewIdx view,
                                    EffectInstancePtr* inputToTransform,
                                    Transform::Matrix3x3* transform) WARN_UNUSED_RETURN;
+    StatusEnum getOverlayTransform_public(double time,
+                                          const RenderScale& renderScale,
+                                          bool draftRender,
+                                          ViewIdx view,
+                                          EffectInstancePtr* inputToTransform,
+                                          Transform::Matrix3x3* transform) WARN_UNUSED_RETURN;
 
+    // getSceneInputContext() for a caller that maps a context through this node outside evaluateScene().
+    SceneEvaluationContext getSceneInputContext_public(int inputNb,
+                                                       const SceneEvaluationContext& ctx,
+                                                       double time,
+                                                       ViewIdx view) const
+    {
+        return getSceneInputContext(inputNb, ctx, time, view);
+    }
+
+    /**
+     * @brief The context input inputNb evaluates on when this node evaluates on ctx, with the id
+     * evaluateScene() gives it, so that a caller outside an evaluation finds what that evaluation
+     * stored for the input. Its reach is ctx's when the input shares ctx's, else null.
+     **/
+    SceneEvaluationContext getEvaluatedSceneInputContext(int inputNb,
+                                                         const SceneEvaluationContext& ctx,
+                                                         double time,
+                                                         ViewIdx view) const;
+
+    /**
+     * @brief Whether evaluateScene() at time and view passes a scene through instead of rendering
+     * one, as isIdentity_public() tells it: *identityInputNb, *identityTime and *identityView are
+     * then what it evaluates instead, on the same context. False when it cannot tell.
+     **/
+    bool getSceneIdentity(double time,
+                          ViewIdx view,
+                          double* identityTime,
+                          ViewIdx* identityView,
+                          int* identityInputNb) const;
+
+    /**
+     * @brief Called by the owner of a context id when it stops evaluating with it: the ids every
+     * node gave its inputs for it, and those mapped from them in turn, are forgotten.
+     **/
+    static void retireSceneContextId(U64 id);
+
+private:
+    /**
+     * @brief The id evaluateScene() gives input inputNb when it maps ctxId's context onto another
+     * load set. A miss makes a new id, kept for later calls only with registerMiss.
+     **/
+    U64 getSceneInputContextId(U64 ctxId,
+                               int inputNb,
+                               bool registerMiss) const;
+
+    // Forgets the ids this node gave its inputs, on its destruction.
+    void retireSceneInputContextIds();
+
+public:
 protected:
 /**
  * @brief Can be overloaded to indicates whether the effect is an identity, i.e it doesn't produce
@@ -2332,7 +2453,7 @@ public:
      * scheduler the requests are planned by an incremental request pass, rendered as tasks in parallel under the
      * frame's budget, and continuation runs on the thread that then renders the effect, where it and the render
      * read the requested outputs with pullRenderContinuationRequest() as store hits. A request for an output the
-     * frame already holds over the region is served from it without a task. Under the legacy scheduler, on a frame
+     * frame already holds over the region is served from it without a task. On a frame
      * the task graph does not take, and for an effect pulled unplanned, the requests are rendered one after the
      * other on the probing thread, then continuation runs inline.
      *
@@ -2724,7 +2845,6 @@ public:
            In the event where the fullScaleImage is in the cache but we must resize it to render a portion unallocated yet and
            if the render is issues directly from getImage() we swap image in cache instead of taking the write lock of fullScaleImage
          */
-        ImagePtr cacheSwapImage;
         void* originalCachedImage;
 
         /**
@@ -2737,7 +2857,6 @@ public:
             , downscaleImage()
             , renderMappedImage()
             , tmpImage()
-            , cacheSwapImage()
             , originalCachedImage(0)
             , isAllocatedOnTheFly(false)
         {
@@ -3048,8 +3167,9 @@ public:
 
     /**
      * @brief True while the render running on this thread is the node's overlay image pass, the
-     * only render in which addOverlayImageTile() does anything. Whatever the answer, the render
-     * must write the same pixels to its output: the pass can fill the cache.
+     * only render in which addOverlayImageTile() does anything; a pass that reads planes is no
+     * render, so this stays false during it until addOverlayImagesFromPlanes(). Whatever the answer,
+     * the render must write the same pixels to its output: the pass can fill the cache.
      **/
     bool isOverlayImageRender() const;
 
@@ -3078,8 +3198,9 @@ public:
 
     /**
      * @brief Runs the node's render action over the part of request.visibleCanonical in its region
-     * of definition and publishes the tiles it adds, all at once, on success. A failed pass publishes
-     * an empty frame, so that the node's last mask does not pass for this state and the failure is not
+     * of definition, or requests the planes overlayImageSourcePlanes() names over it and hands them
+     * to addOverlayImagesFromPlanes(), and publishes the tiles added, all at once, on success. A
+     * failed pass publishes an empty frame, so that the node's last mask does not pass for this state and the failure is not
      * retried until the state changes. An aborted pass publishes nothing, nor does one that
      * refreshOverlayImages() overtook while it ran: it may have rendered the view before. Returns
      * whether the pass published what it rendered. Must not be called under another render's frame
@@ -3154,6 +3275,32 @@ public:
     }
 
     /**
+     * @brief The planes of this node its overlay images are read from. Empty, the default, means
+     * that the render action adds the tiles itself and has to run on every pass, cached or not. For
+     * any other answer the pass requests these planes as any render does, so that the cache answers
+     * it when it can, then calls addOverlayImagesFromPlanes(). This suits an overlay that is a
+     * reading of the node's own output: a view knob that only changes the reading costs no render.
+     **/
+    virtual std::list<ImageLayerDesc> overlayImageSourcePlanes(double /*time*/,
+                                                               ViewIdx /*view*/)
+    {
+        return std::list<ImageLayerDesc>();
+    }
+
+    /**
+     * @brief Adds the pass's tiles with addOverlayImageTile(), from the planes overlayImageSourcePlanes()
+     * named. Runs on the pass's thread once the planes are rendered, outside the render action.
+     * canonicalWindow is the part of the node the pass covers; only that part of each image is
+     * sure to be rendered.
+     **/
+    virtual void addOverlayImagesFromPlanes(const std::map<ImageLayerDesc, ImagePtr>& /*planes*/,
+                                            double /*time*/,
+                                            ViewIdx /*view*/,
+                                            const RectD& /*canonicalWindow*/)
+    {
+    }
+
+    /**
      * @brief Return true to have the viewer draw the list buildOverlay() fills.
      **/
     virtual bool hasOverlayDrawList() const
@@ -3193,11 +3340,19 @@ public:
      * Note that in this case this is expected that getNInputs returns the number of inputs *with* the mask.
      * The function getInputLabel should also return the appropriate label for the mask.
      * The function isInputMask should also return true for this mask index.
-     * The mask will be the last input, i.e its index will be getNInputs() - 1.
+     * The mask is the input getHostMaskInputNb() returns.
      **/
     virtual bool isHostMaskingEnabled() const
     {
         return false;
+    }
+
+    /**
+     * @brief The input host masking reads: the last one unless reimplemented.
+     **/
+    virtual int getHostMaskInputNb() const
+    {
+        return getNInputs() - 1;
     }
 
     /**
@@ -3385,7 +3540,10 @@ public:
     // getPresentLayers() plus, for inputNb == -1 only, every layer registered at the project level.
     void getAvailableLayers(double time, ViewIdx view, int inputNb, std::list<ImageLayerDesc>* availableLayers);
 
-    const std::vector<std::string>& getUserLayers() const;
+    /**
+     * @brief The project's registered layers, each one through encode(), into a per-thread vector.
+     **/
+    const std::vector<std::string>& getUserLayers(std::string (*encode)(const ImageLayerDesc&)) const;
 
     /**
      * @brief The input whose layers pass through this effect at (time, view), and the time and
@@ -3537,10 +3695,6 @@ public:
         std::list<bool> canSetValue;
 #endif
 
-        ///Recursive because it may be set recursively in such situation:
-        ///knobChanged : set ParallelRenderArgs TLS for analysis
-        ///timelineGoTo calls getRenderviewerArgs on the MT which overrides this TLS
-        std::list<ParallelRenderArgsPtr> frameArgs;
         EffectInstance::RenderArgs currentRenderArgs;
 
         std::vector<std::string> userLayerStrings;
@@ -3566,7 +3720,6 @@ public:
 #ifdef DEBUG
             , canSetValue()
 #endif
-            , frameArgs()
             , currentRenderArgs()
             , userLayerStrings()
             , resolvingLayersPassThrough(false)

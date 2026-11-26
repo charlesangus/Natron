@@ -54,6 +54,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/KnobTypes.h"
 #include "Engine/Lut.h"
 #include "Engine/Node.h"
+#include "Engine/Plugin.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
@@ -83,6 +84,33 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 using std::make_pair;
+
+namespace {
+
+// An icon-only viewer button shows neither what it does nor its key, so its tool tip leads with both.
+QString
+iconViewerButtonToolTip(const KnobButtonPtr& knob,
+                        const QString& knobToolTip)
+{
+    QString tt = QString::fromUtf8("<p><b>%1</b>").arg(QString::fromUtf8(knob->getLabel().c_str()).toHtmlEscaped());
+    if (knob->getInViewerContextHasShortcut()) {
+        EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
+        const NodePtr node = effect ? effect->getNode() : NodePtr();
+        if (node && node->getPlugin()) {
+            const std::list<QKeySequence> keybinds = getKeybind(node->getPlugin()->getPluginShortcutGroup(), QString::fromUtf8(knob->getName().c_str()));
+            if (!keybinds.empty() && !keybinds.front().isEmpty()) {
+                tt += QString::fromUtf8("<br />") + QCoreApplication::translate("KnobGuiButton", "Keyboard shortcut: %1").arg(keybinds.front().toString(QKeySequence::NativeText));
+            } else {
+                tt += QString::fromUtf8("<br />") + QCoreApplication::translate("KnobGuiButton", "Keyboard shortcut: none, set one in the Shortcut Editor");
+            }
+        }
+    }
+    tt += QString::fromUtf8("</p>");
+
+    return tt + knobToolTip;
+}
+
+} // anon namespace
 
 //=============================BUTTON_KNOB_GUI===================================
 
@@ -165,7 +193,11 @@ KnobGuiButton::createWidget(QHBoxLayout* layout)
     }
     QObject::connect( _button, SIGNAL(clicked(bool)), this, SLOT(emitValueChanged(bool)) );
     if ( hasToolTip() ) {
-        _button->setToolTip( toolTip() );
+        if (!icon.isNull() && getContainer()->isInViewerUIKnob()) {
+            _button->setToolTip(iconViewerButtonToolTip(knob, toolTip()));
+        } else {
+            _button->setToolTip(toolTip());
+        }
     }
     layout->addWidget(_button);
 } // KnobGuiButton::createWidget

@@ -1372,6 +1372,11 @@ public:
      **/
     bool isActivated() const;
 
+    /**
+     * @brief Whether destroyNode() started on the node, after which its effect may be gone while
+     * work that holds the node, such as a scene worker's job, still runs. MT-safe
+     **/
+    bool isBeingDestroyed() const;
 
     /**
      * @brief Use this function to post a transient message to the user. It will be displayed using
@@ -1395,6 +1400,13 @@ public:
      * @param content The message you want to pass.
      **/
     void setPersistentMessage(MessageTypeEnum type, const std::string & content);
+
+    /**
+     * @brief Keeps content as an information message the user can read on the node, with no dialog
+     * and no warning or error marking in the node graph or on a viewer. A later message of any
+     * kind, or a clear, replaces it.
+     **/
+    void setQuietInfoMessage(const std::string& content);
 
     /**
      * @brief Clears any message posted previously by setPersistentMessage.
@@ -1812,9 +1824,11 @@ public:
 
     /**
      * @brief Fills keyframes with all different keyframes time that all parameters of this
-     * node have. Some keyframes might appear several times.
+     * node have. Some keyframes might appear several times. When accept is set, only the knobs it
+     * accepts contribute.
      **/
-    void getAllKnobsKeyframes(std::list<SequenceTime>* keyframes);
+    void getAllKnobsKeyframes(std::list<SequenceTime>* keyframes,
+                              const std::function<bool(const KnobIPtr&)>& accept = std::function<bool(const KnobIPtr&)>());
 
     bool hasAnimatedKnob() const;
 
@@ -2017,7 +2031,8 @@ public:
                               const KnobDoublePtr& skewY,
                               const KnobChoicePtr& skewOrder,
                               const KnobDoublePtr& center,
-                              const KnobBoolPtr& invert);
+                              const KnobBoolPtr& invert,
+                              const std::function<bool(double, Transform::Matrix3x3*)>& frame = std::function<bool(double, Transform::Matrix3x3*)>());
 
     /**
      * @brief The knobs of the transform interact that drives member, or of the first one the

@@ -25,31 +25,62 @@
 
 #include "SceneSelectionActions.h"
 
-#include <list>
-#include <string>
+// Before Qt's OpenGL headers.
+#include "Gui/SceneViewport.h"
 
+#include <algorithm>
+#include <climits>
+#include <list>
+#include <memory>
+#include <set>
+#include <string>
+#include <vector>
+
+#include <QEvent>
+#include <QHBoxLayout>
+#include <QKeyEvent>
+#include <QLabel>
+#include <QLineEdit>
 #include <QPointF>
+#include <QPointer>
+#include <QPushButton>
 #include <QRectF>
+#include <QRegularExpression>
 #include <QSet>
 #include <QStatusBar>
+#include <QTimer>
 #include <QUndoCommand>
+#include <QWidget>
 #include <QtCore/QCoreApplication>
 
+#include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Scene/PrimSelector.h"
+#include "Engine/Nodes/Scene/SceneDrawStates.h"
+#include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
+#include "Engine/Nodes/Scene/USDExpandHierarchy.h"
 #include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/Plugin.h"
+#include "Engine/PythonUndoCommands.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewerInstance.h"
 #include "Gui/DockablePanel.h"
 #include "Gui/Gui.h"
+#include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGraphUndoRedo.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
+#include "Gui/SceneGraphModel.h"
+#include "Gui/SceneGraphPanel.h"
+#include "Gui/SceneNodeStageSource.h"
 #include "Gui/TabMenuBridge.h"
 #include "Gui/UndoHistory.h"
 #include "Gui/ViewerTab.h"
@@ -100,6 +131,174 @@ private:
     std::string _newValue;
 };
 
+// While a pick is armed, the keys that end it are taken from the viewer and the Scene Graph panels,
+// and the mode is dropped when what it was armed for goes away.
+class ArmedPick
+    : public QObject {
+public:
+    ArmedPick(Gui* gui,
+              ViewerTab* viewer,
+              const NodePtr& node,
+              const KnobStringPtr& knob,
+              const std::function<void(const QStringList&)>& commit)
+        : _gui(gui)
+        , _viewer(viewer)
+        , _node(node)
+        , _knob(knob)
+        , _commit(commit)
+        , _label(QString::fromStdString(node->getScriptName_mt_safe() + "." + knob->getName()))
+        , _timer(new QTimer(this))
+    {
+        _timer->setInterval(50);
+        QObject::connect(_timer, &QTimer::timeout, this, [this]() {
+            if (!stillValid()) {
+                end();
+            }
+        });
+        _timer->start();
+        qApp->installEventFilter(this);
+        publish(_label);
+    }
+
+    static QString text(const char* source)
+    {
+        return QCoreApplication::translate("SceneSelectionActions", source);
+    }
+
+    const QString& label() const
+    {
+        return _label;
+    }
+
+    // Stops the mode and clears what it showed; the object is deleted once the event loop is back.
+    void end();
+
+    bool eventFilter(QObject* watched,
+                     QEvent* e) override
+    {
+        if (_ended || ((e->type() != QEvent::KeyPress) && (e->type() != QEvent::ShortcutOverride))) {
+            return false;
+        }
+        QKeyEvent* k = static_cast<QKeyEvent*>(e);
+        const bool enter = (k->key() == Qt::Key_Return) || (k->key() == Qt::Key_Enter);
+        const bool escape = (k->key() == Qt::Key_Escape);
+        if ((!enter && !escape) || (k->modifiers() & ~Qt::KeypadModifier) || !inPickSurface(watched)) {
+            return false;
+        }
+        if (e->type() == QEvent::ShortcutOverride) {
+            e->accept();
+
+            return false;
+        }
+        if (escape) {
+            end();
+            SceneSelectionActions::showHint(_gui, text("Pick cancelled."));
+        } else {
+            commitSelection();
+        }
+        e->accept();
+
+        return true;
+    }
+
+private:
+    // The viewer's scene view and the Scene Graph panels, but not their text fields, which keep
+    // Enter and Esc for themselves.
+    static bool inPickSurface(QObject* watched)
+    {
+        QWidget* widget = qobject_cast<QWidget*>(watched);
+
+        if (!widget || qobject_cast<QLineEdit*>(widget)) {
+            return false;
+        }
+        for (QWidget* w = widget; w; w = w->parentWidget()) {
+            if (dynamic_cast<SceneViewport*>(w) || dynamic_cast<SceneGraphPanel*>(w)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    bool stillValid() const
+    {
+        NodePtr node = _node.lock();
+        if (!_gui || !_viewer || !node || !node->isActivated() || !_knob.lock() || (SceneSelectionActions::selectionViewer(_gui) != _viewer.data())) {
+            return false;
+        }
+        for (DockablePanel* dockable : _gui->getVisiblePanels_mt_safe()) {
+            NodeSettingsPanel* panel = dynamic_cast<NodeSettingsPanel*>(dockable);
+            NodeGuiPtr nodeGui = panel ? panel->getNode() : NodeGuiPtr();
+            if (nodeGui && (nodeGui->getNode() == node)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    void commitSelection()
+    {
+        const QStringList paths = SceneSelectionActions::currentSelection(_gui);
+
+        if (paths.isEmpty()) {
+            SceneSelectionActions::showHint(_gui, text("No prims are selected."));
+
+            return;
+        }
+        const std::function<void(const QStringList&)> commit = _commit;
+        QPointer<Gui> gui = _gui;
+        end();
+        commit(paths);
+        if (gui) {
+            SceneSelectionActions::showHint(gui, text("Picked %1 prims.").arg(paths.size()));
+        }
+    }
+
+    void publish(const QString& label)
+    {
+        if (!_gui) {
+            return;
+        }
+        for (ViewerTab* tab : _gui->getViewersList()) {
+            SceneViewport* viewport = tab ? tab->getSceneViewport() : nullptr;
+            if (viewport) {
+                viewport->setArmedPick((tab == _viewer.data()) ? label : QString());
+            }
+        }
+        for (SceneGraphPanel* panel : _gui->getSceneGraphPanels()) {
+            panel->setArmedPick(label);
+        }
+    }
+
+    QPointer<Gui> _gui;
+    QPointer<ViewerTab> _viewer;
+    NodeWPtr _node;
+    KnobStringWPtr _knob;
+    std::function<void(const QStringList&)> _commit;
+    QString _label;
+    QTimer* _timer;
+    bool _ended = false;
+};
+
+ArmedPick* g_armedPick = nullptr;
+
+void
+ArmedPick::end()
+{
+    if (_ended) {
+        return;
+    }
+    _ended = true;
+    _timer->stop();
+    qApp->removeEventFilter(this);
+    publish(QString());
+    if (g_armedPick == this) {
+        g_armedPick = nullptr;
+    }
+    deleteLater();
+}
+
 // Gives the prim knob of the node args create paths as its initial value, which no paths leave
 // empty so the knob never evaluates with its normal default. A USDXformPrim wraps a selected prim
 // rather than defining one there.
@@ -119,15 +318,14 @@ addInitialPrims(CreateNodeArgs& args,
     }
 }
 
-// Pushes the edit of node's prim knob; false when there is nothing to change.
+// Pushes the edit of node's prim knob to text; false when there is nothing to change.
 bool
-pushSet(Gui* gui,
-        const NodePtr& node,
-        const KnobStringPtr& knob,
-        const QStringList& paths)
+pushText(Gui* gui,
+         const NodePtr& node,
+         const KnobStringPtr& knob,
+         const std::string& text)
 {
     UndoHistory* history = gui ? gui->getUndoHistory() : nullptr;
-    const std::string text = SceneSelectionActions::primPathsText(knob->getPrimPathHint(), paths);
 
     if (!history || (text == knob->getValue(0))) {
         return false;
@@ -136,6 +334,31 @@ pushSet(Gui* gui,
     history->push(new SetPrimKnobCommand(knob, text, label), UndoScope(UndoScope::holderForNode(node)));
 
     return true;
+}
+
+bool
+pushSet(Gui* gui,
+        const NodePtr& node,
+        const KnobStringPtr& knob,
+        const QStringList& paths)
+{
+    return pushText(gui, node, knob, SceneSelectionActions::primPathsText(knob->getPrimPathHint(), paths));
+}
+
+KnobStringPtr
+firstPatternKnob(const NodePtr& node)
+{
+    if (!node) {
+        return KnobStringPtr();
+    }
+    for (const KnobIPtr& knob : node->getKnobs()) {
+        KnobStringPtr string = std::dynamic_pointer_cast<KnobString>(knob);
+        if (string && (string->getPrimPathHint() == KnobString::ePrimPathHintPattern)) {
+            return string;
+        }
+    }
+
+    return KnobStringPtr();
 }
 
 // The first input of node that isn't a mask and can take a scene; -1 when it has none.
@@ -199,8 +422,9 @@ placeBelow(const NodePtr& viewed,
     const QSize viewedSize = viewedGui->getSize();
     const QSize createdSize = createdGui->getSize();
     const QPointF viewedPos = viewedGui->scenePos();
+    const double captionDrop = viewedGui->messageCaptionDrop();
     const QPointF position(viewedPos.x() + (viewedSize.width() - createdSize.width()) / 2.,
-                           viewedPos.y() + viewedSize.height() + NodeGui::DEFAULT_OFFSET_BETWEEN_NODES);
+                           viewedPos.y() + viewedSize.height() + captionDrop + NodeGui::DEFAULT_OFFSET_BETWEEN_NODES);
     if (NodeGuiPtr outputGui = output ? std::dynamic_pointer_cast<NodeGui>(output->getNodeGui()) : NodeGuiPtr()) {
         outputGui->moveBelowPositionRecursively(QRectF(position, createdSize));
     }
@@ -250,6 +474,205 @@ insertAfterViewed(const NodePtr& viewed,
         // The connections are made, so the command's first redo does nothing.
         graph->pushUndoCommand(new ReconnectInputsCommand(graph, changes), scope);
     }
+}
+
+// Whether text holds an operator, a predicate or an expression reference: whitespace then no
+// longer splits it into the entries of one union, and an entry can't be dropped without changing
+// what the rest means.
+bool
+hasExpressionSyntax(const QString& text)
+{
+    static const QRegularExpression syntax(QStringLiteral("[-+&~()%{}]"));
+
+    return text.contains(syntax);
+}
+
+// The search Select Matches started last; an older one that ends later is dropped.
+int g_matchSearchGeneration = 0;
+
+typedef std::vector<std::pair<std::string, SceneDrawStates::Stored>> SetDrawStates;
+
+// Clears the draw states a bake turned into rules. Undo puts them back over whatever the viewer
+// set since, and leaves the states set elsewhere since as they are.
+class BakeDrawStatesCommand
+    : public QUndoCommand {
+public:
+    BakeDrawStatesCommand(SceneViewport* viewport,
+                          const SetDrawStates& baked,
+                          const QString& text)
+        : QUndoCommand(text)
+        , _viewport(viewport)
+        , _baked(baked)
+    {
+        _paths.reserve(baked.size());
+        for (const SetDrawStates::value_type& state : baked) {
+            _paths.push_back(state.first);
+        }
+    }
+
+    void undo() override
+    {
+        if (_viewport) {
+            SceneViewport* viewport = _viewport;
+            const SetDrawStates baked = _baked;
+            _viewport->editWithGraphPolicy([viewport, baked]() { viewport->mergeSetDrawStates(baked); });
+        }
+    }
+
+    void redo() override
+    {
+        if (_viewport) {
+            // The rules stand in for the states, so the states go with the rules' policy: no frame
+            // shows neither.
+            SceneViewport* viewport = _viewport;
+            const std::vector<std::string> paths = _paths;
+            _viewport->editWithGraphPolicy([viewport, paths]() { viewport->clearSetDrawStates(paths); });
+        }
+    }
+
+private:
+    QPointer<SceneViewport> _viewport;
+    SetDrawStates _baked;
+    std::vector<std::string> _paths;
+};
+
+class StepScope {
+public:
+    StepScope(UndoHistory* history,
+              const QString& text)
+        : _history(history)
+    {
+        _history->openStep(text, true);
+    }
+
+    ~StepScope()
+    {
+        _history->closeStep();
+    }
+
+    StepScope(const StepScope&) = delete;
+    StepScope& operator=(const StepScope&) = delete;
+
+private:
+    UndoHistory* _history;
+};
+
+// A disabled node's rules reach no viewer, so baking into one would change what is drawn.
+bool
+isExpandHierarchy(const NodePtr& node)
+{
+    return node && node->isActivated() && !node->isNodeDisabled() && dynamic_cast<USDExpandHierarchy*>(node->getEffectInstance().get());
+}
+
+NodePtr
+expandHierarchyBelow(const NodePtr& viewed)
+{
+    for (const NodeWPtr& outputW : viewed->getOutputs()) {
+        NodePtr output = outputW.lock();
+        if (isExpandHierarchy(output) && (output->getInput(0) == viewed)) {
+            return output;
+        }
+    }
+
+    return NodePtr();
+}
+
+// Creates a USDExpandHierarchy reading viewed that takes viewed's place in every input viewed fed
+// and that can read it, the viewer's included, as an undoable edit.
+NodePtr
+createExpandHierarchyAfter(const NodePtr& viewed,
+                           NodeGraph* graph)
+{
+    AppInstancePtr app = viewed->getApp();
+    if (!app) {
+        return NodePtr();
+    }
+    CreateNodeArgs args(PLUGINID_NATRON_USDEXPANDHIERARCHY, viewed->getGroup());
+    args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+    args.setProperty<bool>(kCreateNodeArgsPropSettingsOpened, false);
+    // Its command goes in only once it reads viewed: a node that cannot is removed unseen.
+    args.setProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand, false);
+    NodePtr created = app->createNode(args);
+    if (!created) {
+        return NodePtr();
+    }
+
+    std::vector<ReconnectInputsCommand::InputChange> outputs;
+    for (const NodeWPtr& outputW : viewed->getOutputs()) {
+        NodePtr output = outputW.lock();
+        if (!output || (output == created) || !output->getParentMultiInstanceName().empty()) {
+            continue;
+        }
+        const EffectInstancePtr effect = output->getEffectInstance();
+        const int inputs = output->getNInputs();
+        for (int i = 0; i < inputs; ++i) {
+            if ((output->getInput(i) == viewed) && !effect->isInputMask(i) && !output->isInputDataKindUnacceptable(created, i)) {
+                outputs.push_back(ReconnectInputsCommand::InputChange { output, i, viewed, created });
+            }
+        }
+    }
+
+    const NodePtr previousInput = created->getInput(0);
+    const NodeGuiPtr createdGui = std::dynamic_pointer_cast<NodeGui>(created->getNodeGui());
+    if (!createdGui || !created->replaceInput(viewed, 0)) {
+        created->destroyNode(false, false);
+
+        return NodePtr();
+    }
+    AddMultipleNodesCommand* added = new AddMultipleNodesCommand(graph, createdGui);
+    added->setCreationAutoSaves();
+    graph->pushUndoCommand(added, NodesGuiList(1, createdGui));
+    std::vector<ReconnectInputsCommand::InputChange> changes;
+    changes.push_back(ReconnectInputsCommand::InputChange { created, 0, previousInput, viewed });
+    UndoScope scope;
+    scope.touchNode(created);
+    scope.touchNode(viewed);
+    NodePtr below;
+    for (const ReconnectInputsCommand::InputChange& change : outputs) {
+        NodePtr output = change.node.lock();
+        if (output && output->replaceInput(created, change.inputNb)) {
+            changes.push_back(change);
+            scope.touchNode(output);
+            if (!below) {
+                below = output;
+            }
+        }
+    }
+    placeBelow(viewed, created, below);
+    // The connections are made, so the command's first redo does nothing.
+    graph->pushUndoCommand(new ReconnectInputsCommand(graph, changes), scope);
+
+    return created;
+} // createExpandHierarchyAfter
+
+// Connects viewer's active input A to node, as an undoable edit, unless it reads node already.
+void
+viewNode(ViewerTab* viewer,
+         const NodePtr& node)
+{
+    ViewerInstance* instance = viewer->getInternalNode();
+    NodePtr viewerNode = instance ? instance->getNode() : NodePtr();
+    NodeCollectionPtr group = viewerNode ? viewerNode->getGroup() : NodeCollectionPtr();
+    NodeGraph* graph = group ? dynamic_cast<NodeGraph*>(group->getNodeGraph()) : nullptr;
+    if (!graph) {
+        return;
+    }
+    int a = -1, b = -1;
+    instance->getActiveInputs(a, b);
+    if (a < 0) {
+        return;
+    }
+    const NodePtr before = viewerNode->getInput(a);
+    if ((before == node) || !viewerNode->replaceInput(node, a)) {
+        return;
+    }
+    UndoScope scope;
+    scope.touchNode(viewerNode);
+    scope.touchNode(node);
+    std::vector<ReconnectInputsCommand::InputChange> changes;
+    changes.push_back(ReconnectInputsCommand::InputChange { viewerNode, a, before, node });
+    // The connection is made, so the command's first redo does nothing.
+    graph->pushUndoCommand(new ReconnectInputsCommand(graph, changes), scope);
 }
 
 NATRON_NAMESPACE_ANONYMOUS_EXIT
@@ -353,6 +776,548 @@ primKnob(const NodePtr& node)
     return path;
 }
 
+std::string
+editPrimPathsText(KnobString::PrimPathHintEnum hint,
+                  PrimEditEnum edit,
+                  const std::string& current,
+                  const QStringList& paths)
+{
+    if ((hint != KnobString::ePrimPathHintPattern) || (edit == ePrimEditReplace)) {
+        return primPathsText(hint, paths);
+    }
+    QStringList wanted;
+    for (const QString& path : paths) {
+        const QString trimmed = path.trimmed();
+        if (!trimmed.isEmpty() && !wanted.contains(trimmed)) {
+            wanted << trimmed;
+        }
+    }
+    const QString text = QString::fromStdString(current).trimmed();
+    if (text.isEmpty()) {
+        return (edit == ePrimEditAdd) ? wanted.join(QLatin1Char(' ')).toStdString() : current;
+    }
+
+    PrimSelector::Reach reach;
+    std::string error;
+    if (PrimSelector::getReach(current, &reach, &error) && reach.literalOnly) {
+        QStringList entries;
+        for (const std::string& literal : reach.literals) {
+            const QString entry = QString::fromStdString(literal);
+            if (!entries.contains(entry)) {
+                entries << entry;
+            }
+        }
+        QStringList result = entries;
+        for (const QString& path : wanted) {
+            if (edit == ePrimEditAdd) {
+                if (!result.contains(path)) {
+                    result << path;
+                }
+            } else {
+                result.removeAll(path);
+            }
+        }
+
+        return (result == entries) ? current : result.join(QLatin1Char(' ')).toStdString();
+    }
+
+    // Patterns and predicates without operators are a union of whitespace-separated entries, of
+    // which a literal one can be dropped; anything else is only ever extended or subtracted from.
+    const bool list = !hasExpressionSyntax(text);
+    QStringList kept = list ? text.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts) : QStringList();
+    if (edit == ePrimEditAdd) {
+        QStringList missing;
+        for (const QString& path : wanted) {
+            if (!kept.contains(path)) {
+                missing << path;
+            }
+        }
+        if (missing.isEmpty()) {
+            return current;
+        }
+        const QString base = list ? text : QStringLiteral("(%1)").arg(text);
+
+        return (base + QLatin1Char(' ') + missing.join(QLatin1Char(' '))).toStdString();
+    }
+
+    QStringList subtract;
+    for (const QString& path : wanted) {
+        if (!list || (kept.removeAll(path) == 0)) {
+            subtract << path;
+        }
+    }
+    if (list && kept.isEmpty()) {
+        return std::string();
+    }
+    QString result = list ? kept.join(QLatin1Char(' ')) : text;
+    if (!subtract.isEmpty()) {
+        if (!list || (kept.size() > 1)) {
+            result = QStringLiteral("(%1)").arg(result);
+        }
+        result += QStringLiteral(" - ") + subtract.join(QStringLiteral(" - "));
+    }
+
+    return (result == text) ? current : result.toStdString();
+}
+
+QStringList
+currentSelection(Gui* gui)
+{
+    ViewerTab* viewer = selectionViewer(gui);
+    SceneViewport* viewport = viewer ? viewer->getSceneViewport() : nullptr;
+    if (viewport) {
+        return viewport->getSelection();
+    }
+    SceneGraphPanel* panel = gui ? gui->getSceneGraphPanel() : nullptr;
+
+    return panel ? panel->getSelection() : QStringList();
+}
+
+namespace {
+    constexpr int kMatchStepMs = 8;
+    constexpr int kOfferMs = 60000;
+
+    // The "Load and select" report in the status bar, if one is up.
+    QPointer<QWidget> g_loadOffer;
+
+    void
+    dropLoadOffer()
+    {
+        QWidget* offer = g_loadOffer.data();
+        if (!offer) {
+            return;
+        }
+        if (QStatusBar* bar = qobject_cast<QStatusBar*>(offer->parentWidget())) {
+            bar->removeWidget(offer);
+        }
+        offer->hide();
+        offer->deleteLater();
+        g_loadOffer.clear();
+    }
+
+    bool
+    sceneReaches(const NodePtr& from,
+                 const NodePtr& target)
+    {
+        std::vector<NodePtr> pending(1, from);
+        std::set<const Node*> seen;
+        while (!pending.empty()) {
+            NodePtr node = pending.back();
+            pending.pop_back();
+            if (!node || !seen.insert(node.get()).second) {
+                continue;
+            }
+            if (node == target) {
+                return true;
+            }
+            for (std::size_t i = 0; i < node->getInputs().size(); ++i) {
+                pending.push_back(node->getInput(i));
+            }
+        }
+
+        return false;
+    }
+
+    // The viewer whose load rules the node's scene is opened with: the active one if its scene
+    // reaches the node, else the first other showing a scene that does. A scene the node's input
+    // holds is searched with whatever that viewer has loaded, as the viewer shows it.
+    SceneViewport*
+    loadRulesViewport(Gui* gui,
+                      const NodePtr& node)
+    {
+        std::vector<ViewerTab*> tabs;
+        if (ViewerTab* active = selectionViewer(gui)) {
+            tabs.push_back(active);
+        }
+        for (ViewerTab* tab : gui->getViewersList()) {
+            if (tab && (std::find(tabs.begin(), tabs.end(), tab) == tabs.end())) {
+                tabs.push_back(tab);
+            }
+        }
+        for (ViewerTab* tab : tabs) {
+            if (tab->isShowingScene() && sceneReaches(tab->getSceneViewedNode(), node)) {
+                return tab->getSceneViewport();
+            }
+        }
+
+        return nullptr;
+    }
+
+    bool
+    underPath(const std::string& path,
+              const QStringList& roots)
+    {
+        for (const QString& root : roots) {
+            const std::string prefix = root.toStdString();
+            if ((path == prefix) || (path.compare(0, prefix.size() + 1, prefix + "/") == 0)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    void startMatchSearch(Gui* gui, const NodePtr& node, const std::string& expression, const QString& label);
+
+    bool
+    isPolicySettled(SceneViewport* viewport)
+    {
+        return !viewport->isDrawPolicyPending() && !viewport->getRenderer().hasOutstandingStageLoads();
+    }
+
+    /**
+     * Runs run once the viewer has no load outstanding and no graph policy match pending, unless a
+     * newer search starts first. The search copies the viewer's load rules, and a policy still to
+     * match or a Full + Load rule matching again after each batch may yet add loads to them.
+     **/
+    void
+    whenPolicySettled(SceneViewport* viewport,
+                      int generation,
+                      const std::function<void()>& run)
+    {
+        if (isPolicySettled(viewport)) {
+            run();
+
+            return;
+        }
+        QObject* waiter = new QObject(viewport);
+        QObject::connect(viewport, &SceneViewport::drawPolicySettled, waiter, [viewport, generation, run, waiter]() {
+            if (generation != g_matchSearchGeneration) {
+                waiter->deleteLater();
+
+                return;
+            }
+            if (!isPolicySettled(viewport)) {
+                return;
+            }
+            // run may lead the viewer to emit again before the deferred delete.
+            QObject::disconnect(viewport, nullptr, waiter, nullptr);
+            waiter->deleteLater();
+            run();
+        });
+    }
+
+    // Loads paths in the viewer as the Scene Graph panel's Load does, and searches again once the
+    // viewer has taken the batches in, the graph policy's own among them. A payload that fails to
+    // load ends it with a report.
+    void
+    loadAndSearch(Gui* gui,
+                  const NodePtr& node,
+                  const QStringList& paths,
+                  const std::string& expression,
+                  const QString& label)
+    {
+        QPointer<SceneViewport> viewport(loadRulesViewport(gui, node));
+        if (!viewport) {
+            showHint(gui, tr("Select Matches: there is no viewer to load in."));
+
+            return;
+        }
+        const int generation = ++g_matchSearchGeneration;
+        viewport->requestLoad(paths, true);
+        showHint(gui, tr("Select Matches: loading %1 unloaded branches.").arg(paths.size()));
+        whenPolicySettled(viewport.data(), generation, [gui, node, paths, expression, label, viewport]() {
+            for (const std::pair<std::string, std::string>& failure : viewport->getRenderer().getStageLoadFailures()) {
+                if (underPath(failure.first, paths)) {
+                    showHint(gui, tr("Select Matches: %1 did not load: %2").arg(QString::fromStdString(failure.first), QString::fromStdString(failure.second)));
+
+                    return;
+                }
+            }
+            startMatchSearch(gui, node, expression, label);
+        });
+    }
+
+    void
+    showLoadOffer(Gui* gui,
+                  const NodePtr& node,
+                  const QString& report,
+                  const QStringList& paths,
+                  const std::string& expression,
+                  const QString& label)
+    {
+        dropLoadOffer();
+        QStatusBar* bar = gui ? gui->statusBar() : nullptr;
+        if (!bar) {
+            return;
+        }
+        QWidget* offer = new QWidget(bar);
+        offer->setObjectName(QStringLiteral("knobPrimSelectMatchesOffer"));
+        offer->setProperty("natronSelectMatchesUnloaded", paths.size());
+        QHBoxLayout* layout = new QHBoxLayout(offer);
+        layout->setContentsMargins(0, 0, 0, 0);
+        QLabel* text = new QLabel(report, offer);
+        text->setObjectName(QStringLiteral("knobPrimSelectMatchesReport"));
+        QPushButton* button = new QPushButton(tr("Load and select"), offer);
+        button->setObjectName(QStringLiteral("knobPrimSelectMatchesLoad"));
+        button->setToolTip(tr("Loads these payloads in the viewer, then selects the matches inside them. Unload them in the Scene Graph panel."));
+        layout->addWidget(text);
+        layout->addWidget(button);
+        bar->addPermanentWidget(offer);
+        g_loadOffer = offer;
+        QTimer::singleShot(kOfferMs, offer, [offer]() {
+            if (g_loadOffer.data() == offer) {
+                dropLoadOffer();
+            }
+        });
+        QObject::connect(button, &QPushButton::clicked, offer, [gui, node, paths, expression, label]() {
+            dropLoadOffer();
+            loadAndSearch(gui, node, paths, expression, label);
+        });
+    }
+
+    // The node's input scene, opened with nothing loaded and then with the viewer's load rules.
+    struct MatchSearch {
+        SceneGraphPrimWalk walk;
+        QStringList found;
+        std::shared_ptr<SceneNodeStageSource> source;
+        QPointer<SceneViewport> viewport;
+        bool offerLoad = false;
+
+        ~MatchSearch()
+        {
+            if (source) {
+                SceneNodeStageSource::reap({ source });
+            }
+        }
+    };
+
+    // The source's callbacks only hold the search weakly, so something must own it while its
+    // scene is read on the source's thread. A child of the Gui, so it ends before the app does.
+    class MatchSearchOwner
+        : public QObject {
+    public:
+        explicit MatchSearchOwner(QObject* parent)
+            : QObject(parent)
+        {
+        }
+
+        std::shared_ptr<MatchSearch> search;
+    };
+
+    QPointer<MatchSearchOwner> g_matchSearchOwner;
+
+    void
+    ownMatchSearch(Gui* gui,
+                   const std::shared_ptr<MatchSearch>& search)
+    {
+        delete g_matchSearchOwner.data();
+        MatchSearchOwner* owner = new MatchSearchOwner(gui);
+        owner->search = search;
+        g_matchSearchOwner = owner;
+    }
+
+    // Deferred, since a search ends inside its source's callbacks, which the source must outlive.
+    void
+    releaseMatchSearch(const std::shared_ptr<MatchSearch>& search)
+    {
+        MatchSearchOwner* owner = g_matchSearchOwner.data();
+        if (owner && (owner->search == search)) {
+            g_matchSearchOwner.clear();
+            owner->deleteLater();
+        }
+    }
+
+    void
+    reportMatches(Gui* gui,
+                  const NodePtr& node,
+                  const std::shared_ptr<MatchSearch>& search,
+                  const std::string& expression,
+                  const QString& label)
+    {
+        const QStringList matches = search->found;
+        const QStringList unloaded = search->walk.getUnloadedBranchPaths();
+        QString report;
+        if (matches.isEmpty()) {
+            report = tr("Select Matches: nothing loaded matches the %1.").arg(label);
+        } else {
+            report = tr("Select Matches: %1 prims selected.").arg(matches.size());
+        }
+        if (!unloaded.isEmpty()) {
+            report += (unloaded.size() == 1) ? tr(" 1 unloaded branch not searched.")
+                                             : tr(" %1 unloaded branches not searched.").arg(unloaded.size());
+        }
+        SceneViewport* viewport = search->viewport ? search->viewport.data() : nullptr;
+        if (!viewport) {
+            ViewerTab* viewer = selectionViewer(gui);
+            viewport = (viewer && viewer->isShowingScene()) ? viewer->getSceneViewport() : nullptr;
+        }
+        if (viewport) {
+            viewport->setSelection(matches);
+        }
+        showHint(gui, report);
+        releaseMatchSearch(search);
+        if (!unloaded.isEmpty() && search->offerLoad) {
+            showLoadOffer(gui, node, report, unloaded, expression, label);
+        }
+    }
+
+    // Walks the stage in short slices under its read lock, so the UI goes on between them.
+    void
+    stepMatchSearch(Gui* gui,
+                    const NodePtr& node,
+                    const std::shared_ptr<MatchSearch>& search,
+                    const std::string& expression,
+                    const QString& label,
+                    int generation)
+    {
+        std::vector<std::pair<std::string, std::string>> failures;
+        search->source->readStage([&](const SceneStage* stage) {
+            if (stage) {
+                for (const SceneStage::LoadFailure& failure : stage->getLoadFailures()) {
+                    failures.emplace_back(failure.prim.GetString(), failure.error);
+                }
+            }
+        });
+        if (!failures.empty()) {
+            showHint(gui, tr("Select Matches: %1 did not load: %2").arg(QString::fromStdString(failures.front().first), QString::fromStdString(failures.front().second)));
+            releaseMatchSearch(search);
+
+            return;
+        }
+        search->walk.start();
+        QTimer* timer = new QTimer(gui);
+        timer->setInterval(0);
+        QObject::connect(timer, &QTimer::timeout, timer, [gui, node, timer, search, generation, expression, label]() {
+            if (generation != g_matchSearchGeneration) {
+                timer->deleteLater();
+
+                return;
+            }
+            bool shown = false;
+            if (!search->source->tryReadStage([&](const SceneStage* stage) {
+                    shown = (stage != nullptr);
+                    search->walk.step(stage, kMatchStepMs, INT_MAX, [](const QString&) { return false; }, &search->found);
+                })) {
+                return;
+            }
+            if (!shown) {
+                timer->deleteLater();
+                showHint(gui, tr("Select Matches: the node's input shows no scene."));
+                releaseMatchSearch(search);
+
+                return;
+            }
+            if (!search->walk.isOver()) {
+                return;
+            }
+            timer->deleteLater();
+            reportMatches(gui, node, search, expression, label);
+        });
+        timer->start();
+    }
+
+    // Opens the node's input with the load rules the search's viewer has now, and walks it.
+    void
+    readMatchSearch(Gui* gui,
+                    const NodePtr& node,
+                    const std::shared_ptr<MatchSearch>& search,
+                    const std::string& expression,
+                    const QString& label,
+                    int generation)
+    {
+        const NodePtr input = node->getInput(0);
+        if (!input) {
+            showHint(gui, tr("Select Matches: the node has no scene on its input."));
+
+            return;
+        }
+        SceneLoadRules rules;
+        if (search->viewport) {
+            search->viewport->getRenderer().getStageLoadRules(&rules);
+        }
+        const std::weak_ptr<MatchSearch> weak(search);
+        QPointer<Gui> guard(gui);
+        search->source = std::make_shared<SceneNodeStageSource>(input, gui, [guard, node, weak, rules, expression, label, generation](bool ok, const QString& error) {
+            std::shared_ptr<MatchSearch> current = weak.lock();
+            if (!guard || !current || (generation != g_matchSearchGeneration)) {
+                return;
+            }
+            if (!ok) {
+                showHint(guard, tr("Select Matches: %1").arg(error));
+                releaseMatchSearch(current);
+
+                return;
+            }
+            if (sceneLoadRequestsFor(rules).empty()) {
+                stepMatchSearch(guard, node, current, expression, label, generation);
+
+                return;
+            }
+            current->source->requestLoadRules(rules); }, false);
+        search->source->setLoadsChanged([guard, node, weak, expression, label, generation]() {
+            std::shared_ptr<MatchSearch> current = weak.lock();
+            if (guard && current && (generation == g_matchSearchGeneration)) {
+                stepMatchSearch(guard, node, current, expression, label, generation);
+            }
+        });
+        ownMatchSearch(gui, search);
+        const GuiAppInstancePtr app = gui->getApp();
+        search->source->request(app ? app->getTimeLine()->currentFrame() : 0.);
+        showHint(gui, tr("Select Matches: reading the scene of %1...").arg(QString::fromStdString(input->getLabel())));
+    }
+
+    void
+    startMatchSearch(Gui* gui,
+                     const NodePtr& node,
+                     const std::string& expression,
+                     const QString& label)
+    {
+        dropLoadOffer();
+        const NodePtr input = node ? node->getInput(0) : NodePtr();
+        if (!input) {
+            showHint(gui, tr("Select Matches: the node has no scene on its input."));
+
+            return;
+        }
+        std::shared_ptr<MatchSearch> search(new MatchSearch);
+        QString parseError;
+        if (!search->walk.setExpression(QString::fromStdString(expression), &parseError)) {
+            showHint(gui, tr("Select Matches: %1").arg(parseError));
+
+            return;
+        }
+        search->viewport = loadRulesViewport(gui, node);
+        search->offerLoad = !search->viewport.isNull();
+        const int generation = ++g_matchSearchGeneration;
+        if (search->viewport) {
+            if (!isPolicySettled(search->viewport.data())) {
+                showHint(gui, tr("Select Matches: waiting for the viewer's loads..."));
+            }
+            whenPolicySettled(search->viewport.data(), generation, [gui, node, search, expression, label, generation]() {
+                readMatchSearch(gui, node, search, expression, label, generation);
+            });
+
+            return;
+        }
+        readMatchSearch(gui, node, search, expression, label, generation);
+    }
+} // anonymous namespace
+
+void
+selectMatches(Gui* gui,
+              const KnobStringPtr& knob)
+{
+    if (!gui || !knob) {
+        return;
+    }
+    const std::string expression = knob->getValue(0);
+    const QString label = QString::fromStdString(knob->getLabel());
+    if (PrimSelector::isBlank(expression)) {
+        showHint(gui, tr("Select Matches: the %1 is empty.").arg(label));
+
+        return;
+    }
+    std::string error;
+    if (!PrimSelector::validate(expression, &error)) {
+        showHint(gui, tr("Select Matches: the %1 is not valid: %2").arg(label, QString::fromStdString(error)));
+
+        return;
+    }
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
+    startMatchSearch(gui, effect ? effect->getNode() : NodePtr(), expression, label);
+}
+
 QString
 setOnNodeBlocker(Gui* gui,
                  const QStringList& paths)
@@ -390,6 +1355,43 @@ setOnCurrentNode(Gui* gui,
     }
     NodePtr node = currentNode(gui);
     pushSet(gui, node, primKnob(node), paths);
+
+    return true;
+}
+
+QString
+applyPatternBlocker(Gui* gui)
+{
+    NodePtr node = currentNode(gui);
+
+    if (!node) {
+        return tr("Apply To Node: open the settings of the node to apply the expression to.");
+    }
+    KnobStringPtr knob = firstPatternKnob(node);
+    const QString name = QString::fromStdString(node->getLabel());
+    if (!knob) {
+        return tr("Apply To Node: %1 has no prim pattern.").arg(name);
+    }
+    if (!knob->isEnabled(0) || knob->isSlave(0)) {
+        return tr("Apply To Node: the %1 of %2 can't be edited.").arg(QString::fromStdString(knob->getLabel()), name);
+    }
+
+    return QString();
+}
+
+bool
+applyPatternToCurrentNode(Gui* gui,
+                          const std::string& expression)
+{
+    const QString blocker = applyPatternBlocker(gui);
+
+    if (!blocker.isEmpty()) {
+        showHint(gui, blocker);
+
+        return false;
+    }
+    NodePtr node = currentNode(gui);
+    pushText(gui, node, firstPatternKnob(node), expression);
 
     return true;
 }
@@ -441,6 +1443,122 @@ createFromSelection(Gui* gui,
     };
     TabMenuBridge::launch(graph, context);
 }
+
+bool
+armPick(Gui* gui,
+        const KnobStringPtr& knob,
+        const std::function<void(const QStringList& paths)>& commit)
+{
+    ViewerTab* viewer = selectionViewer(gui);
+    EffectInstance* effect = knob ? dynamic_cast<EffectInstance*>(knob->getHolder()) : nullptr;
+    NodePtr node = effect ? effect->getNode() : NodePtr();
+
+    if (!viewer || !viewer->getSceneViewport() || !node) {
+        showHint(gui, tr("Pick: open a 3D viewer to select prims in."));
+
+        return false;
+    }
+    cancelArmedPick();
+    g_armedPick = new ArmedPick(gui, viewer, node, knob, commit);
+    showHint(gui, tr("Pick for %1: select prims, Enter writes them, Esc cancels.").arg(g_armedPick->label()));
+
+    return true;
+}
+
+void
+cancelArmedPick()
+{
+    if (g_armedPick) {
+        g_armedPick->end();
+    }
+}
+
+QString
+bakeBlocker(ViewerTab* viewer)
+{
+    SceneViewport* viewport = viewer ? viewer->getSceneViewport() : nullptr;
+    const NodePtr viewed = viewer ? viewer->getSceneViewedNode() : NodePtr();
+    NodeCollectionPtr group = viewed ? viewed->getGroup() : NodeCollectionPtr();
+    NodeGraph* graph = group ? dynamic_cast<NodeGraph*>(group->getNodeGraph()) : nullptr;
+
+    if (!viewport || !viewed || !graph) {
+        return tr("Bake to Node: the viewer shows no scene.");
+    }
+    if (!viewport->hasSetDrawStates()) {
+        return tr("Bake to Node: this viewer sets no draw state.");
+    }
+
+    return QString();
+}
+
+bool
+bakeToNode(Gui* gui,
+           ViewerTab* viewer)
+{
+    UndoHistory* history = gui ? gui->getUndoHistory() : nullptr;
+    QString blocker = bakeBlocker(viewer);
+
+    if (blocker.isEmpty() && !history) {
+        blocker = tr("Bake to Node: the viewer shows no scene.");
+    }
+    if (!blocker.isEmpty()) {
+        showHint(gui, blocker);
+
+        return false;
+    }
+    SceneViewport* viewport = viewer->getSceneViewport();
+    const NodePtr viewed = viewer->getSceneViewedNode();
+    NodeGraph* graph = dynamic_cast<NodeGraph*>(viewed->getGroup()->getNodeGraph());
+    const SetDrawStates states = viewport->getSetDrawStates();
+
+    if (states.empty()) {
+        showHint(gui, tr("Bake to Node: this viewer sets no draw state."));
+
+        return false;
+    }
+    std::vector<std::pair<std::string, SceneDrawStateEnum>> stateOf;
+    stateOf.reserve(states.size());
+    for (const SetDrawStates::value_type& state : states) {
+        stateOf.push_back(std::make_pair(state.first, state.second.state));
+    }
+    const std::vector<USDExpandHierarchy::Rule> rules = USDExpandHierarchy::getRulesForStates(stateOf);
+
+    NodePtr target = isExpandHierarchy(viewed) ? viewed : expandHierarchyBelow(viewed);
+    USDExpandHierarchy* expand = target ? dynamic_cast<USDExpandHierarchy*>(target->getEffectInstance().get()) : nullptr;
+    const int room = expand ? expand->getFreeRuleCount() : (int)kUSDExpandHierarchyMaxRules;
+    if ((int)rules.size() > room) {
+        if (target) {
+            showHint(gui, tr("Bake to Node: %1 has room for %2 more rules, and the draw states of this viewer take %3.").arg(QString::fromStdString(target->getLabel())).arg(room).arg(rules.size()));
+        } else {
+            showHint(gui, tr("Bake to Node: a USDExpandHierarchy holds at most %1 rules, and the draw states of this viewer take %2.").arg(room).arg(rules.size()));
+        }
+
+        return false;
+    }
+
+    StepScope step(history, tr("Bake to Node"));
+    if (!target) {
+        target = createExpandHierarchyAfter(viewed, graph);
+        if (!target) {
+            showHint(gui, tr("Bake to Node: the USDExpandHierarchy could not be created."));
+
+            return false;
+        }
+    }
+    if (!expand) {
+        expand = dynamic_cast<USDExpandHierarchy*>(target->getEffectInstance().get());
+    }
+    if (!expand) {
+        showHint(gui, tr("Bake to Node: the USDExpandHierarchy could not be created."));
+
+        return false;
+    }
+    viewNode(viewer, target);
+    expand->appendRules(rules);
+    history->push(new BakeDrawStatesCommand(viewport, states, tr("Clear Draw States")), UndoScope());
+
+    return true;
+} // bakeToNode
 
 void
 showHint(Gui* gui,

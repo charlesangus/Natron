@@ -65,6 +65,21 @@ def require(ok, label, detail=""):
         finish()
 
 
+def _disable_scene_stand_in():
+    """Under llvmpipe a Storm frame often exceeds the stand-in budget, so a camera move would show
+    boxes instead of the frame the script waits on. GUI_TEST_KEEP_STAND_IN=1 keeps the product default."""
+    if os.environ.get("GUI_TEST_KEEP_STAND_IN"):
+        return
+    param = NatronEngine.natron.getSettings().getParam("sceneStandInMode")
+    if param is None:
+        report("NOTE Preferences have no sceneStandInMode; the stand-in stays at its default")
+        return
+    param.setValue(0)
+
+
+_disable_scene_stand_in()
+
+
 _plugin_ids = set(NatronEngine.natron.getPluginIDs())
 
 
@@ -130,6 +145,22 @@ def viewer_up():
     return any(w.isVisible() for w in widgets_of("ViewerGL"))
 
 
+FETCH_MORE_LIMIT = 256
+
+
+def fetch_rows(model, parent):
+    """Asks model for parent's rows that are still to come, a bounded number of times.
+
+    A model that reads its rows on a worker only posts the read in fetchMore(); the rows arrive on
+    a later turn of the event loop, so asking until canFetchMore() is false could never end. A poll
+    that calls this again picks the rows up once they have arrived.
+    """
+    for _ in range(FETCH_MORE_LIMIT):
+        if not model.canFetchMore(parent):
+            return
+        model.fetchMore(parent)
+
+
 def viewer_messages():
     """The persistent messages the viewer is drawing, one string per message."""
     messages = []
@@ -168,6 +199,8 @@ HOST_DISPLAY = bool(os.environ.get("GUI_TEST_HOST_DISPLAY"))
 HOST_WINDOW_SIZE = tuple(int(n) for n in os.environ.get("GUI_TEST_SCREEN_SIZE", "1920x1080").split("x"))
 HOST_ON_SCREEN_TIMEOUT_S = 60.0
 _host_window = []
+HOST_KEEP_ABOVE_S = 1.0
+_host_keep_above_at = [0.0]
 
 
 def pin_host_window():
@@ -176,26 +209,33 @@ def pin_host_window():
     instead of the viewer.
 
     Returns True the first time, when the caller must wait for host_window_on_screen(). The
-    keep-above request is repeated on every step: the window manager drops it for a window it has
-    not mapped yet, and other windows get raised over ours later."""
+    keep-above request is repeated at most every HOST_KEEP_ABOVE_S: the window manager drops it for
+    a window it has not mapped yet, and other windows get raised over ours later. Repeating it on
+    every step would put a raise and a nested event loop, with the paints it runs, inside each poll
+    of a script that polls back to back."""
     if not HOST_DISPLAY:
         return False
     if _host_window:
-        w = _host_window[0]
-    else:
-        w = _find_main_window()
-        if w is None:
+        now = time.monotonic()
+        if now < _host_keep_above_at[0]:
             return False
-        w.showNormal()
-        area = QGuiApplication.primaryScreen().availableGeometry()
-        w.setGeometry(area.x(), area.y(), min(HOST_WINDOW_SIZE[0], area.width()), min(HOST_WINDOW_SIZE[1], area.height()))
-        w.activateWindow()
+        _host_keep_above_at[0] = now + HOST_KEEP_ABOVE_S
+        w = _host_window[0]
+        w.raise_()
+        _ask_window_manager_keep_above(int(w.winId()))
+        return False
+    w = _find_main_window()
+    if w is None:
+        return False
+    w.showNormal()
+    area = QGuiApplication.primaryScreen().availableGeometry()
+    w.setGeometry(area.x(), area.y(), min(HOST_WINDOW_SIZE[0], area.width()), min(HOST_WINDOW_SIZE[1], area.height()))
+    w.activateWindow()
     w.raise_()
     above = _ask_window_manager_keep_above(int(w.winId()))
     QApplication.processEvents()
-    if _host_window:
-        return False
     _host_window.append(w)
+    _host_keep_above_at[0] = time.monotonic() + HOST_KEEP_ABOVE_S
     report("NOTE host display: main window pinned, kept above: %s" % above)
     return True
 

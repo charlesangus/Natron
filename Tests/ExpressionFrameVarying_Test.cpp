@@ -84,8 +84,7 @@ frameVarying(const NodePtr& node)
 // caches. Returns "" or what went wrong.
 std::string
 checkFrames(const AppInstancePtr& app,
-            const NodePtr& probe,
-            RenderSchedulerModeEnum mode)
+            const NodePtr& probe)
 {
     const double times[] = { 1., 2. };
     RenderedPlane refs[2];
@@ -93,7 +92,7 @@ checkFrames(const AppInstancePtr& app,
 
     for (int i = 0; i < 2; ++i) {
         clearEverything(app);
-        if (!renderProbe(probe, times[i], 0, kWindow, mode, true, &refs[i], &error)) {
+        if (!renderProbeScheduled(probe, times[i], 0, kWindow, true, &refs[i], &error)) {
             return "the reference render failed: " + error;
         }
     }
@@ -103,7 +102,7 @@ checkFrames(const AppInstancePtr& app,
     clearEverything(app);
     for (int i = 0; i < 2; ++i) {
         RenderedPlane got;
-        if (!renderProbe(probe, times[i], 0, kWindow, mode, false, &got, &error)) {
+        if (!renderProbeScheduled(probe, times[i], 0, kWindow, false, &got, &error)) {
             return "the cached render failed: " + error;
         }
         const std::string diff = compareExact(refs[i], got);
@@ -114,8 +113,6 @@ checkFrames(const AppInstancePtr& app,
 
     return std::string();
 }
-
-const RenderSchedulerModeEnum kModes[] = { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph };
 
 } // namespace
 
@@ -138,9 +135,7 @@ TEST_F(ExpressionFrameVaryingTest, FrameExpressionIsFrameVarying)
     EXPECT_FALSE(frameVarying(g.grade));
     g.white->setExpression(0, "frame*0.1", false, true);
     EXPECT_TRUE(frameVarying(g.grade));
-    for (RenderSchedulerModeEnum mode : kModes) {
-        EXPECT_EQ(std::string(), checkFrames(getApp(), g.grade, mode)) << "mode " << (int)mode;
-    }
+    EXPECT_EQ(std::string(), checkFrames(getApp(), g.grade));
 }
 
 // A dimension slaved to a knob driven by a frame expression varies with time too, although the
@@ -157,9 +152,7 @@ TEST_F(ExpressionFrameVaryingTest, SlavedToAFrameExpressionIsFrameVarying)
     EXPECT_FALSE(frameVarying(g.grade));
     masterWhite->setExpression(0, "frame*0.1", false, true);
     EXPECT_TRUE(frameVarying(g.grade));
-    for (RenderSchedulerModeEnum mode : kModes) {
-        EXPECT_EQ(std::string(), checkFrames(getApp(), g.grade, mode)) << "mode " << (int)mode;
-    }
+    EXPECT_EQ(std::string(), checkFrames(getApp(), g.grade));
 }
 
 // The answer follows the knobs as they are now, whatever was set and removed before, so a node
@@ -185,8 +178,8 @@ TEST_F(ExpressionFrameVaryingTest, StaticAgainAfterTheExpressionAndKeysAreGone)
     RenderedPlane first;
     RenderedPlane second;
     std::string error;
-    ASSERT_TRUE(renderProbe(g.grade, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &first, &error)) << error;
-    ASSERT_TRUE(renderProbe(g.grade, 2., 0, kWindow, eRenderSchedulerModeLegacy, false, &second, &error)) << error;
+    ASSERT_TRUE(renderProbeDirect(g.grade, 1., 0, kWindow, false, &first, &error)) << error;
+    ASSERT_TRUE(renderProbeDirect(g.grade, 2., 0, kWindow, false, &second, &error)) << error;
     EXPECT_EQ(std::string(), compareExact(first, second));
 }
 

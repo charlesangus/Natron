@@ -160,12 +160,6 @@ namespace YamlDetail {
             }
             emitKey(em, entry.layer.layerID);
             em << YAML::Value << YAML::Flow << YAML::BeginMap;
-            emitKey(em, "label");
-            em << YAML::Value;
-            emitString(em, entry.layer.layerLabel);
-            emitKey(em, "channelsLabel");
-            em << YAML::Value;
-            emitString(em, entry.layer.channelsLabel);
             emitKey(em, "channels");
             em << YAML::Value;
             emitStringList(em, entry.layer.channels);
@@ -189,8 +183,6 @@ namespace YamlDetail {
             MapReader layerReader(entry.second, context, warnings);
             LayerRegistryEntrySerialization layer;
             layer.layer.layerID = entry.first;
-            layer.layer.layerLabel = readString(layerReader.get("label"), context + ".label");
-            layer.layer.channelsLabel = readString(layerReader.get("channelsLabel"), context + ".channelsLabel");
             layer.layer.channels = readStringVector(layerReader.get("channels"), context + ".channels");
             layer.origin = readInt(layerReader.get("origin"), context + ".origin");
             layerReader.finish();

@@ -52,6 +52,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QTimer>
 #include <QWidget>
 #include <QtGlobal> // for Q_OS_*
+#include <ofxImageEffect.h>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -995,6 +996,7 @@ GuiApplicationManager::populateShortcuts()
                             Qt::ShiftModifier);
 
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionHideOverlays, kShortcutDescActionHideOverlays, Qt::NoModifier, Qt::Key_O);
+    registerKeybind(kShortcutGroupViewer, kShortcutIDActionMapSiblingOverlays, kShortcutDescActionMapSiblingOverlays, Qt::ShiftModifier, Qt::Key_O);
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionHidePlayer, kShortcutDescActionHidePlayer, Qt::NoModifier, (Qt::Key)0);
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionHideTimeline, kShortcutDescActionHideTimeline, Qt::NoModifier, (Qt::Key)0);
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionHideLeft, kShortcutDescActionHideLeft, Qt::NoModifier, (Qt::Key)0);

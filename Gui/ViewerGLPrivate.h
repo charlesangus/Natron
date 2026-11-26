@@ -42,6 +42,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/Image.h"
 #include "Engine/ProjectColorManagement.h"
+#include "Engine/Settings.h"
 
 #include "Gui/GuiFwd.h"
 #include "Gui/NodeOverlayRenderer.h"
@@ -230,6 +231,9 @@ struct ViewerGL::Implementation
     double _screenPixelRatio;
     std::unique_ptr<QFont> _textFont;
     bool overlay; /*!< True if the user enabled overlay display*/
+    StaleCueStyleEnum staleCueStyle = eStaleCueStyleOff;
+    bool staleCueVisible = false;
+    int staleTransitions = 0;
     bool updatingTexture;
     QColor clearColor;
     QMenu* menu;
@@ -285,6 +289,8 @@ struct ViewerGL::Implementation
     PenType pointerTypeOnPress;
     double pressureOnPress, pressureOnRelease;
     int wheelDeltaSeekFrame; // accumulated wheel delta for frame seeking (crtl+wheel)
+    double wheelZoomRaw; // the wheel's unsnapped zoom factor
+    double wheelZoomFactor; // the factor the last wheel step left the viewer at
     bool isUpdatingTexture;
     bool renderOnPenUp;
     int updateViewerPboIndex;  // always accessed in the main thread: initialized in the constructor, then always accessed and modified by updateViewer()

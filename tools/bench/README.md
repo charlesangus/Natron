@@ -119,6 +119,24 @@ its cache evicts, so there is no purge count.
 `BENCH_DRY_RUN=1 BENCH_TOPO=<topo> BENCH_N=<n> python3 tools/bench/graph_bench.py` builds a graph
 against stand-in objects on the host and prints its node counts, without Natron.
 
+A whole-process eu-stack takes 0.15-0.3 s on the heavy scene (up to 1.5 s on a slow VM), so
+`SAMPLE_INTERVAL_S` below that does not raise the rate. Most of that cost is fixed per eu-stack run,
+not per thread: the main thread alone of a heavy-scene `Natron.bin` (with library symbols from
+`SYMBOLS`) took a median 250-320 ms a sample, p90 305-330 ms, so the main thread is sampled at about
+3-4 Hz and each further thread walked costs about as much again. 20 Hz would need a tracer that stays
+attached between samples. `SAMPLE_TID_COMM=<regex of thread names>` makes
+`sample_stacks.sh` walk only the main thread and the matching threads (`eu-stack -1`);
+`heavy_scene_stack_window.py` prints the achieved sample period. `SAMPLE_TID_COMM='^$'` walks the main
+thread alone and `SAMPLE_TID_COMM=.` every thread, each on its own; unset, one eu-stack takes the whole process.
+The scene viewer's render thread is named `NatronSceneRndr`, and the main thread is always walked, so
+main and render threads alone, which is the default unless `SAMPLE_TID_FRAME` is set: `SAMPLE_TID_COMM='^NatronSceneRndr$'`; `SAMPLE_TID_COMM=` (set, empty) takes the whole-process sample. (The main thread's comm is
+`Natron.bin`, shared with the worker and TBB threads, so putting it in the regex would walk all of them.)
+The alternative, for a build without the name, is `SAMPLE_TID_FRAME=<regex of a frame>`, which finds
+threads by a frame of a whole-process sample taken every `SAMPLE_DISCOVER_S` (default 10):
+`SAMPLE_TID_COMM='^$' SAMPLE_TID_FRAME='HdEngine::Execute'`. `heavy_scene_gpu_host.sh` samples
+only while a scenario runs and puts `SYMBOLS` under `out/symbols`. `heavy_scene_fixture_check.py --rejudge
+RESULTS OUT.jsonl` re-applies the fixture check to an existing results file, writing a copy.
+
 eu-stack stops the process while it walks stacks, so samples in which no thread looks busy are
 an artifact; take concurrency from `sample_states.sh` instead. perf is not installed in the
 container and the container has no package network.
@@ -134,12 +152,9 @@ records with the same `settings`, and records without the field count as empty.
 To compare runs made under different settings, pass `--pair-settings BEFORE_SETTINGS AFTER_SETTINGS`:
 rows of the first file whose `settings` equal the first value pair with rows of the second file whose
 `settings` equal the second, and `default` selects rows with empty `settings`. For example
-`compare.py --pair-settings renderSchedulerMode=0 renderSchedulerMode=1 legacy.jsonl taskgraph.jsonl`
-prints the Task graph / Legacy ratios.
+`compare.py --pair-settings default someKnob=1 before.jsonl after.jsonl`
+prints the ratios of the second file's rows to the first's.
 
-`BENCH_SETTINGS=renderSchedulerMode=0|1` selects the render scheduler: 1 (Task graph) is the
-default when unset, 0 selects Legacy pull. A run with empty `settings` therefore measures the
-Task graph scheduler.
 
 With `BENCH_RANGE` > 0 the record carries `range_frames`, `range_wall_s`, `range_cpu_s` and
 `range_parallelism` (`range_cpu_s / range_wall_s`, null without a range). `compare.py` prints the
@@ -181,7 +196,7 @@ while 20-frame runs throttle. Compare only runs of equal length that started fro
 ## GPU region bench
 
 `tools/bench/gpu_region_bench.sh <Natron.AppImage> [out-dir]` (default `build/bench/gpu-region`) runs each
-case with `NATRON_GPU=off` and `NATRON_GPU=auto` under `NATRON_RENDER_SCHEDULER=taskgraph` and
+case with `NATRON_GPU=off` and `NATRON_GPU=auto` with
 `NATRON_RENDER_PROFILE`, interleaved, the order flipping each round (`BENCH_ROUNDS`, default 3). Nothing is
 warmed up: pipeline compile, host import and pinning, pool warm-up and first-frame placement are part of
 every number. Kinds (`BENCH_KINDS`, run in this order):
@@ -336,8 +351,7 @@ edited node (`grade` or `hsv`), viewer zoom (`fit` or `100`), edited node's pane
 `NATRON_GPU` (`off` or `auto`) and the auto-proxy preference (`off` or `on`). Each run builds the Canon
 fixture -> RawPrepare -> RawTemperature -> RawHighlights -> RawDemosaic -> RawInputColor -> edited node
 -> Viewer, makes a few untimed edits, then changes one knob of the edited node `BENCH_EDITS` times
-(default 20). It needs the render profile, so it sets `NATRON_RENDER_PROFILE` and
-`NATRON_RENDER_SCHEDULER=taskgraph`.
+(default 20). It needs the render profile, so it sets `NATRON_RENDER_PROFILE`.
 
 `<out-dir>/edit_latency.jsonl` gets one line per edit: `latency_ms` (knob set to the profile file
 being written with the first completed viewer frame; the file's modification time, so a few
@@ -450,27 +464,275 @@ scaling linearly with the keyframe count.
 ## Heavy scene fixtures
 
 `heavy_scene_make.py` generates the two scenes the scene-viewer budgets run against, under
-`build/bench`: a payload city (about 300 blocks of buildings, one `.usdc` payload per building,
-about 1M prims once loaded and a few thousand before, `extentsHint` authored on nine in ten
-buildings) and a 1M-prim flat file. It needs the pxr module, so run it in the natron-dev
+`build/bench`: a payload city (about 300 blocks of buildings, `/World/BlockN/BM`, one `.usdc` payload
+per building, about 1M prims once loaded and a few thousand before, `extentsHint` authored on nine
+in ten buildings) and a 1M-prim flat file. It needs the pxr module, so run it in the natron-dev
 container. The fixtures are never committed; only the generator is.
 
 ```
 docker exec natron-dev bash -lc "cd $PWD && python3 tools/bench/heavy_scene_make.py"
 ```
 
+`heavy_scene_gpu_host.sh fixtures` makes them on a host without pxr, through the dev image, under
+`build/bench-gpu`.
+
+Any other scene runs with `BENCH_FIXTURE=scene` and `BENCH_FILE`. `heavy_scene_rows.py` picks the rows
+the actions use from its composed stage, in a process of its own under the AppImage's `natron-python`,
+and the bench caches them under `BENCH_ROWS_DIR`. An action with no row to act on gets a `skipped`
+record.
+
 ## Heavy scene budgets
 
-`heavy_scene_bench.py` runs one action per scenario against a heavy fixture inside Natron under
-Xvfb and prints one JSON line per scenario: the longest main-thread gap (10 ms heartbeat), the
-layers the action loaded, and the action's own numbers, each marked `pass`, `fail`, `not_valid` or
-`not_applicable` against the scene-graph budgets. Frame rate and time to first boxes need a real
-GPU: without `BENCH_GPU=1` they are measured but marked `not_valid`. Stall and unrequested-payload
-checks are valid under llvmpipe. Until the viewer draws boxes, the first finished frame stands in
-for the first boxes. The scenarios are the harness's `ACTIONS` table (`open`, `edit`, `orbit`);
-`BENCH_SCENARIOS` picks and orders them, and a later milestone adds its own action.
+`heavy_scene_bench.py` runs one action per scenario against a heavy scene inside Natron and prints
+one JSON line per scenario: the longest main-thread gap (10 ms heartbeat), the layers the action
+loaded, and the action's own numbers, each marked `pass`, `fail`, `not_valid` or `not_applicable`
+against the scene-graph budgets. Frame rate and time to first frame need a real GPU: without
+`BENCH_GPU=1`, or on a software renderer, they are measured but marked `not_valid`. Stall and
+unrequested-payload checks are valid under llvmpipe. The scenarios are the harness's `ACTIONS` table
+(`open`, `edit`, `orbit`, `load`, `twirl`, `node_switch`, `workflow`, and the draw state scenarios below); `BENCH_SCENARIOS` picks
+and orders them.
+
+The heartbeat is Natron's own when it runs with `NATRON_MAIN_HEARTBEAT=1`, which
+`heavy_scene_gpu_host.sh` sets: a 10 ms timer in C++ that the Python lock cannot delay, read through the
+`natronMainHeartbeat` child of the application (`natronMainGapMaxMs`, `natronMainGapMaxAt`,
+`natronMainGapsOver100`; setting `natronMainGapReset` or `natronMainGapSample` to a new value clears or
+samples it). Without that variable the bench falls back to a Python timer, and `native_heartbeat` in
+each record says which one measured it.
+
+Every record also carries `stall_at`, the epoch seconds the longest gap began at, to find it in stack
+samples; `stalls_over_budget`, each gap over 100 ms in the windows the scenario judged, as
+`[ms, epoch seconds it began]`; `load_edit_times`, the epoch seconds `natronSceneLoadEdits` moved at during the scenario, as
+seen by the heartbeat; and `main_wait_ms` and `main_wait_max_ms`, how much the viewer's
+`natronSceneMainWaitMs` and `natronSceneMainWaitMaxMs` rose over the scenario (the main thread's
+blocking waits on the render thread and on the stage's lock; the second is a running maximum, so it
+rises only when the scenario's longest wait beats every earlier one), null when the viewer does not
+publish them.
+
+`open` reports `first_frame_ms`, from setting the file to the first frame finished after the scene
+reached the viewer, and `open_substeps_ms`: `initial_draw`, `filename` and `connect` (the knob sets and
+the viewer connection) and `to_first_frame` (from the connection to that frame).
+
+Loads count as over when nothing is pending or composing, every posted draw change is presented, no
+reveal runs, and the loaded layer count, load edits, prims added and posted changes have held still for
+`BENCH_SETTLE_S` (2 s). `load_all`, `reveal_load_all`, the scenarios that start from a settled scene and
+the workflow's Full + Load block and reopen wait for that, bounded by the scenario limit, and keep the
+counts before and after and the wait in a `*_settle` field; the time judged ends where the still window
+began.
+
+`reveal_cancel_paced` sets a small fixed reveal batch (an eighth of the scene's prims, so the row needs at
+least four batches) through `setDrawRevealBatch` and fixes the fill's admission batch to a sixteenth of the
+scene's prims through `setDrawFillBatch` (the reveal batch does not bound admission), so the fill needs at
+least 16 passes; the paced defaults are restored after it, and the fill batch is the overshoot bound. If
+the fill had already finished when the cancel landed, the scenario is `not_applicable` with that reason; when
+the cancel lands mid-fill, the check that the fill stops within bound is unchanged.
+
+With `NATRON_DRAW_STATE_TIMING=1`, `reveal_wide`, `reveal_load_all`, `reveal_cancel_paced` and the
+workflow's block add `<name>_draw_steps`: every frame the viewer presented during the reveal, as
+percentiles (p50, p90, p99, max, mean) of each part of its critical path and the 20 worst by
+`picture_ms`.
+
+`load`, after `open`, asks the viewer to load `BENCH_LOAD_PATHS` (one building by default;
+`/World/BlockN` with `BENCH_LOAD_DESCENDANTS=1` is a larger load, and the paths can name several)
+while moving the mouse in a tumble until the result is on screen. It reports `load_ms`,
+`load_mouse_moves`, `load_move_gap_ms` (the longest wait between two moves), `load_hold_ms` (how long
+the last batch held the viewer lock), `load_edits` and `load_failures`; the stall budget covers the
+whole load, and the requested payload files do not count as unrequested.
+
+`twirl`, after `open`, docks the Scene Graph panel beside the viewer and opens an unloaded payload row
+in its tree (`BENCH_TWIRL_PATH`; `/World/Block0/B1` on the city), tumbling the view until the row is
+loaded and the result is on screen. The stall budget covers the time from the twirl on, not the
+docking. It reports `twirl_ms` (which includes the wait for the twirled row's children, `twirl_below_rows_wait_ms`), `twirl_rows`, `twirl_rows_wait_ms` (the wait for the model's worker to read down to the row, before the timed span), `twirl_mouse_moves`, `twirl_move_gap_ms` and the same
+`load_hold_ms`, `load_edits` and `load_failures`.
+
+`node_switch`, after `open` (on the flat file for the design's budget), docks the Scene Graph panel,
+sets it to follow the node selection and selects `BENCH_SWITCH_NODES` (default 4) USDEditTransforms
+off USDRead in turn, each read into a stage of the panel's own, then the first again, whose stage the
+panel keeps. The stall budget covers the switching, not the docking or the node creation. It reports
+`switch_ms` per switch (each includes the selection's 150 ms settle), `switch_max_ms`,
+`cached_switch_ms` and `cached_switch_composes`, which is 0 when the kept stage is reused.
+
+The draw state scenarios drive the viewer's `setDrawState`, `clearDrawState` and `setDrawRevealBatch`
+and act on rows `heavy_scene_rows.py` picks, or the fixture's own (`BENCH_ROOT`, `BENCH_BRANCH`,
+`BENCH_SIBLING_ROW`, `BENCH_WIDE_ROW`, `BENCH_REVEAL_BRANCH` override them). Each carries `filter_bound`, judged: a viewer
+whose engine lost the filter fails rather than reporting a cheap nothing.
+
+| Scenario | What it does | Reports |
+| --- | --- | --- |
+| `populate_full`, `populate_pruned` | Open the file, in place of `open`; pruned sets `bbox` on the root first | `first_frame_ms`, `prims_added_upstream`, `prims_added_ms`, `hidden_sent` |
+| `load_all` | Loads the root with descendants; `BENCH_LOAD_ALL=1` picks rows from the loaded scene | `load_ms`, `prims_added_upstream`, `load_hold_ms` |
+| `prune_restore` | `bbox` then clear on the branch | `prune_*` and `restore_*`: `apply_ms`, `frame_ms`, `total_ms`; hidden and shown notices |
+| `sibling_state` | The same on one row among many, twice | `sibling_*`; `sibling_resynced_paths` budget 0 |
+| `reveal` | Row `bbox`, then `full` at `BENCH_REVEAL_BATCH` prims per frame, up to `BENCH_REVEAL_MAX_S` (default 500 µs per scene prim, 120 s at least, half the scenario's limit at most) | `reveal_prims`, `reveal_frames`, `reveal_fps`, `reveal_worst_frame_ms`, `reveal_complete` |
+| `reveal_cancel` | Starts a reveal at 50 prims per frame, then `bbox` after three frames' worth | `cancel_total_ms`, `cancel_was_active`, `cancel_stopped` |
+| `noedit` | Sets, clears, reveals and cancels on the branch | `stage_edits`, budget 0, counting stage change notices and edit counts |
+| `sibling_shot` | Screen grabs around one change on the sibling row, the branch and the root as control | `*_shot_changed_*`, `*_shot_frame_coverage`, `shot_reading`; `control_changed_pixels` at least 1 |
+| `orbit10k`, `boxes_shot` | orbit10k: `children` on every prim above the depth whose geometry-holding prims number nearest `BENCH_BOXES`, so each prim at that depth is one box, then, once that is on screen, an orbit; boxes_shot: `bbox` on the root and a grab | `orbit_fps`, `boxes_drawn`, `box_depth`, `boxes_presented_ms`, `stand_in_mode` (orbit10k forces Off and restores the previous mode), `paint_count` (orbit10k); skipped until the viewer publishes `natronSceneDrawBoxes` |
+| `draw_budget` | once the loads settled, an unjudged warm-up `bbox` and clear on the sibling row; then `bbox` then clear on the sibling row and on the widest row, `BENCH_BUDGET_REPEATS` times (default 2), then once more each with a trace | `draw_changes`, one entry per change; `sibling_picture_ms_max`, `wide_picture_ms_max`; `traced_stall_ms`; `warmup_change_ms` and `warmup_restore_ms` |
+
+`frame_ms` is `total_ms` less `apply_ms`: from the call to the image that shows the change, without the
+render thread's time sending notices. `total_ms` is polled every 50 ms, so it bounds the time rather
+than measuring it. Frame figures are valid only on a real GPU, like the rest.
+
+The 100 ms budget covers both the main-thread stall and the time from a change to the image that
+shows it. `time_to_picture_ms` is judged on the worst untraced change of `prune_restore`,
+`sibling_state` and `draw_budget` (and per row of `draw_budget`, as `time_to_picture_<row>_ms`); it is
+valid only with `NATRON_DRAW_STATE_TIMING=1` on a real GPU. With that variable set the viewer keeps a
+record per frame that takes in a change, from the slot call to the paint that presents it, and
+publishes the last 256 as `natronSceneDrawTimings`; without it the viewer does none of this. Each
+change's timings then gain the parts of `picture_ms`, each starting where the one before ends:
+
+| Field | From, to |
+| --- | --- |
+| `queue_ms` | the slot call, the render thread's apply |
+| `apply_ms` | the filter's notices to the render index (its Hydra prim inserts and removals included) |
+| `wait_frame_ms` | the apply, the start of the frame's render calls |
+| `render_ms` | the engine's render calls: Hydra sync, draw item regather, batch rebuild, GL submission |
+| `gpu_tail_ms` | the GPU finishing after the last call; the render thread waits for it only in this mode |
+| `handoff_ms` | the frame's arrival on the main thread |
+| `present_ms` | the paint that shows it |
+
+with `render_passes`, `rendered_on_paint` (the frame was rendered by the paint itself, so there is no
+GPU tail or handoff), `coalesced_changes` (changes taken in by the same frame), `hidden_sent` and
+`shown_sent`. A traced change runs `TraceCollector` and `HdPerfLog` from its apply to the end of its
+frame and adds `stages_ms` and `stage_counts` (render-thread wall time and calls per scope:
+`sync` for `HdRenderIndex::SyncAll`, `regather` for `HdSt_RenderPass::_UpdateDrawItems`, `batchRebuild`
+for `HdStCommandBuffer::_RebuildDrawBatches`, `executeDraw` for `HdStCommandBuffer::ExecuteDraw`, and
+the others in `Gui/SceneDrawTiming.cpp`'s table; nested scopes are counted in both), `counter_deltas` and
+`counter_values` (HdPerfLog's `rebuildBatches`, `drawItemsFetched` and the like), `trace_collect_ms`,
+and `trace_thread_found` (false: the scopes were summed over every thread). The viewer reads a trace on
+a thread of its own after the frame, so `trace_collect_ms` is in none of the other parts; the record
+says `tracePending` until then, and `draw_budget` waits for it before the next change. Tracing slows
+the change, so traced changes and their stall are never judged.
+`sibling_shot` skips while payloads are unloaded, as nothing is drawn for the control to change.
+
+Every record carries `gl_renderer`, `gl_vendor`, `peak_rss_mb`, `peak_rss_gb` and
+`mem_available_min_gb`. `heavy_scene_watchdog.sh` watches the run from outside Natron, so a hung run
+still leaves a record: `timed_out` past the wall-clock limit (`BENCH_SCENARIO_LIMIT_S`,
+`BENCH_OPEN_LIMIT_S`), `out_of_memory` when its memory or swap guard ends the process, `aborted` when
+the process ends on its own, and `skipped` for the scenarios left in that process.
 
 ```
-docker exec -e BENCH_FIXTURE=flat -e BENCH_SCENARIOS=open,orbit -e GUI_TEST_TIMEOUT=1800 natron-dev \
+docker exec -e BENCH_FIXTURE=flat -e BENCH_SCENARIOS=open,orbit -e GUI_TEST_TIMEOUT=1800 -e NATRON_MAIN_HEARTBEAT=1 natron-dev \
     Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py build/release/Natron.AppImage
+```
+
+On a host with a real GPU, from a checkout of the branch under test:
+
+```
+DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority tools/bench/heavy_scene_gpu_host.sh gate /path/to/Natron.AppImage
+```
+
+`gate` runs, one fresh process each: flat open; city open with a one-building load, a one-block load
+with descendants, and 30 blocks with descendants at once, the mouse moving throughout; a city twirl;
+the draw state scenarios on flat, on the fully loaded city and on Lobby, with `populate_pruned` runs of
+their own on flat and the city; then Lobby's building, block and twirl runs, and Island's building and twirl runs last, skipped under
+`ISLAND_MIN_RAM_GB`. Each scene's draw run ends with `draw_budget` and runs with
+`NATRON_DRAW_STATE_TIMING=1`, so the gate holds the budget records and its `prune_restore` and
+`sibling_state` times to picture are valid; the timing costs a `glFinish` on every frame that takes in
+a change, reveal steps included. The results go to `build/bench-gpu/heavy-scene-gate.jsonl`.
+
+```
+DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority tools/bench/heavy_scene_gpu_host.sh budget /path/to/Natron.AppImage
+```
+
+`budget` runs only `draw_budget`, with `NATRON_DRAW_STATE_TIMING=1`, for a budget table without the gate: on flat after `populate_full`, on
+the city and Lobby after `populate_full` and `load_all`, and on Island after `populate_full`, under its
+RAM guard. Both modes end with `heavy_scene_budget_table.py`'s table: each scene's stall and time to
+picture against 100 ms, one line per change with the parts above, and each traced change's stages and
+counters. The results go to `build/bench-gpu/heavy-scene-budget.jsonl`. The script's header
+lists its environment; `SCENE_DIR`, `LOBBY_DIR` and `ISLAND_DIR` say where the scenes are, and Docker
+is only needed while the fixtures are missing.
+
+### Waived budgets
+
+A budget with status `waived` is measured and recorded (`value`, `limit`, and a `reason`) but is not a
+failure: it stays out of `failed_checks`, and every other check and budget of the action still applies.
+`BUDGET_WAIVERS` in `heavy_scene_bench.py` lists them, keyed by (`BENCH_LABEL`, action, budget name);
+a waiver applies only where the budget would have failed. Today: `stall_ms` of `draw_budget`,
+`reveal_wide` and `reveal_cancel_paced` on `accept-island-loaded` (the fully loaded Island), because Qt
+composites the window behind a multi-second steady GPU frame ("steady-frame composite behind the GPU
+frame; deferred to M481 - Viewer Polygon Budgets", user decision 2026-11-19). Remove the rows when
+M481 - Viewer Polygon Budgets lands.
+
+### End-to-end budget run
+
+`workflow` chains what a user does on one scene in one process: `open`, a twirl into a payload,
+Full on one asset, Full + Load on a block, a pattern node (a USDEditTransform with a `primPattern`,
+`BENCH_PATTERN` or the branch's descendants) inserted below USDRead and viewed, a switch to that node
+with the Scene Graph panel following the selection, a prim selected in the inspector, a project save,
+and a reset and reopen of the saved project. Each step has its own `ms`, `stall_ms`, `stall_at`, `stalls_over_budget`, `started_at` and `ended_at` (the
+epoch seconds the longest gap began at and `stall_ms` was measured over, to find the step in stack samples) and numbers under
+`workflow_steps`, and its own budgets in the record: `<step>_stall_ms` (100 ms, the setup before a
+step not counted), `full_asset_picture_ms` (100 ms, valid with `NATRON_DRAW_STATE_TIMING=1` on a real
+GPU), `full_load_block_complete` and `full_load_block_worst_frame_ms` (the reveal finishes with no
+gap over 100 ms between painted frames), `reopen_first_frame_ms` (2 s, on a scene with payloads, from the
+project reset on, with `reset_ms` and `first_frame_after_load_ms` beside it; the reopen's stall covers the
+reset, the load and the loads that follow; the first frame is the first one presented after the load, not the
+fill's end), `fill_complete_ms` (from the load to the scene's fill completing, waited for apart from the first
+frame within `BENCH_FILL_LIMIT_S`, default 600; reported with no budget, `null` if the wait ran out), `pattern_node`'s `create_ms` and `reconnect_ms` (its stall
+still the whole step), and
+the first-frame and unrequested-payload budgets over the whole run. The save is judged as a stall: a
+`saveProjectAs` call that blocks the main thread over 100 ms fails. A scene with nothing for a step
+(flat has no payloads to twirl or load) gets `not_applicable` there. The reopen leaves the process's
+nodes gone, so `workflow` has to be the last scenario of its run; scenarios after it are skipped.
+
+On a GPU host, from a checkout of the branch under test, one command runs it on both fixtures, Lobby
+and Island, with the loaded reveal, cancel and orbit scenarios beside it:
+
+```
+DISPLAY=:0 XAUTHORITY=$HOME/.Xauthority tools/bench/heavy_scene_gpu_host.sh acceptance /path/to/Natron.AppImage
+```
+
+`acceptance` runs one fresh process per line: `workflow` on flat, the city, Lobby and Island; on the
+loaded city, Lobby and Island `populate_full`, `load_all`, `reveal_wide`, `reveal_cancel_paced` and
+`orbit10k`; and `reveal_load_all` on the unloaded city. Island (119,220 meshes, 30.9M instances) is
+looked for by name under `ISLAND_DIR` or `SCENE_DIR` (the main checkout's `.local` by default) and
+skipped with a message and a `skipped` record when it is absent or when less than `ISLAND_MIN_RAM_GB`
+is available; its loaded run raises `BENCH_PICK_LIMIT_S` to an hour, as picking rows from the fully
+loaded scene is slow. The fixtures are made through the dev image when `build/bench-gpu` lacks them.
+The results go to `build/bench-gpu/heavy-scene-acceptance.jsonl`, with the table and the pass, fail and
+did-not-finish counts at the end. A single scene runs the same way through `ONLY_LABELS`
+(`accept-city`, `accept-island`, ...), or by hand:
+
+```
+BENCH_FIXTURE=city BENCH_SCENARIOS=workflow NATRON_DRAW_STATE_TIMING=1 NATRON_MAIN_HEARTBEAT=1 BENCH_GPU=1 \
+    Tests/gui/run-gui-test.sh tools/bench/heavy_scene_bench.py /path/to/Natron.AppImage
+```
+
+Every GPU-host run also records GPU memory and stamps its logs. `sample_vram.sh` reads the amdgpu
+card's `mem_info_vram_used` and `mem_info_gtt_used` (the card with the most VRAM, or `VRAM_CARD`) every
+0.25 s, or every `SAMPLE_INTERVAL_S` with `SAMPLE=1`, into `out/<label>.vram`, and `heavy_scene_vram.py`
+adds `vram_peak_mb`, `gtt_peak_mb`, `vram_delta_mb`, `gtt_delta_mb` (and the start, end and total) to each
+record and prints them in the run log. With no amdgpu card it samples `nvidia-smi`'s `memory.used` for
+the NVIDIA GPU with the most memory (`VRAM_CARD=nvidia<index>` picks one) into the same file; the gtt
+fields are null there. The counters are the device's, the desktop's use included.
+
+The GL drivers' shader caches live in `SHADER_CACHE_DIR` (default `<fixture dir>/shader-cache`) for every
+run, through `__GL_SHADER_DISK_CACHE`, `__GL_SHADER_DISK_CACHE_PATH`, `__GL_SHADER_DISK_CACHE_SKIP_CLEANUP`
+and `MESA_SHADER_CACHE_DIR`; `run-gui-test.sh` and the AppImage pass them through. Each run's HOME is
+thrown away, so without it every open would compile its shaders again. Every mode first runs
+`warmup-city` (the city's `open`) to fill the cache; its record says `result` `warmup`, `warmup` true and
+`shader_cache` `cold` when the cache was empty before it, and counts toward neither pass nor fail. The
+other records say `shader_cache` `warm`. With `ONLY_LABELS` the warm-up runs only on an empty cache or
+when the labels name it.
+
+After each run `heavy_scene_fixture_check.py` reads its `natron.log` for the scene's files failing to
+open: `Could not load sublayer`, `Could not open asset` (a reference or payload that did not resolve or
+open), `Unable to open ptex`, `Unable to read Texture` and `Cannot open image`. Any of them makes the run's
+`pass` and `fail` records `fixture_incomplete` (the judged result kept as `judged_result`), counted as did
+not finish, and every record of the run gets `fixture_check`: the count of each kind and the first five
+paths.
+`out/<label>/natron.ts.log` is `natron.log` with each line prefixed by its epoch seconds; Natron's stdout
+is made line buffered for it through coreutils' `libstdbuf.so` (`LOG_LINEBUF=0` turns that off).
+
+`BISECT` sets Natron's environment for every run from a comma list of variants: `lights<N>`
+(`HDST_MAX_LIGHTS=N`; Storm's default is 16), `nolights` (`USDIMAGING_ENABLE_SCENE_LIGHTS=0`), `bindless`
+(`HGIGL_ENABLE_BINDLESS_TEXTURE=1`), `noglthread` (`mesa_glthread=false`), `hud` (`GALLIUM_HUD` GPU load,
+VRAM, GTT and fps, dumped to `out/<label>.hud/`) and `shaderlog` (`TF_DEBUG=HD_BUFFER_ARRAY_INFO
+HDST_LOG_DRAWING_SHADER_PROGRAM_MISSES`). Records carry it as `bisect`; the results file and the `out/`
+files take the variants' names, so variants do not overwrite each other. A quick Island bisect:
+
+```
+BISECT=noglthread ONLY_LABELS=accept-island,accept-island-loaded DISPLAY=:0 \
+    tools/bench/heavy_scene_gpu_host.sh acceptance /path/to/Natron.AppImage
 ```

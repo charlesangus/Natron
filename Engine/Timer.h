@@ -88,6 +88,8 @@ public:
 
     void    waitUntilNextFrameIsDue ();
 
+    // How long waitUntilNextFrameIsDue() would sleep if called now; 0 or less when it would not.
+    double getSecondsUntilNextFrameIsDue() const;
 
     //-------------------------------------------------
     // Set and get the frame rate, in frames per second

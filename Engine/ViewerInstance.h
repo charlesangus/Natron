@@ -30,20 +30,24 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_set>
 #include <vector>
 
+#include "Engine/BufferableObject.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Raw/RawDisplay.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OverlayImage.h"
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/RenderScheduler.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/SchedulerEligibility.h"
 #include "Engine/ViewIdx.h"
+#include "Serialization/SerializationFwd.h"
 
 // Script names of the Viewer node's knobs.
 #define kViewerParamEnableGain "enableGain"
@@ -81,7 +85,9 @@
 #define kViewerParamEnableDownscale "enableDownscale"
 #define kViewerParamDownscaleLevel "downscaleLevel"
 #define kViewerParamMaxSamples "maxSamples"
+#define kViewerParamRenderEverything "renderEverything"
 #define kViewerParamRefinementPaused "refinementPaused"
+#define kViewerParamMapSiblingOverlays "mapSiblingOverlays"
 
 NATRON_NAMESPACE_ENTER
 
@@ -314,6 +320,24 @@ public:
      **/
     std::string getRawDisplayLabel(int textureIndex) const WARN_UNUSED_RETURN;
 
+    typedef std::function<void(Serialization::SceneViewSerialization*)> SceneViewSaver;
+
+    /**
+     * @brief The draw states and loads of the 3D view as the project was opened with them, or once
+     * setSceneViewSaver() is called, as the saver saves them. Main thread.
+     **/
+    Serialization::SceneViewSerialization getLoadedSceneView() const;
+
+    /**
+     * @brief Hands saving the 3D view to saver, which any thread that saves the project runs, and
+     * forgets the view the project was opened with. An empty saver saves nothing; this returns
+     * once a saver running has.
+     **/
+    void setSceneViewSaver(const SceneViewSaver& saver);
+
+    // What the project saves of the 3D view. Any thread.
+    void sceneViewToSerialization(Serialization::SceneViewSerialization* serialization) const;
+
     ///Called upon node creation and then never changed
     void setUiContext(OpenGLViewerI* viewer);
 
@@ -496,6 +520,48 @@ public:
                                      ViewerArgsPtr args[2],
                                      const ViewerCurrentFrameRequestSchedulerStartArgsPtr& request,
                                      const RenderStatsPtr& stats) WARN_UNUSED_RETURN;
+
+    struct PendingViewerRender;
+
+    /**
+     * @brief One playback frame of the A and B inputs, rendered without any thread waiting on the RenderScheduler:
+     * preparePlaybackFrame() runs on the scheduler thread and submits the inputs, finishPlaybackFrame() converts what
+     * they rendered once their futures finished.
+     **/
+    struct PlaybackFrame {
+        int time = 0;
+        ViewIdx view;
+        RenderStatsPtr stats;
+        U64 viewerHash = 0;
+        ViewerArgsPtr args[2];
+        bool inputRenders[2] = { false, false };
+        bool hadRender[2] = { false, false };
+        U64 renderAges[2] = { 0, 0 };
+        std::shared_ptr<PendingViewerRender> pending[2];
+        // An input that must render synchronously, which only finishPlaybackFrame() on the fallback worker may do.
+        bool deferred[2] = { false, false };
+        ViewerRenderRetCode ret[2] = { eViewerRenderRetCodeRedraw, eViewerRenderRetCodeRedraw };
+        std::vector<FrameFuturePtr> futures;
+        std::vector<AbortableRenderInfoPtr> futureAbortInfos;
+        // Those of every input that renders.
+        std::vector<AbortableRenderInfoPtr> abortInfos;
+        int futuresOutstanding = 0;
+        BufferableObjectPtrList toAppend;
+        bool failed = false;
+    };
+
+    enum PlaybackFrameStageEnum {
+        // Nothing is left to render: toAppend holds what to display.
+        ePlaybackFrameStageDone,
+        // finishPlaybackFrame() may run once every future finished.
+        ePlaybackFrameStageAwaitFutures,
+        // finishPlaybackFrame() must run on the fallback worker.
+        ePlaybackFrameStageFallback
+    };
+
+    PlaybackFrameStageEnum preparePlaybackFrame(PlaybackFrame* frame) WARN_UNUSED_RETURN;
+
+    void finishPlaybackFrame(PlaybackFrame& frame);
 
     ViewerRenderRetCode getViewerArgsAndRenderViewer(SequenceTime time,
                                                      bool canAbort,
@@ -732,9 +798,43 @@ public:
     /**
      * @brief What the last evaluation of a scene on the given texture's input produced. Returns
      * false when that input is not a scene or has not been evaluated yet, or when the evaluation
-     * failed, in which case *error carries the message. Either pointer may be null. MT-safe.
+     * failed, in which case *error carries the message. *loadSet and *reach get the load set it
+     * was evaluated with and the reach of the patterns it matched. Any pointer may be null.
+     * MT-safe.
      **/
-    bool getLastEvaluatedScene(int textureIndex, ScenePayload* scene, std::string* error) const;
+    bool getLastEvaluatedScene(int textureIndex,
+                               ScenePayload* scene,
+                               std::string* error,
+                               SceneLoadSetPtr* loadSet = nullptr,
+                               SceneLoadReachPtr* reach = nullptr) const;
+
+    /**
+     * @brief The payloads the viewer's scene evaluations include, which follow what its 3D view's
+     * stage loads: pattern nodes match only those. None until set. A change queues the knob
+     * menus filled from the scene to follow it (SceneMenuRefresh::followLoadChanges()). MT-safe.
+     **/
+    void setSceneLoadSet(const SceneLoadSetPtr& loadSet);
+
+    SceneLoadSetPtr getSceneLoadSet() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Who the viewer's scene evaluations are for: its id, which keeps the nodes' memoized
+     * layers and matches for it apart from other evaluators', and its current load set. Without
+     * a reach. MT-safe.
+     **/
+    SceneEvaluationContext getSceneEvaluationContext() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Evaluates the scene of the A input as the viewer would with loadSet in its place, for
+     * what a load about to be committed shows, at the current frame. getLastEvaluatedScene() is
+     * left as it is. *reach, when given, is set to the reach of the patterns the evaluation
+     * matched. Returns false when that input is not a scene or its evaluation fails, with *error
+     * set for a failure. For a thread other than the main one. MT-safe.
+     **/
+    bool evaluateSceneForLoadSet(const SceneLoadSetPtr& loadSet,
+                                 ScenePayload* scene,
+                                 SceneLoadReachPtr* reach,
+                                 std::string* error);
 
     /**
      * @brief Every node upstream of the A and B inputs that has a persistent message, nearest
@@ -815,8 +915,8 @@ public Q_SLOTS:
     void executeDisconnectTextureRequestOnMainThread(int index, bool clearRoD);
 
     /**
-     * @brief Re-reads the active input's data kind and whether wipe is disabled, and emits
-     * activeInputDataKindChanged() when either changed. Callable from any thread; the work runs
+     * @brief Re-reads the active input's data kind, whether it is connected and whether wipe is
+     * disabled, and emits activeInputDataKindChanged() when any of them changed. Callable from any thread; the work runs
      * on the main thread.
      **/
     void refreshActiveInputDataKind();
@@ -851,7 +951,8 @@ Q_SIGNALS:
     void viewerRenderingStarted();
     void viewerRenderingEnded();
 
-    // getActiveInputDataKind() or isWipeDisabledByDataKind() changed. Emitted on the main thread.
+    // Emitted on the main thread when getActiveInputDataKind(), whether input A is connected,
+    // or isWipeDisabledByDataKind() now reads differently.
     void activeInputDataKindChanged();
 
     // A scene was evaluated for the input of textureIndex; getLastEvaluatedScene() has the
@@ -951,6 +1052,22 @@ private:
 
     ViewerRenderRetCode evaluateSceneInput(ViewerArgs& inArgs) WARN_UNUSED_RETURN;
 
+    ViewerRenderRetCode prepareViewerRender(ViewIdx view,
+                                            bool singleThreaded,
+                                            bool isSequentialRender,
+                                            U64 viewerHash,
+                                            const NodePtr& rotoPaintNode,
+                                            bool useTLS,
+                                            const ViewerCurrentFrameRequestSchedulerStartArgsPtr& request,
+                                            const RenderStatsPtr& stats,
+                                            GpuPlacementSnapshotBuilder* placementBuilder,
+                                            ViewerArgs& inArgs,
+                                            PendingViewerRender* pending) WARN_UNUSED_RETURN;
+
+    ViewerRenderRetCode completeViewerRender(PendingViewerRender& pending) WARN_UNUSED_RETURN;
+
+    void finishPlaybackInput(PlaybackFrame& frame, int i);
+
     ViewerRenderRetCode renderViewer_internal(ViewIdx view,
                                               bool singleThreaded,
                                               bool isSequentialRender,
@@ -980,6 +1097,7 @@ private:
                              double time,
                              bool originatedFromMainThread) OVERRIDE FINAL;
     virtual void onKnobsLoaded() OVERRIDE FINAL;
+    virtual void onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization) OVERRIDE FINAL;
 
     // Re-resolves the layer and alpha knobs against what the A input carries; a value that
     // resolves to nothing keeps the previous description. Returns whether a description changed.
@@ -997,6 +1115,9 @@ private:
     std::unique_ptr<ViewerInstancePrivate> _imp;
     mutable std::mutex _rawDisplayLabelMutex;
     std::string _rawDisplayLabel[2];
+    mutable std::mutex _sceneViewMutex;
+    std::unique_ptr<Serialization::SceneViewSerialization> _loadedSceneView;
+    SceneViewSaver _sceneViewSaver;
 };
 
 enum ViewerDisplayOutputEnum {

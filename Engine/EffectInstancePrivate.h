@@ -34,6 +34,7 @@
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <QCoreApplication>
@@ -45,6 +46,7 @@
 #include "Global/GlobalDefines.h"
 
 #include "Engine/EngineFwd.h"
+#include "Engine/FrameArgsOverlay.h"
 #include "Engine/Image.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/OSGLContext.h"
@@ -526,6 +528,8 @@ public:
         std::bitset<4> processChannels;
         ImageLayersToRenderPtr layers;
         const FrameRenderContext* frameContext;
+        FrameArgsOverlayPtr frameArgsHead;
+        bool scheduledTask;
         const IsolatedJob* isolatedJob;
     };
 

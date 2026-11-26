@@ -1428,18 +1428,6 @@ RotoDrawableItem::getKnobs() const
     return _imp->knobs;
 }
 
-KnobIPtr
-RotoDrawableItem::getKnobByName(const std::string& name) const
-{
-    for (std::list<KnobIPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-        if ( (*it)->getName() == name ) {
-            return *it;
-        }
-    }
-
-    return KnobIPtr();
-}
-
 void
 RotoDrawableItem::getTransformAtTime(double time,
                                      Transform::Matrix3x3* matrix) const
@@ -1546,6 +1534,18 @@ RotoDrawableItem::setExtraMatrix(bool setKeyframe,
         _imp->extraMatrix->setValue(mat.g, ViewSpec::all(), 6); _imp->extraMatrix->setValue(mat.h, ViewSpec::all(), 7); _imp->extraMatrix->setValue(mat.i, ViewSpec::all(), 8);
     }
     _imp->extraMatrix->endChanges();
+}
+
+void
+RotoDrawableItem::setTranslateKeyframe(double time,
+                                       double tx,
+                                       double ty)
+{
+    _imp->translate->beginChanges();
+    _imp->translate->setValueAtTime(time, tx, ViewSpec::all(), 0);
+    _imp->translate->setValueAtTime(time, ty, ViewSpec::all(), 1);
+    _imp->translate->endChanges();
+    onTransformSet(time);
 }
 
 void

@@ -258,6 +258,11 @@ KnobGuiChoice::onCurrentIndexChanged(int i)
     if (!knob) {
         return;
     }
+    if (knob->isEntryDisabled(i)) {
+        updateGUI(0);
+
+        return;
+    }
     pushUndoCommand( new KnobUndoCommand<int>(shared_from_this(), knob->getValue(0), i, 0, false, 0) );
 }
 
@@ -265,7 +270,7 @@ void
 KnobGuiChoice::onCurrentIndexReselected(int i)
 {
     KnobChoicePtr knob = _knob.lock();
-    if (!knob || !knob->getNotifiesOnReselect()) {
+    if (!knob || !knob->getNotifiesOnReselect() || knob->isEntryDisabled(i)) {
         return;
     }
     ignore_result(knob->setValue(i, ViewSpec::all(), 0, eValueChangedReasonUserEdited, NULL, true));
@@ -298,7 +303,9 @@ KnobGuiChoice::onEntryAppended()
         } else {
             _comboBox->addItem(QString::fromUtf8(options[i].label.c_str()), QIcon(), QKeySequence(), QString::fromUtf8(options[i].tooltip.c_str()));
         }
-
+        if (options[i].disabled) {
+            _comboBox->disableItem(i);
+        }
     }
 
     updateGUI(0);
@@ -323,6 +330,9 @@ KnobGuiChoice::onEntriesPopulated()
 
     for (U32 i = 0; i < entries.size(); ++i) {
         _comboBox->addItem( QString::fromUtf8( entries[i].label.c_str() ), QIcon(), QKeySequence(), QString::fromUtf8( entries[i].tooltip.c_str() ) );
+        if (entries[i].disabled) {
+            _comboBox->disableItem(i);
+        }
     } // for all entries
 
     // the "New" menu is only added to known parameters (e.g. the choice of output channels)
@@ -388,27 +398,6 @@ KnobGuiChoice::updateToolTip()
     _comboBox->setToolTip( tt );
 }
 
-// The project only saves the choice ID that was selected and not the associated label.
-// If the ID cannot be found in the menu upon loading the project, then the ID of the choice
-// will be displayed in the menu.
-// For a layer selector, if the layer is not present in the menu when loading the project it will display
-// the raw ID of the layer which contains stuff that should not be displayed to the user.
-static void
-ensureUnknownChoiceIsNotInternalLayerID(QString& label)
-{
-    if (label.contains(QLatin1String(kNatronColorLayerID))) {
-        label.replace(QLatin1String(kNatronColorLayerID), QLatin1String(kNatronColorViewRGBA));
-    } else if (label.contains(QLatin1String(kNatronBackwardMotionVectorsLayerID))) {
-        label.replace(QLatin1String(kNatronBackwardMotionVectorsLayerID), QLatin1String(kNatronBackwardMotionVectorsLayerLabel));
-    } else if (label.contains(QLatin1String(kNatronForwardMotionVectorsLayerID))) {
-        label.replace(QLatin1String(kNatronForwardMotionVectorsLayerID), QLatin1String(kNatronForwardMotionVectorsLayerLabel));
-    } else if (label.contains(QLatin1String(kNatronDisparityLeftLayerID))) {
-        label.replace(QLatin1String(kNatronDisparityLeftLayerID), QLatin1String(kNatronDisparityLeftLayerLabel));
-    } else if (label.contains(QLatin1String(kNatronDisparityRightLayerID))) {
-        label.replace(QLatin1String(kNatronDisparityRightLayerID), QLatin1String(kNatronDisparityRightLayerLabel));
-    }
-}
-
 void
 KnobGuiChoice::updateGUI(int /*dimension*/)
 {
@@ -437,7 +426,6 @@ KnobGuiChoice::updateGUI(int /*dimension*/)
     if ( _comboBox->isCascading() || activeEntry.id.empty() ) {
         _comboBox->setCurrentIndex_no_emit( knob->getValue() );
     } else {
-        ensureUnknownChoiceIsNotInternalLayerID(activeEntryLabel);
         _comboBox->setCurrentText_no_emit( activeEntryLabel );
     }
 }

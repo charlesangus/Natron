@@ -38,6 +38,7 @@
 #include <vector>
 
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/SceneDrawFilter.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/ScenePayload.h"
 #include <pxr/base/vt/value.h>
@@ -285,6 +286,12 @@ void releaseAll();
 void releaseAllCpuEngines();
 
 /**
+ * @brief Drops every owner's stage and engine of a delegate other than Storm, waiting up to
+ * timeoutMs for their thread to have done so. False if it had not by then.
+ **/
+bool releaseAllCpuEnginesAndWait(int timeoutMs);
+
+/**
  * @brief The GPU memory, in bytes, the engines may hold together before the least recently used
  * ones other than the one rendering are dropped. Checked after each render.
  **/
@@ -299,6 +306,17 @@ std::size_t getCpuEngineCount();
 
 // How many engines, of every delegate, have been made in this process.
 std::uint64_t getEngineBuildCount();
+
+// How many times, in this process, a MoonRay render, USDRender's or a progressive one, read its
+// session's progress past zero: the session is connected and its render process is rendering.
+std::uint64_t getMoonRayProgressReads();
+
+/**
+ * @brief Whether Storm renders write the ids of translucent prims into their primId plane, as
+ * they do unless turned off; for tests, to compare against Storm's own ids. Read when a render's
+ * ids are first decoded.
+ **/
+void setStormTranslucentIds(bool enabled);
 
 /**
  * @brief The thread count every Cycles session is made under, 0 for any: Cycles' task scheduler is
@@ -410,9 +428,31 @@ public:
         // is made again when the delegate does not show it restarted within a bound, as a loaded
         // machine may not.
         std::uint64_t engines = 0;
+        // Of those, the ones made again for that bound alone, which no edit asked for.
+        std::uint64_t unseenRemakes = 0;
+        // Of those, the ones made again because a MoonRay session's progress held still.
+        std::uint64_t stallRemakes = 0;
         std::uint64_t frames = 0;
         // Why the delegate cannot render, empty if it can.
         std::string error;
+    };
+
+    // The lock that guards the stage's edits, as a pair of functions, so that its owner may hand
+    // out a shared hold of a reader-writer lock, or learn when the hold ends. The worker only
+    // tries it, polling, so tryAcquire must not block.
+    struct StageLock {
+        std::function<bool()> tryAcquire;
+        std::function<void()> release;
+
+        bool try_lock()
+        {
+            return tryAcquire();
+        }
+
+        void unlock()
+        {
+            release();
+        }
     };
 
     /**
@@ -426,6 +466,11 @@ public:
      * *stageLock is used once the destructor returns.
      **/
     ProgressiveRender(std::mutex* stageLock,
+                      const std::function<bool(SceneStageSnapshot*)>& snapshot,
+                      const std::function<void()>& listener,
+                      float background);
+
+    ProgressiveRender(const StageLock& stageLock,
                       const std::function<bool(SceneStageSnapshot*)>& snapshot,
                       const std::function<void()>& listener,
                       float background);
@@ -470,6 +515,21 @@ public:
 
     // The cap in force: the one set, or the delegate's default once its engine is made, else 0.
     int getMaxSamples() const;
+
+    /**
+     * @brief The viewer's draw rules, which the engine draws by from its next restart: what they
+     * hide leaves the frame. An engine made later starts from them. Different rules restart, the
+     * same ones change nothing.
+     **/
+    void setDrawRules(const SceneDrawFilter::Rules& rules);
+
+    void applyDrawDeltas(const std::vector<SceneDrawDelta>& deltas);
+
+    /**
+     * @brief Draws everything regardless of the draw rules while on, keeping them for when it is
+     * off again. Neither way makes the engine again.
+     **/
+    void setRenderEverything(bool on);
 
     // Pauses the delegate where it is, keeping its samples; resume() continues from them.
     void stop();

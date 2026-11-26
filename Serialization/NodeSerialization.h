@@ -38,13 +38,10 @@ NATRON_NAMESPACE_ENTER
 namespace Serialization {
 
 /**
- * @brief Plain-data equivalent of an image layer description: its ID, its label, the label of
- * its channel set and its channel names.
+ * @brief Plain-data equivalent of an image layer description: its ID and its channel names.
  **/
 struct LayerSerialization {
     std::string layerID;
-    std::string layerLabel;
-    std::string channelsLabel;
     std::vector<std::string> channels;
 };
 
@@ -88,6 +85,28 @@ struct NodeLayoutSerialization {
         , overlayG(0.f)
         , overlayB(0.f)
     {
+    }
+};
+
+/**
+ * @brief What a viewer's 3D view shows of its scene, beside the scene itself: the draw states set on
+ * its rows and the payloads its stage has loaded. Paths are absolute USD prim paths and need not
+ * exist in the scene the file is opened with. None of it reaches the node's output.
+ **/
+struct SceneViewSerialization {
+    // Prim path to the state set on it: "bbox", "children", "full", "loadAll" or "hidden".
+    std::map<std::string, std::string> drawStates;
+
+    // The paths of drawStates whose Children was set for a row below, not chosen for the row.
+    std::list<std::string> impliedChildren;
+
+    // Prim path to the stage's load rule there: "all", "only" or "none". The root's rule when it
+    // loads nothing is left out, as a viewer's stage starts that way.
+    std::map<std::string, std::string> loadRules;
+
+    bool isEmpty() const
+    {
+        return drawStates.empty() && impliedChildren.empty() && loadRules.empty();
     }
 };
 
@@ -136,6 +155,9 @@ struct NodeSerialization {
 
     std::string cacheID;
 
+    // A viewer's only; empty for every other node.
+    SceneViewSerialization sceneView;
+
     NodeSerialization()
         : id()
         , label()
@@ -158,6 +180,7 @@ struct NodeSerialization {
         , pagesOrder()
         , children()
         , cacheID()
+        , sceneView()
     {
     }
 };

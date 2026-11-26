@@ -124,6 +124,7 @@ public:
                                               Natron::StandardButtonEnum defaultButton,
                                               bool* stopAsking) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void onProjectNodesRestored() OVERRIDE FINAL;
+    virtual void aboutToDestroyProjectNodes() OVERRIDE FINAL;
     virtual void notifyRenderStarted(const QString & sequenceName,
                                      int firstFrame, int lastFrame,
                                      int frameStep, bool canPause,
@@ -145,12 +146,13 @@ public:
     virtual void progressStart(const NodePtr& node, const std::string &message, const std::string &messageid, bool canCancel = true) OVERRIDE FINAL;
     virtual void progressEnd(const NodePtr& node) OVERRIDE FINAL;
     virtual bool progressUpdate(const NodePtr& node, double t) OVERRIDE FINAL;
+    virtual std::shared_ptr<void> showProgressModal(const NodePtr& node, const std::string& title, const std::function<void()>& onCancel) OVERRIDE FINAL;
     virtual void onMaxPanelsOpenedChanged(int maxPanels) OVERRIDE FINAL;
     virtual void onRenderQueuingChanged(bool queueingEnabled) OVERRIDE FINAL;
     virtual void connectViewersToViewerCache() OVERRIDE FINAL;
     virtual void disconnectViewersFromViewerCache() OVERRIDE FINAL;
     FileDialogPreviewProviderPtr getPreviewProvider() const;
-    virtual std::string openImageFileDialog() OVERRIDE FINAL;
+    virtual std::string openImageFileDialog(std::optional<std::pair<int, int>>* frameRange = nullptr) OVERRIDE FINAL;
     virtual std::string saveImageFileDialog() OVERRIDE FINAL;
     virtual int chooseItemDialog(const std::string& title, const std::string& label, const std::vector<std::string>& items) OVERRIDE FINAL;
     virtual void clearViewersLastRenderedTexture() OVERRIDE FINAL;
@@ -159,6 +161,7 @@ public:
     virtual void setLastViewerUsingTimeline(const NodePtr& node) OVERRIDE FINAL;
     virtual ViewerInstance* getLastViewerUsingTimeline() const OVERRIDE FINAL;
     virtual NodePtr getActiveViewerNode() const OVERRIDE FINAL;
+    virtual std::list<NodePtr> getViewerNodesByRecentActivity() const OVERRIDE FINAL;
 
     void discardLastViewerUsingTimeline();
 
@@ -214,6 +217,12 @@ Q_SIGNALS:
 
     void keyframeIndicatorsChanged();
 
+    /**
+     * @brief Emitted once per event-loop turn after onPanelForegroundChanged(), for the panels that
+     * publish their own markers to re-check whether they may show them.
+     **/
+    void panelForegroundChanged();
+
 public:
 
     virtual void* getOfxHostOSHandle() const OVERRIDE FINAL;
@@ -251,6 +260,13 @@ public:
     virtual void removeNodeKeyframesFromTimeline(Node* node) OVERRIDE FINAL;
     virtual void setNodeShownOnTimeline(const NodePtr& node, bool shown) OVERRIDE FINAL;
     virtual void invalidateNodeKeyframeIndicators() OVERRIDE FINAL;
+
+    /**
+     * @brief Called when a panel opens, closes, is minimised, expanded, floated, reordered in its
+     * properties bin or switches page: node markers are rebuilt from the panels now in the
+     * foreground, and panelForegroundChanged() follows.
+     **/
+    void onPanelForegroundChanged();
     virtual void setPanelKeyframeIndicators(const void* owner, const std::vector<SequenceTime>& keys) OVERRIDE FINAL;
     virtual void clearPanelKeyframeIndicators(const void* owner) OVERRIDE FINAL;
     virtual void getKeyframes(std::list<SequenceTime>* keys) const OVERRIDE FINAL;

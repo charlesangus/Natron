@@ -146,6 +146,9 @@ CLANG_DIAG_ON(uninitialized)
 
 #define NATRON_ELLIPSE_WARN_DIAMETER 10
 #define NATRON_LINK_BADGE_DIAMETER 18
+#define NATRON_MESSAGE_BADGE_DIAMETER 14
+#define NATRON_MESSAGE_BORDER_WIDTH 2
+#define NATRON_MESSAGE_CAPTION_GAP 4
 
 #define NATRON_PLUGIN_ICON_SIZE 20
 #define PLUGIN_ICON_OFFSET 2
@@ -188,9 +191,23 @@ makeChainLinkIcon(double diameter)
 }
 
 static QColor
-persistentErrorColor()
+missingPluginColor()
 {
     return QColor(128, 0, 0, 255);
+}
+
+// Shared by the message badge, border and caption and the state indicator; both read on the
+// graph's dark background and on light node bodies.
+static QColor
+nodeErrorColor()
+{
+    return QColor(230, 60, 50, 255);
+}
+
+static QColor
+nodeWarningColor()
+{
+    return QColor(245, 165, 20, 255);
 }
 
 static QColor
@@ -391,7 +408,10 @@ NodeGui::NodeGui(QGraphicsItem* parent)
     , _previewData(NATRON_PREVIEW_HEIGHT * NATRON_PREVIEW_WIDTH * sizeof(unsigned int))
     , _previewW(NATRON_PREVIEW_WIDTH)
     , _previewH(NATRON_PREVIEW_HEIGHT)
-    , _persistentMessage(NULL)
+    , _messageBadge(NULL)
+    , _messageBorder(NULL)
+    , _messageCaption(NULL)
+    , _messageCaptionLine()
     , _stateIndicator(NULL)
     , _stateIndicatorSelected(false)
     , _streamIssuesWarning()
@@ -1099,7 +1119,7 @@ NodeGui::createGui()
     _boundingBox = new NodeGraphRectItem(this, cornerRadiusPx);
     _boundingBox->setZValue(depth);
     if (node->getPluginID() == PLUGINID_NATRON_MISSING_PLUGIN) {
-        QPen outline(persistentErrorColor(), TO_DPIX(kMissingPluginOutlineWidth), Qt::DashLine);
+        QPen outline(missingPluginColor(), TO_DPIX(kMissingPluginOutlineWidth), Qt::DashLine);
         outline.setJoinStyle(Qt::MiterJoin);
         _boundingBox->setPen(outline);
     }
@@ -1173,18 +1193,31 @@ NodeGui::createGui()
     //_nameItem->setFont( QFont(appFont,appFontSize) );
     _nameItem->setZValue(depth + 1);
 
-    NodeGraphSimpleTextItem* persistentMessage = new NodeGraphSimpleTextItem(getDagGui(), this, false);
-    persistentMessage->setHiddenAtLowDetail(true);
-    _persistentMessage = persistentMessage;
-    _persistentMessage->setZValue(depth + 3);
-    QFont f = _persistentMessage->font();
-    f.setPointSize(25);
-    bool antialias = appPTR->getCurrentSettings()->isNodeGraphAntiAliasingEnabled();
-    if (!antialias) {
-        f.setStyleStrategy(QFont::NoAntialias);
+    if (!isBd) {
+        _messageBorder = new NodeGraphRectItem(this, cornerRadiusPx);
+        _messageBorder->setZValue(depth + 1.6);
+        _messageBorder->setBrush(Qt::NoBrush);
+        _messageBorder->hide();
+
+        _messageBadge = new NodeGuiMessageBadge(getDagGui(), this, TO_DPIX(NATRON_MESSAGE_BADGE_DIAMETER));
+        _messageBadge->setZValue(depth + 3);
+        _messageBadge->hide();
+
+        NodeGraphSimpleTextItem* caption = new NodeGraphSimpleTextItem(getDagGui(), this, false);
+        caption->setHiddenAtLowDetail(true);
+        _messageCaption = caption;
+        _messageCaption->setZValue(depth + 3);
+        QFont f = _messageCaption->font();
+        f.setFamily(appFont);
+        f.setPointSizeF(std::max(6., appFontSize * 0.85));
+        _messageCaption->setFont(f);
+        _messageCaption->hide();
+
+        // Lets scripts tell the message items apart from the node's other children.
+        _messageBorder->setData(0, QString::fromUtf8("nodeMessageBorder"));
+        _messageBadge->setData(0, QString::fromUtf8("nodeMessageBadge"));
+        _messageCaption->setData(0, QString::fromUtf8("nodeMessageCaption"));
     }
-    _persistentMessage->setFont(f);
-    _persistentMessage->hide();
 
     _stateIndicator = new NodeGraphRectItem(this, cornerRadiusPx);
     _stateIndicator->setZValue(depth - 1);
@@ -1602,9 +1635,6 @@ NodeGui::resize(int width,
         _presetIcon->setY(topLeft.y() + iconsYOffset * 2 + iconSize);
     }
 
-    QFont f(appFont, appFontSize);
-    QFontMetrics metrics(f, 0);
-
     height = refreshPreviewAndLabelPosition(bbox);
 
 
@@ -1616,10 +1646,6 @@ NodeGui::resize(int width,
         _resizeHandle->setPolygon(poly);
     }
 
-    QString persistentMessage = _persistentMessage->text();
-    f.setPixelSize(25);
-    metrics = QFontMetrics(f, 0);
-    int pMWidth = metrics.horizontalAdvance(persistentMessage);
     int midNodeX = topLeft.x() + iconWidth + (width - iconWidth) / 2;
     QPointF bitDepthPos(midNodeX, 0);
     _streamIssuesWarning->refreshPosition(bitDepthPos);
@@ -1637,8 +1663,8 @@ NodeGui::resize(int width,
         _passThroughIndicator->refreshPosition(bottomRight);
     }
 
-    _persistentMessage->setPos(midNodeX - (pMWidth / 2), topLeft.y() + height / 2 - metrics.height() / 2);
     refreshUserColorBorderGeometry();
+    refreshMessageGeometry(_boundingBox->rect());
 
     _disabledCross->setLines(insetDiagonal(bbox.bottomLeft(), bbox.topRight(), kDisabledCrossPenWidth),
                              insetDiagonal(bbox.topLeft(), bbox.bottomRight(), kDisabledCrossPenWidth));
@@ -2188,7 +2214,7 @@ NodeGui::initializeInputsForInspector()
             _inputEdges[i]->setAngle(maskAngle);
             maskAngle += angleBetweenMasks;
         } else {
-            if ( ( (int)i < maxInitiallyOnTopVisibleInputs ) ) {
+            if (((int)i < maxInitiallyOnTopVisibleInputs) && !node->getEffectInstance()->isInputFirstOnSide(i)) {
                 _inputEdges[i]->setAngle(angle);
                 angle += angleBetweenInputs;
             } else {
@@ -2249,9 +2275,7 @@ NodeGui::initializeInputs()
                 }
             }
         }
-        if ( node &&
-             !node->getEffectInstance()->isInputMask(i) &&
-             !node->getEffectInstance()->isInputRotoBrush(i) ) {
+        if (node && !node->getEffectInstance()->isInputMask(i) && !node->getEffectInstance()->isInputRotoBrush(i) && !node->getEffectInstance()->isInputFirstOnSide(i)) {
             if (!input) {
                 ++emptyInputsCount;
             }
@@ -2273,7 +2297,10 @@ NodeGui::initializeInputs()
             if ( node && !node->getEffectInstance()->isInputRotoBrush(i) ) {
                 double edgeAngle;
                 bool incrAngle = true;
-                if ( node->getEffectInstance()->isInputMask(i) ) {
+                if (node->getEffectInstance()->isInputFirstOnSide(i)) {
+                    edgeAngle = M_PI;
+                    incrAngle = false;
+                } else if (node->getEffectInstance()->isInputMask(i)) {
                     if (maskIndex == 0) {
                         edgeAngle = 0;
                         incrAngle = false;
@@ -2315,7 +2342,7 @@ NodeGui::intersects(const QRectF & rect) const
 {
     QRectF mapped = mapRectFromScene(rect);
 
-    return boundingRect().intersects(mapped);
+    return withMessageCaption(boundingRect()).intersects(mapped);
 }
 
 QPainterPath
@@ -2382,7 +2409,19 @@ NodeGui::refreshEdgesVisility()
         /*
          * If optional inputs are displayed, only show one input on th left side of the node
          */
+        const EffectInstancePtr effect = node->getEffectInstance();
+        std::vector<int> sideInputs;
+        for (int i = 0; i < (int)_inputEdges.size(); ++i) {
+            if (effect->isInputFirstOnSide(i)) {
+                sideInputs.push_back(i);
+            }
+        }
         for (int i = maxInitiallyOnTopVisibleInputs; i < (int)_inputEdges.size(); ++i) {
+            if (!effect->isInputFirstOnSide(i)) {
+                sideInputs.push_back(i);
+            }
+        }
+        for (int i : sideInputs) {
             if ( !edgesVisibility[i] || _inputEdges[i]->isMask() ) {
                 continue;
             }
@@ -2413,10 +2452,8 @@ NodeGui::refreshEdgesVisility()
 QRectF
 NodeGui::boundingRectWithEdges() const
 {
-    QRectF ret;
-    QRectF bbox = boundingRect();
+    QRectF ret = sceneFootprint();
 
-    ret = mapToScene(bbox).boundingRect();
     for (InputEdges::const_iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
         if ( !(*it)->hasSource() ) {
             ret = ret.united( (*it)->mapToScene( (*it)->boundingRect() ).boundingRect() );
@@ -2566,6 +2603,58 @@ NodeGui::refreshUserColorBorderGeometry()
                              bbox.width() + indicatorOffset * 2, bbox.height() + indicatorOffset * 2);
 }
 
+void
+NodeGui::refreshMessageGeometry(const QRectF& bbox)
+{
+    if (!_messageBadge || !_messageBorder || !_messageCaption) {
+        return;
+    }
+    const double half = TO_DPIX(NATRON_MESSAGE_BORDER_WIDTH) / 2.;
+    _messageBorder->setRect(bbox.adjusted(half, half, -half, -half));
+
+    // One expression badge's width in from the corner, so the two stay side by side.
+    const double badgeDiameter = TO_DPIX(NATRON_MESSAGE_BADGE_DIAMETER);
+    const double expressionRadius = TO_DPIX(NATRON_ELLIPSE_WARN_DIAMETER) / 2.;
+    _messageBadge->setCenter(QPointF(bbox.right() - expressionRadius - badgeDiameter / 2., bbox.top()));
+
+    if (_messageCaptionLine.isEmpty()) {
+        _messageCaption->setText(QString());
+
+        return;
+    }
+    const QFontMetricsF metrics(_messageCaption->font());
+    const QString elided = metrics.elidedText(_messageCaptionLine, Qt::ElideRight, 2. * bbox.width());
+    if (_messageCaption->text() != elided) {
+        _messageCaption->setText(elided);
+    }
+    const double textWidth = _messageCaption->boundingRect().width();
+    _messageCaption->setPos(bbox.center().x() - textWidth / 2., bbox.bottom() + TO_DPIY(NATRON_MESSAGE_CAPTION_GAP));
+}
+
+QRectF
+NodeGui::withMessageCaption(const QRectF& localRect) const
+{
+    // isVisible() rather than the level of detail: the caption is only skipped when painted
+    // zoomed out, and a node's footprint must not change with the zoom.
+    if (!_messageCaption || !_messageCaption->isVisible()) {
+        return localRect;
+    }
+
+    return localRect | mapRectFromItem(_messageCaption, _messageCaption->boundingRect());
+}
+
+QRectF
+NodeGui::sceneFootprint() const
+{
+    return mapToScene(withMessageCaption(boundingRect())).boundingRect();
+}
+
+double
+NodeGui::messageCaptionDrop() const
+{
+    return sceneFootprint().bottom() - mapToScene(boundingRect()).boundingRect().bottom();
+}
+
 bool
 NodeGui::isSelectedInParentMultiInstance(const Node* node) const
 {
@@ -2597,6 +2686,7 @@ NodeGui::setUserSelected(bool b)
     }
     if (changed && _graph) {
         _graph->scheduleLoopBlockRefresh(false);
+        _graph->scheduleSelectionChanged();
     }
     // Selecting a node again still brings its open panel's viewer interface forward.
     if (_settingsPanel) {
@@ -2936,50 +3026,62 @@ NodeGui::isSettingsPanelMinimized() const
 void
 NodeGui::onPersistentMessageChanged()
 {
-    //keep type in synch with this enum:
-    //enum MessageTypeEnum{eMessageTypeInfo = 0,eMessageTypeError = 1,eMessageTypeWarning = 2,eMessageTypeQuestion = 3};
-
-    ///don't do anything if the last persistent message is the same
-    if ( !_persistentMessage || !_stateIndicator || !_graph || !_graph->getGui() ) {
+    if (!_stateIndicator || !_graph || !_graph->getGui()) {
         return;
     }
 
     QString message;
+    QString bareMessage;
     int type = 0;
     NodePtr node = getNode();
     if (node) {
         node->getPersistentMessage(&message, &type);
+        node->getPersistentMessage(&bareMessage, &type, false);
     }
-    // A placeholder is already marked by its dashed outline and "missing:" caption, which the
-    // overlay would be printed over; the message stays in the tooltip.
+    const bool isError = (type == eMessageTypeError);
+    const bool isWarning = (type == eMessageTypeWarning);
+    // A placeholder is already marked by its dashed outline and "missing:" caption; the message
+    // stays in the tooltip.
     const bool isPlaceholder = node && node->getPluginID() == PLUGINID_NATRON_MISSING_PLUGIN;
-    _persistentMessage->setVisible(!message.isEmpty() && !isPlaceholder);
+    const bool showMessage = !message.isEmpty() && (isError || isWarning) && !isPlaceholder;
 
-    if ( !node || message.isEmpty() ) {
-        setToolTip( QString() );
-        refreshStateIndicator();
-    } else if ((type == 1) || (type == 2)) {
-        if (type == 1) {
-            _persistentMessage->setText( tr("ERROR") );
-            _persistentMessage->setBrush(persistentErrorColor());
+    // An information message is only readable: no badge, border or caption, just the tooltip.
+    const bool isInfo = (type == eMessageTypeInfo);
+    setToolTip(node && !message.isEmpty() && (isError || isWarning || isInfo) ? message : QString());
+
+    if (_messageBadge && _messageBorder && _messageCaption) {
+        if (showMessage) {
+            const QColor color = isError ? nodeErrorColor() : nodeWarningColor();
+            const QString colorName = color.name();
+            _messageBadge->setSeverity(isError, color);
+            _messageBadge->setToolTip(message);
+            _messageBadge->setData(1, colorName);
+
+            QPen borderPen(color, TO_DPIX(NATRON_MESSAGE_BORDER_WIDTH));
+            borderPen.setJoinStyle(Qt::MiterJoin);
+            _messageBorder->setPen(borderPen);
+            _messageBorder->setData(1, colorName);
+
+            _messageCaptionLine = bareMessage.section(QLatin1Char('\n'), 0, 0).trimmed();
+            _messageCaption->setBrush(color);
+            _messageCaption->setToolTip(message);
+            _messageCaption->setData(1, colorName);
         } else {
-            _persistentMessage->setText( tr("WARNING") );
-            QColor warColor(180, 180, 0, 255);
-            _persistentMessage->setBrush(warColor);
+            _messageCaptionLine.clear();
         }
-
-        setToolTip(message);
-
-        refreshSize();
-        refreshStateIndicator();
+        _messageBadge->setVisible(showMessage);
+        _messageBorder->setVisible(showMessage);
+        _messageCaption->setVisible(showMessage && !_messageCaptionLine.isEmpty());
+        refreshMessageGeometry(_boundingBox->rect());
     }
+    refreshStateIndicator();
 
     const std::list<ViewerTab*>& viewers = getDagGui()->getGui()->getViewersList();
     for (std::list<ViewerTab*>::const_iterator it = viewers.begin(); it != viewers.end(); ++it) {
         (*it)->getViewer()->updatePersistentMessage();
     }
 
-    // The message text can reach past the body, and hiding it does not go through resize().
+    // The caption hangs below the body, and showing or hiding it does not go through resize().
     _graph->noteNodeGeometryChanged(this);
     // Covers the message kinds handled above without a refresh of the indicator.
     _graph->scheduleNodeRenderStateRefresh(this);
@@ -3109,11 +3211,7 @@ NodeGui::refreshStateIndicator()
     } else if (isSelected) {
         brush = QBrush(Qt::white);
     } else if (!message.isEmpty() && ((type == 1) || (type == 2))) {
-        if (type == 1) {
-            brush = QBrush(QColor(128, 0, 0, 255)); //< error
-        } else if (type == 2) {
-            brush = QBrush(QColor(80, 180, 0, 255)); //< warning
-        }
+        brush = QBrush((type == 1) ? nodeErrorColor() : nodeWarningColor());
     } else {
         showIndicator = false;
     }
@@ -3197,7 +3295,7 @@ NodeGui::refreshRenderingIndicator()
 void
 NodeGui::moveBelowPositionRecursively(const QRectF & r)
 {
-    QRectF sceneRect = mapToScene( boundingRect() ).boundingRect();
+    QRectF sceneRect = sceneFootprint();
 
     NodePtr node = getNode();
 
@@ -3218,7 +3316,7 @@ NodeGui::moveBelowPositionRecursively(const QRectF & r)
             }
             NodeGui* gui = dynamic_cast<NodeGui*>( outputGuiI.get() );
             assert(gui);
-            sceneRect = mapToScene( boundingRect() ).boundingRect();
+            sceneRect = sceneFootprint();
             gui->moveBelowPositionRecursively(sceneRect);
         }
     }
@@ -3227,13 +3325,13 @@ NodeGui::moveBelowPositionRecursively(const QRectF & r)
 void
 NodeGui::moveAbovePositionRecursively(const QRectF & r)
 {
-    QRectF sceneRect = mapToScene( boundingRect() ).boundingRect();
+    QRectF sceneRect = sceneFootprint();
 
     if ( r.intersects(sceneRect) ) {
         changePosition(0, -r.height() - NodeGui::DEFAULT_OFFSET_BETWEEN_NODES);
         for (U32 i = 0; i < _inputEdges.size(); ++i) {
             if ( _inputEdges[i]->hasSource() ) {
-                sceneRect = mapToScene( boundingRect() ).boundingRect();
+                sceneRect = sceneFootprint();
                 _inputEdges[i]->getSource()->moveAbovePositionRecursively(sceneRect);
             }
         }
@@ -4338,6 +4436,119 @@ NodeGuiDisabledCross::paint(QPainter* painter,
     painter->drawLine(_lines[1]);
 }
 
+NodeGuiMessageBadge::NodeGuiMessageBadge(NodeGraph* graph,
+                                         QGraphicsItem* parent,
+                                         double diameter)
+    : QGraphicsItem(parent)
+    , _graph(graph)
+    , _diameter(diameter)
+    , _isError(true)
+    , _fill(nodeErrorColor())
+    , _center(0., 0.)
+    , _outline()
+    , _mark()
+{
+    refreshShapes();
+}
+
+NodeGuiMessageBadge::~NodeGuiMessageBadge()
+{
+}
+
+void
+NodeGuiMessageBadge::setSeverity(bool isError,
+                                 const QColor& fill)
+{
+    if ((isError == _isError) && (fill == _fill)) {
+        return;
+    }
+    if (isError != _isError) {
+        prepareGeometryChange();
+    }
+    _isError = isError;
+    _fill = fill;
+    refreshShapes();
+    update();
+}
+
+void
+NodeGuiMessageBadge::setCenter(const QPointF& center)
+{
+    if (center == _center) {
+        return;
+    }
+    prepareGeometryChange();
+    _center = center;
+    refreshShapes();
+}
+
+void
+NodeGuiMessageBadge::refreshShapes()
+{
+    const double r = _diameter / 2.;
+    _outline = QPainterPath();
+    if (_isError) {
+        _outline.addEllipse(_center, r, r);
+    } else {
+        QPolygonF triangle;
+        triangle << QPointF(_center.x(), _center.y() - r)
+                 << QPointF(_center.x() + r, _center.y() + r * 0.8)
+                 << QPointF(_center.x() - r, _center.y() + r * 0.8);
+        _outline.addPolygon(triangle);
+        _outline.closeSubpath();
+    }
+
+    // The mark is a filled path rather than a glyph so that it stays centred and crisp at any zoom.
+    const double barWidth = _diameter * 0.16;
+    const double top = _isError ? _center.y() - r * 0.55 : _center.y() - r * 0.3;
+    const double barBottom = _isError ? _center.y() + r * 0.2 : _center.y() + r * 0.15;
+    const double dotTop = barBottom + barWidth * 0.7;
+    _mark = QPainterPath();
+    _mark.addRoundedRect(QRectF(_center.x() - barWidth / 2., top, barWidth, barBottom - top), barWidth / 2., barWidth / 2.);
+    _mark.addEllipse(QRectF(_center.x() - barWidth / 2., dotTop, barWidth, barWidth));
+}
+
+QRectF
+NodeGuiMessageBadge::boundingRect() const
+{
+    return _outline.boundingRect().adjusted(-1., -1., 1., 1.);
+}
+
+QPainterPath
+NodeGuiMessageBadge::shape() const
+{
+    return _outline;
+}
+
+void
+NodeGuiMessageBadge::paint(QPainter* painter,
+                           const QStyleOptionGraphicsItem* /*option*/,
+                           QWidget* /*widget*/)
+{
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing, true);
+    const double diameterPx = painter->worldTransform().map(QLineF(0., 0., 0., _diameter)).length();
+    // A one-pixel outline on a badge only a few pixels across would cover all of its fill and
+    // leave a dark speck instead of the severity colour.
+    if (diameterPx >= 8.) {
+        QPen outlinePen(QColor(0, 0, 0, 160));
+        outlinePen.setCosmetic(true);
+        outlinePen.setJoinStyle(Qt::RoundJoin);
+        painter->setPen(outlinePen);
+    } else {
+        painter->setPen(Qt::NoPen);
+    }
+    painter->setBrush(_fill);
+    painter->drawPath(_outline);
+    // Skipped once too small to read; the coloured shape alone still marks the node.
+    if (diameterPx >= 6. && !(_graph && _graph->isDoingNavigatorRender())) {
+        painter->setPen(Qt::NoPen);
+        painter->setBrush(_isError ? QColor(255, 255, 255) : QColor(30, 20, 0));
+        painter->drawPath(_mark);
+    }
+    painter->restore();
+}
+
 ///////////////////
 
 void
@@ -4581,7 +4792,7 @@ NodeGui::onLayerSelectionChanged()
     const MissingPluginNode* placeholder = dynamic_cast<const MissingPluginNode*>(internalNode->getEffectInstance().get());
     if (placeholder) {
         extraLayerStr = QString::fromUtf8("<font color=\"%1\">%2</font>")
-                            .arg(persistentErrorColor().name())
+                            .arg(missingPluginColor().name())
                             .arg(placeholder->getMissingSummary().toHtmlEscaped());
     }
     KnobIPtr layerKnob = internalNode->getLayerKnob();

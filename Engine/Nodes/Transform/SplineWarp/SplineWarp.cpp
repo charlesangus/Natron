@@ -57,10 +57,10 @@
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
-#include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
+#include "Engine/VectorFollowBake.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuRecord.h"
@@ -244,8 +244,17 @@ SplineWarp::getInputHint(int inputNb) const
     if (inputNb == kSplineWarpInputSource) {
         return tr("The image to warp.").toStdString();
     }
+    if (inputNb == kSplineWarpInputVectors) {
+        return tr(kVectorFollowInputHint).toStdString();
+    }
 
     return EffectInstance::getInputHint(inputNb);
+}
+
+bool
+SplineWarp::isInputFirstOnSide(int inputNb) const
+{
+    return inputNb == kSplineWarpInputVectors;
 }
 
 EffectInstance::CurveContextKindEnum
@@ -283,7 +292,7 @@ outputMaskLayerOf(const std::string& value,
     if (ImageLayerDesc::isColorLayer(layerID)) {
         return false;
     }
-    *layer = ImageLayerDesc(layerID, layerID, "", std::vector<std::string>(1, value.substr(dot + 1)));
+    *layer = ImageLayerDesc(layerID, std::vector<std::string>(1, value.substr(dot + 1)));
 
     return true;
 }
@@ -585,6 +594,22 @@ SplineWarp::initializeKnobs()
     _ui->connectToCurveContext();
     _ui->createViewerButtonKnobs(page);
     _ui->createDisplayKnobs(page);
+    _vectorFollow.reset(new VectorFollowControls(this, _ui.get(), kSplineWarpInputVectors));
+    _vectorFollow->createKnobs(page, page);
+    _vectorFollow->setSelectedPointsProvider([this]() {
+        std::list<VectorFollowPointsPtr> points;
+        SplineWarpLinkPtr link;
+        int index = -1;
+        SplineWarpContextPtr context = splineWarpContext(*this);
+        if (context && _ui->getSelectedCorrespondence(&link, &index)) {
+            if (VectorFollowPointsPtr correspondence = context->makeCorrespondenceFollowPoints(link, index)) {
+                points.push_back(correspondence);
+            }
+        }
+
+        return points;
+    });
+    _panelHook->setVectorFollowControls(_vectorFollow.get());
     _ui->createToolbar();
     _ui->createRightClickMenuKnobs(page);
     selectDefaultTool();
@@ -804,11 +829,13 @@ transformValueKnobs(const RotoCurveContext::TransformKnobs& knobs)
 }
 
 struct TransformTargets {
-    // The items whose own transform the Transform page edits besides the tied curves: each
-    // selected layer, and each linked curve, resolved through its links.
-    std::list<RotoItemPtr> sources;
+    // The selected layers, whose own transforms the Transform page edits besides the tied curves.
+    std::list<RotoItemPtr> layers;
     // The selected curves whose knobs are tied to the page.
     std::list<RotoItemPtr> tied;
+    // A selected item takes its transform through a link. The page then edits nothing: that
+    // transform is the link target's, and a write would move every item linked to it.
+    bool linked = false;
 };
 
 TransformTargets
@@ -831,18 +858,27 @@ transformTargets(const SplineWarpContext& context)
         if (insideLayer) {
             continue;
         }
-        const bool isLayer = bool(std::dynamic_pointer_cast<RotoLayer>(*it));
-        if (!isLayer && !context.getTransformLink(*it)) {
+        if (context.getTransformLink(*it)) {
+            targets.linked = true;
+        } else if (std::dynamic_pointer_cast<RotoLayer>(*it)) {
+            targets.layers.push_back(*it);
+        } else {
             targets.tied.push_back(*it);
-            continue;
-        }
-        RotoItemPtr source = context.getTransformSource(*it);
-        if (std::find(targets.sources.begin(), targets.sources.end(), source) == targets.sources.end()) {
-            targets.sources.push_back(source);
         }
     }
 
     return targets;
+}
+
+// The one selected layer the Transform page edits, null when the page edits a tied curve or nothing.
+RotoItemPtr
+editedLayer(const TransformTargets& targets)
+{
+    if (targets.linked || !targets.tied.empty() || (targets.layers.size() != 1)) {
+        return RotoItemPtr();
+    }
+
+    return targets.layers.front();
 }
 } // anonymous namespace
 
@@ -855,13 +891,13 @@ SplineWarp::syncTransformKnobs()
         return;
     }
     const std::list<KnobIPtr> knobs = transformValueKnobs(context->getTransformKnobs());
-    const TransformTargets targets = transformTargets(*context);
     // With a tied curve the page already shows it, and a write would reach it.
-    if (knobs.empty() || targets.sources.empty() || !targets.tied.empty()) {
+    const RotoItemPtr layer = editedLayer(transformTargets(*context));
+    if (knobs.empty() || !layer) {
         return;
     }
     _syncingTransform = true;
-    context->getOwnTransform(targets.sources.front()).writeKnobs(knobs);
+    context->getOwnTransform(layer).writeKnobs(knobs);
     for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
         (*it)->setAllDimensionsEnabled(true);
     }
@@ -876,35 +912,15 @@ SplineWarp::writeTransformKnobs()
     if (!context) {
         return;
     }
-    const TransformTargets targets = transformTargets(*context);
-    if (targets.sources.empty()) {
+    // The page edits one transform only; the curve context forwards the edit to a tied curve's own knobs.
+    const RotoItemPtr layer = editedLayer(transformTargets(*context));
+    if (!layer) {
         return;
     }
     const std::list<KnobIPtr> pageKnobs = transformValueKnobs(context->getTransformKnobs());
     SplineWarpTransform transform;
     transform.readKnobs(pageKnobs);
-    const bool replaying = context->isReplayingUndo();
-    for (std::list<RotoItemPtr>::const_iterator it = targets.sources.begin(); it != targets.sources.end(); ++it) {
-        // The curve context already replayed the edit on a tied source curve's own knobs.
-        if (std::find(targets.tied.begin(), targets.tied.end(), *it) != targets.tied.end()) {
-            continue;
-        }
-        if (RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(*it)) {
-            // A curve's own transform knobs undo through their own records, which keep each curve's
-            // transform; writing the page's would give every source the same one.
-            if (replaying) {
-                continue;
-            }
-            std::list<KnobIPtr> own;
-            for (std::list<KnobIPtr>::const_iterator k = pageKnobs.begin(); k != pageKnobs.end(); ++k) {
-                if (KnobIPtr ownKnob = drawable->getKnobByName((*k)->getName())) {
-                    own.push_back(ownKnob);
-                }
-            }
-            context->recordForwardedEdit(own);
-        }
-        context->setOwnTransform(*it, transform);
-    }
+    context->setOwnTransform(layer, transform);
 }
 
 void
@@ -945,6 +961,14 @@ SplineWarp::shouldDrawHostOverlay() const
             ++curves;
         }
     }
+    // The handle of a linked item would edit its link target's transform, shared with every item
+    // linked to it.
+    if ((layers == 0) && (curves == 1) && context->getTransformLink(selected.front())) {
+        return false;
+    }
+    if ((layers == 1) && context->getTransformLink(layer)) {
+        return false;
+    }
     if (layers == 0) {
         return curves == 1;
     }
@@ -977,6 +1001,9 @@ SplineWarp::onKnobsLoaded()
     updateCookieKnobsEnabled();
     registerOutputMaskLayer();
     selectDefaultTool();
+    if (_vectorFollow) {
+        _vectorFollow->onKnobsLoaded();
+    }
 }
 
 bool
@@ -1026,6 +1053,10 @@ SplineWarp::knobChanged(KnobI* k,
         return true;
     }
 
+    if (_vectorFollow && k && _vectorFollow->onKnobChanged(k)) {
+        return true;
+    }
+
     bool ret = false;
     if (k && _ui->onKnobChanged(k, time, &ret)) {
         return ret;
@@ -1040,6 +1071,7 @@ SplineWarp::getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts)
     RotoCurveInteract::getViewerButtonShortcuts(shortcuts);
     SplineWarpInteract::getToolbarShortcuts(shortcuts);
     RotoCurveInteract::getRightClickMenuShortcuts(shortcuts);
+    VectorFollowControls::getShortcuts(shortcuts);
 }
 
 void
@@ -1177,7 +1209,7 @@ SplineWarp::getCachedFieldResolutions() const
 bool
 SplineWarp::isDraftRender() const
 {
-    ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
+    ParallelRenderArgsPtr args = getFrameArgs();
 
     return args && args->draftMode;
 }
@@ -1720,6 +1752,10 @@ SplineWarp::getRegionsOfInterest(double time,
     StagedImageEffect::getRegionsOfInterest(time, scale, outputRoD, renderWindow, view, ret);
 
     EffectInstancePtr source = getInput(kSplineWarpInputSource);
+    const EffectInstancePtr vectors = getInput(kSplineWarpInputVectors);
+    if (vectors && (vectors != source) && (vectors != getInput(kSplineWarpInputMask))) {
+        ret->erase(vectors);
+    }
     if (!source) {
         return;
     }
@@ -1761,6 +1797,16 @@ SplineWarp::getRegionsOfInterest(double time,
     }
     (*ret)[source] = region;
 } // SplineWarp::getRegionsOfInterest
+
+FramesNeededMap
+SplineWarp::getFramesNeeded(double time,
+                            ViewIdx view)
+{
+    FramesNeededMap ret = StagedImageEffect::getFramesNeeded(time, view);
+    ret.erase(kSplineWarpInputVectors);
+
+    return ret;
+}
 
 bool
 SplineWarp::isOpIdentity(double time,
@@ -2153,6 +2199,10 @@ SplineWarp::readsGpuInput(int inputNb,
                           double time,
                           ViewIdx view) const
 {
+    if (inputNb == kSplineWarpInputVectors) {
+        return false;
+    }
+
     return (inputNb != kSplineWarpInputSource) || !isOutputMaskPlane(plane, time, view);
 }
 

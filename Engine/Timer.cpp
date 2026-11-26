@@ -253,6 +253,28 @@ Timer::waitUntilNextFrameIsDue ()
 } // waitUntilNextFrameIsDue
 
 double
+Timer::getSecondsUntilNextFrameIsDue() const
+{
+    if (playState != ePlayStateRunning) {
+        return 0.;
+    }
+    double spf;
+    {
+        QMutexLocker l(&_mutex);
+        spf = _spf;
+    }
+    timeval now;
+    gettimeofday(&now, 0);
+
+    double timeSinceLastFrame = now.tv_sec - _lastFrameTime.tv_sec + (now.tv_usec - _lastFrameTime.tv_usec) * 1e-6f;
+    if (timeSinceLastFrame < 0) {
+        timeSinceLastFrame = 0;
+    }
+
+    return spf - timeSinceLastFrame - _timingError;
+}
+
+double
 Timer::getActualFrameRate() const
 {
     QMutexLocker l(&_mutex);

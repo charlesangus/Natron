@@ -274,7 +274,7 @@ protected:
         ProjectPtr project = getApp()->getProject();
         std::string error;
         const std::vector<std::string> rgb = { "R", "G", "B" };
-        EXPECT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("diffuse", "diffuse", "", rgb), LayerRegistryEntry::eOriginUser, &error)) << error;
+        EXPECT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("diffuse", rgb), LayerRegistryEntry::eOriginUser, &error)) << error;
 
         NodePtr reader;
         createFixtureReader(&reader, "flat-rgba-only.exr");
@@ -721,7 +721,7 @@ TEST_F(ShuffleRenderTest, SingleChannelOutputLayerIsCreatedAndColorPassesThrough
     ProjectPtr project = getApp()->getProject();
     std::string error;
     const std::vector<std::string> alpha(1, "A");
-    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", "mask", "", alpha), LayerRegistryEntry::eOriginUser, &error)) << error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", alpha), LayerRegistryEntry::eOriginUser, &error)) << error;
 
     createShuffleOnFixture();
     if (HasFatalFailure()) {
@@ -1030,7 +1030,7 @@ TEST_F(ShuffleRenderTest, StaleRowBeyondASmallerOutputLayerDoesNotFailTheRender)
     ProjectPtr project = getApp()->getProject();
     std::string error;
     const std::vector<std::string> alpha(1, "A");
-    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", "mask", "", alpha), LayerRegistryEntry::eOriginUser, &error)) << error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", alpha), LayerRegistryEntry::eOriginUser, &error)) << error;
 
     createShuffleOnFixture("flat-rgba-only.exr");
     if (HasFatalFailure()) {

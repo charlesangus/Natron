@@ -51,6 +51,7 @@
 #include "Engine/Cache.h"
 #include "Engine/CacheTier.h"
 #include "Engine/DiskCacheNode.h"
+#include "Engine/FrameArgsOverlay.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/Image.h"
@@ -255,7 +256,7 @@ optimizeRectsToRender(EffectInstance* self,
                       const RenderScale & renderMappedScale,
                       std::list<EffectInstance::RectToRender>* finalRectsToRender)
 {
-    const ParallelRenderArgsPtr selfArgs = self->getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr selfArgs = self->getFrameArgs();
     const RenderContextPtr consumerContext = selfArgs ? selfArgs->context : RenderContextPtr();
     for (std::list<RectI>::const_iterator it = rectsToRender.begin(); it != rectsToRender.end(); ++it) {
         std::vector<RectI> splits = it->splitIntoSmallerRects(0);
@@ -557,8 +558,8 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
     assert(tls);
     OSGLContextPtr glContext;
     AbortableRenderInfoPtr abortInfo;
-    ParallelRenderArgsPtr  frameArgs;
-    if ( tls->frameArgs.empty() ) {
+    ParallelRenderArgsPtr frameArgs = getFrameArgs();
+    if (!frameArgs) {
         qDebug() << QThread::currentThread() << "[BUG]:" << getScriptName_mt_safe().c_str() <<  "Thread-storage for the render of the frame was not set.";
 
         frameArgs = std::make_shared<ParallelRenderArgs>();
@@ -572,10 +573,9 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
         frameArgs->view = args.view;
         frameArgs->isSequentialRender = false;
         frameArgs->isRenderResponseToUserInteraction = true;
-        tls->frameArgs.push_back(frameArgs);
+        FrameArgsToken(this, frameArgs).leaveInstalled();
     } else {
-        //The hash must not have changed if we did a pre-pass.
-        frameArgs = tls->frameArgs.back();
+        // The hash must not have changed if we did a pre-pass.
         abortInfo = frameArgs->abortInfo.lock();
         assert(!frameArgs->request || frameArgs->nodeHash == frameArgs->request->nodeHash);
     }
@@ -1306,8 +1306,38 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
             rectsLeftToRender.push_back(renderFullScaleThenDownscale ? upscaledImageBounds : downscaledImageBounds);
         }
     } else {
-        if ( isDuringPaintStroke && !lastStrokePixelRoD.isNull() ) {
-            fillGrownBoundsWithZeroes = true;
+        fillGrownBoundsWithZeroes = isDuringPaintStroke && !lastStrokePixelRoD.isNull();
+
+        /*
+         * Another thread might have allocated the same image in the cache but with another RoI, make sure
+         * it is big enough for us, or resize it to our needs.
+         * Growing in place would swap the buffer of an image other renders hold and read; a grown copy takes
+         * its place in the cache instead. That also takes no write lock on it, which a caller of getImage()
+         * holding it for read would deadlock on.
+         * This must happen before the bitmap marker below is built: it reserves and later publishes the
+         * rectangles on the images it is given, and the render writes into the grown copy.
+         */
+        const RectI& cachedBoundsNeeded = renderFullScaleThenDownscale ? upscaledImageBounds : downscaledImageBounds;
+        for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::iterator it2 = layersToRender->layers.begin();
+             it2 != layersToRender->layers.end(); ++it2) {
+            // A partial hit on an OpenGL render is dropped below, and textures cannot be grown.
+            if (layersToRender->useOpenGL || !it2->second.fullscaleImage || (it2->second.fullscaleImage->getStorageMode() == eStorageModeGLTex) || it2->second.fullscaleImage->getBounds().contains(cachedBoundsNeeded)) {
+                continue;
+            }
+            // The cached image's RoD may differ from this one even though the hash is the same (seen with Roto).
+            RectD cachedRod = it2->second.fullscaleImage->getRoD();
+            if (cachedRod != rod) {
+                cachedRod.merge(rod);
+                it2->second.fullscaleImage->setRoD(cachedRod);
+            }
+            const ImagePtr cachedImage = it2->second.fullscaleImage;
+            if (Image::ensureBoundsByCopy(&it2->second.fullscaleImage, cachedBoundsNeeded, fillGrownBoundsWithZeroes, fillGrownBoundsWithZeroes) && (it2->second.downscaleImage == cachedImage)) {
+                it2->second.downscaleImage = it2->second.fullscaleImage;
+            }
+        }
+        isLayerCached = layersToRender->layers.begin()->second.fullscaleImage;
+
+        if (fillGrownBoundsWithZeroes) {
             //Clear the bitmap of the cached image in the portion of the last stroke to only recompute what's needed
             for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::iterator it2 = layersToRender->layers.begin();
                  it2 != layersToRender->layers.end(); ++it2) {
@@ -1397,7 +1427,7 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                 if (!input) {
                     continue;
                 }
-                ParallelRenderArgsPtr inputFrameArgs = input->getParallelRenderArgsTLS();
+                ParallelRenderArgsPtr inputFrameArgs = input->getFrameArgs();
                 U64 inputHash = (inputFrameArgs) ? inputFrameArgs->nodeHash : input->getHash();
                 StatusEnum stat = input->getRegionOfDefinition_public(inputHash, args.time, args.scale, args.view, &inputRod, nullptr);
                 if ( (stat != eStatusOK) && !inputRod.isNull() ) {
@@ -1615,50 +1645,12 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
                  * There might be a situation  where the RoD of the cached image
                  * is not the same as this RoD even though the hash is the same.
                  * This seems to happen with the Roto node. This hack just updates the
-                 * image's RoD to prevent an assert from triggering in the call to ensureBounds() below.
+                 * image's RoD.
                  */
                 RectD oldRod = it->second.fullscaleImage->getRoD();
                 if (oldRod != rod) {
                     oldRod.merge(rod);
                     it->second.fullscaleImage->setRoD(oldRod);
-                }
-
-
-                /*
-                 * Another thread might have allocated the same image in the cache but with another RoI, make sure
-                 * it is big enough for us, or resize it to our needs.
-                 */
-                bool hasResized;
-
-                if (args.calledFromGetImage) {
-                    /*
-                     * When called from EffectInstance::getImage() we must prevent from taking any write lock because
-                     * this image probably already has a lock for read on it. To overcome the write lock, we resize in a
-                     * separate image and then we swap the images in the cache directly, without taking the image write lock.
-                     */
-
-                    hasResized = it->second.fullscaleImage->copyAndResizeIfNeeded(renderFullScaleThenDownscale ? upscaledImageBounds : downscaledImageBounds, fillGrownBoundsWithZeroes, fillGrownBoundsWithZeroes, &it->second.cacheSwapImage);
-                    if (hasResized) {
-                        ///Work on the swapImg and then swap in the cache
-                        ImagePtr swapImg = it->second.cacheSwapImage;
-                        it->second.cacheSwapImage = it->second.fullscaleImage;
-                        it->second.fullscaleImage = swapImg;
-                        if (!renderFullScaleThenDownscale) {
-                            it->second.downscaleImage = it->second.fullscaleImage;
-                        }
-                    }
-                } else {
-                    hasResized = it->second.fullscaleImage->ensureBounds(renderFullScaleThenDownscale ? upscaledImageBounds : downscaledImageBounds,
-                                                                         fillGrownBoundsWithZeroes, fillGrownBoundsWithZeroes);
-                }
-
-
-                /*
-                 * Note that the image has been resized and the bitmap explicitly set to 1 in the newly allocated portions (for rotopaint purpose).
-                 * We must reset it back to 0 in the last stroke tick RoD.
-                 */
-                if (hasResized && fillGrownBoundsWithZeroes) {
-                    it->second.fullscaleImage->clearBitmap(lastStrokePixelRoD);
                 }
 
                 if ( renderFullScaleThenDownscale && (it->second.fullscaleImage->getMipmapLevel() == 0) ) {
@@ -1971,17 +1963,6 @@ EffectInstance::renderRoI(const RenderRoIArgs& args,
 
     //bool multiplanar = isMultiPlanar();
     for (std::map<ImageLayerDesc, EffectInstance::LayerToRender>::iterator it = layersToRender->layers.begin(); it != layersToRender->layers.end(); ++it) {
-        //If we have worked on a local swapped image, swap it in the cache
-        if (it->second.cacheSwapImage && keepRenderedInCache) {
-            const CacheAPI* cache = it->second.cacheSwapImage->getCacheAPI();
-            const Cache<Image>* imgCache = dynamic_cast<const Cache<Image>*>(cache);
-            if (imgCache) {
-                Cache<Image>* ccImgCache = const_cast<Cache<Image>*>(imgCache);
-                assert(ccImgCache);
-                ccImgCache->swapOrInsert(it->second.cacheSwapImage, it->second.fullscaleImage);
-            }
-        }
-
         //We have to return the downscale image, so make sure it has been computed
         if ((renderRetCode != eRenderRoIStatusRenderFailed) && renderFullScaleThenDownscale && (it->second.fullscaleImage->getMipmapLevel() != mipmapLevel) && !hasSomethingToRender) {
             assert(it->second.fullscaleImage->getMipmapLevel() == 0);
@@ -2194,6 +2175,8 @@ EffectInstance::renderRoIInternal(EffectInstance* self,
             tiledArgs->layers = layersToRender;
             tiledArgs->compsNeeded = compsNeeded;
             tiledArgs->frameContext = AppTLS::currentFrameContext();
+            tiledArgs->frameArgsHead = FrameArgsOverlay::currentHead();
+            tiledArgs->scheduledTask = AppTLS::isRunningScheduledTask();
             tiledArgs->isolatedJob = IsolatedJob::current();
 
 #ifdef NATRON_HOSTFRAMETHREADING_SEQUENTIAL

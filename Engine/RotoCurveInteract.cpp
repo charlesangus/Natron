@@ -68,6 +68,7 @@ RotoCurveInteract::RotoCurveInteract(EffectInstance* host)
     , cpsPivotSelection()
     , sketchSamples()
     , closingTangentDrag(false)
+    , smoothingInsertedPoint(false)
     , transformMode()
     , builtBezier()
     , bezierBeingDragged()
@@ -434,11 +435,11 @@ RotoCurveInteract::drawSelectedCp(double time,
     leftDeriv.z = rightDeriv.z = 1.;
     cp->getLeftBezierPointAtTime(true, time, ViewIdx(0), &leftDeriv.x, &leftDeriv.y);
     cp->getRightBezierPointAtTime(true, time, ViewIdx(0), &rightDeriv.x, &rightDeriv.y);
-    leftDeriv = Transform::matApply(transform, leftDeriv);
-    rightDeriv = Transform::matApply(transform, rightDeriv);
+    leftDeriv = Transform::matApplyProjected(transform, leftDeriv);
+    rightDeriv = Transform::matApplyProjected(transform, rightDeriv);
 
     bool drawLeftHandle = leftDeriv.x != x || leftDeriv.y != y;
-    bool drawRightHandle = rightDeriv.y != x || rightDeriv.y != y;
+    bool drawRightHandle = rightDeriv.x != x || rightDeriv.y != y;
     glBegin(GL_POINTS);
     if (drawLeftHandle) {
         if (colorLeftTangent) {
@@ -906,16 +907,24 @@ RotoCurveInteract::removeItemFromSelection(const RotoDrawableItemPtr& b)
 static void
 handleControlPointMaximum(double time,
                           const BezierCP& p,
+                          const Transform::Matrix3x3& transform,
                           double* l,
                           double* b,
                           double* r,
                           double* t)
 {
-    double x, y, xLeft, yLeft, xRight, yRight;
+    Transform::Point3D pos(0., 0., 1.), left(0., 0., 1.), right(0., 0., 1.);
 
-    p.getPositionAtTime(true, time, ViewIdx(0), &x, &y);
-    p.getLeftBezierPointAtTime(true, time, ViewIdx(0), &xLeft, &yLeft);
-    p.getRightBezierPointAtTime(true, time, ViewIdx(0), &xRight, &yRight);
+    p.getPositionAtTime(true, time, ViewIdx(0), &pos.x, &pos.y);
+    p.getLeftBezierPointAtTime(true, time, ViewIdx(0), &left.x, &left.y);
+    p.getRightBezierPointAtTime(true, time, ViewIdx(0), &right.x, &right.y);
+    pos = Transform::matApplyProjected(transform, pos);
+    left = Transform::matApplyProjected(transform, left);
+    right = Transform::matApplyProjected(transform, right);
+
+    const double x = pos.x, y = pos.y;
+    const double xLeft = left.x, yLeft = left.y;
+    const double xRight = right.x, yRight = right.y;
 
     *r = std::max(x, *r);
     *l = std::min(x, *l);
@@ -2105,10 +2114,18 @@ RotoCurveInteract::computeSelectedCpsBBOX()
 
     double l = std::numeric_limits<int>::max(), r = std::numeric_limits<int>::min();
     double b = std::numeric_limits<int>::max(), t = std::numeric_limits<int>::min();
+    // The box is drawn and dragged where the points are drawn, through their shape's transform.
+    const Bezier* lastCurve = 0;
+    Transform::Matrix3x3 transform;
     for (SelectedCPs::iterator it = selectedCps.begin(); it != selectedCps.end(); ++it) {
-        handleControlPointMaximum(time, *(it->first), &l, &b, &r, &t);
+        const BezierPtr curve = it->first->getBezier();
+        if (curve.get() != lastCurve) {
+            curve->getTransformAtTime(time, &transform);
+            lastCurve = curve.get();
+        }
+        handleControlPointMaximum(time, *(it->first), transform, &l, &b, &r, &t);
         if (it->second) {
-            handleControlPointMaximum(time, *(it->second), &l, &b, &r, &t);
+            handleControlPointMaximum(time, *(it->second), transform, &l, &b, &r, &t);
         }
     }
     selectedCpsBbox.setCoords(l, t, r, b);
@@ -2204,6 +2221,53 @@ RotoCurveInteract::handleControlPointSelection(const std::pair<BezierCPPtr,
     cpBeingDragged = p;
     state = eEventStateDraggingControlPoint;
     evaluateOnPenUp = true; // so that color is restored to normal on pen up, even if there's no motion
+}
+
+void
+RotoCurveInteract::insertPointAndDrag(const BezierPtr& curve,
+                                      int index,
+                                      double t)
+{
+    const int countBefore = curve->getControlPointsCount();
+    pushUndoCommand(new AddPointUndoCommand(shared_from_this(), curve, index, t));
+    evaluateOnPenUp = true;
+
+    BezierCPPtr cp = curve->getControlPointAtIndex(index + 1);
+    if (!cp || (curve->getControlPointsCount() != countBefore + 1)) {
+        return;
+    }
+    cpBeingDragged = std::make_pair(cp, curve->getFeatherPointAtIndex(index + 1));
+    smoothingInsertedPoint = true;
+    state = eEventStateDraggingControlPoint;
+}
+
+void
+RotoCurveInteract::closeDragGesture()
+{
+    smoothingInsertedPoint = false;
+    undoGesture.end();
+    _openDragCommand.reset();
+    endDragRender();
+}
+
+bool
+RotoCurveInteract::abandonInsertedPointDrag()
+{
+    if (!smoothingInsertedPoint || (state != eEventStateDraggingControlPoint)) {
+        return false;
+    }
+    closeDragGesture();
+    if (evaluateOnPenUp) {
+        getCurveContext()->evaluateChange();
+        _host->getApp()->triggerAutoSave();
+        redrawOverlays();
+        evaluateOnPenUp = false;
+    }
+    cpBeingDragged.first.reset();
+    cpBeingDragged.second.reset();
+    state = eEventStateNone;
+
+    return true;
 }
 
 void
@@ -2650,8 +2714,8 @@ RotoCurveInteract::isNearbyFeatherBar(double time,
             (*itCp)->getPositionAtTime(true, time, ViewIdx(0), &controlPoint.x, &controlPoint.y);
             (*itF)->getPositionAtTime(true, time, ViewIdx(0), &featherPoint.x, &featherPoint.y);
 
-            controlPoint = Transform::matApply(transform, controlPoint);
-            featherPoint = Transform::matApply(transform, featherPoint);
+            controlPoint = Transform::matApplyProjected(transform, controlPoint);
+            featherPoint = Transform::matApplyProjected(transform, featherPoint);
             {
                 Point cp, fp;
                 cp.x = controlPoint.x;
@@ -3434,8 +3498,8 @@ RotoCurveInteract::drawOverlay(double time)
                         (*itF)->getPositionAtTime(true, time, ViewIdx(0), &pF.x, &pF.y);
                         pF.z = 1.;
 
-                        p = Transform::matApply(transform, p);
-                        pF = Transform::matApply(transform, pF);
+                        p = Transform::matApplyProjected(transform, p);
+                        pF = Transform::matApplyProjected(transform, pF);
 
                         x = p.x;
                         y = p.y;
@@ -3625,6 +3689,11 @@ RotoCurveInteract::drawOverlay(double time)
         }
     } // GLProtectAttrib a(GL_HINT_BIT | GL_ENABLE_BIT | GL_LINE_BIT | GL_COLOR_BUFFER_BIT | GL_POINT_BIT | GL_CURRENT_BIT);
 
+    // A follow, a transform knob or an expression moves the points without passing through the
+    // interact, so the box is taken from where they are drawn now.
+    if (!selectedCps.empty()) {
+        computeSelectedCpsBBOX();
+    }
     if (showCpsBbox) {
         drawSelectedCpsBBOX();
     }
@@ -3657,16 +3726,18 @@ RotoCurveInteract::drawRippleEditBorder(double screenPixelRatio,
     double insetX = 0.5 * lineWidth * pixelScale.first;
     double insetY = 0.5 * lineWidth * pixelScale.second;
 
-    GLProtectAttrib a(GL_ENABLE_BIT | GL_LINE_BIT | GL_CURRENT_BIT);
-    glDisable(GL_LINE_SMOOTH);
-    glLineWidth(lineWidth);
-    glColor3d(0.9, 0.1, 0.1);
-    glBegin(GL_LINE_LOOP);
-    glVertex2d(view.x1 + insetX, view.y1 + insetY);
-    glVertex2d(view.x2 - insetX, view.y1 + insetY);
-    glVertex2d(view.x2 - insetX, view.y2 - insetY);
-    glVertex2d(view.x1 + insetX, view.y2 - insetY);
-    glEnd();
+    _host->getCurrentViewportForOverlays()->drawInViewportSpace([&]() {
+        GLProtectAttrib a(GL_ENABLE_BIT | GL_LINE_BIT | GL_CURRENT_BIT);
+        glDisable(GL_LINE_SMOOTH);
+        glLineWidth(lineWidth);
+        glColor3d(0.9, 0.1, 0.1);
+        glBegin(GL_LINE_LOOP);
+        glVertex2d(view.x1 + insetX, view.y1 + insetY);
+        glVertex2d(view.x2 - insetX, view.y1 + insetY);
+        glVertex2d(view.x2 - insetX, view.y2 - insetY);
+        glVertex2d(view.x1 + insetX, view.y2 - insetY);
+        glEnd();
+    });
 }
 
 void
@@ -3889,6 +3960,7 @@ RotoCurveInteract::onOverlayPenDown(double time,
     const bool altPress = altPressClaimed;
     altPressClaimed = false;
     featherBarKeepsTangents = false;
+    smoothingInsertedPoint = false;
 
     // Every command this press and the drag after it push is one undo step, closed at pen up.
     undoGesture.begin();
@@ -4065,8 +4137,7 @@ RotoCurveInteract::onOverlayPenDown(double time,
                 }
                 if (pen == ePenTypeLMB || pen == ePenTypeMMB) {
                     if (ctrlDown && altDown && !shiftDown) {
-                        pushUndoCommand(new AddPointUndoCommand(shared_from_this(), nearbyBezier, nearbyBezierCPIndex, nearbyBezierT));
-                        evaluateOnPenUp = true;
+                        insertPointAndDrag(nearbyBezier, nearbyBezierCPIndex, nearbyBezierT);
                     } else {
                         state = eEventStateDraggingSelectedControlPoints;
                         bezierBeingDragged = nearbyBezier;
@@ -4115,8 +4186,7 @@ RotoCurveInteract::onOverlayPenDown(double time,
                 showMenuForCurve(nearbyBezier);
             } else {
                 if (ctrlDown && altDown && !shiftDown) {
-                    pushUndoCommand(new AddPointUndoCommand(shared_from_this(), nearbyBezier, nearbyBezierCPIndex, nearbyBezierT));
-                    evaluateOnPenUp = true;
+                    insertPointAndDrag(nearbyBezier, nearbyBezierCPIndex, nearbyBezierT);
                 }
             }
             didSomething = true;
@@ -4145,8 +4215,7 @@ RotoCurveInteract::onOverlayPenDown(double time,
                 if (nearbyCP.first) {
                     handleControlPointSelection(nearbyCP);
                 } else {
-                    pushUndoCommand(new AddPointUndoCommand(shared_from_this(), nearbyBezier, nearbyBezierCPIndex, nearbyBezierT));
-                    evaluateOnPenUp = true;
+                    insertPointAndDrag(nearbyBezier, nearbyBezierCPIndex, nearbyBezierT);
                 }
                 didSomething = true;
             }
@@ -4492,7 +4561,11 @@ RotoCurveInteract::onOverlayPenMotion(double time,
         } else {
             std::list<SelectedCP> toDrag;
             toDrag.push_back(cpBeingDragged);
-            pushDragCommand(std::make_shared<MoveControlPointsUndoCommand>(shared_from_this(), toDrag, dx, dy, time));
+            std::shared_ptr<MoveControlPointsUndoCommand> move = std::make_shared<MoveControlPointsUndoCommand>(shared_from_this(), toDrag, dx, dy, time);
+            if (smoothingInsertedPoint) {
+                move->setSmoothsMovedPoints(pixelScale);
+            }
+            pushDragCommand(move);
         }
         evaluateOnPenUp = true;
         computeSelectedCpsBBOX();
@@ -4715,9 +4788,7 @@ RotoCurveInteract::onOverlayPenUp()
     // A claimed Alt press that another overlay took first must not make the next press an Alt one.
     altPressClaimed = false;
 
-    undoGesture.end();
-    _openDragCommand.reset();
-    endDragRender();
+    closeDragGesture();
 
     if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
         return objectSelect->penUp();
@@ -4782,6 +4853,11 @@ RotoCurveInteract::onOverlayKeyDown(Key key)
         ++ctrlDown;
     } else if ((key == Key_Alt_L) || (key == Key_Alt_R)) {
         ++altDown;
+    }
+
+    // The point stays where the last motion put it; undo removes it.
+    if ((key == Key_Escape) && abandonInsertedPointDrag()) {
+        return true;
     }
 
     if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
@@ -4865,6 +4941,7 @@ RotoCurveInteract::onOverlayFocusLost()
     shiftDown = 0;
     ctrlDown = 0;
     altDown = 0;
+    abandonInsertedPointDrag();
 
     return true;
 } // onOverlayFocusLost

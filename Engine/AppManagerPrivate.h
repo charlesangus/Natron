@@ -53,6 +53,7 @@
 #include "Engine/FrameEntry.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/GenericSchedulerThreadWatcher.h"
+#include "Engine/GeoDetailCacheEntry.h"
 #include "Engine/GpuContext.h"
 #include "Engine/Image.h"
 #include "Engine/TLSHolder.h"
@@ -70,6 +71,8 @@ public:
     typedef std::shared_ptr<ImageCache> ImageCachePtr;
     typedef Cache<FrameEntry> FrameEntryCache;
     typedef std::shared_ptr<FrameEntryCache> FrameEntryCachePtr;
+    typedef Cache<GeoDetailCacheEntry> GeoDetailCache;
+    typedef std::shared_ptr<GeoDetailCache> GeoDetailCachePtr;
 
     AppTLS globalTLS;
     AppManager::AppTypeEnum _appType; //< the type of app
@@ -84,6 +87,7 @@ public:
     std::unique_ptr<KnobFactory> _knobFactory; //< knob maker
     ImageCachePtr _nodeCache; //< Images cache
     FrameEntryCachePtr _viewerCache; //< Viewer textures cache
+    GeoDetailCachePtr _geoDetailCache; //< Geometry cache, own memory budget separate from _nodeCache
     mutable QMutex diskCachesLocationMutex;
     QString diskCachesLocation;
     std::unique_ptr<ProcessInputChannel> _backgroundIPC; //< object used to communicate with the main app

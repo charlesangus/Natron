@@ -363,6 +363,8 @@ public:
     // The first Scene Graph panel, "sceneGraph", which closing only hides.
     SceneGraphPanel* getSceneGraphPanel() const;
 
+    GeoSpreadsheetPanel* getGeoSpreadsheetPanel() const;
+
     // A further Scene Graph panel following the active viewer, not yet in a pane. scriptName, a
     // layout's sceneGraph<N> with N >= 2, is used when no tab has it; otherwise the lowest free N is.
     SceneGraphPanel* addNewSceneGraphPanel(const std::string& scriptName = std::string());

@@ -1724,6 +1724,16 @@ Settings::initializeKnobsCaching()
                                            "Past it, an output is not kept on disk and a warning is logged once."));
     _cachingTab->addKnob(_maxDiskCacheNodeGB);
 
+    _maxGeometryCacheGB = AppManager::createKnob<KnobInt>(this, tr("Max Geometry Cache (GiB)"));
+    _maxGeometryCacheGB->setName("maxGeometryCache");
+    _maxGeometryCacheGB->disableSlider();
+    _maxGeometryCacheGB->setMinimum(0);
+    _maxGeometryCacheGB->setMaximum(100);
+    _maxGeometryCacheGB->setHintToolTip(tr("The maximum size that may be used in RAM by the geometry cache (in GiB). "
+                                           "This is a separate budget from the image caches above, "
+                                           "so that large geometry cannot evict them."));
+    _cachingTab->addKnob(_maxGeometryCacheGB);
+
     _diskCachePath = AppManager::createKnob<KnobPath>( this, tr("Disk cache path") );
     _diskCachePath->setName("diskCachePath");
     _diskCachePath->setMultiPath(false);
@@ -1965,6 +1975,7 @@ Settings::setDefaultValues()
     _unreachableRAMPercent->setDefaultValue(20); // see https://github.com/NatronGitHub/Natron/issues/486
     _maxViewerDiskCacheGB->setDefaultValue(5, 0);
     _maxDiskCacheNodeGB->setDefaultValue(10, 0);
+    _maxGeometryCacheGB->setDefaultValue(2, 0);
     _diskTierSize->setDefaultValue(20, 0);
     //_diskCachePath
     setCachingLabels();
@@ -2678,6 +2689,10 @@ Settings::onKnobValueChanged(KnobI* k,
         if (!_restoringSettings) {
             appPTR->setNodeCacheDiskTierSize(getDiskTierSizeBytes());
         }
+    } else if (k == _maxGeometryCacheGB.get()) {
+        if (!_restoringSettings) {
+            appPTR->setApplicationsCachesMaximumGeoDetailCacheSize(getMaximumGeoDetailCacheSize());
+        }
     } else if (k == _maxRAMPercent.get()) {
         if (!_restoringSettings) {
             appPTR->setApplicationsCachesMaximumMemoryPercent( getRamMaximumPercent() );
@@ -2781,6 +2796,12 @@ Settings::onKnobValueChanged(KnobI* k,
 
     return ret;
 } // onKnobValueChanged
+
+U64
+Settings::getMaximumGeoDetailCacheSize() const
+{
+    return (U64)(_maxGeometryCacheGB->getValue()) * 1024 * 1024 * 1024;
+}
 
 ////////////////////////////////////////////////////////
 // "Viewers" pane
@@ -3759,6 +3780,9 @@ Settings::getEdgeKindColor(DataKindEnum kind,
         return true;
     case eDataKindRaw:
         getEdgeRawColor(r, g, b);
+        return true;
+    case eDataKindGeometry:
+        getNative3DGroupColor(r, g, b);
         return true;
     case eDataKindImage:
     case eDataKindPolymorphic:

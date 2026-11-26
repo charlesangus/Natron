@@ -32,6 +32,7 @@
 #include <QtCore/QStringList>
 
 #include <functional>
+#include <memory>
 #include <string>
 
 #include "Engine/EngineFwd.h"
@@ -39,6 +40,9 @@
 #include "Gui/GuiFwd.h"
 
 NATRON_NAMESPACE_ENTER
+
+struct GeoComponentSelection;
+class SceneViewport;
 
 /**
  * @brief What the 3D view and the Scene Graph panel do with the prims selected in a viewer: write
@@ -186,6 +190,45 @@ QString bakeBlocker(ViewerTab* viewer);
  * and returns false.
  **/
 bool bakeToNode(Gui* gui, ViewerTab* viewer);
+
+/**
+ * @brief Opens the tab menu listing the node types whose first input takes geometry. The node
+ * chosen reads viewed through that input and takes its place in every output of viewed that can
+ * read it, the viewer among them, as the node graph inserts a node after the selected one. When
+ * the node declares a group knob (NodeSpec::geoGroupKnob), selection, picked on detail, is
+ * carried to a class the group selects, written into it, and that class chosen in its group type
+ * knob. Creating, connecting and setting the group are one undo step. An empty selection, or no
+ * detail, leaves the group empty.
+ **/
+void createFromComponents(Gui* gui, const NodePtr& viewed, const GeoDetailConstPtr& detail, const GeoComponentSelection& selection);
+
+/**
+ * @brief Reselect for Current Node for one 3D view. begin() applies when exactly one node with a
+ * group (NodeSpec::geoGroupKnob) is selected in the node graph of the view's viewer: it decodes
+ * the node's group on the geometry of its first geometry input, shown in the view's component
+ * selection in the matching pick mode. The view shows that input meanwhile, so the numbers are
+ * those of the geometry on screen; what it showed is put back when reselecting ends. commit()
+ * writes the selection and its class into the group as Create from Selection does, as one undo
+ * step, and cancel() leaves the node as it is. In any other state begin() says why in the status
+ * bar and does nothing.
+ **/
+class ReselectSession {
+public:
+    ReselectSession(Gui* gui, ViewerTab* tab, SceneViewport* view);
+    ~ReselectSession();
+
+    ReselectSession(const ReselectSession&) = delete;
+    ReselectSession& operator=(const ReselectSession&) = delete;
+
+    void begin();
+    void commit(const GeoComponentSelection& selection);
+    void cancel();
+
+private:
+    struct Implementation;
+
+    const std::unique_ptr<Implementation> _imp;
+};
 
 /**
  * @brief Shows text in gui's status bar for a few seconds.

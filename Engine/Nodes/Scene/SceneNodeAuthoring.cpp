@@ -2295,12 +2295,8 @@ getLiveTextureSource(const EffectInstance& consumer,
 
         return true;
     }
-    NodePtr node = connected->getNode();
-    const double time = consumer.getCurrentTime();
     // A disabled node renders as its preferred input, so the texture shows what the render would.
-    while (node && node->isNodeDisabled(time)) {
-        node = node->getPreferredInputNode();
-    }
+    const NodePtr node = resolveDisabledNode(connected->getNode(), consumer.getCurrentTime());
     const EffectInstancePtr input = node ? node->getEffectInstance() : EffectInstancePtr();
     if (!input) {
         return false;

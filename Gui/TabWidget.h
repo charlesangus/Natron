@@ -314,6 +314,8 @@ public Q_SLOTS:
 
     void newSceneGraphHere();
 
+    void moveGeoSpreadsheetHere();
+
     void onSplitHorizontally()
     {
         splitHorizontally();

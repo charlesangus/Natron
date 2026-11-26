@@ -27,6 +27,7 @@
 #include "DataKindTestEffect.h"
 #include "DeepRenderTestEffect.h"
 #include "Engine/Nodes/Test/OverlayTestNode.h"
+#include "GeoRenderTestEffect.h"
 #include "IdentityHopTestEffect.h"
 #include "InputChangedFetchTestEffect.h"
 #include "MultiplanarTestEffect.h"
@@ -103,6 +104,9 @@ registerDataKindTestPlugins()
     registerTestBuiltInPlugin<DataKindTestRawSource>();
     registerTestBuiltInPlugin<DataKindTestRawSink>();
     registerTestBuiltInPlugin<DataKindTestRawAdapterSink>();
+    registerTestBuiltInPlugin<DataKindTestGeometrySource>();
+    registerTestBuiltInPlugin<DataKindTestGeometrySink>();
+    registerTestBuiltInPlugin<DataKindTestSceneSink>();
 }
 
 void
@@ -118,6 +122,16 @@ registerDeepRenderTestPlugins()
     registerTestBuiltInPlugin<DeepSyntheticSource>();
     registerTestBuiltInPlugin<DeepLayersStub>();
     registerTestBuiltInPlugin<ImageRenderTestSource>();
+}
+
+void
+registerGeoRenderTestPlugins()
+{
+    // Geometry sources and operators so GeoRender_Test.cpp can drive a real evaluateGeometry()
+    // pull, including a time-varying and a previous-frame input.
+    registerTestBuiltInPlugin<GeoRenderTestTriangle>();
+    registerTestBuiltInPlugin<GeoRenderTestTranslate>();
+    registerTestBuiltInPlugin<GeoRenderTestPreviousFrame>();
 }
 
 void
@@ -316,6 +330,7 @@ GTEST_API_ int main(int argc, char **argv)
     }
     registerDataKindTestPlugins();
     registerDeepRenderTestPlugins();
+    registerGeoRenderTestPlugins();
     registerSceneTestPlugins();
     registerMultiplanarTestPlugins();
     registerGraphScalingTestPlugins();

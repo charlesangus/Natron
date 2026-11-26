@@ -108,3 +108,4 @@ Fix the product races in our code or the MoonRay fork (M325 - MoonRay Fork: char
   - **Wakeup test:** waits on the ender thread's sleep state instead of a 200 ms sleep.
   - **Forks:** arras4_core 9d549db579 (spawn inside the try; the connect thread polls a cancel flag and is joined before abandon/stop); hdMoonray 15dd8726ee (status string by value under its own `mStatusMutex`, since `mMutex` is held across connect). Super-repo `natron/v2026.29.1-m496` d169038bc9 is the new pin.
 - 2026-11-26 (PM) — m496-gate7 green on 9a0b0f3939 with image natron-dev:c49a3ace55d98095 (pin d169038bc9): the three stall tests pass (renderEngine bound 7.9 s, refine bound 15.9 s, the lost-wakeup test). PR #387 merging once PR CI passes.
+- 2026-11-26 (PM) — PR #387 merged to main. M496 done. Main now pins MoonRay d169038bc9 (natron/v2026.29.1-m496); see the inbox note on the diverged openmoonray branches.

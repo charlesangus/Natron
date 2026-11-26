@@ -46,3 +46,4 @@ Fixes from the user's UAT of the F18 - Geometry Loops And Solver AppImage (2026-
 **Verification gate:** f18 gate with the M402-M404 GUI scripts plus the new ones; screenshots to the user.
 
 ## Decisions
+- 2026-11-26 (PM) — Claimed; lane `.worktrees/m615` off the feature branch; all tasks dispatched to one opus implementer.

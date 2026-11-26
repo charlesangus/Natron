@@ -28,3 +28,4 @@ Fixes from the user's UAT of the F16 - User Knob Editor AppImage (2026-11-26), n
 **Verification gate:** f16 gate with the M373 GUI scripts plus the new one; screenshots OK'd by the user.
 
 ## Decisions
+- 2026-11-26 (PM) — Claimed; lane `.worktrees/m614` off the feature branch; all tasks dispatched to one opus implementer.

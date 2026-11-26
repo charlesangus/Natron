@@ -47,3 +47,9 @@ Fixes from the user's UAT of the F18 - Geometry Loops And Solver AppImage (2026-
 
 ## Decisions
 - 2026-11-26 (PM) — Claimed; lane `.worktrees/m615` off the feature branch; all tasks dispatched to one opus implementer.
+- 2026-11-26 (PM) — All tasks implemented in the next commit; m615-gate1 (--appimage, M402/M404 GUI scripts plus m615_loops/m615_geofile) queued.
+  - **Shared loop interface:** one interface and registry for image, For-Each and Solver blocks. Loop names are unique across kinds (they share `loops.<name>.*`), and new or pasted blocks get the first free `loop<N>`.
+  - **Solver variables:** iteration (substeps since the start frame), numiterations, count, t, value, frame, substep, numsubsteps, dt.
+  - **Progress and cache:** progress shows when more than 2 frames need solving; cancel keeps the solved frames; the timeline marks kept frames; the viewer shows a "cached sim frame" label.
+  - **GeoFile:** takes Read's frame knobs and logic wholesale. The old Missing Frames knob is gone (clean break). Black means empty geometry; the nearest-frame tie now goes to the next frame, as in Read; a file changed on disk is an error.
+  - **`EffectInstance::onFilesReloaded()`:** a new hook so GeoFile re-lists its frames after a GeoFileCache write. It is a header change, so expect a full rebuild.

@@ -28,6 +28,8 @@ BSDF = "cycles_principled_bsdf"
 
 try:
     import NatronEngine
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QFocusEvent, QMouseEvent
     from PySide6.QtWidgets import QApplication
 
     import guitest as gt
@@ -59,6 +61,32 @@ try:
                     QApplication.processEvents()
                     return True
         return False
+
+    def root_graph():
+        graphs = [w for w in gt.widgets_of("NodeGraph") if not w.objectName() and w.isVisible()]
+        return graphs[0] if graphs else None
+
+    def open_graph(group):
+        """Shows group's graph tab, diving into the group from the root graph (Shift+double-click)
+        when it has none: a group made without a focused graph, or loaded from a project, gets its
+        graph without a tab."""
+        if show_graph_tab(group.getLabel()):
+            return True
+        root = root_graph()
+        if root is None:
+            return False
+        # The dive-in appends the tab to the pane of the last focused graph.
+        QApplication.sendEvent(root, QFocusEvent(QEvent.FocusIn, Qt.OtherFocusReason))
+        x, y = group.getPosition()[0:2]
+        w, h = group.getSize()[0:2]
+        centre = QPointF(x + w / 2.0, y + h / 2.0)
+        root.centerOn(centre)
+        QApplication.processEvents()
+        pos = QPointF(root.mapFromScene(centre))
+        event = QMouseEvent(QEvent.MouseButtonDblClick, pos, Qt.LeftButton, Qt.LeftButton, Qt.ShiftModifier)
+        QApplication.sendEvent(root.viewport(), event)
+        QApplication.processEvents()
+        return show_graph_tab(group.getLabel())
 
     def input_index(node, port):
         for i in range(node.getMaxInputCount()):
@@ -96,7 +124,7 @@ try:
         builder = create(BUILDER, 0, 0)
         builder_name = builder.getScriptName()
         yield ("sleep", SETTLE_MS)
-        gt.require(show_graph_tab(builder.getLabel()), "the builder's graph has a tab")
+        gt.require(open_graph(builder), "the builder's graph has a tab")
         texture = create(TEXTURE, 0, 0, builder)
         math = create(MATH, 0, 300, builder)
         bsdf = create(BSDF, 450, 0, builder)
@@ -138,7 +166,7 @@ try:
                                        (names[1], "value", nodes[3], "base_color")))
         x, y = nodes[0].getPosition()[0:2]
         check(abs(x + 150) < 1 and abs(y - 120) < 1, "the texture kept its moved position (got %r, %r)" % (x, y))
-        gt.require(show_graph_tab(reloaded.getLabel()), "the reloaded builder's graph has a tab")
+        gt.require(open_graph(reloaded), "the reloaded builder's graph has a tab")
         ok = yield ("until", lambda: graph_of(reloaded) is not None and graph_of(reloaded).isVisible(), 10.0)
         gt.require(ok, "the reloaded builder's graph is shown")
         graph = graph_of(reloaded)

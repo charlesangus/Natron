@@ -25,6 +25,7 @@ import traceback
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
 
 STARTUP_TIMEOUT_S = 60.0
+DESTROY_TIMEOUT_S = 30.0
 WATCHDOG_S = 420
 SETTLE_MS = 500
 RENDER_SCALE = 0.75
@@ -137,11 +138,18 @@ try:
         QApplication.sendEvent(graph.viewport(), ev)
         QApplication.processEvents()
 
+    # Destroying a node that is still processing (a Viewer rendering its inputs) only finishes once
+    # its processing has quit, so its GUI can outlive the call; the names tell when it has gone.
     def clear_all(nodes):
         app.clearSelection()
+        names = [n.getScriptName() for n in nodes]
         for n in nodes:
             n.destroy(False)
         QApplication.processEvents()
+        return names
+
+    def all_gone(names):
+        return all(app.getNode(name) is None for name in names)
 
     def sources(count, y=0.0):
         return [create("Constant", "src%d" % i, i * COL_STEP, y) for i in range(count)]
@@ -300,7 +308,9 @@ try:
 
             if cleanup is not None:
                 cleanup()
-            clear_all(nodes)
+            names = clear_all(nodes)
+            gone = yield ("until", lambda: all_gone(names), DESTROY_TIMEOUT_S)
+            gt.require(gone, "case %s: its nodes are destroyed before the next case" % case)
             yield ("sleep", 200)
 
         faulthandler.cancel_dump_traceback_later()

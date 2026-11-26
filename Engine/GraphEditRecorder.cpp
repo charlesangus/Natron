@@ -211,8 +211,6 @@ projectDataOp(const Project& project)
         }
         Serialization::LayerRegistryEntrySerialization entry;
         entry.layer.layerID = layer.desc.getLayerID();
-        entry.layer.layerLabel = layer.desc.getLayerLabel();
-        entry.layer.channelsLabel = layer.desc.getChannelsLabel();
         entry.layer.channels = layer.desc.getChannels();
         entry.origin = (int)layer.origin;
         op.layers->push_back(entry);

@@ -180,7 +180,7 @@ NewLayerDialog::NewLayerDialog(const ImageLayerDesc& original,
     _imp->mainLayout->addWidget(_imp->buttons, 7, 0, 1, 2);
 
     if (original.getNumComponents() != 0) {
-        _imp->layerEdit->setText(QString::fromUtf8(original.getLayerLabel().c_str()));
+        _imp->layerEdit->setText(QString::fromUtf8(original.getLayerID().c_str()));
 
         const std::vector<std::string>& channels = original.getChannels();
         if (channels.size() == 1) {
@@ -233,12 +233,7 @@ NewLayerDialog::getComponents() const
         }
     }
 
-    std::string compsGlobal;
-    for (std::size_t i = 0; i < comps.size(); ++i) {
-        compsGlobal += comps[i];
-    }
-
-    return ImageLayerDesc(layer, layer, compsGlobal, comps);
+    return ImageLayerDesc(layer, comps);
 } // NewLayerDialog::getComponents
 
 void

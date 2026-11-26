@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "GpuBuffer.h"
 #include "GpuDevice.h"
 #include "GpuTestDevice.h"
 
@@ -69,6 +70,90 @@ GPU_TEST_F(GpuDeviceTest, BudgetIsNonZero)
         total += b.budget;
     }
     EXPECT_GT(total, 0u);
+}
+
+namespace {
+
+VkFence
+createFence(GpuDevice& dev, VkFenceCreateFlags flags)
+{
+    VkFenceCreateInfo fi { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    fi.flags = flags;
+    VkFence fence = VK_NULL_HANDLE;
+    EXPECT_EQ(vkCreateFence(dev.device(), &fi, nullptr, &fence), VK_SUCCESS);
+    return fence;
+}
+
+} // namespace
+
+GPU_TEST_F(GpuDeviceTest, RetiringWorkKeepsItsHoldingsUntilTheFenceSignals)
+{
+    const VkFence fence = createFence(*dev, 0);
+    ASSERT_NE(fence, VK_NULL_HANDLE);
+    auto holding = std::make_shared<int>(7);
+    const std::weak_ptr<int> watch = holding;
+    dev->retireWhenSignalled(fence, std::move(holding));
+    EXPECT_TRUE(dev->hasRetiringWork());
+
+    dev->reapRetired();
+    EXPECT_FALSE(watch.expired());
+    EXPECT_TRUE(dev->hasRetiringWork());
+
+    ASSERT_TRUE(dev->submit(QueueKind::Compute, {}, fence).ok());
+    dev->finishRetiring();
+    EXPECT_TRUE(watch.expired());
+    EXPECT_FALSE(dev->hasRetiringWork());
+    EXPECT_FALSE(dev->hasAbandonedWork());
+}
+
+GPU_TEST_F(GpuDeviceTest, RetiringSignalledFenceReleasesAtNextReap)
+{
+    const VkFence fence = createFence(*dev, VK_FENCE_CREATE_SIGNALED_BIT);
+    ASSERT_NE(fence, VK_NULL_HANDLE);
+    auto holding = std::make_shared<int>(7);
+    const std::weak_ptr<int> watch = holding;
+    dev->retireWhenSignalled(fence, std::move(holding));
+
+    dev->reapRetired();
+    EXPECT_TRUE(watch.expired());
+    EXPECT_FALSE(dev->hasRetiringWork());
+}
+
+GPU_TEST_F(GpuDeviceTest, DestroyWhenRetiredWaitsForEveryPendingFence)
+{
+    const VkFence first = createFence(*dev, 0);
+    const VkFence second = createFence(*dev, 0);
+    ASSERT_NE(first, VK_NULL_HANDLE);
+    ASSERT_NE(second, VK_NULL_HANDLE);
+    GpuBuffer used;
+    GpuBuffer unused;
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(*dev, 4096, kGpuBufferDefaultUsage, used).ok());
+    ASSERT_TRUE(GpuBuffer::createDeviceLocal(*dev, 4096, kGpuBufferDefaultUsage, unused).ok());
+    dev->retireWhenSignalled(first, nullptr, { used.buffer() });
+    dev->retireWhenSignalled(second, nullptr, { used.buffer() });
+    const uint64_t mark = dev->retiringMark(used.buffer());
+    EXPECT_NE(mark, 0u);
+    EXPECT_EQ(dev->retiringMark(unused.buffer()), 0u);
+
+    bool destroyed = false;
+    dev->destroyWhenRetired([&destroyed]() { destroyed = true; });
+    EXPECT_FALSE(destroyed);
+
+    ASSERT_TRUE(dev->submit(QueueKind::Compute, {}, first).ok());
+    ASSERT_TRUE(dev->waitIdle().ok());
+    dev->reapRetired();
+    EXPECT_FALSE(destroyed);
+    EXPECT_FALSE(dev->retiredThrough(mark));
+
+    ASSERT_TRUE(dev->submit(QueueKind::Compute, {}, second).ok());
+    dev->finishRetiring();
+    EXPECT_TRUE(destroyed);
+    EXPECT_TRUE(dev->retiredThrough(mark));
+    EXPECT_EQ(dev->retiringMark(used.buffer()), 0u);
+
+    bool immediate = false;
+    dev->destroyWhenRetired([&immediate]() { immediate = true; });
+    EXPECT_TRUE(immediate);
 }
 
 namespace {

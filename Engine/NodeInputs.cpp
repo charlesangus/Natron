@@ -27,9 +27,11 @@
 
 #include <QDebug>
 #include <QThread>
+
 #include <algorithm>
 #include <atomic>
 #include <list>
+#include <ofxImageEffect.h>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>

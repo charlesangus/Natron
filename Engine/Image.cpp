@@ -33,6 +33,7 @@
 
 #include <QDebug>
 
+#include "Engine/Cache.h"
 #include "Engine/CacheDiskTier.h"
 #include "Engine/ContentHasher.h"
 
@@ -586,6 +587,12 @@ Bitmap::markForRendering(const RectI & roi)
     return markFor(roi, PIXEL_UNAVAILABLE);
 }
 
+void
+Bitmap::clearMarksForRendering()
+{
+    std::replace(_map.begin(), _map.end(), (char)PIXEL_UNAVAILABLE, (char)0);
+}
+
 #endif
 
 void
@@ -842,8 +849,6 @@ Image::diskParamsBytes(const ImageParams& params)
 
     const ImageLayerDesc& components = params.getComponents();
     bytes.putText(components.getLayerID());
-    bytes.putText(components.getLayerLabel());
-    bytes.putText(components.getChannelsLabel());
     const std::vector<std::string>& channels = components.getChannels();
     bytes.put<std::uint32_t>((std::uint32_t)channels.size());
     for (const std::string& channel : channels) {
@@ -863,9 +868,9 @@ Image::diskParamsFromBytes(const std::string& bytes,
     std::uint32_t mipmapLevel, textureTarget, channelCount;
     std::uint8_t isRoDProjectFormat;
     std::int32_t bitDepth, fielding, mode;
-    std::string layerID, layerLabel, channelsLabel;
+    std::string layerID;
 
-    if (!reader.get(&rod.x1) || !reader.get(&rod.y1) || !reader.get(&rod.x2) || !reader.get(&rod.y2) || !reader.get(&par) || !reader.get(&mipmapLevel) || !reader.get(&isRoDProjectFormat) || !reader.get(&bitDepth) || !reader.get(&fielding) || !reader.get(&mode) || !reader.get(&textureTarget) || !reader.getText(&layerID) || !reader.getText(&layerLabel) || !reader.getText(&channelsLabel) || !reader.get(&channelCount) || (channelCount == 0) || (channelCount > bytes.size())) {
+    if (!reader.get(&rod.x1) || !reader.get(&rod.y1) || !reader.get(&rod.x2) || !reader.get(&rod.y2) || !reader.get(&par) || !reader.get(&mipmapLevel) || !reader.get(&isRoDProjectFormat) || !reader.get(&bitDepth) || !reader.get(&fielding) || !reader.get(&mode) || !reader.get(&textureTarget) || !reader.getText(&layerID) || !reader.get(&channelCount) || (channelCount == 0) || (channelCount > bytes.size())) {
         return ImageParamsPtr();
     }
 
@@ -896,7 +901,7 @@ Image::diskParamsFromBytes(const std::string& bytes,
                                          (ImageBitDepthEnum)bitDepth,
                                          (ImageFieldingOrderEnum)fielding,
                                          isRoDProjectFormat != 0,
-                                         ImageLayerDesc(layerID, layerLabel, channelsLabel, channels),
+                                         ImageLayerDesc(layerID, channels),
                                          eStorageModeRAM,
                                          textureTarget);
 }
@@ -1358,7 +1363,34 @@ Image::copyAndResizeIfNeeded(const RectI& newBounds,
     RectI merge = newBounds;
     merge.merge(_bounds);
 
-    resizeInternal(this, _bounds, merge, fillWithBlackAndTransparent, setBitmapTo1, usesBitMap(), output);
+    resizeInternal(this, _bounds, merge, fillWithBlackAndTransparent, setBitmapTo1, getCacheAPI() != NULL, output);
+    copyEntryState(*_header, (*output)->_header.get());
+#if NATRON_ENABLE_TRIMAP
+    // Renders under way write into this image, not into the copy, so what they reserved must be rendered again there.
+    if ((*output)->usesBitMap()) {
+        (*output)->_header->bitmap.clearMarksForRendering();
+    }
+#endif
+
+    return true;
+}
+
+bool
+Image::ensureBoundsByCopy(ImagePtr* image,
+                          const RectI& newBounds,
+                          bool fillWithBlackAndTransparent,
+                          bool setBitmapTo1)
+{
+    assert(image && *image);
+    ImagePtr grown;
+    if (!(*image)->copyAndResizeIfNeeded(newBounds, fillWithBlackAndTransparent, setBitmapTo1, &grown)) {
+        return false;
+    }
+    const Cache<Image>* cache = dynamic_cast<const Cache<Image>*>((*image)->getCacheAPI());
+    if (cache) {
+        const_cast<Cache<Image>*>(cache)->swapOrInsert(*image, grown);
+    }
+    *image = grown;
 
     return true;
 }
@@ -1878,7 +1910,11 @@ std::string
 Image::getFormatString(const ImageLayerDesc& comps,
                        ImageBitDepthEnum depth)
 {
-    std::string s = comps.getUserFacingLabel() + '.' + comps.getChannelsLabel();
+    std::string s = comps.getUserFacingLabel() + '.';
+    const std::vector<std::string>& channels = comps.getChannels();
+    for (std::size_t i = 0; i < channels.size(); ++i) {
+        s.append(channels[i]);
+    }
 
     s.append( getDepthString(depth) );
 

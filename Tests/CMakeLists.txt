@@ -20,7 +20,7 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h ContinuationTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/KeyerMatteReference.h Native/NativeBlurRange.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestWatchdog.h SplineWarpHostTestEffect.h Native/SplineWarpTestCurves.h TestOfxPluginPath.h TestRetiredOfxIds.h ViewerInstanceTestAccess.h)
+set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h ContinuationTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h Flow/FlowTestPlate.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/KeyerMatteReference.h Native/NativeBlurRange.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestWatchdog.h SplineWarpHostTestEffect.h Native/SplineWarpTestCurves.h TestOfxPluginPath.h TestRetiredOfxIds.h TwoPlaneTestEffect.h ViewerInstanceTestAccess.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -68,6 +68,7 @@ set(Tests_SOURCES
     FrameStoreHandoff_Test.cpp
     GeneratorLayer_Test.cpp
     GLScheduler_Test.cpp
+    KnobChangeGLContext_Test.cpp
     GlobalModeKind_Test.cpp
     GlobalModeStroke_Test.cpp
     GpuContext_Test.cpp
@@ -111,6 +112,12 @@ set(Tests_SOURCES
     RotoSelectionProxy_Test.cpp
     PyRotoCreate_Test.cpp
     CurveTrackLink_Test.cpp
+    VectorSampler_Test.cpp
+    VectorFollow_Test.cpp
+    VectorFollowModels_Test.cpp
+    VectorFollowBake_Test.cpp
+    VectorFollowReduce_Test.cpp
+    SplineWarpFollowVectors_Test.cpp
     CurveClipboard_Test.cpp
     BezierEditScaling_Test.cpp
     BezierGuiCopyEquivalence_Test.cpp
@@ -119,8 +126,10 @@ set(Tests_SOURCES
     RippleEditModes_Test.cpp
     RotoUndoGesture_Test.cpp
     RotoDragUndo_Test.cpp
+    RotoOverlayHomography_Test.cpp
     RotoDragRenderThrottle_Test.cpp
     RotoKeyDuringRender_Test.cpp
+    RotoPaintExtraBgRoD_Test.cpp
     StrokeRenderCoalescer_Test.cpp
     Knob_Test.cpp
     LayerKnobsRender_Test.cpp
@@ -136,6 +145,11 @@ set(Tests_SOURCES
     Gpu/CacheStressGpu_Test.cpp
     Gpu/CacheDeviceTier_Test.cpp
     Gpu/RawAmazeGpu_Test.cpp
+    Gpu/GpuFlowPyramid_Test.cpp
+    Gpu/GpuDisFlow_Test.cpp
+    Gpu/GpuTvL1Flow_Test.cpp
+    Gpu/GpuFlowConfidence_Test.cpp
+    Gpu/GpuSplitWork_Test.cpp
     Ai/AiSettings_Test.cpp
     Ai/OrtLoader_Test.cpp
     Ai/OrtTelemetry_Test.cpp
@@ -146,6 +160,7 @@ set(Tests_SOURCES
     Ai/ModelKnob_Test.cpp
     Ai/Segmentation_Test.cpp
     Ai/MaskTrace_Test.cpp
+    Ai/OpticalFlow_Test.cpp
     NodeCategory_Test.cpp
     NodePresetApply_Test.cpp
     TabMenuSettings_Test.cpp
@@ -172,6 +187,7 @@ set(Tests_SOURCES
     ProjectSerialization_Test.cpp
     Serialization/ProjectEquivalence.cpp
     PyKeyTangents_Test.cpp
+    PyVectorFollow_Test.cpp
     PyLinks_Test.cpp
     PyPlugExport_Test.cpp
     PyPlugInstantiate_Test.cpp
@@ -213,6 +229,7 @@ set(Tests_SOURCES
     TimeVaryingLayers_Test.cpp
     TrackerLayer_Test.cpp
     Tracker_Test.cpp
+    TwoPlaneRender_Test.cpp
     TypedPassthrough_Test.cpp
     WeightedInterpolation_Test.cpp
     WriteAllLayers_Test.cpp
@@ -228,6 +245,7 @@ set(Tests_SOURCES
     OfxTestPlugin_Test.cpp
     OverlayDrawList_Test.cpp
     OverlayImage_Test.cpp
+    OverlayPath_Test.cpp
     wmain.cpp
 )
 # Per-node native tests are picked up without editing this list; CONFIGURE_DEPENDS re-globs on
@@ -237,6 +255,9 @@ list(APPEND Tests_SOURCES ${Tests_NATIVE_SOURCES})
 # Same CONFIGURE_DEPENDS auto-pickup for the serialization-boundary tests.
 file(GLOB Tests_SERIALIZATION_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Serialization/*_Test.cpp)
 list(APPEND Tests_SOURCES ${Tests_SERIALIZATION_SOURCES})
+# Same CONFIGURE_DEPENDS auto-pickup for the optical-flow library tests.
+file(GLOB Tests_FLOW_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Flow/*_Test.cpp)
+list(APPEND Tests_SOURCES ${Tests_FLOW_SOURCES})
 # Same CONFIGURE_DEPENDS auto-pickup for the scene (USD) transport tests.
 file(GLOB Tests_SCENE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Scene/*_Test.cpp)
 # Authors the layers of SceneTestEffect.h's stubs, which wmain.cpp registers.
@@ -333,6 +354,7 @@ set(GuiTests_SOURCES
     ColorTrackballReveal_Test.cpp
     ColorTrackballTarget_Test.cpp
     ColorWheelWidget_Test.cpp
+    ComboBox_Test.cpp
     CurveTangentJoin_Test.cpp
     CurveWeightedTangent_Test.cpp
     DisplayLegendColour_Test.cpp
@@ -362,9 +384,14 @@ set(GuiTests_SOURCES
     RotoLatencyProbe_Test.cpp
     RotoItemKnobKeyframes_Test.cpp
     ScaleSliderQWidget_Test.cpp
+    SceneDrawBoxes_Test.cpp
+    SceneDrawFilter_Test.cpp
     SceneGizmo_Test.cpp
     SceneGraphModel_Test.cpp
     SceneGuides_Test.cpp
+    ScenePresentPacer_Test.cpp
+    SceneSelectionActions_Test.cpp
+    SceneSelectionTasks_Test.cpp
     SceneViewport_Test.cpp
     ShuffleMatrix_Test.cpp
     SpinBox_Test.cpp
@@ -376,6 +403,8 @@ set(GuiTests_SOURCES
     UndoHistory_Test.cpp
     ValueKnobEditSession_Test.cpp
     ValueKnobGlobalModeTarget_Test.cpp
+    ViewerPixelGrid_Test.cpp
+    ViewerStaleCueTiming_Test.cpp
     WindowPlacement_Test.cpp
     guimain.cpp
 )
@@ -383,7 +412,7 @@ set(GuiTests_SOURCES
 find_package(Qt6 6.8 CONFIG REQUIRED COMPONENTS Test)
 add_executable(GuiTests ${GuiTests_SOURCES})
 # Build their scenes with OpenUSD, whose headers need the full Python API.
-set_source_files_properties(SceneGizmo_Test.cpp SceneGraphModel_Test.cpp SceneGuides_Test.cpp SceneViewport_Test.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
+set_source_files_properties(SceneDrawBoxes_Test.cpp SceneDrawFilter_Test.cpp SceneGizmo_Test.cpp SceneGraphModel_Test.cpp SceneGuides_Test.cpp SceneSelectionTasks_Test.cpp SceneViewport_Test.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 target_link_libraries(GuiTests
     PRIVATE
         NatronGui
@@ -421,8 +450,9 @@ include(NatronGtestSuites)
 # TIMEOUT 300 turns a scheduler wait that never returns (OutputSchedulerThread.cpp's
 # bufEmptyCondition wait has no predicate, loop or timeout) into a failed suite instead of a process
 # that never exits; SuiteProperties.cmake raises it for the suites that run longer than that.
-natron_add_gtest_suites(Tests PROPERTIES TIMEOUT 300)
-natron_add_gtest_suites(GuiTests PROPERTIES TIMEOUT 300)
+set(NATRON_TEST_DEFAULT_TIMEOUT_S 300)
+natron_add_gtest_suites(Tests PROPERTIES TIMEOUT ${NATRON_TEST_DEFAULT_TIMEOUT_S})
+natron_add_gtest_suites(GuiTests PROPERTIES TIMEOUT ${NATRON_TEST_DEFAULT_TIMEOUT_S})
 # Per-suite properties go in an include that ctest runs after the includes registered above, once
 # their add_test() calls have run.
 # SuiteProperties.cmake runs at ctest time and cannot see configure-time variables, so what it needs
@@ -441,7 +471,7 @@ if(EXISTS "${NATRON_USD_PREFIX}/plugin/usd/hdCycles.so")
 else()
     set(NATRON_CYCLES_BUNDLED OFF)
 endif()
-file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake "set(NATRON_CYCLES_BUNDLED ${NATRON_CYCLES_BUNDLED})\nset(NATRON_MOONRAY_BUNDLED ${NATRON_MOONRAY_BUNDLED})\n")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake "set(NATRON_CYCLES_BUNDLED ${NATRON_CYCLES_BUNDLED})\nset(NATRON_MOONRAY_BUNDLED ${NATRON_MOONRAY_BUNDLED})\nset(NATRON_TEST_DEFAULT_TIMEOUT_S ${NATRON_TEST_DEFAULT_TIMEOUT_S})\n")
 set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake)
 set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/SuiteProperties.cmake)
 

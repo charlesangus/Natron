@@ -108,6 +108,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/ViewerTab.h"
 
 #include <SequenceParsing.h>
+#include <ofxImageEffect.h>
 
 #if defined(Q_OS_WIN)
 #include <winuser.h>

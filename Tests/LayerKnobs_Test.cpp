@@ -476,7 +476,7 @@ TEST(NodeUnPremultSkipChannel, ColourDivisorIsMatchedByChannelAcrossLayouts)
     EXPECT_EQ(3, Node::getUnPremultSkipChannel(rgba, rgba, 3));
 }
 
-TEST(KnobChannelSelect, RetiredStorageIdResolvesToNothing)
+TEST(KnobChannelSelect, ColourChannelResolvesOnTheStoragePlane)
 {
     KnobChannelSelectPtr knob = makeChannelSelectKnob();
 
@@ -484,7 +484,20 @@ TEST(KnobChannelSelect, RetiredStorageIdResolvesToNothing)
     rgbaPresent.push_back(ImageLayerDesc::getRGBAComponents());
 
     knob->set(std::string(kNatronColorLayerID) + ".A");
-    EXPECT_FALSE(knob->resolve(rgbaPresent, 0, 0));
+    ImageLayerDesc layer;
+    int channelIndex = -1;
+    ASSERT_TRUE(knob->resolve(rgbaPresent, &layer, &channelIndex));
+    EXPECT_TRUE(layer.isColorStorage());
+    EXPECT_EQ(3, channelIndex);
+    EXPECT_EQ(std::string(kNatronColorLayerID) + ".A", knob->getSummary());
+}
+
+TEST(KnobChannelSelect, MotionChannelSummaryIsTheChannelName)
+{
+    KnobChannelSelectPtr knob = makeChannelSelectKnob();
+
+    knob->set(std::string(kNatronForwardMotionVectorsLayerID) + ".u");
+    EXPECT_EQ(std::string("forward.u"), knob->getSummary());
 }
 
 TEST_F(BaseTest, ChannelSetListsPresentLayersOfPreferredInput)

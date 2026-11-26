@@ -84,7 +84,7 @@ const char* const kFilters[] = { "impulse", "box", "bilinear", "cubic", "keys", 
 ImageLayerDesc
 warpLayer()
 {
-    return ImageLayerDesc("warp", "warp", "UV", std::vector<std::string> { "U", "V" });
+    return ImageLayerDesc("warp", std::vector<std::string> { "U", "V" });
 }
 
 /**

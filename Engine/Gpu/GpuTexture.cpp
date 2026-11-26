@@ -385,15 +385,22 @@ GpuTexture::~GpuTexture()
     if (device_.hasAbandonedWork()) {
         return;
     }
-    const VkDevice dev = device_.device();
-    if (sampler_) {
-        vkDestroySampler(dev, sampler_, nullptr);
-    }
-    if (view_) {
-        vkDestroyImageView(dev, view_, nullptr);
-    }
-    if (allocation_) {
-        vmaDestroyImage(device_.allocator(), image_, allocation_);
+    auto destroy = [device = &device_, sampler = sampler_, view = view_, image = image_, allocation = allocation_]() {
+        const VkDevice dev = device->device();
+        if (sampler) {
+            vkDestroySampler(dev, sampler, nullptr);
+        }
+        if (view) {
+            vkDestroyImageView(dev, view, nullptr);
+        }
+        if (allocation) {
+            vmaDestroyImage(device->allocator(), image, allocation);
+        }
+    };
+    if (device_.hasRetiringWork()) {
+        device_.destroyWhenRetired(std::move(destroy));
+    } else {
+        destroy();
     }
 }
 

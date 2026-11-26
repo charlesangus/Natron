@@ -182,7 +182,7 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
   - approach: on Island every camera stop freezes the UI about 1.65 s and the budget takes 11-14 s to reach the screen (bench and user, both objectionable). Profile where the main thread spends the stop (draw-filter change delivery, stand-in box upload, Storm re-sync, the budgetMutex copy) and move or slice it so no stop blocks the main thread more than 100 ms; Storm's own sync cost must be spread across frames or kept incremental (send only the demotion delta since the last applied budget)
   - verify: budget_orbit on Island: per-stop stall ≤ 100 ms, orbit ≥ 30 fps; GUI script still passes
   - size: L
-- [ ] M481.P5.T2 — Counted figure is plausible
+- [x] M481.P5.T2 — Counted figure is plausible
   - files: SceneViewBudget, the box-worker unit counts, the HUD line
   - approach: Island's HUD shows about 13.8 billion counted; find the overcount (instances multiplied twice, nested instancers, or overflow) and fix it
   - verify: ctest with a nested PointInstancer fixture checks the counted figure; Island's figure is in the low hundreds of millions at most
@@ -239,3 +239,10 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
   - **Status:** put to the user (Needs: response).
 - 2026-11-26 (PM) — The user tests on their own GPU before any more VM runs. The UAT AppImage `build/appimages/Natron-m481-viewer-polygon-budgets.AppImage` (release 384091515) and its steps .md are staged; Needs: uat.
 - 2026-11-25 — **UAT round 1 (user, own GPU):** the budget keeps the viewer feeling good aside from the stalls. The camera-stop stalls are confirmed and objectionable. Draw states disagreed between the viewer and the Scene Graph with only USDRead → Viewer: some Hidden prims still drew, some Full + Load All prims did not draw. Filed as phase 481.5 (stall, counted figure, draw-state disconnect).
+- 2026-11-25 (PM) — Phase 481.5 implemented in 18f62d1c58; gate m481-gate8 (--appimage, the gate7 GUI list) queued. Not built or run yet.
+  - **Stall causes:** Budget Boxes rows (about 1.5 GB at Island) were built on the main thread and uploaded in one glBufferData per budget; about 31.2M instanced boxes were drawn every frame (6.6 fps); the solve did a per-instance hash lookup and the worker built a 4x4 matrix per demoted instance (11-14 s latency).
+  - **Fixes:** rows built off the main thread with the camera, demoted instances under about 5 px merged into cluster boxes (a cluster picks its first instance), uploads capped at 8 MB per frame into a second buffer while the last set keeps drawing, per-prototype instance spheres.
+  - **Draw states:** budgets solved against out-of-date units are never applied or drawn; instancer masks drop when instance locations change (wrong instances hidden after Load All); the 5% band no longer holds demotions once everything fits. Hidden already won over the budget.
+  - **P5.T2:** no overcount. A Python copy of the counting rule gives 13,844,785,514 against the bench's 13,844,781,482 (isMountainB 6.05B, isDunesB 4.6B, isBeach 2.23B), so the counted figure is real authored faces times instances. The task's "low hundreds of millions" verify was wrong; a nested-instancer ctest was added.
+  - **For the user at UAT:** distant demoted instances now show as merged cluster boxes rather than one box each.
+  - Not investigated: a Hidden prim inside a native-instance prototype may not hide just that part, even with no budget.

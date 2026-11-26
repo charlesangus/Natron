@@ -949,15 +949,14 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
         return eStatusOK;
     }
 
-    std::vector<RenderContextPtr> contexts(run.size());
-    for (std::size_t j = 0; j < run.size(); ++j) {
-        contexts[j] = iterationContext(base, loopName, iterations[run[j]], numIterations, pieces, GeoDetailConstPtr());
-    }
     std::vector<GeoDetailConstPtr> results(run.size());
     std::vector<std::string> errors(run.size());
     std::vector<RenderRoIRetCode> codes(run.size(), eRenderRoIRetCodeOk);
+    // Each iteration builds its own context as it starts, so an abort is not held up behind a
+    // context for every iteration: at the largest counts that alone takes seconds.
     const auto cook = [&](std::size_t j) {
-        codes[j] = body->evaluateGeometry(EvaluateGeometryArgs(args.time, args.view, args.byPassCache, contexts[j]), &results[j], &errors[j]);
+        const RenderContextPtr context = iterationContext(base, loopName, iterations[run[j]], numIterations, pieces, GeoDetailConstPtr());
+        codes[j] = body->evaluateGeometry(EvaluateGeometryArgs(args.time, args.view, args.byPassCache, context), &results[j], &errors[j]);
     };
 
     // The first iteration cooks alone, so what every iteration shares upstream of the
@@ -1002,13 +1001,16 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
     }
 
     std::vector<std::string> warnings;
-    GeoDetail merged = GeoMerge::merge(std::span<const GeoDetailConstPtr>(results), &warnings);
+    std::optional<GeoDetail> merged = GeoMerge::merge(std::span<const GeoDetailConstPtr>(results), &warnings, [this, &running]() { return running.editedSinceStart() || aborted(); });
+    if (!merged) {
+        return eStatusFailed;
+    }
     if (warnings.empty()) {
         postMessage(eMessageTypeInfo, std::string());
     } else {
         postMessage(eMessageTypeWarning, getScriptName_mt_safe() + ": " + warnings.front());
     }
-    *outputDetail = std::make_shared<const GeoDetail>(std::move(merged));
+    *outputDetail = std::make_shared<const GeoDetail>(std::move(*merged));
 
     return eStatusOK;
 } // GeoForEachEnd::renderGeometry

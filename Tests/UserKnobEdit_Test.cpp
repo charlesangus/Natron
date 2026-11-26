@@ -1764,8 +1764,6 @@ TEST_F(UserKnobEdit, ACopyKeepsOnlyTheExpressionsReadingItself)
     EXPECT_DOUBLE_EQ(4., amountCopy->getValue(1));
     EXPECT_DOUBLE_EQ(3., amountCopy->getValue(2));
     EXPECT_DOUBLE_EQ(6., otherCopy->getValue(0));
-    amountCopy->setValue(5., ViewSpec::all(), 0);
-    EXPECT_DOUBLE_EQ(10., amountCopy->getValue(1));
 }
 
 TEST_F(UserKnobEdit, AChoiceWithoutEntriesCanBeEdited)

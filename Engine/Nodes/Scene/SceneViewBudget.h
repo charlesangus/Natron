@@ -73,7 +73,8 @@ NATRON_NAMESPACE_ENTER
  *
  * Near each boundary the previous result holds: a unit within 5% of the demotion, cull or fraction
  * distance keeps its previous decision, and the previous demotion distance stays while the count it
- * gives is within 5% of the limit. The count may then exceed the limit by up to 5%.
+ * gives is within 5% of the limit, unless every counted face fits. The count may then exceed the
+ * limit by up to 5%.
  */
 class SceneViewBudget {
 public:
@@ -110,6 +111,15 @@ public:
         // The instance's prototype-space to world transform, the prototype's own transform excluded,
         // as GfMatrix4d composes it, row vectors on the left.
         PXR_NS::GfMatrix4d instanceTransform(std::size_t index) const;
+
+        // Bounds every instance's world bounding sphere, cheaper than instanceTransform().
+        struct Spheres {
+            std::vector<PXR_NS::GfVec3d> centres;
+            std::vector<double> radii;
+            double stretch = 1.;
+        };
+        Spheres prototypeSpheres() const;
+        void instanceSphere(const Spheres& spheres, std::size_t index, PXR_NS::GfVec3d* centre, double* radius) const;
     };
 
     using InstancesPtr = std::shared_ptr<const Instances>;

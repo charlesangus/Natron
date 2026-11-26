@@ -637,6 +637,85 @@ TEST(SceneDrawBoxes, AnInstanceTheInstancerTurnsOffCountsNoFaces)
     EXPECT_FALSE(instancer->instances->draws(2));
 }
 
+// Each of the outer instancer's two instances is an inner instancer's three six-face boxes and a
+// one-face ground, 19 faces.
+TEST(SceneDrawBoxes, NestedInstancersCountEachInstanceOfEachLevelOnce)
+{
+    SdfLayerRefPtr layer = SdfLayer::CreateAnonymous(".usda");
+    ASSERT_TRUE(layer->ImportFromString(R"(#usda 1.0
+def Xform "World"
+{
+    def PointInstancer "Outer"
+    {
+        rel prototypes = [</World/Outer/Prototypes/Patch>]
+        int[] protoIndices = [0, 0]
+        point3f[] positions = [(0, 0, 0), (100, 0, 0)]
+        def Scope "Prototypes"
+        {
+            def Xform "Patch"
+            {
+                def Mesh "Ground"
+                {
+                    int[] faceVertexCounts = [4]
+                    int[] faceVertexIndices = [0, 1, 2, 3]
+                    point3f[] points = [(-5, 0, -5), (5, 0, -5), (5, 0, 5), (-5, 0, 5)]
+                    float3[] extent = [(-5, 0, -5), (5, 0, 5)]
+                }
+                def PointInstancer "Inner"
+                {
+                    rel prototypes = [</World/Outer/Prototypes/Patch/Inner/Prototypes/Box>]
+                    int[] protoIndices = [0, 0, 0]
+                    point3f[] positions = [(-3, 1, 0), (0, 1, 0), (3, 1, 0)]
+                    def Scope "Prototypes"
+                    {
+                        def Mesh "Box"
+                        {
+                            int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]
+                            int[] faceVertexIndices = [0, 1, 3, 2, 2, 3, 5, 4, 4, 5, 7, 6, 6, 7, 1, 0, 1, 7, 5, 3, 6, 0, 2, 4]
+                            point3f[] points = [(-1, -1, 1), (1, -1, 1), (-1, 1, 1), (1, 1, 1), (-1, 1, -1), (1, 1, -1), (-1, -1, -1), (1, -1, -1)]
+                            float3[] extent = [(-1, -1, -1), (1, 1, 1)]
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+)"));
+    const UsdStageRefPtr stage = UsdStage::Open(layer);
+    ASSERT_TRUE(stage);
+    const std::unique_ptr<SceneDrawBoxes> boxes = boxesOver(stage);
+
+    boxes->setCounting(true);
+    const SceneDrawBoxes::UnitsPtr units = latestUnits(*boxes);
+    ASSERT_NE(units, nullptr);
+    const SceneDrawBoxes::Unit* outer = unitOf(units, "/World/Outer");
+    ASSERT_NE(outer, nullptr);
+    ASSERT_NE(outer->instances, nullptr);
+    ASSERT_EQ(outer->instances->prototypes.size(), 1u);
+    EXPECT_EQ(outer->instances->prototypes[0].faces, 19u);
+    EXPECT_EQ(outer->faces, 38u);
+    // What lies under an instancer draws through it alone.
+    EXPECT_EQ(unitOf(units, "/World/Outer/Prototypes/Patch/Inner"), nullptr);
+    EXPECT_EQ(unitOf(units, "/World/Outer/Prototypes/Patch/Ground"), nullptr);
+    U64 total = 0;
+    for (const SceneDrawBoxes::Unit& unit : units->units) {
+        total += unit.faces;
+    }
+    EXPECT_EQ(total, 38u);
+
+    SceneViewBudget::Camera camera;
+    camera.eye = GfVec3d(50, 50, 200);
+    camera.valid = true;
+    SceneViewBudget::Settings settings;
+    settings.countWholeScene = true;
+    settings.limit = 1000;
+    const SceneViewBudget::Result result = SceneViewBudget::solve(units->units, camera, settings, SceneViewBudget::Result());
+    EXPECT_EQ(result.counted, 38u);
+    EXPECT_EQ(result.drawn, 38u);
+    EXPECT_EQ(result.demotedCount, 0u);
+}
+
 TEST(SceneDrawBoxes, OnlyWhatTheRulesDrawIsAUnit)
 {
     const UsdStageRefPtr stage = openCountScene();
@@ -809,6 +888,65 @@ TEST(SceneDrawBoxes, ALiveBudgetIsSolvedAgainWhenTheUnitsChangeAndACancelledOneI
 
     EXPECT_FALSE(boxes->waitForBudget(again->serial + 1, std::chrono::milliseconds(200)));
     EXPECT_EQ(boxes->getBudget(), again);
+}
+
+TEST(SceneDrawBoxes, DemotedInstancesTooSmallToSeeApartShareABudgetBox)
+{
+    std::shared_ptr<SceneDrawBoxes::Instances> instances = std::make_shared<SceneDrawBoxes::Instances>();
+    SceneDrawBoxes::Prototype prototype;
+    prototype.path = SdfPath("/World/Instancer/Prototypes/Box");
+    prototype.min = GfVec3f(-1, -1, -1);
+    prototype.max = GfVec3f(1, 1, 1);
+    prototype.bounded = true;
+    prototype.faces = 6;
+    instances->prototypes.push_back(prototype);
+    // One in front of the eye, then a hundred a thousand units away within a unit of each other.
+    instances->protoIndices.push_back(0);
+    instances->positions.push_back(GfVec3f(0, 0, 0));
+    for (int i = 0; i < 100; ++i) {
+        instances->protoIndices.push_back(0);
+        instances->positions.push_back(GfVec3f(0.01f * float(i), 0, -1000));
+    }
+    SceneDrawBoxes::Unit unit;
+    unit.path = SdfPath("/World/Instancer");
+    unit.bounded = true;
+    unit.faces = 6 * 101;
+    unit.instances = instances;
+    const std::vector<SceneDrawBoxes::Unit> units { unit };
+    SceneViewBudget::Result result;
+    result.valid = true;
+    SceneViewBudget::InstancerResult& record = result.instancers[unit.path];
+    record.demoted.assign(101, true);
+    record.demotedCount = 101;
+
+    SceneDrawBoxes::BudgetBoxSet set;
+    ASSERT_TRUE(SceneDrawBoxes::buildBudgetBoxes(result, units, budgetCamera(), []() { return false; }, &set));
+    EXPECT_EQ(set.instanceCount, 101u);
+    ASSERT_EQ(set.groups.size(), 1u);
+    ASSERT_EQ(set.groups[0].indices.size(), 1u);
+    EXPECT_EQ(set.groups[0].indices[0], 0u);
+    ASSERT_FALSE(set.clusters.empty());
+    EXPECT_LE(set.clusters.size(), 2u);
+    std::size_t clustered = 0;
+    for (const SceneDrawBoxes::BudgetBoxCluster& cluster : set.clusters) {
+        clustered += cluster.count;
+        EXPECT_EQ(cluster.instancer, unit.path);
+        EXPECT_EQ(cluster.prototype, prototype.path);
+    }
+    EXPECT_EQ(clustered, 100u);
+    EXPECT_EQ(set.rows.size(), 12u * (set.clusters.size() + 1u));
+    std::size_t drawn = 0;
+    for (const SceneDrawBoxes::BudgetBoxRange& range : set.ranges) {
+        drawn += range.count;
+    }
+    EXPECT_EQ(drawn, set.clusters.size() + 1u);
+
+    // A click on the near instance's box picks it.
+    SceneDrawBoxes::BudgetBoxHit hit;
+    ASSERT_TRUE(SceneDrawBoxes::pickBudgetBox(set, viewProjection(), 100, 100, GfVec2d(50, 50), 4., false, &hit));
+    EXPECT_TRUE(hit.isInstance);
+    EXPECT_EQ(hit.instancer, unit.path);
+    EXPECT_EQ(hit.instance, 0u);
 }
 
 TEST(SceneDrawBoxes, TheOrderPutsWhatCoversMoreOfTheViewFirstAndTheNearerOfTwoThatCoverNothing)

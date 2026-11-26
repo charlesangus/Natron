@@ -271,6 +271,8 @@ public:
      * against is the same either way. Main thread.
      **/
     bool needsStageFrame() const;
+    // Whether drawOverlays() is still copying a budget's boxes over several frames, each owing the next.
+    bool isUploadingBudgetBoxes() const;
 
     /**
      * @brief Queues a draw state change for this renderer's engine; needsBackgroundFrame() holds

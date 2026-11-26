@@ -585,8 +585,30 @@ SceneDrawFilter::readInstancer(const SdfPath& path,
             }
         }
     }
+    // The budget's mask is by instance index, which a changed instance list makes name other
+    // instances, as a load does for native instances. They draw until the next budget.
+    std::vector<SdfPath> budgetMasked;
+    const auto masked = _budgetMasks.find(path);
+    if (masked != _budgetMasks.end()) {
+        const auto old = _instancers.find(path);
+        if (old != _instancers.end()) {
+            budgetMasked = old->second.locations;
+        }
+    }
+    const auto dropStaleMask = [&]() {
+        if (masked == _budgetMasks.end()) {
+            return;
+        }
+        const auto now = _instancers.find(path);
+        if ((now == _instancers.end()) || (now->second.locations != budgetMasked)) {
+            _budgetMaskedCount -= countSet(masked->second);
+            _budgetMasks.erase(masked);
+        }
+    };
     forgetInstancer(path);
     if (prim.primType != HdPrimTypeTokens->instancer) {
+        dropStaleMask();
+
         return;
     }
     const HdInstancerTopologySchema topology = HdInstancerTopologySchema::GetFromParent(prim.dataSource);
@@ -601,10 +623,14 @@ SceneDrawFilter::readInstancer(const SdfPath& path,
     }
     const HdPathArrayDataSourceHandle source = topology.GetInstanceLocations();
     if (!source) {
+        dropStaleMask();
+
         return;
     }
     const VtArray<SdfPath> locations = source->GetTypedValue(0.f);
     if (locations.empty()) {
+        dropStaleMask();
+
         return;
     }
     record.locations.assign(locations.cbegin(), locations.cend());
@@ -625,6 +651,7 @@ SceneDrawFilter::readInstancer(const SdfPath& path,
         }
     }
     record.pending = false;
+    dropStaleMask();
 }
 
 void
@@ -1618,6 +1645,11 @@ SceneDrawFilter::applyBudget(const Budget& budget)
             continue;
         }
         std::vector<bool>& bits = masks[entry.first];
+        if (bits.empty()) {
+            // A word at a time: an instancer may hold tens of millions.
+            bits = entry.second;
+            continue;
+        }
         if (bits.size() < entry.second.size()) {
             bits.resize(entry.second.size(), false);
         }

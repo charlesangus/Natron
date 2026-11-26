@@ -294,6 +294,25 @@ TEST(SceneViewBudget, ASmallCameraMoveKeepsThePreviousResult)
     EXPECT_EQ(after.drawn, before.drawn);
 }
 
+TEST(SceneViewBudget, NothingStaysDemotedOnceEverythingFits)
+{
+    const std::vector<Budget::Unit> units {
+        gprim("/Near", GfVec3f(0, 0, 0), 100),
+        gprim("/Middle", GfVec3f(0, 0, -20), 95),
+        gprim("/Far", GfVec3f(0, 0, -50), 5),
+    };
+
+    const Budget::Result before = Budget::solve(units, cameraAt(kEye), limitOf(195), Budget::Result());
+    ASSERT_EQ(before.demotedCount, 1u);
+    ASSERT_TRUE(before.isDemoted(SdfPath("/Far")));
+
+    // The previous demotion distance leaves 195 drawn, within the band of 200, but all 200 fit.
+    const Budget::Result after = Budget::solve(units, cameraAt(kEye), limitOf(200), before);
+    EXPECT_EQ(after.demotedCount, 0u);
+    EXPECT_EQ(after.drawn, 200u);
+    EXPECT_TRUE(std::isinf(after.demoteDistance));
+}
+
 TEST(SceneViewBudget, ASmallCameraMoveKeepsThePreviousCullAndFraction)
 {
     std::vector<GfVec3f> positions;

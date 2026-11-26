@@ -142,24 +142,58 @@ public:
 
     using UnitsPtr = std::shared_ptr<const Units>;
 
-    // The budget boxes of one prototype of one instancer, drawn as one instanced box.
+    // The budget boxes of one prototype of one instancer, its instances drawn one box each.
     struct BudgetBoxGroup {
         PXR_NS::SdfPath instancer;
         PXR_NS::SdfPath prototype;
-        // In the instancer's space, as Prototype has it.
-        PXR_NS::GfVec3f min;
-        PXR_NS::GfVec3f max;
-        bool bounded = false;
-        // Twelve per instance: the rows of instanceTransform()'s linear part, then its translation.
-        std::vector<float> rows;
         std::vector<std::size_t> indices;
+    };
+
+    // The instances too small on screen at the solve's camera to draw apart, merged by where they
+    // lie into one world box each, as they would cover about the same pixels.
+    struct BudgetBoxCluster {
+        // The first instance merged, which a click on the box picks.
+        PXR_NS::SdfPath instancer;
+        PXR_NS::SdfPath prototype;
+        std::size_t instance = 0;
+        std::size_t count = 0;
+        // Its box's in BudgetBoxSet::rows.
+        std::size_t row = 0;
+    };
+
+    enum BudgetBoxRangeEnum {
+        eBudgetBoxRangeGprims,
+        eBudgetBoxRangeClusters,
+        eBudgetBoxRangeGroup
+    };
+
+    // Rows drawn as one instanced box: the box min..max in each row's space.
+    struct BudgetBoxRange {
+        BudgetBoxRangeEnum kind = eBudgetBoxRangeGprims;
+        std::size_t first = 0;
+        std::size_t count = 0;
+        PXR_NS::GfVec3f min { 0.f };
+        PXR_NS::GfVec3f max { 0.f };
+        // False for markers.
+        bool bounded = true;
+        // With eBudgetBoxRangeGroup, the group's index.
+        std::size_t at = 0;
     };
 
     struct BudgetBoxSet {
         // The gprims', world space; a marker for one without bounds.
         std::vector<Box> boxes;
         std::vector<BudgetBoxGroup> groups;
+        std::vector<BudgetBoxCluster> clusters;
+        // Twelve per box drawn, in the order of ranges, ready to upload: the rows of a linear map,
+        // then a translation, row vectors on the left as instanceTransform() has them. Gprims and
+        // clusters map the unit cube onto their world box.
+        std::vector<float> rows;
+        std::vector<BudgetBoxRange> ranges;
+        // The demoted and fractioned instances the groups and clusters stand for.
         std::size_t instanceCount = 0;
+
+        bool empty() const { return ranges.empty(); }
     };
 
     struct Budget {
@@ -295,10 +329,14 @@ public:
     /**
      * @brief What draws in place of what result takes out of units: a demoted gprim, every drawn
      * gprim of a native instance the budget hides some of, and each demoted or fractioned-out
-     * instance. Culled ones get none. False, with budgetBoxSet partial, as soon as stale() is true.
+     * instance. Culled ones get none. An instance whose bounding sphere spans under
+     * kBudgetClusterNdc of the camera's view, as clip space measures it, joins a cluster instead.
+     * False, with budgetBoxSet partial, as soon as stale() is true.
      */
+    static const double kBudgetClusterNdc;
     static bool buildBudgetBoxes(const SceneViewBudget::Result& result,
                                  const std::vector<Unit>& units,
+                                 const Camera& camera,
                                  const std::function<bool()>& stale,
                                  BudgetBoxSet* budgetBoxSet);
 

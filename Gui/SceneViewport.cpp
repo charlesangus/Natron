@@ -701,6 +701,9 @@ const GLfloat kBoxFaces[] = {
 // Unlike the boxes of boxed rows, the selection and unloaded payloads.
 const GLfloat kBudgetBoxTint[] = { 0.85f, 0.45f, 0.95f };
 const int kBudgetBoxRowFloats = 12;
+// What one frame copies of a budget's boxes, a few milliseconds' worth, so that tens of millions of
+// them take frames rather than stall one.
+const std::size_t kBudgetBoxUploadBytes = std::size_t(8) << 20;
 } // anon namespace
 
 std::atomic<U64> engineConstructionCount(0);
@@ -1037,18 +1040,13 @@ struct SceneViewportRenderer::Implementation {
     // Edges, faces and marker arms.
     GLuint budgetBoxVaos[3] = { 0, 0, 0 };
     GLuint budgetBoxShapes[3] = { 0, 0, 0 };
-    GLuint budgetBoxRows = 0;
+    // The rows drawn from, and the one the next budget's go into over the frames it takes.
+    GLuint budgetBoxRows[2] = { 0, 0 };
+    int drawnRows = 0;
     SceneDrawBoxes::BudgetPtr uploadedBudgetBoxes;
-    struct BudgetBoxRange {
-        GLint first = 0;
-        GLsizei count = 0;
-        GfVec3f min;
-        GfVec3f max;
-        bool bounded = true;
-        // Of a gprim, not an instance.
-        bool gprim = false;
-    };
-    std::vector<BudgetBoxRange> budgetBoxRanges;
+    SceneDrawBoxes::BudgetPtr uploadingBudgetBoxes;
+    std::size_t uploadingBytes = 0;
+    std::atomic<bool> budgetBoxesUploading { false };
     // Whether feedBoxes() feeds the stand-in's worker. Main thread.
     bool standInEnabled = false;
     // Which rows the stand-in's worker lists, read there.
@@ -3300,7 +3298,7 @@ struct SceneViewportRenderer::Implementation {
         const SceneDrawBoxes::BudgetPtr budget = currentBudget();
 
         return budget && (budgetBoxes != SceneViewportRenderer::eBudgetBoxesOff)
-            && (!budget->budgetBoxSet.boxes.empty() || !budget->budgetBoxSet.groups.empty());
+            && !budget->budgetBoxSet.empty() && solvedForCurrentUnits(budget);
     }
 
     // Needs stageMutex. A frame from another camera holds the budget as it is until the next
@@ -3336,7 +3334,19 @@ struct SceneViewportRenderer::Implementation {
     // for that frame once the camera rests.
     bool budgetOwed() const
     {
-        return budgetServiceable && boxes && (boxes->getBudget() != currentBudget());
+        if (!budgetServiceable || !boxes) {
+            return false;
+        }
+        const SceneDrawBoxes::BudgetPtr budget = boxes->getBudget();
+
+        return (budget != currentBudget()) && (!budget || solvedForCurrentUnits(budget));
+    }
+
+    // A draw state change, load or stage edit since the solve makes the budget's units another
+    // scene's: its boxes may stand for what is hidden now, its masks for other instances.
+    bool solvedForCurrentUnits(const SceneDrawBoxes::BudgetPtr& budget) const
+    {
+        return budget && budget->units && boxes && (budget->units->generation == boxes->getGeneration());
     }
 
     SceneDrawBoxes::BudgetPtr currentBudget() const
@@ -3362,7 +3372,12 @@ struct SceneViewportRenderer::Implementation {
                 setAppliedBudget(SceneDrawBoxes::BudgetPtr());
                 changed = true;
             }
-            const SceneDrawBoxes::BudgetPtr budget = (storm && boxes) ? boxes->getBudget() : SceneDrawBoxes::BudgetPtr();
+            SceneDrawBoxes::BudgetPtr budget = (storm && boxes) ? boxes->getBudget() : SceneDrawBoxes::BudgetPtr();
+            // The worker solves again for the units now; until then what is applied holds, the
+            // draw states winning over it in the filter.
+            if (budget && !solvedForCurrentUnits(budget)) {
+                budget = appliedBudget;
+            }
             if (budget != appliedBudget) {
                 filter->applyBudget(budget ? budget->filter : SceneDrawFilter::Budget());
                 setAppliedBudget(budget);
@@ -3676,14 +3691,14 @@ struct SceneViewportRenderer::Implementation {
         const GLsizeiptr sizes[3] = { sizeof(kBoxEdges), sizeof(kBoxFaces), sizeof(kMarkerArms) };
         glGenVertexArrays(3, budgetBoxVaos);
         glGenBuffers(3, budgetBoxShapes);
-        glGenBuffers(1, &budgetBoxRows);
+        glGenBuffers(2, budgetBoxRows);
         for (int shape = 0; shape < 3; ++shape) {
             glBindVertexArray(budgetBoxVaos[shape]);
             glBindBuffer(GL_ARRAY_BUFFER, budgetBoxShapes[shape]);
             glBufferData(GL_ARRAY_BUFFER, sizes[shape], shapes[shape], GL_STATIC_DRAW);
             glEnableVertexAttribArray(0);
             glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, nullptr);
-            glBindBuffer(GL_ARRAY_BUFFER, budgetBoxRows);
+            glBindBuffer(GL_ARRAY_BUFFER, budgetBoxRows[0]);
             for (GLuint attribute = 1; attribute <= 4; ++attribute) {
                 glEnableVertexAttribArray(attribute);
                 glVertexAttribDivisor(attribute, 1);
@@ -3692,56 +3707,44 @@ struct SceneViewportRenderer::Implementation {
         glBindVertexArray(0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         uploadedBudgetBoxes.reset();
+        uploadingBudgetBoxes.reset();
+        budgetBoxesUploading = false;
 
         return true;
     } // ensureBudgetBoxesProgram
 
-    // The gprims' boxes become rows mapping the unit cube onto them, so that every budget box draws
-    // through the one program.
-    void uploadBudgetBoxes(const SceneDrawBoxes::Budget& budget)
+    // Main thread. The worker built the rows ready to upload; a frame copies at most
+    // kBudgetBoxUploadBytes of them into the buffer not drawn from, and the frames meanwhile draw
+    // the last budget whose rows are all in. True once budget's are.
+    bool uploadBudgetBoxes(const SceneDrawBoxes::BudgetPtr& budget)
     {
-        const SceneDrawBoxes::BudgetBoxSet& budgetBoxSet = budget.budgetBoxSet;
-        std::vector<GLfloat> rows;
-        rows.reserve((budgetBoxSet.boxes.size() + budgetBoxSet.instanceCount) * kBudgetBoxRowFloats);
-        budgetBoxRanges.clear();
-        for (int pass = 0; pass < 2; ++pass) {
-            BudgetBoxRange range;
-            range.first = GLint(rows.size() / kBudgetBoxRowFloats);
-            range.bounded = (pass == 0);
-            range.gprim = true;
-            range.min = GfVec3f(0.f);
-            range.max = range.bounded ? GfVec3f(1.f) : GfVec3f(0.f);
-            for (const SceneDrawBoxes::Box& box : budgetBoxSet.boxes) {
-                if ((box.kind != SceneDrawBoxes::eKindMarker) != range.bounded) {
-                    continue;
-                }
-                const GfVec3f size = range.bounded ? GfVec3f(box.max - box.min) : GfVec3f(0.f);
-                rows.insert(rows.end(), { size[0], 0.f, 0.f, 0.f, size[1], 0.f, 0.f, 0.f, size[2], box.min[0], box.min[1], box.min[2] });
-            }
-            range.count = GLsizei(rows.size() / kBudgetBoxRowFloats) - range.first;
-            if (range.count > 0) {
-                budgetBoxRanges.push_back(range);
-            }
+        const std::vector<float>& rows = budget->budgetBoxSet.rows;
+        const std::size_t bytes = rows.size() * sizeof(GLfloat);
+        const GLuint into = budgetBoxRows[1 - drawnRows];
+        glBindBuffer(GL_ARRAY_BUFFER, into);
+        if (uploadingBudgetBoxes != budget) {
+            uploadingBudgetBoxes = budget;
+            uploadingBytes = 0;
+            glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(bytes), nullptr, GL_STATIC_DRAW);
         }
-        for (const SceneDrawBoxes::BudgetBoxGroup& group : budgetBoxSet.groups) {
-            BudgetBoxRange range;
-            range.first = GLint(rows.size() / kBudgetBoxRowFloats);
-            range.count = GLsizei(group.indices.size());
-            range.min = group.min;
-            range.max = group.max;
-            range.bounded = group.bounded;
-            rows.insert(rows.end(), group.rows.begin(), group.rows.end());
-            if (range.count > 0) {
-                budgetBoxRanges.push_back(range);
-            }
+        const std::size_t slice = (std::min)(bytes - uploadingBytes, kBudgetBoxUploadBytes);
+        if (slice > 0) {
+            glBufferSubData(GL_ARRAY_BUFFER, GLintptr(uploadingBytes), GLsizeiptr(slice), reinterpret_cast<const char*>(rows.data()) + uploadingBytes);
+            uploadingBytes += slice;
         }
-        glBindBuffer(GL_ARRAY_BUFFER, budgetBoxRows);
-        glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(rows.size() * sizeof(GLfloat)), rows.data(), GL_STATIC_DRAW);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
+        if (uploadingBytes < bytes) {
+            return false;
+        }
+        drawnRows = 1 - drawnRows;
+        uploadedBudgetBoxes = budget;
+        uploadingBudgetBoxes.reset();
+
+        return true;
     }
 
     // The corners of a budget box's box in world space, mapped by its rows.
-    static void budgetBoxCorners(const BudgetBoxRange& range,
+    static void budgetBoxCorners(const SceneDrawBoxes::BudgetBoxRange& range,
                                  const GLfloat* row,
                                  GfVec3d corners[8])
     {
@@ -3760,10 +3763,9 @@ struct SceneViewportRenderer::Implementation {
     {
         const SceneDrawBoxes::BudgetBoxSet& budgetBoxSet = drawnBudgetBoxes->budgetBoxSet;
         const SceneGizmo::View view(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix(), width, height);
-        std::vector<GLfloat> row(kBudgetBoxRowFloats);
-        const auto record = [&](const BudgetBoxRange& range, const std::string& path, const char* kind) {
+        const auto record = [&](const SceneDrawBoxes::BudgetBoxRange& range, const GLfloat* row, const std::string& path, const char* kind) {
             GfVec3d corners[8];
-            budgetBoxCorners(range, row.data(), corners);
+            budgetBoxCorners(range, row, corners);
             GfVec2d centre;
             if (!SceneGizmo::project(view, (corners[0] + corners[7]) * 0.5, &centre)) {
                 return;
@@ -3784,22 +3786,29 @@ struct SceneViewportRenderer::Implementation {
             }
             drawnBoxes.push_back(drawn);
         };
+        const GLfloat identity[kBudgetBoxRowFloats] = { 1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f };
         for (const SceneDrawBoxes::Box& box : budgetBoxSet.boxes) {
-            BudgetBoxRange range;
+            SceneDrawBoxes::BudgetBoxRange range;
             range.min = box.min;
             range.max = (box.kind == SceneDrawBoxes::eKindMarker) ? box.min : box.max;
             range.bounded = (box.kind != SceneDrawBoxes::eKindMarker);
-            row = { 1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f };
-            record(range, box.path.GetString(), "budgetBox");
+            record(range, identity, box.path.GetString(), "budgetBox");
         }
-        for (const SceneDrawBoxes::BudgetBoxGroup& group : budgetBoxSet.groups) {
-            BudgetBoxRange range;
-            range.min = group.min;
-            range.max = group.max;
-            range.bounded = group.bounded;
-            for (std::size_t at = 0; at < group.indices.size(); ++at) {
-                std::copy(group.rows.begin() + at * kBudgetBoxRowFloats, group.rows.begin() + (at + 1) * kBudgetBoxRowFloats, row.begin());
-                record(range, group.instancer.GetString() + "[" + std::to_string(group.indices[at]) + "]", "budgetBoxInstance");
+        for (const SceneDrawBoxes::BudgetBoxCluster& cluster : budgetBoxSet.clusters) {
+            SceneDrawBoxes::BudgetBoxRange range;
+            range.min = GfVec3f(0.f);
+            range.max = GfVec3f(1.f);
+            record(range, &budgetBoxSet.rows[cluster.row * kBudgetBoxRowFloats], cluster.instancer.GetString() + "[" + std::to_string(cluster.instance) + "]",
+                   "budgetBoxCluster");
+        }
+        for (const SceneDrawBoxes::BudgetBoxRange& range : budgetBoxSet.ranges) {
+            if (range.kind != SceneDrawBoxes::eBudgetBoxRangeGroup) {
+                continue;
+            }
+            const SceneDrawBoxes::BudgetBoxGroup& group = budgetBoxSet.groups[range.at];
+            for (std::size_t at = 0; at < range.count; ++at) {
+                record(range, &budgetBoxSet.rows[(range.first + at) * kBudgetBoxRowFloats], group.instancer.GetString() + "[" + std::to_string(group.indices[at]) + "]",
+                       "budgetBoxInstance");
             }
         }
     } // recordDrawnBudgetBoxes
@@ -3814,12 +3823,19 @@ struct SceneViewportRenderer::Implementation {
         drawnBudgetBoxes.reset();
         unsigned long long boxesShown = 0, instancesShown = 0, markersShown = 0;
         const int mode = budgetBoxes;
-        const SceneDrawBoxes::BudgetPtr budget = hasBudgetBoxes() ? currentBudget() : SceneDrawBoxes::BudgetPtr();
-        if (budget && ensureBudgetBoxesProgram()) {
-            if (uploadedBudgetBoxes != budget) {
-                uploadBudgetBoxes(*budget);
-                uploadedBudgetBoxes = budget;
+        const SceneDrawBoxes::BudgetPtr latest = hasBudgetBoxes() ? currentBudget() : SceneDrawBoxes::BudgetPtr();
+        SceneDrawBoxes::BudgetPtr budget;
+        if (latest && ensureBudgetBoxesProgram()) {
+            budget = ((uploadedBudgetBoxes == latest) || uploadBudgetBoxes(latest)) ? latest : uploadedBudgetBoxes;
+            // Boxes solved against other draw states may stand for what the user has hidden since.
+            if (budget && (budget->units != latest->units)) {
+                budget.reset();
             }
+        } else {
+            uploadingBudgetBoxes.reset();
+        }
+        budgetBoxesUploading = bool(uploadingBudgetBoxes);
+        if (budget && !budget->budgetBoxSet.empty()) {
             drawnBudgetBoxes = budget;
             if (recordDrawnBoxes) {
                 recordDrawnBudgetBoxes(frustum, width, height, mode == SceneViewportRenderer::eBudgetBoxesMarker);
@@ -3838,7 +3854,7 @@ struct SceneViewportRenderer::Implementation {
             glDisable(GL_BLEND);
             glDisable(GL_CULL_FACE);
             glLineWidth(1.f);
-            for (const BudgetBoxRange& range : budgetBoxRanges) {
+            for (const SceneDrawBoxes::BudgetBoxRange& range : budget->budgetBoxSet.ranges) {
                 const bool marker = (mode == SceneViewportRenderer::eBudgetBoxesMarker) || !range.bounded;
                 const bool shaded = !marker && (mode == SceneViewportRenderer::eBudgetBoxesBoxShaded);
                 const int shape = marker ? 2 : (shaded ? 1 : 0);
@@ -3848,13 +3864,13 @@ struct SceneViewportRenderer::Implementation {
                 glUniform1i(markersAt, marker ? 1 : 0);
                 glUniform1i(shadedAt, shaded ? 1 : 0);
                 glBindVertexArray(budgetBoxVaos[shape]);
-                glBindBuffer(GL_ARRAY_BUFFER, budgetBoxRows);
+                glBindBuffer(GL_ARRAY_BUFFER, budgetBoxRows[drawnRows]);
                 for (GLuint attribute = 1; attribute <= 4; ++attribute) {
                     const std::size_t offset = (std::size_t(range.first) * kBudgetBoxRowFloats + (attribute - 1) * 3) * sizeof(GLfloat);
                     glVertexAttribPointer(attribute, 3, GL_FLOAT, GL_FALSE, kBudgetBoxRowFloats * sizeof(GLfloat), reinterpret_cast<const void*>(offset));
                 }
-                glDrawArraysInstanced(shaded ? GL_TRIANGLES : GL_LINES, 0, marker ? 4 : (shaded ? 36 : 24), range.count);
-                (range.gprim ? boxesShown : instancesShown) += range.count;
+                glDrawArraysInstanced(shaded ? GL_TRIANGLES : GL_LINES, 0, marker ? 4 : (shaded ? 36 : 24), GLsizei(range.count));
+                (range.kind == SceneDrawBoxes::eBudgetBoxRangeGprims ? boxesShown : instancesShown) += range.count;
                 if (marker) {
                     markersShown += range.count;
                 }
@@ -3947,17 +3963,18 @@ struct SceneViewportRenderer::Implementation {
             glDeleteProgram(budgetBoxProgram);
             glDeleteVertexArrays(3, budgetBoxVaos);
             glDeleteBuffers(3, budgetBoxShapes);
-            glDeleteBuffers(1, &budgetBoxRows);
+            glDeleteBuffers(2, budgetBoxRows);
             budgetBoxProgram = 0;
-            budgetBoxRows = 0;
+            budgetBoxRows[0] = budgetBoxRows[1] = 0;
             for (int shape = 0; shape < 3; ++shape) {
                 budgetBoxVaos[shape] = 0;
                 budgetBoxShapes[shape] = 0;
             }
         }
         uploadedBudgetBoxes.reset();
+        uploadingBudgetBoxes.reset();
+        budgetBoxesUploading = false;
         drawnBudgetBoxes.reset();
-        budgetBoxRanges.clear();
         if (boxProgram) {
             glDeleteProgram(boxProgram);
             boxProgram = 0;
@@ -4402,6 +4419,12 @@ SceneViewportRenderer::needsBackgroundFrame() const
     }
 
     return _imp->takesBackgroundFrames() && (_imp->selectionAbsorbed != _imp->selectionPosted);
+}
+
+bool
+SceneViewportRenderer::isUploadingBudgetBoxes() const
+{
+    return _imp->budgetBoxesUploading;
 }
 
 bool
@@ -11870,12 +11893,15 @@ SceneViewport::paintGL()
     // A frame of a fill still coming in is not the frame of the scene.
     // The fill is the Storm engine's, which another delegate leaves where it was.
     const bool fillComplete = !stormPaint || _imp->renderer.isFillComplete();
-    converged = converged && fillComplete;
+    converged = converged && fillComplete && !_imp->renderer.isUploadingBudgetBoxes();
     const SceneViewportRenderer::RefineStatus refine = _imp->renderer.getRefineStatus();
     publishRefineState();
     publishTransformState();
     publishDrawStats();
     publishBudget();
+    if (_imp->renderer.isUploadingBudgetBoxes()) {
+        update();
+    }
     // A render-thread frame is shown after its render, once the GPU has finished it, and shows
     // the changes it took in then.
     const unsigned long long absorbed = (stormOnRenderThread && imp->frontFrame) ? imp->frontFrame->absorbed : _imp->renderer.getDrawFilterStats().absorbed;

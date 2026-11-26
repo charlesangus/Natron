@@ -27,8 +27,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <tuple>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -77,6 +79,7 @@ const std::chrono::milliseconds kPassBudget(4);
 const std::chrono::milliseconds kPassGap(1);
 // Instances settled between checks for a dropped pass, off the lock.
 const std::size_t kInstanceChunk = 1 << 16;
+const std::size_t kBudgetBoxRowFloats = 12;
 
 // The scene graph's rows, so every row it lists can be boxed.
 Usd_PrimFlagsPredicate
@@ -546,7 +549,7 @@ SceneDrawBoxes::solveBudget()
 
         return (serial != _budgetSerial) || _quit;
     };
-    if (!buildBudgetBoxes(budget->result, budget->units->units, stale, &budget->budgetBoxSet)) {
+    if (!buildBudgetBoxes(budget->result, budget->units->units, budget->camera, stale, &budget->budgetBoxSet)) {
         return;
     }
     {
@@ -974,9 +977,47 @@ hitMarker(const GfVec3d& centre,
 }
 } // anon namespace
 
+namespace {
+struct ClusterCell {
+    int level = 0;
+    std::int64_t x = 0;
+    std::int64_t y = 0;
+    std::int64_t z = 0;
+
+    bool operator==(const ClusterCell& other) const
+    {
+        return (level == other.level) && (x == other.x) && (y == other.y) && (z == other.z);
+    }
+};
+
+struct ClusterCellHash {
+    std::size_t operator()(const ClusterCell& cell) const
+    {
+        U64 h = U64(std::uint32_t(cell.level)) * 0x9E3779B97F4A7C15ull;
+        for (const std::int64_t v : { cell.x, cell.y, cell.z }) {
+            h ^= U64(v) + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
+        }
+
+        return std::size_t(h);
+    }
+};
+
+void
+pushBoxRows(std::vector<float>* rows,
+            const GfVec3f& min,
+            const GfVec3f& size)
+{
+    rows->insert(rows->end(), { size[0], 0.f, 0.f, 0.f, size[1], 0.f, 0.f, 0.f, size[2], min[0], min[1], min[2] });
+}
+} // anon namespace
+
+// About five pixels of a 1080-pixel-tall view.
+const double SceneDrawBoxes::kBudgetClusterNdc = 0.01;
+
 bool
 SceneDrawBoxes::buildBudgetBoxes(const SceneViewBudget::Result& result,
                                  const std::vector<Unit>& units,
+                                 const Camera& camera,
                                  const std::function<bool()>& stale,
                                  BudgetBoxSet* budgetBoxSet)
 {
@@ -990,6 +1031,19 @@ SceneDrawBoxes::buildBudgetBoxes(const SceneViewBudget::Result& result,
             hiddenInstances.insert(unit.nativeInstance);
         }
     }
+    // An instance spans about 2 r focal / d of clip space at distance d, focal being the larger of
+    // the projection's x and y scales.
+    double focal = 0.;
+    if (camera.valid) {
+        for (int column = 0; column < 2; ++column) {
+            const GfMatrix4d& m = camera.viewProjection;
+            focal = (std::max)(focal, GfVec3d(m[0][column], m[1][column], m[2][column]).GetLength());
+        }
+    }
+    std::unordered_map<ClusterCell, std::size_t, ClusterCellHash> cellOf;
+    std::vector<GfVec3d> clusterMin;
+    std::vector<GfVec3d> clusterMax;
+    std::vector<std::vector<float>> groupRows;
     std::size_t sinceCheck = 0;
     for (const Unit& unit : units) {
         if (++sinceCheck >= kInstanceChunk) {
@@ -1021,6 +1075,7 @@ SceneDrawBoxes::buildBudgetBoxes(const SceneViewBudget::Result& result,
         }
         const SceneViewBudget::InstancerResult& record = found->second;
         const Instances& instances = *unit.instances;
+        const Instances::Spheres spheres = instances.prototypeSpheres();
         // Per prototype, its group's index in budgetBoxSet->groups.
         std::vector<std::size_t> groupOf(instances.prototypes.size(), std::size_t(-1));
         for (std::size_t index = 0; index < instances.size(); ++index) {
@@ -1036,28 +1091,116 @@ SceneDrawBoxes::buildBudgetBoxes(const SceneViewBudget::Result& result,
             if (!bitOr(record.demoted, index, false) && bitOr(record.kept, index, true)) {
                 continue;
             }
+            ++budgetBoxSet->instanceCount;
             const std::size_t prototype = std::size_t(instances.protoIndices[index]);
+            if (focal > 0.) {
+                GfVec3d centre;
+                double radius = 0.;
+                instances.instanceSphere(spheres, index, &centre, &radius);
+                const double distance = (centre - camera.eye).GetLength();
+                const double cell = kBudgetClusterNdc * distance / focal;
+                if ((2. * radius < cell) && (cell > 0.) && std::isfinite(cell)) {
+                    ClusterCell key;
+                    key.level = int(std::ceil(std::log2(cell)));
+                    const double size = std::ldexp(1., key.level);
+                    key.x = std::int64_t(std::floor(centre[0] / size));
+                    key.y = std::int64_t(std::floor(centre[1] / size));
+                    key.z = std::int64_t(std::floor(centre[2] / size));
+                    const GfVec3d low = centre - GfVec3d(radius);
+                    const GfVec3d high = centre + GfVec3d(radius);
+                    const auto made = cellOf.emplace(key, budgetBoxSet->clusters.size());
+                    if (made.second) {
+                        BudgetBoxCluster cluster;
+                        cluster.instancer = unit.path;
+                        cluster.prototype = instances.prototypes[prototype].path;
+                        cluster.instance = index;
+                        budgetBoxSet->clusters.push_back(cluster);
+                        clusterMin.push_back(low);
+                        clusterMax.push_back(high);
+                    } else {
+                        const std::size_t at = made.first->second;
+                        for (int axis = 0; axis < 3; ++axis) {
+                            clusterMin[at][axis] = (std::min)(clusterMin[at][axis], low[axis]);
+                            clusterMax[at][axis] = (std::max)(clusterMax[at][axis], high[axis]);
+                        }
+                    }
+                    ++budgetBoxSet->clusters[made.first->second].count;
+                    continue;
+                }
+            }
             if (groupOf[prototype] == std::size_t(-1)) {
                 groupOf[prototype] = budgetBoxSet->groups.size();
                 BudgetBoxGroup group;
                 group.instancer = unit.path;
                 group.prototype = instances.prototypes[prototype].path;
-                group.min = instances.prototypes[prototype].min;
-                group.max = instances.prototypes[prototype].bounded ? instances.prototypes[prototype].max : group.min;
-                group.bounded = instances.prototypes[prototype].bounded;
                 budgetBoxSet->groups.push_back(std::move(group));
+                BudgetBoxRange range;
+                range.kind = eBudgetBoxRangeGroup;
+                range.min = instances.prototypes[prototype].min;
+                range.max = instances.prototypes[prototype].bounded ? instances.prototypes[prototype].max : range.min;
+                range.bounded = instances.prototypes[prototype].bounded;
+                range.at = groupOf[prototype];
+                budgetBoxSet->ranges.push_back(range);
+                groupRows.emplace_back();
             }
             BudgetBoxGroup& group = budgetBoxSet->groups[groupOf[prototype]];
+            std::vector<float>& rows = groupRows[groupOf[prototype]];
             const GfMatrix4d transform = instances.instanceTransform(index);
             for (int row = 0; row < 4; ++row) {
                 for (int column = 0; column < 3; ++column) {
-                    group.rows.push_back(float(transform[row][column]));
+                    rows.push_back(float(transform[row][column]));
                 }
             }
             group.indices.push_back(index);
-            ++budgetBoxSet->instanceCount;
         }
     }
+
+    // Gprim boxes, gprim markers, cluster boxes and cluster markers, then the groups.
+    std::vector<BudgetBoxRange> ranges;
+    std::vector<float>& rows = budgetBoxSet->rows;
+    std::size_t total = budgetBoxSet->boxes.size() + budgetBoxSet->clusters.size();
+    for (const BudgetBoxGroup& group : budgetBoxSet->groups) {
+        total += group.indices.size();
+    }
+    rows.reserve(total * kBudgetBoxRowFloats);
+    for (int pass = 0; pass < 4; ++pass) {
+        BudgetBoxRange range;
+        range.kind = (pass < 2) ? eBudgetBoxRangeGprims : eBudgetBoxRangeClusters;
+        range.bounded = ((pass % 2) == 0);
+        range.min = GfVec3f(0.f);
+        range.max = range.bounded ? GfVec3f(1.f) : GfVec3f(0.f);
+        range.first = rows.size() / kBudgetBoxRowFloats;
+        if (pass < 2) {
+            for (const Box& box : budgetBoxSet->boxes) {
+                if ((box.kind != eKindMarker) != range.bounded) {
+                    continue;
+                }
+                pushBoxRows(&rows, box.min, range.bounded ? GfVec3f(box.max - box.min) : GfVec3f(0.f));
+            }
+        } else {
+            for (std::size_t at = 0; at < budgetBoxSet->clusters.size(); ++at) {
+                const GfVec3f low(clusterMin[at]);
+                const GfVec3f size(clusterMax[at] - clusterMin[at]);
+                if ((size != GfVec3f(0.f)) != range.bounded) {
+                    continue;
+                }
+                budgetBoxSet->clusters[at].row = rows.size() / kBudgetBoxRowFloats;
+                pushBoxRows(&rows, low, size);
+            }
+        }
+        range.count = rows.size() / kBudgetBoxRowFloats - range.first;
+        if (range.count > 0) {
+            ranges.push_back(range);
+        }
+    }
+    for (BudgetBoxRange range : budgetBoxSet->ranges) {
+        const std::vector<float>& from = groupRows[range.at];
+        range.first = rows.size() / kBudgetBoxRowFloats;
+        range.count = from.size() / kBudgetBoxRowFloats;
+        rows.insert(rows.end(), from.begin(), from.end());
+        ranges.push_back(range);
+    }
+    budgetBoxSet->ranges = std::move(ranges);
 
     return true;
 } // SceneDrawBoxes::buildBudgetBoxes
@@ -1072,7 +1215,7 @@ SceneDrawBoxes::pickBudgetBox(const BudgetBoxSet& budgetBoxSet,
                               bool markers,
                               BudgetBoxHit* hit)
 {
-    if ((width <= 0) || (height <= 0) || (budgetBoxSet.boxes.empty() && budgetBoxSet.groups.empty())) {
+    if ((width <= 0) || (height <= 0) || budgetBoxSet.empty()) {
         return false;
     }
     const GfMatrix4d inverse = viewProjection.GetInverse();
@@ -1115,12 +1258,34 @@ SceneDrawBoxes::pickBudgetBox(const BudgetBoxSet& budgetBoxSet,
             offer(viewProjection.Transform(point)[2], point, box.path, SdfPath(), false, 0);
         }
     }
-    for (const BudgetBoxGroup& group : budgetBoxSet.groups) {
-        const GfVec3d localCentre = (GfVec3d(group.min) + GfVec3d(group.max)) * 0.5;
-        const double localRadius = (GfVec3d(group.max) - GfVec3d(group.min)).GetLength() * 0.5;
-        const bool asMarker = markers || !group.bounded;
-        for (std::size_t at = 0; at < group.indices.size(); ++at) {
-            const float* r = &group.rows[at * 12];
+    for (const BudgetBoxCluster& cluster : budgetBoxSet.clusters) {
+        const float* r = &budgetBoxSet.rows[cluster.row * kBudgetBoxRowFloats];
+        const GfVec3f low(r[9], r[10], r[11]);
+        const GfVec3f high = low + GfVec3f(r[0], r[4], r[8]);
+        double depth = 0.;
+        if (markers || (high == low)) {
+            const GfVec3d centre = (GfVec3d(low) + GfVec3d(high)) * 0.5;
+            if (hitMarker(centre, viewProjection, width, height, pixel, markerPixels, &depth)) {
+                offer(depth, centre, cluster.prototype, cluster.instancer, true, cluster.instance);
+            }
+            continue;
+        }
+        double t = 0.;
+        if (enterBox(origin, direction, low, high, &t)) {
+            const GfVec3d point = origin + direction * t;
+            offer(viewProjection.Transform(point)[2], point, cluster.prototype, cluster.instancer, true, cluster.instance);
+        }
+    }
+    for (const BudgetBoxRange& range : budgetBoxSet.ranges) {
+        if (range.kind != eBudgetBoxRangeGroup) {
+            continue;
+        }
+        const BudgetBoxGroup& group = budgetBoxSet.groups[range.at];
+        const GfVec3d localCentre = (GfVec3d(range.min) + GfVec3d(range.max)) * 0.5;
+        const double localRadius = (GfVec3d(range.max) - GfVec3d(range.min)).GetLength() * 0.5;
+        const bool asMarker = markers || !range.bounded;
+        for (std::size_t at = 0; at < range.count; ++at) {
+            const float* r = &budgetBoxSet.rows[(range.first + at) * kBudgetBoxRowFloats];
             const GfVec3d r0(r[0], r[1], r[2]);
             const GfVec3d r1(r[3], r[4], r[5]);
             const GfVec3d r2(r[6], r[7], r[8]);
@@ -1149,7 +1314,7 @@ SceneDrawBoxes::pickBudgetBox(const BudgetBoxSet& budgetBoxSet,
             const GfVec3d localOrigin = (origin - r3) * toLocal;
             const GfVec3d localDirection = direction * toLocal;
             double t = 0.;
-            if (enterBox(localOrigin, localDirection, group.min, group.max, &t)) {
+            if (enterBox(localOrigin, localDirection, range.min, range.max, &t)) {
                 const GfVec3d point = origin + direction * t;
                 offer(viewProjection.Transform(point)[2], point, group.prototype, group.instancer, true, group.indices[at]);
             }

@@ -354,6 +354,51 @@ SceneViewBudget::Instances::instanceTransform(std::size_t index) const
     return scale * rotate * translate * toWorld;
 }
 
+SceneViewBudget::Instances::Spheres
+SceneViewBudget::Instances::prototypeSpheres() const
+{
+    Spheres spheres;
+
+    spheres.stretch = maxStretch(toWorld);
+    spheres.centres.reserve(prototypes.size());
+    spheres.radii.reserve(prototypes.size());
+    for (const Prototype& prototype : prototypes) {
+        const Sphere sphere = sphereOf(prototype.min, prototype.max, prototype.bounded);
+        spheres.centres.push_back(sphere.centre);
+        spheres.radii.push_back(sphere.radius);
+    }
+
+    return spheres;
+}
+
+// For a drawn instance.
+void
+SceneViewBudget::Instances::instanceSphere(const Spheres& spheres,
+                                           std::size_t index,
+                                           GfVec3d* centre,
+                                           double* radius) const
+{
+    const int prototype = protoIndices[index];
+    const GfVec3d& local = spheres.centres[prototype];
+    GfVec3d scale(1.);
+    if (index < scales.size()) {
+        scale = GfVec3d(scales[index]);
+    }
+    GfVec3d at(local[0] * scale[0], local[1] * scale[1], local[2] * scale[2]);
+    if (!orientationsf.empty()) {
+        if (index < orientationsf.size()) {
+            at = GfQuatd(orientationsf[index]).GetNormalized().Transform(at);
+        }
+    } else if (index < orientations.size()) {
+        at = GfQuatd(orientations[index]).GetNormalized().Transform(at);
+    }
+    if (index < positions.size()) {
+        at += GfVec3d(positions[index]);
+    }
+    *centre = toWorld.Transform(at);
+    *radius = spheres.radii[prototype] * (std::max)({ std::abs(scale[0]), std::abs(scale[1]), std::abs(scale[2]) }) * spheres.stretch;
+}
+
 bool
 SceneViewBudget::Result::isDemoted(const SdfPath& path) const
 {
@@ -515,46 +560,27 @@ SceneViewBudget::solve(const std::vector<Unit>& units,
         at.flags.assign(size, 0);
         InstancerResult record;
         const U64 seed = pathSeed(unit.path);
-        const double stretch = maxStretch(instances.toWorld);
-        std::vector<Sphere> prototypeSpheres;
-        prototypeSpheres.reserve(instances.prototypes.size());
-        for (const Prototype& prototype : instances.prototypes) {
-            prototypeSpheres.push_back(sphereOf(prototype.min, prototype.max, prototype.bounded));
-        }
+        const Instances::Spheres spheres = instances.prototypeSpheres();
+        // Looked up once: a hash per instance costs seconds over tens of millions.
+        const auto before = hadPrevious ? previous.instancers.find(unit.path) : previous.instancers.end();
+        const InstancerResult* was = (before != previous.instancers.end()) ? &before->second : nullptr;
         for (std::size_t index = 0; index < size; ++index) {
             if (!instances.draws(index)) {
                 continue;
             }
             const int prototype = instances.protoIndices[index];
-            const Sphere& local = prototypeSpheres[prototype];
-            GfVec3d scale(1.);
-            if (index < instances.scales.size()) {
-                scale = GfVec3d(instances.scales[index]);
-            }
-            GfVec3d centre(local.centre[0] * scale[0], local.centre[1] * scale[1], local.centre[2] * scale[2]);
-            if (!instances.orientationsf.empty()) {
-                if (index < instances.orientationsf.size()) {
-                    centre = GfQuatd(instances.orientationsf[index]).GetNormalized().Transform(centre);
-                }
-            } else if (index < instances.orientations.size()) {
-                centre = GfQuatd(instances.orientations[index]).GetNormalized().Transform(centre);
-            }
-            if (index < instances.positions.size()) {
-                centre += GfVec3d(instances.positions[index]);
-            }
             Sphere sphere;
-            sphere.centre = instances.toWorld.Transform(centre);
-            sphere.radius = local.radius * (std::max)({ std::abs(scale[0]), std::abs(scale[1]), std::abs(scale[2]) }) * stretch;
+            instances.instanceSphere(spheres, index, &sphere.centre, &sphere.radius);
             const double distance = distanceTo(camera.eye, sphere);
             at.distance[index] = float(distance);
             at.flags[index] = eFlagDrawn;
-            if (beyond(distance, settings.cullDistance, hadPrevious, previous.isInstanceCulled(unit.path, index))) {
+            if (beyond(distance, settings.cullDistance, hadPrevious, was && bitAt(was->culled, index, false))) {
                 at.flags[index] = withFlag(at.flags[index], eFlagCulled, true);
                 setBit(record.culled, size, index, true, false);
                 ++record.culledCount;
                 continue;
             }
-            if (!keeps(seed, index, fraction) && beyond(distance, settings.fractionDistance, hadPrevious, !previous.isInstanceKept(unit.path, index))) {
+            if (!keeps(seed, index, fraction) && beyond(distance, settings.fractionDistance, hadPrevious, was && !bitAt(was->kept, index, true))) {
                 at.flags[index] = withFlag(at.flags[index], eFlagFractioned, true);
                 setBit(record.kept, size, index, false, true);
                 ++record.fractionedCount;
@@ -581,8 +607,9 @@ SceneViewBudget::solve(const std::vector<Unit>& units,
     // The previous demotion distance holds while what it leaves is within the band of the limit.
     const double band = kBand * double(settings.limit);
     double distance = demoteDistance(work, counted, settings.limit, farthest);
-    // A unit over the limit alone always goes, however near the boundary.
-    bool banded = hadPrevious && result.aloneOverLimit.IsEmpty();
+    // A unit over the limit alone always goes, however near the boundary, and nothing does when
+    // everything fits.
+    bool banded = hadPrevious && result.aloneOverLimit.IsEmpty() && (counted > settings.limit);
     if (banded) {
         const bool finite = std::isfinite(previous.demoteDistance);
         if ((double(underPrevious) <= double(settings.limit) + band) && (!finite || (double(underPrevious) >= double(settings.limit) - band))) {

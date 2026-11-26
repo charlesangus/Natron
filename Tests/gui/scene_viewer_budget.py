@@ -388,6 +388,70 @@ try:
         check(farthest in paths("demotedPaths"), "%s, set to Full, is still demoted (%r)" % (farthest, paths("demotedPaths")[:5]))
         QMetaObject.invokeMethod(view(), "clearDrawState", Q_ARG("QString", farthest))
 
+        section("draw states")
+        # The Scene Graph's Draw column writes through these slots.
+        yield from resolve("Polygon Limit %d" % limit, set_knob("polygonLimit", limit))
+
+        def redrawn(label, edit):
+            """Runs a draw state edit, then waits for the budget the recount brings to reach the screen."""
+            before = int(budget().get("serial", 0))
+            edit()
+            ok = yield ("until", lambda: int(budget().get("serial", 0)) > before and solved(), POLL_TIMEOUT_S)
+            check(ok, "%s: the budget is solved again and applied (%r)" % (label, budget().get("serial")))
+            yield settle()
+
+        def boxed_paths():
+            return set(p for p, _, _, _ in budget_boxes())
+
+        def consistent(label):
+            """Every demoted mesh draws a tinted budget box, and no box stands for anything not demoted."""
+            demoted = set(paths("demotedPaths"))
+            meshes = set(p for p in boxed_paths() if not p.startswith(INSTANCER + "["))
+            check(meshes == set(p for p in demoted if not p.startswith(INSTANCER + "[")),
+                  "%s: the mesh budget boxes are the demoted meshes (%r boxed, %r demoted)" %
+                  (label, sorted(meshes)[:3], sorted(demoted)[:3]))
+
+        e = eye()
+        demoted_meshes = [p for p in paths("demotedPaths") if not p.startswith(INSTANCER + "[")]
+        if check(len(demoted_meshes) > 0, "a mesh is demoted at Polygon Limit %d" % limit):
+            target = max(demoted_meshes, key=lambda p: distance(p, e))
+            counted = int(budget().get("counted", 0))
+            yield from redrawn("Hidden on %s" % target,
+                               lambda: QMetaObject.invokeMethod(view(), "setDrawState", Q_ARG("QString", target), Q_ARG("QString", "hidden")))
+            check(target not in paths("demotedPaths") and target not in paths("culledPaths"),
+                  "a Hidden %s is never demoted or culled" % target)
+            check(target not in boxed_paths(), "a Hidden %s draws no budget box" % target)
+            check(int(budget().get("counted", 0)) == counted - MESH_FACES, "a Hidden %s counts no faces (%r, was %r)" %
+                  (target, budget().get("counted"), counted))
+            consistent("Hidden on %s" % target)
+
+            yield from redrawn("Full on %s" % target,
+                               lambda: QMetaObject.invokeMethod(view(), "setDrawState", Q_ARG("QString", target), Q_ARG("QString", "full")))
+            check(int(budget().get("counted", 0)) == counted, "a Full %s counts again (%r, was %r)" %
+                  (target, budget().get("counted"), counted))
+            check(int(budget().get("drawn", TOTAL_FACES)) <= limit, "at most the limit is drawn (%r)" % budget().get("drawn"))
+            consistent("Full on %s" % target)
+
+            yield from redrawn("Load All on /World",
+                               lambda: QMetaObject.invokeMethod(view(), "setDrawState", Q_ARG("QString", "/World"), Q_ARG("QString", "loadAll")))
+            check(int(budget().get("counted", 0)) == counted, "Load All counts what Full did (%r, was %r)" %
+                  (budget().get("counted"), counted))
+            consistent("Load All on /World")
+
+            yield from redrawn("Hidden on %s" % INSTANCER,
+                               lambda: QMetaObject.invokeMethod(view(), "setDrawState", Q_ARG("QString", INSTANCER), Q_ARG("QString", "hidden")))
+            check(not any(p.startswith(INSTANCER + "[") for p in paths("demotedPaths")), "a Hidden instancer's instances are never demoted")
+            check(not any(p.startswith(INSTANCER + "[") for p in boxed_paths()), "a Hidden instancer's instances draw no budget box")
+            consistent("Hidden on %s" % INSTANCER)
+
+            yield from resolve("Polygon Limit %d" % TOTAL_FACES, set_knob("polygonLimit", TOTAL_FACES))
+            check(int(budget().get("demoted", -1)) == 0 and budget_boxes() == [],
+                  "under the limit nothing stays demoted and no budget box is drawn (%r, %r)" %
+                  (budget().get("demoted"), budget_boxes()[:3]))
+            for path in (target, INSTANCER, "/World"):
+                QMetaObject.invokeMethod(view(), "clearDrawState", Q_ARG("QString", path))
+            yield from resolve("Polygon Limit %d" % limit, set_knob("polygonLimit", limit))
+
         section("budget boxes")
         for label, value in BUDGET_BOXES:
             yield from resolve("Budget Boxes %s" % label, lambda value=value: (

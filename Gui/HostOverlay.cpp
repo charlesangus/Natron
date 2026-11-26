@@ -580,6 +580,7 @@ class TransformInteract
     KnobDoubleWPtr _skewY;
     KnobChoiceWPtr _skewOrder;
     KnobBoolWPtr _invert;
+    HostOverlayKnobsTransform::FrameGetter _frameGetter;
     DrawStateEnum _drawState;
     MouseStateEnum _mouseState;
     int _modifierStateCtrl;
@@ -609,6 +610,7 @@ public:
         , _skewY()
         , _skewOrder()
         , _invert()
+        , _frameGetter(knobs->getFrameGetter())
         , _drawState(eInActive)
         , _mouseState(eReleased)
         , _modifierStateCtrl(0)
@@ -795,6 +797,28 @@ public:
     virtual bool loseFocus(double time,
                            const RenderScale& renderScale,
                            ViewIdx view) OVERRIDE FINAL;
+
+private:
+    /**
+     * @brief The frame the knobs' transform applies in, and what pen positions and the pixel
+     * scale become in it. False, leaving them as they are, when the frame is the identity.
+     **/
+    bool getFrame(double time, Transform::Matrix3x3* frame) const;
+    static QPointF toFrame(const Transform::Matrix3x3& inverse, const QPointF& p);
+    static OfxPointD pixelScaleInFrame(const Transform::Matrix3x3& frame, const OfxPointD& pscale);
+
+    void drawInFrame(double time,
+                     const OfxPointD& pscale,
+                     const QPointF& lastPenPos,
+                     const OfxRGBColourD& color,
+                     const OfxPointD& shadow);
+    bool penMotionInFrame(double time,
+                          const OfxPointD& pscale,
+                          const QPointF& lastPenPos,
+                          const QPointF& penPos);
+    bool penDownInFrame(double time,
+                        const OfxPointD& pscale,
+                        const QPointF& penPos);
 };
 
 typedef std::shared_ptr<TransformInteract> TransformInteractPtr;
@@ -2508,6 +2532,72 @@ TransformInteract::draw(double time,
                         const QFont& /*font*/,
                         const QFontMetrics& /*fm*/)
 {
+    Transform::Matrix3x3 frame;
+    if (!getFrame(time, &frame)) {
+        drawInFrame(time, pscale, lastPenPos, color, shadow);
+
+        return;
+    }
+    const Transform::Matrix3x3 inverse = Transform::matInverse(frame);
+    GLdouble frameMatrix[16] = {
+        frame.a, frame.d, 0., frame.g,
+        frame.b, frame.e, 0., frame.h,
+        0., 0., 1., 0.,
+        frame.c, frame.f, 0., frame.i
+    };
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glMultMatrixd(frameMatrix);
+    drawInFrame(time, pixelScaleInFrame(frame, pscale), toFrame(inverse, lastPenPos), color, shadow);
+    glMatrixMode(GL_MODELVIEW);
+    glPopMatrix();
+}
+
+bool
+TransformInteract::getFrame(double time,
+                            Transform::Matrix3x3* frame) const
+{
+    if (!_frameGetter || !_frameGetter(time, frame)) {
+        return false;
+    }
+    // A singular frame has no inverse to read pen positions through.
+    const double det = frame->a * frame->e - frame->b * frame->d;
+
+    return std::abs(det) > 1e-12;
+}
+
+QPointF
+TransformInteract::toFrame(const Transform::Matrix3x3& inverse,
+                           const QPointF& p)
+{
+    Transform::Point3D q = Transform::matApply(inverse, Transform::Point3D(p.x(), p.y(), 1.));
+    if (q.z == 0.) {
+        return p;
+    }
+
+    return QPointF(q.x / q.z, q.y / q.z);
+}
+
+OfxPointD
+TransformInteract::pixelScaleInFrame(const Transform::Matrix3x3& frame,
+                                     const OfxPointD& pscale)
+{
+    // Handle sizes are in screen pixels, which the frame's scale would otherwise stretch.
+    const double s = std::sqrt(std::abs(frame.a * frame.e - frame.b * frame.d));
+    OfxPointD ret;
+    ret.x = pscale.x / s;
+    ret.y = pscale.y / s;
+
+    return ret;
+}
+
+void
+TransformInteract::drawInFrame(double time,
+                               const OfxPointD& pscale,
+                               const QPointF& lastPenPos,
+                               const OfxRGBColourD& color,
+                               const OfxPointD& shadow)
+{
     // do not show interact if knob is secret or not enabled
     // see https://github.com/MrKepzie/Natron/issues/932
     KnobDoublePtr translateKnob = _translate.lock();
@@ -2989,6 +3079,21 @@ TransformInteract::penMotion(double time,
                              const QPointF &penPosParam,
                              const QPoint & /*penPosViewport*/,
                              double /*pressure*/)
+{
+    Transform::Matrix3x3 frame;
+    if (!getFrame(time, &frame)) {
+        return penMotionInFrame(time, pscale, lastPenPos, penPosParam);
+    }
+    const Transform::Matrix3x3 inverse = Transform::matInverse(frame);
+
+    return penMotionInFrame(time, pixelScaleInFrame(frame, pscale), toFrame(inverse, lastPenPos), toFrame(inverse, penPosParam));
+}
+
+bool
+TransformInteract::penMotionInFrame(double time,
+                                    const OfxPointD& pscale,
+                                    const QPointF& lastPenPos,
+                                    const QPointF& penPosParam)
 {
     // do not show interact if knob is secret or not enabled
     // see https://github.com/MrKepzie/Natron/issues/932
@@ -3661,6 +3766,19 @@ TransformInteract::penDown(double time,
                            const QPointF &penPosParam,
                            const QPoint & /*penPosViewport*/,
                            double /*pressure*/)
+{
+    Transform::Matrix3x3 frame;
+    if (!getFrame(time, &frame)) {
+        return penDownInFrame(time, pscale, penPosParam);
+    }
+
+    return penDownInFrame(time, pixelScaleInFrame(frame, pscale), toFrame(Transform::matInverse(frame), penPosParam));
+}
+
+bool
+TransformInteract::penDownInFrame(double time,
+                                  const OfxPointD& pscale,
+                                  const QPointF& penPosParam)
 {
     // do not show interact if knob is secret or not enabled
     // see https://github.com/MrKepzie/Natron/issues/932

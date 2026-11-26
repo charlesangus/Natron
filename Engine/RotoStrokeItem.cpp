@@ -577,7 +577,7 @@ RotoStrokeItem::getMostRecentStrokeChangesSinceAge(double time,
     //We changed stroke index so far, reset the age
     if ( (*strokeIndex != lastMultiStrokeIndex) && (lastAge != -1) ) {
         lastAge = -1;
-        *wholeStrokeBbox = computeBoundingBoxInternal(time);
+        *wholeStrokeBbox = computeBoundingBoxInternal(time, transform);
     }
 
     KeyFrameSet xCurve = stroke->xCurve->getKeyFrames_mt_safe();
@@ -663,12 +663,10 @@ RotoStrokeItem::clone(const RotoItem* other)
 }
 
 RectD
-RotoStrokeItem::computeBoundingBoxInternal(double time) const
+RotoStrokeItem::computeBoundingBoxInternal(double time,
+                                           const Transform::Matrix3x3& transform) const
 {
     RectD bbox;
-    Transform::Matrix3x3 transform;
-
-    getTransformAtTime(time, &transform);
     bool pressureAffectsSize = getPressureSizeKnob()->getValueAtTime(time);
     bool bboxSet = false;
     double halfBrushSize = getBrushSizeKnob()->getValueAtTime(time) / 2. + 1;
@@ -767,9 +765,12 @@ RotoStrokeItem::computeBoundingBoxInternal(double time) const
 RectD
 RotoStrokeItem::computeBoundingBox(double time) const
 {
+    // Composing the transform reads the parent layer, which takes itemMutex.
+    Transform::Matrix3x3 transform;
+    getTransformAtTime(time, &transform);
     QMutexLocker k(&itemMutex);
 
-    return computeBoundingBoxInternal(time);
+    return computeBoundingBoxInternal(time, transform);
 }
 
 RectD

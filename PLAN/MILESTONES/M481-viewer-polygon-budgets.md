@@ -219,3 +219,4 @@ are from `milestone/m336-heavy-scene-acceptance` as of 2026-11-17. Re-check them
   - **Suspect counter:** counted shows 13.8 billion, which looks like an instancing or overflow bug.
   - **Outside budget_orbit:** Island's load_all stalls 2.9 s.
   - **Status:** put to the user (Needs: response).
+- 2026-11-26 (PM) — The user tests on their own GPU before any more VM runs. The UAT AppImage `build/appimages/Natron-m481-viewer-polygon-budgets.AppImage` (release 384091515) and its steps .md are staged; Needs: uat.

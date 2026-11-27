@@ -659,17 +659,19 @@ layoutGeoUVs(GeoDetailBuilder& detail,
     if (promote) {
         const GeoAttribute* pointUV = d.findAttribute(eGeoAttribClassPoint, uvName);
         const GeoAttributeDesc desc = pointUV->desc();
-        std::vector<std::pair<GeoOffset, std::vector<double>>> seeded;
-        std::vector<double> tuple((std::size_t)desc.tupleSize);
+        const std::size_t tupleSize = (std::size_t)desc.tupleSize;
+        std::vector<double> seeded((std::size_t)d.vertexMap().offsetSize() * tupleSize);
         d.vertexMap().forEachLive([&](GeoIndex, GeoOffset vertex) {
-            geoReadNumeric(*pointUV, (std::size_t)d.vertexPoint(vertex), std::span<double>(tuple));
-            seeded.emplace_back(vertex, tuple);
+            geoReadNumeric(*pointUV, (std::size_t)d.vertexPoint(vertex), std::span<double>(seeded.data() + (std::size_t)vertex * tupleSize, tupleSize));
         });
         detail.removeAttribute(eGeoAttribClassPoint, uvName);
+        // A vertex attribute of this name that could not hold a uv was passed over for the point
+        // one; the promoted uv takes its place.
+        detail.removeAttribute(eGeoAttribClassVertex, uvName);
         out = &detail.addAttribute(eGeoAttribClassVertex, desc);
-        for (const std::pair<GeoOffset, std::vector<double>>& seed : seeded) {
-            geoWriteNumeric(*out, (std::size_t)seed.first, std::span<const double>(seed.second));
-        }
+        d.vertexMap().forEachLive([&](GeoIndex, GeoOffset vertex) {
+            geoWriteNumeric(*out, (std::size_t)vertex, std::span<const double>(seeded.data() + (std::size_t)vertex * tupleSize, tupleSize));
+        });
         r->promotedToVertices = true;
     } else {
         out = detail.attributeForWriting(uv.onVertices ? eGeoAttribClassVertex : eGeoAttribClassPoint, uvName);

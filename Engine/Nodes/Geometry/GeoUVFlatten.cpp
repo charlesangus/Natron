@@ -543,51 +543,6 @@ packStage(const GeoDetail& d,
     return true;
 } // packStage
 
-// The least-squares fit of from onto to by a uniform scale, a translation and a turn of a whole
-// number of steps of a quarter turn, so the axes the island was aligned to stay axes.
-GeoUVPackPlacement
-fitInQuarterTurns(const std::vector<GeoUV>& from,
-                  const std::vector<GeoUV>& to,
-                  int step)
-{
-    static const std::array<double, 4> kTurns[4] = { { 1., 0., 0., 1. }, { 0., -1., 1., 0. }, { -1., 0., 0., -1. }, { 0., 1., -1., 0. } };
-    const std::size_t n = std::min(from.size(), to.size());
-    GeoUV cf = { 0., 0. }, ct = { 0., 0. };
-    for (std::size_t i = 0; i < n; ++i) {
-        for (int a = 0; a < 2; ++a) {
-            cf[(std::size_t)a] += from[i][(std::size_t)a] / (double)n;
-            ct[(std::size_t)a] += to[i][(std::size_t)a] / (double)n;
-        }
-    }
-    double norm = 0.;
-    for (std::size_t i = 0; i < n; ++i) {
-        const double fx = from[i][0] - cf[0], fy = from[i][1] - cf[1];
-        norm += fx * fx + fy * fy;
-    }
-    int best = 0;
-    double bestDot = -std::numeric_limits<double>::infinity();
-    for (int k = 0; k < 4; k += step) {
-        const std::array<double, 4>& m = kTurns[k];
-        double dot = 0.;
-        for (std::size_t i = 0; i < n; ++i) {
-            const double fx = from[i][0] - cf[0], fy = from[i][1] - cf[1];
-            dot += (m[0] * fx + m[1] * fy) * (to[i][0] - ct[0]) + (m[2] * fx + m[3] * fy) * (to[i][1] - ct[1]);
-        }
-        if (dot > bestDot) {
-            best = k;
-            bestDot = dot;
-        }
-    }
-    const double scale = ((norm > 0.) && (bestDot > 0.)) ? bestDot / norm : 1.;
-    const std::array<double, 4>& m = kTurns[best];
-    GeoUVPackPlacement placement;
-    placement.m = { scale * m[0], scale * m[1], scale * m[2], scale * m[3] };
-    placement.t = { ct[0] - (placement.m[0] * cf[0] + placement.m[1] * cf[1]), ct[1] - (placement.m[2] * cf[0] + placement.m[3] * cf[1]) };
-    placement.packed = true;
-
-    return placement;
-}
-
 void
 fitOntoLayout(const GeoDetail& d,
               const FlattenStage& layout,
@@ -618,9 +573,9 @@ fitOntoLayout(const GeoDetail& d,
         const GeoUVFlattenChartConstraints& constraints = stage->constraints[c];
         GeoUVPackPlacement placement;
         if (!constraints.alignments.empty()) {
-            placement = fitInQuarterTurns(from, to, 2);
+            placement = geoUVFitInTurns(from, to, 2);
         } else if (!constraints.rectify.empty()) {
-            placement = fitInQuarterTurns(from, to, 1);
+            placement = geoUVFitInTurns(from, to, 1);
         } else {
             placement = geoUVFitSimilarity(from, to);
         }

@@ -694,7 +694,17 @@ Packer::setUp(std::string* errorMessage)
     // obstacle) to sit on; the first of a kind is packed and the rest follow it. A follower is
     // drawn at its leader's size, so a packed leader must have the follower's scale; an obstacle
     // leader keeps its own size. Only islands of as many polygons and corners can match, so the
-    // leaders are bucketed by those.
+    // leaders are bucketed by those, and within a bucket ordered by the corners' RMS distance
+    // from their mean. A rigid map moving every corner by at most d changes that distance by at
+    // most d, so only leaders within the leader's own tolerance of it need a full match.
+    struct Leader {
+        int island;
+        double tolerance;
+    };
+    struct Bucket {
+        std::multimap<double, Leader> byRadius;
+        double widest = 0.;
+    };
     const auto shapeKey = [](const GeoUVPackIsland& island) {
         std::size_t corners = 0;
         for (const std::vector<GeoUV>& polygon : island.polygons) {
@@ -703,14 +713,48 @@ Packer::setUp(std::string* errorMessage)
 
         return std::make_pair(island.polygons.size(), corners);
     };
-    std::map<std::pair<std::size_t, std::size_t>, std::vector<int>> leaders;
+    const auto rmsRadius = [](const GeoUVPackIsland& island) {
+        GeoUV mean = { 0., 0. };
+        std::size_t count = 0;
+        for (const std::vector<GeoUV>& polygon : island.polygons) {
+            for (const GeoUV& corner : polygon) {
+                mean[0] += corner[0];
+                mean[1] += corner[1];
+                ++count;
+            }
+        }
+        if (count == 0) {
+            return 0.;
+        }
+        mean[0] /= count;
+        mean[1] /= count;
+        double sum = 0.;
+        for (const std::vector<GeoUV>& polygon : island.polygons) {
+            for (const GeoUV& corner : polygon) {
+                sum += (corner[0] - mean[0]) * (corner[0] - mean[0]) + (corner[1] - mean[1]) * (corner[1] - mean[1]);
+            }
+        }
+
+        return std::sqrt(sum / count);
+    };
+    std::map<std::pair<std::size_t, std::size_t>, Bucket> leaders;
+    const auto addLeader = [&](int i, double radius) {
+        GeoUV lo, hi;
+        polygonsBounds(_islands[i].polygons, &lo, &hi);
+        const double tolerance = p.stackTolerance * std::hypot(hi[0] - lo[0], hi[1] - lo[1]) + 1e-9 * std::max(1., radius);
+        Bucket& bucket = leaders[shapeKey(_islands[i])];
+        bucket.byRadius.emplace(radius, Leader { i, tolerance });
+        bucket.widest = std::max(bucket.widest, tolerance);
+    };
     if (p.stackIdentical && p.stackOnObstacles) {
         for (int i = 0; i < n; ++i) {
             if (_islands[i].obstacle && _islands[i].stackable && !_islands[i].polygons.empty()) {
-                leaders[shapeKey(_islands[i])].push_back(i);
+                addLeader(i, rmsRadius(_islands[i]));
             }
         }
     }
+    std::size_t attempts = 0;
+    std::vector<int> candidates;
     for (int i = 0; i < n; ++i) {
         if (((i & 63) == 0) && poll()) {
             return true;
@@ -727,20 +771,43 @@ Packer::setUp(std::string* errorMessage)
         }
         bool stacked = false;
         if (p.stackIdentical && island.stackable) {
-            std::vector<int>& candidates = leaders[shapeKey(island)];
-            for (int j : candidates) {
-                const double leaderScale = _islands[j].scale;
-                if (!_islands[j].obstacle && !(std::fabs(leaderScale - island.scale) <= 1e-9 * std::max(std::fabs(leaderScale), std::fabs(island.scale)))) {
-                    continue;
+            const double radius = rmsRadius(island);
+            const auto found = leaders.find(shapeKey(island));
+            if (found != leaders.end()) {
+                const Bucket& bucket = found->second;
+                candidates.clear();
+                const auto last = bucket.byRadius.upper_bound(radius + bucket.widest);
+                for (auto it = bucket.byRadius.lower_bound(radius - bucket.widest); it != last; ++it) {
+                    const int j = it->second.island;
+                    if (!(std::fabs(it->first - radius) <= it->second.tolerance)) {
+                        continue;
+                    }
+                    const double leaderScale = _islands[j].scale;
+                    if (!_islands[j].obstacle && !(std::fabs(leaderScale - island.scale) <= 1e-9 * std::max(std::fabs(leaderScale), std::fabs(island.scale)))) {
+                        continue;
+                    }
+                    candidates.push_back(j);
                 }
-                if (matchIslands(_islands[j], island, false, p.stackTolerance, &_stackM[i], &_stackT[i]) || (p.stackMirrored && matchIslands(_islands[j], island, true, p.stackTolerance, &_stackM[i], &_stackT[i]))) {
-                    _leader[i] = j;
-                    stacked = true;
-                    break;
+                // Obstacles lead before islands, and earlier islands before later ones.
+                std::sort(candidates.begin(), candidates.end(), [this](int a, int b) {
+                    const bool obstacleA = _islands[a].obstacle;
+                    const bool obstacleB = _islands[b].obstacle;
+
+                    return obstacleA != obstacleB ? obstacleA : a < b;
+                });
+                for (int j : candidates) {
+                    if (((++attempts & 1023) == 0) && poll()) {
+                        return true;
+                    }
+                    if (matchIslands(_islands[j], island, false, p.stackTolerance, &_stackM[i], &_stackT[i]) || (p.stackMirrored && matchIslands(_islands[j], island, true, p.stackTolerance, &_stackM[i], &_stackT[i]))) {
+                        _leader[i] = j;
+                        stacked = true;
+                        break;
+                    }
                 }
             }
             if (!stacked) {
-                candidates.push_back(i);
+                addLeader(i, radius);
             }
         }
         if (!stacked) {
@@ -1172,7 +1239,6 @@ geoPackUVIslands(const std::vector<GeoUVPackIsland>& islands,
                     bestScale = lo;
                 }
             }
-            scale = found ? lo : bestScale;
             while (found && (hi - lo > params.scaleTolerance * lo)) {
                 const double mid = 0.5 * (lo + hi);
                 attempt = packer.pack(mid, params.padding);
@@ -1186,7 +1252,7 @@ geoPackUVIslands(const std::vector<GeoUVPackIsland>& islands,
                     hi = mid;
                 }
             }
-            scale = lo;
+            scale = found ? lo : bestScale;
         }
     }
 

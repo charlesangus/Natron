@@ -167,6 +167,18 @@ double geoUVMinimumAreaRotation(const std::vector<GeoUV>& points);
 GeoUVPackPlacement geoUVFitSimilarity(const std::vector<GeoUV>& from,
                                       const std::vector<GeoUV>& to);
 
+/**
+ * @brief The placement taking @p from onto @p to by a translation, a uniform scale and a turn of
+ * a whole number of @p step quarter turns (1 or 2), so axes stay axes. The turn is the one
+ * closest to the points in least squares; the scale and translation put the turned points'
+ * bounding box as large as fits, centred, in the bounding box of @p to: when no allowed turn
+ * follows the target's orientation, the points still come out about the target's size and
+ * never beyond its extent.
+ **/
+GeoUVPackPlacement geoUVFitInTurns(const std::vector<GeoUV>& from,
+                                   const std::vector<GeoUV>& to,
+                                   int step);
+
 NATRON_NAMESPACE_EXIT
 
 #endif // Engine_Geo_GeoUVFlattenSolver_h

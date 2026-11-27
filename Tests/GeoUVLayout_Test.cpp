@@ -492,6 +492,38 @@ TEST(GeoUVLayout, PointUVSharedByTwoIslandsBecomesVertexUV)
     }
 }
 
+TEST(GeoUVLayout, PromotionReplacesAVertexAttributeThatCannotHoldUV)
+{
+    GeoDetailBuilder b;
+    const GeoOffset first = b.appendPoints(6);
+    for (int i = 0; i < 6; ++i) {
+        b.setPointPosition(first + i, i % 3, i / 3, 0.);
+    }
+    b.appendPrimitives(eGeoPrimitivePolygon, std::vector<std::int32_t> { 4, 4 }, std::vector<GeoOffset> { 0, 1, 4, 3, 1, 2, 5, 4 });
+    GeoAttribute& uv = b.addAttribute(eGeoAttribClassPoint, GeoAttributeDesc { "uv", eGeoStorageFloat32, 2, eGeoTypeInfoNone, false });
+    for (GeoOffset point = 0; point < 6; ++point) {
+        const std::array<double, 3> p = b.detail().pointPosition(point);
+        const double value[2] = { p[0], p[1] };
+        geoWriteNumeric(uv, (std::size_t)point, std::span<const double>(value, 2));
+    }
+    b.addAttribute(eGeoAttribClassVertex, GeoAttributeDesc { "uv", eGeoStorageFloat32, 1, eGeoTypeInfoNone, false });
+    const GeoDetail input = b.finish();
+    GeoUVLayoutParams params = plainParams();
+    params.islands.separatorEdges = "p1-4";
+    GeoUVLayoutReport report;
+    const GeoDetail out = layout(input, params, &report);
+    EXPECT_TRUE(report.promotedToVertices);
+    EXPECT_EQ(out.findAttribute(eGeoAttribClassPoint, "uv"), nullptr);
+    const GeoAttribute* moved = out.findAttribute(eGeoAttribClassVertex, "uv");
+    ASSERT_NE(moved, nullptr);
+    EXPECT_EQ(moved->desc().tupleSize, 2);
+    const std::vector<GeoUV> left = ringOf(out, 0);
+    const std::vector<GeoUV> right = ringOf(out, 1);
+    EXPECT_NEAR(area(left), area(right), 1e-6);
+    EXPECT_GT(area(left), 0.1);
+    EXPECT_FALSE(overlap(left, right));
+}
+
 TEST(GeoUVLayout, DegeneratePolygonsMoveWithTheirIsland)
 {
     GeoDetailBuilder b;

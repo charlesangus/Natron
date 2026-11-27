@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -493,4 +494,58 @@ TEST(GeoUVFlattenSolver, SimilarityFitRecoversATransform)
         EXPECT_NEAR(mapped[1], to[i][1], 1e-12);
     }
 }
+class GeoUVFlattenSolverTurnFitTest
+    : public ::testing::TestWithParam<double> {
+};
+
+TEST(GeoUVFlattenSolver, TurnFitRecoversAQuarterTurn)
+{
+    const std::vector<GeoUV> from = { { 0., 0. }, { 2., 0. }, { 2., 1. }, { 0., 1. } };
+    std::vector<GeoUV> to;
+    for (const GeoUV& p : from) {
+        to.push_back({ -3. * p[1] + 5., 3. * p[0] - 2. });
+    }
+    const GeoUVPackPlacement placement = geoUVFitInTurns(from, to, 1);
+    for (std::size_t i = 0; i < from.size(); ++i) {
+        const GeoUV mapped = geoUVPackApply(placement, from[i]);
+        EXPECT_NEAR(mapped[0], to[i][0], 1e-12);
+        EXPECT_NEAR(mapped[1], to[i][1], 1e-12);
+    }
+}
+
+TEST_P(GeoUVFlattenSolverTurnFitTest, HalfTurnsKeepTheSizeAndStayInside)
+{
+    const double angle = GetParam();
+    const std::vector<GeoUV> from = { { 0., 0. }, { 2., 0. }, { 2., 1. }, { 0., 1. } };
+    std::vector<GeoUV> to;
+    GeoUV lo = { 1e300, 1e300 }, hi = { -1e300, -1e300 };
+    for (const GeoUV& p : from) {
+        const GeoUV q = { 3. * (std::cos(angle) * p[0] - std::sin(angle) * p[1]) + 4., 3. * (std::sin(angle) * p[0] + std::cos(angle) * p[1]) + 1. };
+        to.push_back(q);
+        for (int a = 0; a < 2; ++a) {
+            lo[a] = std::min(lo[a], q[a]);
+            hi[a] = std::max(hi[a], q[a]);
+        }
+    }
+    const GeoUVPackPlacement placement = geoUVFitInTurns(from, to, 2);
+    EXPECT_EQ(placement.m[1], 0.);
+    EXPECT_EQ(placement.m[2], 0.);
+    GeoUV flo = { 1e300, 1e300 }, fhi = { -1e300, -1e300 };
+    for (const GeoUV& p : from) {
+        const GeoUV mapped = geoUVPackApply(placement, p);
+        for (int a = 0; a < 2; ++a) {
+            EXPECT_GE(mapped[a], lo[a] - 1e-9);
+            EXPECT_LE(mapped[a], hi[a] + 1e-9);
+            flo[a] = std::min(flo[a], mapped[a]);
+            fhi[a] = std::max(fhi[a], mapped[a]);
+        }
+    }
+    // As large as fits: one side spans the target's extent.
+    const bool spansU = std::fabs((fhi[0] - flo[0]) - (hi[0] - lo[0])) < 1e-9;
+    const bool spansV = std::fabs((fhi[1] - flo[1]) - (hi[1] - lo[1])) < 1e-9;
+    EXPECT_TRUE(spansU || spansV);
+    EXPECT_GT(std::fabs(placement.m[0]), 1.4);
+}
+
+INSTANTIATE_TEST_CASE_P(Angles, GeoUVFlattenSolverTurnFitTest, ::testing::Values(0., 1.3962634015954636, 1.5707963267948966, 2.5));
 } // anonymous namespace

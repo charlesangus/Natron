@@ -26,6 +26,7 @@
 #include "GeoUVFlattenSolver.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <limits>
@@ -1666,6 +1667,69 @@ geoUVFitSimilarity(const std::vector<GeoUV>& from,
     placement.m = { re, -im, im, re };
     placement.t = { ct[0] - (re * cf[0] - im * cf[1]), ct[1] - (im * cf[0] + re * cf[1]) };
     placement.packed = true;
+
+    return placement;
+}
+
+GeoUVPackPlacement
+geoUVFitInTurns(const std::vector<GeoUV>& from,
+                const std::vector<GeoUV>& to,
+                int step)
+{
+    static const std::array<double, 4> kTurns[4] = { { 1., 0., 0., 1. }, { 0., -1., 1., 0. }, { -1., 0., 0., -1. }, { 0., 1., -1., 0. } };
+    GeoUVPackPlacement placement;
+    placement.packed = true;
+    const std::size_t n = std::min(from.size(), to.size());
+    if (n == 0) {
+        return placement;
+    }
+    GeoUV cf = { 0., 0. }, ct = { 0., 0. };
+    for (std::size_t i = 0; i < n; ++i) {
+        for (int a = 0; a < 2; ++a) {
+            cf[a] += from[i][a] / (double)n;
+            ct[a] += to[i][a] / (double)n;
+        }
+    }
+    int best = 0;
+    double bestDot = -std::numeric_limits<double>::infinity();
+    for (int k = 0; k < 4; k += std::max(1, step)) {
+        const std::array<double, 4>& m = kTurns[k];
+        double dot = 0.;
+        for (std::size_t i = 0; i < n; ++i) {
+            const double fx = from[i][0] - cf[0], fy = from[i][1] - cf[1];
+            dot += (m[0] * fx + m[1] * fy) * (to[i][0] - ct[0]) + (m[2] * fx + m[3] * fy) * (to[i][1] - ct[1]);
+        }
+        if (dot > bestDot) {
+            best = k;
+            bestDot = dot;
+        }
+    }
+    const std::array<double, 4>& m = kTurns[best];
+    GeoUV flo = { std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity() };
+    GeoUV fhi = { -flo[0], -flo[1] };
+    GeoUV tlo = flo, thi = fhi;
+    for (std::size_t i = 0; i < n; ++i) {
+        const GeoUV turned = { m[0] * from[i][0] + m[1] * from[i][1], m[2] * from[i][0] + m[3] * from[i][1] };
+        for (int a = 0; a < 2; ++a) {
+            flo[a] = std::min(flo[a], turned[a]);
+            fhi[a] = std::max(fhi[a], turned[a]);
+            tlo[a] = std::min(tlo[a], to[i][a]);
+            thi[a] = std::max(thi[a], to[i][a]);
+        }
+    }
+    double scale = std::numeric_limits<double>::infinity();
+    for (int a = 0; a < 2; ++a) {
+        if (fhi[a] - flo[a] > 0.) {
+            scale = std::min(scale, (thi[a] - tlo[a]) / (fhi[a] - flo[a]));
+        }
+    }
+    if (!(scale < std::numeric_limits<double>::infinity())) {
+        scale = 1.;
+    }
+    placement.m = { scale * m[0], scale * m[1], scale * m[2], scale * m[3] };
+    for (int a = 0; a < 2; ++a) {
+        placement.t[a] = 0.5 * (tlo[a] + thi[a]) - scale * 0.5 * (flo[a] + fhi[a]);
+    }
 
     return placement;
 }

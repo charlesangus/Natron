@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -487,17 +488,46 @@ TEST(GeoUVPack, CancelDuringStackingReturnsPromptly)
     GeoUVPackParams params;
     params.stackIdentical = true;
     params.stackMirrored = true;
-    const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-    params.aborted = [start]() {
-        return std::chrono::steady_clock::now() - start > std::chrono::milliseconds(20);
+    std::atomic<int> polls { 0 };
+    params.aborted = [&polls]() {
+        return ++polls >= 2;
     };
     GeoUVPackResult result;
     std::string error;
     EXPECT_FALSE(geoPackUVIslands(islands, params, &result, &error));
-    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     EXPECT_TRUE(result.aborted);
     EXPECT_TRUE(error.empty()) << error;
-    EXPECT_LT(seconds, 2.);
+    // The set-up stops at its second poll, and the one check after it is the last.
+    EXPECT_EQ(polls.load(), 3);
+}
+
+TEST(GeoUVPack, StackingFindsCopiesAmongIslandsOfOneTopology)
+{
+    // Each triangle is a tenth larger than the one before, far beyond the shape tolerance.
+    std::vector<GeoUVPackIsland> islands;
+    for (int i = 0; i < 60; ++i) {
+        const double k = 0.05 * std::pow(1.1, i);
+        GeoUVPackIsland triangle;
+        triangle.polygons = { { { 0., 0. }, { k, 0. }, { 0.3 * k, 0.7 * k } } };
+        islands.push_back(triangle);
+    }
+    for (int i = 0; i < 60; i += 7) {
+        islands.push_back(mapped(islands[i], 0., -1., 1., 0., 3., 1.));
+        islands.push_back(mapped(islands[i], -1., 0., 0., 1., 5., 2.));
+    }
+    GeoUVPackParams params;
+    params.resolution = 64;
+    params.stackIdentical = true;
+    params.stackMirrored = true;
+    const GeoUVPackResult result = pack(islands, params);
+    for (int i = 0; i < 60; ++i) {
+        EXPECT_EQ(result.placements[i].stackedOn, -1) << i;
+    }
+    std::size_t copy = 60;
+    for (int i = 0; i < 60; i += 7) {
+        EXPECT_EQ(result.placements[copy++].stackedOn, i);
+        EXPECT_EQ(result.placements[copy++].stackedOn, i);
+    }
 }
 
 TEST(GeoUVPack, BadParametersFail)

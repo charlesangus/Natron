@@ -1745,6 +1745,7 @@ ViewerTab::onActiveInputDataKindChanged()
     }
     refreshSceneRenderRow();
     applyStaleCueInput();
+    refreshColorSpaceView();
     Q_EMIT sceneViewChanged();
 } // onActiveInputDataKindChanged
 
@@ -1757,8 +1758,11 @@ ViewerTab::refreshColorSpaceView()
     auto isColorWarp = [](const NodePtr& node) {
         return node && node->isActivated() && dynamic_cast<ColorWarp*>(node->getEffectInstance().get());
     };
-    NodePtr candidate = getSceneViewedNode();
-    if (!isColorWarp(candidate)) {
+    // The colour space view draws in the image viewer, which is hidden while a scene is shown, and
+    // its keys and drags would otherwise land on a widget nobody sees.
+    const bool scene = isShowingScene();
+    NodePtr candidate = scene ? NodePtr() : getSceneViewedNode();
+    if (!scene && !isColorWarp(candidate)) {
         candidate.reset();
         Gui* gui = getGui();
         NodeGraph* graph = gui ? gui->getLastSelectedGraph() : nullptr;

@@ -86,6 +86,12 @@ public:
     bool isActive() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief To be called when the widget is shown or hidden: polling and fetching stop while it
+     * is off screen, and resume, with a fresh fetch, once it is back. The on/off state is kept.
+     **/
+    void onWidgetVisibilityChanged();
+
+    /**
      * @brief Whether the cloud shows the ColorWarp's output rather than its input.
      **/
     void setShowOutput(bool output);

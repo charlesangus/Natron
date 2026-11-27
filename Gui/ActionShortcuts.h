@@ -1120,6 +1120,10 @@ Qt::KeyboardModifiers mouseBindingModifiers(Qt::KeyboardModifiers modifiers, boo
 // Whether a mouse binding of the 3D viewer needs Space held.
 bool viewer3DMouseBindingsUseSpace();
 
+// Whether the 3D viewer's mouse action actionID is bound to button with modifiers. Without the GUI
+// application manager, as in tests, the default navigation preset's bindings are matched instead.
+bool viewer3DMatchesMouseBinding(const char* actionID, Qt::KeyboardModifiers modifiers, Qt::MouseButton button);
+
 // A binding as the shortcut editor shows it, such as "Alt+LeftButton", "Space+MiddleButton" or
 // "Ctrl+Wheel".
 QString mouseBindingToString(const MouseBinding& binding, bool wheel);

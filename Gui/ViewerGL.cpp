@@ -3834,8 +3834,13 @@ ViewerGL::event(QEvent* e)
             }
         }
     }
+    const bool handled = QOpenGLWidget::event(e);
+    // Hiding the viewer's tab hides this widget too; the colour space view stops fetching for it.
+    if (((type == QEvent::Show) || (type == QEvent::Hide)) && _imp && _imp->colorSpaceView) {
+        _imp->colorSpaceView->onWidgetVisibilityChanged();
+    }
 
-    return QOpenGLWidget::event(e);
+    return handled;
 }
 
 void

@@ -55,7 +55,6 @@
 
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
-#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -68,11 +67,9 @@
 #include "Engine/Nodes/Color/ColorWarp/ColorWarpSpace.h"
 #include "Engine/Nodes/Image/ColorMath.h"
 #include "Engine/RectI.h"
-#include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 
 #include "Gui/ActionShortcuts.h"
-#include "Gui/GuiApplicationManager.h"
 #include "Gui/TextRenderer.h"
 
 NATRON_NAMESPACE_ENTER
@@ -91,31 +88,6 @@ constexpr double kMaxPitch = 1.55;
 constexpr double kHandleShare = 0.18;
 // How often edits upstream of the cloud are looked for; a burst of them within it costs one fetch.
 constexpr int kEditPollMs = 150;
-
-GuiApplicationManager*
-guiManager()
-{
-    return dynamic_cast<GuiApplicationManager*>(AppManager::instance());
-}
-
-bool
-matchesMouseBinding(const char* actionID,
-                    Qt::KeyboardModifiers modifiers,
-                    Qt::MouseButton button)
-{
-    if (GuiApplicationManager* manager = guiManager()) {
-        return manager->matchesMouseShortcut(kShortcutGroupViewer3D, actionID, modifiers, button);
-    }
-    MouseAction action;
-    if (std::string(actionID) == kShortcutIDMouseViewer3DDollyWheel) {
-        action.gesture = eMouseGestureWheel;
-    }
-    std::vector<MouseBinding> bindings;
-    getViewer3DNavigationPresetBindings((int)Settings::eViewer3DNavigationNuke, QString::fromUtf8(actionID), &bindings);
-    action.setBindings(bindings);
-
-    return action.matches(modifiers, button);
-}
 
 // A fixed hash, so the pixel each stratum contributes is the same on every fetch.
 std::uint32_t
@@ -265,7 +237,8 @@ pointDistance(const QPointF& a,
 
 struct CloudRequest {
     std::uint64_t serial = 0;
-    NodePtr node;
+    // Weak, so a detached worker still holding the request never keeps a deleted node alive.
+    NodeWPtr node;
     double time = 0.;
     ViewIdx view;
     // The channel colours are divided by, divisorChannel of divisorLayer, or none when -1.
@@ -287,9 +260,14 @@ fetchCloud(const CloudRequest& r,
            const AbortableRenderInfoPtr& abortInfo,
            CloudResult* out)
 {
+    const NodePtr node = r.node.lock();
+
+    if (!node) {
+        return false;
+    }
     RectI format, window;
 
-    if (!getNodeImageWindow(r.node, r.time, r.view, &format, &window) || window.isNull()) {
+    if (!getNodeImageWindow(node, r.time, r.view, &format, &window) || window.isNull()) {
         return false;
     }
     unsigned int level = 0;
@@ -298,7 +276,7 @@ fetchCloud(const CloudRequest& r,
     }
     const RectI pixelRect = window.downscalePowerOfTwoSmallestEnclosing(level);
     RectI rendered;
-    const ImagePtr image = renderNodeImage(r.node, r.time, r.view, level, pixelRect, ImageLayerDesc::getRGBAComponents(), &rendered, abortInfo);
+    const ImagePtr image = renderNodeImage(node, r.time, r.view, level, pixelRect, ImageLayerDesc::getRGBAComponents(), &rendered, abortInfo);
     if (!image || abortInfo->isAborted()) {
         return false;
     }
@@ -367,7 +345,7 @@ fetchCloud(const CloudRequest& r,
         ImagePtr divisorImage = image;
         if (!(r.divisorLayer == ImageLayerDesc::getRGBAComponents())) {
             RectI divisorRendered;
-            divisorImage = renderNodeImage(r.node, r.time, r.view, level, pixelRect, r.divisorLayer, &divisorRendered, abortInfo);
+            divisorImage = renderNodeImage(node, r.time, r.view, level, pixelRect, r.divisorLayer, &divisorRendered, abortInfo);
             if (abortInfo->isAborted()) {
                 return false;
             }
@@ -856,9 +834,16 @@ struct ColorSpaceView::Implementation {
         distance = radius / std::sin(kFieldOfViewDegrees * M_PI / 360.) * 1.1;
     }
 
+    // Fetching and edit polling run only while the view is on and its widget is on screen; a
+    // viewer in a hidden tab would otherwise keep rendering its input for nobody.
+    bool running() const
+    {
+        return active && widget && widget->isVisible();
+    }
+
     void scheduleFetch()
     {
-        if (!active || fetchQueued) {
+        if (!running() || fetchQueued) {
             return;
         }
         fetchQueued = true;
@@ -889,7 +874,7 @@ struct ColorSpaceView::Implementation {
     // may have changed its hash: its hash mark count moves with every such edit.
     void pollEdits()
     {
-        if (!active || fetchQueued) {
+        if (!running() || fetchQueued) {
             return;
         }
         const NodePtr source = sourceNode();
@@ -916,7 +901,7 @@ struct ColorSpaceView::Implementation {
     {
         ColorWarp* cw = colorWarp();
         const NodePtr n = node.lock();
-        if (!active || !cw || !n) {
+        if (!running() || !cw || !n) {
             return;
         }
         const double time = currentTime();
@@ -990,7 +975,7 @@ struct ColorSpaceView::Implementation {
         QObject::connect(editPoll, &QTimer::timeout, ctx, [this]() {
             pollEdits();
         });
-        if (active) {
+        if (running()) {
             editPoll->start();
         }
         if (const KnobColorWarpPinsPtr knob = cw->getPinsKnob()) {
@@ -1320,7 +1305,7 @@ ColorSpaceView::setActive(bool active)
     _imp->active = active;
     _imp->spaceHeld = false;
     if (_imp->editPoll) {
-        if (active) {
+        if (_imp->running()) {
             _imp->editPoll->start();
         } else {
             _imp->editPoll->stop();
@@ -1342,6 +1327,30 @@ bool
 ColorSpaceView::isActive() const
 {
     return _imp->active;
+}
+
+void
+ColorSpaceView::onWidgetVisibilityChanged()
+{
+    if (_imp->running()) {
+        if (_imp->editPoll) {
+            _imp->editPoll->start();
+        }
+        // Edits made while hidden were not polled, so the cloud may be stale.
+        _imp->scheduleFetch();
+
+        return;
+    }
+    if (_imp->editPoll) {
+        _imp->editPoll->stop();
+    }
+    if (_imp->drag != Implementation::eDragNone) {
+        _imp->endDrag();
+    }
+    _imp->spaceHeld = false;
+    _imp->fetcher->abort();
+    ++_imp->requestSerial;
+    _imp->fetching = false;
 }
 
 void
@@ -1632,13 +1641,13 @@ ColorSpaceView::mousePress(QMouseEvent* e)
     const QPointF pos = e->position();
     _imp->lastPos = pos;
     const Qt::KeyboardModifiers modifiers = mouseBindingModifiers(e->modifiers(), _imp->spaceHeld);
-    if (matchesMouseBinding(kShortcutIDMouseViewer3DTumble, modifiers, e->button())) {
+    if (viewer3DMatchesMouseBinding(kShortcutIDMouseViewer3DTumble, modifiers, e->button())) {
         _imp->drag = Implementation::eDragTumble;
-    } else if (matchesMouseBinding(kShortcutIDMouseViewer3DPan, modifiers, e->button())) {
+    } else if (viewer3DMatchesMouseBinding(kShortcutIDMouseViewer3DPan, modifiers, e->button())) {
         _imp->drag = Implementation::eDragPan;
-    } else if (matchesMouseBinding(kShortcutIDMouseViewer3DDolly, modifiers, e->button())) {
+    } else if (viewer3DMatchesMouseBinding(kShortcutIDMouseViewer3DDolly, modifiers, e->button())) {
         _imp->drag = Implementation::eDragDolly;
-    } else if (matchesMouseBinding(kShortcutIDMouseViewer3DSelect, modifiers, e->button())) {
+    } else if (viewer3DMatchesMouseBinding(kShortcutIDMouseViewer3DSelect, modifiers, e->button())) {
         int pinId = 0;
         int part = 0;
         if (_imp->pick(pos, &pinId, &part)) {
@@ -1743,7 +1752,7 @@ ColorSpaceView::wheel(QWheelEvent* e)
     const QPoint angle = e->angleDelta();
     const double steps = ((angle.y() != 0) ? angle.y() : angle.x()) / 120.;
 
-    if ((steps == 0.) || !matchesMouseBinding(kShortcutIDMouseViewer3DDollyWheel, mouseBindingModifiers(e->modifiers(), _imp->spaceHeld), Qt::NoButton)) {
+    if ((steps == 0.) || !viewer3DMatchesMouseBinding(kShortcutIDMouseViewer3DDollyWheel, mouseBindingModifiers(e->modifiers(), _imp->spaceHeld), Qt::NoButton)) {
         return false;
     }
     _imp->distance = std::max(1e-6, _imp->distance * std::pow(0.85, steps));

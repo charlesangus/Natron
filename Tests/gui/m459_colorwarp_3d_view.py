@@ -13,7 +13,9 @@ follows, drags the selected target along one axis handle and reads the knob back
 edits a pin from Python and checks the view and its bounds follow, drags the target freely in the
 screen plane and undoes it, and turns the mode off and checks the 2D pan and zoom came back. Last,
 viewing the CheckerBoard instead turns the mode off and disables the toggle, and selecting the
-ColorWarp offers the mode again until the selection clears. Saves a screenshot of every state.
+ColorWarp offers the mode again until the selection clears. With the mode on, the 2D Red channel
+key leaves the viewer's channels alone; viewing a USDCamera with the ColorWarp selected disables
+the toggle and turns the mode off. Saves a screenshot of every state.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
     docker exec -e NATRON_GUI_TEST_OUT=build/m459-shots -e GUI_TEST_TIMEOUT=300 \\
@@ -60,7 +62,7 @@ try:
 
     import NatronEngine
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Qt, Q_ARG, Q_RETURN_ARG
-    from PySide6.QtGui import QCursor, QMouseEvent, QWheelEvent
+    from PySide6.QtGui import QCursor, QKeyEvent, QMouseEvent, QWheelEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow, QPushButton, QTreeWidget, QWidget
 
@@ -605,6 +607,41 @@ try:
         require(viewer.connectInput(0, warp), "the viewer views the ColorWarp again")
         ok = yield ("until", lambda: toggle.isEnabled(), POLL_TIMEOUT_S)
         check(ok, "the toggle is enabled again")
+
+        gt.section("2d-keys-off")
+        toggle.click()
+        QApplication.processEvents()
+        ok = yield ("until", cloud_ready, POLL_TIMEOUT_S)
+        check(ok, "the mode is on for the key check")
+        channels = viewer.getParam("displayChannels")
+        require(channels is not None, "the viewer has a displayChannels parameter")
+        channels_before = channels.get()
+        gl = visible_viewer()
+        for kind in (QEvent.KeyPress, QEvent.KeyRelease):
+            QApplication.sendEvent(gl, QKeyEvent(kind, Qt.Key_R, Qt.NoModifier, "r"))
+        yield ("sleep", SETTLE_MS)
+        check(channels.get() == channels_before,
+              "the 2D Red channel key does nothing in the mode (%r -> %r)" % (channels_before, channels.get()))
+        check(toggle.isChecked() and cloud_ready(), "and the mode stays on")
+
+        gt.section("scene-disables")
+        camera = app.createNode("USDCamera")
+        require(camera is not None, "created a USDCamera", gt.plugin_problem("USDCamera"))
+        camera.setPosition(300, 300)
+        app.selectNode(warp, True)
+        viewer.disconnectInput(0)
+        require(viewer.connectInput(0, camera), "the viewer views the USDCamera")
+        ok = yield ("until", lambda: any(w.isVisible() for w in gt.widgets_of("SceneViewport")), POLL_TIMEOUT_S)
+        require(ok, "the viewer shows the scene")
+        ok = yield ("until", lambda: not toggle.isEnabled(), POLL_TIMEOUT_S)
+        check(ok, "the toggle is disabled while a scene is shown, with a ColorWarp selected")
+        check(not toggle.isChecked(), "and the mode is off")
+        app.clearSelection()
+        viewer.disconnectInput(0)
+        require(viewer.connectInput(0, warp), "the viewer views the ColorWarp again")
+        ok = yield ("until", lambda: toggle.isEnabled(), POLL_TIMEOUT_S)
+        check(ok, "the toggle is enabled once the image is back")
+        check(not toggle.isChecked(), "and stays off")
 
         faulthandler.cancel_dump_traceback_later()
 

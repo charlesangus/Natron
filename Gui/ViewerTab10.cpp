@@ -761,12 +761,59 @@ ViewerTab::keyPressEvent(QKeyEvent* e)
     Qt::KeyboardModifiers modifiers = e->modifiers();
     Qt::Key key = (Qt::Key)Gui::handleNativeKeys( e->key(), e->nativeScanCode(), e->nativeVirtualKey() );
 
+    // The colour space view hides the image: node overlays and the bindings that act on the 2D
+    // image (channels, zoom, wipe, region of interest...) would change things nobody can see.
+    // Framing, playback and the panel layout still apply to it.
+    const bool colorSpace = _imp->viewer->isColorSpaceViewActive();
+    const auto colorSpaceKeepsKey = [&]() {
+        static const char* const playerActions[] = {
+            kShortcutIDActionPlayerPrevious,
+            kShortcutIDActionPlayerBackward,
+            kShortcutIDActionPlayerStop,
+            kShortcutIDActionPlayerForward,
+            kShortcutIDActionPlayerNext,
+            kShortcutIDActionPlayerPrevIncr,
+            kShortcutIDActionPlayerNextIncr,
+            kShortcutIDActionPlayerFirst,
+            kShortcutIDActionPlayerLast,
+            kShortcutIDActionPlayerPlaybackIn,
+            kShortcutIDActionPlayerPlaybackOut,
+            kShortcutIDActionPlayerPrevKF,
+            kShortcutIDActionPlayerNextKF,
+        };
+        static const char* const viewerActions[] = {
+            kShortcutIDActionFitViewer,
+            kShortcutIDActionHideAll,
+            kShortcutIDActionShowAll,
+            kShortcutIDActionHidePlayer,
+            kShortcutIDActionHideTimeline,
+            kShortcutIDActionHideInfobar,
+            kShortcutIDActionHideLeft,
+            kShortcutIDActionHideRight,
+            kShortcutIDActionHideTop,
+        };
+        for (const char* id : playerActions) {
+            if (isKeybind(kShortcutGroupPlayer, id, modifiers, key)) {
+                return true;
+            }
+        }
+        for (const char* id : viewerActions) {
+            if (isKeybind(kShortcutGroupViewer, id, modifiers, key)) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+
     const unsigned int mipmapLevel = _imp->viewer->getCurrentMipmapLevel();
-    if ( e->isAutoRepeat() && notifyOverlaysKeyRepeat(RenderScale::fromMipmapLevel(mipmapLevel), e) ) {
+    if (colorSpace && !colorSpaceKeepsKey()) {
+        accept = false;
+    } else if (!colorSpace && e->isAutoRepeat() && notifyOverlaysKeyRepeat(RenderScale::fromMipmapLevel(mipmapLevel), e)) {
         update();
-    } else if ( notifyOverlaysKeyDown(RenderScale::fromMipmapLevel(mipmapLevel), e) ) {
+    } else if (!colorSpace && notifyOverlaysKeyDown(RenderScale::fromMipmapLevel(mipmapLevel), e)) {
         update();
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionLuminance, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionLuminance, modifiers, key)) {
         int currentIndex = _imp->viewerChannels->activeIndex();
         if (currentIndex == 0) {
             _imp->viewerChannels->setCurrentIndex_no_emit(1);
@@ -775,7 +822,7 @@ ViewerTab::keyPressEvent(QKeyEvent* e)
             _imp->viewerChannels->setCurrentIndex_no_emit(0);
             setDisplayChannels(0, true);
         }
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionRed, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionRed, modifiers, key)) {
         int currentIndex = _imp->viewerChannels->activeIndex();
         if (currentIndex == 2) {
             _imp->viewerChannels->setCurrentIndex_no_emit(1);
@@ -784,7 +831,7 @@ ViewerTab::keyPressEvent(QKeyEvent* e)
             _imp->viewerChannels->setCurrentIndex_no_emit(2);
             setDisplayChannels(2, true);
         }
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionGreen, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionGreen, modifiers, key)) {
         int currentIndex = _imp->viewerChannels->activeIndex();
         if (currentIndex == 3) {
             _imp->viewerChannels->setCurrentIndex_no_emit(1);
@@ -793,7 +840,7 @@ ViewerTab::keyPressEvent(QKeyEvent* e)
             _imp->viewerChannels->setCurrentIndex_no_emit(3);
             setDisplayChannels(3, true);
         }
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionBlue, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionBlue, modifiers, key)) {
         int currentIndex = _imp->viewerChannels->activeIndex();
         if (currentIndex == 4) {
             _imp->viewerChannels->setCurrentIndex_no_emit(1);
@@ -802,7 +849,7 @@ ViewerTab::keyPressEvent(QKeyEvent* e)
             _imp->viewerChannels->setCurrentIndex_no_emit(4);
             setDisplayChannels(4, true);
         }
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionAlpha, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionAlpha, modifiers, key)) {
         int currentIndex = _imp->viewerChannels->activeIndex();
         if (currentIndex == 5) {
             _imp->viewerChannels->setCurrentIndex_no_emit(1);
@@ -811,7 +858,7 @@ ViewerTab::keyPressEvent(QKeyEvent* e)
             _imp->viewerChannels->setCurrentIndex_no_emit(5);
             setDisplayChannels(5, true);
         }
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionLuminanceA, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionLuminanceA, modifiers, key)) {
         int currentIndex = _imp->viewerChannels->activeIndex();
         if (currentIndex == 0) {
             _imp->viewerChannels->setCurrentIndex_no_emit(1);
@@ -820,7 +867,7 @@ ViewerTab::keyPressEvent(QKeyEvent* e)
             _imp->viewerChannels->setCurrentIndex_no_emit(0);
             setDisplayChannels(0, false);
         }
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionRedA, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionRedA, modifiers, key)) {
         int currentIndex = _imp->viewerChannels->activeIndex();
         if (currentIndex == 2) {
             _imp->viewerChannels->setCurrentIndex_no_emit(1);
@@ -829,7 +876,7 @@ ViewerTab::keyPressEvent(QKeyEvent* e)
             _imp->viewerChannels->setCurrentIndex_no_emit(2);
             setDisplayChannels(2, false);
         }
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionGreenA, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionGreenA, modifiers, key)) {
         int currentIndex = _imp->viewerChannels->activeIndex();
         if (currentIndex == 3) {
             _imp->viewerChannels->setCurrentIndex_no_emit(1);
@@ -838,7 +885,7 @@ ViewerTab::keyPressEvent(QKeyEvent* e)
             _imp->viewerChannels->setCurrentIndex_no_emit(3);
             setDisplayChannels(3, false);
         }
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionBlueA, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionBlueA, modifiers, key)) {
         int currentIndex = _imp->viewerChannels->activeIndex();
         if (currentIndex == 4) {
             _imp->viewerChannels->setCurrentIndex_no_emit(1);
@@ -847,7 +894,7 @@ ViewerTab::keyPressEvent(QKeyEvent* e)
             _imp->viewerChannels->setCurrentIndex_no_emit(4);
             setDisplayChannels(4, false);
         }
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionAlphaA, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionAlphaA, modifiers, key)) {
         int currentIndex = _imp->viewerChannels->activeIndex();
         if (currentIndex == 5) {
             _imp->viewerChannels->setCurrentIndex_no_emit(1);
@@ -856,7 +903,7 @@ ViewerTab::keyPressEvent(QKeyEvent* e)
             _imp->viewerChannels->setCurrentIndex_no_emit(5);
             setDisplayChannels(5, false);
         }
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionMatteOverlay, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionMatteOverlay, modifiers, key)) {
         int currentIndex = _imp->viewerChannels->activeIndex();
         if (currentIndex == 6) {
             _imp->viewerChannels->setCurrentIndex_no_emit(1);
@@ -865,53 +912,53 @@ ViewerTab::keyPressEvent(QKeyEvent* e)
             _imp->viewerChannels->setCurrentIndex_no_emit(6);
             setDisplayChannels(6, false);
         }
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionPauseViewer, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionPauseViewer, modifiers, key)) {
         toggleViewerPauseMode(true);
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionPauseViewerInputA, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionPauseViewerInputA, modifiers, key)) {
         toggleViewerPauseMode(false);
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevious, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevious, modifiers, key)) {
         previousFrame();
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerBackward, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerBackward, modifiers, key)) {
         toggleStartBackward();
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerStop, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerStop, modifiers, key)) {
         abortRendering();
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerForward, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerForward, modifiers, key)) {
         toggleStartForward();
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerNext, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerNext, modifiers, key)) {
         nextFrame();
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevIncr, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevIncr, modifiers, key)) {
         //prev incr
         previousIncrement();
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerNextIncr, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerNextIncr, modifiers, key)) {
         //next incr
         nextIncrement();
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerFirst, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerFirst, modifiers, key)) {
         //first frame
         firstFrame();
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerLast, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerLast, modifiers, key)) {
         //last frame
         lastFrame();
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPlaybackIn, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPlaybackIn, modifiers, key)) {
         onPlaybackInButtonClicked();
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPlaybackOut, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPlaybackOut, modifiers, key)) {
         onPlaybackOutButtonClicked();
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevKF, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerPrevKF, modifiers, key)) {
         //prev key
         app->goToPreviousKeyframe();
-    } else if ( isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerNextKF, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupPlayer, kShortcutIDActionPlayerNextKF, modifiers, key)) {
         //next key
         app->goToNextKeyframe();
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionFitViewer, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionFitViewer, modifiers, key)) {
         centerViewer();
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionClipEnabled, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionClipEnabled, modifiers, key)) {
         onClipToProjectButtonToggle( !_imp->clipToProjectFormatButton->isDown() );
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionRefresh, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionRefresh, modifiers, key)) {
         refresh(false);
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionRefreshWithStats, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionRefreshWithStats, modifiers, key)) {
         refresh(true);
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionROIEnabled, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionROIEnabled, modifiers, key)) {
         onEnableViewerRoIButtonToggle(!_imp->viewerValue<bool>(kViewerParamEnableUserRoI, false));
-    } else if ( isKeybind(kShortcutGroupViewer, kShortcutIDActionNewROI, modifiers, key) ) {
+    } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionNewROI, modifiers, key)) {
         onCreateNewRoIPressed();
     } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionAutoProxyScrubbing, modifiers, key)) {
         onAutoProxyButtonToggle(!appPTR->getCurrentSettings()->isAutoProxyEnabled());
@@ -1041,7 +1088,8 @@ ViewerTab::keyReleaseEvent(QKeyEvent* e)
         return QWidget::keyPressEvent(e);
     }
     const unsigned int mipmapLevel = _imp->viewer->getCurrentMipmapLevel();
-    if ( notifyOverlaysKeyUp(RenderScale::fromMipmapLevel(mipmapLevel), e) ) {
+    // Overlays get no key presses while the colour space view is on, so no releases either.
+    if (!_imp->viewer->isColorSpaceViewActive() && notifyOverlaysKeyUp(RenderScale::fromMipmapLevel(mipmapLevel), e)) {
         _imp->viewer->redraw();
     } else {
         handleUnCaughtKeyUpEvent(e);

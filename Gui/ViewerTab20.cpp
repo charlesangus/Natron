@@ -701,7 +701,11 @@ ViewerTab::claimShortcutOverride(QKeyEvent* e)
         return false;
     }
     // A key bound to an active interact (Roto's V picks its drawing tools) goes to the viewer's
-    // keyPressEvent rather than to a global action on the same key.
+    // keyPressEvent rather than to a global action on the same key. Not while the colour space
+    // view is on: keyPressEvent keeps overlays out of it, so the claim would only swallow the key.
+    if (_imp->viewer && _imp->viewer->isColorSpaceViewActive()) {
+        return false;
+    }
     Qt::Key qKey = (Qt::Key)e->key();
     Qt::KeyboardModifiers qMods = e->modifiers();
     NodesList nodes;

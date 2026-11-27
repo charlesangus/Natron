@@ -66,13 +66,13 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/GuiDefines.h"
 #include "Gui/GuiDensity.h"
 #include "Gui/GuiMacros.h" // triggerButtonIsRight...
+#include "Gui/KnobEditMode.h"
 #include "Gui/KnobGui.h"
 #include "Gui/KnobGuiColor.h"
 #include "Gui/KnobGuiGroup.h"
 #include "Gui/KnobUndoCommand.h" // RestoreDefaultsCommand
 #include "Gui/Label.h"
 #include "Gui/LineEdit.h"
-#include "Gui/ManageUserParamsDialog.h"
 #include "Gui/Menu.h"
 #include "Gui/MultiInstancePanel.h"
 #include "Gui/NodeGraph.h"
@@ -313,6 +313,24 @@ DockablePanel::DockablePanel(Gui* gui,
                 QObject::connect( _imp->_overlayButton, SIGNAL(clicked()), this, SLOT(onOverlayButtonClicked()) );
             }
         }
+        if (dynamic_cast<EffectInstance*>(holder)) {
+            QIcon icEdit;
+            appPTR->getIcon(NATRON_PIXMAP_PENCIL, iconSize, &icEdit);
+            _imp->_editButton = new Button(icEdit, QString(), _imp->_headerWidget);
+            _imp->_editButton->setObjectName(QString::fromUtf8("DockablePanelEditButton"));
+            _imp->_editButton->setFixedSize(mediumBSize);
+            _imp->_editButton->setIconSize(mediumIconSize);
+            _imp->_editButton->setCheckable(true);
+            _imp->_editButton->setFocusPolicy(Qt::NoFocus);
+            _imp->_editButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("Edit the user parameters of this node in the panel: "
+                                                                                    "add them from the palette, select one to change its "
+                                                                                    "properties, drag to reorder. Drag a parameter in from "
+                                                                                    "another panel to link to it, or Ctrl-drag it for an "
+                                                                                    "independent copy; a drag from one dimension adds the "
+                                                                                    "whole parameter."),
+                                                                                 NATRON_NAMESPACE::WhiteSpaceNormal));
+            QObject::connect(_imp->_editButton, SIGNAL(clicked(bool)), this, SLOT(onEditButtonClicked(bool)));
+        }
         QIcon icUndo;
         appPTR->getIcon(NATRON_PIXMAP_UNDO, iconSize, &icUndo);
         _imp->_undoButton = new Button(icUndo, QString(), _imp->_headerWidget);
@@ -366,6 +384,9 @@ DockablePanel::DockablePanel(Gui* gui,
         }
         if ( (headerMode != eHeaderModeReadOnlyName) && _imp->_overlayButton ) {
             _imp->_headerLayout->addWidget(_imp->_overlayButton);
+        }
+        if (_imp->_editButton) {
+            _imp->_headerLayout->addWidget(_imp->_editButton);
         }
         _imp->_headerLayout->addWidget(_imp->_undoButton);
         _imp->_headerLayout->addWidget(_imp->_redoButton);
@@ -421,11 +442,73 @@ DockablePanel::DockablePanel(Gui* gui,
     QObject::connect( _imp->_tabWidget, SIGNAL(currentChanged(int)), this, SLOT(onPageIndexChanged(int)) );
     _imp->_horizLayout->addWidget(_imp->_rightContainer);
     _imp->_mainLayout->addWidget(_imp->_horizContainer);
+
+    if (dynamic_cast<EffectInstance*>(holder)) {
+        _imp->_editMode = new KnobEditMode(this);
+        QObject::connect(_imp->_editMode, SIGNAL(activeChanged(bool)), this, SLOT(refreshEditButton()));
+    }
+    refreshEditButton();
 }
 
 DockablePanel::~DockablePanel()
 {
-    
+    if (_imp->_editMode) {
+        _imp->_editMode->detach();
+    }
+}
+
+KnobEditMode*
+DockablePanel::getKnobEditMode() const
+{
+    return _imp->_editMode;
+}
+
+QVBoxLayout*
+DockablePanel::getPagesColumnLayout() const
+{
+    return _imp->_rightContainerLayout;
+}
+
+QTabWidget*
+DockablePanel::getTabWidget() const
+{
+    return _imp->_tabWidget;
+}
+
+bool
+DockablePanel::canEditUserKnobs() const
+{
+    const EffectInstance* isEffect = dynamic_cast<const EffectInstance*>(_imp->_holder);
+
+    return _imp->_editMode && _imp->_gui && isEffect && isEffect->getIsEditable() && isEffect->getNode();
+}
+
+void
+DockablePanel::refreshEditButton()
+{
+    if (!_imp->_editButton) {
+        return;
+    }
+    _imp->_editButton->setEnabled(canEditUserKnobs());
+    const bool active = _imp->_editMode && _imp->_editMode->isActive();
+    if (_imp->_editButton->isChecked() != active) {
+        _imp->_editButton->setChecked(active);
+    }
+}
+
+bool
+DockablePanel::showsEmptyUserPages() const
+{
+    return _imp->_editMode && _imp->_editMode->isActive();
+}
+
+void
+DockablePanel::onEditButtonClicked(bool checked)
+{
+    if (_imp->_editMode) {
+        _imp->_editMode->setActive(checked);
+    }
+    refreshEditButton();
 }
 
 bool
@@ -546,6 +629,9 @@ DockablePanel::setPagesOrder(const std::list<KnobPageGuiPtr>& orderedPages,
 void
 DockablePanel::onKnobsRecreated()
 {
+    if (_imp->_editMode) {
+        _imp->_editMode->onKnobsRecreated();
+    }
     NodeSettingsPanel* isNodePanel = dynamic_cast<NodeSettingsPanel*>(this);
 
     // Refresh the curve editor with potential new animated knobs
@@ -583,6 +669,7 @@ DockablePanel::onPageIndexChanged(int index)
             }
         }
     }
+    notifyForegroundChanged();
 }
 
 void
@@ -661,6 +748,9 @@ DockablePanel::onNodeScriptChanged(const QString& label)
 void
 DockablePanel::onGuiClosing()
 {
+    if (_imp->_editMode) {
+        _imp->_editMode->setActive(false);
+    }
     if (_imp->_holder) {
         _imp->_holder->discardPanelPointer();
     }
@@ -1012,6 +1102,10 @@ DockablePanel::setClosedInternal(bool c)
         }
     }
 
+    if (c && _imp->_editMode) {
+        _imp->_editMode->setActive(false);
+    }
+
     // Opening and closing add and remove the node from the editors, which a panel still being built
     // has yet to do. Finishing a build only to close it would stall whatever closes it, such as the
     // open-panel limit during a burst of creations, so such a panel is dropped and built afresh when
@@ -1041,11 +1135,12 @@ DockablePanel::setClosedInternal(bool c)
         _imp->_isClosed = c;
     }
 
-
-    if (_imp->_floating) {
-        floatPanel();
-
-        return;
+    if (_imp->_floating && c) {
+        // Docking the panel back would reopen it on top of the bin and could evict another panel.
+        releaseFloatingWindow();
+        if (_imp->_container) {
+            setParent(_imp->_container->parentWidget());
+        }
     }
 
     if (!c) {
@@ -1149,6 +1244,7 @@ DockablePanel::setClosedInternal(bool c)
         }
     }
 
+    notifyForegroundChanged();
     Q_EMIT closeChanged(c);
 } // DockablePanel::setClosedInternal
 
@@ -1210,6 +1306,7 @@ DockablePanel::minimizeOrMaximize(bool toggled)
         Q_EMIT maximized();
     }
     _imp->_rightContainer->setVisible(!_imp->_minimized);
+    notifyForegroundChanged();
     std::vector<QWidget*> _panels;
     for (int i = 0; i < _imp->_container->count(); ++i) {
         if ( QWidget * myItem = dynamic_cast <QWidget*>( _imp->_container->itemAt(i) ) ) {
@@ -1275,12 +1372,12 @@ DockablePanel::restoreMinimizedState(bool minimized)
 FloatingWidget*
 DockablePanel::floatPanel()
 {
-    _imp->_floating = !_imp->_floating;
     {
         QMutexLocker k(&_imp->_isClosedMutex);
         _imp->_isClosed = false;
     }
-    if (_imp->_floating) {
+    if (!_imp->_floating) {
+        _imp->_floating = true;
         assert(!_imp->_floatingWidget);
 
         QSize curSize = sizeHint();
@@ -1293,20 +1390,27 @@ DockablePanel::floatPanel()
         _imp->_floatingWidget->resize(curSize);
         _imp->_gui->registerFloatingWindow(_imp->_floatingWidget);
     } else {
-        assert(_imp->_floatingWidget);
-        _imp->_gui->unregisterFloatingWindow(_imp->_floatingWidget);
-        _imp->_floatingWidget->removeEmbeddedWidget();
-        //setParent( _imp->_container->parentWidget() );
-        //_imp->_container->insertWidget(0, this);
+        releaseFloatingWindow();
         _imp->_gui->addVisibleDockablePanel(this);
-        _imp->_floatingWidget->deleteLater();
-        _imp->_floatingWidget = 0;
     }
     Gui* gui = getGui();
     if (gui) {
         gui->buildTabFocusOrderPropertiesBin();
     }
+    notifyForegroundChanged();
+
     return _imp->_floatingWidget;
+}
+
+void
+DockablePanel::releaseFloatingWindow()
+{
+    assert(_imp->_floating && _imp->_floatingWidget);
+    _imp->_floating = false;
+    _imp->_gui->unregisterFloatingWindow(_imp->_floatingWidget);
+    _imp->_floatingWidget->removeEmbeddedWidget();
+    _imp->_floatingWidget->deleteLater();
+    _imp->_floatingWidget = 0;
 }
 
 void
@@ -1382,6 +1486,74 @@ bool
 DockablePanel::isFloating() const
 {
     return _imp->_floating;
+}
+
+bool
+DockablePanel::isInForeground() const
+{
+    if (isClosed() || isMinimized()) {
+        return false;
+    }
+    if (_imp->_floating) {
+        return true;
+    }
+    if (!_imp->_container) {
+        return false;
+    }
+    for (int i = 0; i < _imp->_container->count(); ++i) {
+        QLayoutItem* item = _imp->_container->itemAt(i);
+        DockablePanel* panel = item ? qobject_cast<DockablePanel*>(item->widget()) : 0;
+        if (panel && !panel->isHidden() && !panel->isClosed() && !panel->isMinimized()) {
+            return panel == this;
+        }
+    }
+
+    return false;
+}
+
+bool
+DockablePanel::isPageVisible(const KnobPagePtr& page) const
+{
+    if (!_imp->_tabWidget) {
+        return true;
+    }
+    if (!page) {
+        return false;
+    }
+    QWidget* current = _imp->_tabWidget->currentWidget();
+    if (!current) {
+        return false;
+    }
+    const PagesMap& pages = getPages();
+    PagesMap::const_iterator found = pages.find(page);
+
+    return found != pages.end() && found->second && found->second->tab == current;
+}
+
+bool
+DockablePanel::isKnobOnVisiblePage(const KnobIPtr& knob) const
+{
+    return knob && isPageVisible(knob->getTopLevelPage()) && areEnclosingTabsCurrent(knob);
+}
+
+bool
+DockablePanel::isWidgetOnVisiblePage(const QWidget* widget) const
+{
+    if (!widget || !_imp->_tabWidget || !_imp->_tabWidget->isAncestorOf(widget)) {
+        return true;
+    }
+    QWidget* current = _imp->_tabWidget->currentWidget();
+
+    return current && (current == widget || current->isAncestorOf(widget));
+}
+
+void
+DockablePanel::notifyForegroundChanged() const
+{
+    Gui* gui = getGui();
+    if (gui) {
+        gui->notifyPanelForegroundChanged();
+    }
 }
 
 bool
@@ -1639,8 +1811,10 @@ DockablePanel::onRightClickMenuRequested(const QPoint & pos)
     if (isEffect) {
         Menu menu(this);
         //menu.setFont( QFont(appFont,appFontSize) );
-        QAction* userParams = new QAction(tr("Manage user parameters..."), &menu);
-        userParams->setEnabled(isEffect->getIsEditable());
+        QAction* userParams = new QAction(tr("Edit parameters"), &menu);
+        userParams->setCheckable(true);
+        userParams->setChecked(_imp->_editMode && _imp->_editMode->isActive());
+        userParams->setEnabled(canEditUserKnobs());
         menu.addAction(userParams);
 
 
@@ -1662,43 +1836,20 @@ DockablePanel::onRightClickMenuRequested(const QPoint & pos)
             removeAnimationOnAllParameters();
         } else if (ret == userParams) {
             // The emitter is a row or page of the panel, whose mouse press is still on the stack.
-            // The dialog rebuilds the user pages, which deletes that widget if it is in one, so
-            // it opens once the press has returned.
-            QMetaObject::invokeMethod(this, "onManageUserParametersActionTriggered", Qt::QueuedConnection);
+            // Toggling rebuilds the user pages, which deletes that widget if it is in one, so it
+            // happens once the press has returned.
+            QMetaObject::invokeMethod(this, "onEditParametersActionTriggered", Qt::QueuedConnection);
         }
     }
 } // onRightClickMenuRequested
 
 void
-DockablePanel::onManageUserParametersActionTriggered()
+DockablePanel::onEditParametersActionTriggered()
 {
-    KnobHolder* holder = getHolder();
-    if (!holder) {
-        return;
+    if (_imp->_editMode && canEditUserKnobs()) {
+        _imp->_editMode->setActive(!_imp->_editMode->isActive());
     }
-    EffectInstance* isEffect = dynamic_cast<EffectInstance*>(holder);
-    if (!isEffect || !isEffect->getIsEditable()) {
-        return;
-    }
-    NodePtr node = isEffect->getNode();
-    if (!node) {
-        return;
-    }
-    // If this is a pyplug, warn that the user is about to break it
-    if (node->isPyPlug()) {
-        StandardButtons rep = Dialogs::questionDialog(tr("PyPlug").toStdString(), tr("You are about to edit parameters of this node which will "
-                                                                                     "automatically convert this node as a Group. Are you sure "
-                                                                                     "you want to edit it?").toStdString(), false);
-        if (rep != eStandardButtonYes) {
-            return;
-        }
-        node->setPyPlugEdited(true);
-
-
-    }
-    ManageUserParamsDialog dialog(this, this);
-
-    ignore_result( dialog.exec() );
+    refreshEditButton();
 }
 
 void
@@ -1911,56 +2062,6 @@ DockablePanel::onHideUnmodifiedButtonClicked(bool checked)
         }
     }
 }
-
-NATRON_NAMESPACE_ANONYMOUS_ENTER
-
-struct TreeItem
-{
-    QTreeWidgetItem* item;
-    KnobIPtr knob;
-};
-
-struct ManageUserParamsDialogPrivate
-{
-    DockablePanel* panel;
-    QHBoxLayout* mainLayout;
-    QTreeWidget* tree;
-    std::list<TreeItem> items;
-    QWidget* buttonsContainer;
-    QVBoxLayout* buttonsLayout;
-    Button* addButton;
-    Button* pickButton;
-    Button* editButton;
-    Button* removeButton;
-    Button* upButton;
-    Button* downButton;
-    Button* closeButton;
-
-
-    ManageUserParamsDialogPrivate(DockablePanel* panel)
-        : panel(panel)
-        , mainLayout(0)
-        , tree(0)
-        , items()
-        , buttonsContainer(0)
-        , buttonsLayout(0)
-        , addButton(0)
-        , pickButton(0)
-        , editButton(0)
-        , removeButton(0)
-        , upButton(0)
-        , downButton(0)
-        , closeButton(0)
-    {
-    }
-
-    void initializeKnobs(const KnobsVec& knobs, QTreeWidgetItem* parent, std::list<KnobI*>& markedKnobs);
-
-    void rebuildUserPages();
-};
-
-NATRON_NAMESPACE_ANONYMOUS_EXIT
-
 
     NATRON_NAMESPACE_EXIT
 

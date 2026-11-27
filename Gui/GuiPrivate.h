@@ -185,6 +185,7 @@ public:
     CurveEditor *_curveEditor;
     ProgressPanel* _progressPanel;
     SceneGraphPanel* _sceneGraphPanel;
+    GeoSpreadsheetPanel* _geoSpreadsheetPanel;
     std::list<SceneGraphPanel*> _extraSceneGraphPanels;
 
     // The dope sheet
@@ -301,6 +302,8 @@ public:
     void createProgressPanelGui();
 
     void createSceneGraphPanelGui();
+
+    void createGeoSpreadsheetPanelGui();
 
     ///If there's only 1 non-floating pane in the main window, return it, otherwise returns NULL
     TabWidget* getOnly1NonFloatingPane(int & count) const;

@@ -28,12 +28,13 @@
 
 #include "Global/Macros.h"
 
-#include <vector>
-#include <string>
-#include <map>
-#include <utility>
-#include <set>
 #include <list>
+#include <map>
+#include <optional>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -51,6 +52,8 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QSize>
 #include <QComboBox>
 #include <QListView>
+
+class QCheckBox;
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -323,8 +326,10 @@ public:
     ///Works only in eFileDialogModeOpen mode.
     std::string selectedFiles();
 
-   ///Returns  the content of the selection line edit.
-    ///Works only in eFileDialogModeSave mode.
+    std::optional<std::pair<int, int>> selectedSequenceRange() const;
+
+    /// Returns  the content of the selection line edit.
+    /// Works only in eFileDialogModeSave mode.
     std::string filesToSave();
 
     /// Pre-fills the file name of a save dialog.
@@ -400,9 +405,9 @@ public Q_SLOTS:
     ///slot called when the sequence mode has changed
     void enableSequenceMode(bool);
 
-    ///combobox slot, it calls enableSequenceMode
-    void sequenceComboBoxSlot(int index);
-
+    void onSequencesToggled(bool checked);
+    void onSplitOnGapsToggled(bool checked);
+    void onShowHiddenToggled(bool checked);
 
     void onRelativeChoiceChanged(int index);
 
@@ -452,6 +457,8 @@ private:
     void addFavorite(const QString & name, const QString & path);
 
     bool sequenceModeEnabled() const;
+
+    void refreshSplitOnGapsEnabled();
 
     bool isDirectory(const QString & name) const;
 
@@ -581,11 +588,11 @@ private:
     std::unique_ptr<QFileSystemModel> _lookinViewModel;
     QVBoxLayout* _mainLayout;
     QString _requestedDir;
-    Label* _lookInLabel;
     FileDialogComboBox* _lookInCombobox;
     Button* _previousButton;
     Button* _nextButton;
     Button* _upButton;
+    Button* _homeButton;
     Button* _createDirButton;
     Button* _openButton;
     Button* _cancelButton;
@@ -594,7 +601,10 @@ private:
     FileDialogLineEdit* _selectionLineEdit;
     Label* _relativeLabel;
     ComboBox* _relativeChoice;
-    ComboBox* _sequenceButton;
+    QWidget* _togglesWidget;
+    QCheckBox* _sequencesCheckBox;
+    QCheckBox* _splitOnGapsCheckBox;
+    QCheckBox* _showHiddenCheckBox;
     Label* _filterLabel;
     FileDialogLineEdit* _filterLineEdit;
     Button* _filterDropDown;
@@ -618,6 +628,8 @@ private:
     int _currentHistoryLocation;
     QAction* _showHiddenAction;
     QAction* _newFolderAction;
+    // The folder New Folder made, selected again once the watcher's relisting of its parent lands.
+    QString _newFolderToSelect;
     FileDialogModeEnum _dialogMode;
     QWidget* _centerArea;
     QHBoxLayout* _centerAreaLayout;
@@ -628,6 +640,7 @@ private:
     bool _wasAutosetProjectFormatEnabled;
     Gui* _gui;
     bool _relativePathsAllowed;
+    bool _isSequenceDialog;
 };
 
 /**

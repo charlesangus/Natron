@@ -153,7 +153,7 @@ protected:
         }
     }
 
-    // Renders `node` in Legacy mode and as a task graph at pool sizes 1, 4 and 16 over its own
+    // Renders `node` by a direct pull and as a task graph at pool sizes 1, 4 and 16 over its own
     // region of definition: bit-exact, and the task graph pulls nothing it did not plan.
     void expectSameBothWays(const NodePtr& node,
                             const std::string& caseName)
@@ -270,7 +270,7 @@ TEST_F(NativeBlurTest, MaskAndMix)
     expectParity(pair, "mask-mix", kBlurTolerance, true);
 }
 
-TEST_F(NativeBlurTest, RendersTheSameInBothSchedulerModesAtAnyPoolSize)
+TEST_F(NativeBlurTest, RendersTheSameDirectAndScheduledAtAnyPoolSize)
 {
     resetProject();
     NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);

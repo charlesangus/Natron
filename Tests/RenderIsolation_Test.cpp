@@ -155,18 +155,18 @@ protected:
      * its test instead of reaching the ctest timeout; zero disables the deadline. One that does not return from
      * the abort within a further deadline of its own ends the process, since the render thread still refers to this
      * frame's locals.
-     * With `peakRenderThreads`, it receives the most frame threads the engine had at once while the render ran.
+     * With `peakFramesInFlight`, it receives the most frames the engine had in flight at once while the render ran.
      * Returns the render's exit code, or -1 if it never reported one.
      **/
     int renderWithActionAtFrame(const std::function<void()>& action,
                                 ActionThreadEnum actionThread,
                                 bool* actionRan,
                                 std::chrono::milliseconds deadline = kDefaultRenderDeadline,
-                                int* peakRenderThreads = NULL)
+                                int* peakFramesInFlight = NULL)
     {
         *actionRan = false;
-        if (peakRenderThreads) {
-            *peakRenderThreads = 0;
+        if (peakFramesInFlight) {
+            *peakFramesInFlight = 0;
         }
         OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(_writer->getEffectInstance().get());
         EXPECT_TRUE(writerEffect != NULL);
@@ -188,12 +188,12 @@ protected:
         bool renderReturned = false;
 
         std::atomic<bool> ran { false };
-        std::atomic<int> peakThreads { 0 };
+        std::atomic<int> peakFrames { 0 };
         std::atomic<int> lastReportedFrame { kFirstFrame - 1 };
-        const auto samplePeak = [&engine, &peakThreads]() {
-            const int nThreads = engine->getNRenderThreads();
-            int seen = peakThreads.load();
-            while ((nThreads > seen) && !peakThreads.compare_exchange_weak(seen, nThreads)) {
+        const auto samplePeak = [&engine, &peakFrames]() {
+            const int nFrames = engine->getNFramesInFlight();
+            int seen = peakFrames.load();
+            while ((nFrames > seen) && !peakFrames.compare_exchange_weak(seen, nFrames)) {
             }
         };
         // Runs on the scheduler thread, which is in the render's own context: the action must run elsewhere.
@@ -278,8 +278,8 @@ protected:
         QObject::disconnect(onFrame);
         QObject::disconnect(finished);
         *actionRan = ran.load();
-        if (peakRenderThreads) {
-            *peakRenderThreads = peakThreads.load();
+        if (peakFramesInFlight) {
+            *peakFramesInFlight = peakFrames.load();
         }
 
         return timedOut ? kRenderTimedOut : finishedCode;
@@ -796,8 +796,8 @@ TEST_F(RenderIsolation, ForegroundRenderWritesEveryFrameBeforeReturning)
     }
 }
 
-// Lowering the parallel-render cap below the number of frame threads mid-render stops the extra threads
-// one at a time but keeps the last, which a quitting thread leaves the queued frames to.
+// Lowering the parallel-render cap below the number of frames in flight mid-render lets those frames end and
+// admits the rest one at a time.
 TEST_F(RenderIsolation, LoweringParallelRendersMidRenderFinishes)
 {
     QTemporaryDir tmp;
@@ -820,7 +820,7 @@ TEST_F(RenderIsolation, LoweringParallelRendersMidRenderFinishes)
         }
     } parallelRenders;
 
-    // With a single pool thread task-graph mode never opens a second frame thread and there is nothing to stop.
+    // With a single pool thread admission never has a second frame in flight and the cap never bites.
     struct PoolThreadsScope {
         int saved;
 
@@ -843,11 +843,11 @@ TEST_F(RenderIsolation, LoweringParallelRendersMidRenderFinishes)
     RenderEnginePtr engine = writerEffect->getRenderEngine();
 
     std::atomic<int> capSeenByAction { -1 };
-    std::atomic<int> threadsSeenByAction { -1 };
-    const std::function<void()> lowerCap = [&capSeenByAction, &threadsSeenByAction, engine]() {
-        // Read as is: the scheduler thread, which opens frame threads, is blocked on this action.
-        const int nThreads = engine->getNRenderThreads();
-        threadsSeenByAction = nThreads;
+    std::atomic<int> framesSeenByAction { -1 };
+    const std::function<void()> lowerCap = [&capSeenByAction, &framesSeenByAction, engine]() {
+        // Read as is: the scheduler thread, which admits the frames, is blocked on this action.
+        const int nFrames = engine->getNFramesInFlight();
+        framesSeenByAction = nFrames;
         appPTR->getCurrentSettings()->setNumberOfParallelRenders(1);
         capSeenByAction = appPTR->getCurrentSettings()->getNumberOfParallelRenders();
     };
@@ -855,7 +855,7 @@ TEST_F(RenderIsolation, LoweringParallelRendersMidRenderFinishes)
     const int finishedCode = renderWithActionAtFrame(lowerCap, eActionThreadOwn, &actionRan);
 
     ASSERT_TRUE(actionRan) << "frame " << kActionFrame << " was never reported";
-    EXPECT_GT(threadsSeenByAction.load(), 1) << "only " << threadsSeenByAction.load() << " live render thread(s) when the cap was lowered, so no thread was left to stop";
+    EXPECT_GT(framesSeenByAction.load(), 1) << "only " << framesSeenByAction.load() << " frame(s) in flight when the cap was lowered, so the cap was never above what was running";
     EXPECT_EQ(1, capSeenByAction.load()) << "the Settings write was refused mid-render";
     EXPECT_EQ(0, finishedCode);
     for (int frame = kFirstFrame; frame <= kLastFrame; ++frame) {
@@ -864,8 +864,8 @@ TEST_F(RenderIsolation, LoweringParallelRendersMidRenderFinishes)
 }
 
 // The refused-edit render, repeated under the task-graph scheduler with fewer parallel renders allowed than pool
-// threads: frame threads finishing together then race to open and stop threads, which is where a render that
-// strands its queued frames comes from. Each render has a deadline, so a stall fails here rather than at the
+// threads: frames ending together then race to admit the next ones, which is where a render that strands its
+// remaining frames would come from. Each render has a deadline, so a stall fails here rather than at the
 // ctest timeout.
 TEST_F(RenderIsolation, RefusedEditRenderStress)
 {
@@ -875,17 +875,14 @@ TEST_F(RenderIsolation, RefusedEditRenderStress)
     ASSERT_TRUE(bool(_writer));
 
     struct StressScope {
-        RenderSchedulerModeEnum savedMode;
         int savedPoolThreads;
         int savedParallelRenders;
 
         StressScope()
-            : savedMode(appPTR->getRenderSchedulerMode())
-            , savedPoolThreads(QThreadPool::globalInstance()->maxThreadCount())
+            : savedPoolThreads(QThreadPool::globalInstance()->maxThreadCount())
             , savedParallelRenders(appPTR->getCurrentSettings()->getNumberOfParallelRenders())
         {
-            appPTR->setRenderSchedulerMode(eRenderSchedulerModeTaskGraph);
-            // Room for more frame threads than the caps below allow, whatever the runner's core count.
+            // Room for more frames in flight than the caps below allow, whatever the runner's core count.
             QThreadPool::globalInstance()->setMaxThreadCount(std::max(6, savedPoolThreads));
         }
 
@@ -893,7 +890,6 @@ TEST_F(RenderIsolation, RefusedEditRenderStress)
         {
             appPTR->getCurrentSettings()->setNumberOfParallelRenders(savedParallelRenders);
             QThreadPool::globalInstance()->setMaxThreadCount(savedPoolThreads);
-            appPTR->setRenderSchedulerMode(savedMode);
         }
     } stress;
 
@@ -912,7 +908,7 @@ TEST_F(RenderIsolation, RefusedEditRenderStress)
     const std::chrono::minutes kLoopBudget(5);
     const std::chrono::steady_clock::time_point loopStart = std::chrono::steady_clock::now();
     int rounds = 0;
-    int roundsWithConcurrentThreads = 0;
+    int roundsWithConcurrentFrames = 0;
     for (; rounds < kRounds; ++rounds) {
         if ((rounds >= kMinRounds) && (std::chrono::steady_clock::now() - loopStart > kLoopBudget)) {
             break;
@@ -924,8 +920,8 @@ TEST_F(RenderIsolation, RefusedEditRenderStress)
         returnCode = -1;
 
         bool actionRan = false;
-        int peakThreads = 0;
-        const int finishedCode = renderWithActionAtFrame(edit, eActionThreadOwn, &actionRan, kRenderDeadline, &peakThreads);
+        int peakFrames = 0;
+        const int finishedCode = renderWithActionAtFrame(edit, eActionThreadOwn, &actionRan, kRenderDeadline, &peakFrames);
 
         ASSERT_NE(kRenderTimedOut, finishedCode) << "render " << rounds << " stalled for " << kRenderDeadline.count() << " ms";
         ASSERT_TRUE(actionRan) << "render " << rounds << ": frame " << kActionFrame << " was never reported";
@@ -934,14 +930,14 @@ TEST_F(RenderIsolation, RefusedEditRenderStress)
         for (int frame = kFirstFrame; frame <= kLastFrame; ++frame) {
             ASSERT_TRUE(QFile::exists(frameFile(frame))) << "render " << rounds << ": frame " << frame << " was not written";
         }
-        if (peakThreads > 1) {
-            ++roundsWithConcurrentThreads;
+        if (peakFrames > 1) {
+            ++roundsWithConcurrentFrames;
         }
     }
     EXPECT_DOUBLE_EQ(before, multiply->getValue(0));
     EXPECT_GE(rounds, kMinRounds);
-    EXPECT_GT(roundsWithConcurrentThreads * 2, rounds)
-        << "only " << roundsWithConcurrentThreads << " of " << rounds << " renders had more than one frame thread at once, so the thread-count race was not exercised";
+    EXPECT_GT(roundsWithConcurrentFrames * 2, rounds)
+        << "only " << roundsWithConcurrentFrames << " of " << rounds << " renders had more than one frame in flight at once, so the admission race was not exercised";
 }
 
 // Restarting a background render reuses the project file saved when it was submitted, which outlives

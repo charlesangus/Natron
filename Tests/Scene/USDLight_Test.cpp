@@ -42,6 +42,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDLight.h"
@@ -159,6 +160,39 @@ TEST_F(USDLightTest, EachTypeAuthorsItsUsdLuxPrimWithTheSharedInputs)
         }
         // No texture, no warning.
         EXPECT_FALSE(light->hasPersistentMessage());
+    }
+}
+
+TEST_F(USDLightTest, VisibleInRenderAuthorsThePrimaryRayVisibilityOfDomeAndSphereLights)
+{
+    NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
+    ASSERT_TRUE(bool(light));
+    KnobChoice* visible = dynamic_cast<KnobChoice*>(light->getKnobByName(kUSDLightParamVisibleInRender).get());
+    ASSERT_TRUE(visible != NULL);
+    EXPECT_EQ((int)USDLight::eVisibleInRenderDefault, visible->getValue());
+
+    for (const char* id : { "dome", "sphere" }) {
+        setType(light, id);
+        {
+            SCOPED_TRACE(std::string(id) + " default");
+            visible->setValueFromID("default", 0);
+            PXR_NS::UsdStageRefPtr stage;
+            const PXR_NS::UsdPrim prim = composeLight(light, &stage);
+            ASSERT_TRUE(prim.IsValid());
+            EXPECT_FALSE(prim.GetAttribute(PXR_NS::TfToken(kLightVisibleInPrimaryRayAttribute)).IsValid());
+        }
+        for (const bool expected : { true, false }) {
+            SCOPED_TRACE(std::string(id) + (expected ? " visible" : " hidden"));
+            visible->setValueFromID(expected ? "on" : "off", 0);
+            PXR_NS::UsdStageRefPtr stage;
+            const PXR_NS::UsdPrim prim = composeLight(light, &stage);
+            ASSERT_TRUE(prim.IsValid());
+            const PXR_NS::UsdAttribute attr = prim.GetAttribute(PXR_NS::TfToken(kLightVisibleInPrimaryRayAttribute));
+            ASSERT_TRUE(attr.HasAuthoredValue());
+            bool value = !expected;
+            ASSERT_TRUE(attr.Get(&value));
+            EXPECT_EQ(expected, value);
+        }
     }
 }
 

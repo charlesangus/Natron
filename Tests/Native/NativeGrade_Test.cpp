@@ -238,7 +238,7 @@ TEST_F(NativeGradeTest, UnversionedRequestsGetTheNativeGrade)
     EXPECT_TRUE(isNative(created));
 }
 
-TEST_F(NativeGradeTest, ChainOfThirtyRendersTheSameInBothSchedulerModes)
+TEST_F(NativeGradeTest, ChainOfThirtyRendersTheSameDirectAndScheduled)
 {
     getApp()->getProject()->reset(false, true);
     Format format(0, 0, 128, 96, "nativeGradeChainFormat", 1.);

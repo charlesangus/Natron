@@ -49,6 +49,16 @@ file(GLOB NatronEngineAi_HEADERS Ai/*.h)
 file(GLOB NatronEngineAi_SOURCES Ai/*.cpp)
 list(APPEND NatronEngine_HEADERS ${NatronEngineAi_HEADERS})
 list(APPEND NatronEngine_SOURCES ${NatronEngineAi_SOURCES})
+# Engine/Geo/ is the native geometry data model (attributes, index maps, topology); no pxr types.
+file(GLOB NatronEngineGeo_HEADERS Geo/*.h)
+file(GLOB NatronEngineGeo_SOURCES Geo/*.cpp)
+list(APPEND NatronEngine_HEADERS ${NatronEngineGeo_HEADERS})
+list(APPEND NatronEngine_SOURCES ${NatronEngineGeo_SOURCES})
+# Engine/Kernel/ is the context-neutral kernel language front end and bytecode; no Geo types.
+file(GLOB NatronEngineKernel_HEADERS Kernel/*.h)
+file(GLOB NatronEngineKernel_SOURCES Kernel/*.cpp)
+list(APPEND NatronEngine_HEADERS ${NatronEngineKernel_HEADERS})
+list(APPEND NatronEngine_SOURCES ${NatronEngineKernel_SOURCES})
 file(GLOB NatronEngineOptics_HEADERS Optics/*.h)
 file(GLOB NatronEngineOptics_SOURCES Optics/*.cpp)
 list(APPEND NatronEngine_HEADERS ${NatronEngineOptics_HEADERS})
@@ -60,8 +70,11 @@ list(APPEND NatronEngine_HEADERS ${NatronEngineFlow_HEADERS})
 list(APPEND NatronEngine_SOURCES ${NatronEngineFlow_SOURCES})
 # OpenUSD's headers (Nodes/Scene/UsdIncludes.h) include its Python bindings' headers, which need
 # the full Python API, and libshiboken puts Py_LIMITED_API on everything that links it.
-file(GLOB NatronEngineScene_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)
+file(GLOB_RECURSE NatronEngineScene_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)
 set_source_files_properties(${NatronEngineScene_SOURCES} PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
+# The geometry nodes translate to and from USD, so they include the same headers.
+file(GLOB NatronEngineGeometry_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/*.cpp)
+set_source_files_properties(${NatronEngineGeometry_SOURCES} PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 # Releases the Python lock only if its caller holds it, which the limited API cannot ask.
 set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/VectorFollowTask.cpp PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 
@@ -201,6 +214,7 @@ if(NATRON_GPU)
 endif()
 
 add_library(NatronEngine STATIC ${NatronEngine_HEADERS} ${NatronEngine_SOURCES})
+add_subdirectory(Nodes/Scene/Utility)
 # The pinned darktable-ai model manifest Ai/ModelRegistry reads, as :/Ai/ai_models.json.
 # tools/ai/update-manifest.py regenerates it.
 qt_add_resources(NatronEngine AiModelManifest
@@ -208,6 +222,30 @@ qt_add_resources(NatronEngine AiModelManifest
     BASE "${CMAKE_CURRENT_SOURCE_DIR}/Ai/data"
     FILES "${CMAKE_CURRENT_SOURCE_DIR}/Ai/data/ai_models.json"
 )
+# The nodes whose docs/<PluginID>.md is a user-facing reference rather than a developer note
+# are bundled as :/Docs/Nodes/<PluginID>.md; Node::makeDocumentation appends it to the node's
+# Help page.
+set(NatronEngine_NODE_DOCS
+    ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/docs/GeoGroup.md
+    ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/docs/GeoWrangle.md
+    ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/docs/GeoPython.md
+    ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/docs/GeoEdit.md
+    ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/docs/GeoToUSD.md
+)
+foreach(nodeDoc IN LISTS NatronEngine_NODE_DOCS)
+    get_filename_component(nodeDocName ${nodeDoc} NAME)
+    set_source_files_properties(${nodeDoc} PROPERTIES QT_RESOURCE_ALIAS ${nodeDocName})
+endforeach()
+qt_add_resources(NatronEngine NodeDocs
+    PREFIX "/Docs/Nodes"
+    FILES ${NatronEngine_NODE_DOCS}
+)
+# GeoSubdivide refines through OpenSubdiv's Far library, the one USD's own subdivision uses;
+# pxr's package config usually brings the target in already.
+if(NOT TARGET OpenSubdiv::osdCPU)
+    find_package(OpenSubdiv CONFIG REQUIRED)
+endif()
+
 target_link_libraries(NatronEngine
     PUBLIC
         HostSupport
@@ -240,6 +278,7 @@ target_link_libraries(NatronEngine
         ZLIB::ZLIB
         ${CMAKE_DL_LIBS}
         ${NATRON_USD_ENGINE_LIBRARIES}
+        OpenSubdiv::osdCPU
 )
 
 # rawspeed's camera database, read at run time from <bin>/../Resources/rawspeed beside every
@@ -269,6 +308,10 @@ install(FILES ${NatronEngine_LIVE_TEXTURE_PLUGINFO} DESTINATION Resources/usd/na
 set(NatronEngine_PROJECT3D_GLSLFX ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/shaders/natronProject3D.glslfx)
 configure_file(${NatronEngine_PROJECT3D_GLSLFX} ${CMAKE_BINARY_DIR}/Resources/usd/natronLiveTexture/natronProject3D.glslfx COPYONLY)
 install(FILES ${NatronEngine_PROJECT3D_GLSLFX} DESTINATION Resources/usd/natronLiveTexture)
+# The natrongeo: layer resolver and file format, registered at startup by GeoLayers::registerPlugin.
+set(NatronEngine_GEO_LAYER_PLUGINFO ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/plugInfo.json)
+configure_file(${NatronEngine_GEO_LAYER_PLUGINFO} ${CMAKE_BINARY_DIR}/Resources/usd/natronGeo/plugInfo.json COPYONLY)
+install(FILES ${NatronEngine_GEO_LAYER_PLUGINFO} DESTINATION Resources/usd/natronGeo)
 
 # Serves live textures to OIIO in the Cycles delegate and in MoonRay's execComp, found at run time from
 # <bin>/../lib/oiio (SceneCaches::registerLiveTextures). A separate library as execComp loads it too.

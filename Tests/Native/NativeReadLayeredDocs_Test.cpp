@@ -115,7 +115,7 @@ TEST(LayeredDocsLayerIds, CollisionsTakeTheFirstFreeSuffix)
 
 TEST(LayeredDocsLayerIds, ReservedAndEmptyNamesGetASuffixOrAName)
 {
-    const std::vector<std::string> ids = idsOf({ { "Color" }, { "rgba" }, { "Alpha" }, { "depth" }, { "" }, { "  " }, { "\xc3\x9c" } });
+    const std::vector<std::string> ids = idsOf({ { "Color" }, { "rgba" }, { "Alpha" }, { "depth" }, { "" }, { "  " }, { "\xe5\xb1\x82" } });
 
     ASSERT_EQ(7u, ids.size());
     EXPECT_EQ("Color_2", ids[0]);
@@ -125,6 +125,7 @@ TEST(LayeredDocsLayerIds, ReservedAndEmptyNamesGetASuffixOrAName)
     EXPECT_EQ("layer", ids[4]);
     EXPECT_EQ("layer_2", ids[5]);
     EXPECT_EQ("layer_3", ids[6]);
+    EXPECT_EQ(std::vector<std::string>({ "U" }), idsOf({ { "\xc3\x9c" } }));
     for (const std::string& id : ids) {
         expectValidFileLayer(id);
     }

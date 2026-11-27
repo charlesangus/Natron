@@ -379,9 +379,10 @@ public:
 
     /**
      * @brief The linked viewer's draw states changed: the column reads them again. The one
-     * dataChanged() it emits spans the top-level rows, though rows at every depth may change: a
-     * signal per parent cost a view a header layout each, quadratic in the rows open. A view of
-     * this model repaints its whole viewport on a top-level dataChanged().
+     * dataChanged() it emits spans the top-level rows only, though rows at every depth may change,
+     * because each dataChanged() costs a view a header layout and one per parent would be
+     * quadratic in the rows open. A view of this model must therefore repaint its whole viewport
+     * on a top-level dataChanged(), as SceneGraphPanel does; Qt repaints only the range given.
      **/
     void refreshDrawStates();
 

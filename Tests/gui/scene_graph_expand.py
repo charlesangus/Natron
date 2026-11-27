@@ -10,17 +10,19 @@ a subcomponent payload) and a wide stage written at run time to $NATRON_GUI_TEST
     disabled with no row selected;
   - Expand To Component on the island, its components loaded, opens the island and the grove and
     leaves every component row shown and closed;
-  - Expand To natronTestTree shows the bush closed and leaves the grove, where nothing matches, closed;
+  - Expand To natronTestTree shows the bush closed and leaves the grove, where nothing matches, as it
+    was: closed, or open when it was open;
   - Expand All Below opens every row under the island and leaves the unloaded subcomponent payloads
     closed and unloaded, and says so;
   - Collapse All Below closes every row under the island;
   - * on the current row, Shift-click on its arrow, the toolbar buttons in Below and To Component
-    scope, and Scene Graph: Expand All Below bound to K do the same and load nothing; Shift-click on
-    an open row's arrow collapses all below it;
+    scope, and Scene Graph: Expand All Below, Collapse All Below and Expand To Component bound to K,
+    J and L do the same and load nothing; Shift-click on an open row's arrow collapses all below it;
   - on the wide stage Expand All Below opens all 5,101 rows with children and no payload, and a timer
     posted as it starts fires while it is still running;
   - Esc stops a long expansion, leaving the rows it opened open, and the status line says Stopped;
-  - switching the viewer to another node stops an expansion under way;
+  - switching the viewer to another node stops an expansion under way before the panel's model
+    resets, and clears its status line;
   - a plain click on an unloaded row's arrow still opens and loads it.
 
 Screenshots go to $NATRON_GUI_TEST_OUT (default build/gui-test-out/) for sign-off.
@@ -170,25 +172,28 @@ try:
         return (v is not None and bool(v.property("natronSceneSynced")) and bool(v.property("natronSceneShown"))
                 and not v.property("natronSceneError"))
 
-    def rows(parent=QModelIndex()):
+    def rows(parent=QModelIndex(), fetch=True):
+        """parent's rows; with fetch False only those read already, so that a check sees the rows
+        the panel read rather than reading more in."""
         m = model()
         if m is None:
             return []
-        while m.canFetchMore(parent):
+        while fetch and m.canFetchMore(parent):
             m.fetchMore(parent)
         return [m.index(r, 0, parent) for r in range(m.rowCount(parent))]
 
     def path_of(index):
         return str(index.data(PATH_ROLE))
 
-    def find(path):
-        """The index of path's row, reading the tree down to it; an invalid index when absent."""
+    def find(path, fetch=True):
+        """The index of path's row, reading the tree down to it unless fetch is False; an invalid
+        index when absent."""
         parent = QModelIndex()
         found = QModelIndex()
         for depth in range(1, path.count("/") + 1):
             prefix = "/" + "/".join(path.strip("/").split("/")[:depth])
             found = QModelIndex()
-            for index in rows(parent):
+            for index in rows(parent, fetch):
                 if path_of(index) == prefix:
                     found = index
                     break
@@ -197,15 +202,16 @@ try:
             parent = found
         return found
 
-    def state(path):
-        index = find(path)
+    def state(path, fetch=True):
+        index = find(path, fetch)
         return index.data(STATE_ROLE) if index.isValid() else None
 
-    def states(paths):
-        return [state(p) for p in paths]
+    def states(paths, fetch=False):
+        return [state(p, fetch) for p in paths]
 
     def is_open(path):
-        index = find(path)
+        """Whether path's row is read and open; reads nothing in."""
+        index = find(path, False)
         return index.isValid() and tree().isExpanded(index)
 
     def opened(paths):
@@ -415,8 +421,9 @@ try:
                         return panels[0] if len(panels) == 1 else None
         return None
 
-    def rebind(label, key, key_name):
-        """Binds the 3DViewer group's command label to key in the Shortcut Editor."""
+    def rebind(bindings):
+        """Binds each (label, key, key_name) of bindings, a command of the 3DViewer group, to key in
+        the Shortcut Editor, after checking that every expand command is unbound by default."""
         prefs = open_preferences()
         require(prefs is not None, "the Preferences panel opens")
         page_trees = [w for w in prefs.findChildren(QTreeWidget) if w.columnCount() == 1]
@@ -437,23 +444,24 @@ try:
             check(row is not None, "the 3DViewer group lists %s" % listed)
             if row is not None:
                 check(not str(row.siblingAtColumn(1).data() or ""), "%s is unbound by default (got %r)" % (listed, row.siblingAtColumn(1).data()))
-        row = find_item(keys, label, "3DViewer")
-        require(row is not None, "the 3DViewer group has a %s row" % label)
-        keys.setCurrentIndex(row)
-        keys.scrollTo(row)
-        QApplication.processEvents()
-        editors = [w for w in prefs.findChildren(QLineEdit) if w.placeholderText() == "Type to set shortcut" and w.isVisible()]
-        validate = [w for w in prefs.findChildren(QPushButton) if w.text() == "Validate" and w.isVisible()]
-        require(len(editors) == 1 and len(validate) == 1, "found the %s field and its Validate button" % label)
-        editors[0].clear()
-        QTest.keyClick(editors[0], key)
-        QApplication.processEvents()
-        check(key_name in editors[0].text(), "the field records %s (%r)" % (key_name, editors[0].text()))
-        validate[0].click()
-        QApplication.processEvents()
-        row = find_item(keys, label, "3DViewer")
-        check(row is not None and key_name in str(row.siblingAtColumn(1).data()), "the %s row shows %s (%r)"
-              % (label, key_name, row.siblingAtColumn(1).data() if row is not None else None))
+        for label, key, key_name in bindings:
+            row = find_item(keys, label, "3DViewer")
+            require(row is not None, "the 3DViewer group has a %s row" % label)
+            keys.setCurrentIndex(row)
+            keys.scrollTo(row)
+            QApplication.processEvents()
+            editors = [w for w in prefs.findChildren(QLineEdit) if w.placeholderText() == "Type to set shortcut" and w.isVisible()]
+            validate = [w for w in prefs.findChildren(QPushButton) if w.text() == "Validate" and w.isVisible()]
+            require(len(editors) == 1 and len(validate) == 1, "found the %s field and its Validate button" % label)
+            editors[0].clear()
+            QTest.keyClick(editors[0], key)
+            QApplication.processEvents()
+            check(key_name in editors[0].text(), "the field records %s (%r)" % (key_name, editors[0].text()))
+            validate[0].click()
+            QApplication.processEvents()
+            row = find_item(keys, label, "3DViewer")
+            check(row is not None and key_name in str(row.siblingAtColumn(1).data()), "the %s row shows %s (%r)"
+                  % (label, key_name, row.siblingAtColumn(1).data() if row is not None else None))
         prefs.close()
         QApplication.processEvents()
 
@@ -533,7 +541,7 @@ try:
         require(ok, "Load is enabled in To Component scope")
         child(QToolButton, "sceneGraphBulk_load").click()
         ok = yield ("until", all_loaded([ISLAND] + COMPONENTS), POLL_TIMEOUT_S)
-        require(ok, "Load To Component loads the island and its components (states %r)" % (states([ISLAND] + COMPONENTS),))
+        require(ok, "Load To Component loads the island and its components (states %r)" % (states([ISLAND] + COMPONENTS, True),))
         ok = yield ("until", lambda: all(state(p) is not None for p in SUBCOMPONENTS), POLL_TIMEOUT_S)
         require(ok, "the subcomponent rows are listed")
         tree().collapse(find(ISLAND))
@@ -553,7 +561,15 @@ try:
         summary = yield from finished()
         check(is_open(ISLAND) and shown(BUSH) and not is_open(BUSH), "Expand To natronTestTree shows the bush closed (open %r)" % opened([ISLAND, BUSH]))
         check(not is_open(GROVE), "Expand To natronTestTree leaves the grove, which holds none, closed")
-        yield from collapse_island("after Expand To natronTestTree")
+        # A branch open already stays open where nothing matches below it.
+        tree().expand(find(GROVE))
+        check(pick_in_menu(ISLAND, "sceneGraphExpandTo_natronTestTree"), "the row menu has an enabled Expand To natronTestTree again")
+        summary = yield from finished()
+        check(summary.startswith("Expanded to ") and "Stopped" not in summary,
+              "Expand To natronTestTree over the open grove says what it did (got %r)" % summary)
+        check(is_open(GROVE), "Expand To natronTestTree leaves the open grove, which holds none, open")
+        check(shown(BUSH) and not is_open(BUSH), "Expand To natronTestTree over the open grove shows the bush closed")
+        yield from collapse_island("after Expand To natronTestTree over the open grove")
 
         # Expand All Below from the row menu.
         check(pick_in_menu(ISLAND, "sceneGraphExpandBelow"), "the row menu has an enabled Expand All Below")
@@ -607,8 +623,22 @@ try:
         check_all_below("Expand in Selected scope", summary)
         yield from collapse_island("after Expand in Selected scope")
 
-        # An editable shortcut.
-        rebind("Scene Graph: Expand All Below", Qt.Key_K, "K")
+        # Editable shortcuts: one per kind of command.
+        rebind([("Scene Graph: Expand All Below", Qt.Key_K, "K"), ("Scene Graph: Collapse All Below", Qt.Key_J, "J"),
+                ("Scene Graph: Expand To Component", Qt.Key_L, "L")])
+        select_rows([ISLAND])
+        focus_tree()
+        QTest.keyClick(tree(), Qt.Key_L)
+        summary = yield from finished()
+        check_to_component("L, bound to Scene Graph: Expand To Component,", summary)
+        yield from check_nothing_loaded("L")
+        select_rows([ISLAND])
+        focus_tree()
+        QTest.keyClick(tree(), Qt.Key_J)
+        summary = yield from finished()
+        check(summary.startswith("Collapsed "), "J, bound to Scene Graph: Collapse All Below, says what it did (got %r)" % summary)
+        check(not opened(BELOW_ISLAND), "J, bound to Scene Graph: Collapse All Below, closes every row under the island (open %r)"
+              % opened(BELOW_ISLAND))
         select_rows([ISLAND])
         focus_tree()
         QTest.keyClick(tree(), Qt.Key_K)
@@ -618,7 +648,7 @@ try:
 
         # A plain click on an unloaded row's arrow opens and loads it, as without the expander.
         QTest.mouseClick(tree().viewport(), Qt.LeftButton, Qt.NoModifier, arrow_point(BERRIES))
-        ok = yield ("until", lambda: is_open(BERRIES) and state(BERRIES) == STATE_LOADED, POLL_TIMEOUT_S)
+        ok = yield ("until", lambda: is_open(BERRIES) and state(BERRIES, False) == STATE_LOADED, POLL_TIMEOUT_S)
         check(ok, "a plain click on the berries' arrow opens and loads them (open %r, state %r)" % (is_open(BERRIES), state(BERRIES)))
 
         # The wide stage: every row, no payload, and the event loop runs between slices.
@@ -673,7 +703,7 @@ try:
                   "no slice runs after Esc (%d slices at Esc, %d after)" % (at_esc, slices()))
             reported = int(match.group(1).replace(",", "")) if match else -1
             open_rows = []
-            pending = [find(WIDE)]
+            pending = [find(WIDE, False)]
             while pending:
                 index = pending.pop()
                 if not index.isValid():
@@ -682,7 +712,7 @@ try:
                 # under a closed one goes uncounted here while it is still remembered.
                 if tree().isExpanded(index):
                     open_rows.append(path_of(index))
-                    pending.extend(rows(index))
+                    pending.extend(rows(index, False))
             check(0 < reported <= WIDE_OPENED and len(open_rows) == reported,
                   "the rows open after Esc are the %d the run reported opening (%d open)" % (reported, len(open_rows)))
             check(not opened(payloads), "the wide stage's payload rows stay closed after Esc (open %r)" % opened(payloads))
@@ -696,9 +726,14 @@ try:
         expand_button().click()
         running = expanding()
         check(running, "the second wide expansion is running after its first slice (status %r)" % status())
+        resets = int(panel().property("natronSceneGraphResetCount") or 0)
         require(view_input(usd), "connect the Viewer back to the island's USDRead")
         ok = yield ("until", lambda: not expanding(), POLL_TIMEOUT_S)
         check(ok, "showing another node stops the expansion")
+        left_at = panel().property("natronSceneGraphExpansionLeftAtReset")
+        check(left_at is not None and int(left_at) == resets,
+              "the switch stops the expansion before the model resets (left at reset %r, %d resets before the switch)" % (left_at, resets))
+        check(status() == "", "the switch clears the stopped expansion's status (got %r)" % status())
         # The poll runs on the GUI thread: a long gap between polls is the GUI thread held, not the
         # viewer or the panel slow, and tells the two kinds of stall apart.
         polled = []

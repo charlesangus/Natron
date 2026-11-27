@@ -1002,9 +1002,9 @@ struct SceneGraphModel::Implementation {
 
     /**
      * @brief Announces columns first to last of every row as changed, through the top-level rows
-     * alone. One signal per parent made a view lay its header out again for each of them, which
-     * with thousands of rows open held the GUI thread for tens of seconds when the viewer switched;
-     * a view repaints the rows below from the one signal, as refreshDrawStates() documents.
+     * alone: each dataChanged() makes a view lay its header out again, so one per parent would
+     * cost a layout per open parent. A view must repaint the rows below itself on this signal, as
+     * refreshDrawStates() requires.
      **/
     void emitColumnsChanged(int first,
                             int last)

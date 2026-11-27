@@ -34,14 +34,17 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
 #include <QtCore/QMutex>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Loop/LoopFold.h"
 #include "Engine/Nodes/Loop/LoopFrameCache.h"
+#include "Engine/Nodes/Loop/LoopMapBlend.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderContext.h"
@@ -56,6 +59,12 @@
 #define kLoopEndParamMode "mode"
 #define kLoopEndParamModeAccumulate "accumulate"
 #define kLoopEndParamModeFeedback "feedback"
+#define kLoopEndParamModeMapBlend "mapBlend"
+#define kLoopEndParamInterpolation "interpolation"
+#define kLoopEndParamInterpolationLinear "linear"
+#define kLoopEndParamInterpolationCubic "cubic"
+#define kLoopEndParamInterpolationNearest "nearest"
+#define kLoopEndParamLevelSpacing "levelSpacing"
 #define kLoopEndParamSinglePass "singlePass"
 #define kLoopEndParamSinglePassIteration "singlePassIteration"
 #define kLoopEndParamIterateOver "iterateOver"
@@ -89,10 +98,14 @@
 #define kLoopEndMinFrameStep 0.001
 #define kLoopEndFrameSnap 1e-6
 
+#define kLoopEndInputSource 0
+#define kLoopEndInputMap 1
+
 NATRON_NAMESPACE_ENTER
 
 inline constexpr InputSpec kLoopEndInputs[] = {
     InputSpec { .label = "Source", .kind = eDataKindImage },
+    kMapInputSpec,
 };
 
 /**
@@ -195,15 +208,20 @@ public:
                                     std::vector<NodePtr>* begins);
 
     private:
+        // A node, its depth and whether it is a LoopEnd reached aside, and for a node that
+        // getInput() resolves through, the node that entered it.
+        typedef std::tuple<const Node*, int, const Node*> Step;
+
         struct StepHash {
-            std::size_t operator()(const std::pair<const Node*, int>& step) const;
+            std::size_t operator()(const Step& step) const;
         };
 
-        // The LoopEnds the walk down from node, entering it at depth, pairs with.
+        // The LoopEnds the walk down from node, entering it at depth from the node from, pairs with.
         const std::vector<NodePtr>& pairedEndsAt(const NodePtr& node,
-                                                 int depth);
+                                                 int depth,
+                                                 const NodePtr& from);
 
-        std::unordered_map<std::pair<const Node*, int>, std::vector<NodePtr>, StepHash> _pairedEnds;
+        std::unordered_map<Step, std::vector<NodePtr>, StepHash> _pairedEnds;
         std::unordered_map<const Node*, std::vector<NodePtr>> _feedbackBegins;
     };
 
@@ -485,6 +503,9 @@ private:
         // the body at f - 1 + (k + 1) / count, spread over the interval from the frame before.
         bool subframes = false;
         bool feedback = false;
+        // Map Blend: every iteration is rendered where the Map reads it, Single Pass and the stop
+        // condition set aside.
+        bool mapBlend = false;
         // The iteration Single Pass outputs, or -1.
         int singlePass = -1;
         // How many iterations are folded: count, fewer when the stop condition ended the loop
@@ -496,6 +517,8 @@ private:
         std::string message;
         // Why the stop condition failed; the iterations before it still render.
         std::string stopError;
+        // Shown when there is neither message nor stop error: the loop renders regardless.
+        std::string warning;
 
         /**
          * @brief How far from the frame the loop renders iteration k renders the body.
@@ -558,6 +581,9 @@ private:
                        "of the next, which start from their input, and outputs the last; with several "
                        "LoopBegins, Feedback LoopBegins chooses which do, the others passing their input "
                        "through at every iteration. "
+                       "Map Blend outputs, at each pixel, the iterations its Map value falls between, "
+                       "blended by Interpolation: the iterations sit evenly from Map 0, the first, to Map 1, "
+                       "the last, and an iteration no pixel of a region reads is not rendered there. "
                        "Single Pass outputs the one iteration Single Pass Iteration names, unfolded; "
                        "under Feedback, that iteration after the ones before it. A Stop Condition, a Python expression, is evaluated "
                        "before each iteration with loop.iteration, loop.count, loop.t, loop.frame and "
@@ -641,18 +667,41 @@ private:
         return OpKind::Point;
     }
 
-    // Only a fold step task of the task-graph scheduler, which reads step k - 1 from the device.
+    // Under the task-graph scheduler only: a fold step task, which reads step k - 1 from the device,
+    // or a Map Blend of the layer its render continuation requests.
     virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // The iteration on input 0 and step k - 1 under a context, both in plane.
+    // The iteration on input 0, step k - 1 under a context and the iterations a render continuation
+    // requested, all in plane; the Map in the layer of its channel.
     virtual bool getGpuInputLayer(int inputNb,
                                   const ImageLayerDesc& plane,
                                   double time,
                                   ViewIdx view,
                                   ImageLayerDesc* layer) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    // One loopfold dispatch folding the iteration into step k - 1, finishing a Mean at the last step.
+    // Map Blend reads its iterations from its render continuation rather than from the Source, and
+    // the Map only when its channel resolves.
+    virtual bool readsGpuInput(int inputNb,
+                               const ImageLayerDesc& plane,
+                               double time,
+                               ViewIdx view) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // One loopfold dispatch folding the iteration into step k - 1, finishing a Mean at the last step;
+    // for Map Blend one loopmapblend dispatch per iteration requested.
     virtual StatusEnum renderGpu(const GpuRenderArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // Map Blend only: the iterations the Map reads over a region are requested there, no others.
+    virtual bool offersRenderContinuation() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool supportsRenderContinuationOnGpu() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual bool getRenderContinuation(const RenderContinuationArgs& args,
+                                       RenderContinuation* continuation) OVERRIDE FINAL;
+
+    virtual bool getInputLayersRead(int inputNb,
+                                    double time,
+                                    ViewIdx view,
+                                    std::list<ImageLayerDesc>* layers) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     // The loop as its knobs and graph define it, every iteration folded.
     Resolved resolve() const WARN_UNUSED_RETURN;
@@ -660,6 +709,41 @@ private:
     bool isFeedback() const WARN_UNUSED_RETURN;
 
     bool isCrossFrame() const WARN_UNUSED_RETURN;
+
+    bool isMapBlend() const WARN_UNUSED_RETURN;
+
+    LoopMapBlend::InterpolationEnum mapBlendInterpolation() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The Map values over window, read with pullRenderContinuationRequest() under context:
+     * 0 everywhere without a Map. False when the Map fails to render or is not float.
+     **/
+    bool readMapPlane(double time,
+                      ViewIdx view,
+                      unsigned int mipmapLevel,
+                      const RectI& window,
+                      const RenderContextPtr& context,
+                      MapPlane* plane) WARN_UNUSED_RETURN;
+
+    StatusEnum renderMapBlendGpu(const GpuRenderArgs& args,
+                                 const Resolved& resolved) WARN_UNUSED_RETURN;
+
+    // Iteration's output over region, in layer, as getRenderContinuation() requests it and the render pulls it.
+    RenderContinuationRequest mapBlendRequest(const Iteration& iteration,
+                                              ViewIdx view,
+                                              unsigned int mipmapLevel,
+                                              const RectI& region,
+                                              const ImageLayerDesc& layer) const WARN_UNUSED_RETURN;
+
+    // The layer the body is requested in under Map Blend: the one this node outputs.
+    ImageLayerDesc mapBlendLayer(double time,
+                                 ViewIdx view) const WARN_UNUSED_RETURN;
+
+    StatusEnum renderMapBlend(const RenderActionArgs& args,
+                              const Resolved& resolved,
+                              const RenderContextPtr& context) WARN_UNUSED_RETURN;
+
+    void refreshLevelSpacing();
 
     int crossFrameStart() const WARN_UNUSED_RETURN;
 
@@ -886,6 +970,9 @@ private:
     KnobBoolWPtr _loadFromCache;
     KnobButtonWPtr _clearCache;
     KnobStringWPtr _passThroughBegins;
+    KnobChoiceWPtr _interpolation;
+    KnobStringWPtr _levelSpacing;
+    MapInput _map;
 
     mutable QMutex _messageMutex;
     std::string _postedMessage;

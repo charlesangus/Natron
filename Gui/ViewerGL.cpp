@@ -3811,7 +3811,11 @@ ViewerGL::enterEvent(QEnterEvent* e)
 bool
 ViewerGL::event(QEvent* e)
 {
-    if (_imp->colorSpaceView && _imp->colorSpaceView->event(e)) {
+    // Test the event type before touching _imp: the Implementation constructor parents its
+    // context menu to this widget, so a ChildAdded event arrives while _imp is still unset.
+    const QEvent::Type type = e->type();
+    const bool colorSpaceViewEvent = (type == QEvent::ShortcutOverride) || (type == QEvent::KeyPress) || (type == QEvent::KeyRelease) || (type == QEvent::FocusOut);
+    if (colorSpaceViewEvent && _imp->colorSpaceView && _imp->colorSpaceView->event(e)) {
         return true;
     }
     if ((e->type() == QEvent::ShortcutOverride) && _imp->viewerTab && _imp->viewerTab->claimShortcutOverride(static_cast<QKeyEvent*>(e))) {

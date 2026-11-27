@@ -923,3 +923,5 @@ Reference: Nuke 17's EdgeExtend (`.local/docs/nuke/html/content/reference_guide/
   - `m275_viewer_widget_editing`: translate/scale snap back after release, a real value change, not timing.
   - `m121_routing_mix`: `[adjustbbox]` Num Pixels 0 leaves the centre empty.
   - `m224_shape_drag`: the script locks onto viewer text. Its fix (e9347fd229) is on M299 - Roto Render Performance's branch and lands with it.
+
+- **Input-data refresh scales badly on long chains** (PM, 2026-11-26, from M299 - Roto Render Performance): `AppManager::clearAllCaches` → `forceComputeInputDependentDataOnAllTrees` recurses about 80 frames of `refreshInputRelatedDataInternal` down a 70-item Merge chain, so `Operators/RotoPaintDirectCompositeTest` takes 9–38 s per case under -j4 (it calls `CacheStress::clearEverything` before every render). M299 runs that entry serially as a stopgap. Profile and make the refresh linear in the graph size; related to the O(N²) upstream walks in the 2026-09-25 render-scaling findings.

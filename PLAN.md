@@ -690,7 +690,7 @@ future core work has solid ground to build on.
 | M629 | Stable USDRead Placeholder Digest | todo | - |  | E9 |  | | [M629-stable-usdread-placeholder-digest.md](PLAN/MILESTONES/M629-stable-usdread-placeholder-digest.md) |
 | M630 | Headlight Toggle Relighting | todo | - |  | E9 |  | | [M630-headlight-toggle-relighting.md](PLAN/MILESTONES/M630-headlight-toggle-relighting.md) |
 | M631 | Main GUI Check Failures | todo | - |  | E2 |  | | [M631-main-gui-check-failures.md](PLAN/MILESTONES/M631-main-gui-check-failures.md) |
-| M632 | Linear Input Data Refresh | todo | M299 |  | E6 | M632-linear-input-data-refresh.md | | [Input-data refresh scales](PLAN/MILESTONES/Input-data refresh scales) |
+| M632 | Linear Input Data Refresh | todo | M299 |  | E6 |  | | [M632-linear-input-data-refresh.md](PLAN/MILESTONES/M632-linear-input-data-refresh.md) |
 | M633 | Shared Geometry Group Selection | todo | - |  | E9 | M633-shared-geometry-group-selection.md | | [Shared geometry group selection](PLAN/MILESTONES/Shared geometry group selection) |
 | M634 | VDB Grids In Geometry Cache | todo | M417 |  | E22 | F22 | | [M634-vdb-grids-in-geometry-cache.md](PLAN/MILESTONES/M634-vdb-grids-in-geometry-cache.md) |
 | M635 | Layered Flatten Clipping And Groups | todo | M79 |  | E3 | M635-layered-flatten-clipping-and-groups.md | | [Layered document flatten](PLAN/MILESTONES/Layered document flatten) |

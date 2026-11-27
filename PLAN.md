@@ -129,7 +129,7 @@ future core work has solid ground to build on.
 | M76 | Native Write | done | M75 |  | E3 | | | [M76-native-write.md](PLAN/MILESTONES/M76-native-write.md) |
 | M77 | Native Metadata Nodes | done | M75 | bosley-native-nodes | E3 | | | [M77-native-metadata-nodes.md](PLAN/MILESTONES/M77-native-metadata-nodes.md) |
 | M78 | Metadata In Expressions | done | M75, M77 | bosley-native-nodes | E3 | | | [M78-metadata-in-expressions.md](PLAN/MILESTONES/M78-metadata-in-expressions.md) |
-| M79 | Layered Document Readers | doing | M75 | bosley-executor | E3 | | | [M79-layered-document-readers.md](PLAN/MILESTONES/M79-layered-document-readers.md) |
+| M79 | Layered Document Readers | doing | M75 | bosley-executor | E3 | | uat | [M79-layered-document-readers.md](PLAN/MILESTONES/M79-layered-document-readers.md) |
 | M80 | Native RAW Support | done | M75, M85, M120, M137 | bosley-native-nodes | E3 | | | [M80-native-raw-support.md](PLAN/MILESTONES/M80-native-raw-support.md) |
 | M159 | Kind-Agnostic Groups | done | - | bosley-native-nodes | E3 | | | [M159-kind-agnostic-groups.md](PLAN/MILESTONES/M159-kind-agnostic-groups.md) |
 | M160 | Lensfun Lens Correction | done | M80, M113 | bosley-native-nodes | E3 | | | [M160-lensfun-lens-correction.md](PLAN/MILESTONES/M160-lensfun-lens-correction.md) |

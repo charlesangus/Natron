@@ -66,6 +66,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Loop/LoopFrameCache.h"
 #include "Engine/Nodes/Raw/RawDemosaic.h"
+#include "Engine/Nodes/Scene/StormTextureBudget.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
@@ -354,7 +355,6 @@ Settings::initializeKnobsThreading()
     _numberOfThreads->setDisplayMinimum(-1);
     _threadingPage->addKnob(_numberOfThreads);
 
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
     _numberOfParallelRenders = AppManager::createKnob<KnobInt>( this, tr("Number of parallel renders (0=\"guess\")") );
     _numberOfParallelRenders->setHintToolTip( tr("Controls the number of parallel frame that will be rendered at the same time by the renderer. "
                                                  "A value of 0 indicate that %1 should automatically determine "
@@ -366,7 +366,6 @@ Settings::initializeKnobsThreading()
     _numberOfParallelRenders->setMinimum(0);
     _numberOfParallelRenders->disableSlider();
     _threadingPage->addKnob(_numberOfParallelRenders);
-#endif
 
     _useThreadPool = AppManager::createKnob<KnobBool>( this, tr("Effects use the thread-pool") );
     _useThreadPool->setName("useThreadPool");
@@ -391,25 +390,6 @@ Settings::initializeKnobsThreading()
     _nThreadsPerEffect->setMinimum(0);
     _nThreadsPerEffect->disableSlider();
     _threadingPage->addKnob(_nThreadsPerEffect);
-
-    _renderSchedulerMode = AppManager::createKnob<KnobChoice>(this, tr("Render scheduler"));
-    _renderSchedulerMode->setName("renderSchedulerMode");
-    {
-        std::vector<ChoiceOption> entries;
-        assert(entries.size() == (int)eRenderSchedulerModeLegacy);
-        entries.push_back(ChoiceOption("legacy",
-                                       tr("Legacy pull").toStdString(),
-                                       tr("Render the nodes of a frame recursively, each node pulling its inputs.").toStdString()));
-        assert(entries.size() == (int)eRenderSchedulerModeTaskGraph);
-        entries.push_back(ChoiceOption("taskgraph",
-                                       tr("Task graph").toStdString(),
-                                       tr("Schedule the nodes of a frame as tasks on the shared thread pool.").toStdString()));
-        _renderSchedulerMode->populateChoices(entries);
-    }
-    _renderSchedulerMode->setHintToolTip(tr("How the nodes of a frame are scheduled. \"Task graph\" (the default) schedules them on the shared thread pool, "
-                                            "while \"Legacy pull\" renders them recursively and is the fallback. "
-                                            "The NATRON_RENDER_SCHEDULER environment variable (legacy or taskgraph) takes precedence over this setting."));
-    _threadingPage->addKnob(_renderSchedulerMode);
 
     _queueRenders = AppManager::createKnob<KnobBool>( this, tr("Append new renders to queue") );
     _queueRenders->setHintToolTip( tr("When checked, renders will be queued in the Progress Panel and will start only when all "
@@ -490,6 +470,19 @@ Settings::initializeKnobsGPU()
     _gpuMemoryBudgetMB->setMinimum(0);
     _gpuMemoryBudgetMB->disableSlider();
     _gpuPage->addKnob(_gpuMemoryBudgetMB);
+
+    _gpuTextureBudget = AppManager::createKnob<KnobInt>(this, tr("GPU Texture Budget"));
+    _gpuTextureBudget->setName("gpuTextureBudget");
+    _gpuTextureBudget->setHintToolTip(tr("How much GPU memory the textures of the 3D viewers and renders may take together. "
+                                         "A texture that does not fit is not loaded, and its material uses the texture's fallback value.\n"
+                                         "0 is automatic: textures load while the graphics card keeps a sixteenth of its memory free, and never less than 1024 MB "
+                                         "(1536 MB on a 24 GB card), whatever else takes up the rest. "
+                                         "Where the driver does not tell how much is free, the textures are kept within half the card's memory.\n"
+                                         "Any other value is a fixed budget in megabytes for the textures alone: it does not look at what else is on the card.\n"
+                                         "Changing this applies to the textures loaded from then on."));
+    _gpuTextureBudget->setMinimum(0);
+    _gpuTextureBudget->disableSlider();
+    _gpuPage->addKnob(_gpuTextureBudget);
 
     _gpuStatus = AppManager::createKnob<KnobString>(this, tr("GPU status"));
     _gpuStatus->setName("gpuStatus");
@@ -1379,14 +1372,6 @@ Settings::initializeKnobsViewers()
                                     "to Linux from a different OS.") );
     _viewersTab->addKnob(_viewerNumberKeys);
 
-    _viewerOverlaysPath = AppManager::createKnob<KnobBool>( this, tr("Only display overlays for the viewer render path") );
-    _viewerOverlaysPath->setName("viewerOverlaysPath");
-    _viewerOverlaysPath->setHintToolTip( tr("When disabled, overlays for all the non-minimized open "
-                                            "properties panels are displayed. When enabled, overlays are "
-                                            "displayed only for the render path for the current viewer "
-                                            "inputs.") );
-    _viewersTab->addKnob(_viewerOverlaysPath);
-
     _rotoShapeDragRender = AppManager::createKnob<KnobChoice>(this, tr("Roto Shape Drag Render"));
     _rotoShapeDragRender->setName("rotoShapeDragRender");
     {
@@ -1470,6 +1455,65 @@ Settings::initializeKnobsViewers()
     _viewer3DLighting->setHintToolTip(tr("What lights the shaded mode of the viewer's 3D views, all of them alike. Also chosen from "
                                          "the 3D view's Display > Lighting menu."));
     _viewersTab->addKnob(_viewer3DLighting);
+
+    _sceneStandInMode = AppManager::createKnob<KnobChoice>(this, tr("Scene Stand-In Mode"));
+    _sceneStandInMode->setName("sceneStandInMode");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("off", "Off", tr("The last full frame stays up while the view moves, and a new one starts as soon as the last ends.").toStdString()));
+        entries.push_back(ChoiceOption("interaction", "During Interaction", tr("While the view tumbles, pans, zooms or resizes, and the last full frame took longer "
+                                                                               "than the Scene Stand-In Budget, the view is cleared and shows the stand-in boxes "
+                                                                               "instead, and no full frame starts. Once the view has been still for the Scene "
+                                                                               "Stand-In Refill Delay, one full frame starts, and it replaces the boxes, all at "
+                                                                               "once, when it is finished.")
+                                                                                .toStdString()));
+        entries.push_back(ChoiceOption("always", "Always", tr("The view only ever shows the stand-in boxes, moving or not, and never renders a full "
+                                                              "frame, whatever its cost. Edits to the scene and to draw states update the boxes. "
+                                                              "Switching back to another mode renders a full frame again.")
+                                                               .toStdString()));
+        _sceneStandInMode->populateChoices(entries);
+    }
+    _sceneStandInMode->setHintToolTip(tr("When the Storm view of a 3D viewer shows wireframe boxes in place of the scene, so that a scene "
+                                         "too heavy to render at an interactive rate can still be moved around smoothly. The grid, "
+                                         "guides, BBox rows and transform handles are drawn as usual over the boxes. A full frame "
+                                         "already rendering when the view starts moving cannot be stopped: it finishes, and is not "
+                                         "shown if the view has moved since."));
+    _viewersTab->addKnob(_sceneStandInMode);
+
+    _sceneStandInBudget = AppManager::createKnob<KnobInt>(this, tr("Scene Stand-In Budget"));
+    _sceneStandInBudget->setName("sceneStandInBudget");
+    _sceneStandInBudget->setHintToolTip(tr("In milliseconds, how long a full frame of the 3D viewer may take before the During Interaction "
+                                           "stand-in mode shows boxes while the view moves. A frame's time is from its start to the "
+                                           "graphics card finishing it. Once over, the frames have to come in under four fifths of "
+                                           "it to go back, so the view does not switch at every frame."));
+    _sceneStandInBudget->setMinimum(1);
+    _sceneStandInBudget->disableSlider();
+    _viewersTab->addKnob(_sceneStandInBudget);
+
+    _sceneStandInBoxes = AppManager::createKnob<KnobChoice>(this, tr("Scene Stand-In Boxes"));
+    _sceneStandInBoxes->setName("sceneStandInBoxes");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("models", "Per Model", tr("One box per model prim, whose kind is component, assembly or group. Models nest, and so "
+                                                                 "do their boxes. A stage without models gets one per draw state row instead.")
+                                                                  .toStdString()));
+        entries.push_back(ChoiceOption("rows", "Per Draw State Row", tr("One box per row that has a draw state, and per row a Children row boxes; with no draw "
+                                                                        "state set, one per top-level prim.")
+                                                                         .toStdString()));
+        _sceneStandInBoxes->populateChoices(entries);
+    }
+    _sceneStandInBoxes->setHintToolTip(tr("What the 3D viewer's stand-in draws a box around. The boxes are measured in the background, "
+                                          "an unloaded payload's from its authored extents hint, and drawn all at once however many "
+                                          "there are. A row hidden by its draw state has no box."));
+    _viewersTab->addKnob(_sceneStandInBoxes);
+
+    _sceneStandInRefillDelay = AppManager::createKnob<KnobInt>(this, tr("Scene Stand-In Refill Delay"));
+    _sceneStandInRefillDelay->setName("sceneStandInRefillDelay");
+    _sceneStandInRefillDelay->setHintToolTip(tr("In milliseconds, how long the 3D viewer's view has to stay still after a move before the full "
+                                                "frame that replaces the stand-in boxes starts."));
+    _sceneStandInRefillDelay->setMinimum(0);
+    _sceneStandInRefillDelay->disableSlider();
+    _viewersTab->addKnob(_sceneStandInRefillDelay);
 } // Settings::initializeKnobsViewers
 
 void
@@ -1680,6 +1724,16 @@ Settings::initializeKnobsCaching()
                                            "Past it, an output is not kept on disk and a warning is logged once."));
     _cachingTab->addKnob(_maxDiskCacheNodeGB);
 
+    _maxGeometryCacheGB = AppManager::createKnob<KnobInt>(this, tr("Max Geometry Cache (GiB)"));
+    _maxGeometryCacheGB->setName("maxGeometryCache");
+    _maxGeometryCacheGB->disableSlider();
+    _maxGeometryCacheGB->setMinimum(0);
+    _maxGeometryCacheGB->setMaximum(100);
+    _maxGeometryCacheGB->setHintToolTip(tr("The maximum size that may be used in RAM by the geometry cache (in GiB). "
+                                           "This is a separate budget from the image caches above, "
+                                           "so that large geometry cannot evict them."));
+    _cachingTab->addKnob(_maxGeometryCacheGB);
+
     _diskCachePath = AppManager::createKnob<KnobPath>( this, tr("Disk cache path") );
     _diskCachePath->setName("diskCachePath");
     _diskCachePath->setMultiPath(false);
@@ -1874,12 +1928,9 @@ Settings::setDefaultValues()
 
     // General/Threading
     _numberOfThreads->setDefaultValue(0, 0);
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
     _numberOfParallelRenders->setDefaultValue(0, 0);
-#endif
     _useThreadPool->setDefaultValue(true);
     _nThreadsPerEffect->setDefaultValue(0);
-    _renderSchedulerMode->setDefaultValue((int)eRenderSchedulerModeTaskGraph);
     _queueRenders->setDefaultValue(false);
 
     // General/Rendering
@@ -1891,6 +1942,7 @@ Settings::setDefaultValues()
     _gpuComputeMode->setDefaultValue((int)eGpuComputeModeAuto);
     _gpuDevice->setDefaultValue(0);
     _gpuMemoryBudgetMB->setDefaultValue(0);
+    _gpuTextureBudget->setDefaultValue(0);
 
     // General/Projects setup
     _firstReadSetProjectFormat->setDefaultValue(true);
@@ -1923,6 +1975,7 @@ Settings::setDefaultValues()
     _unreachableRAMPercent->setDefaultValue(20); // see https://github.com/NatronGitHub/Natron/issues/486
     _maxViewerDiskCacheGB->setDefaultValue(5, 0);
     _maxDiskCacheNodeGB->setDefaultValue(10, 0);
+    _maxGeometryCacheGB->setDefaultValue(2, 0);
     _diskTierSize->setDefaultValue(20, 0);
     //_diskCachePath
     setCachingLabels();
@@ -1948,12 +2001,15 @@ Settings::setDefaultValues()
     _zoomedOutDemosaic->setDefaultValue(0);
     _maximumNodeViewerUIOpened->setDefaultValue(2);
     _viewerNumberKeys->setDefaultValue(true);
-    _viewerOverlaysPath->setDefaultValue(true);
     _rotoShapeDragRender->setDefaultValue((int)eRotoShapeDragRenderAdaptive);
     _viewer3DNavigation->setDefaultValue((int)eViewer3DNavigationNuke);
     _viewer3DGuideSize->setDefaultValue(3.);
     _viewer3DTransformTarget->setDefaultValue((int)eViewer3DTransformTargetOwner);
     _viewer3DLighting->setDefaultValue((int)eViewer3DLightingScene);
+    _sceneStandInMode->setDefaultValue((int)eSceneStandInModeInteraction);
+    _sceneStandInBudget->setDefaultValue(33);
+    _sceneStandInBoxes->setDefaultValue((int)eSceneStandInBoxesModels);
+    _sceneStandInRefillDelay->setDefaultValue(250);
 
     // Nodegraph
     _autoScroll->setDefaultValue(false);
@@ -2619,17 +2675,23 @@ Settings::onKnobValueChanged(KnobI* k,
     Q_EMIT settingChanged(k);
     bool ret = true;
 
-    if ( k == _maxViewerDiskCacheGB.get() ) {
+    if (k == _gpuTextureBudget.get()) {
+        StormTextureBudget::setConfiguredBudgetMB(getGpuTextureBudgetMB());
+    } else if (k == _maxViewerDiskCacheGB.get()) {
         if (!_restoringSettings) {
             appPTR->setApplicationsCachesMaximumViewerDiskSpace( getMaximumViewerDiskCacheSize() );
         }
-    } else if ( k == _maxDiskCacheNodeGB.get() ) {
+    } else if (k == _maxDiskCacheNodeGB.get()) {
         if (!_restoringSettings) {
             appPTR->setNodeCachePinBudget(getMaximumDiskCacheNodeSize());
         }
     } else if (k == _diskTierSize.get()) {
         if (!_restoringSettings) {
             appPTR->setNodeCacheDiskTierSize(getDiskTierSizeBytes());
+        }
+    } else if (k == _maxGeometryCacheGB.get()) {
+        if (!_restoringSettings) {
+            appPTR->setApplicationsCachesMaximumGeoDetailCacheSize(getMaximumGeoDetailCacheSize());
         }
     } else if (k == _maxRAMPercent.get()) {
         if (!_restoringSettings) {
@@ -2688,8 +2750,6 @@ Settings::onKnobValueChanged(KnobI* k,
         }
         // The nodes fold the trait into their hash, which must not be read back from before it changed.
         Node::invalidateAllHashes("the Zoomed-Out Demosaic preference changed", k);
-    } else if (k == _renderSchedulerMode.get()) {
-        appPTR->onRenderSchedulerModeSettingChanged(getRenderSchedulerMode());
     } else if (k == _cacheAdmissionPolicy.get()) {
         CacheRetention::setAdmissionPolicySetting((CacheRetention::AdmissionPolicyEnum)_cacheAdmissionPolicy->getValue());
     } else if ((k == _ocioConfigKnob.get()) || (k == _customOcioConfigFile.get())) {
@@ -2736,6 +2796,12 @@ Settings::onKnobValueChanged(KnobI* k,
 
     return ret;
 } // onKnobValueChanged
+
+U64
+Settings::getMaximumGeoDetailCacheSize() const
+{
+    return (U64)(_maxGeometryCacheGB->getValue()) * 1024 * 1024 * 1024;
+}
 
 ////////////////////////////////////////////////////////
 // "Viewers" pane
@@ -2884,12 +2950,6 @@ Settings::viewerNumberKeys() const
     return _viewerNumberKeys->getValue();
 }
 
-bool
-Settings::viewerOverlaysPath() const
-{
-    return _viewerOverlaysPath->getValue();
-}
-
 Settings::RotoShapeDragRenderEnum
 Settings::getRotoShapeDragRender() const
 {
@@ -2907,6 +2967,30 @@ Settings::setViewer3DLighting(Viewer3DLightingEnum lighting)
 {
     _viewer3DLighting->setValue((int)lighting);
     saveSetting(_viewer3DLighting.get());
+}
+
+Settings::SceneStandInModeEnum
+Settings::getSceneStandInMode() const
+{
+    return (SceneStandInModeEnum)_sceneStandInMode->getValue();
+}
+
+int
+Settings::getSceneStandInBudgetMs() const
+{
+    return std::max(1, _sceneStandInBudget->getValue());
+}
+
+Settings::SceneStandInBoxesEnum
+Settings::getSceneStandInBoxes() const
+{
+    return (SceneStandInBoxesEnum)_sceneStandInBoxes->getValue();
+}
+
+int
+Settings::getSceneStandInRefillDelayMs() const
+{
+    return std::max(0, _sceneStandInRefillDelay->getValue());
 }
 
 GpuComputeModeEnum
@@ -2929,13 +3013,13 @@ Settings::getGpuMemoryBudgetMB() const
     return (std::uint64_t)std::max(0, _gpuMemoryBudgetMB->getValue());
 }
 
-///////////////////////////////////////////////////////
-RenderSchedulerModeEnum
-Settings::getRenderSchedulerMode() const
+std::uint64_t
+Settings::getGpuTextureBudgetMB() const
 {
-    return (RenderSchedulerModeEnum)_renderSchedulerMode->getValue();
+    return (std::uint64_t)std::max(0, _gpuTextureBudget->getValue());
 }
 
+///////////////////////////////////////////////////////
 // "Caching" pane
 
 double
@@ -3697,6 +3781,9 @@ Settings::getEdgeKindColor(DataKindEnum kind,
     case eDataKindRaw:
         getEdgeRawColor(r, g, b);
         return true;
+    case eDataKindGeometry:
+        getNative3DGroupColor(r, g, b);
+        return true;
     case eDataKindImage:
     case eDataKindPolymorphic:
     default:
@@ -3893,21 +3980,13 @@ Settings::isAutoFixRelativeFilePathEnabled() const
 int
 Settings::getNumberOfParallelRenders() const
 {
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
-
     return _numberOfParallelRenders->getValue();
-#else
-
-    return 1;
-#endif
 }
 
 void
 Settings::setNumberOfParallelRenders(int nb)
 {
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
     _numberOfParallelRenders->setValue(nb);
-#endif
 }
 
 bool

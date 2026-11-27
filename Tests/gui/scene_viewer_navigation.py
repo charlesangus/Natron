@@ -10,7 +10,8 @@ wheel dollies, and a plain left drag over empty space (a marquee) leaves the cam
 
 Then, under the Blender preset, the Shortcut Editor's 3DViewer > Tumble row is rebound to Alt+left
 by clicking into its binding field: the preference turns to Custom, Alt+left tumbles and the
-middle button no longer does. Choosing Nuke again brings back Ctrl+left.
+middle button no longer does. Closing Preferences without Save discards the edit: the preference
+returns to its default preset, where Ctrl+left tumbles and Alt+left pans.
 
 Mouse and key events are sent to the SceneViewport (synthesized window-system events do not reach
 Natron's widgets under Xvfb). Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go
@@ -47,6 +48,7 @@ try:
 
     usd = app.createNode("USDRead")
     require(usd is not None, "create USDRead", plugin_problem("USDRead"))
+    usd.getParam("initialDraw").setValue(3)
     filename = usd.getParam("filename")
     require(filename is not None, "USDRead has a filename parameter")
     filename.setValue(scene_path)
@@ -256,9 +258,8 @@ try:
         require(tumble is not None, "the 3DViewer group still has a Tumble row after the rebind")
         check("Alt" in tumble.siblingAtColumn(1).data(), "the Tumble row shows the new binding (%r)" % (tumble.siblingAtColumn(1).data(),))
         shot("scene-navigation-rebound.png")
-        panel.close()
-        QApplication.processEvents()
 
+        # A validated binding applies at once; closing Preferences without Save discards it.
         frame_all(v)
         yield settle()
         before = camera()
@@ -272,13 +273,15 @@ try:
         parts = moved(before, camera())
         check(parts == set(), "after the rebind, a middle drag no longer tumbles (changed %r)" % (parts,))
 
-        navigation.setValue(NUKE)
+        panel.close()
         QApplication.processEvents()
+        # Nothing was saved, so the preference goes back to its default.
+        check(navigation.getValue() == NUKE, "closing Preferences without saving discards the rebind (got %r)" % (navigation.getValue(),))
         before = camera()
         drag(v, L, CTRL)
         yield settle()
         parts = moved(before, camera())
-        check(parts == {"angles"}, "choosing Nuke again brings back Ctrl+left tumble (changed %r)" % (parts,))
+        check(parts == {"angles"}, "after the discard, Ctrl+left tumbles again (changed %r)" % (parts,))
         before = camera()
         drag(v, L, ALT)
         yield settle()

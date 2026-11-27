@@ -30,6 +30,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <string>
 
 #include "Engine/Nodes/Scene/DelegateSupport.h"
@@ -45,6 +46,8 @@ PXR_NAMESPACE_CLOSE_SCOPE
 #define kRenderDelegateCyclesId "HdCyclesPlugin"
 // Cycles' HdRendererPlugin display name, which Hydra's scene index plug-in registry is keyed by.
 #define kRenderDelegateCyclesDisplayName "Cycles"
+// The setting Cycles' delegate subdivides meshes by, off by default.
+#define kCyclesSubdivisionSurfacesKey "natron:subdivisionSurfaces"
 
 NATRON_NAMESPACE_ENTER
 
@@ -60,10 +63,21 @@ bool isCycles(const std::string& renderer) WARN_UNUSED_RETURN;
  * Capsule and Plane) into meshes for every Cycles engine made after it. The engine hands a
  * delegate those prims as implicit-surface rprims, which Cycles does not take, and only Storm
  * registers the scene index that turns them into meshes, so Cycles would render none of them.
- * Polygonal meshes are then handed over as meshShadingSceneIndex() does. Must run before the engine is made: its render index builds its scene index chain once. Safe
- * to call any number of times from any thread.
+ * Polygonal meshes are then handed over as meshShadingSceneIndex() does, subdividing as the
+ * withSubdivision() the engine is made in says, or not outside one. Must run before the engine is
+ * made: its render index builds its scene index chain once. Safe to call any number of times from
+ * any thread.
  **/
 void registerSceneIndices();
+
+// Whether settings, a Cycles engine's, have its delegate subdivide meshes.
+bool subdivides(const std::map<std::string, PXR_NS::VtValue>& settings) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Runs job, which makes a Cycles engine, so that its meshes are handed over as
+ * meshShadingSceneIndex() does with subdivide. One job runs at a time.
+ **/
+void withSubdivision(bool subdivide, const std::function<void()>& job);
 
 /**
  * @brief input, with every polygonal mesh shaded by Cycles as USD shades it. The delegate shades a
@@ -72,9 +86,12 @@ void registerSceneIndices();
  * with uniform ones, or with faceVarying ones that are each face's own is flagged flat-shaded. One
  * whose faceVarying normals agree at every corner of each point gets them as vertex normals; one
  * with other faceVarying normals gets a point per face corner, its vertex and varying primvars
- * spread to the corners and its normals made vertex normals.
+ * spread to the corners and its normals made vertex normals. With subdivides, the delegate's
+ * subdivision setting on, a bilinear mesh is subdivided, ignoring its normals, and is left as
+ * authored; otherwise it is shaded as a mesh of scheme none is.
  **/
-PXR_NS::HdSceneIndexBaseRefPtr meshShadingSceneIndex(const PXR_NS::HdSceneIndexBaseRefPtr& input) WARN_UNUSED_RETURN;
+PXR_NS::HdSceneIndexBaseRefPtr meshShadingSceneIndex(const PXR_NS::HdSceneIndexBaseRefPtr& input,
+                                                     bool subdivides) WARN_UNUSED_RETURN;
 
 /**
  * @brief What Cycles renders, for DelegateSupport::warningText(): its delegate's types and render

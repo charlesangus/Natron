@@ -5,23 +5,17 @@
 # build/remote/<preset>/. The remote twin of tools/ci/local/build.sh.
 #
 # Usage:
-#   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens]
-#                            [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--cmake-arg <arg>]... [--gui "<script> ..."]
+#   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens]
+#                            [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N> [--repeat-parallel <P>] [--repeat-timeout <S>]] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui "<script> ..."]
 #   tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
 #   tools/ci/remote/build.sh --mode
 #
 #   fast | release | debug -> the build preset, same meaning as in local/build.sh.
 #                        debug never produces an AppImage: one cannot be packaged
 #                        in the container, because llvmpipe raises SIGFPE under
-#                        the -DDEBUG traps. It behaves as --no-appimage.
+#                        the -DDEBUG traps, so it takes neither --appimage nor --gui.
 #   --tests           -> also run the ctest suite and smoke tests remotely; the
 #                        ctest logs are downloaded even when the run fails.
-#   --scheduler <legacy|taskgraph> -> implies --tests; runs only that scheduler's
-#                        ctest leg and smoke test instead of both, which halves the
-#                        wait of an intermediate fix build. Without it both legs
-#                        run. A milestone's verification gate must run without it.
-#                        The smoke renders of the two schedulers are compared
-#                        only when both legs ran.
 #   --record-goldens  -> implies --tests; also records the native, Cycles and MoonRay golden
 #                        renders (NativeGoldenTest, NativeIDistortAmountTest,
 #                        NativeIWarpTest, USDRenderCyclesTest,
@@ -29,29 +23,50 @@
 #                        USDRenderCyclesProjectionTest, USDRenderMoonRayProjectionTest,
 #                        USDRenderStormTest)
 #                        remotely and downloads them, STAMP included, into
-#                        Tests/fixtures/native-golden/ of this checkout. The
+#                        Tests/fixtures/native-golden/ of this checkout, with NatronUtilityGoldenTest's. The
 #                        references bind bit for bit only under the preset that
 #                        recorded them (see STAMP). Also records the resampling
 #                        parity references of NativeTransformTest (CubicMinifyingAndRotated,
 #                        MaskedMixHalf, SkewYX) and NativeReformatTest (FitIntoAFixedBox,
 #                        ToFormatWithAPixelAspectRatio, ToProjectFormatFromTheSourceRoD)
 #                        into Tests/fixtures/native-parity/; no other parity reference changes.
-#   --shuffle-seeds <n,n,...> -> implies --tests; each ctest leg also runs once
+#   --shuffle-seeds <n,n,...> -> implies --tests; the ctest job also runs once
 #                        per seed with GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<seed>,
 #                        after its unshuffled run, e.g. --shuffle-seeds 1,2,3.
 #                        Every seed runs even if an earlier one failed, and each
-#                        run's log is ctest-<scheduler>-seed<seed>.log next to
-#                        the unshuffled ctest-<scheduler>.log. The ctest step's
+#                        run's log is ctest-seed<seed>.log next to
+#                        the unshuffled ctest.log. The ctest step's
 #                        timeout is a fixed 120 minutes, which fits about five
 #                        seeds on the debug preset, so at most 5 seeds are
 #                        accepted.
-#   --repeat-test <name>:<N> -> implies --tests; after its normal ctest run, each ctest
-#                        leg runs the one ctest case matching the regex <name> N times
+#   --repeat-test <name>:<N> -> implies --tests; after its normal ctest run, the ctest
+#                        job runs the one ctest case matching the regex <name> N times
 #                        under background ctest load (`tools/ci/local/test.sh repeat
 #                        <name> <N>`), stopping at the first failure. The log is
-#                        ctest-<scheduler>-repeat.log next to the ctest log. <name>
+#                        ctest-repeat.log next to the ctest log. <name>
 #                        must not contain a colon or whitespace.
-#   --no-appimage     -> skip packaging and downloading the AppImage.
+#                        Every iteration's log and any hung one's thread stacks are
+#                        downloaded into repeat/ next to it.
+#   --repeat-parallel <P> -> with --repeat-test: copies of the case run at once
+#                        (test.sh repeat --parallel; default 4).
+#   --repeat-timeout <S> -> with --repeat-test: seconds each copy may run before its
+#                        stacks are dumped and it is killed (test.sh repeat --timeout;
+#                        default 900). The repeat step itself stops after 90 minutes.
+#   --appimage        -> also package the AppImage and download it into build/remote/<preset>/.
+#                        Without it (or --gui or --debug-symbols, which imply it) the
+#                        run builds no AppImage. Use it for UAT builds and for a run
+#                        meant as a later --from-run source.
+#   --no-appimage     -> the default: no AppImage. Rejected beside --appimage, --gui or
+#                        --debug-symbols.
+#   --debug-symbols   -> implies --appimage; also download the symbol tables the bundle's strip removes,
+#                        as natron-symbols.tar.gz beside the AppImage and unpacked into
+#                        build/remote/<preset>/symbols/: a .build-id tree for eu-stack
+#                        --debuginfo-path and <exe>.bin.syms listings for
+#                        heavy_scene_stack_window.py --symbols. The AppImage is the
+#                        same one a run without it ships.
+#   --no-remote-ccache -> build with the local and actions/cache ccache only,
+#                        without the shared remote ccache storage (the
+#                        CCACHE_REMOTE_STORAGE repo secret).
 #   --cmake-arg <arg> -> pass <arg> to the remote cmake configure, e.g.
 #                        --cmake-arg -DNATRON_GPU=OFF. Repeatable. The args reach
 #                        the workflow as one space-separated input, so an arg
@@ -61,13 +76,15 @@
 #                        job per script in parallel, and download each one's
 #                        screenshots, results.txt and natron.log into
 #                        build/remote/<preset>/gui/<name>/. Prints a PASS/FAIL
-#                        line per script and fails if any script failed. Needs
-#                        the AppImage, so not with debug or --no-appimage.
+#                        line per script and fails if any script failed. Implies
+#                        --appimage, so not with debug.
 #   --from-run <run-id> -> skip the build and run the --gui scripts against the
 #                        <preset> AppImage of an earlier remote-build run, using
 #                        the scripts and fixtures of the commit that run built
 #                        (so its branch need not carry this workflow). Takes no
-#                        build or test options, and needs --gui. Only
+#                        build or test options, and needs --gui. Fails before
+#                        dispatching when that run has no unexpired <preset>
+#                        AppImage (a run without --appimage or --gui has none). Only
 #                        build/remote/<preset>/gui/ is replaced.
 #   --gui-ref <ref>    -> with --from-run: check out this branch or sha for the
 #                        scripts, fixtures and run-gui-test.sh instead of the
@@ -84,11 +101,17 @@ set -euo pipefail
 
 WORKFLOW="remote-build.yml"
 FIND_TIMEOUT_SECS=300
-FIND_INTERVAL_SECS=5
-WATCH_INTERVAL_SECS=30
+FIND_INTERVAL_SECS="${NATRON_REMOTE_FIND_INTERVAL_SECS:-10}"
+WATCH_INTERVAL_SECS="${NATRON_REMOTE_WATCH_INTERVAL_SECS:-60}"
+for interval_var in FIND_INTERVAL_SECS WATCH_INTERVAL_SECS; do
+    if [[ ! "${!interval_var}" =~ ^[1-9][0-9]*$ ]]; then
+        echo "build.sh: NATRON_REMOTE_${interval_var} must be a positive whole number of seconds, got '${!interval_var}'" >&2
+        exit 1
+    fi
+done
 
 usage() {
-    echo "usage: build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--no-appimage] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
+    echo "usage: build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N> [--repeat-parallel <P>] [--repeat-timeout <S>]] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
     echo "       build.sh <fast|release> --from-run <run-id> [--gui-ref <ref>] --gui \"<script> ...\"" >&2
     echo "       build.sh --mode" >&2
 }
@@ -123,10 +146,14 @@ print_mode() {
 PRESET=""
 RUN_TESTS=false
 RECORD_GOLDENS=false
-WANT_APPIMAGE=true
+WANT_APPIMAGE=false
+NO_APPIMAGE=false
+DEBUG_SYMBOLS=false
+REMOTE_CCACHE=true
 SHUFFLE_SEEDS=""
 REPEAT_TEST=""
-SCHEDULERS="legacy,taskgraph"
+REPEAT_PARALLEL=""
+REPEAT_TIMEOUT=""
 CMAKE_ARGS=""
 GUI_SCRIPTS=""
 FROM_RUN=""
@@ -164,17 +191,6 @@ while [[ $# -gt 0 ]]; do
             RUN_TESTS=true
             BUILD_OPTION=true
             ;;
-        --scheduler)
-            if [[ $# -eq 0 || ( "$1" != "legacy" && "$1" != "taskgraph" ) ]]; then
-                echo "build.sh: --scheduler needs legacy or taskgraph, got '${1:-}'" >&2
-                usage
-                exit 1
-            fi
-            SCHEDULERS="$1"
-            shift
-            RUN_TESTS=true
-            BUILD_OPTION=true
-            ;;
         --shuffle-seeds)
             if [[ $# -eq 0 ]]; then
                 echo "build.sh: --shuffle-seeds needs a comma-separated list of seeds" >&2
@@ -197,8 +213,35 @@ while [[ $# -gt 0 ]]; do
             RUN_TESTS=true
             BUILD_OPTION=true
             ;;
+        --repeat-parallel|--repeat-timeout)
+            if [[ $# -eq 0 || ! "$1" =~ ^[1-9][0-9]*$ ]]; then
+                echo "build.sh: ${arg} needs a positive integer, got '${1:-}'" >&2
+                usage
+                exit 1
+            fi
+            if [[ "${arg}" == --repeat-parallel ]]; then
+                REPEAT_PARALLEL="$1"
+            else
+                REPEAT_TIMEOUT="$1"
+            fi
+            shift
+            BUILD_OPTION=true
+            ;;
+        --appimage)
+            WANT_APPIMAGE=true
+            BUILD_OPTION=true
+            ;;
         --no-appimage)
-            WANT_APPIMAGE=false
+            NO_APPIMAGE=true
+            BUILD_OPTION=true
+            ;;
+        --debug-symbols)
+            DEBUG_SYMBOLS=true
+            WANT_APPIMAGE=true
+            BUILD_OPTION=true
+            ;;
+        --no-remote-ccache)
+            REMOTE_CCACHE=false
             BUILD_OPTION=true
             ;;
         --cmake-arg)
@@ -268,6 +311,12 @@ if [[ -z "${PRESET}" ]]; then
     exit 1
 fi
 
+if [[ ( -n "${REPEAT_PARALLEL}" || -n "${REPEAT_TIMEOUT}" ) && -z "${REPEAT_TEST}" ]]; then
+    echo "build.sh: --repeat-parallel and --repeat-timeout need --repeat-test" >&2
+    usage
+    exit 1
+fi
+
 # The ctest step's 120-minute timeout covers about five seeds on the debug preset.
 if [[ -n "${SHUFFLE_SEEDS}" ]] && (( $(tr -cd ',' <<<"${SHUFFLE_SEEDS}" | wc -c) + 1 > 5 )); then
     echo "build.sh: --shuffle-seeds accepts at most 5 seeds (the ctest step's 120-minute timeout covers about five), got '${SHUFFLE_SEEDS}'" >&2
@@ -304,19 +353,48 @@ if [[ -n "${FROM_RUN}" ]]; then
         usage
         exit 1
     fi
-    WANT_APPIMAGE=false
-elif [[ -n "${GUI_SCRIPTS}" && ( "${PRESET}" == "debug" || "${WANT_APPIMAGE}" == "false" ) ]]; then
-    echo "build.sh: --gui runs against the AppImage, so it needs fast or release without --no-appimage" >&2
+elif [[ -n "${GUI_SCRIPTS}" ]]; then
+    WANT_APPIMAGE=true
+fi
+
+if [[ "${NO_APPIMAGE}" == "true" && "${WANT_APPIMAGE}" == "true" ]]; then
+    echo "build.sh: --no-appimage contradicts --appimage, --gui and --debug-symbols, which all package an AppImage" >&2
     usage
     exit 1
 fi
 
-if [[ "${PRESET}" == "debug" && "${WANT_APPIMAGE}" == "true" ]]; then
-    echo "build.sh: the debug preset builds no AppImage (llvmpipe raises SIGFPE under -DDEBUG traps in the container); behaving as --no-appimage" >&2
-    WANT_APPIMAGE=false
+if [[ -z "${FROM_RUN}" && "${PRESET}" == "debug" && "${WANT_APPIMAGE}" == "true" ]]; then
+    echo "build.sh: the debug preset builds no AppImage (llvmpipe raises SIGFPE under -DDEBUG traps in the container), so it takes neither --appimage, --gui nor --debug-symbols" >&2
+    usage
+    exit 1
+fi
+
+if [[ -n "${NATRON_REMOTE_RUN_STATE_DIR:-}" && "${NATRON_REMOTE_RUN_STATE_DIR}" != /* ]]; then
+    NATRON_REMOTE_RUN_STATE_DIR="${PWD}/${NATRON_REMOTE_RUN_STATE_DIR}"
 fi
 
 cd "${REPO_ROOT}"
+
+# The workflow would fail on the same check, but only after the dev image job; asking here
+# fails in seconds.
+if [[ -n "${FROM_RUN}" ]]; then
+    if ! FROM_SHA="$(gh api "repos/{owner}/{repo}/actions/runs/${FROM_RUN}" --jq .head_sha 2>/dev/null)" || [[ -z "${FROM_SHA}" ]]; then
+        echo "build.sh: cannot look up run ${FROM_RUN}; is it a remote-build run id of this repository?" >&2
+        exit 1
+    fi
+    FROM_ARTIFACT="natron-${PRESET}-${FROM_SHA}"
+    if ! FROM_AVAILABLE="$(gh api --paginate "repos/{owner}/{repo}/actions/runs/${FROM_RUN}/artifacts" \
+        --jq '.artifacts[] | select(.expired | not) | .name' 2>/dev/null)"; then
+        echo "build.sh: cannot list the artifacts of run ${FROM_RUN}" >&2
+        exit 1
+    fi
+    if ! grep -qxF "${FROM_ARTIFACT}" <<<"${FROM_AVAILABLE}"; then
+        FROM_OTHERS="$(grep '^natron-' <<<"${FROM_AVAILABLE}" | grep -v '^natron-symbols-' | tr '\n' ' ' || true)"
+        echo "build.sh: run ${FROM_RUN} has no unexpired ${PRESET} AppImage (artifact ${FROM_ARTIFACT})." >&2
+        echo "Runs package only with --appimage or --gui; rebuild with --appimage to make a --from-run source. AppImages it does have: ${FROM_OTHERS:-none}" >&2
+        exit 1
+    fi
+fi
 
 BRANCH="$(git symbolic-ref --quiet --short HEAD || true)"
 if [[ -z "${BRANCH}" ]]; then
@@ -360,6 +438,21 @@ REPEAT_ARGS=()
 if [[ -n "${REPEAT_TEST}" ]]; then
     REPEAT_ARGS=(-f "repeat_test=${REPEAT_TEST}")
 fi
+if [[ -n "${REPEAT_PARALLEL}" ]]; then
+    REPEAT_ARGS+=(-f "repeat_parallel=${REPEAT_PARALLEL}")
+fi
+if [[ -n "${REPEAT_TIMEOUT}" ]]; then
+    REPEAT_ARGS+=(-f "repeat_timeout=${REPEAT_TIMEOUT}")
+fi
+if [[ "${DEBUG_SYMBOLS}" == "true" ]]; then
+    REPEAT_ARGS+=(-f "debug_symbols=true")
+fi
+
+# Sent only when switched off, so a ref whose workflow predates the input still dispatches.
+REMOTE_CCACHE_ARGS=()
+if [[ "${REMOTE_CCACHE}" == false ]]; then
+    REMOTE_CCACHE_ARGS=(-f "remote_ccache=false")
+fi
 
 echo "== build.sh: dispatching ${WORKFLOW} on ${BRANCH} (${HEAD_SHA:0:10}) token=${TOKEN} =="
 gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
@@ -369,7 +462,7 @@ gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "appimage=${WANT_APPIMAGE}" \
     -f "shuffle_seeds=${SHUFFLE_SEEDS}" \
     ${REPEAT_ARGS[@]+"${REPEAT_ARGS[@]}"} \
-    -f "schedulers=${SCHEDULERS}" \
+    ${REMOTE_CCACHE_ARGS[@]+"${REMOTE_CCACHE_ARGS[@]}"} \
     -f "cmake_args=${CMAKE_ARGS}" \
     -f "label=${LABEL}" \
     -f "token=${TOKEN}" \
@@ -377,19 +470,60 @@ gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "from_run=${FROM_RUN}" \
     -f "gui_ref=${GUI_REF}"
 
+RUN_STATE_DIR="${NATRON_REMOTE_RUN_STATE_DIR:-}"
+if [[ -n "${RUN_STATE_DIR}" ]]; then
+    mkdir -p "${RUN_STATE_DIR}/clients"
+    CLIENT_FILE="${RUN_STATE_DIR}/clients/$$"
+    : >"${CLIENT_FILE}"
+    trap 'rm -f "${CLIENT_FILE:?}"' EXIT
+fi
+
+# Every watcher but the one holding the lock exits at once, so a race between
+# two build.sh instances starting one is harmless.
+ensure_watcher() {
+    if flock -n "${RUN_STATE_DIR}/watcher.lock" true 2>/dev/null; then
+        setsid nohup "${SCRIPT_DIR}/watch-runs.sh" "${RUN_STATE_DIR}" \
+            >>"${RUN_STATE_DIR}/watcher.log" 2>&1 </dev/null &
+    fi
+}
+
+# True when the watcher polled within its last three intervals.
+watcher_fresh() {
+    local beat="" interval=""
+    # The heartbeat has no trailing newline, so read fails even when it filled both fields.
+    read -r beat interval 2>/dev/null <"${RUN_STATE_DIR}/heartbeat" || true
+    [[ "${beat}" =~ ^[0-9]+$ && "${interval}" =~ ^[0-9]+$ ]] || return 1
+    (( $(date +%s) - beat <= 3 * interval ))
+}
+
+if [[ -n "${RUN_STATE_DIR}" ]]; then
+    ensure_watcher
+fi
+
 # gh 2.23 prints no run ID on dispatch, so the run is found by the token that
 # the workflow echoes into its run name.
 RUN_ID=""
 deadline=$((SECONDS + FIND_TIMEOUT_SECS))
 while [[ -z "${RUN_ID}" ]]; do
-    RUN_ID="$(gh run list --workflow "${WORKFLOW}" --branch "${BRANCH}" \
-        --json databaseId,displayTitle,headSha --limit 20 \
-        --jq ".[] | select(.displayTitle | contains(\"${TOKEN}\")) | [.databaseId, .headSha] | @tsv" \
-        | head -n1 || true)"
+    if [[ -n "${RUN_STATE_DIR}" ]] && watcher_fresh; then
+        RUN_ID="$(awk -F'\t' -v token="${TOKEN}" 'index($3, token) { print $1 "\t" $2; exit }' \
+            "${RUN_STATE_DIR}/titles.tsv" 2>/dev/null || true)"
+    else
+        if [[ -n "${RUN_STATE_DIR}" ]]; then
+            ensure_watcher
+        fi
+        RUN_ID="$(gh run list --workflow "${WORKFLOW}" --branch "${BRANCH}" \
+            --json databaseId,displayTitle,headSha --limit 20 \
+            --jq ".[] | select(.displayTitle | contains(\"${TOKEN}\")) | [.databaseId, .headSha] | @tsv" \
+            | head -n1 || true)"
+    fi
     if [[ -n "${RUN_ID}" ]]; then
         RUN_SHA="${RUN_ID#*$'\t'}"
         RUN_ID="${RUN_ID%%$'\t'*}"
         break
+    fi
+    if [[ -n "${RUN_STATE_DIR}" ]]; then
+        ensure_watcher
     fi
     if (( SECONDS >= deadline )); then
         echo "build.sh: ERROR: no run with token ${TOKEN} appeared within ${FIND_TIMEOUT_SECS}s" >&2
@@ -406,19 +540,43 @@ if [[ "${RUN_SHA}" != "${HEAD_SHA}" ]]; then
     exit 1
 fi
 
-# gh run watch also exits on a transient API error (GitHub answers 502 at times), which would
-# leave the run going while the artifacts below are fetched too early. So its exit status is
-# ignored: the run's own status is polled until it completes, and its conclusion decides.
-gh run watch "${RUN_ID}" --interval "${WATCH_INTERVAL_SECS}" || true
-
+# A transient API error (GitHub answers 502 at times) yields an empty state, which is retried
+# at the next interval rather than taken as an outcome. `gh api` on the run is one call, where
+# `gh run view` may also fetch the jobs.
 RUN_CONCLUSION=""
+LAST_RUN_STATUS=""
+LAST_PROGRESS_SECS="${SECONDS}"
 while true; do
-    RUN_STATE="$(gh run view "${RUN_ID}" --json status,conclusion --jq '.status + " " + .conclusion' 2>/dev/null || true)"
+    RUN_STATE=""
+    POLL_SECS="${WATCH_INTERVAL_SECS}"
+    # A run missing from titles.tsv has dropped out of the watcher's list, so its state file
+    # would never change again.
+    if [[ -n "${RUN_STATE_DIR}" ]] && watcher_fresh \
+        && awk -F'\t' -v id="${RUN_ID}" '$1 == id { found = 1; exit } END { exit !found }' \
+            "${RUN_STATE_DIR}/titles.tsv" 2>/dev/null; then
+        RUN_STATE="$(cat "${RUN_STATE_DIR}/${RUN_ID}" 2>/dev/null || true)"
+        POLL_SECS="${FIND_INTERVAL_SECS}"
+    fi
+    if [[ -z "${RUN_STATE}" ]]; then
+        if [[ -n "${RUN_STATE_DIR}" ]]; then
+            ensure_watcher
+        fi
+        RUN_STATE="$(gh api "repos/{owner}/{repo}/actions/runs/${RUN_ID}" \
+            --jq '.status + " " + (.conclusion // "")' 2>/dev/null || true)"
+    fi
+    if [[ -n "${RUN_STATE}" && "${RUN_STATE%% *}" != "${LAST_RUN_STATUS}" ]]; then
+        LAST_RUN_STATUS="${RUN_STATE%% *}"
+        echo "build.sh: run ${RUN_ID} is ${LAST_RUN_STATUS}"
+    fi
+    if (( SECONDS - LAST_PROGRESS_SECS >= 600 )); then
+        LAST_PROGRESS_SECS="${SECONDS}"
+        echo "build.sh: run ${RUN_ID} still ${LAST_RUN_STATUS:-unknown}"
+    fi
     if [[ "${RUN_STATE%% *}" == "completed" ]]; then
         RUN_CONCLUSION="${RUN_STATE#* }"
         break
     fi
-    sleep "${WATCH_INTERVAL_SECS}"
+    sleep "${POLL_SECS}"
 done
 
 RUN_STATUS=0
@@ -471,9 +629,25 @@ if [[ "${WANT_APPIMAGE}" == "true" ]]; then
     fi
 fi
 
+SYMBOLS_DIR=""
+if [[ "${DEBUG_SYMBOLS}" == "true" ]] && download_artifact "natron-symbols-${PRESET}-${HEAD_SHA}"; then
+    rm -rf "${OUT_DIR:?}/symbols"
+    mkdir -p "${OUT_DIR}/symbols"
+    if tar -C "${OUT_DIR}/symbols" -xzf "${OUT_DIR}/natron-symbols.tar.gz"; then
+        SYMBOLS_DIR="${OUT_DIR}/symbols"
+    fi
+fi
+
 if [[ "${RUN_TESTS}" == "true" ]]; then
     if download_artifact "ctest-logs-${PRESET}-${HEAD_SHA}"; then
         CTEST_LOG_DIR="${OUT_DIR}"
+    fi
+fi
+
+REPEAT_DIRS=()
+if [[ -n "${REPEAT_TEST}" ]]; then
+    if download_artifact "ctest-repeat-${PRESET}-${HEAD_SHA}" "${OUT_DIR}/repeat"; then
+        REPEAT_DIRS+=("${OUT_DIR}/repeat")
     fi
 fi
 
@@ -552,6 +726,11 @@ elif [[ "${RUN_STATUS}" -eq 0 ]]; then
     echo "== build.sh: remote build succeeded: ${RUN_URL} =="
     if [[ -n "${APPIMAGE}" ]]; then
         echo "AppImage: ${APPIMAGE}"
+        if [[ -n "${SYMBOLS_DIR}" ]]; then
+            echo "symbols: ${OUT_DIR}/natron-symbols.tar.gz (unpacked in ${SYMBOLS_DIR})"
+        elif [[ "${DEBUG_SYMBOLS}" == "true" ]]; then
+            echo "build.sh: --debug-symbols given but no symbols were downloaded" >&2
+        fi
     elif [[ "${WANT_APPIMAGE}" == "true" ]]; then
         echo "build.sh: run succeeded but no AppImage was downloaded" >&2
         RUN_STATUS=1
@@ -575,6 +754,9 @@ if [[ -n "${CTEST_LOG_DIR}" ]]; then
         done
     fi
 fi
+for dir in ${REPEAT_DIRS[@]+"${REPEAT_DIRS[@]}"}; do
+    echo "repeat iteration logs: ${dir}"
+done
 for line in "${GUI_LINES[@]}"; do
     echo "gui: ${line}"
 done

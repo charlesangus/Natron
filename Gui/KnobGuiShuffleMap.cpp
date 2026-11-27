@@ -259,7 +259,7 @@ findKnownLayer(const std::list<ImageLayerDesc>& listedViews,
 QString
 layerLabel(const ImageLayerDesc& desc)
 {
-    return desc.getLayerLabel().empty() ? qs(desc.getLayerID()) : qs(desc.getLayerLabel());
+    return qs(desc.getLayerID());
 }
 
 // Shuffle::getOutputLayer(2) resolves to None both when out2 is genuinely unset and when it
@@ -868,7 +868,7 @@ KnobGuiShuffleMap::onLayerRowNewLayerRequested(LayerRowEnum which)
         if (!knob) {
             return;
         }
-        runNewLayerDialog(knob, getGui(), [this, knob, which](const std::string& layerID, const std::string& /*layerLabel*/) {
+        runNewLayerDialog(knob, getGui(), [this, knob, which](const std::string& layerID) {
             pushLayerValue(which, knob->encode(layerID, std::vector<std::string>()));
         });
     });

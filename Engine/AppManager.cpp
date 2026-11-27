@@ -64,6 +64,7 @@
 #include <sstream> // stringstream
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 #include <QtGlobal> // for Q_OS_*
 #if defined(Q_OS_LINUX)
@@ -159,6 +160,7 @@
 #include "Engine/TrackerNode.h"
 
 #include "Engine/Nodes/Deep/DeepRead.h"
+#include "Engine/Nodes/Geometry/GeoSdfFileFormat.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
 #include "Engine/Nodes/IO/RawExtensions.h"
@@ -167,6 +169,8 @@
 #include "Engine/Nodes/NodeSpec.h"
 #include "Engine/Nodes/Scene/MoonRayRuntime.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Test/OverlayImageGuiTestNode.h"
 #include "Engine/Nodes/Test/OverlayTestNode.h"
 
@@ -216,6 +220,8 @@ struct ShutdownState {
 
     std::mutex watchdogMutex;
     bool watchdogArmed = false;
+    // Unset while the watchdog is not armed, or is turned off.
+    std::optional<std::chrono::steady_clock::time_point> watchdogDeadline;
     std::atomic<const char*> stage { "quitting" };
 };
 
@@ -269,8 +275,10 @@ armShutdownWatchdog(const char* stage)
     if (seconds <= 0.) {
         return;
     }
-    std::thread([seconds]() {
-        std::this_thread::sleep_for(std::chrono::duration<double>(seconds));
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(seconds));
+    state.watchdogDeadline = deadline;
+    std::thread([seconds, deadline]() {
+        std::this_thread::sleep_until(deadline);
         char line[512];
         int n = std::snprintf(line, sizeof(line), "Natron: shutdown stalled for %g s while %s; exiting with 124 (" kNatronShutdownWatchdogEnv " sets the limit)\n",
                               seconds, shutdownState().stage.load());
@@ -280,6 +288,22 @@ armShutdownWatchdog(const char* stage)
         }
         _exit(124);
     }).detach();
+}
+
+// The time left before the shutdown watchdog ends the process, at most capMs. capMs if it is not
+// armed or is turned off.
+int
+shutdownWatchdogRemainingMs(int capMs)
+{
+    ShutdownState& state = shutdownState();
+    std::lock_guard<std::mutex> k(state.watchdogMutex);
+
+    if (!state.watchdogDeadline) {
+        return capMs;
+    }
+    const long long remaining = std::chrono::duration_cast<std::chrono::milliseconds>(*state.watchdogDeadline - std::chrono::steady_clock::now()).count();
+
+    return (int)std::clamp<long long>(remaining, 0, capMs);
 }
 
 void
@@ -553,10 +577,19 @@ backTraceSigSegvHandler(int sig,
 static void
 setSigSegvSignal()
 {
+    // A stack overflow leaves no stack for the handler, so the crash would end without a backtrace.
+    // The alternate stack only covers the thread that installs it, the main thread.
+    static std::vector<char> altStack(256 * 1024);
+    stack_t ss;
+    ss.ss_sp = altStack.data();
+    ss.ss_size = altStack.size();
+    ss.ss_flags = 0;
+    const bool hasAltStack = sigaltstack(&ss, NULL) == 0;
+
     struct sigaction sa;
 
     sigemptyset (&sa.sa_mask);
-    sa.sa_flags = SA_RESTART | SA_SIGINFO;
+    sa.sa_flags = SA_RESTART | SA_SIGINFO | (hasAltStack ? SA_ONSTACK : 0);
     /* if SA_SIGINFO is set, sa_sigaction is to be used instead of sa_handler. */
     sa.sa_sigaction = backTraceSigSegvHandler;
 
@@ -598,15 +631,6 @@ AppManager::AppManager()
 {
     assert(!_instance);
     _instance = this;
-
-    // Read before the settings load: CI selects the scheduler per job through the environment.
-    {
-        std::optional<RenderSchedulerModeEnum> envMode = parseRenderSchedulerModeEnv(std::getenv("NATRON_RENDER_SCHEDULER"));
-        if (envMode) {
-            _imp->renderSchedulerMode = (int)*envMode;
-            _imp->renderSchedulerEnvOverride = true;
-        }
-    }
 
     CacheRetention::readAdmissionPolicyOverrideFromEnvironment();
 
@@ -706,6 +730,10 @@ AppManager::loadFromArgs(const CLArgs& cl)
         std::string liveTextureError;
         if (!SceneCaches::registerLiveTextures(&liveTextureError)) {
             std::cerr << liveTextureError << std::endl;
+        }
+        std::string geoLayerError;
+        if (!GeoLayers::registerPlugin(&geoLayerError)) {
+            std::cerr << geoLayerError << std::endl;
         }
     }
 
@@ -810,6 +838,15 @@ AppManager::~AppManager()
         }
     }
 
+    // The nodes are gone, so every scene job is cancelled; they read the caches, Python and the
+    // QApplication torn down below. Bounded: a job stuck past it is left to the process exit.
+    setTeardownStage("waiting for the scene workers");
+    SceneWorker::joinAll(5000);
+
+    // What the closed projects let go of still uses OpenUSD, the caches and the plug-ins' libraries.
+    setTeardownStage("closing the released scenes");
+    SceneTeardown::shutdown();
+
     for (PluginsMap::iterator it = _imp->_plugins.begin(); it != _imp->_plugins.end(); ++it) {
         for (PluginVersionsOrdered::reverse_iterator itver = it->second.rbegin(); itver != it->second.rend(); ++itver) {
             delete *itver;
@@ -841,6 +878,25 @@ AppManager::~AppManager()
         std::_Exit(EXIT_FAILURE);
     }
 
+    // The engines' delegates run threads and child processes of their own, which exit would cut
+    // short or leave running. Both waits fit in what the shutdown watchdog has left, less a margin,
+    // so the render processes are always ended before it fires and leaves them orphaned.
+    constexpr int kWatchdogMarginMs = 1000;
+    const auto teardownBudgetMs = [](int capMs) {
+        return std::max(0, shutdownWatchdogRemainingMs(capMs + kWatchdogMarginMs) - kWatchdogMarginMs);
+    };
+    setTeardownStage("releasing the render delegates' engines");
+    const bool enginesReleased = SceneCaches::releaseCpuRenderEnginesAndWait(teardownBudgetMs(10000));
+    setTeardownStage("waiting for MoonRay's render processes");
+    (void)MoonRayRuntime::endRenderProcesses(teardownBudgetMs(5500));
+    if (!enginesReleased) {
+        // The render thread is still releasing them, in OpenUSD and the delegates' libraries, which
+        // the rest of the teardown frees: as for a viewer's delegate above, the process ends here.
+        qWarning("A render delegate's engine was not released; exiting without the rest of the teardown.");
+        std::fflush(nullptr);
+        std::_Exit(EXIT_FAILURE);
+    }
+
     // No render is left to abort, and the watchdog thread reads this manager.
     AbortWatchdog::shutdown();
 
@@ -858,8 +914,12 @@ AppManager::~AppManager()
     if (_imp->_viewerCache) {
         _imp->_viewerCache->waitForDeleterThread();
     }
+    if (_imp->_geoDetailCache) {
+        _imp->_geoDetailCache->waitForDeleterThread();
+    }
     _imp->_nodeCache.reset();
     _imp->_viewerCache.reset();
+    _imp->_geoDetailCache.reset();
 
     setTeardownStage("finalizing Python");
     tearDownPython();
@@ -1180,7 +1240,6 @@ AppManager::loadInternal(const CLArgs& cl)
 
         return ok;
     }
-    onRenderSchedulerModeSettingChanged(_imp->_settings->getRenderSchedulerMode());
     {
         const GpuResolvedMode gpuMode = GpuContext::resolveMode(_imp->_settings->getGpuComputeMode(), std::getenv("NATRON_GPU"));
         const std::string gpuDeviceId = _imp->_settings->getGpuDevice();
@@ -1460,12 +1519,15 @@ AppManager::loadInternalAfterInitGui(const CLArgs& cl)
         size_t maxCacheRAM = _imp->_settings->getRamMaximumPercent() * getSystemTotalRAM();
         U64 viewerCacheSize = _imp->_settings->getMaximumViewerDiskCacheSize();
         U64 maxDiskCacheNode = _imp->_settings->getMaximumDiskCacheNodeSize();
+        U64 maxGeoDetailCache = _imp->_settings->getMaximumGeoDetailCacheSize();
 
         _imp->_nodeCache = std::make_shared<Cache<Image> >("NodeCache", NATRON_CACHE_VERSION, maxCacheRAM, 1.);
         _imp->_nodeCache->useEvictionScore();
         _imp->_nodeCache->setDiskTier(openNodeCacheDiskTier(*_imp->_settings));
         setNodeCachePinBudget(maxDiskCacheNode);
         _imp->_viewerCache = std::make_shared<Cache<FrameEntry>>("ViewerCache", NATRON_CACHE_VERSION, viewerCacheSize, 0.);
+        // RAM-only with its own budget, so geometry can never evict the image caches.
+        _imp->_geoDetailCache = std::make_shared<Cache<GeoDetailCacheEntry>>("GeoDetailCache", NATRON_CACHE_VERSION, maxGeoDetailCache, 1.);
         _imp->setViewerCacheTileSize();
     } catch (std::logic_error&) {
         // ignore
@@ -1803,7 +1865,7 @@ AppManager::clearPluginsLoadedCache()
 void
 AppManager::freeGpuMemory()
 {
-    SceneCaches::releaseRenderEngines();
+    SceneCaches::releaseRenderEnginesGpuMemory();
     SceneCaches::releaseLiveTextures();
     releaseSceneViewEngines(false);
     if (_imp->gpuContext) {
@@ -1844,6 +1906,9 @@ AppManager::clearCaches(bool inRamOnly)
     if (_imp->_viewerCache) {
         _imp->_viewerCache->waitForDeleterThread();
     }
+    if (_imp->_geoDetailCache) {
+        _imp->_geoDetailCache->waitForDeleterThread();
+    }
 
     if (inRamOnly) {
         clearLastRenderedTextures();
@@ -1859,6 +1924,9 @@ AppManager::clearCaches(bool inRamOnly)
     } else {
         clearDiskCache();
         clearNodeCache();
+    }
+    if (_imp->_geoDetailCache) {
+        _imp->_geoDetailCache->clear();
     }
     SceneCaches::releaseIdleQueryStages();
     // Not freeGpuMemory(): the GPU pool's free buffers are what the next renders reuse.
@@ -1992,6 +2060,13 @@ AppManager::setNodeCachePinBudget(U64 bytes)
     if (_imp->_nodeCache && _imp->_nodeCache->diskTier()) {
         _imp->_nodeCache->diskTier()->setPinBudget(bytes);
     }
+}
+
+void
+AppManager::setApplicationsCachesMaximumGeoDetailCacheSize(unsigned long long size)
+{
+    _imp->_geoDetailCache->setMaximumCacheSize(size);
+    _imp->_geoDetailCache->setMaximumInMemorySize(1);
 }
 
 void
@@ -2757,6 +2832,7 @@ void
 AppManager::clearExceedingEntriesFromNodeCache()
 {
     _imp->_nodeCache->clearExceedingEntries();
+    _imp->_geoDetailCache->clearExceedingEntries();
 }
 
 const PluginsMap&
@@ -2878,6 +2954,12 @@ AppManager::removeFromNodeCache(const DeepImageCacheEntryPtr& entry)
 }
 
 void
+AppManager::removeFromGeoDetailCache(const GeoDetailCacheEntryPtr& entry)
+{
+    _imp->_geoDetailCache->removeEntry(entry);
+}
+
+void
 AppManager::removeFromNodeCache(U64 hash)
 {
     _imp->_nodeCache->removeEntry(hash);
@@ -2917,6 +2999,8 @@ AppManager::getMemoryStatsForCacheEntryHolder(const CacheEntryHolder* holder,
     std::size_t viewerCacheDisk = 0;
     std::size_t nodeCacheMem = 0;
     std::size_t nodeCacheDisk = 0;
+    std::size_t geoCacheMem = 0;
+    std::size_t geoCacheDisk = 0; // the geometry cache is RAM-only, so this is always 0
     const Node* isNode = dynamic_cast<const Node*>(holder);
     if (isNode) {
         ViewerInstance* isViewer = isNode->isEffectViewer();
@@ -2925,11 +3009,12 @@ AppManager::getMemoryStatsForCacheEntryHolder(const CacheEntryHolder* holder,
         }
     }
     _imp->_nodeCache->getMemoryStatsForCacheEntryHolder(holder, &nodeCacheMem, &nodeCacheDisk);
+    _imp->_geoDetailCache->getMemoryStatsForCacheEntryHolder(holder, &geoCacheMem, &geoCacheDisk);
 
     const CacheDiskTierPtr tier = _imp->_nodeCache->diskTier();
     const std::size_t pinnedDisk = tier ? (std::size_t)tier->pinnedBytesOf(holder->getCacheID()) : 0;
 
-    *ramOccupied = viewerCacheMem + nodeCacheMem;
+    *ramOccupied = viewerCacheMem + nodeCacheMem + geoCacheMem;
     *diskOccupied = viewerCacheDisk + nodeCacheDisk + pinnedDisk;
 }
 
@@ -2942,6 +3027,7 @@ AppManager::removeAllCacheEntriesForHolder(const CacheEntryHolder* holder,
         _imp->_nodeCache->diskTier()->releaseHolder(holder->getCacheID());
     }
     _imp->_viewerCache->removeAllEntriesForHolderPublic(holder, blocking);
+    _imp->_geoDetailCache->removeAllEntriesForHolderPublic(holder, blocking);
 }
 
 const QString &
@@ -3024,6 +3110,21 @@ AppManager::getDeepImageOrCreate(const DeepImageKey& key,
                                  DeepImageCacheEntryPtr* returnValue) const
 {
     return _imp->_nodeCache->getOrCreate(key, params, 0, returnValue);
+}
+
+bool
+AppManager::getGeoDetail(const GeoDetailKey& key,
+                         std::list<GeoDetailCacheEntryPtr>* returnValue) const
+{
+    return _imp->_geoDetailCache->get(key, returnValue);
+}
+
+bool
+AppManager::getGeoDetailOrCreate(const GeoDetailKey& key,
+                                 const GeoDetailParamsPtr& params,
+                                 GeoDetailCacheEntryPtr* returnValue) const
+{
+    return _imp->_geoDetailCache->getOrCreate(key, params, 0, returnValue);
 }
 
 bool
@@ -3412,7 +3513,10 @@ AppManager::isNodeCacheAlmostFull() const
 bool
 AppManager::evictLRUFromMemoryCaches()
 {
-    return _imp->_nodeCache->evictLRUInMemoryEntry();
+    bool evictedFromNodeCache = _imp->_nodeCache->evictLRUInMemoryEntry();
+    bool evictedFromGeoDetailCache = _imp->_geoDetailCache->evictLRUInMemoryEntry();
+
+    return evictedFromNodeCache || evictedFromGeoDetailCache;
 }
 
 void
@@ -3497,35 +3601,6 @@ AppManager::setNThreadsPerEffect(int nThreadsPerEffect)
     _imp->nThreadsPerEffect = nThreadsPerEffect;
 }
 
-std::optional<RenderSchedulerModeEnum>
-AppManager::parseRenderSchedulerModeEnv(const char* value)
-{
-    if (!value) {
-        return std::nullopt;
-    }
-    const std::string str(value);
-    if (str == "legacy") {
-        return eRenderSchedulerModeLegacy;
-    }
-    if (str == "taskgraph") {
-        return eRenderSchedulerModeTaskGraph;
-    }
-
-    return std::nullopt;
-}
-
-RenderSchedulerModeEnum
-AppManager::getRenderSchedulerMode() const
-{
-    return (RenderSchedulerModeEnum)_imp->renderSchedulerMode.load();
-}
-
-void
-AppManager::setRenderSchedulerMode(RenderSchedulerModeEnum mode)
-{
-    _imp->renderSchedulerMode = (int)mode;
-}
-
 GpuContext*
 AppManager::getGpuContext() const
 {
@@ -3580,22 +3655,13 @@ AppManagerPrivate::dropDeviceTier()
 std::unique_ptr<GpuContext>
 AppManager::swapGpuContextForTests(std::unique_ptr<GpuContext> context)
 {
+    // The caller usually destroys the context returned, which the scene engines and their queued
+    // releases may still be using.
+    SceneCaches::releaseRenderEnginesAndWait();
     _imp->dropDeviceTier();
     _imp->gpuContext.swap(context);
 
     return context;
-}
-
-void
-AppManager::onRenderSchedulerModeSettingChanged(RenderSchedulerModeEnum mode)
-{
-    if (_imp->renderSchedulerEnvOverride) {
-        return;
-    }
-    _imp->renderSchedulerMode = (int)mode;
-
-    // Real renders in legacy mode keep the last placement, so nothing else would clear the regions of the old mode.
-    ViewerInstance::requestGpuPlacementDryRunForEveryViewer();
 }
 
 void
@@ -3642,11 +3708,7 @@ AppManager::getNCPUsAvailableForEffect()
     }
 
     // Threads already running for the multiThreadSuite + parallel renders
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
     const int runningThreadsCount = getNRunningThreads();
-#else
-    const int runningThreadsCount = 0;
-#endif
 
     // better than QThread::idealThreadCount();, because it can be set by a global preference:
     int maxThreadsCount = QThreadPool::globalInstance()->maxThreadCount();
@@ -4781,6 +4843,21 @@ PythonGILUnlocker::~PythonGILUnlocker()
 #if PY_VERSION_HEX >= 0x030400F0
     assert(PyGILState_Check()); // Not available prior to Python 3.4
 #endif
+}
+
+PythonUnlockedWhileWaiting::PythonUnlockedWhileWaiting()
+    : _state(nullptr)
+{
+    if (Py_IsInitialized() && PyGILState_Check()) {
+        _state = PyEval_SaveThread();
+    }
+}
+
+PythonUnlockedWhileWaiting::~PythonUnlockedWhileWaiting()
+{
+    if (_state) {
+        PyEval_RestoreThread(_state);
+    }
 }
 
 static bool

@@ -133,15 +133,14 @@ protected:
             }
         }
         const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
-        const RenderSchedulerModeEnum modes[] = { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph };
-        for (RenderSchedulerModeEnum mode : modes) {
+        for (bool scheduled : { false, true }) {
             std::vector<RenderedPlane> planes;
             std::string error;
-            ASSERT_TRUE(renderNodePlanesInMode(node, time, ViewIdx(0), 0, NativeTimeNodes::kWindow, rgba, mode, true, &planes, &error)) << "mode " << (int)mode << ": " << error;
+            ASSERT_TRUE((scheduled ? renderNodePlanesScheduled(node, time, ViewIdx(0), 0, NativeTimeNodes::kWindow, true, &planes, &error) : renderNodePlanesDirect(node, time, ViewIdx(0), 0, NativeTimeNodes::kWindow, rgba, &planes, &error, true))) << (scheduled ? "scheduled" : "direct") << ": " << error;
             ASSERT_FALSE(planes.empty());
             ASSERT_GE(planes.front().pixels.size(), 4u);
             for (int c = 0; c < 4; ++c) {
-                EXPECT_NEAR(expected[c], planes.front().pixels[c], 1e-5) << "mode " << (int)mode << ", channel " << c << ", at " << time;
+                EXPECT_NEAR(expected[c], planes.front().pixels[c], 1e-5) << (scheduled ? "scheduled" : "direct") << ", channel " << c << ", at " << time;
             }
         }
 

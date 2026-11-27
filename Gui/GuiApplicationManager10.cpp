@@ -52,6 +52,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QTimer>
 #include <QWidget>
 #include <QtGlobal> // for Q_OS_*
+#include <ofxImageEffect.h>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -987,6 +988,7 @@ GuiApplicationManager::populateShortcuts()
                             Qt::ShiftModifier);
 
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionHideOverlays, kShortcutDescActionHideOverlays, Qt::NoModifier, Qt::Key_O);
+    registerKeybind(kShortcutGroupViewer, kShortcutIDActionMapSiblingOverlays, kShortcutDescActionMapSiblingOverlays, Qt::ShiftModifier, Qt::Key_O);
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionHidePlayer, kShortcutDescActionHidePlayer, Qt::NoModifier, (Qt::Key)0);
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionHideTimeline, kShortcutDescActionHideTimeline, Qt::NoModifier, (Qt::Key)0);
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionHideLeft, kShortcutDescActionHideLeft, Qt::NoModifier, (Qt::Key)0);
@@ -1278,11 +1280,16 @@ GuiApplicationManager::releaseSceneViewEngines(bool keptOnly)
             if (!view) {
                 continue;
             }
-            // Other delegates hold host memory, not the GPU's, but the Storm engine kept behind
-            // one does.
-            const bool storm = RenderDelegates::isStorm(view->getRenderer().getActiveRendererId());
+            const std::string renderer = view->getRenderer().getActiveRendererId();
+            // The delegates other than Storm and Natron Utility hold host memory, not the GPU's, but
+            // the Storm engine kept behind one does.
+            const bool storm = RenderDelegates::isStorm(renderer);
             if ((!storm || !keptOnly) && (storm || view->getRenderer().hasEngine())) {
                 view->releaseEngine();
+            }
+            if (!keptOnly && (renderer == kRenderDelegateUtilityId)) {
+                // Its engine gives its GPU memory back on its own worker; the hand-off lives in this view's context.
+                view->releaseDeviceUpload();
             }
         }
     }

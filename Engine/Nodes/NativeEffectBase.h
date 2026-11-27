@@ -53,6 +53,7 @@
 
 NATRON_NAMESPACE_ENTER
 
+class GeoDetailBuilder;
 struct GpuQuery;
 struct GpuRenderArgs;
 
@@ -452,6 +453,14 @@ protected:
     void invalidateOutputMetadata();
 
     /**
+     * @brief Called from deriveOutputMetadata() when its answer is incomplete for now: neither it
+     * nor the answers of the nodes downstream derived from it in the same call are cached, so they
+     * are derived again when next asked. The node calls invalidateOutputMetadata() once the
+     * complete answer is available, so that the readers that were given the incomplete one ask again.
+     **/
+    void markOutputMetadataProvisional();
+
+    /**
      * @brief Sets the text getSublabel() returns and shows it in the node graph.
      **/
     void setSublabel(const std::string& sublabel);
@@ -598,6 +607,33 @@ protected:
                                        std::vector<RectI>* chunks);
 
     /**
+     * @brief Builds or edits a detail for renderGeometryFromInput() and renderGeometryGenerator().
+     * On failure returns eStatusFailed, with *errorMessage set to what the user should read.
+     **/
+    typedef std::function<StatusEnum(GeoDetailBuilder& detail, std::string* errorMessage)> GeoBuildFunc;
+
+    /**
+     * @brief For a geometry op's renderGeometry(): hands mutate a builder over a copy of
+     * inputNb's detail at args.time and sets *outputDetail to the result. The copy shares every
+     * page with the input until mutate writes it, so only what mutate touches is detached, and
+     * nothing mutate is given can reach the input's storage. Fails when inputNb has no detail at
+     * args.time.
+     **/
+    StatusEnum renderGeometryFromInput(const GeoRenderActionArgs& args,
+                                       int inputNb,
+                                       const GeoBuildFunc& mutate,
+                                       GeoDetailConstPtr* outputDetail,
+                                       std::string* errorMessage) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief For a geometry generator's renderGeometry(): hands generate a builder over an empty
+     * detail and sets *outputDetail to the result.
+     **/
+    StatusEnum renderGeometryGenerator(const GeoBuildFunc& generate,
+                                       GeoDetailConstPtr* outputDetail,
+                                       std::string* errorMessage) WARN_UNUSED_RETURN;
+
+    /**
      * @brief Wraps the AppManager::createKnob() idiom every initializeKnobs() repeats.
      **/
     template <typename KNOB_TYPE>
@@ -635,6 +671,10 @@ protected:
         // For eUpstreamReadFacts: a hash of every upstream fact the author reads.
         U64 factsDigest = 0;
         bool frameRange = true;
+        // For an author handed values read before emitSceneLayer(): getSceneLayerKey() taken
+        // before those reads. A knob or project edit after it leaves the layer unmemoized.
+        bool valuesRead = false;
+        SceneLayerMemo::Key valuesReadUnder;
     };
 
     /**

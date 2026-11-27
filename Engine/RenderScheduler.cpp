@@ -42,6 +42,7 @@
 #include <utility>
 
 #include <QDateTime>
+#include <QDebug>
 #include <QMutexLocker>
 #include <QRunnable>
 #include <QString>
@@ -96,9 +97,19 @@ FrameFuture::~FrameFuture()
 {
 }
 
+namespace {
+
+std::atomic<int> gPoolThreadWaits { 0 };
+
+} // namespace
+
 EffectInstance::RenderRoIRetCode
 FrameFuture::wait()
 {
+    if (QThreadPool::globalInstance()->contains(QThread::currentThread())) {
+        ++gPoolThreadWaits;
+        qWarning("RenderScheduler: a frame was waited for on a thread of the global pool, which may deadlock");
+    }
     assert(!QThreadPool::globalInstance()->contains(QThread::currentThread()));
 
     QMutexLocker k(&_mutex);
@@ -109,12 +120,32 @@ FrameFuture::wait()
     return _retCode;
 }
 
+int
+FrameFuture::getPoolThreadWaitsForTests()
+{
+    return gPoolThreadWaits.load();
+}
+
 bool
 FrameFuture::isFinished() const
 {
     QMutexLocker k(&_mutex);
 
     return _finished;
+}
+
+EffectInstance::RenderRoIRetCode
+FrameFuture::result() const
+{
+    QMutexLocker k(&_mutex);
+
+    if (!_finished) {
+        qWarning("RenderScheduler: the result of a frame was read before it finished");
+
+        return EffectInstance::eRenderRoIRetCodeFailed;
+    }
+
+    return _retCode;
 }
 
 std::map<ImageLayerDesc, ImagePtr>
@@ -133,18 +164,52 @@ FrameFuture::getRegionFallbacks() const
     return _fallbacks;
 }
 
-void
+bool
 FrameFuture::finish(EffectInstance::RenderRoIRetCode retCode,
                     std::map<ImageLayerDesc, ImagePtr> rootPlanes,
                     std::vector<RegionFallback> fallbacks)
 {
-    QMutexLocker k(&_mutex);
+    CompletionCallback callback;
+    {
+        QMutexLocker k(&_mutex);
 
-    _retCode = retCode;
-    _rootPlanes = std::move(rootPlanes);
-    _fallbacks = std::move(fallbacks);
-    _finished = true;
-    _finishedCond.wakeAll();
+        if (_finished) {
+            qWarning("RenderScheduler: a frame was finished twice; the second result (%d) is dropped", (int)retCode);
+
+            return false;
+        }
+        _retCode = retCode;
+        _rootPlanes = std::move(rootPlanes);
+        _fallbacks = std::move(fallbacks);
+        _finished = true;
+        callback.swap(_callback);
+        _finishedCond.wakeAll();
+    }
+    // Outside the lock: the callback may read the planes back through this future.
+    if (callback) {
+        callback(retCode);
+    }
+
+    return true;
+}
+
+void
+FrameFuture::onFinished(CompletionCallback callback)
+{
+    EffectInstance::RenderRoIRetCode retCode;
+    {
+        QMutexLocker k(&_mutex);
+
+        if (!_finished) {
+            _callback = std::move(callback);
+
+            return;
+        }
+        retCode = _retCode;
+    }
+    if (callback) {
+        callback(retCode);
+    }
 }
 
 struct RenderScheduler::Continuation {
@@ -434,7 +499,7 @@ formatTaskRecord(const FrameGraph::Task& task,
         if (it != task.components.begin()) {
             line.push_back(',');
         }
-        appendJSONString(it->getChannelsLabel(), &line);
+        appendJSONString(it->getUserFacingLabel(), &line);
     }
     std::snprintf(num, sizeof(num), "],\"bitDepth\":\"%s\",\"deps\":[", bitDepthName(task.bitdepth));
     line.append(num);
@@ -706,7 +771,7 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
             getOutputComponents(effect, nodeRequest->second->nodeHash, task.key.time, task.key.view, *metadata, &task.components);
         }
 
-        ParallelRenderArgsPtr frameArgs = effect->getParallelRenderArgsTLS();
+        ParallelRenderArgsPtr frameArgs = effect->getFrameArgs();
 
         // renderRoI renders at full scale then downscales for eSupportsNo, and also for eSupportsMaybe, which it
         // switches to full scale once the identity check is done.
@@ -1111,6 +1176,12 @@ RenderScheduler::getLoad(int* running,
 }
 
 int
+RenderScheduler::runnablePriority(Priority priority)
+{
+    return runnablePriorityOf(priority);
+}
+
+int
 RenderScheduler::computeTaskBudget(int poolMax,
                                    int running,
                                    int ready,
@@ -1436,7 +1507,8 @@ consumerDevices(const FrameGraph& graph,
 /**
  * @brief For a task the device tier holds layer of only at a finer level: that entry box-downscaled on the device to
  * the task's level, over its renderedRoI, and cached in the tier under exact, the key the task's level is looked up by.
- * Null when no finer entry holds all of what the downscale reads, or the downscale cannot be made.
+ * Null when no finer entry holds all of what the downscale reads, or the downscale cannot be made; also when the render
+ * was aborted while the device ran it, which sets *aborted.
  **/
 CacheDeviceEntryPtr
 downscaleFinerDeviceEntry(CacheDeviceTier& tier,
@@ -1444,7 +1516,9 @@ downscaleFinerDeviceEntry(CacheDeviceTier& tier,
                           const ImageKey& exact,
                           const FrameGraph::Task& task,
                           const ImageLayerDesc& layer,
-                          const RenderStatsPtr& stats)
+                          const RenderStatsPtr& stats,
+                          const AbortableRenderInfoPtr& abortInfo,
+                          bool* aborted)
 {
     gpu::GpuRuntime* runtime = tier.runtime();
     const unsigned int level = task.key.mipmapLevel;
@@ -1504,11 +1578,16 @@ downscaleFinerDeviceEntry(CacheDeviceTier& tier,
         dst.nComps = (std::uint32_t)layout.nComps();
         gpu::GpuStatus status = gpu::recordMipDownscale(*recorder, src, dst, dst.bounds, levels);
         if (status) {
-            status = recorder->submitAndWait();
+            const std::function<bool()> stop = [&abortInfo]() { return abortInfo && abortInfo->isAborted(); };
+            status = recorder->submitAndWait(30'000'000'000ull, stop);
         }
         image->unpin();
         if (!status) {
-            runtime->note(status);
+            if (status.result == VK_INCOMPLETE) {
+                *aborted = true;
+            } else {
+                runtime->note(status);
+            }
 
             return CacheDeviceEntryPtr();
         }
@@ -1535,7 +1614,8 @@ downscaleFinerDeviceEntry(CacheDeviceTier& tier,
  * @brief Gives the task the device tier's entries of its layers without rendering it: as device layers when a region
  * reads them, which it then does in place, and otherwise moved to the host tier as planes. A layer the tier holds only
  * at a finer level is downscaled on the device first. False, with both maps left empty, when an entry left the tier or
- * the device was lost since the plan, so that the task renders instead.
+ * the device was lost since the plan, so that the task renders instead, or when the render was aborted during a
+ * downscale, which sets *aborted.
  **/
 bool
 serveFromDeviceTier(const FrameRenderContext& context,
@@ -1544,7 +1624,8 @@ serveFromDeviceTier(const FrameRenderContext& context,
                     const EffectInstancePtr& effect,
                     std::map<ImageLayerDesc, ImagePtr>* planes,
                     std::map<ImageLayerDesc, DeviceImagePtr>* deviceLayers,
-                    std::vector<CacheDeviceEntryPtr>* inPlace)
+                    std::vector<CacheDeviceEntryPtr>* inPlace,
+                    bool* aborted)
 {
 #ifdef NATRON_HAVE_GPU
     GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
@@ -1562,7 +1643,7 @@ serveFromDeviceTier(const FrameRenderContext& context,
         const ImageKey exact = base.forEntry(task.key.mipmapLevel, layer, eImageBitDepthFloat);
         CacheDeviceEntryPtr entry = tier->findServing(exact);
         if (!entry) {
-            entry = downscaleFinerDeviceEntry(*tier, base, exact, task, layer, context.getStats());
+            entry = downscaleFinerDeviceEntry(*tier, base, exact, task, layer, context.getStats(), context.getAbortInfo(), aborted);
         }
         if (!entry) {
             return false;
@@ -1607,6 +1688,7 @@ serveFromDeviceTier(const FrameRenderContext& context,
     (void)planes;
     (void)deviceLayers;
     (void)inPlace;
+    (void)aborted;
 
     return false;
 #endif
@@ -1776,12 +1858,16 @@ RenderScheduler::executeTask(const FramePtr& frame,
     std::map<ImageLayerDesc, DeviceImagePtr> deviceLayers;
     EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
     bool servedInPlace = false;
+    bool serveAborted = false;
     std::vector<CacheDeviceEntryPtr> inPlace;
 
     if (effect && task.servedFromCache && (task.servedTier == EffectInstance::OutputCacheTier::Device) && task.deviceMissingRoI.isNull()) {
         ProfileSink& sink = profileSink();
         const std::chrono::steady_clock::time_point serveStart = sink.isEnabled() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point();
-        servedInPlace = serveFromDeviceTier(*frame->context, frame->graph, task, effect, &planes, &deviceLayers, &inPlace);
+        servedInPlace = serveFromDeviceTier(*frame->context, frame->graph, task, effect, &planes, &deviceLayers, &inPlace, &serveAborted);
+        if (serveAborted) {
+            retCode = EffectInstance::eRenderRoIRetCodeAborted;
+        }
         if (servedInPlace) {
             retCode = EffectInstance::eRenderRoIRetCodeOk;
             if (sink.isEnabled()) {
@@ -1792,7 +1878,7 @@ RenderScheduler::executeTask(const FramePtr& frame,
     }
 
     std::unique_ptr<Continuation> continuation;
-    bool renders = effect && !servedInPlace;
+    bool renders = effect && !servedInPlace && !serveAborted;
     if (renders && task.reusesStore) {
         renders = false;
         retCode = EffectInstance::eRenderRoIRetCodeOk;
@@ -1830,7 +1916,7 @@ RenderScheduler::executeTask(const FramePtr& frame,
             renders = false;
             retCode = EffectInstance::eRenderRoIRetCodeAborted;
         } else if (continuation->callback) {
-            AppTLS::FrameContextScope scope(continuation->context.get(), budget, runnablePriorityOf(frame->priority));
+            AppTLS::FrameContextScope scope(continuation->context.get(), budget, runnablePriorityOf(frame->priority), true);
             OpenMPThreadsScope openMPThreads(budget);
             ContextFrameArgsScope contextArgs(effect, task.key.contextKey ? continuation->context->getArgs(NodeCtxKey(task.key.node, task.key.contextKey)) : ParallelRenderArgsPtr());
             EffectInstance::RenderContinuationHandledScope handled(task.key.node.get(), task.key.time, task.key.view, task.key.contextKey, frame->depth + 1);
@@ -1849,7 +1935,7 @@ RenderScheduler::executeTask(const FramePtr& frame,
 
     if (renders) {
         const FrameRenderContextPtr& renderContext = continuation ? continuation->context : frame->context;
-        AppTLS::FrameContextScope scope(renderContext.get(), budget, runnablePriorityOf(frame->priority));
+        AppTLS::FrameContextScope scope(renderContext.get(), budget, runnablePriorityOf(frame->priority), true);
         OpenMPThreadsScope openMPThreads(budget);
         // A partial cache hit was not probed: renderRoI probes it inline if something is left to render.
         std::optional<EffectInstance::RenderContinuationHandledScope> handled;
@@ -1954,7 +2040,7 @@ RenderScheduler::probeRenderContinuation(const FramePtr& frame,
 {
     const FrameGraph::Task& task = frame->graph.tasks[taskIndex];
     const EffectInstancePtr effect = task.key.node->getEffectInstance();
-    AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
+    AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority), true);
     EffectInstance::RenderContinuation probed;
     bool hasContinuation = false;
     {
@@ -2056,7 +2142,7 @@ RenderScheduler::probeRenderContinuation(const FramePtr& frame,
     const FrameRenderContextPtr extensionContext = FrameRenderContext::createExtension(frame->context, request, _nextStoreGeneration++);
     FrameGraph graph;
     {
-        AppTLS::FrameContextScope extensionScope(extensionContext.get(), budget, runnablePriorityOf(frame->priority));
+        AppTLS::FrameContextScope extensionScope(extensionContext.get(), budget, runnablePriorityOf(frame->priority), true);
         graph = buildGraph(extensionContext, rootKeys);
         if (graph.tasks.size() < rootKeys.size()) {
             failTaskWithReason(effect, "asked its render continuation for outputs the request pass did not reach");
@@ -2273,7 +2359,7 @@ RenderScheduler::executeRegion(const FramePtr& frame,
     bool deviceLost = false;
 
     if (body) {
-        AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
+        AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority), true);
         OpenMPThreadsScope openMPThreads(budget);
         const int rendering = ++_tasksRendering;
         if (frame->context->getStats()) {

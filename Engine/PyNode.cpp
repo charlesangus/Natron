@@ -58,6 +58,7 @@
 #include "Engine/PythonUndoCommands.h"
 #include "Engine/RFV.h"
 #include "Engine/TimeLine.h"
+#include "Engine/UserKnobEdit.h"
 #include "Engine/ViewIdx.h"
 #include "Serialization/NodeSerialization.h"
 
@@ -65,10 +66,8 @@ NATRON_NAMESPACE_ENTER
 NATRON_PYTHON_NAMESPACE_ENTER
 
 ImageLayer::ImageLayer(const QString& layerName,
-                       const QString& componentsPrettyName,
                        const QStringList& componentsName)
     : _layerName(layerName)
-    , _componentsPrettyName(componentsPrettyName)
     , _componentsName(componentsName)
     , _comps()
 {
@@ -78,12 +77,17 @@ ImageLayer::ImageLayer(const QString& layerName,
     for (QStringList::const_iterator it = componentsName.begin(); it != componentsName.end(); ++it, ++i) {
         channels[i] = it->toStdString();
     }
-    _comps.reset(new ImageLayerDesc(layerName.toStdString(), layerName.toStdString(), componentsPrettyName.toStdString(), channels));
+    const std::string name = layerName.toStdString();
+    const ImageLayerDesc& view = ImageLayerDesc::getColorView(name);
+    if (view && (view.getChannels() == channels)) {
+        _comps.reset(new ImageLayerDesc(view));
+    } else {
+        _comps.reset(new ImageLayerDesc(name, channels));
+    }
 }
 
 ImageLayer::ImageLayer(const ImageLayerDesc& comps)
-    : _layerName(QString::fromUtf8(comps.getLayerLabel().c_str()))
-    , _componentsPrettyName(QString::fromUtf8(comps.getChannelsLabel().c_str()))
+    : _layerName(QString::fromUtf8(comps.getUserFacingLabel().c_str()))
 {
     const std::vector<std::string>& channels = comps.getChannels();
 
@@ -98,7 +102,7 @@ ImageLayer::getHash(const ImageLayer& layer)
 {
     Hash64 h;
 
-    Hash64_appendQString( &h, QString::fromUtf8( layer._comps->getChannelsLabel().c_str() ) );
+    Hash64_appendQString(&h, QString::fromUtf8(layer._comps->getLayerID().c_str()));
     const std::vector<std::string>& comps = layer._comps->getChannels();
     for (std::size_t i = 0; i < comps.size(); ++i) {
         Hash64_appendQString( &h, QString::fromUtf8( comps[i].c_str() ) );
@@ -129,12 +133,6 @@ const QStringList&
 ImageLayer::getComponentsNames() const
 {
     return _componentsName;
-}
-
-const QString&
-ImageLayer::getComponentsPrettyName() const
-{
-    return _componentsPrettyName;
 }
 
 bool
@@ -798,7 +796,11 @@ Effect::getPersistentMessage() const
 {
     QString message;
     int type = 0;
-    getInternalNode()->getPersistentMessage(&message, &type, false);
+    const NodePtr node = getInternalNode();
+    if (!node) {
+        return message;
+    }
+    node->getPersistentMessage(&message, &type, false);
 
     return message;
 }
@@ -1303,6 +1305,84 @@ UserParamHolder::removeParam(Param* param)
 
     return true;
 }
+
+Param*
+UserParamHolder::changeParamType(Param* param,
+                                 const QString& typeName,
+                                 bool allowReset)
+{
+    if (!checkHolderIsEditable(_holder)) {
+        return 0;
+    }
+    KnobIPtr knob = param ? param->getInternalKnob() : KnobIPtr();
+    if (!knob) {
+        PyErr_SetString(PyExc_ValueError, "The parameter no longer exists.");
+
+        return 0;
+    }
+    const std::string name = typeName.toStdString();
+    const int parametricCurves = dynamic_cast<KnobParametric*>(knob.get()) ? knob->getDimension() : 1;
+    const std::pair<const char*, std::pair<std::string, int>> types[] = {
+        { "Int", { KnobInt::typeNameStatic(), 1 } },
+        { "Int2D", { KnobInt::typeNameStatic(), 2 } },
+        { "Int3D", { KnobInt::typeNameStatic(), 3 } },
+        { "Double", { KnobDouble::typeNameStatic(), 1 } },
+        { "Double2D", { KnobDouble::typeNameStatic(), 2 } },
+        { "Double3D", { KnobDouble::typeNameStatic(), 3 } },
+        { "Color", { KnobColor::typeNameStatic(), 3 } },
+        { "ColorRGBA", { KnobColor::typeNameStatic(), 4 } },
+        { "Boolean", { KnobBool::typeNameStatic(), 1 } },
+        { "Choice", { KnobChoice::typeNameStatic(), 1 } },
+        { "String", { KnobString::typeNameStatic(), 1 } },
+        { "Label", { KnobString::typeNameStatic(), 1 } },
+        { "File", { KnobFile::typeNameStatic(), 1 } },
+        { "OutputFile", { KnobOutputFile::typeNameStatic(), 1 } },
+        { "Path", { KnobPath::typeNameStatic(), 1 } },
+        { "ChannelSet", { KnobChannelSet::typeNameStatic(), 1 } },
+        { "LayerSelect", { KnobLayerSelect::typeNameStatic(), 1 } },
+        { "ChannelSelect", { KnobChannelSelect::typeNameStatic(), 1 } },
+        { "Button", { KnobButton::typeNameStatic(), 1 } },
+        { "Separator", { KnobSeparator::typeNameStatic(), 1 } },
+        { "Parametric", { KnobParametric::typeNameStatic(), parametricCurves } },
+    };
+    const std::pair<std::string, int>* target = 0;
+    for (const std::pair<const char*, std::pair<std::string, int>>& type : types) {
+        if (name == type.first) {
+            target = &type.second;
+            break;
+        }
+    }
+    if (!target) {
+        const std::string message = "There is no parameter type named " + name + ".";
+        PyErr_SetString(PyExc_ValueError, message.c_str());
+
+        return 0;
+    }
+
+    // A Label is a String shown as text; a label made a String again becomes a plain line.
+    Serialization::KnobExtraSerialization extra;
+    KnobString* isString = dynamic_cast<KnobString*>(knob.get());
+    if (name == "Label") {
+        Serialization::KnobTextExtraSerialization text;
+        text.isLabel = true;
+        extra = text;
+    } else if ((name == "String") && isString && isString->isLabel()) {
+        extra = Serialization::KnobTextExtraSerialization();
+    }
+    KnobIPtr newKnob;
+    std::string error;
+    const UserKnobTypeChangeEnum result = changeUserKnobType(_holder, knob, target->first, target->second, allowReset, &newKnob, &error, extra);
+    if (result == eUserKnobTypeChangeFailed) {
+        PyErr_SetString(PyExc_ValueError, error.c_str());
+
+        return 0;
+    }
+    if ((result == eUserKnobTypeChangeNeedsReset) || !newKnob) {
+        return 0;
+    }
+
+    return Effect::createParamWrapperForKnob(newKnob);
+} // UserParamHolder::changeParamType
 
 void
 UserParamHolder::addRFVKnob(Param* param)

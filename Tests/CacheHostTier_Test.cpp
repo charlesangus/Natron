@@ -329,7 +329,7 @@ TEST_F(CacheHostTierTest, DemotingDropsAnUnheldEntryAndARenderRestoresIdenticalP
 
     RenderedPlane reference;
     std::string error;
-    ASSERT_TRUE(renderProbe(constant, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &reference, &error)) << error;
+    ASSERT_TRUE(renderProbeDirect(constant, 1., 0, kWindow, false, &reference, &error)) << error;
 
     const std::size_t rendered = tier.liveBytes();
     ASSERT_GT(rendered, (std::size_t)0);
@@ -351,7 +351,7 @@ TEST_F(CacheHostTierTest, DemotingDropsAnUnheldEntryAndARenderRestoresIdenticalP
     EXPECT_TRUE(waitFor([&tier, rendered]() { return tier.liveBytes() < rendered; }));
 
     RenderedPlane again;
-    ASSERT_TRUE(renderProbe(constant, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &again, &error)) << error;
+    ASSERT_TRUE(renderProbeDirect(constant, 1., 0, kWindow, false, &again, &error)) << error;
     EXPECT_EQ(std::string(), compareExact(reference, again));
     EXPECT_TRUE(bool(tier.demotionCandidate())) << "the render caches the entry again";
 }
@@ -668,7 +668,7 @@ TEST_F(CacheHostTierTest, ARenderRecordsItsOwnCostOnTheEntry)
 
     RenderedPlane plane;
     std::string error;
-    ASSERT_TRUE(renderProbe(constant, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &plane, &error)) << error;
+    ASSERT_TRUE(renderProbeDirect(constant, 1., 0, kWindow, false, &plane, &error)) << error;
 
     const CacheEntryPtr entry = tier.demotionCandidate();
     ASSERT_TRUE(bool(entry));

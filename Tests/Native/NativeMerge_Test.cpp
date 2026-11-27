@@ -450,13 +450,13 @@ protected:
     {
         for (const char* id : { "diffuse", "albedo", "normals" }) {
             std::string error;
-            EXPECT_EQ(LayerRegistry::eAddResultAdded, getApp()->getProject()->addLayer(ImageLayerDesc(id, id, "", { "R", "G", "B" }), LayerRegistryEntry::eOriginUser, &error)) << id << ": " << error;
+            EXPECT_EQ(LayerRegistry::eAddResultAdded, getApp()->getProject()->addLayer(ImageLayerDesc(id, { "R", "G", "B" }), LayerRegistryEntry::eOriginUser, &error)) << id << ": " << error;
         }
     }
 
     static ImageLayerDesc projectLayer(const std::string& id)
     {
-        return ImageLayerDesc(id, id, "", { "R", "G", "B" });
+        return ImageLayerDesc(id, { "R", "G", "B" });
     }
 
     // The first three channels of each rgba pixel.

@@ -61,8 +61,6 @@
 
 NATRON_NAMESPACE_ENTER
 
-NATRON_NAMESPACE_ANONYMOUS_ENTER
-
 void
 userKnobLayoutToSerialization(const KnobIPtr& knob,
                               Serialization::GroupKnobSerialization* layout)
@@ -74,6 +72,7 @@ userKnobLayoutToSerialization(const KnobIPtr& knob,
 
     layout->name = knob->getName();
     layout->label = knob->getLabel();
+    layout->tooltip = knob->getHintToolTip();
     layout->secret = knob->getIsSecret();
 
     KnobsVec children;
@@ -107,6 +106,8 @@ userKnobLayoutToSerialization(const KnobIPtr& knob,
         }
     }
 }
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
 
 Serialization::NodeSerializationPtr
 nodeToSerialization(const NodePtr& node)
@@ -281,6 +282,10 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
         tracker->toSerialization(&serialization->trackerContext);
     }
 
+    if (const ViewerInstance* viewer = dynamic_cast<const ViewerInstance*>(effect.get())) {
+        viewer->sceneViewToSerialization(&serialization->sceneView);
+    }
+
     NodeGroup* isGroupNode = isEffectGroup();
     if (isGroupNode) {
         NodesList groupNodes;
@@ -371,8 +376,6 @@ Project::toSerialization(Serialization::ProjectSerialization* serialization) con
         }
         Serialization::LayerRegistryEntrySerialization entry;
         entry.layer.layerID = it->desc.getLayerID();
-        entry.layer.layerLabel = it->desc.getLayerLabel();
-        entry.layer.channelsLabel = it->desc.getChannelsLabel();
         entry.layer.channels = it->desc.getChannels();
         entry.origin = (int)it->origin;
         serialization->layers.push_back(entry);
@@ -458,7 +461,7 @@ ProjectPrivate::restoreFromSerialization(const Serialization::ProjectSerializati
     std::list<LayerRegistryEntry> serializedLayers;
     for (std::list<Serialization::LayerRegistryEntrySerialization>::const_iterator it = serialization.layers.begin(); it != serialization.layers.end(); ++it) {
         LayerRegistryEntry entry;
-        entry.desc = ImageLayerDesc(it->layer.layerID, it->layer.layerLabel, it->layer.channelsLabel, it->layer.channels);
+        entry.desc = ImageLayerDesc(it->layer.layerID, it->layer.channels);
         entry.origin = (LayerRegistryEntry::OriginEnum)it->origin;
         serializedLayers.push_back(entry);
     }

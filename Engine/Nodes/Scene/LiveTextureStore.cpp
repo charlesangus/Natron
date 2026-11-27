@@ -271,13 +271,11 @@ renderSource(const LiveTextureSource& source,
     // A disabled node shows its pass-through input, as the engine renders it, but the render
     // below declines a disabled node. A source authored while the node was enabled can be
     // rendered after it is disabled, and disabling can be animated.
-    while (node->isNodeDisabled(frame)) {
-        node = node->getPreferredInputNode();
-        if (!node || !node->isActivated()) {
-            *failure = "the node " + source.nodeName + " that feeds it is disabled and passes no input through";
+    node = resolveDisabledNode(node, frame);
+    if (!node || !node->isActivated()) {
+        *failure = "the node " + source.nodeName + " that feeds it is disabled and passes no input through";
 
-            return LiveTextureBufferConstPtr();
-        }
+        return LiveTextureBufferConstPtr();
     }
     // The texture holds the whole window its layer authored texture coordinates for: the format
     // with the overscan around it, transparent black where the image does not reach.
@@ -904,6 +902,14 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
                 continue;
             }
             ++numMissing;
+            // Kept as the texture's failure: the consumer's own next evaluation, which may come
+            // from any thread, would otherwise clear the warning below.
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                if (_failures.find(uri) == _failures.end()) {
+                    recordFailureLocked(uri, "the image of " + nodeNameOfUri(uri) + " is not rendered on the main thread");
+                }
+            }
             const NodePtr consumer = source.consumer.lock();
             if (consumer) {
                 std::string& uris = missingByConsumer[consumer];

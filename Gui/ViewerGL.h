@@ -133,6 +133,8 @@ public:
      **/
     double getZoomFactor() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    void stepZoomPresets(int steps, const QPointF& pivot);
+
     /**
      * @brief Returns the rectangle of the image displayed by the viewer
      **/
@@ -323,6 +325,18 @@ public:
                             double b,
                             int flags = 0) OVERRIDE FINAL; //!< see http://doc.qt.io/qt-4.8/qpainter.html#drawText-10
 
+    virtual bool renderViewportText(double x,
+                                    double y,
+                                    const std::string& string,
+                                    double r,
+                                    double g,
+                                    double b,
+                                    int flags = 0) OVERRIDE FINAL;
+
+    virtual void drawInViewportSpace(const std::function<void()>& draw) OVERRIDE FINAL;
+
+    virtual void getCursorPositionInOverlay(double& x,
+                                            double& y) const OVERRIDE FINAL;
 
     void renderText(double x,
                     double y,
@@ -517,6 +531,8 @@ public:
     virtual int getCurrentlyDisplayedTime() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     QPointF toZoomCoordinates(const QPointF& position) const;
+
+    QPointF toZoomCoordinatesAtPixelCentre(const QPointF& position) const;
 
     QPointF toWidgetCoordinates(const QPointF& position) const;
 
@@ -762,6 +778,8 @@ private:
     static double currentTimeForEvent(QInputEvent* e);
 
 private:
+    void onZoomStepped(double oldZoomFactor, double zoomFactor);
+
     struct Implementation;
     std::unique_ptr<Implementation> _imp; // PIMPL: hide implementation details
 };

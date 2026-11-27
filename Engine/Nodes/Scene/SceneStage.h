@@ -28,24 +28,32 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <cstddef>
+#include <functional>
+#include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_ENTER
 
 /**
  * @brief What a SceneStage composes, taken from one to make another compose the same: the payload
- * last synced and the drag preview set over it. Copying it shares the payload's layers, it does
- * not copy them.
+ * last synced, the payloads it includes and the drag preview set over it. Copying it shares the
+ * payload's layers, it does not copy them.
  **/
 struct SceneStageSnapshot {
     ScenePayload payload;
+    // getLoadSet() of the stage; null for every payload.
+    SceneLoadSetPtr loadSet;
     // The deltas and time code of the last setPreviewTransforms(), none while nothing is previewed.
     std::vector<std::pair<std::string, PXR_NS::GfMatrix4d>> previewDeltas;
     double previewTimeCode = 0.;
@@ -65,12 +73,14 @@ struct SceneStageSnapshot {
  *
  * Not thread-safe: a stage must not be read while it is being edited (OpenUSD's threading model
  * is many readers or one writer per stage), so the owner serializes sync() with every read of
- * getStage(), including Hydra renders of it.
+ * getStage(), including Hydra renders of it. The exceptions are the requests for payload loads and
+ * what reports on them, which any thread may call at any time.
  **/
 class SceneStage {
 public:
-    // Opens the stage on an empty root. isValid() is false when OpenUSD is unusable.
-    SceneStage();
+    // Opens the stage on an empty root, with the payloads of whatever it later composes loaded as
+    // load says. isValid() is false when OpenUSD is unusable.
+    explicit SceneStage(PXR_NS::UsdStage::InitialLoadSet load = PXR_NS::UsdStage::LoadAll);
 
     ~SceneStage();
 
@@ -89,13 +99,25 @@ public:
     bool sync(const ScenePayload& payload);
 
     /**
+     * @brief Whether sync(payload) would edit nothing: the stage composes payload's layers and
+     * metadata already. Takes no lock of the stage's and edits nothing.
+     **/
+    bool isSyncedTo(const ScenePayload& payload) const;
+
+    /**
      * @brief How many of payload's layers, from the weakest up, are the ones already applied, by
      * identity. A sync to a payload sharing a longer base touches less.
      **/
     std::size_t getCommonBaseLength(const ScenePayload& payload) const;
 
-    // How many sync() calls edited the stage.
+    // How many sync() calls edited the stage, plus the noteLayerEdit() calls.
     U64 getEditCount() const;
+
+    /**
+     * @brief Counts an edit the owner made in place to a layer of the payload that no other stage
+     * composes, under the same lock as sync(), so readers of getEditCount() see the stage moved.
+     **/
+    void noteLayerEdit();
 
     // The projections of the payload whose camera the stage lacks, as last synced.
     const std::vector<SceneProjectionCameras::Unresolved>& getUnresolvedProjections() const;
@@ -115,17 +137,142 @@ public:
 
     bool hasPreviewTransforms() const;
 
+    // Moves whenever the preview changes what the stage composes, which getEditCount() does not count.
+    U64 getPreviewGeneration() const;
+
+    /**
+     * @brief Asks for the payloads of paths to load, each prim's own or also those below it, on the
+     * next serviceLoads(). Never touches the stage. A later request for a path replaces an earlier
+     * one not yet serviced. A load with descendants leaves out the subtrees at excluded: a payload
+     * above one of them loads on its own, and its descendants are asked for again once it has.
+     **/
+    void requestLoad(const PXR_NS::SdfPathVector& paths,
+                     bool withDescendants,
+                     const PXR_NS::SdfPathVector& excluded = PXR_NS::SdfPathVector());
+
+    void requestUnload(const PXR_NS::SdfPathVector& paths);
+
+    /**
+     * @brief Drops the requests no serviceLoads() has taken yet. A batch being serviced commits what
+     * it has opened but puts none of its requests back and asks for none of its follow-up loads.
+     **/
+    void cancelPendingLoads();
+
+    /**
+     * @brief Drops the load requests at paths no serviceLoads() has taken yet; unloads stay. A batch
+     * being serviced puts back none of these paths' requests, and asks for no follow-up load of a
+     * payload at one of them or of a request made at one of them. Other paths are left alone.
+     **/
+    void cancelPendingLoads(const PXR_NS::SdfPathVector& paths);
+
+    // Counts a load put off for a closed scene's stale layer only once SceneTeardown is idle.
+    bool hasPendingLoads() const;
+
+    /**
+     * @brief Sets what is called, on the main thread, when loads put off for a closed scene's stale
+     * layer become pending again: SceneTeardown has gone idle. Whoever waits on hasPendingLoads()
+     * wakes on it. MT-safe.
+     **/
+    void setLoadsWake(const std::function<void()>& wake);
+
+    // Whether a request is still waiting or in a serviceLoads() that has not returned.
+    bool hasOutstandingLoads() const;
+
+    // Runs its argument with the owner's lock held, shared with other readers or exclusively.
+    using LockedSection = std::function<void(const std::function<void()>&)>;
+
+    /**
+     * @brief Services every request pending: finds the payload layers under readLocked, opens them
+     * with no lock held, then commits the batch under writeLocked with the layers already in the
+     * registry, so that the lock is not held across file reads. A descendant load opens the nested
+     * payloads its files author too, every variant's, so that its commit reads no file either.
+     * Requests made meanwhile wait for the next call. Returns whether there was anything to service.
+     *
+     * Without cancelled the files open on the caller's thread. With it they open on a thread of
+     * their own, and the call returns, committing nothing, as soon as cancelled() turns true, even
+     * in the middle of a file: that thread finishes the file against state of its own.
+     *
+     * A sync while the files open may compose other payloads at the paths requested: a path is
+     * committed only if its prim still names the payload files that were opened for it. USD takes
+     * one load policy per LoadAndUnload, so a batch mixing own and descendant loads commits in two
+     * calls. A prim whose payload file does not open stays unloaded and is reported by
+     * getLoadFailures().
+     *
+     * A payload whose file, or a file it needs, is still open in a closed scene's layer that
+     * SceneTeardown has yet to destroy, and has changed on disk since, stays unloaded and is asked
+     * for again once SceneTeardown is idle: composing it would reuse that layer.
+     **/
+    bool serviceLoads(const LockedSection& readLocked,
+                      const LockedSection& writeLocked,
+                      const std::function<bool()>& cancelled = std::function<bool()>());
+
+    /**
+     * @brief What a batch commits along with its loads. Called once the batch's files are open,
+     * with no lock held, with the load set the stage has once the batch commits. The function it
+     * returns runs under writeLocked before the loads, in the same step, so a listener never sees
+     * the loads without it; an empty one commits the loads alone. If the stage is synced again
+     * after the call, the batch is put back to be serviced again rather than commit what was
+     * prepared for a stack no longer applied.
+     **/
+    using LoadPreparer = std::function<std::function<void()>(const SceneLoadSetPtr& loadSet)>;
+
+    bool serviceLoads(const LockedSection& readLocked,
+                      const LockedSection& writeLocked,
+                      const std::function<bool()>& cancelled,
+                      const LoadPreparer& prepare);
+
+    /**
+     * @brief The payloads the stage includes, as a load set. Reads the stage, so it is serialized
+     * as any read of getStage() is.
+     **/
+    SceneLoadSetPtr getLoadSet() const;
+
+    /**
+     * @brief Makes the stage include the payloads of loadSet, every one for a null set, with no
+     * load request involved. Returns whether anything was loaded or unloaded. For stages nothing
+     * requests loads on, such as query stages.
+     **/
+    bool applyLoadSet(const SceneLoadSetPtr& loadSet);
+
+    // The set the last applyLoadSet() applied, null before any.
+    const SceneLoadSetPtr& getAppliedLoadSet() const;
+
+    struct LoadFailure {
+        PXR_NS::SdfPath prim;
+        std::string error;
+    };
+
+    // The prims whose last load failed. Asking again clears a prim's failure.
+    std::vector<LoadFailure> getLoadFailures() const;
+
+    // How many LoadAndUnload calls edited the stage. getEditCount() does not count them.
+    U64 getLoadEditCount() const;
+
+    // How long the last serviced batch held writeLocked.
+    double getLastLoadHoldMs() const;
+
     SceneStageSnapshot getSnapshot() const;
 
     /**
-     * @brief Makes the stage compose what snapshot holds: sync() of its payload, then its preview
-     * set or cleared. Returns true if anything was edited. Another stage composing the same
+     * @brief Makes the stage compose what snapshot holds: sync() of its payload, its load set
+     * applied, then its preview set or cleared. Returns true if anything was edited. A stage opened
+     * with LoadNone reads no payload file the snapshot's set leaves out. Another stage composing the same
      * layers shares the write domain of the layers read from files (SceneWriteBarrier).
      **/
     bool syncTo(const SceneStageSnapshot& snapshot);
 
 private:
     void syncProjections();
+
+    // Under _loadMutex: moves the loads put off for a stale layer back to the pending ones once
+    // SceneTeardown has gone idle. A newer request for a path wins.
+    void takeReadyDeferredLoads();
+
+    enum PendingLoadEnum {
+        ePendingLoadOwn,
+        ePendingLoadWithDescendants,
+        ePendingUnload
+    };
 
     struct PreviewPrim {
         PXR_NS::SdfPath path;
@@ -148,6 +295,28 @@ private:
     U64 _editCount = 0;
     std::vector<PreviewPrim> _preview;
     std::vector<std::string> _previewRequested;
+    U64 _previewGeneration = 0;
+
+    // Guards the pending requests and the failures, and is never held across a stage operation.
+    mutable std::mutex _loadMutex;
+    std::map<PXR_NS::SdfPath, PendingLoadEnum> _pendingLoads;
+    // The excluded subtrees of the pending loads with descendants that have any.
+    std::map<PXR_NS::SdfPath, PXR_NS::SdfPathSet> _pendingExclusions;
+    // The load requests cancelled since the batch being serviced was taken, so that the batch does
+    // not ask again for them; a cancel of every request sets the flag instead.
+    PXR_NS::SdfPathSet _cancelledWhileServicing;
+    bool _allCancelledWhileServicing = false;
+    std::map<PXR_NS::SdfPath, std::string> _loadFailures;
+    bool _servicingLoads = false;
+    // The loads put off for a stale layer, until SceneTeardown is idle.
+    std::map<PXR_NS::SdfPath, PendingLoadEnum> _deferredLoads;
+    std::map<PXR_NS::SdfPath, PXR_NS::SdfPathSet> _deferredExclusions;
+    struct DeferredLoadsWake;
+    // Shared with the callback SceneTeardown runs once idle, which may outlive the stage.
+    std::shared_ptr<DeferredLoadsWake> _deferredWake;
+    std::atomic<U64> _loadEditCount { 0 };
+    std::atomic<double> _lastLoadHoldMs { 0. };
+    SceneLoadSetPtr _appliedLoadSet;
     std::vector<std::pair<std::string, PXR_NS::GfMatrix4d>> _previewDeltas;
     double _previewTimeCode = 0.;
 };

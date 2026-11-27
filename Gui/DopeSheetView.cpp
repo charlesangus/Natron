@@ -2884,7 +2884,7 @@ DopeSheetViewPrivate::keyTimeOffset(const DSKnobPtr& dsKnob) const
     NodePtr node = effect ? effect->getNode() : NodePtr();
     if (!node) {
         // Roto item knobs and shapes have no holder: they belong to their curve host's node.
-        RotoDrawableItemPtr item = dsKnob->getRotoItem();
+        RotoItemPtr item = dsKnob->getRotoItem();
         RotoCurveContextPtr context = item ? item->getContext() : RotoCurveContextPtr();
         node = context ? context->getNode() : NodePtr();
     }

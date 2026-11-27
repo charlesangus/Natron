@@ -238,7 +238,7 @@ private:
             return;
         }
         metadata.setNComps(-1, nComps->getValueAtTime(time));
-        metadata.setComponentsType(-1, kNatronColorLayerID);
+        metadata.setComponentsType(-1, eImageComponentsTypeColor);
         metadata.setBitDepth(-1, static_cast<ImageBitDepthEnum>(bitDepth->getValueAtTime(time)));
         metadata.setPixelAspectRatio(-1, par->getValueAtTime(time));
         const int width = format->getValueAtTime(time, 0);

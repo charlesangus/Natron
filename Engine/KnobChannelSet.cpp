@@ -501,17 +501,11 @@ namedChannelBits(const ImageLayerDesc& desc,
     return bits;
 }
 
-static bool
-isColorStorage(const ImageLayerDesc& desc)
-{
-    return desc.getLayerID() == kNatronColorLayerID;
-}
-
 static const ImageLayerDesc*
 findColorStorage(const std::list<ImageLayerDesc>& present)
 {
     for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
-        if (isColorStorage(*it)) {
+        if (it->isColorStorage()) {
             return &(*it);
         }
     }
@@ -540,7 +534,7 @@ regexColorBits(const QRegularExpression& pattern,
     ImageLayerDesc::presentColorViews(storage, &views);
     for (std::vector<std::string>::const_iterator view = views.begin(); view != views.end(); ++view) {
         const ImageLayerDesc& viewDesc = ImageLayerDesc::getColorView(*view);
-        if (!pattern.match(QString::fromUtf8(viewDesc.getLayerLabel().c_str())).hasMatch()) {
+        if (!pattern.match(QString::fromUtf8(viewDesc.getLayerID().c_str())).hasMatch()) {
             continue;
         }
         const std::bitset<4> mask = ImageLayerDesc::colorViewMask(*view);
@@ -616,9 +610,6 @@ KnobChannelSet::resolve(const std::list<ImageLayerDesc>& present) const
                     }
                     continue;
                 }
-                if (row.layerOrPattern == kNatronColorLayerID) {
-                    continue;
-                }
                 for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
                     if (it->getLayerID() != row.layerOrPattern) {
                         continue;
@@ -630,12 +621,12 @@ KnobChannelSet::resolve(const std::list<ImageLayerDesc>& present) const
                     continue;
                 }
                 for (std::list<ImageLayerDesc>::const_iterator it = present.begin(); it != present.end(); ++it) {
-                    if (isColorStorage(*it)) {
+                    if (it->isColorStorage()) {
                         std::string widestView;
                         accumulate(*it, regexColorBits(patterns[i], *it, row.channels, &widestView), std::bitset<4>());
                         continue;
                     }
-                    if (patterns[i].match(QString::fromUtf8(it->getLayerLabel().c_str())).hasMatch()) {
+                    if (patterns[i].match(QString::fromUtf8(it->getLayerID().c_str())).hasMatch()) {
                         std::bitset<4> bits = allChannelBits(*it);
                         if (!row.channels.empty()) {
                             bits &= ~namedChannelBits(*it, row.channels);
@@ -693,23 +684,6 @@ KnobChannelSet::isPatternValid(int row,
     return false;
 }
 
-static std::string
-layerLabelForID(const std::string& layerID)
-{
-    if (ImageLayerDesc::isColorViewID(layerID)) {
-        return layerID;
-    }
-    if (layerID == kNatronColorLayerID) {
-        return kNatronColorViewRGBA;
-    }
-    ImageLayerDesc desc = ImageLayerDesc::mapOFXPlaneStringToLayer(layerID);
-    if (desc) {
-        return desc.getLayerLabel();
-    }
-
-    return layerID;
-}
-
 static void
 appendSummaryItem(std::string* summary,
                   const std::string& item)
@@ -724,7 +698,7 @@ static std::string
 layerRowSummaryItem(const std::string& layerID,
                     const std::vector<std::string>& channels)
 {
-    std::string item = layerLabelForID(layerID);
+    std::string item = layerID;
 
     if (!channels.empty()) {
         item += '.';
@@ -748,7 +722,7 @@ regexMatchSummaryItem(const QRegularExpression& pattern,
                       const ImageLayerDesc& desc,
                       const std::vector<std::string>& excludedChannels)
 {
-    if (isColorStorage(desc)) {
+    if (desc.isColorStorage()) {
         std::string widestView;
         const std::bitset<4> kept = regexColorBits(pattern, desc, excludedChannels, &widestView);
         if (widestView.empty() || kept.none()) {
@@ -770,11 +744,11 @@ regexMatchSummaryItem(const QRegularExpression& pattern,
         return item;
     }
 
-    if (!pattern.match(QString::fromUtf8(desc.getLayerLabel().c_str())).hasMatch()) {
+    if (!pattern.match(QString::fromUtf8(desc.getLayerID().c_str())).hasMatch()) {
         return std::string();
     }
 
-    std::string item = desc.getLayerLabel();
+    std::string item = desc.getLayerID();
 
     if (excludedChannels.empty()) {
         return item;

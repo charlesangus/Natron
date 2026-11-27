@@ -35,13 +35,13 @@ struct PerInputData
     //Either 1 or 2 components in the case of MotionVectors/Disparity
     double pixelAspectRatio;
     int nComps;
-    std::string componentsType;
+    ImageComponentsTypeEnum componentsType;
     ImageBitDepthEnum bitdepth;
 
     PerInputData()
         : pixelAspectRatio(1.)
         , nComps(0)
-        , componentsType()
+        , componentsType(eImageComponentsTypeNone)
         , bitdepth(eImageBitDepthFloat)
     {
     }
@@ -343,7 +343,7 @@ NodeMetadata::getNComps(int inputNb) const
 }
 
 void
-NodeMetadata::setComponentsType(int inputNb,const std::string& componentsType)
+NodeMetadata::setComponentsType(int inputNb, ImageComponentsTypeEnum componentsType)
 {
     if (inputNb == -1) {
         _imp->outputData.componentsType = componentsType;
@@ -354,7 +354,7 @@ NodeMetadata::setComponentsType(int inputNb,const std::string& componentsType)
     }
 }
 
-std::string
+ImageComponentsTypeEnum
 NodeMetadata::getComponentsType(int inputNb) const
 {
     if (inputNb == -1) {
@@ -364,7 +364,7 @@ NodeMetadata::getComponentsType(int inputNb) const
 
             return _imp->inputsData[inputNb].componentsType;
         } else {
-            return kNatronColorLayerID;
+            return eImageComponentsTypeColor;
         }
     }
 }

@@ -381,7 +381,7 @@ KnobGuiChannelSet::onRowNewLayerRequested(LayerChannelRow* row)
         if (!knob || index < 0) {
             return;
         }
-        runNewLayerDialog(knob, getGui(), [this, row](const std::string& layerID, const std::string& /*layerLabel*/) {
+        runNewLayerDialog(knob, getGui(), [this, row](const std::string& layerID) {
             onRowLayerChosen(row, QString::fromStdString(layerID));
         });
     });

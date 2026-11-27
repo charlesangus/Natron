@@ -47,14 +47,14 @@ NATRON_PYTHON_NAMESPACE_ENTER;
 class ImageLayer
 {
     QString _layerName;
-    QString _componentsPrettyName;
     QStringList _componentsName;
     ImageLayerDescPtr _comps;
 
 public:
-
+    /**
+     * @brief A colour view name (rgba, rgb, alpha, xy) with that view's channels names the view.
+     **/
     ImageLayer(const QString& layerName,
-               const QString& componentsPrettyName,
                const QStringList& componentsName);
 
     ImageLayer(const ImageLayerDesc& comps);
@@ -74,7 +74,6 @@ public:
 
     const QString& getLayerName() const;
     const QStringList& getComponentsNames() const;
-    const QString& getComponentsPrettyName() const;
 
     bool operator==(const ImageLayer& other) const;
 
@@ -197,6 +196,20 @@ public:
     ParametricParam* createParametricParam(const QString& name, const QString& label, int nbCurves);
 
     bool removeParam(Param* param);
+
+    /**
+     * @brief Replaces the user parameter param by one of type typeName, keeping its name and place:
+     * one of Int, Int2D, Int3D, Double, Double2D, Double3D, Color (RGB), ColorRGBA, Boolean,
+     * Choice, String, Label (a String shown as text), File, OutputFile, Path, ChannelSet,
+     * LayerSelect, ChannelSelect, Button, Separator and Parametric (with as many curves as param
+     * has, or one). A String and a Label change into each other in place. Between the Int, Double
+     * and Color types the values, animation, expressions and links carry over, rounded for an
+     * Int; any other change resets the parameter to the new type's defaults, done only when
+     * allowReset is True. Returns the new parameter, which thisNode.<name> then is too, or None
+     * when a reset is needed and allowReset is False. Raises ValueError for an unknown type or a
+     * parameter that is not a user parameter of this holder.
+     **/
+    Param* changeParamType(Param* param, const QString& typeName, bool allowReset = false);
 
     /**
      * @brief Makes a parameter created with one of the functions above a Reverse-Flow Variable:

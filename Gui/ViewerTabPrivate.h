@@ -43,6 +43,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Knob.h"
+#include "Engine/OverlayPath.h"
 #include "Engine/UndoGesture.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
@@ -52,10 +53,10 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/NodeViewerContext.h"
 #include "Gui/ViewerStaleCueTiming.h"
 
-#define NATRON_TRANSFORM_AFFECTS_OVERLAYS
-
 NATRON_NAMESPACE_ENTER
 
+class SceneBreadcrumbBar;
+class GeoDisplayBar;
 class SceneViewport;
 
 struct ViewerTabPrivate
@@ -78,17 +79,27 @@ struct ViewerTabPrivate
     QVBoxLayout* viewerSubContainerLayout;
     // Beside viewer in viewerSubContainerLayout; one of the two is visible.
     SceneViewport* sceneViewport;
+    // Above sceneViewport, shown and hidden with it.
+    SceneBreadcrumbBar* sceneBreadcrumbBar;
+    // The node the scene view last showed: loads asked for on another node's scene are dropped.
+    NodeWPtr sceneLoadsNode;
+    // The node the scene view last showed, for sceneViewedNodeChanged().
+    NodeWPtr sceneViewedNode;
     QVBoxLayout* mainLayout;
 
     /*Viewer Settings*/
     QWidget* firstSettingsRow, *secondSettingsRow;
     QHBoxLayout* firstRowLayout, *secondRowLayout;
-    // The progressive render's controls, shown while the scene view renders with other than Storm.
+    // The progressive render's controls, shown with the scene view and enabled while it renders with
+    // other than Storm.
     QWidget* sceneRenderRow;
     QHBoxLayout* sceneRenderRowLayout;
     SpinBox* maxSamplesBox;
     Button* refinementPausedButton;
+    Button* renderEverythingButton;
     Label* refineSamplesLabel;
+    // The geometry display toggles, shown while the scene view shows geometry.
+    GeoDisplayBar* geoDisplayRow;
 
     /*1st row*/
     //ComboBox* viewerLayers;
@@ -136,6 +147,7 @@ struct ViewerTabPrivate
     ProjectColorManagementPtr colorManagement;
     int configChangedCallbackId;
     Button* checkerboardButton;
+    Button* mapSiblingOverlaysButton;
     Button* pickerButton;
     ComboBox* viewsComboBox;
     /*Info*/
@@ -173,6 +185,10 @@ struct ViewerTabPrivate
     QTimer mustSetUpPlaybackButtonsTimer;
 
     ViewerStaleCueTiming staleCueTiming;
+    // The inputs applyStaleCueInput() combines: the viewer node's last staleChanged() and the 3D
+    // view's last outOfDateChanged().
+    bool viewerNodeStale = false;
+    bool sceneOutOfDate = false;
     // Fires at the timing's next deadline; never runs while the stale cue style is Off.
     QTimer staleCueTimer;
     QElapsedTimer staleCueClock;
@@ -220,6 +236,13 @@ struct ViewerTabPrivate
     bool hasPenDown;
     bool hasCaughtPenMotionWhileDragging;
 
+    // The overlay that took the last pen-down and where it was then: it gets the pen-up even if
+    // the drag hid it.
+    NodeWPtr penDownOverlay;
+    OverlayPathResult penDownPlacement;
+
+    mutable OverlayPathCache overlayPathCache;
+
     ViewerTabPrivate(ViewerTab* publicInterface,
                      ViewerInstance* node);
 
@@ -253,21 +276,10 @@ struct ViewerTabPrivate
         }
     }
 
-#ifdef NATRON_TRANSFORM_AFFECTS_OVERLAYS
-    // return the tronsform to apply to the overlay as a 3x3 homography in canonical coordinates
-    bool getOverlayTransform(double time,
-                             ViewIdx view,
-                             const NodePtr& target,
-                             EffectInstance* currentNode,
-                             Transform::Matrix3x3* transform) const;
-
-    bool getTimeTransform(double time,
-                          ViewIdx view,
-                          const NodePtr& target,
-                          EffectInstance* currentNode,
-                          double *newTime) const;
-
-#endif
+    // Where node's overlay goes in this viewer at the viewer's time.
+    OverlayPathResult resolveOverlay(double time,
+                                     ViewIdx view,
+                                     const NodePtr& node) const;
 
     void getComponentsAvailabel(double time, ViewIdx view, std::set<ImageLayerDesc>* comps) const;
 

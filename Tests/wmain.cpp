@@ -27,6 +27,7 @@
 #include "DataKindTestEffect.h"
 #include "DeepRenderTestEffect.h"
 #include "Engine/Nodes/Test/OverlayTestNode.h"
+#include "GeoRenderTestEffect.h"
 #include "IdentityHopTestEffect.h"
 #include "InputChangedFetchTestEffect.h"
 #include "MultiplanarTestEffect.h"
@@ -42,6 +43,10 @@
 #include "TestOfxPluginPath.h"
 #include "TestPlaneChoiceTakeOvers.h"
 #include "TestRetiredOfxIds.h"
+// Registers the fatal-signal stack dump and the stall dump for every suite, not only the ones
+// that start a TestWatchdog.
+#include "TestWatchdog.h"
+#include "TwoPlaneTestEffect.h"
 
 using namespace NATRON_NAMESPACE;
 
@@ -99,6 +104,9 @@ registerDataKindTestPlugins()
     registerTestBuiltInPlugin<DataKindTestRawSource>();
     registerTestBuiltInPlugin<DataKindTestRawSink>();
     registerTestBuiltInPlugin<DataKindTestRawAdapterSink>();
+    registerTestBuiltInPlugin<DataKindTestGeometrySource>();
+    registerTestBuiltInPlugin<DataKindTestGeometrySink>();
+    registerTestBuiltInPlugin<DataKindTestSceneSink>();
 }
 
 void
@@ -117,11 +125,24 @@ registerDeepRenderTestPlugins()
 }
 
 void
+registerGeoRenderTestPlugins()
+{
+    // Geometry sources and operators so GeoRender_Test.cpp can drive a real evaluateGeometry()
+    // pull, including a time-varying and a previous-frame input.
+    registerTestBuiltInPlugin<GeoRenderTestTriangle>();
+    registerTestBuiltInPlugin<GeoRenderTestTranslate>();
+    registerTestBuiltInPlugin<GeoRenderTestPreviousFrame>();
+}
+
+void
 registerMultiplanarTestPlugins()
 {
     // Registered so LayerKnobsRender_Test.cpp can exercise a multiplanar effect that never
     // produces Color, which no shipped plugin does today.
     registerTestBuiltInPlugin<MultiplanarDiffuseOnlyTestEffect>();
+    // Registered so TwoPlaneRender_Test.cpp can tell two planes of one layout apart by their values.
+    registerTestBuiltInPlugin<TwoPlaneSourceTestEffect>();
+    registerTestBuiltInPlugin<TwoPlaneReaderTestEffect>();
 }
 
 void
@@ -142,6 +163,7 @@ registerSceneTestPlugins()
     registerTestBuiltInPlugin<SceneTestOp>();
     registerTestBuiltInPlugin<SceneTestGeometry>();
     registerTestBuiltInPlugin<SceneTestAuthored>();
+    registerTestBuiltInPlugin<SceneTestContextProbe>();
 }
 
 void
@@ -308,6 +330,7 @@ GTEST_API_ int main(int argc, char **argv)
     }
     registerDataKindTestPlugins();
     registerDeepRenderTestPlugins();
+    registerGeoRenderTestPlugins();
     registerSceneTestPlugins();
     registerMultiplanarTestPlugins();
     registerGraphScalingTestPlugins();

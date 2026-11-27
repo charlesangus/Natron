@@ -6,6 +6,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXCLUDELIST="$SCRIPT_DIR/excludelist.txt"
 CHECK_RELOCATABLE="$SCRIPT_DIR/check-relocatable.sh"
 CHECK_STARTUP="$SCRIPT_DIR/check-startup.sh"
+RELOCATABLE_STAMP="$SCRIPT_DIR/relocatable-stamp.sh"
+
+SECTION_NAME=""
+SECTION_START=$SECONDS
+section_end() {
+    if [[ -n "$SECTION_NAME" ]]; then
+        echo "==> $SECTION_NAME done in $((SECONDS - SECTION_START))s"
+    fi
+    SECTION_NAME=""
+}
+section() {
+    section_end
+    SECTION_NAME="$1"
+    SECTION_START=$SECONDS
+    echo "==> $1"
+}
 
 if [[ $# -ne 2 ]]; then
     echo "Usage: stage-bundle.sh <build-dir> <staging-dir>" >&2
@@ -29,6 +45,22 @@ if [[ "${NATRON_STAGE_NO_STRIP:-0}" != "1" ]]; then
         echo "error: strip not found in PATH (set NATRON_STAGE_NO_STRIP=1 to stage unstripped)" >&2
         exit 1
     fi
+fi
+
+# NATRON_STAGE_SYMBOLS_DIR: where the symbol tables strip removes are kept, for
+# stack samples of the shipped bundle. Nothing in the bundle changes.
+SYMBOLS_DIR=""
+if [[ -n "${NATRON_STAGE_SYMBOLS_DIR:-}" && -z "$STRIP" ]]; then
+    echo "  NATRON_STAGE_SYMBOLS_DIR ignored: NATRON_STAGE_NO_STRIP=1 keeps the symbols in the bundle"
+elif [[ -n "${NATRON_STAGE_SYMBOLS_DIR:-}" ]]; then
+    for tool in objcopy nm readelf; do
+        if ! command -v "$tool" &>/dev/null; then
+            echo "error: $tool not found in PATH (needed by NATRON_STAGE_SYMBOLS_DIR)" >&2
+            exit 1
+        fi
+    done
+    mkdir -p "$NATRON_STAGE_SYMBOLS_DIR"
+    SYMBOLS_DIR="$(cd "$NATRON_STAGE_SYMBOLS_DIR" && pwd)"
 fi
 
 if [[ ! -f "$BUILD_DIR/CMakeCache.txt" ]]; then
@@ -89,6 +121,7 @@ is_excluded() {
 # the bundle?" is answerable by prefix match no matter what the caller passed.
 mkdir -p "$STAGE_DIR"
 STAGE_DIR="$(cd "$STAGE_DIR" && pwd)"
+"$RELOCATABLE_STAMP" clear "$STAGE_DIR"
 
 is_elf() {
     file -b "$1" 2>/dev/null | grep -q "^ELF"
@@ -156,6 +189,7 @@ set_bundle_runpath() {
 
 STRIP_COUNT=0
 STRIP_FAILED=0
+SYMBOLS_COUNT=0
 STRIP_BYTES_BEFORE=0
 STRIP_BYTES_AFTER=0
 
@@ -174,10 +208,40 @@ STRIP_BYTES_AFTER=0
 # segment: it moves .dynsym to a file offset nothing maps while DT_SYMTAB keeps
 # the old address, and the executable segfaults in the loader. A stripped file
 # fed to patchelf is just a smaller ELF, which every patchelf handles.
+# A symtab-only file under SYMBOLS_DIR/.build-id, where eu-stack --debuginfo-path
+# finds it. That lookup fails for a non-PIE executable once patchelf has mapped
+# the page below its base (see strip_elf), so a top-level executable in bin/
+# also gets SYMBOLS_DIR/<name>.bin.syms, nm's address-sorted listing, which
+# heavy_scene_stack_window.py --symbols applies to frames by absolute address.
+keep_symbols() {
+    local target="$1" build_id name notes header
+
+    # Each reader gets the whole output before it looks at it: an awk that
+    # exits, or a grep -q that stops, on the first match closes the pipe while
+    # readelf is still writing, and pipefail turns that SIGPIPE (141) into a
+    # fatal error under set -e.
+    notes="$(LC_ALL=C readelf -n "$target" 2>/dev/null || true)"
+    build_id="$(awk '/Build ID:/ { print $3; exit }' <<< "$notes")"
+    if [[ ${#build_id} -gt 2 ]]; then
+        mkdir -p "$SYMBOLS_DIR/.build-id/${build_id:0:2}"
+        objcopy --only-keep-debug --strip-debug "$target" "$SYMBOLS_DIR/.build-id/${build_id:0:2}/${build_id:2}.debug" \
+            || echo "  warning: no symbol file for ${target#"$STAGE_DIR"/}" >&2
+    fi
+    if [[ "$(dirname "$target")" == "$STAGE_DIR/bin" && "$target" != *.bin ]] \
+        && header="$(LC_ALL=C readelf -h "$target" 2>/dev/null || true)" \
+        && grep -q 'Type: *EXEC' <<< "$header"; then
+        name="$(basename "$target").bin"
+        nm -n -S -C --defined-only "$target" > "$SYMBOLS_DIR/$name.syms" \
+            || echo "  warning: no symbol listing for ${target#"$STAGE_DIR"/}" >&2
+    fi
+    SYMBOLS_COUNT=$((SYMBOLS_COUNT + 1))
+}
+
 strip_elf() {
     local target="$1" size_before size_after
 
     [[ -n "$STRIP" ]] || return 0
+    [[ -z "$SYMBOLS_DIR" ]] || keep_symbols "$target"
 
     size_before="$(stat -c %s "$target")"
     chmod u+w "$target"
@@ -209,7 +273,7 @@ stage_library() {
     stage_elf "$STAGE_DIR/lib/$name"
 }
 
-echo "==> Installing from CMake build to $STAGE_DIR"
+section "Installing from CMake build to $STAGE_DIR"
 cmake --install "$BUILD_DIR" --prefix "$STAGE_DIR"
 
 mkdir -p "$STAGE_DIR/lib"
@@ -225,7 +289,7 @@ if [[ -z "$QT_PLUGIN_DIR" || ! -d "$QT_PLUGIN_DIR" ]]; then
     exit 1
 fi
 
-echo "==> Copying Qt6 plugins from $QT_PLUGIN_DIR"
+section "Copying Qt6 plugins from $QT_PLUGIN_DIR"
 
 # tls/ holds Qt's TLS backends. Without them every HTTPS request, model
 # downloads included, fails with "TLS initialization failed".
@@ -251,7 +315,7 @@ if [[ ! -f "$STAGE_DIR/plugins/tls/libqopensslbackend.so" ]]; then
     exit 1
 fi
 
-echo "==> Writing qt.conf"
+section "Writing qt.conf"
 cat > "$STAGE_DIR/bin/qt.conf" <<'QTCONF'
 [Paths]
 Prefix = ..
@@ -285,7 +349,7 @@ fi
 # bundle instead of dying on "No module named 'encodings'".
 PY_DEST="$STAGE_DIR/lib/python$PY_TAG"
 
-echo "==> Staging the Python $PY_TAG standard library from $PY_STDLIB"
+section "Staging the Python $PY_TAG standard library from $PY_STDLIB"
 
 # config-* is the static libpython and Makefile fragments used to *build*
 # extension modules, which a bundle never does and which alone outweighs
@@ -314,7 +378,7 @@ mkdir -p "$PY_DEST/site-packages"
 # ships neither Qt Quick nor Qt Multimedia nor Qt WebEngine.
 PYSIDE_SRC="$PY_SITELIB/PySide6"
 if [[ -d "$PYSIDE_SRC" ]]; then
-    echo "==> Staging PySide6 (QtCore, QtGui, QtWidgets) and shiboken6"
+    section "Staging PySide6 (QtCore, QtGui, QtWidgets) and shiboken6"
     mkdir -p "$PY_DEST/site-packages/PySide6"
     for pyside_item in __init__.py _config.py _git_pyside_version.py support \
                        QtCore.abi3.so QtGui.abi3.so QtWidgets.abi3.so; do
@@ -349,7 +413,7 @@ for usd_dir in "$USD_PREFIX/lib/usd" "$USD_PREFIX/plugin/usd" "$PY_SITELIB/pxr";
     fi
 done
 
-echo "==> Staging OpenUSD from $USD_PREFIX"
+section "Staging OpenUSD from $USD_PREFIX"
 for usd_lib in "$USD_PREFIX"/lib/libusd_*.so; do
     stage_library "$usd_lib" "$(basename "$usd_lib")"
 done
@@ -409,7 +473,7 @@ while IFS= read -r staged_py_binary; do
     fi
 done < <(find "$PY_DEST" -type f -name "*.so" 2>/dev/null)
 
-echo "==> Staging bundle-relative resources"
+section "Staging bundle-relative resources"
 
 # AppManager::loadInternal() points FONTCONFIG_PATH at <bin>/../Resources/etc/
 # fonts. The template is stored with its quotes backslash-escaped, which is not
@@ -439,6 +503,9 @@ copy_tree "$SOURCE_DIR/Gui/Resources/PyPlugs" "$STAGE_DIR/Plugins/PyPlugs"
 # <bin>/../Resources/tabtabtab.
 copy_tree "$SOURCE_DIR/Gui/Resources/TabTabTab" "$STAGE_DIR/Resources/tabtabtab" --exclude='./tests' --exclude='__pycache__'
 
+# GlassCatalogue::defaultPath() looks for <bin>/../Resources/optics/glass.json.
+copy_tree "$SOURCE_DIR/Gui/Resources/Optics" "$STAGE_DIR/Resources/optics"
+
 # fetch-assets.sh writes what it downloads and builds to <repo>/build/assets
 # regardless of where the build directory itself is, so a build tree
 # configured anywhere else still has to be pointed back at that one place.
@@ -451,7 +518,7 @@ OFX_ASSETS="$ASSETS_DIR/Plugins"
 mkdir -p "$STAGE_DIR/Plugins/OFX/Natron"
 
 if compgen -G "$OFX_ASSETS/*.ofx.bundle" > /dev/null; then
-    echo "==> Staging OFX plugins from $OFX_ASSETS"
+    section "Staging OFX plugins from $OFX_ASSETS"
     for ofx_bundle in "$OFX_ASSETS"/*.ofx.bundle; do
         echo "  $(basename "$ofx_bundle")"
         copy_tree "$ofx_bundle" "$STAGE_DIR/Plugins/OFX/Natron/$(basename "$ofx_bundle")"
@@ -474,7 +541,7 @@ if ! compgen -G "$ORT_ASSETS/lib/libonnxruntime.so.*.*" > /dev/null; then
     echo "error: Run tools/ci/local/fetch-assets.sh and stage again." >&2
     exit 1
 fi
-echo "==> Staging ONNX Runtime from $ORT_ASSETS"
+section "Staging ONNX Runtime from $ORT_ASSETS"
 mkdir -p "$STAGE_DIR/lib/onnxruntime"
 cp -a "$ORT_ASSETS"/lib/libonnxruntime.so* "$STAGE_DIR/lib/onnxruntime/"
 cp "$ORT_ASSETS/LICENSE" "$ORT_ASSETS/ThirdPartyNotices.txt" "$STAGE_DIR/lib/onnxruntime/"
@@ -485,7 +552,7 @@ cp "$ORT_ASSETS/LICENSE" "$ORT_ASSETS/ThirdPartyNotices.txt" "$STAGE_DIR/lib/onn
 # The debug delegate, headers, CMake files and the other command-line tools stay out.
 MOONRAY_PREFIX="$(cache_value 'NATRON_MOONRAY_PREFIX:PATH')"
 if [[ -n "$MOONRAY_PREFIX" && -f "$MOONRAY_PREFIX/plugin/pxr/plugInfo.json" ]]; then
-    echo "==> Staging MoonRay from $MOONRAY_PREFIX"
+    section "Staging MoonRay from $MOONRAY_PREFIX"
     MOONRAY_DEST="$STAGE_DIR/moonray"
     copy_tree "$MOONRAY_PREFIX" "$MOONRAY_DEST" \
         --exclude='./bin' --exclude='./include' --exclude='./lib64/cmake' --exclude='./lib64/pkgconfig' \
@@ -509,22 +576,51 @@ else
     exit 1
 fi
 
-resolve_deps() {
-    local binary="$1"
-    ldd "$binary" 2>/dev/null | while read -r line; do
-        if [[ "$line" == *"=>"* ]]; then
-            local path
-            path="$(echo "$line" | sed -n 's/.* => \(\/[^ ]*\) .*/\1/p')"
-            if [[ -n "$path" ]]; then
-                echo "$path"
-            fi
+# ldd's verdict on a file depends on what lib/ already holds, so a parallel ldd
+# taken before a chunk's copies is only trusted for an item if none of the
+# names it reports were copied into lib/ since: a new lib/<name> can change the
+# lookup of <name> and nothing else. Otherwise the item is run again serially,
+# which leaves every copy decision, and so which source wins a basename, as a
+# one-at-a-time FIFO walk would make it.
+LDD_JOBS="${NATRON_STAGE_JOBS:-$(nproc)}"
+case "$LDD_JOBS" in
+    ''|*[!0-9]*|0*) echo "error: NATRON_STAGE_JOBS must be a positive integer, got '$LDD_JOBS'" >&2; exit 1 ;;
+esac
+LDD_CHUNK=$((LDD_JOBS * 8))
+LDD_DIR="$(mktemp -d)"
+trap 'rm -rf "$LDD_DIR"' EXIT
+
+LDD_RESOLVED_RE='^.* => (/[^ ]*) .*$'
+LDD_DEPS=()
+LDD_NAMES=()
+parse_ldd() {
+    local line first
+    LDD_DEPS=()
+    LDD_NAMES=()
+    while read -r line; do
+        if [[ "$line" == *"=>"* && "$line" =~ $LDD_RESOLVED_RE ]]; then
+            LDD_DEPS+=("${BASH_REMATCH[1]}")
+            LDD_NAMES+=("${BASH_REMATCH[1]##*/}")
         fi
-    done
+        first="${line%%[[:space:]]*}"
+        if [[ -n "$first" ]]; then
+            LDD_NAMES+=("${first##*/}")
+        fi
+    done < "$1"
 }
 
-echo "==> Walking ldd closure"
+declare -A EXCLUDED_VERDICT
+is_excluded_cached() {
+    local verdict
+    if [[ ! -v EXCLUDED_VERDICT["$1"] ]]; then
+        verdict=1
+        is_excluded "$1" && verdict=0
+        EXCLUDED_VERDICT["$1"]=$verdict
+    fi
+    return "${EXCLUDED_VERDICT[$1]}"
+}
 
-declare -A SEEN
+section "Walking ldd closure"
 
 # Seed from everything the bundle ships that the loader can be asked for:
 # the executables, the libraries CMake installed, and the whole Qt, OpenUSD and
@@ -545,54 +641,89 @@ is_inside_ofx_libraries() {
     return 1
 }
 
+# Everything staged goes back on the queue and gets walked in turn, so a
+# library pulled in by a plugin contributes its own dependencies too. Each
+# path string is queued once, which is what brings the walk to a fixed point.
 walk_closure() {
-    local queue=()
-    local current dep dep_basename staged
+    local -a queue=()
+    local -A queued=()
+    local -A copied_in_chunk=()
+    local head=0 end i name stale bin dep dep_basename staged
 
     while IFS= read -r bin; do
+        [[ -v queued["$bin"] ]] && continue
+        queued["$bin"]=1
         queue+=("$bin")
     done < <(collect_binaries)
 
-    while [[ ${#queue[@]} -gt 0 ]]; do
-        current="${queue[0]}"
-        queue=("${queue[@]:1}")
+    while (( head < ${#queue[@]} )); do
+        end=$((head + LDD_CHUNK))
+        if (( end > ${#queue[@]} )); then
+            end=${#queue[@]}
+        fi
 
-        [[ -v SEEN["$current"] ]] && continue
-        SEEN["$current"]=1
+        for (( i = head; i < end; i++ )); do
+            printf '%s\0%s\0' "$LDD_DIR/$i" "${queue[i]}"
+        done | xargs -0 -n 2 -P "$LDD_JOBS" sh -c 'ldd "$2" > "$1" 2>/dev/null; exit 0' sh
 
-        while IFS= read -r dep; do
-            [[ -z "$dep" ]] && continue
-
-            dep_basename="$(basename "$dep")"
-
-            if is_excluded "$dep_basename"; then
-                continue
+        copied_in_chunk=()
+        for (( i = head; i < end; i++ )); do
+            parse_ldd "$LDD_DIR/$i"
+            stale=0
+            if [[ ${#copied_in_chunk[@]} -gt 0 ]]; then
+                for name in "${LDD_NAMES[@]}"; do
+                    if [[ -v copied_in_chunk["$name"] ]]; then
+                        stale=1
+                        break
+                    fi
+                done
             fi
-
-            if is_inside_ofx_libraries "$dep"; then
-                continue
+            if [[ "$stale" == 1 ]]; then
+                ldd "${queue[i]}" > "$LDD_DIR/$i" 2>/dev/null || true
+                parse_ldd "$LDD_DIR/$i"
             fi
+            rm -f "$LDD_DIR/$i"
 
-            if [[ "$dep" == "$STAGE_DIR"/* ]]; then
-                staged="$dep"
-            else
-                staged="$STAGE_DIR/lib/$dep_basename"
-                if [[ ! -f "$staged" ]]; then
-                    stage_library "$dep" "$dep_basename"
-                    echo "  copied: $dep_basename"
+            for dep in "${LDD_DEPS[@]}"; do
+                dep_basename="${dep##*/}"
+
+                if is_excluded_cached "$dep_basename"; then
+                    continue
                 fi
-            fi
 
-            # Everything staged goes back on the queue and gets walked in
-            # turn, so a library pulled in by a plugin contributes its own
-            # dependencies too. SEEN makes each file resolve once, which is
-            # what brings the walk to a fixed point.
-            queue+=("$staged")
-        done < <(resolve_deps "$current")
+                if is_inside_ofx_libraries "$dep"; then
+                    continue
+                fi
+
+                if [[ "$dep" == "$STAGE_DIR"/* ]]; then
+                    staged="$dep"
+                else
+                    staged="$STAGE_DIR/lib/$dep_basename"
+                    if [[ ! -f "$staged" ]]; then
+                        stage_library "$dep" "$dep_basename"
+                        copied_in_chunk["$dep_basename"]=1
+                        echo "  copied: $dep_basename"
+                    fi
+                fi
+
+                if [[ ! -v queued["$staged"] ]]; then
+                    queued["$staged"]=1
+                    queue+=("$staged")
+                fi
+            done
+        done
+        head=$end
     done
 }
 
+closure_start=$SECONDS
 walk_closure
+echo "==> ldd closure walk took $((SECONDS - closure_start))s"
+
+if [[ ! -f "$STAGE_DIR/lib/libembree4.so.4" ]]; then
+    echo "error: libembree4.so.4 was not staged; the Natron Utility render delegate could not load" >&2
+    exit 1
+fi
 
 # A plugin's private Libraries and the shared lib/ can offer the same soname:
 # the app and Arena's ImageMagick both link lcms2. Shipping both copies means
@@ -613,7 +744,7 @@ drop_shared_ofx_libraries() {
     find "$STAGE_DIR/Plugins" -path "*.ofx.bundle/Libraries/*" -xtype l -delete 2>/dev/null || true
 }
 
-echo "==> Resolving plugin libraries against the shared lib/"
+section "Resolving plugin libraries against the shared lib/"
 drop_shared_ofx_libraries
 
 # The GCC runtime is the one piece of the closure the bundle must not simply
@@ -755,13 +886,13 @@ LAUNCHER
     done
 }
 
-echo "==> Setting the GCC runtime aside for launch-time election"
+section "Setting the GCC runtime aside for launch-time election"
 split_optional_runtime_libs
 
-echo "==> Installing the launcher shims"
+section "Installing the launcher shims"
 install_launcher
 
-echo "==> Debug info stripped from staged ELF files"
+section "Debug info stripped from staged ELF files"
 if [[ -n "$STRIP" ]]; then
     echo "  stripped $STRIP_COUNT files ($STRIP_FAILED failed): $STRIP_BYTES_BEFORE -> $STRIP_BYTES_AFTER bytes"
     if [[ "$STRIP_FAILED" -gt 0 ]]; then
@@ -771,17 +902,23 @@ if [[ -n "$STRIP" ]]; then
 else
     echo "  skipped: NATRON_STAGE_NO_STRIP=1"
 fi
+if [[ -n "$SYMBOLS_DIR" ]]; then
+    echo "  symbols of $SYMBOLS_COUNT files kept in $SYMBOLS_DIR ($(du -sh "$SYMBOLS_DIR" | cut -f1))"
+fi
 
 # ldd is the right tool above -- finding host libraries to bundle is exactly
 # its job -- and the wrong one here, because it would answer using this
 # machine's ld.so.cache. Hand the finished tree to the checker instead.
-echo "==> Verifying the staged tree resolves against itself"
+section "Verifying the staged tree resolves against itself"
 "$CHECK_RELOCATABLE" "$STAGE_DIR"
+"$RELOCATABLE_STAMP" write "$STAGE_DIR"
 
 # The check above reads ELF headers, so a bundle missing a data dependency --
 # the Python standard library, the fontconfig configuration -- passes it and
 # still cannot start. Actually start the binaries.
-echo "==> Verifying the staged binaries start"
+section "Verifying the staged binaries start"
 "$CHECK_STARTUP" "$STAGE_DIR"
 
-echo "==> Staging complete: $STAGE_DIR"
+section "Staging complete: $STAGE_DIR"
+section_end
+echo "==> Total staging time ${SECONDS}s"

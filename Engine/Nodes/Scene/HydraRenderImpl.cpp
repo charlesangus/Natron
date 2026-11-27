@@ -31,6 +31,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <functional>
@@ -40,6 +41,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <thread>
 #include <utility>
 
@@ -62,6 +64,7 @@
 #include <pxr/base/gf/vec4d.h>
 #include <pxr/base/gf/vec4f.h>
 #include <pxr/base/tf/errorMark.h>
+#include <pxr/base/vt/types.h>
 #include <pxr/imaging/cameraUtil/conformWindow.h>
 #include <pxr/imaging/cameraUtil/framing.h>
 #include <pxr/imaging/garch/glApi.h>
@@ -96,11 +99,28 @@
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Nodes/Scene/SceneDrawFilter.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/StormGLSection.h"
+#include "Engine/Nodes/Scene/StormIdPass.h"
+#include "Engine/Nodes/Scene/StormPtexBindingFilter.h"
 #include "Engine/Nodes/Scene/StormPtexBudget.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/AppManager.h"
+#include "Engine/Gpu/GpuDevice.h"
+#include "Engine/Gpu/GpuRecord.h"
+#include "Engine/GpuContext.h"
+#include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
+#include "Engine/RectI.h"
+#endif
+#include "Engine/Nodes/Scene/StormTextureBudget.h"
+#include "Engine/TLSHolder.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -120,6 +140,9 @@ renderGuarded(UsdImagingGLEngine* engine,
 {
     try {
         RenderDelegates::runRenderFaultHook();
+        if (RenderDelegates::isStorm(engine->GetCurrentRendererId().GetString())) {
+            StormTextureBudget::sampleFreeVideoMemory();
+        }
         engine->Render(root, params);
     } catch (const std::exception& e) {
         *what = e.what();
@@ -143,6 +166,105 @@ const std::chrono::milliseconds kConvergencePoll(10);
 // How long a delegate may show no sign of a restart in its progress before its engine is made
 // again: until it shows one its buffers may hold the render of before, which is not read.
 const std::chrono::milliseconds kRestartUnseen(2000);
+
+// How long a MoonRay session may hold its progress still, mid-render, before it is taken to have
+// stopped answering: its engine is made once again, and a second such silence fails the render.
+// Any change in what it reports, its progress, clock or status, starts the wait over, so a slow
+// render that moves on never meets it. It applies once the session has sent a frame;
+// NATRON_DELEGATE_STALL_S overrides it, in seconds.
+const std::chrono::seconds kDelegateStall(30);
+
+// The same, for a session that has sent no frame yet. Until its first, its stats can hold still
+// through execComp's start, the scene's load and its render prep, which on a heavy scene and a
+// modest machine take minutes, while a session whose engine never comes ready must still fail.
+// NATRON_DELEGATE_STARTUP_STALL_S overrides it, in seconds.
+const std::chrono::seconds kDelegateStartupStall(300);
+
+std::chrono::milliseconds
+stallBoundOf(const char* variable,
+             std::chrono::milliseconds fallback)
+{
+    const char* env = std::getenv(variable);
+    if (env && *env) {
+        char* end = nullptr;
+        const double seconds = std::strtod(env, &end);
+        if ((end != env) && (seconds > 0.)) {
+            return std::chrono::milliseconds((long long)std::ceil(seconds * 1000.));
+        }
+    }
+
+    return fallback;
+}
+
+std::string
+delegateStallError(std::chrono::milliseconds bound)
+{
+    char seconds[32];
+    std::snprintf(seconds, sizeof(seconds), "%g", std::chrono::duration<double>(bound).count());
+
+    return std::string("MoonRay's render session stopped answering: its progress held still, and once its session was made again held still for ") + seconds + " s.";
+}
+
+// Whether MoonRay's stats show a frame from its render process: hdMoonray's percentDone stays 0 until
+// the first one arrives.
+bool
+moonRayProgressed(const VtDictionary& stats)
+{
+    const VtDictionary::const_iterator percent = stats.find("percentDone");
+    if (percent == stats.end()) {
+        return false;
+    }
+    if (percent->second.IsHolding<float>()) {
+        return percent->second.UncheckedGet<float>() > 0.f;
+    }
+    if (percent->second.IsHolding<double>()) {
+        return percent->second.UncheckedGet<double>() > 0.;
+    }
+
+    return false;
+}
+
+/**
+ * Whether a MoonRay session's progress has held still for its bound: its render stats, read after
+ * every pass, the same all along. The wait starts at the first read after a reset, and its bound is
+ * the startup one until a read shows a frame, the mid-render one from then on.
+ **/
+class ProgressStall {
+public:
+    void reset()
+    {
+        _known = false;
+        _framed = false;
+    }
+
+    bool stalled(const VtDictionary& stats,
+                 std::chrono::steady_clock::time_point now)
+    {
+        if (!_known || (stats != _stats)) {
+            _known = true;
+            _stats = stats;
+            _since = now;
+            _framed = _framed || moonRayProgressed(stats);
+            _bound = _framed ? stallBoundOf("NATRON_DELEGATE_STALL_S", kDelegateStall) : stallBoundOf("NATRON_DELEGATE_STARTUP_STALL_S", kDelegateStartupStall);
+
+            return false;
+        }
+
+        return now - _since >= _bound;
+    }
+
+    std::chrono::milliseconds bound() const
+    {
+        return _bound;
+    }
+
+private:
+    bool _known = false;
+    bool _framed = false;
+    VtDictionary _stats;
+    std::chrono::steady_clock::time_point _since;
+    std::chrono::milliseconds _bound = kDelegateStartupStall;
+};
 
 // How long a render waits, before restarting a converged Cycles session, for it to say it is idle:
 // it marks its buffers converged a moment before, and its progress holds still only after.
@@ -331,6 +453,142 @@ HydraGLContextFactory gFactory;
 
 std::atomic<std::size_t> gMemoryBudget(kDefaultMemoryBudget);
 std::atomic<std::uint64_t> gEngineBuilds(0);
+std::atomic<std::uint64_t> gEngineRenders(0);
+
+// A cancel asked for on the waiting caller's thread while the render thread is inside
+// UsdImagingGLEngine::Render, which only the delegate's stop can cut short. The render thread takes
+// _mutex only outside Render, so a stop blocking under it on the running pass cannot deadlock.
+class RenderCancel {
+public:
+    void request()
+    {
+        _requested.store(true);
+        const std::lock_guard<std::mutex> l(_mutex);
+        stopEngine();
+    }
+
+    bool requested() const
+    {
+        return _requested.load();
+    }
+
+    bool stopped() const
+    {
+        const std::lock_guard<std::mutex> l(_mutex);
+
+        return _stopped;
+    }
+
+    // A LiveTextureStore::ExportAbortScope's callback: whether a cancel was asked for, which cuts
+    // the export waiting on it short. Called from TBB's threads too.
+    bool abortExport()
+    {
+        if (!_requested.load()) {
+            return false;
+        }
+        _exportCut.store(true);
+
+        return true;
+    }
+
+    // Whether abortExport() cut an export short.
+    bool exportCut() const
+    {
+        return _exportCut.load();
+    }
+
+    // Makes the engine stoppable for its scope, past which it may be destroyed.
+    class Attachment {
+    public:
+        Attachment(RenderCancel* cancel,
+                   UsdImagingGLEngine* engine)
+            : _cancel(cancel)
+        {
+            if (_cancel) {
+                const std::lock_guard<std::mutex> l(_cancel->_mutex);
+                _cancel->_engine = engine;
+                _cancel->stopEngine();
+            }
+        }
+
+        ~Attachment()
+        {
+            if (_cancel) {
+                const std::lock_guard<std::mutex> l(_cancel->_mutex);
+                _cancel->_engine = nullptr;
+            }
+        }
+
+        Attachment(const Attachment&) = delete;
+        Attachment& operator=(const Attachment&) = delete;
+
+    private:
+        RenderCancel* _cancel;
+    };
+
+private:
+    void stopEngine()
+    {
+        if (_requested.load() && _engine && !_stopTried) {
+            _stopTried = true;
+            _stopped = _engine->IsStopRendererSupported() && _engine->StopRenderer();
+        }
+    }
+
+    std::atomic<bool> _requested { false };
+    std::atomic<bool> _exportCut { false };
+    mutable std::mutex _mutex;
+    UsdImagingGLEngine* _engine = nullptr;
+    bool _stopTried = false;
+    bool _stopped = false;
+};
+
+#ifdef NATRON_HAVE_GPU
+struct DeviceFallback {
+    std::uint64_t generation = 0;
+    std::uint64_t budget = 0;
+    std::string device;
+};
+
+std::string
+deviceSetting(const std::map<std::string, VtValue>& settings)
+{
+    const std::map<std::string, VtValue>::const_iterator found = settings.find(kUtilitySettingDevice);
+    if ((found == settings.end()) || !found->second.IsHolding<TfToken>()) {
+        return kUtilityDeviceAuto;
+    }
+
+    return found->second.UncheckedGet<TfToken>().GetString();
+}
+
+std::mutex gDeviceFallbacksMutex;
+std::map<const void*, DeviceFallback> gDeviceFallbacks;
+
+void
+forgetDeviceFallback(const void* owner)
+{
+    const std::lock_guard<std::mutex> lock(gDeviceFallbacksMutex);
+
+    gDeviceFallbacks.erase(owner);
+}
+
+void
+rememberDeviceFallback(const void* owner,
+                       const std::map<std::string, VtValue>& settings)
+{
+    GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr;
+    const std::uint64_t generation = gpu ? gpu->generation() : 0;
+    const std::uint64_t budget = utilityGpuBudget();
+    const std::lock_guard<std::mutex> lock(gDeviceFallbacksMutex);
+    DeviceFallback& fallback = gDeviceFallbacks[owner];
+
+    fallback.generation = generation;
+    fallback.budget = budget;
+    fallback.device = deviceSetting(settings);
+}
+#endif
+std::atomic<std::uint64_t> gMoonRayProgressReads(0);
+std::atomic<bool> gStormTranslucentIds(true);
 
 typedef std::map<std::string, VtValue> RendererSettings;
 std::mutex gSettingsMutex;
@@ -449,10 +707,17 @@ private:
 // Closes the engine's Cycles session (CyclesThreads::open()) after the engine, which ends it, goes.
 struct EngineDeleter {
     bool cyclesSession = false;
+    // Whether the engine is a StormIdEngine, which UsdImagingGLEngine's destructor, not virtual,
+    // would not destroy.
+    bool stormIds = false;
 
     void operator()(UsdImagingGLEngine* engine) const
     {
-        delete engine;
+        if (stormIds) {
+            delete static_cast<StormIdEngine*>(engine);
+        } else {
+            delete engine;
+        }
         if (cyclesSession) {
             CyclesThreads::instance().close();
         }
@@ -463,15 +728,37 @@ typedef std::unique_ptr<UsdImagingGLEngine, EngineDeleter> EnginePtr;
 
 /**
  * A new engine of parameters. A Cycles one (cycles), whose session the caller has opened, is made
- * so that its CPU device renders on threads threads, and closes the session when it goes.
+ * so that its CPU device renders on threads threads, and closes the session when it goes. A Cycles
+ * engine made with subdivides subdivides the meshes that author subdivision. A StormIdEngine
+ * (stormIds) is made for Storm on the GPU. Only an engine made with wantFilter gets a
+ * SceneDrawFilter, whose renderInstanceId goes to *filterId if given; the viewer's draw states
+ * mean nothing to the others.
  **/
 EnginePtr
 newEngine(const UsdImagingGLEngine::Parameters& parameters,
           bool cycles,
-          int threads)
+          int threads,
+          bool subdivides,
+          bool stormIds,
+          bool wantFilter,
+          std::string* filterId = nullptr)
 {
-    EnginePtr engine(nullptr, EngineDeleter { cycles });
-    const std::function<void()> make = [&]() { engine.reset(new UsdImagingGLEngine(parameters)); };
+    EnginePtr engine(nullptr, EngineDeleter { cycles, stormIds });
+    std::unique_ptr<SceneDrawFilter::EngineScope> scope;
+    if (wantFilter) {
+        SceneDrawFilter::registerForAllRenderers();
+        scope.reset(new SceneDrawFilter::EngineScope);
+    }
+    const std::function<void()> make = [&]() {
+        if (stormIds) {
+            engine.reset(new StormIdEngine(parameters));
+        } else {
+            engine.reset(new UsdImagingGLEngine(parameters));
+        }
+        if (scope && filterId) {
+            *filterId = scope->getInstanceId();
+        }
+    };
 
     if (!cycles) {
         make();
@@ -479,7 +766,7 @@ newEngine(const UsdImagingGLEngine::Parameters& parameters,
         return engine;
     }
     try {
-        CyclesAovs::withThreadBudget(threads, make);
+        CyclesAovs::withSubdivision(subdivides, [&]() { CyclesAovs::withThreadBudget(threads, make); });
     } catch (...) {
         if (!engine) {
             CyclesThreads::instance().close();
@@ -500,6 +787,9 @@ struct EngineEntry {
     EnginePtr engine;
     // Whether the engine lights the stage with a light at the camera.
     bool headlight = false;
+    // Whether a cancel left the delegate stopped. It stays so until the next render, or its threads
+    // would resume the cancelled frame.
+    bool stopped = false;
     // The render settings the engine was made with: the request's, setRendererSettings()'s on top.
     std::map<std::string, VtValue> settings;
     // The thread budget a MoonRay engine was made with: its Arras session takes its cores when it starts.
@@ -523,6 +813,9 @@ struct EngineEntry {
     std::uint64_t lastUse = 0;
     // The GPU memory the engine held after its last render.
     std::size_t bytes = 0;
+    // The part of bytes that is the translucent id pass's own depth buffer, which is made after
+    // the render and which Storm's count may leave out.
+    std::size_t idPassBytes = 0;
 
     // What the engine last rendered, which its AOVs hold until it renders again.
     bool rendered = false;
@@ -532,11 +825,19 @@ struct EngineEntry {
     // log, and the errors it logged naming no prim of it; empty for a delegate that reports neither.
     std::string warning;
     std::string errors;
+    std::string device;
     UsdTimeCode time;
     GfMatrix4d view;
     GfMatrix4d projection;
     int width = 0;
     int height = 0;
+    CameraUtilFraming framing;
+    bool showRender = false;
+    bool showProxy = false;
+    bool showGuides = false;
+    std::vector<std::pair<double, GfFrustum>> cameraMotion;
+    // The parameters of that render's Render() calls, which the translucent id pass draws with.
+    UsdImagingGLRenderParams params;
 
     // That render's primId plane and the paths of its hashes, decoded on the CPU when first asked for.
     bool idsDecoded = false;
@@ -623,12 +924,19 @@ takeGlError()
     return first;
 }
 
-// The light at the camera usdview gives a stage, which the request may ask for.
+/**
+ * The light at the camera usdview gives a stage, which the request may ask for. Storm places a
+ * camera-space light from its position alone; the distant light HdxTaskController makes for any
+ * other delegate is placed by the light's transform, so a delegate's headlight follows the camera
+ * only when transform is the camera's to world.
+ **/
 void
-setHeadlight(UsdImagingGLEngine* engine)
+setHeadlight(UsdImagingGLEngine* engine,
+             const GfMatrix4d& transform = GfMatrix4d(1.))
 {
     GlfSimpleLight light;
 
+    light.SetTransform(transform);
     light.SetIsCameraSpaceLight(true);
     light.SetPosition(GfVec4f(0.f, 0.f, 0.f, 1.f));
     light.SetAmbient(GfVec4f(0.f, 0.f, 0.f, 1.f));
@@ -665,6 +973,16 @@ public:
     static RenderThread& cpu()
     {
         static RenderThread* thread = new RenderThread(false);
+#ifdef NATRON_HAVE_GPU
+        // A Natron Utility engine idle since its device was lost would keep it from recovering.
+        static std::once_flag releaser;
+        std::call_once(releaser, []() {
+            GpuContext::addLossReleaser([]() {
+                RenderThread& lost = cpu();
+                (void)lost.post([&lost]() { lost.releaseLostUtilityGpu(); }, false);
+            });
+        });
+#endif
 
         return *thread;
     }
@@ -844,6 +1162,27 @@ public:
         }
     }
 
+    // Has every Natron Utility engine give back what it keeps on the GPU. The engines and their stages stay,
+    // so that the next render only builds the GPU's side again.
+    void releaseUtilityGpu()
+    {
+        for (std::map<const void*, EngineEntry>::iterator it = _engines.begin(); it != _engines.end(); ++it) {
+            if (it->second.engine && (it->second.renderer == kRenderDelegateUtilityId)) {
+                (void)it->second.engine->InvokeRendererCommand(TfToken(kUtilityCommandReleaseGpu));
+                it->second.rendered = false;
+            }
+        }
+    }
+
+    void releaseLostUtilityGpu()
+    {
+        for (std::map<const void*, EngineEntry>::iterator it = _engines.begin(); it != _engines.end(); ++it) {
+            if (it->second.engine && (it->second.renderer == kRenderDelegateUtilityId)) {
+                (void)it->second.engine->InvokeRendererCommand(TfToken(kUtilityCommandReleaseLostGpu));
+            }
+        }
+    }
+
     /**
      * Drops every Cycles engine unless they were all made under threads. A Cycles session sizes
      * its CPU device once, when it is made, from TaskScheduler::max_concurrency(), which is the
@@ -886,7 +1225,7 @@ public:
      * *threads. While another holder's sessions live under another count it waits for that holder
      * to drop them at its next boundary, letting barrier writes through, until cancelled.
      **/
-    bool openCyclesSession(const std::atomic<bool>* cancel,
+    bool openCyclesSession(RenderCancel* cancel,
                            int* threads,
                            std::string* error)
     {
@@ -897,7 +1236,7 @@ public:
 
                 return true;
             }
-            if (cancel && cancel->load()) {
+            if (cancel && cancel->requested()) {
                 *error = "The Cycles render was cancelled.";
 
                 return false;
@@ -927,6 +1266,17 @@ public:
         }
     }
 
+    const void* ownerOf(const EngineEntry& entry) const
+    {
+        for (std::map<const void*, EngineEntry>::const_iterator it = _engines.begin(); it != _engines.end(); ++it) {
+            if (&it->second == &entry) {
+                return it->first;
+            }
+        }
+
+        return nullptr;
+    }
+
     std::size_t engineCount() const
     {
         return _engineCount.load();
@@ -934,16 +1284,16 @@ public:
 
     // Renders request with its owner's engine, or reuses the engine's last render of the same
     // request; null with *error set on failure. cancel, when set, stops the render before it
-    // starts and between its passes.
+    // starts and between its passes, and stops a delegate other than Storm that can stop within one.
     EngineEntry* renderEngine(const HydraRender::Request& request,
-                              const std::atomic<bool>* cancel,
+                              RenderCancel* cancel,
                               std::string* error);
 
     bool makeEngine(EngineEntry& entry,
                     const HydraRender::Request& request,
                     const std::string& renderer,
                     const RendererSettings& settings,
-                    const std::atomic<bool>* cancel,
+                    RenderCancel* cancel,
                     std::string* error);
 
     // The whole frame's planes of entry's render, as pack() gives them, or converted on the CPU
@@ -954,6 +1304,11 @@ public:
 
     bool decodeIds(EngineEntry& entry,
                    std::string* error);
+
+    // Writes the translucent prims' ids into a Storm render's primId and instanceId AOVs, before
+    // they are first decoded. False, with the engine dropped, if the pass threw.
+    bool translucentIds(EngineEntry& entry,
+                        std::string* error);
 
     bool packAvailable(std::string* error);
 
@@ -1346,12 +1701,13 @@ RenderThread::makeEngine(EngineEntry& entry,
                          const HydraRender::Request& request,
                          const std::string& renderer,
                          const RendererSettings& settings,
-                         const std::atomic<bool>* cancel,
+                         RenderCancel* cancel,
                          std::string* error)
 {
     const bool cycles = CyclesAovs::isCycles(renderer);
     entry.engine.reset();
     entry.rendered = false;
+    entry.stopped = false;
     // Named even for Storm: with no id the engine takes USD's default delegate, the first by
     // plugInfo priority that loads, which need not be Storm.
     UsdImagingGLEngine::Parameters parameters;
@@ -1366,6 +1722,8 @@ RenderThread::makeEngine(EngineEntry& entry,
     }
     CyclesAovs::registerSceneIndices();
     MoonRayAovs::registerSceneIndices();
+    StormPtexBindingFilter::registerForStorm();
+    StormTextureBudget::registerForStorm();
     LiveTextureSceneIndex::registerSceneIndices();
     int threads = 0;
     if (cycles && !openCyclesSession(cancel, &threads, error)) {
@@ -1374,7 +1732,7 @@ RenderThread::makeEngine(EngineEntry& entry,
     std::string startError;
     {
         TfErrorMark mark;
-        entry.engine = newEngine(parameters, cycles, threads);
+        entry.engine = newEngine(parameters, cycles, threads, cycles && CyclesAovs::subdivides(settings), _gl && RenderDelegates::isStorm(renderer), false);
         ++gEngineBuilds;
         // The engine reports a delegate it could not start as coding errors and renders nothing.
         if (entry.engine->GetCurrentRendererId() != TfToken(renderer)) {
@@ -1396,6 +1754,10 @@ RenderThread::makeEngine(EngineEntry& entry,
         applyStormPtexBudget(_hgi.get());
     }
     entry.engine->SetEnablePresentation(false);
+    // Before the prim's settings, which override them.
+    for (const std::pair<const std::string, VtValue>& setting : RenderSettingsKnobs::engineDefaults(renderer)) {
+        entry.engine->SetRendererSetting(TfToken(setting.first), setting.second);
+    }
     for (RendererSettings::const_iterator it = settings.begin(); it != settings.end(); ++it) {
         entry.engine->SetRendererSetting(TfToken(it->first), it->second);
     }
@@ -1448,10 +1810,10 @@ RenderThread::makeEngine(EngineEntry& entry,
 
 EngineEntry*
 RenderThread::renderEngine(const HydraRender::Request& request,
-                           const std::atomic<bool>* cancel,
+                           RenderCancel* cancel,
                            std::string* error)
 {
-    if (cancel && cancel->load()) {
+    if (cancel && cancel->requested()) {
         *error = "The render was cancelled.";
 
         return nullptr;
@@ -1461,6 +1823,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     }
     const int width = request.width;
     const int height = request.height;
+    const CameraUtilFraming framing = HydraRender::framing(request);
     const std::string renderer = request.renderer.empty() ? std::string(kRenderDelegateStormId) : request.renderer;
 
     EngineEntry& entry = _engines[request.owner];
@@ -1498,6 +1861,11 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     for (const std::pair<const std::string, VtValue>& setting : rendererSettings(renderer)) {
         settings[setting.first] = setting.second;
     }
+    // The shutter decides which motion samples the delegate syncs, so a new one makes the engine
+    // again, as its settings do; the camera's motion is only traced, so it is set on each render.
+    if (renderer == kRenderDelegateUtilityId) {
+        settings[kRenderDelegateUtilityShutterSetting] = VtValue(HydraRender::shutterInterval(request));
+    }
     const bool cycles = CyclesAovs::isCycles(renderer);
     if (cycles) {
         followCyclesThreads(request.threads);
@@ -1519,14 +1887,14 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     const GfMatrix4d projection = request.frustum.ComputeProjectionMatrix();
     const U64 writeCount = SceneWriteBarrier::getWriteCount();
     entry.lastUse = ++_useSerial;
-    if (entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height)) {
+    if (entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height) && (entry.framing == framing) && (entry.showRender == request.showRender) && (entry.showProxy == request.showProxy) && (entry.showGuides == request.showGuides) && (entry.cameraMotion == request.cameraMotion)) {
         return &entry;
     }
     // Cycles shows a restart in its progress only once a change reaches it: a request changing
     // nothing it sees would wait out kRestartUnseen for one, then make the engine again.
     bool watchRestart = false;
     if (!freshEngine && RestartWatch::watches(renderer)) {
-        watchRestart = !entry.rendered || edited || (entry.writeCount != writeCount) || (entry.view != view) || (entry.projection != projection) || (entry.width != width) || (entry.height != height);
+        watchRestart = !entry.rendered || edited || (entry.writeCount != writeCount) || (entry.view != view) || (entry.projection != projection) || (entry.width != width) || (entry.height != height) || (entry.framing != framing);
         if (!watchRestart && (entry.time != request.time)) {
             const U64 edits = entry.stage->getEditCount();
             if (!entry.timeVaryingKnown || (entry.timeVaryingEdits != edits) || (entry.timeVaryingWrites != writeCount)) {
@@ -1547,8 +1915,21 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         bindFramebuffer(width, height);
     }
     engine->SetRenderBufferSize(GfVec2i(width, height));
-    engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
+    engine->SetFraming(framing);
     engine->SetCameraState(view, projection);
+    if (renderer == kRenderDelegateUtilityId) {
+        VtDoubleArray times;
+        VtMatrix4dArray views;
+        VtMatrix4dArray projections;
+        for (const std::pair<double, GfFrustum>& sample : request.cameraMotion) {
+            times.push_back(sample.first);
+            views.push_back(sample.second.ComputeViewMatrix());
+            projections.push_back(sample.second.ComputeProjectionMatrix());
+        }
+        engine->SetRendererSetting(TfToken(kRenderDelegateUtilityCameraTimesSetting), VtValue(times));
+        engine->SetRendererSetting(TfToken(kRenderDelegateUtilityCameraViewsSetting), VtValue(views));
+        engine->SetRendererSetting(TfToken(kRenderDelegateUtilityCameraProjectionsSetting), VtValue(projections));
+    }
 
     UsdImagingGLRenderParams params;
     params.frame = request.time;
@@ -1560,10 +1941,11 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     // The colour AOV is read as Storm shades it, in the scene's linear space.
     params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
     params.highlight = false;
+    HydraRender::setPurposes(engine, renderer, request.showRender, request.showProxy, request.showGuides, &params);
     std::string renderFailure;
     if (_gl) {
         for (int pass = 0; pass < kMaxRenderPasses; ++pass) {
-            if (cancel && cancel->load()) {
+            if (cancel && cancel->requested()) {
                 break;
             }
             if (!renderGuarded(engine, stage->GetPseudoRoot(), params, &renderFailure)) {
@@ -1574,7 +1956,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             }
         }
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        if (renderFailure.empty() && cancel && cancel->load()) {
+        if (renderFailure.empty() && cancel && cancel->requested()) {
             *error = "The " + entry.rendererName + " render was cancelled.";
             // Unlike the path tracers' engines, Storm's runs nothing between passes and takes no
             // live texture through shared memory, so the next render goes on with it.
@@ -1589,93 +1971,146 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             log.reset(new MoonRayAovs::LogCapture);
         }
         std::chrono::steady_clock::time_point restarted = std::chrono::steady_clock::now();
+        if (entry.stopped) {
+            engine->RestartRenderer();
+            entry.stopped = false;
+        }
         RestartWatch restartWatch;
         restartWatch.restart(!watchRestart);
         if (watchRestart) {
             VtDictionary stats = engine->GetRenderStats();
-            while (!RestartWatch::idle(stats) && engine->IsConverged() && !(cancel && cancel->load()) && (std::chrono::steady_clock::now() - restarted < kIdleSettle)) {
+            while (!RestartWatch::idle(stats) && engine->IsConverged() && !(cancel && cancel->requested()) && (std::chrono::steady_clock::now() - restarted < kIdleSettle)) {
                 yieldToBarrier();
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 stats = engine->GetRenderStats();
             }
             restartWatch.before(stats, 0);
         }
-        const auto cancelled = [&]() {
-            *error = "The " + entry.rendererName + " render was cancelled.";
-            // Its threads would go on rendering the cancelled frame. Cycles has no stop: its
-            // render pass cancels the session and its session joins its thread as the engine
-            // goes. Nor has MoonRay: its Arras session ends its render process as the engine
-            // goes. The next render makes the engine again.
-            if (engine->IsStopRendererSupported()) {
-                (void)engine->StopRenderer();
-            }
-            entry.engine.reset();
-            entry.rendered = false;
-        };
+        std::string sessionFailure;
+        bool cancelled = false;
+        // MoonRay shows no restart for kRestartUnseen to catch, nor a session that went silent.
+        const bool watchStall = MoonRayAovs::isMoonRay(renderer);
+        ProgressStall stall;
+        bool stallRemade = false;
         bool passRan = false;
-        for (;;) {
-            // A cancel during the idle settle or the poll must not cost a sync of the stage.
-            if (cancel && cancel->load()) {
-                if (passRan) {
-                    cancelled();
-                } else {
-                    // Edits cancel constantly: an engine no pass of this render reached keeps
-                    // its session, which would otherwise be made again at every one.
-                    *error = "The " + entry.rendererName + " render was cancelled.";
-                    entry.rendered = false;
-                }
-
-                return nullptr;
-            }
-            passRan = true;
-            if (!renderGuarded(engine, stage->GetPseudoRoot(), params, &renderFailure)) {
-                break;
-            }
-            // The progress is read before the convergence: once it shows the new render, the
-            // delegate's word that it converged is about that render. A cancelled pass can have
-            // synced a texture it gave up on as missing, which the engine would keep: even
-            // converged, it goes.
-            const VtDictionary stats = engine->GetRenderStats();
-            const bool restartSeen = restartWatch.after(stats, samplesOf(stats, 0));
-            if (restartSeen && restartWatch.converged() && engine->IsConverged() && !(cancel && cancel->load())) {
-                break;
-            }
-            // A MoonRay session that could not start or broke never converges.
-            const std::string failure = log ? MoonRayAovs::sessionFailure(stats, log->notices()) : std::string();
-            if (!failure.empty()) {
-                *error = failure;
-                entry.engine.reset();
-                entry.rendered = false;
-
-                return nullptr;
-            }
-            if (cancel && cancel->load()) {
-                cancelled();
-
-                return nullptr;
-            }
-            const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-            if (!restartSeen && !restartWatch.restarting() && (now - restarted >= kRestartUnseen)) {
-                // A new engine has no pixels from before to mistake for this render's.
+        {
+            std::unique_ptr<RenderCancel::Attachment> attachment(new RenderCancel::Attachment(cancel, engine));
+            // The old engine goes, so it is no longer stoppable. A new engine has no pixels from
+            // before to mistake for this render's.
+            const auto remakeEngine = [&]() -> bool {
+                attachment.reset();
                 if (!makeEngine(entry, request, renderer, settings, cancel, error)) {
-                    return nullptr;
+                    return false;
                 }
                 engine = entry.engine.get();
                 engine->SetRenderBufferSize(GfVec2i(width, height));
-                engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
+                engine->SetFraming(framing);
                 engine->SetCameraState(view, projection);
+                HydraRender::setPurposes(engine, renderer, request.showRender, request.showProxy, request.showGuides, &params);
+                attachment.reset(new RenderCancel::Attachment(cancel, engine));
                 if (log) {
                     // What it kept of the session dropped must not fail the new one.
                     log.reset();
                     log.reset(new MoonRayAovs::LogCapture);
                 }
-                restartWatch.restart(true);
-                restarted = now;
-                passRan = false;
-                continue;
+
+                return true;
+            };
+
+            for (;;) {
+                // A cancel during the idle settle or the poll must not cost a sync of the stage.
+                if (cancel && cancel->requested()) {
+                    cancelled = true;
+                    break;
+                }
+                passRan = true;
+                if (!renderGuarded(engine, stage->GetPseudoRoot(), params, &renderFailure)) {
+                    break;
+                }
+                // The progress is read before the convergence: once it shows the new render, the
+                // delegate's word that it converged is about that render. A cancelled pass can have
+                // synced a texture it gave up on as missing, which the engine would keep: even
+                // converged, it goes.
+                const VtDictionary stats = engine->GetRenderStats();
+                if (watchStall && moonRayProgressed(stats)) {
+                    ++gMoonRayProgressReads;
+                }
+                const bool restartSeen = restartWatch.after(stats, samplesOf(stats, 0));
+                if (restartSeen && restartWatch.converged() && engine->IsConverged() && !(cancel && cancel->requested())) {
+                    break;
+                }
+                // A MoonRay session that could not start or broke never converges.
+                if (log) {
+                    sessionFailure = MoonRayAovs::sessionFailure(stats, log->notices());
+                    if (!sessionFailure.empty()) {
+                        break;
+                    }
+                }
+                if (cancel && cancel->requested()) {
+                    cancelled = true;
+                    break;
+                }
+                const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+                if (watchStall && stall.stalled(stats, now)) {
+                    if (stallRemade) {
+                        // Handled as a broken session past the loop, once the engine is no longer
+                        // attached to the cancel.
+                        sessionFailure = delegateStallError(stall.bound());
+                        break;
+                    }
+                    if (!remakeEngine()) {
+                        return nullptr;
+                    }
+                    stallRemade = true;
+                    stall.reset();
+                    restartWatch.restart(true);
+                    restarted = now;
+                    passRan = false;
+                    continue;
+                }
+                if (!restartSeen && !restartWatch.restarting() && (now - restarted >= kRestartUnseen)) {
+                    if (!remakeEngine()) {
+                        return nullptr;
+                    }
+                    stall.reset();
+                    restartWatch.restart(true);
+                    restarted = now;
+                    passRan = false;
+                    continue;
+                }
+                yieldToBarrier();
+                std::this_thread::sleep_for(kConvergencePoll);
             }
-            yieldToBarrier();
-            std::this_thread::sleep_for(kConvergencePoll);
+        }
+        entry.stopped = cancel && cancel->stopped();
+        if (!sessionFailure.empty()) {
+            *error = sessionFailure;
+            entry.engine.reset();
+            entry.stopped = false;
+            entry.rendered = false;
+
+            return nullptr;
+        }
+        if (cancelled) {
+            *error = "The " + entry.rendererName + " render was cancelled.";
+            entry.rendered = false;
+            // Edits cancel constantly: an engine no pass of this render reached keeps its session,
+            // which would otherwise be made again at every one, and so does one the cancel stopped,
+            // whose threads stay stopped until the next render. A delegate that cannot stop would go
+            // on rendering the cancelled frame on its own threads, so the next render makes the
+            // engine again: Cycles has no stop, its render pass cancels the session and its session
+            // joins its thread as the engine goes; nor has MoonRay, whose Arras session ends its
+            // render process as the engine goes. An engine whose pass had a live texture's export
+            // cut short goes too, as it keeps the missing-texture colour in that texture's place.
+            if (passRan && (!entry.stopped || cancel->exportCut())) {
+                if (!entry.stopped && engine->IsStopRendererSupported()) {
+                    (void)engine->StopRenderer();
+                }
+                entry.engine.reset();
+                entry.stopped = false;
+            }
+
+            return nullptr;
         }
         // Only Cycles is probed: making a delegate to ask it its types may start a render.
         if (!entry.supportChecked) {
@@ -1684,6 +2119,39 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         }
         entry.warning = entry.supportWarning;
         entry.errors.clear();
+        entry.device.clear();
+        if (renderer == kRenderDelegateUtilityId) {
+            const VtDictionary utilityStats = engine->GetRenderStats();
+            const VtDictionary::const_iterator device = utilityStats.find(kUtilityStatDevice);
+            const VtDictionary::const_iterator fallback = utilityStats.find(kUtilityStatWarning);
+            if ((device != utilityStats.end()) && device->second.IsHolding<std::string>()) {
+                entry.device = device->second.UncheckedGet<std::string>();
+            }
+#ifdef NATRON_HAVE_GPU
+            if (entry.device.rfind("GPU", 0) == 0) {
+                forgetDeviceFallback(request.owner);
+            } else if ((fallback != utilityStats.end()) && fallback->second.IsHolding<std::string>() && !fallback->second.UncheckedGet<std::string>().empty()) {
+                // A frame the scheduler took off the GPU before the delegate saw it, for want of room for the
+                // output, renders here, so the delegate's own fallback is only ever reported on this path.
+                rememberDeviceFallback(request.owner, request.settings);
+            }
+#endif
+            if ((fallback != utilityStats.end()) && fallback->second.IsHolding<std::string>() && !fallback->second.UncheckedGet<std::string>().empty()) {
+                entry.warning += (entry.warning.empty() ? std::string() : std::string("\n")) + fallback->second.UncheckedGet<std::string>();
+            }
+
+            const VtDictionary::const_iterator scene = utilityStats.find(kUtilityStatSceneWarning);
+
+            if ((scene != utilityStats.end()) && scene->second.IsHolding<std::string>() && !scene->second.UncheckedGet<std::string>().empty()) {
+                entry.warning += (entry.warning.empty() ? std::string() : std::string("\n")) + scene->second.UncheckedGet<std::string>();
+            }
+
+            const VtDictionary::const_iterator motion = utilityStats.find(kUtilityStatMotionWarning);
+
+            if ((motion != utilityStats.end()) && motion->second.IsHolding<std::string>() && !motion->second.UncheckedGet<std::string>().empty()) {
+                entry.warning += (entry.warning.empty() ? std::string() : std::string("\n")) + motion->second.UncheckedGet<std::string>();
+            }
+        }
         if (log) {
             const std::vector<MoonRayAovs::Notice> notices = log->notices();
             const std::string logged = MoonRayAovs::warningText(stage, MoonRayAovs::unsupportedLights(stage, MoonRayAovs::supportedPrimTypes()), notices);
@@ -1704,6 +2172,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     }
 
     entry.rendered = true;
+    ++gEngineRenders;
     entry.serial = ++_renderSerial;
     entry.writeCount = writeCount;
     entry.time = request.time;
@@ -1711,6 +2180,12 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     entry.projection = projection;
     entry.width = width;
     entry.height = height;
+    entry.framing = framing;
+    entry.showRender = request.showRender;
+    entry.showProxy = request.showProxy;
+    entry.showGuides = request.showGuides;
+    entry.cameraMotion = request.cameraMotion;
+    entry.params = params;
 
     if (!_gl) {
         // Host memory, which the GPU budget does not count.
@@ -1726,7 +2201,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     if ((used != stats.end()) && used->second.IsHolding<size_t>()) {
         bytes = std::max(bytes, used->second.UncheckedGet<size_t>());
     }
-    entry.bytes = bytes;
+    entry.idPassBytes = entry.engine.get_deleter().stormIds ? static_cast<StormIdEngine*>(engine)->getIdPassBytes() : 0;
+    entry.bytes = bytes + entry.idPassBytes;
     const void* owner = request.owner;
     enforceBudget(owner);
 
@@ -1831,6 +2307,7 @@ RenderThread::cpuFrame(EngineEntry& entry,
 
     result->warning = entry.warning;
     result->errors = entry.errors;
+    result->device = entry.device;
 
     if (!decodeIds(entry, error)) {
         return false;
@@ -1898,6 +2375,9 @@ RenderThread::decodeIds(EngineEntry& entry,
     if (entry.idsDecoded) {
         return true;
     }
+    if (!translucentIds(entry, error)) {
+        return false;
+    }
     UsdImagingGLEngine* engine = entry.engine.get();
     const int width = entry.width;
     const int height = entry.height;
@@ -1944,6 +2424,52 @@ RenderThread::decodeIds(EngineEntry& entry,
 
     return true;
 } // RenderThread::decodeIds
+
+bool
+RenderThread::translucentIds(EngineEntry& entry,
+                             std::string* error)
+{
+    // The pass draws the stage as it is: once a write has changed it since the render, the ids
+    // would not be the render's.
+    if (!_gl || !entry.rendered || !entry.engine || !entry.engine.get_deleter().stormIds || !gStormTranslucentIds.load() || (entry.writeCount != SceneWriteBarrier::getWriteCount())) {
+        return true;
+    }
+    StormIdEngine* const engine = static_cast<StormIdEngine*>(entry.engine.get());
+    if (!engine->hasIdPass()) {
+        return true;
+    }
+    std::string failure;
+    bindFramebuffer(entry.width, entry.height);
+    try {
+        (void)engine->renderTranslucentIds(entry.params);
+    } catch (const std::exception& e) {
+        failure = e.what();
+        if (failure.empty()) {
+            failure = "unknown exception";
+        }
+    } catch (...) {
+        failure = "unknown exception";
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (failure.empty()) {
+        const std::size_t passBytes = engine->getIdPassBytes();
+        if (passBytes != entry.idPassBytes) {
+            const bool grew = (passBytes > entry.idPassBytes);
+            entry.bytes = entry.bytes - entry.idPassBytes + passBytes;
+            entry.idPassBytes = passBytes;
+            if (grew) {
+                enforceBudget(ownerOf(entry));
+            }
+        }
+
+        return true;
+    }
+    *error = "The " + entry.rendererName + " translucent id pass failed: " + failure;
+    entry.engine.reset();
+    entry.rendered = false;
+
+    return false;
+} // RenderThread::translucentIds
 
 bool
 RenderThread::frame(EngineEntry& entry,
@@ -2296,6 +2822,99 @@ setHydraGLContextFactory(const HydraGLContextFactory& factory)
 }
 
 namespace HydraRender {
+namespace {
+    RendererSettings
+    requestSettings(const Request& request)
+    {
+        RendererSettings settings = request.settings;
+
+        for (const std::pair<const std::string, VtValue>& setting : rendererSettings(request.renderer)) {
+            settings[setting.first] = setting.second;
+        }
+
+        return settings;
+    }
+
+    template <typename T>
+    T
+    settingOr(const RendererSettings& settings,
+              const char* key,
+              const T& fallback)
+    {
+        RendererSettings::const_iterator found = settings.find(key);
+
+        if (found == settings.end()) {
+            return fallback;
+        }
+        if (found->second.IsHolding<T>()) {
+            return found->second.UncheckedGet<T>();
+        }
+        const VtValue cast = VtValue::Cast<T>(found->second);
+
+        return cast.IsHolding<T>() ? cast.UncheckedGet<T>() : fallback;
+    }
+
+    bool
+    utilityBlurs(const RendererSettings& settings)
+    {
+        return settingOr<bool>(settings, kUtilitySettingCameraMotionBlur, true) || settingOr<bool>(settings, kUtilitySettingTransformMotionBlur, true) || settingOr<bool>(settings, kUtilitySettingDeformationMotionBlur, true);
+    }
+} // anon namespace
+
+CameraUtilFraming
+framing(const Request& request)
+{
+    const GfRect2i data(GfVec2i(0, 0), request.width, request.height);
+    const float left = static_cast<float>(request.overscanLeft);
+    const float top = static_cast<float>(request.overscanTop);
+    const float right = static_cast<float>(request.width - request.overscanRight);
+    const float bottom = static_cast<float>(request.height - request.overscanBottom);
+
+    if ((right <= left) || (bottom <= top)) {
+        return CameraUtilFraming(data);
+    }
+
+    return CameraUtilFraming(GfRange2f(GfVec2f(left, top), GfVec2f(right, bottom)), data);
+}
+
+GfVec2d
+shutterInterval(const Request& request)
+{
+    if (request.renderer != kRenderDelegateUtilityId) {
+        return GfVec2d(0.);
+    }
+    const RendererSettings settings = requestSettings(request);
+    double open = request.shutterOpen;
+    double close = request.shutterClose;
+    if (settingOr<bool>(settings, kUtilitySettingOverrideShutter, false)) {
+        const double length = std::max(0., double(settingOr<float>(settings, kUtilitySettingShutter, kUtilityDefaultShutter)));
+        const TfToken offset = settingOr<TfToken>(settings, kUtilitySettingShutterOffset, TfToken(kUtilityShutterCentred));
+        if (offset == kUtilityShutterStart) {
+            open = 0.;
+        } else if (offset == kUtilityShutterEnd) {
+            open = -length;
+        } else if (offset == kUtilityShutterCustom) {
+            open = settingOr<float>(settings, kUtilitySettingShutterCustomOffset, 0.f);
+        } else {
+            open = -0.5 * length;
+        }
+        close = open + length;
+    }
+    if (!(close > open) || !utilityBlurs(settings)) {
+        return GfVec2d(0.);
+    }
+
+    return GfVec2d(open, close);
+}
+
+bool
+cameraMotionBlur(const Request& request)
+{
+    const GfVec2d shutter = shutterInterval(request);
+
+    return (shutter[1] > shutter[0]) && settingOr<bool>(requestSettings(request), kUtilitySettingCameraMotionBlur, true);
+}
+
 bool
 cameraFrustum(const UsdStageRefPtr& stage,
               const SdfPath& cameraPath,
@@ -2409,14 +3028,14 @@ namespace {
      **/
     std::function<void()>
     pollAborted(const Request& request,
-                std::atomic<bool>* cancel)
+                RenderCancel* cancel)
     {
         if (!request.aborted) {
             return std::function<void()>();
         }
         const std::function<void()> poll = [&request, cancel]() {
             if (request.aborted()) {
-                *cancel = true;
+                cancel->request();
             }
         };
         poll();
@@ -2455,10 +3074,14 @@ render(const Request& request,
     }
     RenderThread& thread = *routed;
     bool ok = false;
-    std::atomic<bool> cancel(false);
+    RenderCancel cancel;
     const std::function<void()> whileWaiting = pollAborted(request, &cancel);
+    const int threadBudget = AppTLS::currentThreadBudget();
     const bool ran = thread.runAndWait([&]() {
-        const LiveTextureStore::ExportAbortScope exportAbort([&cancel]() { return cancel.load(); });
+        // The budget is the waiting caller's, and a delegate parallelising on this thread must see it.
+        AppTLS::ThreadBudgetScope budget(threadBudget);
+        const LiveTextureStore::ExportAbortScope exportAbort([&cancel]() { return cancel.abortExport(); });
+
         try {
             EngineEntry* entry = thread.renderEngine(request, &cancel, error);
             ok = entry && thread.frame(*entry, result, error);
@@ -2493,7 +3116,7 @@ withRender(const Request& request,
     }
     bool ok = false;
     RenderThread& thread = *routed;
-    std::atomic<bool> cancel(false);
+    RenderCancel cancel;
     const std::function<void()> whileWaiting = pollAborted(request, &cancel);
     const bool ran = thread.runAndWait([&]() {
         try {
@@ -2561,10 +3184,14 @@ renderWindow(const Request& request,
     }
     RenderThread& thread = *routed;
     bool ok = false;
-    std::atomic<bool> cancel(false);
+    RenderCancel cancel;
     const std::function<void()> whileWaiting = pollAborted(request, &cancel);
+    const int threadBudget = AppTLS::currentThreadBudget();
     const bool ran = thread.runAndWait([&]() {
-        const LiveTextureStore::ExportAbortScope exportAbort([&cancel]() { return cancel.load(); });
+        // The budget is the waiting caller's, and a delegate parallelising on this thread must see it.
+        AppTLS::ThreadBudgetScope budget(threadBudget);
+        const LiveTextureStore::ExportAbortScope exportAbort([&cancel]() { return cancel.abortExport(); });
+
         try {
             EngineEntry* entry = thread.renderEngine(request, &cancel, error);
             if (!entry) {
@@ -2600,9 +3227,254 @@ packsOnGpu()
     return ran && ok;
 }
 
+#ifdef NATRON_HAVE_GPU
+namespace {
+    // What makes two requests the same frame of an owner, its window included.
+    struct DeviceFrameKey {
+        std::string renderer;
+        U64 stackHash = 0;
+        SceneMetadata metadata;
+        U64 writeCount = 0;
+        UsdTimeCode time;
+        GfMatrix4d view;
+        GfMatrix4d projection;
+        int width = 0;
+        int height = 0;
+        CameraUtilFraming framing;
+        bool headlight = false;
+        bool showRender = false;
+        bool showProxy = false;
+        bool showGuides = false;
+        RendererSettings settings;
+        GfVec2d shutter;
+        std::vector<std::pair<double, GfFrustum>> cameraMotion;
+
+        bool operator==(const DeviceFrameKey& other) const
+        {
+            return (shutter == other.shutter) && (cameraMotion == other.cameraMotion) && (renderer == other.renderer) && (stackHash == other.stackHash) && (metadata == other.metadata) && (writeCount == other.writeCount) && (time == other.time) && (view == other.view) && (projection == other.projection) && (width == other.width) && (height == other.height) && (framing == other.framing) && (headlight == other.headlight) && (showRender == other.showRender) && (showProxy == other.showProxy) && (showGuides == other.showGuides) && (settings == other.settings);
+        }
+    };
+
+    DeviceFrameKey
+    deviceFrameKey(const Request& request)
+    {
+        DeviceFrameKey key;
+        key.renderer = request.renderer.empty() ? std::string(kRenderDelegateStormId) : request.renderer;
+        key.stackHash = request.scene.getStackHash();
+        key.metadata = request.scene.getMetadata();
+        key.writeCount = SceneWriteBarrier::getWriteCount();
+        key.time = request.time;
+        key.view = request.frustum.ComputeViewMatrix();
+        key.projection = request.frustum.ComputeProjectionMatrix();
+        key.width = request.width;
+        key.height = request.height;
+        key.framing = HydraRender::framing(request);
+        key.headlight = request.headlight;
+        key.showRender = request.showRender;
+        key.showProxy = request.showProxy;
+        key.showGuides = request.showGuides;
+        key.settings = request.settings;
+        for (const std::pair<const std::string, VtValue>& setting : rendererSettings(key.renderer)) {
+            key.settings[setting.first] = setting.second;
+        }
+        key.shutter = HydraRender::shutterInterval(request);
+        key.cameraMotion = request.cameraMotion;
+
+        return key;
+    }
+
+    // An owner's last frame left on the device, which every strip of a region copies its window from.
+    // The mutex is held across the render, so strips running at once wait for the one that renders.
+    struct DeviceFrame {
+        std::mutex mutex;
+        bool valid = false;
+        DeviceFrameKey key;
+        UtilityDeviceResource film;
+        std::string warning;
+        std::string errors;
+        std::string device;
+    };
+
+    std::mutex gDeviceFramesMutex;
+    std::map<const void*, std::shared_ptr<DeviceFrame>> gDeviceFrames;
+
+    std::shared_ptr<DeviceFrame>
+    deviceFrameOf(const void* owner)
+    {
+        const std::lock_guard<std::mutex> lock(gDeviceFramesMutex);
+        std::shared_ptr<DeviceFrame>& frame = gDeviceFrames[owner];
+        if (!frame) {
+            frame = std::make_shared<DeviceFrame>();
+        }
+
+        return frame;
+    }
+} // anon namespace
+
+bool
+recordDeviceWindow(const Request& request,
+                   const PlaneWindow& window,
+                   gpu::GpuRecordContext& context,
+                   const GpuImageView& output,
+                   const RectI& outputRect,
+                   Result* info,
+                   std::string* error)
+{
+    if (request.scene.isEmpty() || (request.width <= 0) || (request.height <= 0)) {
+        *error = "Nothing to render.";
+
+        return false;
+    }
+    const int width = window.x2 - window.x1;
+    const int height = window.y2 - window.y1;
+    if ((window.plane != ePlaneColor) || !output.buffer || (width != outputRect.width()) || (height != outputRect.height()) || (window.nComps != output.nComps) || !output.bounds.contains(outputRect)) {
+        *error = "USDRender's GPU output does not match the window it renders.";
+
+        return false;
+    }
+    RenderThread* routed = routeRequest(request, error);
+    if (!routed) {
+        return false;
+    }
+    RenderThread& thread = *routed;
+    if (thread.usesGl()) {
+        *error = "Storm hands its pixels over through GL, not from a frame on the device.";
+
+        return false;
+    }
+    const DeviceFrameKey key = deviceFrameKey(request);
+    const std::shared_ptr<DeviceFrame> frame = deviceFrameOf(request.owner);
+    UtilityDeviceResource film;
+    {
+        // A strip waiting for the one that renders must still see its own abort.
+        std::unique_lock<std::mutex> frameLock(frame->mutex, std::try_to_lock);
+        while (!frameLock.owns_lock()) {
+            if (request.aborted && request.aborted()) {
+                *error = "The render was cancelled while it waited for its frame.";
+
+                return false;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            (void)frameLock.try_lock();
+        }
+        if (frame->valid) {
+            frame->film.releaseIfLost();
+        }
+        if (!frame->valid || !(frame->key == key) || !frame->film.device()) {
+            // The engine's next frame goes into this film when nothing else holds it.
+            frame->valid = false;
+            frame->film = UtilityDeviceResource();
+
+            bool ok = false;
+            UtilityDeviceResource rendered;
+            Result renderedInfo;
+            RenderCancel cancel;
+            const std::function<void()> whileWaiting = pollAborted(request, &cancel);
+            const int threadBudget = AppTLS::currentThreadBudget();
+            bool fellBack = false;
+            const bool ran = thread.runAndWait([&]() {
+                // The budget is the waiting caller's, and a delegate parallelising on this thread must see it.
+                AppTLS::ThreadBudgetScope budget(threadBudget);
+                const LiveTextureStore::ExportAbortScope exportAbort([&cancel]() { return cancel.abortExport(); });
+
+                try {
+                    EngineEntry* entry = thread.renderEngine(request, &cancel, error);
+                    if (!entry) {
+                        return;
+                    }
+                    HdRenderBuffer* buffer = entry->engine->GetAovRenderBuffer(HdAovTokens->color);
+                    if (!buffer) {
+                        *error = entry->rendererName + " rendered no color AOV.";
+
+                        return;
+                    }
+                    buffer->Resolve();
+                    if (((int)buffer->GetWidth() != entry->width) || ((int)buffer->GetHeight() != entry->height)) {
+                        *error = entry->rendererName + "'s color AOV is not the size asked for.";
+
+                        return;
+                    }
+                    const VtValue resource = buffer->GetResource(false);
+                    if (!resource.IsHolding<UtilityDeviceResource>()) {
+                        *error = entry->rendererName + " did not leave its frame on the GPU.";
+                        fellBack = true;
+
+                        return;
+                    }
+                    rendered = resource.UncheckedGet<UtilityDeviceResource>();
+                    renderedInfo.warning = entry->warning;
+                    renderedInfo.errors = entry->errors;
+                    renderedInfo.device = entry->device;
+                    ok = true;
+                } catch (const std::exception& e) {
+                    *error = std::string("Hydra failed: ") + e.what();
+                    ok = false;
+                }
+            },
+                                               error, whileWaiting);
+            if (ran && fellBack) {
+                rememberDeviceFallback(request.owner, request.settings);
+            }
+            if (!ran || !ok) {
+                return false;
+            }
+            frame->key = key;
+            frame->film = rendered;
+            frame->warning = renderedInfo.warning;
+            frame->errors = renderedInfo.errors;
+            frame->device = renderedInfo.device;
+            frame->valid = true;
+        }
+        film = frame->film;
+        info->warning = frame->warning;
+        info->errors = frame->errors;
+        info->device = frame->device;
+    }
+    // A record context belongs to the thread that made it, so the copy is recorded here, not on the render thread.
+    if (film.device() != &context.device()) {
+        *error = "Natron Utility rendered on another GPU than the one its output is on.";
+
+        return false;
+    }
+    if ((width <= 0) || (height <= 0)) {
+        return true;
+    }
+    const std::int64_t origin = (std::int64_t)(output.byteOffset / sizeof(float)) + ((std::int64_t)(outputRect.y1 - output.bounds.y1) * output.rowStrideFloats) + (std::int64_t)(outputRect.x1 - output.bounds.x1) * output.nComps;
+    const gpu::GpuStatus status = film.recordWindow(context, window.x1, window.y1, window.x2, window.y2, window.nComps, *output.buffer, (std::uint64_t)origin, (std::uint32_t)output.rowStrideFloats);
+    if (!status) {
+        *error = "Natron Utility's frame could not be copied on the GPU: " + status.message;
+
+        return false;
+    }
+
+    return true;
+} // recordDeviceWindow
+#endif // NATRON_HAVE_GPU
+
+#ifdef NATRON_HAVE_GPU
+bool
+deviceFrameFellBack(const void* owner,
+                    std::uint64_t generation,
+                    std::uint64_t budget,
+                    const std::string& device)
+{
+    const std::lock_guard<std::mutex> lock(gDeviceFallbacksMutex);
+    const std::map<const void*, DeviceFallback>::const_iterator found = gDeviceFallbacks.find(owner);
+
+    return (found != gDeviceFallbacks.end()) && (found->second.generation == generation) && (found->second.budget == budget) && (found->second.device == device);
+}
+#endif
+
 void
 release(const void* owner)
 {
+#ifdef NATRON_HAVE_GPU
+    {
+        const std::lock_guard<std::mutex> lock(gDeviceFramesMutex);
+        gDeviceFrames.erase(owner);
+    }
+    forgetDeviceFallback(owner);
+#endif
     RenderThread& storm = RenderThread::storm();
     RenderThread& cpu = RenderThread::cpu();
 
@@ -2613,9 +3485,38 @@ release(const void* owner)
 void
 releaseAll()
 {
+#ifdef NATRON_HAVE_GPU
+    {
+        const std::lock_guard<std::mutex> lock(gDeviceFramesMutex);
+        gDeviceFrames.clear();
+    }
+    {
+        // The memory given back may be what the delegates fell back for.
+        const std::lock_guard<std::mutex> lock(gDeviceFallbacksMutex);
+        gDeviceFallbacks.clear();
+    }
+#endif
     RenderThread& thread = RenderThread::storm();
+    RenderThread& cpu = RenderThread::cpu();
 
     (void)thread.post([&thread]() { thread.releaseAllEngines(); }, false);
+    (void)cpu.post([&cpu]() { cpu.releaseUtilityGpu(); }, false);
+}
+
+void
+releaseAllGpuMemory()
+{
+    releaseAll();
+#ifdef NATRON_HAVE_GPU
+    ProgressiveRender::releaseAllGpu();
+    // Queued behind releaseAll()'s job, so the pool is trimmed after the engines gave their buffers back.
+    (void)RenderThread::cpu().post([]() {
+        if (GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr) {
+            gpu->releaseIdleMemory();
+        }
+    },
+                                   false);
+#endif
 }
 
 void
@@ -2629,6 +3530,38 @@ setRendererSettings(const std::string& renderer,
     } else {
         gSettings[renderer] = settings;
     }
+}
+
+void
+setPurposes(UsdImagingGLEngine* engine,
+            const std::string& renderer,
+            bool showRender,
+            bool showProxy,
+            bool showGuides,
+            UsdImagingGLRenderParams* params)
+{
+    params->showRender = showRender;
+    params->showProxy = showProxy;
+    params->showGuides = showGuides;
+    if (renderer != kRenderDelegateUtilityId) {
+        return;
+    }
+
+    VtTokenArray shown(1, HdRenderTagTokens->geometry);
+
+    if (showGuides) {
+        shown.push_back(HdRenderTagTokens->guide);
+    }
+    if (showProxy) {
+        shown.push_back(HdRenderTagTokens->proxy);
+    }
+    if (showRender) {
+        shown.push_back(HdRenderTagTokens->render);
+    }
+    engine->SetRendererSetting(TfToken(kRenderDelegateUtilityShownTagsSetting), VtValue(shown));
+    params->showRender = true;
+    params->showProxy = true;
+    params->showGuides = true;
 }
 
 bool
@@ -2654,6 +3587,32 @@ releaseAllCpuEngines()
     RenderThread& thread = RenderThread::cpu();
 
     (void)thread.post([&thread]() { thread.releaseAllEngines(); }, false);
+}
+
+bool
+releaseAllCpuEnginesAndWait(int timeoutMs)
+{
+    RenderThread& thread = RenderThread::cpu();
+    // Shared with the job, which outlives a wait that times out.
+    std::shared_ptr<std::promise<void>> released = std::make_shared<std::promise<void>>();
+    std::future<void> done = released->get_future();
+
+    const auto job = [&thread, released]() {
+        // Set however the release ends, a throw included, so the wait reports it rather than
+        // running out.
+        struct SetOnExit {
+            std::promise<void>& promise;
+            ~SetOnExit() { promise.set_value(); }
+        } setOnExit { *released };
+        thread.releaseAllEngines();
+    };
+
+    // A thread that never started holds no engine.
+    if (!thread.post(job, false)) {
+        return true;
+    }
+
+    return done.wait_for(std::chrono::milliseconds(std::max(0, timeoutMs))) == std::future_status::ready;
 }
 
 void
@@ -2692,6 +3651,24 @@ getEngineBuildCount()
     return gEngineBuilds.load();
 }
 
+std::uint64_t
+getEngineRenderCount()
+{
+    return gEngineRenders.load();
+}
+
+std::uint64_t
+getMoonRayProgressReads()
+{
+    return gMoonRayProgressReads.load();
+}
+
+void
+setStormTranslucentIds(bool enabled)
+{
+    gStormTranslucentIds = enabled;
+}
+
 std::string
 contextDescription(std::string* error)
 {
@@ -2711,7 +3688,7 @@ contextDescription(std::string* error)
 bool
 ProgressiveRender::View::operator==(const View& other) const
 {
-    return (width == other.width) && (height == other.height) && (time == other.time) && (frustum.ComputeViewMatrix() == other.frustum.ComputeViewMatrix()) && (frustum.ComputeProjectionMatrix() == other.frustum.ComputeProjectionMatrix());
+    return (width == other.width) && (height == other.height) && (time == other.time) && (showRender == other.showRender) && (showProxy == other.showProxy) && (showGuides == other.showGuides) && (headlight == other.headlight) && (frustum.ComputeViewMatrix() == other.frustum.ComputeViewMatrix()) && (frustum.ComputeProjectionMatrix() == other.frustum.ComputeProjectionMatrix());
 }
 
 namespace {
@@ -2747,6 +3724,10 @@ namespace {
 
         return *counts;
     }
+
+    // Every ProgressiveRender alive, for the GPU releases that reach them all.
+    std::mutex gProgressivesMutex;
+    std::set<ProgressiveRender::Implementation*> gProgressives;
 
     int
     intOf(const VtValue& value,
@@ -2832,9 +3813,11 @@ namespace {
 struct ProgressiveRender::Implementation {
     typedef std::chrono::steady_clock Clock;
 
-    std::mutex* const stageLock;
+    StageLock stageLock;
     const std::function<bool(SceneStageSnapshot*)> snapshotOf;
     const std::function<void()> listener;
+    // setDeviceColor()'s; readFrame() reads it without mutex.
+    std::atomic<bool> deviceColor { false };
     SceneWriteBarrier::ParticipantId participant = 0;
 
     // Held by the worker through each call of what the caller owns: stageLock, snapshotOf,
@@ -2853,8 +3836,6 @@ struct ProgressiveRender::Implementation {
     int maxSamples = 0;
     // The settings of the stage's render settings prim for the renderer (setSettings()).
     RendererSettings settings;
-    // setHeadlightOnly()'s.
-    bool headlight = false;
     bool stopped = false;
     bool quit = false;
     // A barrier write waits for the worker to park; parkedReport is the report still to make.
@@ -2874,6 +3855,10 @@ struct ProgressiveRender::Implementation {
     Status status;
     std::shared_ptr<const Frame> frame;
     int defaultMaxSamples = 0;
+    SceneDrawFilter::Rules drawRules;
+    bool renderEverything = false;
+    // Bumped by each change of what the filter is to draw by.
+    std::uint64_t drawEdits = 0;
 
     // The worker's; engineMutex guards them against pick() and barrier writes. The stage is made
     // on the first pass and kept until the worker ends, as an engine binds the first stage it
@@ -2884,9 +3869,6 @@ struct ProgressiveRender::Implementation {
     std::string engineRenderer;
     // The settings the engine was made under, and the AOV its depth is read from.
     RendererSettings engineSettings;
-    // The setHeadlightOnly() the engine was made under, and whether it lights from the camera.
-    bool engineHeadlightAsked = false;
-    bool engineHeadlight = false;
     TfToken depthAov;
     std::string rendererName;
     std::string failedRenderer;
@@ -2899,8 +3881,22 @@ struct ProgressiveRender::Implementation {
     std::uint64_t workingEdits = 0;
     TfToken samplesKey;
     int appliedCap = 0;
+    // The engine's filter, null if its delegate's render index has none, and the drawEdits its
+    // rules are of.
+    SceneDrawFilter::WeakPtr drawFilter;
+    std::uint64_t appliedDrawEdits = 0;
+    // Whether the engine has the headlight that stands in for the scene's lights while the rules
+    // hide every one, as Storm's viewer lights such a scene.
+    bool headlit = false;
+    // An engine made again because its delegate did not show a restart starts with the headlight
+    // its predecessor had. Its filter learns the stage's lights only in its first render, so finding
+    // the headlight missing after that pass would restart the render; that restart may come too
+    // soon after the delegate starts for its counts to show it, which makes the engine again, and
+    // so on without end on a loaded machine.
+    bool carriedHeadlight = false;
     bool paused = false;
-    // StopRenderer() stopped the delegate's threads for an edit; the next pass restarts them.
+    // StopRenderer() stopped the delegate's threads for an edit, or for stop() where it cannot
+    // pause; the next pass restarts them.
     bool rendererStopped = false;
     View engineView;
     bool engineHasView = false;
@@ -2909,16 +3905,60 @@ struct ProgressiveRender::Implementation {
     int engineThreads = 0;
     int askedThreads = -1;
     int cyclesHolder = 0;
+    // What releaseGpu() and releaseLostGpu() asked of the worker, under mutex.
+    bool gpuReleaseAsked = false;
+    bool lostGpuReleaseAsked = false;
 
     std::thread worker;
 
-    Implementation(std::mutex* stageLock_,
+    Implementation(const StageLock& stageLock_,
                    const std::function<bool(SceneStageSnapshot*)>& snapshot_,
                    const std::function<void()>& listener_)
         : stageLock(stageLock_)
         , snapshotOf(snapshot_)
         , listener(listener_)
     {
+    }
+
+    // Under mutex.
+    SceneDrawFilter::Rules drawTarget() const
+    {
+        return renderEverything ? SceneDrawFilter::Rules() : drawRules;
+    }
+
+    // Under mutex.
+    void drawEdited()
+    {
+        ++drawEdits;
+        ++sceneEdits;
+        edited();
+    }
+
+    /**
+     * Whether the engine needs the headlight: the stage has lights and the rules keep all of them
+     * from Hydra. The task controller's own lights reach the filter too, and only the stage's
+     * count, or adding the headlight would take it away again. stage is the worker's; under
+     * engineMutex. The filter knows the stage's lights once a render has synced them.
+     **/
+    bool wantsHeadlight(const UsdStageRefPtr& stage) const
+    {
+        const SceneDrawFilter* filter = get_pointer(drawFilter);
+
+        return filter && filter->hidesEveryLight([&stage](const SdfPath& light) {
+            return bool(stage->GetPrimAtPath(light));
+        });
+    }
+
+    // Under engineMutex.
+    void applyHeadlight(bool on,
+                        const View& v)
+    {
+        if (on) {
+            setHeadlight(engine.get(), v.frustum.ComputeViewInverse());
+        } else {
+            engine->SetLightingState(GlfSimpleLightVector(), GlfSimpleMaterial(), GfVec4f(0.f, 0.f, 0.f, 1.f));
+        }
+        headlit = on;
     }
 
     // Under mutex.
@@ -2942,6 +3982,13 @@ struct ProgressiveRender::Implementation {
     void dropEngine()
     {
         std::lock_guard<std::mutex> l(engineMutex);
+        if (engine && !rendererStopped && engine->IsStopRendererSupported()) {
+            try {
+                (void)engine->StopRenderer();
+            } catch (...) {
+                qWarning("A render delegate threw while stopping to be released.");
+            }
+        }
         if (engine && paused) {
             try {
                 (void)engine->ResumeRenderer();
@@ -2949,6 +3996,8 @@ struct ProgressiveRender::Implementation {
                 qWarning("A render delegate threw while resuming to be released.");
             }
         }
+        drawFilter = SceneDrawFilter::WeakPtr();
+        headlit = false;
         engine.reset();
         engineRenderer.clear();
         samplesKey = TfToken();
@@ -3014,7 +4063,8 @@ struct ProgressiveRender::Implementation {
                     bool cycles,
                     int threads,
                     const RendererSettings& primSettings,
-                    bool headlightAsked,
+                    const SceneDrawFilter::Rules& rules,
+                    std::uint64_t rulesEdits,
                     int* defaultCap,
                     std::string* error)
     {
@@ -3026,10 +4076,19 @@ struct ProgressiveRender::Implementation {
         CyclesAovs::registerSceneIndices();
         MoonRayAovs::registerSceneIndices();
         LiveTextureSceneIndex::registerSceneIndices();
+        // The renderer's engine defaults, the prim's settings, then those set for tests, as a USDRender's engine takes them.
+        RendererSettings settings = RenderSettingsKnobs::engineDefaults(id);
+        for (const std::pair<const std::string, VtValue>& setting : primSettings) {
+            settings[setting.first] = setting.second;
+        }
+        for (const std::pair<const std::string, VtValue>& setting : rendererSettings(id)) {
+            settings[setting.first] = setting.second;
+        }
         EnginePtr made;
+        std::string filterId;
         {
             TfErrorMark mark;
-            made = newEngine(parameters, cycles, threads);
+            made = newEngine(parameters, cycles, threads, cycles && CyclesAovs::subdivides(settings), false, true, &filterId);
             ++gEngineBuilds;
             if (made->GetCurrentRendererId() != TfToken(id)) {
                 std::string reasons;
@@ -3045,11 +4104,6 @@ struct ProgressiveRender::Implementation {
         }
         made->SetEnablePresentation(false);
         const bool moonRay = MoonRayAovs::isMoonRay(id);
-        // The prim's settings, then those set for tests, as a USDRender's engine takes them.
-        RendererSettings settings = primSettings;
-        for (const std::pair<const std::string, VtValue>& setting : rendererSettings(id)) {
-            settings[setting.first] = setting.second;
-        }
         for (RendererSettings::const_iterator it = settings.begin(); it != settings.end(); ++it) {
             made->SetRendererSetting(TfToken(it->first), it->second);
         }
@@ -3075,10 +4129,6 @@ struct ProgressiveRender::Implementation {
 
             return false;
         }
-        const bool lit = headlightFor(id, headlightAsked);
-        if (lit) {
-            setHeadlight(made.get());
-        }
         const UsdImagingGLRendererSettingsList list = made->GetRendererSettingsList();
         // MoonRay's samples per pixel is a scene variable its delegate does not declare.
         const TfToken key = moonRay ? TfToken(MoonRaySettings::samplesKey()) : samplesSettingKey(list);
@@ -3091,12 +4141,19 @@ struct ProgressiveRender::Implementation {
                 }
             }
         }
+        // Before the first render, which populates the render index, so seeding sends nothing.
+        const SceneDrawFilter::WeakPtr filter = filterId.empty() ? SceneDrawFilter::WeakPtr() : SceneDrawFilter::find(filterId);
+        if (SceneDrawFilter* f = get_pointer(filter)) {
+            f->seedRules(rules);
+        }
         std::lock_guard<std::mutex> l(engineMutex);
         engine = std::move(made);
+        rendererStopped = false;
+        drawFilter = filter;
+        appliedDrawEdits = rulesEdits;
+        headlit = false;
         engineRenderer = id;
         engineSettings = primSettings;
-        engineHeadlightAsked = headlightAsked;
-        engineHeadlight = lit;
         depthAov = moonRay ? MoonRayAovs::depthAov() : HdAovTokens->depth;
         engineThreads = threads;
         rendererName = name;
@@ -3119,6 +4176,18 @@ struct ProgressiveRender::Implementation {
         const std::size_t pixels = (std::size_t)width * (std::size_t)height;
         out->width = width;
         out->height = height;
+#ifdef NATRON_HAVE_GPU
+        if (deviceColor.load() && (engineRenderer == kRenderDelegateUtilityId)) {
+            HdRenderBuffer* buffer = engine->GetAovRenderBuffer(HdAovTokens->color);
+            if (buffer && ((int)buffer->GetWidth() == width) && ((int)buffer->GetHeight() == height)) {
+                const VtValue resource = buffer->GetResource(false);
+                if (resource.IsHolding<UtilityDeviceResource>()) {
+                    out->deviceColor = std::make_shared<const UtilityDeviceResource>(resource.UncheckedGet<UtilityDeviceResource>());
+                }
+            }
+        }
+        if (!out->deviceColor)
+#endif
         {
             MappedAov color(engine.get(), rendererName, width, height, HdAovTokens->color, error);
             if (!color.valid()) {
@@ -3233,14 +4302,16 @@ struct ProgressiveRender::Implementation {
                       View* v,
                       int* cap,
                       std::uint64_t* passGeneration,
-                      std::uint64_t* restartIndex)
+                      std::uint64_t* restartIndex,
+                      std::uint64_t* passDrawEdits,
+                      SceneDrawFilter::Rules* passRules)
     {
         std::unique_lock<std::mutex> caller(callerMutex);
         // The caller edits its stage and bumps the generation under stageLock, so the generation
         // read with the snapshot is the one it was taken under. The caller may hold stageLock
         // through a long sync of its own: blocking on it with callerMutex held would make the
         // destructor, which takes callerMutex, wait out that sync.
-        std::unique_lock<std::mutex> stageGuard(*stageLock, std::defer_lock);
+        std::unique_lock<StageLock> stageGuard(stageLock, std::defer_lock);
         for (;;) {
             if (detached) {
                 return false;
@@ -3258,6 +4329,10 @@ struct ProgressiveRender::Implementation {
         *cap = (maxSamples > 0) ? maxSamples : defaultMaxSamples;
         *passGeneration = generation;
         *restartIndex = status.restarts;
+        *passDrawEdits = drawEdits;
+        if (drawEdits != appliedDrawEdits) {
+            *passRules = drawTarget();
+        }
 
         return true;
     }
@@ -3297,6 +4372,91 @@ struct ProgressiveRender::Implementation {
         const std::string name = RenderDelegates::find(workingRenderer, &delegate) ? delegate.displayName : workingRenderer;
         const std::string reason = (what && what[0]) ? what : "unknown exception";
         fail(lock, workingRenderer, "The " + name + " render failed: " + reason, workingEdits);
+    }
+
+#ifdef NATRON_HAVE_GPU
+    bool hostColorOf(const Frame& from,
+                     std::vector<GfHalf>* rgba,
+                     std::string* error) const
+    {
+        if (!from.deviceColor) {
+            *error = "The frame's colour is not on the device.";
+
+            return false;
+        }
+        const std::size_t pixels = (std::size_t)from.width * (std::size_t)from.height;
+        if (((std::size_t)from.deviceColor->width() * from.deviceColor->height()) != pixels) {
+            *error = "The frame's colour on the device is not the frame's size.";
+
+            return false;
+        }
+        std::vector<float> linear;
+        if (!from.deviceColor->download(&linear, error)) {
+            return false;
+        }
+        rgba->resize(pixels * 4);
+        for (std::size_t i = 0; i < pixels * 4; ++i) {
+            (*rgba)[i] = saturatedHalf(linear[i]);
+        }
+
+        return true;
+    }
+#endif
+
+    // Under mutex, and again on return: what releaseGpu() and releaseLostGpu() asked for. Only the
+    // worker changes the engine, so it is read here without engineMutex.
+    void runGpuReleases(std::unique_lock<std::mutex>& lock)
+    {
+        const bool full = gpuReleaseAsked;
+        gpuReleaseAsked = false;
+        lostGpuReleaseAsked = false;
+#ifdef NATRON_HAVE_GPU
+        if (!engine || (engineRenderer != kRenderDelegateUtilityId)) {
+            return;
+        }
+        const std::shared_ptr<const Frame> shown = (full && frame && frame->deviceColor) ? frame : std::shared_ptr<const Frame>();
+        lock.unlock();
+        std::shared_ptr<Frame> hosted;
+        if (shown) {
+            // Read back while the film is still held: the engine's release lets go of it.
+            std::vector<GfHalf> rgba;
+            std::string error;
+            if (hostColorOf(*shown, &rgba, &error)) {
+                hosted = std::make_shared<Frame>(*shown);
+                hosted->deviceColor.reset();
+                hosted->rgba = std::move(rgba);
+            } else {
+                qWarning("The 3D viewer's frame could not be read back from the GPU: %s", error.c_str());
+            }
+        }
+        {
+            std::lock_guard<std::mutex> l(engineMutex);
+            try {
+                (void)engine->InvokeRendererCommand(TfToken(full ? kUtilityCommandReleaseGpu : kUtilityCommandReleaseLostGpu));
+            } catch (...) {
+                qWarning("A render delegate threw while giving its GPU memory back.");
+            }
+        }
+        if (shown) {
+            // The viewer still holds the frame it shows, and with it the film.
+            shown->deviceColor->release();
+        }
+        if (full) {
+            if (GpuContext* gpu = appPTR ? appPTR->getGpuContext() : nullptr) {
+                gpu->releaseIdleMemory();
+            }
+        }
+        lock.lock();
+        if (hosted && (frame == shown)) {
+            frame = hosted;
+            lock.unlock();
+            notifyListener();
+            lock.lock();
+        }
+#else
+        Q_UNUSED(lock);
+        Q_UNUSED(full);
+#endif
     }
 
     void refine(std::unique_lock<std::mutex>& lock);
@@ -3345,16 +4505,25 @@ namespace {
 } // anon namespace
 
 // Returns with lock held. Its record of the render's progress dies with a failure, as the engine does.
+// Each untimed wait reads quit first: a step that lets go of mutex, as asking for the Cycles
+// thread count does, may miss the destructor's notify.
 void
 ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
 {
     int lastSamples = -1;
+    std::size_t lastUtilitySamples = 0;
     RestartWatch restartWatch;
     bool lastConverged = false;
     bool firstPass = false;
     bool engineFresh = false;
+    // Whether the engine has rendered a pass, so that its delegate may be sampling on its own threads.
+    bool engineRendered = false;
     Clock::time_point restartTime = Clock::now();
     Clock::time_point stallSince = restartTime;
+    // A MoonRay session whose progress holds still is made again once; until an edit, or the
+    // render's end, a second silence fails it.
+    ProgressStall sessionStall;
+    bool sessionStallRemade = false;
     bool done = false;
     bool needRestart = true;
     // The engine is being made again for the same render: the frame shown stays until the new one.
@@ -3365,6 +4534,11 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
     while (!quit) {
         if (parkPoint(lock)) {
             done = false;
+            sessionStall.reset();
+            continue;
+        }
+        if (gpuReleaseAsked || lostGpuReleaseAsked) {
+            runGpuReleases(lock);
             continue;
         }
         workingRenderer = renderer;
@@ -3393,19 +4567,23 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                     }
                 }
                 failedRenderer.clear();
+                sessionStallRemade = false;
             }
             if (renderer != failedRenderer) {
                 status.error.clear();
             }
             if (idle || (renderer == failedRenderer)) {
                 keepFrame = false;
-                wake.wait(lock);
+                if (!quit) {
+                    wake.wait(lock);
+                }
                 continue;
             }
             const std::string id = renderer;
             const std::function<int()> threadsFn = threadsOf;
             const RendererSettings primSettings = settings;
-            const bool headlightAsked = headlight;
+            const SceneDrawFilter::Rules rules = drawTarget();
+            const std::uint64_t rulesEdits = drawEdits;
             lock.unlock();
             const bool cycles = CyclesAovs::isCycles(id);
             int threads = 0;
@@ -3423,7 +4601,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
             std::string error;
             int cap = 0;
-            const bool made = makeEngine(id, cycles, threads, primSettings, headlightAsked, &cap, &error);
+            const bool made = makeEngine(id, cycles, threads, primSettings, rules, rulesEdits, &cap, &error);
             lock.lock();
             if (!made) {
                 fail(lock, id, error, workingEdits);
@@ -3441,11 +4619,11 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
             keepFrame = false;
             lastSamples = -1;
+            lastUtilitySamples = 0;
             lastConverged = false;
+            engineRendered = false;
             engineFresh = true;
             ++status.engines;
-            status.headlightAsked = engineHeadlightAsked;
-            status.headlight = engineHeadlight;
             needRestart = true;
             continue;
         }
@@ -3463,10 +4641,9 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 continue;
             }
         }
-        if ((settings != engineSettings) || (headlight != engineHeadlightAsked)) {
+        if (settings != engineSettings) {
             // Some settings, such as Cycles' integrator's, restart a render only when the engine
-            // is made under them, and a light at the camera cannot be taken back from one: it is
-            // made again, the frame shown kept until the new one.
+            // is made under them: the engine is made again, the frame shown kept until the new one.
             lock.unlock();
             dropEngine();
             lock.lock();
@@ -3487,13 +4664,18 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                         (void)engine->PauseRenderer();
                     }
                     paused = true;
+                    if (!engine->IsPauseRendererSupported() && !rendererStopped && engine->IsStopRendererSupported()) {
+                        rendererStopped = engine->StopRenderer();
+                    }
                 }
                 lock.lock();
                 continue;
             }
             status.stopped = true;
             status.paused = true;
-            wake.wait(lock);
+            if (!quit) {
+                wake.wait(lock);
+            }
             continue;
         }
         status.stopped = false;
@@ -3512,6 +4694,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
             lock.lock();
             stallSince = Clock::now();
+            sessionStall.reset();
             continue;
         }
 
@@ -3527,6 +4710,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
             pending = false;
             needRestart = true;
+            sessionStallRemade = false;
         }
         if (needRestart) {
             needRestart = false;
@@ -3535,12 +4719,15 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             status.converged = false;
             restartTime = Clock::now();
             stallSince = restartTime;
+            sessionStall.reset();
             firstPass = true;
             restartWatch.restart(engineFresh || !RestartWatch::watches(engineRenderer));
             engineFresh = false;
         }
         if (done) {
-            wake.wait(lock);
+            if (!quit) {
+                wake.wait(lock);
+            }
             continue;
         }
         if (parkPoint(lock)) {
@@ -3548,14 +4735,32 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             continue;
         }
 
+        if (engine && engineRendered && CyclesAovs::isCycles(engineRenderer) && !samplesKey.IsEmpty() && (appliedCap > 0) && !lastConverged) {
+            const int capNow = (maxSamples > 0) ? maxSamples : defaultMaxSamples;
+            if ((capNow > 0) && (capNow < appliedCap)) {
+                // Cycles told mid-render to stop at or below the samples it already holds resets to no
+                // sample and renders none again, with its AOVs cleared: a new engine starts under the
+                // cap, and the frame shown stays until it draws. Any lowering of a render under way
+                // counts, not only one below the samples last read: Cycles samples on between passes.
+                const bool lit = headlit;
+                lock.unlock();
+                dropEngine();
+                lock.lock();
+                carriedHeadlight = lit;
+                keepFrame = true;
+                continue;
+            }
+        }
         lock.unlock();
         View v;
         int cap = 0;
         std::uint64_t passGeneration = 0;
         std::uint64_t restartIndex = 0;
+        std::uint64_t passDrawEdits = 0;
+        SceneDrawFilter::Rules passRules;
         SceneStageSnapshot snapshot;
         bool hasStage = false;
-        if (!takeSnapshot(&snapshot, &hasStage, &v, &cap, &passGeneration, &restartIndex)) {
+        if (!takeSnapshot(&snapshot, &hasStage, &v, &cap, &passGeneration, &restartIndex, &passDrawEdits, &passRules)) {
             lock.lock();
             break;
         }
@@ -3569,12 +4774,15 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         std::string renderFailure;
         std::string sessionFailure;
         std::shared_ptr<Frame> read;
+        bool lightsChanged = false;
+        bool viewHeadlight = false;
         const std::uint64_t passEngineChanges = engineChanges.load();
         std::atomic<bool> exportCut { false };
         if (hasStage) {
             std::lock_guard<std::mutex> l(engineMutex);
             if (!workerStage) {
-                workerStage.reset(new SceneStage);
+                // Composes no payload until syncTo() applies the snapshot's load set.
+                workerStage.reset(new SceneStage(UsdStage::LoadNone));
             }
             const LiveTextureStore::ExportAbortScope exportAbort([this, passEngineChanges, &exportCut]() {
                 if (engineChanges.load() != passEngineChanges) {
@@ -3605,30 +4813,56 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                     engine->SetRendererSetting(samplesKey, VtValue(cap));
                     appliedCap = cap;
                 }
-                if (!engineHasView || (engineView != v)) {
+                const bool viewMoved = !engineHasView || (engineView != v);
+                if (viewMoved) {
                     engine->SetRenderBufferSize(GfVec2i(v.width, v.height));
                     engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), v.width, v.height)));
                     engine->SetCameraState(v.frustum.ComputeViewMatrix(), v.frustum.ComputeProjectionMatrix());
                     engineView = v;
                     engineHasView = true;
                 }
+                viewHeadlight = headlightFor(engineRenderer, v.headlight);
                 UsdImagingGLRenderParams params;
                 params.frame = v.time;
                 params.drawMode = UsdImagingGLDrawMode::DRAW_SHADED_SMOOTH;
                 params.enableLighting = true;
                 // UsdImagingGL prunes the stage's lights from any delegate's scene without them.
-                params.enableSceneLights = !engineHeadlight;
+                params.enableSceneLights = !viewHeadlight;
                 params.enableSceneMaterials = true;
                 params.clearColor = GfVec4f(0.f, 0.f, 0.f, 0.f);
                 params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
                 params.highlight = false;
+                HydraRender::setPurposes(engine.get(), engineRenderer, v.showRender, v.showProxy, v.showGuides, &params);
+                SceneDrawFilter* filter = get_pointer(drawFilter);
+                if (passDrawEdits != appliedDrawEdits) {
+                    // All at once: each step of a paced reveal would restart the delegate.
+                    if (filter) {
+                        filter->replaceRules(passRules);
+                    }
+                    appliedDrawEdits = passDrawEdits;
+                }
+                const bool headlight = viewHeadlight || carriedHeadlight || wantsHeadlight(stage);
+                carriedHeadlight = false;
+                if ((headlight != headlit) || (headlight && viewMoved)) {
+                    applyHeadlight(headlight, v);
+                }
                 if (readsRestart) {
                     before = engine->GetRenderStats();
                 }
-                if (renderGuarded(engine.get(), stage->GetPseudoRoot(), params, &renderFailure)) {
+                const bool renderedPass = renderGuarded(engine.get(), stage->GetPseudoRoot(), params, &renderFailure);
+                if (filter) {
+                    filter->endRender();
+                }
+                // The render's sync may have brought the stage's lights to the filter, as an
+                // engine's first does, or taken them away.
+                lightsChanged = renderedPass && ((viewHeadlight || wantsHeadlight(stage)) != headlit);
+                if (renderedPass) {
                     rendered = true;
                     converged = engine->IsConverged();
                     stats = engine->GetRenderStats();
+                    if (MoonRayAovs::isMoonRay(engineRenderer) && moonRayProgressed(stats)) {
+                        ++gMoonRayProgressReads;
+                    }
                     if (log && !converged) {
                         // A MoonRay session that could not start or broke never converges.
                         sessionFailure = MoonRayAovs::sessionFailure(stats, log->notices());
@@ -3638,6 +4872,11 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         }
         const int samples = samplesOf(stats, cap);
         lock.lock();
+        engineRendered = engineRendered || rendered;
+        if (hasStage) {
+            status.headlightAsked = v.headlight;
+            status.headlight = viewHeadlight;
+        }
         if (quit) {
             break;
         }
@@ -3672,9 +4911,16 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             // Edited during the pass: what it rendered is stale.
             continue;
         }
+        if (lightsChanged) {
+            // Lit otherwise than the scene now asks: the next pass sets the headlight and restarts.
+            edited();
+            continue;
+        }
         if (!rendered) {
             // No stage yet: the sync that brings one edits it, and restarts.
-            wake.wait(lock);
+            if (!quit) {
+                wake.wait(lock);
+            }
             continue;
         }
         if (readsRestart) {
@@ -3686,12 +4932,30 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         if (!restartSeen) {
             if (!restartWatch.restarting() && (now - restartTime >= kRestartUnseen)) {
                 // A new engine has no pixels from before to mistake for the restart's.
+                const bool lit = headlit;
                 lock.unlock();
                 dropEngine();
                 lock.lock();
+                carriedHeadlight = lit;
+                ++status.unseenRemakes;
                 keepFrame = true;
                 continue;
             }
+        }
+        if (!converged && MoonRayAovs::isMoonRay(engineRenderer) && sessionStall.stalled(stats, now)) {
+            if (sessionStallRemade) {
+                fail(lock, workingRenderer, delegateStallError(sessionStall.bound()), workingEdits);
+                continue;
+            }
+            sessionStallRemade = true;
+            const bool lit = headlit;
+            lock.unlock();
+            dropEngine();
+            lock.lock();
+            carriedHeadlight = lit;
+            ++status.stallRemakes;
+            keepFrame = true;
+            continue;
         }
         const bool changed = (samples != lastSamples) || (converged != lastConverged);
         if (samples != lastSamples) {
@@ -3706,7 +4970,14 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         // not enough: Cycles marks its buffers converged when a reset cuts a render short.
         const bool atCap = (cap > 0) && (samples >= cap);
         const bool finished = restartSeen && converged && restartWatch.converged() && (atCap || (samples < 0) || (now - stallSince >= kConvergedStall));
-        bool publish = restartSeen && (samples != 0) && (changed || finished || (samples < 0) || !frame || (frame->restart != restartIndex));
+        // Natron Utility's tiles land in no order and count no samples the viewer reads, so its frame is
+        // a picture once a whole sample per pixel has landed, and again as each later one lands.
+        const bool wholeFrames = engineRenderer == kRenderDelegateUtilityId;
+        const VtDictionary::const_iterator utilityStat = stats.find(kUtilityStatSamples);
+        const std::size_t utilitySamples = (utilityStat != stats.end() && utilityStat->second.IsHolding<std::size_t>()) ? utilityStat->second.UncheckedGet<std::size_t>() : 0;
+        const bool samplesLanded = (utilitySamples > 0) && (utilitySamples != lastUtilitySamples);
+        lastUtilitySamples = utilitySamples;
+        bool publish = restartSeen && (samples != 0) && (wholeFrames ? (finished || samplesLanded) : (changed || finished || (samples < 0) || !frame || (frame->restart != restartIndex)));
         if (publish && parkPoint(lock)) {
             // What the pass rendered may be of the layers before the write.
             done = false;
@@ -3741,6 +5012,9 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             frame = read;
         }
         done = finished && publish;
+        if (done) {
+            sessionStallRemade = false;
+        }
         status.converged = done;
         if (publish && listener) {
             lock.unlock();
@@ -3756,8 +5030,20 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
 ProgressiveRender::ProgressiveRender(std::mutex* stageLock,
                                      const std::function<bool(SceneStageSnapshot*)>& snapshot,
                                      const std::function<void()>& listener)
+    : ProgressiveRender(StageLock { [stageLock]() { return stageLock->try_lock(); }, [stageLock]() { stageLock->unlock(); } }, snapshot, listener)
+{
+}
+
+ProgressiveRender::ProgressiveRender(const StageLock& stageLock,
+                                     const std::function<bool(SceneStageSnapshot*)>& snapshot,
+                                     const std::function<void()>& listener)
     : _imp(new Implementation(stageLock, snapshot, listener))
 {
+#ifdef NATRON_HAVE_GPU
+    // A Natron Utility engine idle since its device was lost would keep it from recovering.
+    static std::once_flag releaser;
+    std::call_once(releaser, []() { GpuContext::addLossReleaser(&ProgressiveRender::releaseAllLostGpu); });
+#endif
     Implementation* imp = _imp.get();
     // The worker's stage composes the caller's layers read from files outside any ReadScope: a
     // reload keeps every delegate call out until it is done. It cannot cut a call short, as the
@@ -3793,10 +5079,18 @@ ProgressiveRender::ProgressiveRender(std::mutex* stageLock,
         ++counts.renders;
     }
     _imp->worker = std::thread(runWorker, _imp);
+    {
+        const std::lock_guard<std::mutex> l(gProgressivesMutex);
+        gProgressives.insert(_imp.get());
+    }
 }
 
 ProgressiveRender::~ProgressiveRender()
 {
+    {
+        const std::lock_guard<std::mutex> l(gProgressivesMutex);
+        gProgressives.erase(_imp.get());
+    }
     {
         std::lock_guard<std::mutex> l(_imp->mutex);
         _imp->quit = true;
@@ -3881,20 +5175,6 @@ ProgressiveRender::setSettings(const std::map<std::string, VtValue>& settings)
 }
 
 void
-ProgressiveRender::setHeadlightOnly(bool on)
-{
-    std::lock_guard<std::mutex> l(_imp->mutex);
-
-    if (on == _imp->headlight) {
-        return;
-    }
-    _imp->headlight = on;
-    ++_imp->engineChanges;
-    ++_imp->sceneEdits;
-    _imp->edited();
-}
-
-void
 ProgressiveRender::setMaxSamples(int samples)
 {
     std::lock_guard<std::mutex> l(_imp->mutex);
@@ -3906,6 +5186,52 @@ ProgressiveRender::setMaxSamples(int samples)
     _imp->maxSamples = samples;
     ++_imp->sceneEdits;
     _imp->edited();
+}
+
+void
+ProgressiveRender::setDrawRules(const SceneDrawFilter::Rules& rules)
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    if (rules == _imp->drawRules) {
+        return;
+    }
+    _imp->drawRules = rules;
+    if (!_imp->renderEverything) {
+        _imp->drawEdited();
+    }
+}
+
+void
+ProgressiveRender::applyDrawDeltas(const std::vector<SceneDrawDelta>& deltas)
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+    SceneDrawFilter::Rules rules = _imp->drawRules;
+
+    for (const SceneDrawDelta& delta : deltas) {
+        SceneDrawFilter::applyToRules(delta, &rules);
+    }
+    if (rules == _imp->drawRules) {
+        return;
+    }
+    _imp->drawRules = std::move(rules);
+    if (!_imp->renderEverything) {
+        _imp->drawEdited();
+    }
+}
+
+void
+ProgressiveRender::setRenderEverything(bool on)
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    if (on == _imp->renderEverything) {
+        return;
+    }
+    _imp->renderEverything = on;
+    if (!_imp->drawRules.empty()) {
+        _imp->drawEdited();
+    }
 }
 
 int
@@ -3966,6 +5292,64 @@ ProgressiveRender::getRestartCount() const
 
     return _imp->status.restarts;
 }
+
+#ifdef NATRON_HAVE_GPU
+void
+ProgressiveRender::setDeviceColor(bool onDevice)
+{
+    _imp->deviceColor.store(onDevice);
+}
+
+bool
+ProgressiveRender::hostColor(const Frame& frame,
+                             std::vector<GfHalf>* rgba,
+                             std::string* error) const
+{
+    return _imp->hostColorOf(frame, rgba, error);
+}
+
+void
+ProgressiveRender::releaseGpu()
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    _imp->gpuReleaseAsked = true;
+    _imp->wake.notify_all();
+}
+
+void
+ProgressiveRender::releaseLostGpu()
+{
+    std::lock_guard<std::mutex> l(_imp->mutex);
+
+    _imp->lostGpuReleaseAsked = true;
+    _imp->wake.notify_all();
+}
+
+void
+ProgressiveRender::releaseAllGpu()
+{
+    const std::lock_guard<std::mutex> l(gProgressivesMutex);
+
+    for (Implementation* imp : gProgressives) {
+        std::lock_guard<std::mutex> k(imp->mutex);
+        imp->gpuReleaseAsked = true;
+        imp->wake.notify_all();
+    }
+}
+
+void
+ProgressiveRender::releaseAllLostGpu()
+{
+    const std::lock_guard<std::mutex> l(gProgressivesMutex);
+
+    for (Implementation* imp : gProgressives) {
+        std::lock_guard<std::mutex> k(imp->mutex);
+        imp->lostGpuReleaseAsked = true;
+        imp->wake.notify_all();
+    }
+}
+#endif
 
 std::string
 ProgressiveRender::pick(const Frame& frame,
@@ -4061,9 +5445,30 @@ releaseRenderEngines()
 }
 
 void
+releaseRenderEnginesAndWait()
+{
+    HydraRender::releaseAll();
+    HydraRender::releaseAllCpuEngines();
+    (void)HydraRender::getEngineCount();
+    (void)HydraRender::getCpuEngineCount();
+}
+
+void
+releaseRenderEnginesGpuMemory()
+{
+    HydraRender::releaseAllGpuMemory();
+}
+
+void
 releaseCpuRenderEngines()
 {
     HydraRender::releaseAllCpuEngines();
+}
+
+bool
+releaseCpuRenderEnginesAndWait(int timeoutMs)
+{
+    return HydraRender::releaseAllCpuEnginesAndWait(timeoutMs);
 }
 
 bool

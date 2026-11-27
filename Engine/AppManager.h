@@ -272,6 +272,15 @@ public:
     bool getDeepImageOrCreate(const DeepImageKey& key, const DeepImageParamsPtr& params,
                               DeepImageCacheEntryPtr* returnValue) const;
 
+    /**
+     * @brief Same as getImage/getImageOrCreate but for the geometry cache, which has its own
+     * memory budget separate from the image caches.
+     **/
+    bool getGeoDetail(const GeoDetailKey& key, std::list<GeoDetailCacheEntryPtr>* returnValue) const;
+
+    bool getGeoDetailOrCreate(const GeoDetailKey& key, const GeoDetailParamsPtr& params,
+                              GeoDetailCacheEntryPtr* returnValue) const;
+
     bool getTexture(const FrameKey & key,
                     std::list<FrameEntryPtr>* returnValue) const;
 
@@ -303,6 +312,8 @@ public:
 
     void setNodeCachePinBudget(U64 bytes);
 
+    void setApplicationsCachesMaximumGeoDetailCacheSize(unsigned long long size);
+
     void removeFromNodeCache(const ImagePtr & image);
     void removeFromViewerCache(const FrameEntryPtr & texture);
 
@@ -312,6 +323,9 @@ public:
      * half-built entry back out rather than leave it to be found by the next lookup.
      **/
     void removeFromNodeCache(const DeepImageCacheEntryPtr& entry);
+
+    /** @brief Drops one geometry entry, for a pull that aborts or fails after creating it. */
+    void removeFromGeoDetailCache(const GeoDetailCacheEntryPtr& entry);
 
     void removeFromNodeCache(U64 hash);
     // Also unlinks the key's files of every params variation, known to this session or not.
@@ -474,13 +488,6 @@ public:
     bool getUseThreadPool() const;
 
     /**
-     * @brief Parses a NATRON_RENDER_SCHEDULER value: "legacy" or "taskgraph". Returns nothing for anything else.
-     **/
-    static std::optional<RenderSchedulerModeEnum> parseRenderSchedulerModeEnv(const char* value);
-
-    RenderSchedulerModeEnum getRenderSchedulerMode() const;
-
-    /**
      * @brief The GPU context, null before the settings are loaded. It reports unavailable while it initializes
      * on its own thread and whenever no suitable device exists.
      **/
@@ -488,7 +495,8 @@ public:
 
     /**
      * @brief Replaces the GPU context and returns the previous one, so that a test can render with a device the
-     * settings would not select. No render may be running.
+     * settings would not select. Drops the scene engines and waits for their render threads first, so
+     * that the previous context can be destroyed. No render may be running.
      **/
     std::unique_ptr<GpuContext> swapGpuContextForTests(std::unique_ptr<GpuContext> context);
 
@@ -498,16 +506,6 @@ public:
      * through GpuContext::holdRuntime() while it uses the tier.
      **/
     std::shared_ptr<CacheDeviceTier> getDeviceCacheTier() const;
-
-    /**
-     * @brief Overrides the mode, whatever its source, until the next Settings change.
-     **/
-    void setRenderSchedulerMode(RenderSchedulerModeEnum mode);
-
-    /**
-     * @brief Called by the Settings when the knob changes. Ignored while the environment variable override is active.
-     **/
-    void onRenderSchedulerModeSettingChanged(RenderSchedulerModeEnum mode);
 
     /**
      * @brief Updates the global runningThreadsCount maintained across the whole application
@@ -1027,6 +1025,21 @@ public:
     PythonGILUnlocker();
 
     ~PythonGILUnlocker();
+};
+
+// Releases the Python GIL for the lifetime of the object, only if the calling thread holds it.
+// Use it around a blocking wait: the thread being waited on may need the GIL to finish.
+class PythonUnlockedWhileWaiting {
+public:
+    PythonUnlockedWhileWaiting();
+
+    ~PythonUnlockedWhileWaiting();
+
+    PythonUnlockedWhileWaiting(const PythonUnlockedWhileWaiting&) = delete;
+    PythonUnlockedWhileWaiting& operator=(const PythonUnlockedWhileWaiting&) = delete;
+
+private:
+    PyThreadState* _state;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -34,9 +34,10 @@
 #include <stdexcept>
 #include <sstream> // stringstream
 
+#include <QCoreApplication>
+#include <QDateTime>
 #include <QDebug>
 #include <QThread>
-#include <QCoreApplication>
 
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
@@ -50,6 +51,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
 #include "Engine/RotoContext.h"
@@ -620,6 +622,78 @@ KnobButton::trigger()
     return evaluateValueChange(0, getCurrentTime(), ViewIdx(0),  eValueChangedReasonUserEdited);
 }
 
+void
+KnobButton::setScript(const std::string& script)
+{
+    QMutexLocker k(&_scriptMutex);
+
+    _script = script;
+}
+
+std::string
+KnobButton::getScript() const
+{
+    QMutexLocker k(&_scriptMutex);
+
+    return _script;
+}
+
+static std::string
+toHex(const std::string& str)
+{
+    static const char kDigits[] = "0123456789abcdef";
+    std::string hex;
+
+    hex.reserve(str.size() * 2);
+    for (std::size_t i = 0; i < str.size(); ++i) {
+        const unsigned char c = (unsigned char)str[i];
+        hex.push_back(kDigits[c >> 4]);
+        hex.push_back(kDigits[c & 0xf]);
+    }
+
+    return hex;
+}
+
+bool
+KnobButton::runScript()
+{
+    const std::string script = getScript();
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(getHolder());
+    if (script.empty() || !effect || !effect->getNode() || !effect->getApp()) {
+        return true;
+    }
+    NodePtr node = effect->getNode();
+    AppInstancePtr app = effect->getApp();
+    const std::string appID = app->getAppIDString();
+    const std::string thisNodeVar = appID + "." + node->getFullyQualifiedName();
+    std::string thisGroupVar = appID;
+    NodeGroup* parentGroup = dynamic_cast<NodeGroup*>(node->getGroup().get());
+    if (parentGroup) {
+        thisGroupVar = appID + "." + parentGroup->getNode()->getFullyQualifiedName();
+    }
+
+    // The source travels as hex so that no quoting of it can break the call around it; globals()
+    // is copied so that the script's own names do not leak into the main module.
+    std::stringstream ss;
+    ss << "exec(compile(bytes.fromhex(\"" << toHex(script) << "\").decode(\"utf-8\"), \"" << getName()
+       << "\", \"exec\"), dict(globals(), thisParam=" << thisNodeVar << "." << getName() << ", thisNode=" << thisNodeVar
+       << ", thisGroup=" << thisGroupVar << ", app=" << appID << "))\n";
+
+    std::string error;
+    std::string output;
+    const bool ok = NATRON_PYTHON_NAMESPACE::interpretPythonScript(ss.str(), &error, &output);
+    if (!output.empty()) {
+        app->appendToScriptEditor(output);
+    }
+    if (!ok) {
+        const QString message = tr("Failed to run the script of %1: %2").arg(QString::fromUtf8(getName().c_str()), QString::fromUtf8(error.c_str()));
+        app->appendToScriptEditor(message.toStdString());
+        appPTR->writeToErrorLog_mt_safe(QString::fromUtf8(node->getLabel_mt_safe().c_str()), QDateTime::currentDateTime(), message);
+    }
+
+    return ok;
+}
+
 bool
 KnobButton::triggerCallbacksOnly()
 {
@@ -719,9 +793,12 @@ KnobChoice::cloneExtraData(KnobI* other,
         return;
     }
 
+    const ChoiceOption otherEntry = isChoice->getActiveEntry();
     {
         QMutexLocker k(&_entriesMutex);
-        _currentEntry = isChoice->getActiveEntry();
+        if (!otherEntry.disabled) {
+            _currentEntry = otherEntry;
+        }
     }
     invalidateContentHash();
 }
@@ -740,7 +817,7 @@ KnobChoice::cloneExtraDataAndCheckIfChanged(KnobI* other,
     ChoiceOption otherEntry = isChoice->getActiveEntry();
     {
         QMutexLocker k(&_entriesMutex);
-        if (_currentEntry.id == otherEntry.id) {
+        if (otherEntry.disabled || (_currentEntry.id == otherEntry.id)) {
             return false;
         }
         _currentEntry = otherEntry;
@@ -764,9 +841,12 @@ KnobChoice::cloneExtraData(KnobI* other,
         return;
     }
 
+    const ChoiceOption otherEntry = isChoice->getActiveEntry();
     {
         QMutexLocker k(&_entriesMutex);
-        _currentEntry = isChoice->getActiveEntry();
+        if (!otherEntry.disabled) {
+            _currentEntry = otherEntry;
+        }
     }
     invalidateContentHash();
 }
@@ -775,7 +855,7 @@ static bool
 sameChoiceOption(const ChoiceOption& a,
                  const ChoiceOption& b)
 {
-    return (a.id == b.id) && (a.label == b.label) && (a.tooltip == b.tooltip);
+    return (a.id == b.id) && (a.label == b.label) && (a.tooltip == b.tooltip) && (a.disabled == b.disabled);
 }
 
 void
@@ -783,8 +863,10 @@ KnobChoice::onInternalValueChanged(int dimension,
                                    double time,
                                    ViewSpec /*view*/)
 {
+    // -1 means every dimension, and a choice has only the first: read as -1 the index would be
+    // the out-of-range default 0, caching the first entry over the real one.
     // by-pass any master/slave link here
-    int index = getValueAtTime(time, dimension, ViewSpec::current(), true, true);
+    int index = getValueAtTime(time, (dimension < 0) ? 0 : dimension, ViewSpec::current(), true, true);
     {
         QMutexLocker k(&_entriesMutex);
 
@@ -793,7 +875,9 @@ KnobChoice::onInternalValueChanged(int dimension,
 
             return;
         }
-        if ((index < 0) || (index >= (int)_entries.size()) || sameChoiceOption(_currentEntry, _entries[index])) {
+        // setValue() refuses a disabled row, which names nothing to choose; this one may still be
+        // reached through an expression, a link or a keyframe, and the entry chosen before it stays saved.
+        if ((index < 0) || (index >= (int)_entries.size()) || _entries[index].disabled || sameChoiceOption(_currentEntry, _entries[index])) {
             return;
         }
         _currentEntry = _entries[index];
@@ -866,7 +950,7 @@ KnobChoice::findAndSetOldChoice()
         if ( !_currentEntry.id.empty() ) {
             ChoiceOption matched;
             found = matchEntry(_currentEntry.id, _entries, &matched);
-            if (found != -1) {
+            if ((found != -1) && !matched.disabled) {
                 _currentEntry = matched;
             }
         }
@@ -1042,12 +1126,20 @@ KnobChoice::getNumEntries() const
     return (int)_entries.size();
 }
 
+bool
+KnobChoice::isEntryDisabled(int index) const
+{
+    QMutexLocker l(&_entriesMutex);
+
+    return (index >= 0) && (index < (int)_entries.size()) && _entries[index].disabled;
+}
+
 void
 KnobChoice::setActiveEntry(const ChoiceOption& opt)
 {
     {
         QMutexLocker l(&_entriesMutex);
-        if (sameChoiceOption(_currentEntry, opt)) {
+        if (opt.disabled || sameChoiceOption(_currentEntry, opt)) {
             return;
         }
         _currentEntry = opt;
@@ -1061,7 +1153,9 @@ KnobChoice::setActiveEntryAndNotify(const ChoiceOption& opt,
 {
     {
         QMutexLocker l(&_entriesMutex);
-        _currentEntry = opt;
+        if (!opt.disabled) {
+            _currentEntry = opt;
+        }
         // evaluateValueChange() first runs onInternalValueChanged(), before any callback.
         _keepActiveEntryOnValueChange = true;
     }
@@ -1118,8 +1212,10 @@ KnobChoice::getActiveEntry()
         return _currentEntry;
     }
     int activeIndex = getValue();
-    if ( activeIndex < (int)_entries.size() ) {
-        _currentEntry = _entries[activeIndex];
+    if ((activeIndex >= 0) && (activeIndex < (int)_entries.size())) {
+        if (!_entries[activeIndex].disabled) {
+            _currentEntry = _entries[activeIndex];
+        }
         return _entries[activeIndex];
     }
 
@@ -1216,6 +1312,15 @@ KnobChoice::getHintToolTipFull() const
     return ss.str();
 } // KnobChoice::getHintToolTipFull
 
+bool
+KnobChoice::refusesValue(const int& v,
+                         int /*dimension*/) const
+{
+    QMutexLocker k(&_entriesMutex);
+
+    return (v >= 0) && (v < (int)_entries.size()) && _entries[v].disabled;
+}
+
 KnobHelper::ValueChangedReturnCodeEnum
 KnobChoice::setValueFromID(const std::string & value,
                               int dimension,
@@ -1227,6 +1332,11 @@ KnobChoice::setValueFromID(const std::string & value,
         QMutexLocker k(&_entriesMutex);
         const ChoiceOption previous = _currentEntry;
         i = matchEntry(value, _entries, &_currentEntry);
+        if (_currentEntry.disabled) {
+            _currentEntry = previous;
+
+            return eValueChangedReturnCodeNothingChanged;
+        }
         entryChanged = !sameChoiceOption(previous, _currentEntry);
     }
     if (entryChanged) {
@@ -1763,8 +1873,14 @@ KnobString::hasContentWithoutHtmlTags()
 }
 
 void
-KnobString::setAsLabel()
+KnobString::setAsLabel(bool isLabel)
 {
+    if (!isLabel) {
+        _isLabel = false;
+        setHashExempt(false);
+
+        return;
+    }
     setAnimationEnabled(false); //< labels cannot animate
     _isLabel = true;
     // A label takes no input and only shows text, which plugins rewrite from their actions; in
@@ -1799,9 +1915,9 @@ KnobGroup::KnobGroup(KnobHolder* holder,
 }
 
 void
-KnobGroup::setAsTab()
+KnobGroup::setAsTab(bool isTab)
 {
-    _isTab = true;
+    _isTab = isTab;
 }
 
 bool
@@ -3084,7 +3200,7 @@ KnobLayers::makeRow(const ImageLayerDesc& layer, int usersCount)
 {
     std::vector<std::string> row(3);
 
-    row[0] = layer.getLayerLabel();
+    row[0] = layer.getLayerID();
     const std::vector<std::string>& channels = layer.getChannels();
     for (std::size_t c = 0; c < channels.size(); ++c) {
         if (c > 0) {

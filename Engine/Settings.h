@@ -113,6 +113,22 @@ public:
         eViewer3DLightingHeadlight
     };
 
+    // When the 3D viewer draws boxes in place of the scene.
+    enum SceneStandInModeEnum {
+        eSceneStandInModeOff = 0,
+        // While the view moves, when the last full frame took longer than the budget.
+        eSceneStandInModeInteraction,
+        // In place of every full frame.
+        eSceneStandInModeAlways
+    };
+
+    // What the 3D viewer's stand-in draws a box for.
+    enum SceneStandInBoxesEnum {
+        // Each model prim, or each draw state row on a stage without models.
+        eSceneStandInBoxesModels = 0,
+        eSceneStandInBoxesRows
+    };
+
     enum KnownHostNameEnum
     {
         eKnownHostNameNatron = 0,
@@ -167,6 +183,7 @@ public:
 
     U64 getMaximumDiskCacheNodeSize() const;
 
+    U64 getMaximumGeoDetailCacheSize() const;
     U64 getDiskTierSizeBytes() const;
 
     std::string getDiskTierLocation() const;
@@ -406,7 +423,6 @@ public:
 
     Viewer3DTransformTargetEnum getViewer3DTransformTarget() const;
     bool viewerNumberKeys() const;
-    bool viewerOverlaysPath() const;
 
     RotoShapeDragRenderEnum getRotoShapeDragRender() const;
 
@@ -415,6 +431,13 @@ public:
 
     // Sets the preference and saves it.
     void setViewer3DLighting(Viewer3DLightingEnum lighting);
+
+    SceneStandInModeEnum getSceneStandInMode() const;
+    // Milliseconds a full frame of the 3D viewer may take before its stand-in shows while the view moves.
+    int getSceneStandInBudgetMs() const;
+    SceneStandInBoxesEnum getSceneStandInBoxes() const;
+    // Milliseconds the view stays still before the full frame that replaces the stand-in starts.
+    int getSceneStandInRefillDelayMs() const;
     ///////////////////////////////////////////////////////
 
     bool areRGBPixelComponentsSupported() const;
@@ -447,12 +470,12 @@ public:
      **/
     std::string getDefaultOCIOConfigSourceForNewProjects() const;
 
-    RenderSchedulerModeEnum getRenderSchedulerMode() const;
-
     GpuComputeModeEnum getGpuComputeMode() const;
     // The UUID id of the chosen GPU device, or "" for automatic.
     std::string getGpuDevice() const;
     std::uint64_t getGpuMemoryBudgetMB() const;
+    // 0 for half the memory of the graphics card.
+    std::uint64_t getGpuTextureBudgetMB() const;
 
     bool isAutoTurboEnabled() const;
 
@@ -607,7 +630,6 @@ private:
     KnobIntPtr _numberOfParallelRenders;
     KnobBoolPtr _useThreadPool;
     KnobIntPtr _nThreadsPerEffect;
-    KnobChoicePtr _renderSchedulerMode;
     KnobBoolPtr _queueRenders;
 
     // General/Rendering
@@ -624,6 +646,7 @@ private:
     KnobChoicePtr _gpuComputeMode;
     KnobChoicePtr _gpuDevice;
     KnobIntPtr _gpuMemoryBudgetMB;
+    KnobIntPtr _gpuTextureBudget;
     KnobStringPtr _gpuStatus;
 
     // AI
@@ -695,8 +718,8 @@ private:
     KnobIntPtr _maxViewerDiskCacheGB;
     KnobIntPtr _maxDiskCacheNodeGB;
 
-    /// Deep renders are large and must not be able to evict the entire 2D image cache above, so
-    /// they get a separate budget entirely, RAM-only (deep has no on-disk cache in v1).
+    /// Geometry gets its own RAM-only budget, separate from the node cache.
+    KnobIntPtr _maxGeometryCacheGB;
     KnobPathPtr _diskCachePath;
     KnobPathPtr _diskTierLocation;
     KnobIntPtr _diskTierSize;
@@ -718,12 +741,15 @@ private:
     KnobChoicePtr _zoomedOutDemosaic;
     KnobIntPtr _maximumNodeViewerUIOpened;
     KnobBoolPtr _viewerNumberKeys;
-    KnobBoolPtr _viewerOverlaysPath;
     KnobChoicePtr _rotoShapeDragRender;
     KnobChoicePtr _viewer3DNavigation;
     KnobDoublePtr _viewer3DGuideSize;
     KnobChoicePtr _viewer3DTransformTarget;
     KnobChoicePtr _viewer3DLighting;
+    KnobChoicePtr _sceneStandInMode;
+    KnobIntPtr _sceneStandInBudget;
+    KnobChoicePtr _sceneStandInBoxes;
+    KnobIntPtr _sceneStandInRefillDelay;
 
     // Nodegraph
     KnobPagePtr _nodegraphTab;

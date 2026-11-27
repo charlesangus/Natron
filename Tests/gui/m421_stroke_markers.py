@@ -61,7 +61,7 @@ try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QItemSelectionModel, QMetaObject, QPoint, QPointF, QRect, Q_ARG, Q_RETURN_ARG, Qt
     from PySide6.QtGui import QGuiApplication, QMouseEvent
-    from PySide6.QtWidgets import QApplication, QLineEdit, QTreeWidget, QWidget
+    from PySide6.QtWidgets import QApplication, QLineEdit, QTabWidget, QTreeWidget, QWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -146,6 +146,17 @@ try:
                 continue
         return None
 
+    def show_page(st, page_label):
+        panel = panel_of_node(st.node)
+        require(panel is not None, "the settings panel of %s is open" % st.node.getLabel())
+        for tabs in panel.findChildren(QTabWidget):
+            for i in range(tabs.count()):
+                if tabs.tabText(i).replace("&", "") == page_label:
+                    tabs.setCurrentIndex(i)
+                    QApplication.processEvents()
+                    return
+        require(False, "the panel of %s has a %s page" % (st.node.getLabel(), page_label))
+
     def curve_tree(st):
         """(the RotoPanel's tree, the RotoPanel) of the open panel, or (None, None)."""
         panel = panel_of_node(st.node)
@@ -209,15 +220,23 @@ try:
         ok = yield ("until", lambda: panel_of_node(st.node) is None, POLL_TIMEOUT_S)
         require(ok, "closed the settings panel of " + st.node.getLabel())
 
+    def top_level_graph():
+        """The project's own NodeGraph. A Group's subgraph is a NodeGraph too, named after the Group's
+        label, and QApplication.allWidgets() has no stable order, so the first NodeGraph found may be
+        a subgraph whose selection setSelection() never touches."""
+        node_labels = set(n.getLabel() for n in app.getChildren())
+        graphs = [g for g in gt.widgets_of("NodeGraph") if g.objectName() not in node_labels]
+        return hold(graphs[0]) if graphs else None
+
     def reopen_panel(st):
         if st.grouped:
             require(st.panel is not None, "the closed panel is held")
             QMetaObject.invokeMethod(st.panel, "setClosed", Q_ARG(bool, False))
         else:
-            graphs = gt.widgets_of("NodeGraph")
-            require(graphs, "found the node graph")
+            graph = top_level_graph()
+            require(graph is not None, "found the node graph")
             app.setSelection([st.node])
-            QMetaObject.invokeMethod(graphs[0], "showSelectedNodeSettingsPanel")
+            QMetaObject.invokeMethod(graph, "showSelectedNodeSettingsPanel")
         ok = yield ("until", lambda: panel_of_node(st.node) is not None, POLL_TIMEOUT_S)
         require(ok, "reopened the settings panel of " + st.node.getLabel())
         if not st.grouped:
@@ -369,6 +388,7 @@ try:
         gt.section(tag + "-setup")
         ok = yield ("until", lambda: panel_of_node(st.node) is not None, POLL_TIMEOUT_S)
         require(ok, "the settings panel of %s is open" % label)
+        show_page(st, "General")
         st.node.getParam("multiStrokeEnabledButton").setValue(False)
         st.node.getParam("sizeSpinbox").setValue(30.0)
         yield ("sleep", SETTLE_MS)
@@ -891,9 +911,9 @@ try:
         # The panel is closed and reopened by core(); the dope sheet needs it open.
         require(panel_of_node(rp) is not None, "the top-level RotoPaint's panel is open")
         yield from dope_sheet_section(st, "top", names)
-        graphs = gt.widgets_of("NodeGraph")
-        if graphs:
-            make_tab_current(graphs[0], "graph")
+        graph = top_level_graph()
+        if graph is not None:
+            make_tab_current(graph, "graph")
         yield from close_panel(st)
         yield from expect("top level closed: no markers", [], st)
 
@@ -925,8 +945,7 @@ try:
         top_only, group_only = derived(st), derived(gst)
         check(top_only and group_only and not set(top_only) & set(group_only),
               "the two panels' strokes sit on different frames (%r, %r)" % (top_only, group_only))
-        yield from expect("two RotoPaint panels open: both owners' markers merged",
-                          sorted(set(top_only) | set(group_only)), st)
+        yield from expect("two RotoPaint panels open: only the top panel's markers", top_only, st)
         timeline_shot("m421-two-panels-timeline.png")
         yield from close_panel(st)
         yield from expect("the top-level panel closed: only the grouped RotoPaint's markers", group_only, gst)

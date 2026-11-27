@@ -195,15 +195,14 @@ TEST_F(NativeMultiTimeTest, AverageOfTheNeighbouringFramesMatchesInBothScheduler
     ASSERT_TRUE(bool(average));
 
     const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
-    const RenderSchedulerModeEnum modes[] = { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph };
-    for (RenderSchedulerModeEnum mode : modes) {
+    for (bool scheduled : { false, true }) {
         std::vector<RenderedPlane> planes;
         std::string error;
-        ASSERT_TRUE(renderNodePlanesInMode(average, kTime, ViewIdx(0), 0, kWindow, rgba, mode, true, &planes, &error)) << "mode " << (int)mode << ": " << error;
-        ASSERT_FALSE(planes.empty()) << "mode " << (int)mode;
+        ASSERT_TRUE((scheduled ? renderNodePlanesScheduled(average, kTime, ViewIdx(0), 0, kWindow, true, &planes, &error) : renderNodePlanesDirect(average, kTime, ViewIdx(0), 0, kWindow, rgba, &planes, &error, true))) << (scheduled ? "scheduled" : "direct") << ": " << error;
+        ASSERT_FALSE(planes.empty()) << (scheduled ? "scheduled" : "direct");
         for (int c = 0; c < _nColourDims; ++c) {
             const float expected = (colourAt((int)kTime - 1, c) + colourAt((int)kTime + 1, c)) * 0.5f;
-            EXPECT_FLOAT_EQ(expected, firstValue(planes.front(), c)) << "mode " << (int)mode << ", channel " << c;
+            EXPECT_FLOAT_EQ(expected, firstValue(planes.front(), c)) << (scheduled ? "scheduled" : "direct") << ", channel " << c;
         }
     }
 
@@ -234,16 +233,15 @@ TEST_F(NativeMultiTimeTest, AnUndeclaredTimeIsRejectedWithAnError)
     EXPECT_FALSE(declared->declaresInputTime(0, kTime, ViewIdx(0), kTime + 2.));
 
     const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
-    const RenderSchedulerModeEnum modes[] = { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph };
-    for (RenderSchedulerModeEnum mode : modes) {
+    for (bool scheduled : { false, true }) {
         node->clearPersistentMessage(false);
         std::vector<RenderedPlane> planes;
-        EXPECT_FALSE(renderNodePlanesInMode(node, kTime, ViewIdx(0), 0, kWindow, rgba, mode, true, &planes)) << "mode " << (int)mode;
-        ASSERT_TRUE(node->hasPersistentMessage()) << "mode " << (int)mode;
+        EXPECT_FALSE((scheduled ? renderNodePlanesScheduled(node, kTime, ViewIdx(0), 0, kWindow, true, &planes) : renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, kWindow, rgba, &planes, 0, true))) << (scheduled ? "scheduled" : "direct");
+        ASSERT_TRUE(node->hasPersistentMessage()) << (scheduled ? "scheduled" : "direct");
         QString message;
         int type = 0;
         node->getPersistentMessage(&message, &type, false);
-        EXPECT_EQ((int)eMessageTypeError, type) << "mode " << (int)mode;
-        EXPECT_TRUE(message.contains(QString::fromUtf8("frame 3"))) << "mode " << (int)mode << ": " << message.toStdString();
+        EXPECT_EQ((int)eMessageTypeError, type) << (scheduled ? "scheduled" : "direct");
+        EXPECT_TRUE(message.contains(QString::fromUtf8("frame 3"))) << (scheduled ? "scheduled" : "direct") << ": " << message.toStdString();
     }
 }

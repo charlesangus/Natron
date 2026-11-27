@@ -62,6 +62,7 @@
 #include "Engine/ProcessHandler.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
+#include "Engine/RotoCurveContext.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
 #include "Engine/StartupGLDiag.h"
@@ -76,14 +77,18 @@
 
 #include "Gui/BackdropGui.h"
 #include "Gui/ForegroundTaskDialog.h"
+#include "Gui/GeoSpreadsheetPanel.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/KnobGuiFile.h"
 #include "Gui/MultiInstancePanel.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
+#include "Gui/NodeSettingsPanel.h"
 #include "Gui/ProgressPanel.h"
 #include "Gui/PythonUndoRecorder.h"
+#include "Gui/SceneGraphPanel.h"
+#include "Gui/SceneNodeStageSource.h"
 #include "Gui/ScriptEditor.h"
 #include "Gui/SplashScreen.h"
 #include "Gui/UndoHistory.h"
@@ -224,6 +229,7 @@ struct GuiAppInstancePrivate
     std::atomic<bool> nodeKeysDirty;
     std::atomic<bool> nodeKeysRefreshQueued;
     bool nodeKeysChangedSinceSignal;
+    bool panelForegroundRefreshQueued;
     KnobDnDData knobDnd;
 
     GuiAppInstancePrivate()
@@ -247,10 +253,40 @@ struct GuiAppInstancePrivate
         , nodeKeysDirty(false)
         , nodeKeysRefreshQueued(false)
         , nodeKeysChangedSinceSignal(false)
+        , panelForegroundRefreshQueued(false)
         , knobDnd()
     {
         _previewProvider = std::make_shared<FileDialogPreviewProvider>();
         rotoData.turboAlreadyActiveBeforePainting = false;
+    }
+
+    static DockablePanel* settingsPanelOf(const NodePtr& node)
+    {
+        NodeGuiPtr nodeGui = std::dynamic_pointer_cast<NodeGui>(node->getNodeGui());
+
+        return nodeGui ? nodeGui->getSettingPanel() : 0;
+    }
+
+    static void collectShownKnobKeyframes(const NodePtr& node,
+                                          std::list<SequenceTime>* keys)
+    {
+        NodePtr parent = node->getParentMultiInstance();
+        DockablePanel* panel = settingsPanelOf(parent ? parent : node);
+        if (!panel || !panel->isInForeground()) {
+            return;
+        }
+        if (parent) {
+            // A child instance's knobs are edited through its parent's table, not on a page.
+            node->getAllKnobsKeyframes(keys);
+
+            return;
+        }
+        // The RotoPanel publishes the selected items' own keys; a proxy keeps the last-shown item's
+        // curves after the selection changes, and holds keys that reach no item through a layer.
+        RotoCurveContextPtr curveContext = node->getCurveContext();
+        node->getAllKnobsKeyframes(keys, [panel, curveContext](const KnobIPtr& knob) {
+            return panel->isKnobOnVisiblePage(knob) && !(curveContext && curveContext->isItemProxyKnob(knob));
+        });
     }
 
     void refreshNodeKeysIfDirty()
@@ -266,7 +302,7 @@ struct GuiAppInstancePrivate
                 continue;
             }
             if (node->isActivated()) {
-                node->getAllKnobsKeyframes(&keys);
+                collectShownKnobKeyframes(node, &keys);
             }
             ++it;
         }
@@ -355,6 +391,9 @@ GuiAppInstance::aboutToQuit()
             _imp->_gui->getUndoHistory()->setReplayHook(std::function<void(bool)>());
         }
 
+        // The scene stages of closed panels still stopping: none may evaluate a node the project
+        // reset destroys.
+        SceneNodeStageSource::joinReaped();
         AppInstance::aboutToQuit();
 
         _imp->_isClosing = true;
@@ -366,6 +405,8 @@ GuiAppInstance::aboutToQuit()
         qApp->processEvents();
         // Make sure all deleteLater calls are reached
         qApp->sendPostedEvents(0, QEvent::DeferredDelete);
+        // Those the panels just destroyed handed over.
+        SceneNodeStageSource::joinReaped();
 
         _imp->_gui = 0;
     }
@@ -719,13 +760,13 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
 } // createNodeGui
 
 std::string
-GuiAppInstance::openImageFileDialog()
+GuiAppInstance::openImageFileDialog(std::optional<std::pair<int, int>>* frameRange)
 {
     {
         QMutexLocker l(&_imp->_showingDialogMutex);
         ++_imp->_showingDialog;
     }
-    std::string ret = _imp->_gui->openImageSequenceDialog();
+    std::string ret = _imp->_gui->openImageSequenceDialog(frameRange);
     {
         QMutexLocker l(&_imp->_showingDialogMutex);
         --_imp->_showingDialog;
@@ -989,6 +1030,22 @@ GuiAppInstance::onProjectNodesRestored()
 }
 
 void
+GuiAppInstance::aboutToDestroyProjectNodes()
+{
+    if (_imp->_gui) {
+        const std::list<SceneGraphPanel*> panels = _imp->_gui->getSceneGraphPanels();
+        for (SceneGraphPanel* panel : panels) {
+            panel->releaseNodeStages();
+        }
+        if (GeoSpreadsheetPanel* geoPanel = _imp->_gui->getGeoSpreadsheetPanel()) {
+            geoPanel->releaseNodes();
+        }
+    }
+    SceneNodeStageSource::stopAll();
+    SceneNodeStageSource::joinReaped();
+}
+
+void
 GuiAppInstance::setupViewersForViews(const std::vector<std::string>& viewNames)
 {
     _imp->_gui->updateViewersViewsMenu(viewNames);
@@ -1020,9 +1077,9 @@ GuiAppInstance::notifyRenderRestarted( OutputEffectInstance* writer,
 }
 
 namespace {
-// The modal shown while one tracker node tracks. Releasing it on destruction lets the dialog
-// close should the tracker go away mid-run.
-struct TrackingModal {
+// The modal shown while one node's job runs. Releasing it on destruction lets the dialog close
+// should the job go away mid-run.
+struct HeldModal {
     ForegroundTaskDialogPtr dialog;
 
     void release()
@@ -1034,7 +1091,7 @@ struct TrackingModal {
         }
     }
 
-    ~TrackingModal()
+    ~HeldModal()
     {
         release();
     }
@@ -1050,7 +1107,7 @@ GuiAppInstance::followTrackingInModal(const NodePtr& node)
     }
     // Hooked here rather than in the tracker's settings panel so that tracking started from
     // Python, with no panel ever opened, is blocked the same way.
-    std::shared_ptr<TrackingModal> modal = std::make_shared<TrackingModal>();
+    std::shared_ptr<HeldModal> modal = std::make_shared<HeldModal>();
     NodeWPtr weakNode = node;
     TrackerContextWPtr weakContext = context;
     QObject::connect(context.get(), &TrackerContext::trackingStarted, this, [this, modal, weakNode, weakContext](int /*step*/) {
@@ -1094,6 +1151,38 @@ GuiAppInstance::followTrackingInModal(const NodePtr& node)
         modal->release();
     });
 } // GuiAppInstance::followTrackingInModal
+
+std::shared_ptr<void>
+GuiAppInstance::showProgressModal(const NodePtr& node,
+                                  const std::string& title,
+                                  const std::function<void()>& onCancel)
+{
+    Gui* gui = getGui();
+    ProgressPanel* panel = gui ? gui->getProgressPanel() : 0;
+    ProgressTaskInfoPtr task = (node && panel) ? panel->getTaskForNode(node) : ProgressTaskInfoPtr();
+    if (!task) {
+        return std::shared_ptr<void>();
+    }
+    const QString qtitle = QString::fromUtf8(title.c_str());
+    ForegroundTaskDialog::Texts texts;
+    texts.title = qtitle;
+    texts.taskFormat = qtitle + QString::fromUtf8(": %1");
+    texts.failureFormat = tr("%1 failed.");
+    texts.failureTitle = qtitle;
+    std::vector<ForegroundTaskDialog::TaskDesc> tasks(1);
+    tasks[0].label = QString::fromUtf8(node->getLabel().c_str());
+    tasks[0].task = task;
+    std::shared_ptr<HeldModal> modal = std::make_shared<HeldModal>();
+    modal->dialog = ForegroundTaskDialog::show(gui, texts, tasks, true);
+    if (!modal->dialog) {
+        return std::shared_ptr<void>();
+    }
+    if (onCancel) {
+        modal->dialog->setOnCancel(onCancel);
+    }
+
+    return modal;
+}
 
 void
 GuiAppInstance::renderForeground(const std::list<RenderWork>& writers)
@@ -1294,6 +1383,26 @@ GuiAppInstance::getLastViewerUsingTimeline() const
     }
 
     return _imp->lastTimelineViewer->isEffectViewer();
+}
+
+std::list<NodePtr>
+GuiAppInstance::getViewerNodesByRecentActivity() const
+{
+    std::list<NodePtr> viewers;
+    const NodePtr active = getActiveViewerNode();
+    if (active) {
+        viewers.push_back(active);
+    }
+    const std::list<ViewerTab*> focused = _imp->_gui ? _imp->_gui->getViewersByRecentFocus() : std::list<ViewerTab*>();
+    for (ViewerTab* tab : focused) {
+        ViewerInstance* viewer = tab ? tab->getInternalNode() : 0;
+        const NodePtr node = viewer ? viewer->getNode() : NodePtr();
+        if (node && (std::find(viewers.begin(), viewers.end(), node) == viewers.end())) {
+            viewers.push_back(node);
+        }
+    }
+
+    return viewers;
 }
 
 NodePtr
@@ -1744,6 +1853,27 @@ GuiAppInstance::invalidateNodeKeyframeIndicators()
             _imp->nodeKeysChangedSinceSignal = false;
             Q_EMIT keyframeIndicatorsChanged();
         } }, Qt::QueuedConnection);
+}
+
+void
+GuiAppInstance::onPanelForegroundChanged()
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    if (_imp->panelForegroundRefreshQueued) {
+        return;
+    }
+    _imp->panelForegroundRefreshQueued = true;
+    // Queued, so that the panel layout has settled when the foreground panels are read.
+    QMetaObject::invokeMethod(this, [this]() {
+        _imp->panelForegroundRefreshQueued = false;
+        _imp->nodeKeysDirty.store(true);
+        _imp->refreshNodeKeysIfDirty();
+        if (_imp->nodeKeysChangedSinceSignal) {
+            _imp->nodeKeysChangedSinceSignal = false;
+            Q_EMIT keyframeIndicatorsChanged();
+        }
+        Q_EMIT panelForegroundChanged(); }, Qt::QueuedConnection);
 }
 
 void

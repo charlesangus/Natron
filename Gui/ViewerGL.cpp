@@ -69,6 +69,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/Settings.h"
 #include "Engine/Texture.h"
 #include "Engine/Timer.h" // for gettimeofday
+#include "Engine/Transform.h"
 #include "Engine/Utils.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
@@ -82,14 +83,16 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/GuiMacros.h" // buttonDownIsLeft...
 #include "Gui/Histogram.h"
 #include "Gui/InfoViewerWidget.h"
+#include "Gui/KnobGuiParametric.h"
 #include "Gui/Menu.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
-#include "Gui/KnobGuiParametric.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/Shaders.h"
+#include "Gui/StaleCueLook.h"
 #include "Gui/TabWidget.h"
 #include "Gui/ViewerTab.h"
+#include "Gui/ViewerZoomLadder.h"
 
 #include <QOpenGLContext>
 #include <QRegularExpression>
@@ -217,6 +220,8 @@ ViewerGL::resizeGL(int w,
         oldWidth = _imp->zoomCtx.screenWidth();
         oldHeight = _imp->zoomCtx.screenHeight();
         _imp->zoomCtx.setScreenSize(zoomWidth, zoomHeight, /*alignTop=*/ true, /*alignRight=*/ false);
+        // An estimate for events before the next paint; paintGL replaces it with the viewport Qt set.
+        _imp->zoomCtx.setDevicePixelGrid(static_cast<int>(w * devicePixelRatio()), static_cast<int>(h * devicePixelRatio()));
         zoomSinceLastFit = _imp->zoomOrPannedSinceLastFit;
     }
     glCheckError();
@@ -318,16 +323,16 @@ drawStaleCue(StaleCueStyleEnum style,
     const double py = pixel.y();
     switch (style) {
     case eStaleCueStyleSubtleOutline:
-        glColor4d(1., 0.7, 0., 0.4);
-        fillStaleCueFrame(left, right, bottom, top, px, py);
+        glColor4d(StaleCueLook::kRed, StaleCueLook::kGreen, StaleCueLook::kBlue, StaleCueLook::kOutlineAlpha);
+        fillStaleCueFrame(left, right, bottom, top, StaleCueLook::kOutlineWidth * px, StaleCueLook::kOutlineWidth * py);
         break;
     case eStaleCueStyleCornerDot: {
-        const double radius = 4.;
-        const double inset = 10.;
+        const double radius = StaleCueLook::kDotRadius;
+        const double inset = StaleCueLook::kDotInset;
         const double cx = right - (inset + radius) * px;
         const double cy = top - (inset + radius) * py;
         const int segments = 32;
-        glColor4d(1., 0.7, 0., 1.);
+        glColor4d(StaleCueLook::kRed, StaleCueLook::kGreen, StaleCueLook::kBlue, StaleCueLook::kDotAlpha);
         glBegin(GL_TRIANGLE_FAN);
         glVertex2d(cx, cy);
         for (int i = 0; i <= segments; ++i) {
@@ -370,10 +375,13 @@ ViewerGL::paintGL()
     }
     assert(_imp->_textFont);
 
+    GLint viewport[4] = { 0, 0, 0, 0 };
+    glGetIntegerv(GL_VIEWPORT, viewport);
     double zoomLeft, zoomRight, zoomBottom, zoomTop;
     {
         QMutexLocker l(&_imp->zoomCtxMutex);
         assert(0 < _imp->zoomCtx.factor() && _imp->zoomCtx.factor() <= 1024);
+        _imp->zoomCtx.setDevicePixelGrid(viewport[2], viewport[3]);
         zoomLeft = _imp->zoomCtx.left();
         zoomRight = _imp->zoomCtx.right();
         zoomBottom = _imp->zoomCtx.bottom();
@@ -394,7 +402,6 @@ ViewerGL::paintGL()
         // However,
         // - Nuke uses a different matrix (RoD.width is the width of the RoD of the displayed image)
         // - Nuke transforms the interacts using the modelview if there are Transform nodes between the viewer and the interact.
-
 
         glMatrixMode(GL_PROJECTION);
         glLoadIdentity();
@@ -1365,6 +1372,8 @@ ViewerGL::drawPersistentMessage()
 void
 ViewerGL::initializeGL()
 {
+    // How many contexts the widget was initialised in: a dock or split that recreates it adds one.
+    setProperty("natronGlInitCount", property("natronGlInitCount").toInt() + 1);
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
     appPTR->initializeOpenGLFunctionsOnce();
@@ -1382,10 +1391,10 @@ ViewerGL::initializeGL()
         });
         QObject::disconnect(_imp->handoffContextConnection);
         _imp->handoffContextConnection = QObject::connect(glContext, &QOpenGLContext::aboutToBeDestroyed, this, [this]() {
+            // Left current: the slots after this one need the dying context current (see GLContextLoss).
             if (_imp->handoff) {
                 makeCurrent();
                 _imp->handoff->release();
-                doneCurrent();
             }
         });
         prepareHandoffAhead();
@@ -1656,8 +1665,8 @@ ViewerGL::endTransferBufferFromRAMToGPU(int textureIndex,
 {
     if (recenterViewer) {
         QMutexLocker k(&_imp->zoomCtxMutex);
-        double curCenterX = ( _imp->zoomCtx.left() + _imp->zoomCtx.right() ) / 2.;
-        double curCenterY = ( _imp->zoomCtx.bottom() + _imp->zoomCtx.top() ) / 2.;
+        double curCenterX = _imp->zoomCtx.unsnappedLeft() + (_imp->zoomCtx.right() - _imp->zoomCtx.left()) / 2.;
+        double curCenterY = _imp->zoomCtx.unsnappedBottom() + (_imp->zoomCtx.top() - _imp->zoomCtx.bottom()) / 2.;
         _imp->zoomCtx.translate(viewportCenter.x - curCenterX, viewportCenter.y - curCenterY);
     }
 
@@ -2735,20 +2744,22 @@ ViewerGL::penMotionInternal(int x,
     //    _imp->pickerState = ePickerStateInactive;
     //}
 
+    QPointF texelPos;
     double zoomScreenPixelWidth, zoomScreenPixelHeight; // screen pixel size in zoom coordinates
     {
         QMutexLocker l(&_imp->zoomCtxMutex);
         zoomPos = _imp->zoomCtx.toZoomCoordinates(x, y);
+        texelPos = _imp->zoomCtx.toZoomCoordinatesAtPixelCentre(x, y);
         zoomScreenPixelWidth = _imp->zoomCtx.screenPixelWidth();
         zoomScreenPixelHeight = _imp->zoomCtx.screenPixelHeight();
     }
 
-    updateInfoWidgetColorPicker( zoomPos, QPoint(x, y) );
+    updateInfoWidgetColorPicker(texelPos, QPoint(x, y));
     if ( _imp->viewerTab->isViewersSynchroEnabled() ) {
         const std::list<ViewerTab*>& allViewers = gui->getViewersList();
         for (std::list<ViewerTab*>::const_iterator it = allViewers.begin(); it != allViewers.end(); ++it) {
             if ( (*it)->getViewer() != this ) {
-                (*it)->getViewer()->updateInfoWidgetColorPicker( zoomPos, QPoint(x, y) );
+                (*it)->getViewer()->updateInfoWidgetColorPicker(texelPos, QPoint(x, y));
             }
         }
     }
@@ -3108,6 +3119,14 @@ ViewerGL::toZoomCoordinates(const QPointF& position) const
 }
 
 QPointF
+ViewerGL::toZoomCoordinatesAtPixelCentre(const QPointF& position) const
+{
+    QMutexLocker l(&_imp->zoomCtxMutex);
+
+    return _imp->zoomCtx.toZoomCoordinatesAtPixelCentre(position.x(), position.y());
+}
+
+QPointF
 ViewerGL::toWidgetCoordinates(const QPointF& position) const
 {
     QMutexLocker l(&_imp->zoomCtxMutex);
@@ -3173,21 +3192,21 @@ ViewerGL::updateColorPicker(int textureIndex,
         if ( !_imp->viewerTab->isViewersSynchroEnabled() ) {
             pos = mapFromGlobal( QCursor::pos() );
             QMutexLocker l(&_imp->zoomCtxMutex);
-            imgPosCanonical = _imp->zoomCtx.toZoomCoordinates( pos.x(), pos.y() );
+            imgPosCanonical = _imp->zoomCtx.toZoomCoordinatesAtPixelCentre(pos.x(), pos.y());
         } else {
             ViewerTab* masterViewer = getViewerTab()->getGui()->getMasterSyncViewer();
             if (masterViewer) {
                 pos = masterViewer->getViewer()->mapFromGlobal( QCursor::pos() );
-                imgPosCanonical = masterViewer->getViewer()->toZoomCoordinates(pos);
+                imgPosCanonical = masterViewer->getViewer()->toZoomCoordinatesAtPixelCentre(pos);
             } else {
                 pos = mapFromGlobal( QCursor::pos() );
                 QMutexLocker l(&_imp->zoomCtxMutex);
-                imgPosCanonical = _imp->zoomCtx.toZoomCoordinates( pos.x(), pos.y() );
+                imgPosCanonical = _imp->zoomCtx.toZoomCoordinatesAtPixelCentre(pos.x(), pos.y());
             }
         }
     } else {
         QMutexLocker l(&_imp->zoomCtxMutex);
-        imgPosCanonical = _imp->zoomCtx.toZoomCoordinates( pos.x(), pos.y() );
+        imgPosCanonical = _imp->zoomCtx.toZoomCoordinatesAtPixelCentre(pos.x(), pos.y());
     }
 
     float r, g, b, a;
@@ -3368,44 +3387,73 @@ ViewerGL::wheelEvent(QWheelEvent* e)
     NodeGuiPtr nodeGui = std::dynamic_pointer_cast<NodeGui>(nodeGui_i);
     gui->selectNode(nodeGui);
 
-    double zoomFactor;
-    unsigned int oldMipmapLevel, newMipmapLevel;
-    double scaleFactor = std::pow( NATRON_WHEEL_ZOOM_PER_DELTA, e->angleDelta().y() );
+    double oldZoomFactor, zoomFactor;
     {
         QMutexLocker l(&_imp->zoomCtxMutex);
-        QPointF zoomCenter = _imp->zoomCtx.toZoomCoordinates( e->position().x(), e->position().y() );
-
+        oldZoomFactor = _imp->zoomCtx.factor();
+        // Fit, the menu or the +/- actions moved the zoom since the last wheel step.
+        if (std::fabs(oldZoomFactor - _imp->wheelZoomFactor) > 1e-9 * oldZoomFactor) {
+            _imp->wheelZoomRaw = oldZoomFactor;
+        }
+        const ViewerWheelZoom z = wheelZoomSnap(_imp->wheelZoomRaw, std::pow(NATRON_WHEEL_ZOOM_PER_DELTA, e->angleDelta().y()),
+                                                _imp->zoomCtx.minFactor(), _imp->zoomCtx.maxFactor());
+        _imp->wheelZoomRaw = z.raw;
+        if (z.factor != oldZoomFactor) {
+            const QPointF zoomCenter = _imp->zoomCtx.toZoomCoordinates(e->position().x(), e->position().y());
+            _imp->zoomCtx.zoom(zoomCenter.x(), zoomCenter.y(), z.factor / oldZoomFactor);
+            _imp->zoomOrPannedSinceLastFit = true;
+        }
         zoomFactor = _imp->zoomCtx.factor();
-        //oldMipmapLevel = std::log( zoomFactor >= 1 ? 1 : ipow( 2, -std::ceil(std::log(zoomFactor) / M_LN2) ) ) / M_LN2;
-        oldMipmapLevel = zoomFactor >= 1 ? 0 : -std::ceil(std::log(zoomFactor) / M_LN2);
+        _imp->wheelZoomFactor = zoomFactor;
+    }
+    if (zoomFactor != oldZoomFactor) {
+        onZoomStepped(oldZoomFactor, zoomFactor);
+    }
+}
 
-        _imp->zoomCtx.zoom(zoomCenter.x(), zoomCenter.y(), scaleFactor);
+void
+ViewerGL::stepZoomPresets(int steps,
+                          const QPointF& pivot)
+{
+    assert(qApp && qApp->thread() == QThread::currentThread());
+
+    double oldZoomFactor, zoomFactor;
+    {
+        QMutexLocker l(&_imp->zoomCtxMutex);
+        oldZoomFactor = _imp->zoomCtx.factor();
+        const double target = stepZoomPreset(oldZoomFactor, steps, _imp->zoomCtx.minFactor(), _imp->zoomCtx.maxFactor());
+        if (target == oldZoomFactor) {
+            return;
+        }
+        const QPointF zoomCenter = _imp->zoomCtx.toZoomCoordinates(pivot.x(), pivot.y());
+        _imp->zoomCtx.zoom(zoomCenter.x(), zoomCenter.y(), target / oldZoomFactor);
         zoomFactor = _imp->zoomCtx.factor();
+        _imp->zoomOrPannedSinceLastFit = true;
     }
-    //newMipmapLevel = std::log( zoomFactor >= 1 ? 1 : std::pow( 2, -std::ceil(std::log(zoomFactor) / M_LN2) ) ) / M_LN2;
-    newMipmapLevel = zoomFactor >= 1 ? 0 : -std::ceil(std::log(zoomFactor) / M_LN2);
-    _imp->zoomOrPannedSinceLastFit = true;
-    int zoomValue = (int)(100 * zoomFactor);
-    if (zoomValue == 0) {
-        zoomValue = 1; // sometimes, floor(100*0.01) makes 0
-    }
-    assert(zoomValue > 0);
-    Q_EMIT zoomChanged(zoomValue);
+    onZoomStepped(oldZoomFactor, zoomFactor);
+}
 
-    if ( _imp->viewerTab->isViewersSynchroEnabled() ) {
+void
+ViewerGL::onZoomStepped(double oldZoomFactor,
+                        double zoomFactor)
+{
+    const unsigned int oldMipmapLevel = oldZoomFactor >= 1 ? 0 : -std::ceil(std::log(oldZoomFactor) / M_LN2);
+    const unsigned int newMipmapLevel = zoomFactor >= 1 ? 0 : -std::ceil(std::log(zoomFactor) / M_LN2);
+    Q_EMIT zoomChanged(std::max(1, (int)std::lround(100 * zoomFactor)));
+
+    if (_imp->viewerTab && _imp->viewerTab->isViewersSynchroEnabled()) {
         _imp->viewerTab->synchronizeOtherViewersProjection();
     }
 
     checkIfViewPortRoIValidOrRender();
 
-
     ///Clear green cached line so the user doesn't expect to see things in the cache
     ///since we're changing the zoom factor
-    if (oldMipmapLevel != newMipmapLevel) {
+    if (_imp->viewerTab && oldMipmapLevel != newMipmapLevel) {
         _imp->viewerTab->clearTimelineCacheLine();
     }
     update();
-} // ViewerGL::wheelEvent
+}
 
 void
 ViewerGL::zoomSlot(double v)
@@ -3871,6 +3919,56 @@ ViewerGL::renderText(double x,
     return true;
 }
 
+bool
+ViewerGL::renderViewportText(double x,
+                             double y,
+                             const std::string& string,
+                             double r,
+                             double g,
+                             double b,
+                             int flags)
+{
+    // An off-path overlay is drawn through its path's matrix on the modelview; the viewport's
+    // own coordinates are the identity modelview paintGL sets up.
+    GLProtectMatrix p(GL_MODELVIEW);
+    glLoadIdentity();
+
+    return renderText(x, y, string, r, g, b, flags);
+}
+
+void
+ViewerGL::drawInViewportSpace(const std::function<void()>& draw)
+{
+    GLProtectMatrix p(GL_MODELVIEW);
+    glLoadIdentity();
+    draw();
+}
+
+void
+ViewerGL::getCursorPositionInOverlay(double& x,
+                                     double& y) const
+{
+    getCursorPosition(x, y);
+
+    // The modelview is the overlay path's matrix on top of the identity paintGL sets up.
+    GLdouble m[16];
+    glGetDoublev(GL_MODELVIEW_MATRIX, m);
+    const Transform::Matrix3x3 path(m[0], m[4], m[12], m[1], m[5], m[13], m[3], m[7], m[15]);
+    const double det = Transform::matDeterminant(path);
+    if (det == 0.) {
+        return;
+    }
+    const Transform::Matrix3x3 inv = Transform::matInverse(path, det);
+    const double w = inv.g * x + inv.h * y + inv.i;
+    if (w == 0.) {
+        return;
+    }
+    const double ox = (inv.a * x + inv.b * y + inv.c) / w;
+    const double oy = (inv.d * x + inv.e * y + inv.f) / w;
+    x = ox;
+    y = oy;
+}
+
 void
 ViewerGL::renderText(double x,
                      double y,
@@ -3933,7 +4031,7 @@ ViewerGL::updatePersistentMessageToWidth(int w)
         QString mess;
         int nType = 0;
         (*it)->getPersistentMessage(&mess, &nType);
-        if (mess.isEmpty() || allMessages.contains(mess)) {
+        if (mess.isEmpty() || (nType == 0) || allMessages.contains(mess)) {
             continue;
         }
         allMessages.append(mess);
@@ -3974,8 +4072,8 @@ ViewerGL::getProjection(double *zoomLeft,
     // MT-SAFE
     QMutexLocker l(&_imp->zoomCtxMutex);
 
-    *zoomLeft = _imp->zoomCtx.left();
-    *zoomBottom = _imp->zoomCtx.bottom();
+    *zoomLeft = _imp->zoomCtx.unsnappedLeft();
+    *zoomBottom = _imp->zoomCtx.unsnappedBottom();
     *zoomFactor = _imp->zoomCtx.factor();
     *zoomAspectRatio = _imp->zoomCtx.aspectRatio();
 }
@@ -4328,7 +4426,7 @@ ViewerGL::pickColorInternal(double x,
     QPointF imgPos;
     {
         QMutexLocker l(&_imp->zoomCtxMutex);
-        imgPos = _imp->zoomCtx.toZoomCoordinates(x, y);
+        imgPos = _imp->zoomCtx.toZoomCoordinatesAtPixelCentre(x, y);
     }
 
     _imp->lastPickerPos = imgPos;

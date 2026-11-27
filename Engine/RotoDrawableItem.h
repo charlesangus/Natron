@@ -160,9 +160,7 @@ public:
 
     void setKeyframeOnAllTransformParameters(double time);
 
-    const std::list<KnobIPtr>& getKnobs() const;
-
-    KnobIPtr getKnobByName(const std::string& name) const;
+    virtual const std::list<KnobIPtr>& getKnobs() const OVERRIDE FINAL;
 
     /**
      * @brief Adds a knob the hosting effect owns on this item: it is saved, copied and hashed
@@ -193,6 +191,12 @@ public:
     void setTransform(double time, double tx, double ty, double sx, double sy, double centerX, double centerY, double rot, double skewX, double skewY);
 
     void setExtraMatrix(bool setKeyframe, double time, const Transform::Matrix3x3& mat);
+
+    /**
+     * @brief Keys the translation alone, whatever the auto-key setting, and leaves the item's other
+     * transform knobs as they are.
+     **/
+    void setTranslateKeyframe(double time, double tx, double ty);
 
     NodePtr getEffectNode() const;
     NodePtr getMergeNode() const;

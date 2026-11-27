@@ -131,6 +131,9 @@ public:
 #if NATRON_ENABLE_TRIMAP
     /// Fill with 2 the roi
     void markForRendering(const RectI& roi);
+
+    /// Turns every 2 back into 0
+    void clearMarksForRendering();
 #endif
 
     void clear(const RectI& roi) { markFor(roi, 0); }
@@ -260,6 +263,19 @@ struct CacheEntryHeader {
 };
 
 typedef std::shared_ptr<CacheEntryHeader> CacheEntryHeaderPtr;
+
+// What eviction and lookups read of an entry, for a header that must not be shared with the one it is copied from.
+inline void
+copyEntryState(const CacheEntryHeader& from,
+               CacheEntryHeader* to)
+{
+    to->lastUse.store(from.lastUse.load());
+    to->priority.store(from.priority.load());
+    to->recomputeCostNs.store(from.recomputeCostNs.load());
+    to->retention.store(from.retention.load());
+    to->reuseCount.store(from.reuseCount.load());
+    to->lastReuseRender.store(from.lastReuseRender.load());
+}
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////
 //////////////////////////////////////////BUFFER////////////////////////////////////////////////////

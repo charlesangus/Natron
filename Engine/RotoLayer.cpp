@@ -90,6 +90,64 @@ RotoLayer::RotoLayer(const RotoCurveContextPtr& context,
     : RotoItem(context, n, parent)
     , _imp(new RotoLayerPrivate())
 {
+    for (std::list<KnobIPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
+        KnobSignalSlotHandler* handler = (*it)->getSignalSlotHandler().get();
+        if (!handler) {
+            continue;
+        }
+        QObject::connect(handler, &KnobSignalSlotHandler::valueChanged, this, [this](ViewSpec, int, int) {
+            onTransformKnobChanged();
+        });
+    }
+}
+
+void
+RotoLayer::onTransformKnobChanged()
+{
+    // The layer's children hash their ancestors' transforms, so marking the node dirty is enough.
+    invalidateContentHash();
+    RotoCurveContextPtr context = getContext();
+    if (context) {
+        context->emitRefreshViewerOverlays();
+    }
+}
+
+const std::list<KnobIPtr>&
+RotoLayer::getKnobs() const
+{
+    return _imp->knobs;
+}
+
+void
+RotoLayer::getLocalTransformAtTime(double time,
+                                   Transform::Matrix3x3* matrix) const
+{
+    _imp->transform.getMatrixAtTime(time, matrix);
+}
+
+void
+RotoLayer::getTransformAtTime(double time,
+                              Transform::Matrix3x3* matrix) const
+{
+    *matrix = Transform::Matrix3x3(1, 0, 0, 0, 1, 0, 0, 0, 1);
+    RotoCurveContextPtr context = getContext();
+    if (!context || !context->layersOwnTransforms()) {
+        return;
+    }
+    getLocalTransformAtTime(time, matrix);
+    for (RotoLayerPtr layer = getParentLayer(); layer; layer = layer->getParentLayer()) {
+        Transform::Matrix3x3 parent;
+        layer->getLocalTransformAtTime(time, &parent);
+        *matrix = Transform::matMul(parent, *matrix);
+    }
+}
+
+void
+RotoLayer::appendTransformContentHash(ContentHasher& h) const
+{
+    for (std::list<KnobIPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
+        h.appendU64((*it)->getContentHash());
+    }
 }
 
 RotoLayer::~RotoLayer()
@@ -104,6 +162,12 @@ RotoLayer::clone(const RotoItem* other)
 
     if (!isOtherLayer) {
         return;
+    }
+    for (std::list<KnobIPtr>::iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
+        KnobIPtr otherKnob = isOtherLayer->getKnobByName((*it)->getName());
+        if (otherKnob) {
+            (*it)->clone(otherKnob);
+        }
     }
     RotoLayerPtr this_shared = std::dynamic_pointer_cast<RotoLayer>( shared_from_this() );
     assert(this_shared);
@@ -278,6 +342,7 @@ void
 RotoLayer::appendLiveContentHash(ContentHasher& h) const
 {
     RotoItem::appendLiveContentHash(h);
+    appendTransformContentHash(h);
 
     // Children render in reverse list order, so the order is part of the content.
     RotoItems items = getItems_mt_safe();

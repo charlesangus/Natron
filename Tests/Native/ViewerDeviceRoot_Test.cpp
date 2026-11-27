@@ -449,7 +449,6 @@ protected:
         , _viewer(0)
         , _constant()
         , _viewerNode()
-        , _savedMode(eRenderSchedulerModeTaskGraph)
         , _savedTexturesDepth(-1)
         , _skipReason()
         , _depthSkipReason()
@@ -459,8 +458,6 @@ protected:
     virtual void SetUp() OVERRIDE
     {
         BaseTest::SetUp();
-        _savedMode = appPTR->getRenderSchedulerMode();
-        appPTR->setRenderSchedulerMode(eRenderSchedulerModeTaskGraph);
         ProjectPtr project = getApp()->getProject();
         project->reset(false, true);
         project->setOrAddProjectFormat(Format(0, 0, kSize, kSize, "viewerDeviceRoot64", 1.));
@@ -506,7 +503,6 @@ protected:
         getApp()->getProject()->reset(false, true);
         _gpu.reset();
         restoreTexturesDepth();
-        appPTR->setRenderSchedulerMode(_savedMode);
         BaseTest::TearDown();
     }
 
@@ -662,7 +658,6 @@ protected:
     ViewerInstance* _viewer;
     NodePtr _constant;
     NodePtr _viewerNode;
-    RenderSchedulerModeEnum _savedMode;
     int _savedTexturesDepth;
     std::string _skipReason;
     std::string _depthSkipReason;
@@ -946,48 +941,6 @@ TEST_P(ViewerDeviceRoot, APendingDryRunNeverReplacesARealRenderOfTheSameState)
     letThePlannerSettle();
 
     EXPECT_EQ(rendered.get(), _viewer->getGpuPlacementSnapshot().get());
-}
-
-TEST_P(ViewerDeviceRoot, InLegacyModeADryRunPublishesAnEmptySnapshot)
-{
-    appPTR->setRenderSchedulerMode(eRenderSchedulerModeLegacy);
-    const int firstDryRun = ViewerInstance::getGpuPlacementDryRunCountForTests() + 1;
-    const PlacementOverlayScope scope(true, &placementAlwaysAvailable);
-
-    ASSERT_TRUE(waitForDryRunCount(firstDryRun));
-
-    const GpuPlacementSnapshotPtr snapshot = _viewer->getGpuPlacementSnapshot();
-    ASSERT_TRUE(bool(snapshot));
-    EXPECT_TRUE(snapshot->regions.empty());
-}
-
-TEST_P(ViewerDeviceRoot, SwitchingTheSchedulerModeReplansEveryViewer)
-{
-    if (!gpuOrSkip()) {
-        return;
-    }
-    if (std::getenv("NATRON_RENDER_SCHEDULER")) {
-        std::printf("[  SKIPPED ] NATRON_RENDER_SCHEDULER pins the scheduler mode\n");
-
-        return;
-    }
-    useAFrameLargeEnoughForARegion();
-    const SnapshotChangeSpy spy(_viewer);
-    int dryRuns = ViewerInstance::getGpuPlacementDryRunCountForTests() + 1;
-    const PlacementOverlayScope scope(true, &placementAlwaysAvailable);
-    ASSERT_TRUE(waitForDryRunCount(dryRuns));
-    ASSERT_EQ(1, spy.count());
-    ASSERT_FALSE(_viewer->getGpuPlacementSnapshot()->regions.empty());
-
-    appPTR->onRenderSchedulerModeSettingChanged(eRenderSchedulerModeLegacy);
-    ASSERT_TRUE(waitForDryRunCount(++dryRuns));
-    EXPECT_EQ(2, spy.count());
-    EXPECT_TRUE(_viewer->getGpuPlacementSnapshot()->regions.empty());
-
-    appPTR->onRenderSchedulerModeSettingChanged(eRenderSchedulerModeTaskGraph);
-    ASSERT_TRUE(waitForDryRunCount(++dryRuns));
-    EXPECT_EQ(3, spy.count());
-    EXPECT_FALSE(_viewer->getGpuPlacementSnapshot()->regions.empty());
 }
 
 TEST_P(ViewerDeviceRoot, WithNoGpuADryRunPublishesAnEmptySnapshot)

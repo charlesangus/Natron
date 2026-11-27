@@ -38,23 +38,24 @@
 #include <QDebug>
 #include <QCoreApplication>
 
-#include "Engine/CacheEntry.h"
-#include "Engine/OfxEffectInstance.h"
-#include "Engine/OfxImageEffectInstance.h"
-#include "Engine/Settings.h"
-#include "Engine/Image.h"
-#include "Engine/ImageParams.h"
-#include "Engine/TimeLine.h"
-#include "Engine/Hash64.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CacheEntry.h"
+#include "Engine/Hash64.h"
+#include "Engine/Image.h"
+#include "Engine/ImageParams.h"
 #include "Engine/Node.h"
-#include "Engine/ViewerInstance.h"
-#include "Engine/RotoContext.h"
-#include "Engine/Transform.h"
-#include "Engine/TLSHolder.h"
+#include "Engine/OfxEffectInstance.h"
+#include "Engine/OfxImageEffectInstance.h"
+#include "Engine/OfxLayerMapping.h"
 #include "Engine/Project.h"
+#include "Engine/RotoContext.h"
+#include "Engine/Settings.h"
+#include "Engine/TLSHolder.h"
+#include "Engine/TimeLine.h"
+#include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
+#include "Engine/ViewerInstance.h"
 
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
@@ -178,15 +179,7 @@ std::string
 ofxComponentsFromMetadata(const NodeMetadata& metadata,
                           int inputNb)
 {
-    const std::string componentsType = metadata.getComponentsType(inputNb);
-
-    if (componentsType == kNatronDisparityComponentsLabel) {
-        return kFnOfxImageComponentStereoDisparity;
-    } else if (componentsType == kNatronMotionComponentsLabel) {
-        return kFnOfxImageComponentMotionVectors;
-    }
-
-    return ImageLayerDesc::mapLayerToOFXComponentsTypeString(ImageLayerDesc::mapNCompsToColorLayer(metadata.getNComps(inputNb)));
+    return OfxLayerMapping::componentsTypeToComponents(metadata.getComponentsType(inputNb), metadata.getNComps(inputNb));
 }
 } // anon namespace
 
@@ -233,7 +226,7 @@ OfxClipsFrameAnswer::create(const NodeMetadata& metadata,
         if (layer.getNumComponents() == 0) {
             layer = ImageLayerDesc::getRGBAComponents();
         }
-        clip.unmappedComponents = ImageLayerDesc::mapLayerToOFXComponentsTypeString(layer);
+        clip.unmappedComponents = OfxLayerMapping::layerToComponents(layer);
         const ImageBitDepthEnum depth = source->getBitDepth(-1);
         if ((depth == eImageBitDepthByte) || (depth == eImageBitDepthShort) || (depth == eImageBitDepthHalf) || (depth == eImageBitDepthFloat)) {
             clip.unmappedPixelDepth = OfxClipInstance::natronsDepthToOfxDepth(depth);
@@ -364,7 +357,7 @@ OfxClipInstance::getUnmappedComponents() const
         if (metadataLayer.getNumComponents() == 0) {
             metadataLayer = ImageLayerDesc::getRGBAComponents();
         }
-        ret = ImageLayerDesc::mapLayerToOFXComponentsTypeString(metadataLayer);
+        ret = OfxLayerMapping::layerToComponents(metadataLayer);
 
     } else {
         // The node is not connected but optional, return the closest supported components
@@ -379,7 +372,7 @@ OfxClipInstance::getUnmappedComponents() const
                 EffectInstance::getLayersFromMetadata(*holderMetadata, i, &metadataLayer, &metadataPairedLayer);
 
                 if (metadataLayer.getNumComponents() > 0) {
-                    ret = ImageLayerDesc::mapLayerToOFXComponentsTypeString(metadataLayer);
+                    ret = OfxLayerMapping::layerToComponents(metadataLayer);
                 }
             }
         }
@@ -387,7 +380,7 @@ OfxClipInstance::getUnmappedComponents() const
 
         // last-resort: black and transparent image means RGBA.
         if (ret.empty()) {
-            ret = ImageLayerDesc::mapLayerToOFXComponentsTypeString(ImageLayerDesc::getRGBAComponents());
+            ret = OfxLayerMapping::layerToComponents(ImageLayerDesc::getRGBAComponents());
         }
 
     }
@@ -430,7 +423,7 @@ OfxClipInstancePrivate::getComponentsPresentInternal(const OfxClipInstance::Clip
     effect->getAvailableLayers(time, view, inputNb, &availableLayers);
 
     for (std::list<ImageLayerDesc>::iterator it = availableLayers.begin(); it != availableLayers.end(); ++it) {
-        std::string ofxPlane = ImageLayerDesc::mapLayerToOFXPlaneString(*it);
+        std::string ofxPlane = OfxLayerMapping::layerToPlane(*it);
         tls->componentsPresent.push_back(ofxPlane);
     }
 
@@ -1017,14 +1010,14 @@ OfxClipInstance::getInputImageInternal(const OfxTime time,
     ImageLayerDesc comp;
     if (!ofxPlane) {
         ImageLayerDesc clipComp, pairedComp;
-        ImageLayerDesc::mapOFXComponentsTypeStringToLayers(thisClipComponents, &clipComp, &pairedComp);
+        OfxLayerMapping::componentsToLayers(thisClipComponents, &clipComp, &pairedComp);
         effect->resolveInputPlaneForRender(inputnb, time, ViewIdx(0), clipComp, &comp, NULL);
     } else {
         if (*ofxPlane == kFnOfxImagePlaneColour) {
             ImageLayerDesc pairedComp;
-            ImageLayerDesc::mapOFXComponentsTypeStringToLayers(thisClipComponents, &comp, &pairedComp);
+            OfxLayerMapping::componentsToLayers(thisClipComponents, &comp, &pairedComp);
         } else {
-            comp = ImageLayerDesc::mapOFXPlaneStringToLayer(*ofxPlane);
+            comp = OfxLayerMapping::planeToLayer(*ofxPlane);
         }
     }
 
@@ -1193,12 +1186,12 @@ OfxClipInstance::getInputImageInternal(const OfxTime time,
     std::string components;
     int nComps;
     if (multiPlanar) {
-        components = ImageLayerDesc::mapLayerToOFXComponentsTypeString(image->getComponents());
+        components = OfxLayerMapping::layerToComponents(image->getComponents());
         nComps = image->getComponents().getNumComponents();
     } else {
         components = thisClipComponents;
         ImageLayerDesc layer, pairedComp;
-        ImageLayerDesc::mapOFXComponentsTypeStringToLayers(components, &layer, &pairedComp);
+        OfxLayerMapping::componentsToLayers(components, &layer, &pairedComp);
         nComps = layer.getNumComponents();
     }
 
@@ -1266,15 +1259,15 @@ OfxClipInstance::getOutputImageInternal(const std::string* ofxPlane,
          */
         if ((natronLayer.getNumComponents() == 0) && effect->isMultiPlanar()) {
             ImageLayerDesc pairedLayer;
-            ImageLayerDesc::mapOFXComponentsTypeStringToLayers(getComponents(), &natronLayer, &pairedLayer);
+            OfxLayerMapping::componentsToLayers(getComponents(), &natronLayer, &pairedLayer);
         }
         assert(natronLayer.getNumComponents() > 0);
     } else {
         if (*ofxPlane == kFnOfxImagePlaneColour) {
             ImageLayerDesc pairedComp;
-            ImageLayerDesc::mapOFXComponentsTypeStringToLayers(getComponents(), &natronLayer, &pairedComp);
+            OfxLayerMapping::componentsToLayers(getComponents(), &natronLayer, &pairedComp);
         } else {
-            natronLayer = ImageLayerDesc::mapOFXPlaneStringToLayer(*ofxPlane);
+            natronLayer = OfxLayerMapping::planeToLayer(*ofxPlane);
         }
     }
 
@@ -1350,12 +1343,12 @@ OfxClipInstance::getOutputImageInternal(const std::string* ofxPlane,
     std::string ofxComponents;
     int nComps;
     if (isMultiplanar) {
-        ofxComponents = ImageLayerDesc::mapLayerToOFXComponentsTypeString(outputImage->getComponents());
+        ofxComponents = OfxLayerMapping::layerToComponents(outputImage->getComponents());
         nComps = outputImage->getComponents().getNumComponents();
     } else {
         ofxComponents = getComponents();
         ImageLayerDesc natronComps, pairedComps;
-        ImageLayerDesc::mapOFXComponentsTypeStringToLayers(ofxComponents, &natronComps, &pairedComps);
+        OfxLayerMapping::componentsToLayers(ofxComponents, &natronComps, &pairedComps);
         nComps = natronComps.getNumComponents();
         assert( nComps == (int)outputImage->getComponentsCount() );
         if ( nComps != (int)outputImage->getComponentsCount() ) {

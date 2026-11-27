@@ -74,6 +74,25 @@ public:
         bool _outermost;
     };
 
+    /**
+     * @brief Counts the calling thread as reading under a ReadScope another thread holds for
+     * longer than this one lives, without waiting for a writer. For a helper that holder waits
+     * for: a writer pending would hold the helper's own outermost scope off, while waiting for
+     * the holder's scope to end. Does nothing when held is false.
+     **/
+    class SharedReadScope {
+    public:
+        explicit SharedReadScope(bool held);
+
+        ~SharedReadScope();
+
+    private:
+        SharedReadScope(const SharedReadScope&) = delete;
+        SharedReadScope& operator=(const SharedReadScope&) = delete;
+
+        bool _held;
+    };
+
     typedef U64 ParticipantId;
 
     // When a participant is quiesced relative to the others; resume runs in the reverse order.
@@ -143,6 +162,12 @@ public:
 
     // How many writes have run in this process.
     static U64 getWriteCount();
+
+    // Called, if set, on the writing thread of runExclusive() once the readers have drained: it
+    // holds writerMutex there and has not yet taken the GIL back. Lets a test hold the writer at
+    // the point where a lock-order mistake would show. Pass nullptr to clear.
+    typedef void (*TestHookFunction)(void* context);
+    static void setTestHook(TestHookFunction hook, void* context);
 };
 
 NATRON_NAMESPACE_EXIT

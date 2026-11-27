@@ -43,8 +43,8 @@ FROM aswf/ci-vfxall:2027-clang21.1
 # compressed it adds to the AppImage.
 # NATRON_CYCLES_SHA256 is of <NATRON_CYCLES_REPO>/archive/<commit>.tar.gz.
 ARG NATRON_CYCLES_REPO=https://github.com/charlesangus/cycles
-ARG NATRON_CYCLES_COMMIT=a5be12ed6511823e549919c634710ae5489f664e
-ARG NATRON_CYCLES_SHA256=e572e0428e4baf816c5e0afd24132c2d8d08252b70171e870043f3a17b0e417f
+ARG NATRON_CYCLES_COMMIT=15de381396bbe59834660f4485441275b2d86274
+ARG NATRON_CYCLES_SHA256=e5300c864e31afefe0a408e0477326f864f4fd5e31d20c3025b05f825d1bdf40
 ARG NATRON_CYCLES_OIDN=ON
 COPY build-cycles.sh /tmp/build-cycles.sh
 RUN NATRON_CYCLES_REPO="$NATRON_CYCLES_REPO" \
@@ -67,7 +67,7 @@ RUN NATRON_CYCLES_REPO="$NATRON_CYCLES_REPO" \
 # is fetched for the build only. Right after Cycles: the other slow layer,
 # changed more often than Cycles, so its rebuilds leave the Cycles layer cached.
 ARG NATRON_MOONRAY_REPO=https://github.com/charlesangus/openmoonray.git
-ARG NATRON_MOONRAY_COMMIT=6bd3642589a16d7fec014f305a099626cc5c4c87
+ARG NATRON_MOONRAY_COMMIT=fb6a35b40d681889adfc3d80f551a3a64e405776
 ARG NATRON_MOONRAY_ISPC_VERSION=v1.21.0
 ARG NATRON_MOONRAY_ISPC_SHA256=fe658893799af46c9cac0153f0bdc9a2ff93541fff9b17cf6b09ffc7576cfdcc
 COPY build-moonray.sh /tmp/build-moonray.sh

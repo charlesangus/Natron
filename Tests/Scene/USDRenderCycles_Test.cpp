@@ -1798,6 +1798,29 @@ TEST_F(USDRenderCyclesSubdivisionTest, AHoleFaceIsNotDrawn)
     EXPECT_LT(coverage(holed, 36, 50), 0.02 * wholeRight);
 }
 
+// The authored boundary rule reaches the subdivision. The default sharpens the strip's corners, so
+// it covers out to its ends; "edgeOnly" rounds them, pulling the ends in; "none" leaves every face
+// on the boundary, which is all of the strip's, undrawn.
+TEST_F(USDRenderCyclesSubdivisionTest, TheBoundaryRuleShapesTheEdges)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    std::vector<float> corners, edgeOnly, none;
+    ASSERT_TRUE(renderStage(subdivisionStrip(), on(), &corners));
+    ASSERT_TRUE(renderStage(subdivisionStrip("        uniform token interpolateBoundary = \"edgeOnly\"\n"), on(), &edgeOnly));
+    ASSERT_TRUE(renderStage(subdivisionStrip("        uniform token interpolateBoundary = \"none\"\n"), on(), &none));
+
+    // The strip spans about columns 11 to 53; 11 to 16 hold its left end.
+    const double whole = coverage(corners);
+    const double cornersEnd = coverage(corners, 11, 17);
+    ASSERT_GT(whole, 100.);
+    ASSERT_GT(cornersEnd, 20.);
+    EXPECT_LT(coverage(edgeOnly, 11, 17), 0.8 * cornersEnd);
+    EXPECT_GT(coverage(edgeOnly), 0.5 * whole);
+    EXPECT_LT(coverage(none), 0.1 * whole);
+}
+
 // Cycles dices in pixel space as seen from the camera, so a mesh diced from far away is diced
 // again when the camera comes close: an engine that rendered the far view first renders the near
 // one as a fresh engine does, not as the mesh diced from the far camera looks from near.

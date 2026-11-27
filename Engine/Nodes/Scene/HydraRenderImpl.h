@@ -146,8 +146,6 @@ bool renderableCamera(const PXR_NS::UsdStageRefPtr& stage,
  * renders through frustum alone, as a free camera with a closed shutter.
  **/
 struct EngineCamera {
-    // The delegate's plugin id: whether it frames by camera is decided by rendersThroughCamera().
-    std::string renderer;
     PXR_NS::SdfPath camera;
     FitModeEnum fit = eFitModeExpand;
     // The width of a pixel over its height, the format's. The framing the delegate is given
@@ -160,15 +158,6 @@ struct EngineCamera {
     // window; the whole image when not valid. Its pixel aspect is setEngineCamera()'s to set.
     PXR_NS::CameraUtilFraming framing;
 };
-
-/**
- * @brief Whether the delegate renderer frames an image by the scene camera, per fit and pixelAspect,
- * as cameraFrustum() does. Storm, hdMoonray and hdCycles all do, at every fit and pixel aspect.
- * Where it is false the engine renders through the frustum.
- **/
-bool rendersThroughCamera(const std::string& renderer,
-                          FitModeEnum fit,
-                          double pixelAspect) WARN_UNUSED_RETURN;
 
 /**
  * @brief Points engine's next render at view. *throughCamera holds whether the engine renders

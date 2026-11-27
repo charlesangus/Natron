@@ -1924,7 +1924,6 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     const GfMatrix4d view = request.frustum.ComputeViewMatrix();
     const GfMatrix4d projection = request.frustum.ComputeProjectionMatrix();
     HydraRender::EngineCamera engineCamera;
-    engineCamera.renderer = renderer;
     engineCamera.camera = request.camera;
     engineCamera.fit = request.fit;
     engineCamera.pixelAspect = request.pixelAspect;
@@ -1933,12 +1932,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     engineCamera.height = height;
     engineCamera.framing = framing;
     // Two cameras with one frustum can differ in what else the delegate reads of them, such as
-    // their shutter; a delegate given the frustum alone reads nothing else.
-    const bool throughPath = !request.camera.IsEmpty() && HydraRender::rendersThroughCamera(renderer, request.fit, request.pixelAspect);
-    const SdfPath effectiveCamera = throughPath ? request.camera : SdfPath();
-    const HydraRender::FitModeEnum effectiveFit = throughPath ? request.fit : HydraRender::eFitModeExpand;
-    const double effectivePixelAspect = throughPath ? request.pixelAspect : 1.;
-    const bool cameraMoved = (entry.camera != effectiveCamera) || (entry.fit != effectiveFit) || (entry.pixelAspect != effectivePixelAspect);
+    // their shutter.
+    const bool cameraMoved = (entry.camera != request.camera) || (entry.fit != request.fit) || (entry.pixelAspect != request.pixelAspect);
     const U64 writeCount = SceneWriteBarrier::getWriteCount();
     entry.lastUse = ++_useSerial;
     if (entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height) && (entry.framing == framing) && !cameraMoved && (entry.showRender == request.showRender) && (entry.showProxy == request.showProxy) && (entry.showGuides == request.showGuides) && (entry.cameraMotion == request.cameraMotion)) {
@@ -2295,9 +2290,9 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     entry.width = width;
     entry.height = height;
     entry.framing = framing;
-    entry.camera = effectiveCamera;
-    entry.fit = effectiveFit;
-    entry.pixelAspect = effectivePixelAspect;
+    entry.camera = request.camera;
+    entry.fit = request.fit;
+    entry.pixelAspect = request.pixelAspect;
     entry.showRender = request.showRender;
     entry.showProxy = request.showProxy;
     entry.showGuides = request.showGuides;
@@ -3091,7 +3086,7 @@ setEngineCamera(UsdImagingGLEngine* engine,
     // display window's width over its height.
     const GfVec2f shown = framing.displayWindow.GetSize();
     framing.pixelAspectRatio = (float)(view.frustum.ComputeAspectRatio() * shown[1] / shown[0]);
-    if (view.camera.IsEmpty() || !rendersThroughCamera(view.renderer, view.fit, view.pixelAspect)) {
+    if (view.camera.IsEmpty()) {
         const GfMatrix4d viewMatrix = view.frustum.ComputeViewMatrix();
         const GfMatrix4d projection = view.frustum.ComputeProjectionMatrix();
         if (*throughCamera) {
@@ -3113,14 +3108,6 @@ setEngineCamera(UsdImagingGLEngine* engine,
     engine->SetOverrideWindowPolicy(windowPolicy(view.fit));
     engine->SetCameraPath(view.camera);
     *throughCamera = true;
-}
-
-bool
-rendersThroughCamera(const std::string& /*renderer*/,
-                     FitModeEnum /*fit*/,
-                     double /*pixelAspect*/)
-{
-    return true;
 }
 
 std::vector<SdfPath>
@@ -5025,7 +5012,6 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 const bool viewMoved = !engineHasView || (engineView != v);
                 if (viewMoved) {
                     EngineCamera camera;
-                    camera.renderer = engineRenderer;
                     camera.camera = v.camera;
                     camera.fit = v.fit;
                     camera.pixelAspect = v.pixelAspect;

@@ -180,6 +180,41 @@ const char* const kDilatedVelocityOpenShutter = "over \"World\"\n"
                                                 "    }\n"
                                                 "}\n";
 
+// kDilatedVelocity on a stage of timeCodesPerSecond, the shutter open halfShutter frames either
+// side of the frame.
+std::string
+dilatedVelocityAt(double timeCodesPerSecond,
+                  double halfShutter)
+{
+    char text[4096];
+    std::snprintf(text, sizeof(text),
+                  "(\n"
+                  "    timeCodesPerSecond = %g\n"
+                  ")\n"
+                  "over \"World\"\n"
+                  "{\n"
+                  "    over \"Cam\"\n"
+                  "    {\n"
+                  "        double shutter:close = %g\n"
+                  "        double shutter:open = %g\n"
+                  "    }\n"
+                  "    over \"Smoke\"\n"
+                  "    {\n"
+                  "        over \"density\"\n"
+                  "        {\n"
+                  "            asset filePath.timeSamples = { 1: @" NATRON_TESTS_FIXTURES_DIR "/volume-sphere-dilated.0001.vdb@ }\n"
+                  "        }\n"
+                  "        over \"velocity\"\n"
+                  "        {\n"
+                  "            asset filePath.timeSamples = { 1: @" NATRON_TESTS_FIXTURES_DIR "/volume-sphere-dilated.0001.vdb@ }\n"
+                  "        }\n"
+                  "    }\n"
+                  "}\n",
+                  timeCodesPerSecond, halfShutter, -halfShutter);
+
+    return text;
+}
+
 // The dev image's /usr/local glvnd lists only NVIDIA; the system directory holds Mesa. Set before
 // the first EGL use, as the render thread's context is made once.
 void
@@ -578,6 +613,30 @@ expectVelocityBlursTheVolume(const std::string& renderer,
     const float blurredTrail = meanOf(blurred, kTrailX0, kTrailX1);
     EXPECT_LT(blurredTrail, 0.95f * stillTrail) << renderer << ": blurred " << blurredTrail << ", still " << stillTrail;
 }
+
+// Velocity is in units a second, so the stage's rate decides how far a shutter in time codes
+// moves the volume: at 48 a second a shutter twice as long blurs as the 24 a second one does,
+// and one as long blurs less.
+void
+expectTheRateScalesTheVelocity(const std::string& renderer)
+{
+    const RendererSettings settings(renderer);
+    Render still;
+    ASSERT_TRUE(renderScene(renderer, 1., kDilatedVelocity, &still));
+    Render at24;
+    ASSERT_TRUE(renderScene(renderer, 1., dilatedVelocityAt(24., 0.25), &at24));
+    Render at48SameSeconds;
+    ASSERT_TRUE(renderScene(renderer, 1., dilatedVelocityAt(48., 0.5), &at48SameSeconds));
+    Render at48HalfSeconds;
+    ASSERT_TRUE(renderScene(renderer, 1., dilatedVelocityAt(48., 0.25), &at48HalfSeconds));
+    const float stillTrail = meanOf(still, kTrailX0, kTrailX1);
+    const float darkened24 = stillTrail - meanOf(at24, kTrailX0, kTrailX1);
+    const float darkened48Same = stillTrail - meanOf(at48SameSeconds, kTrailX0, kTrailX1);
+    const float darkened48Half = stillTrail - meanOf(at48HalfSeconds, kTrailX0, kTrailX1);
+    ASSERT_GT(darkened24, 0.05f * stillTrail) << renderer << ": the 24 a second shutter does not blur, still " << stillTrail;
+    EXPECT_NEAR(darkened48Same, darkened24, 0.3f * darkened24) << renderer << ": the same seconds at 48 a second blur otherwise";
+    EXPECT_LT(darkened48Half, 0.8f * darkened24) << renderer << ": half the seconds at 48 a second blur as far as at 24";
+}
 } // anon namespace
 
 // Each renderer has a suite of its own, so each runs in its own process: Storm's OpenVDB reader
@@ -632,6 +691,14 @@ TEST(VolumeRenderCycles, VelocityBlursTheVolume)
     expectVelocityBlursTheVolume(kRenderDelegateCyclesId, kDilatedVelocity, kDilatedVelocityOpenShutter);
 }
 
+TEST(VolumeRenderCycles, TheStageRateScalesTheVelocity)
+{
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    expectTheRateScalesTheVelocity(kRenderDelegateCyclesId);
+}
+
 TEST(VolumeRenderMoonRay, TheVolumeDarkensItsSide)
 {
     if (!moonRayOrSkip()) {
@@ -664,4 +731,12 @@ TEST(VolumeRenderMoonRay, VelocityBlursTheVolume)
         return;
     }
     expectVelocityBlursTheVolume(kMoonRayRendererId, kDilatedVelocity, kDilatedVelocityOpenShutter);
+}
+
+TEST(VolumeRenderMoonRay, TheStageRateScalesTheVelocity)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    expectTheRateScalesTheVelocity(kMoonRayRendererId);
 }

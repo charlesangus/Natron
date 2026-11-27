@@ -111,6 +111,44 @@ const char* const kHoleQuads = "over \"World\"\n"
                                "    }\n"
                                "}\n";
 
+// Three quads side by side facing the camera, the left one a hole, each of its own colour: red for
+// the hole, green for the middle, blue for the right. faceVarying gives the colours per face
+// vertex instead of per face. Each quad also carries a face-varying st of its own corners.
+std::string
+holeStrip(bool faceVarying)
+{
+    const std::string colours = faceVarying ? "        color3f[] primvars:displayColor = [(1, 0, 0), (1, 0, 0), (1, 0, 0), (1, 0, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 1, 0), (0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (\n"
+                                              "            interpolation = \"faceVarying\"\n"
+                                              "        )\n"
+                                            : "        color3f[] primvars:displayColor = [(1, 0, 0), (0, 1, 0), (0, 0, 1)] (\n"
+                                              "            interpolation = \"uniform\"\n"
+                                              "        )\n";
+
+    return "over \"World\"\n"
+           "{\n"
+           "    def Mesh \"Strip\"\n"
+           "    {\n"
+           "        int[] faceVertexCounts = [4, 4, 4]\n"
+           "        int[] faceVertexIndices = [0, 1, 5, 4, 1, 2, 6, 5, 2, 3, 7, 6]\n"
+           "        int[] holeIndices = [0]\n"
+           "        point3f[] points = [(-3, -1, 0), (-1, -1, 0), (1, -1, 0), (3, -1, 0), (-3, 1, 0), (-1, 1, 0), (1, 1, 0), (3, 1, 0)]\n"
+           "        uniform token subdivisionScheme = \"none\"\n"
+        + colours + "        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1), (0, 0), (1, 0), (1, 1), (0, 1), (0, 0), (1, 0), (1, 1), (0, 1)] (\n"
+                    "            interpolation = \"faceVarying\"\n"
+                    "        )\n"
+                    "    }\n"
+                    "}\n";
+}
+
+// A vertical aperture offset of a sixth of the aperture's height.
+const char* const kApertureOffset = "over \"World\"\n"
+                                    "{\n"
+                                    "    over \"Cam\"\n"
+                                    "    {\n"
+                                    "        float verticalApertureOffset = 3\n"
+                                    "    }\n"
+                                    "}\n";
+
 // The shutter open a quarter frame either side of the frame: the cube sweeps half a unit each way.
 const char* const kOpenShutter = "over \"World\"\n"
                                  "{\n"
@@ -190,13 +228,15 @@ public:
     }
 };
 
-// kCameraAndLight with the given layers on top, rendered by MoonRay at frame 1 through kCamera,
-// by its path or by the frustum cameraFrustum() gives for it. False after a gtest failure.
+// kCameraAndLight with the given layers on top, rendered by MoonRay at frame 1 through kCamera
+// into width x height pixels pixelAspect wide, by its path or by the frustum cameraFrustum()
+// gives for it. False after a gtest failure.
 bool
 renderMoonRay(const std::vector<std::string>& overrides,
               HydraRender::FitModeEnum fit,
               int width,
               int height,
+              double pixelAspect,
               bool throughPath,
               std::vector<float>* rgba)
 {
@@ -232,7 +272,7 @@ renderMoonRay(const std::vector<std::string>& overrides,
     request.height = height;
     request.renderer = kMoonRayRendererId;
     std::string error;
-    if (!HydraRender::cameraFrustum(stage, PXR_NS::SdfPath(kCamera), request.time, double(width) / height, fit, &request.frustum, &error)) {
+    if (!HydraRender::cameraFrustum(stage, PXR_NS::SdfPath(kCamera), request.time, width * pixelAspect / height, fit, &request.frustum, &error)) {
         ADD_FAILURE() << error;
 
         return false;
@@ -240,7 +280,7 @@ renderMoonRay(const std::vector<std::string>& overrides,
     if (throughPath) {
         request.camera = PXR_NS::SdfPath(kCamera);
         request.fit = fit;
-        request.pixelAspect = 1.;
+        request.pixelAspect = pixelAspect;
     }
     HydraRender::Result result;
     const bool rendered = HydraRender::render(request, &result, &error);
@@ -258,6 +298,28 @@ renderMoonRay(const std::vector<std::string>& overrides,
     *rgba = result.rgba;
 
     return true;
+}
+
+// The mean of channel c of columns x0 to x1 over rows y0 to y1.
+float
+channelOf(const std::vector<float>& rgba,
+          int width,
+          int c,
+          int x0,
+          int x1,
+          int y0,
+          int y1)
+{
+    double sum = 0.;
+    int count = 0;
+    for (int y = y0; y <= y1; ++y) {
+        for (int x = x0; x <= x1; ++x) {
+            sum += rgba[((std::size_t)y * (std::size_t)width + (std::size_t)x) * 4 + (std::size_t)c];
+            ++count;
+        }
+    }
+
+    return (float)(sum / count);
 }
 
 // The mean of the red, green and blue of columns x0 to x1 over rows y0 to y1.
@@ -318,9 +380,9 @@ TEST(MoonRayCamera, TheShutterBlursAMovingCube)
     const int height = 48;
     const MoonRaySampling sampling(16);
     std::vector<float> still;
-    ASSERT_TRUE(renderMoonRay({ kMovingCube }, HydraRender::eFitModeExpand, width, height, true, &still));
+    ASSERT_TRUE(renderMoonRay({ kMovingCube }, HydraRender::eFitModeExpand, width, height, 1., true, &still));
     std::vector<float> blurred;
-    ASSERT_TRUE(renderMoonRay({ kMovingCube, kOpenShutter }, HydraRender::eFitModeExpand, width, height, true, &blurred));
+    ASSERT_TRUE(renderMoonRay({ kMovingCube, kOpenShutter }, HydraRender::eFitModeExpand, width, height, 1., true, &blurred));
 
     const int y0 = 20;
     const int y1 = 28;
@@ -345,18 +407,17 @@ TEST(MoonRayCamera, TheFillFitFramesAsTheFrustum)
     if (!moonRayOrSkip()) {
         return;
     }
-    ASSERT_TRUE(HydraRender::rendersThroughCamera(kMoonRayRendererId, HydraRender::eFitModeFill, 1.));
     const MoonRaySampling sampling(4);
     const int sizes[][2] = { { 64, 32 }, { 32, 56 } };
     for (const int* size : sizes) {
         const std::string what = std::to_string(size[0]) + "x" + std::to_string(size[1]);
         const std::size_t pixels = (std::size_t)size[0] * (std::size_t)size[1];
         std::vector<float> frustum;
-        ASSERT_TRUE(renderMoonRay({ wall() }, HydraRender::eFitModeFill, size[0], size[1], false, &frustum)) << what;
+        ASSERT_TRUE(renderMoonRay({ wall() }, HydraRender::eFitModeFill, size[0], size[1], 1., false, &frustum)) << what;
         std::vector<float> path;
-        ASSERT_TRUE(renderMoonRay({ wall() }, HydraRender::eFitModeFill, size[0], size[1], true, &path)) << what;
+        ASSERT_TRUE(renderMoonRay({ wall() }, HydraRender::eFitModeFill, size[0], size[1], 1., true, &path)) << what;
         std::vector<float> expand;
-        ASSERT_TRUE(renderMoonRay({ wall() }, HydraRender::eFitModeExpand, size[0], size[1], true, &expand)) << what;
+        ASSERT_TRUE(renderMoonRay({ wall() }, HydraRender::eFitModeExpand, size[0], size[1], 1., true, &expand)) << what;
 
         EXPECT_GT(meanOf(path, size[0], 0, size[0] - 1, 0, size[1] - 1), 0.02f) << what << ": nothing rendered";
         EXPECT_LE(countDifferent(frustum, path, 0.1f), pixels / 50) << what << ": the path render is not framed as the frustum's";
@@ -375,10 +436,94 @@ TEST(MoonRayCamera, AHoleFaceIsNotDrawn)
     const int height = 48;
     const MoonRaySampling sampling(16);
     std::vector<float> image;
-    ASSERT_TRUE(renderMoonRay({ kHoleQuads }, HydraRender::eFitModeExpand, width, height, true, &image));
+    ASSERT_TRUE(renderMoonRay({ kHoleQuads }, HydraRender::eFitModeExpand, width, height, 1., true, &image));
 
     const float solid = meanOf(image, width, 10, 26, 14, 34);
     const float hole = meanOf(image, width, 38, 54, 14, 34);
     ASSERT_GT(solid, 0.1f) << "MoonRay does not draw the face beside the hole";
     EXPECT_LT(hole, 0.02f * solid) << "the hole face is drawn: " << hole << " against " << solid;
+}
+
+// Pixels twice as wide as tall at the expand, horizontal and vertical fits, and a vertical
+// aperture offset, which the pixel aspect scales as the aperture's height, frame by path as by the
+// frustum; the pixel aspect and the offset each change the framing, so both reach the render.
+TEST(MoonRayCamera, WidePixelsAndOffsetsFrameAsTheFrustum)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const MoonRaySampling sampling(4);
+    const int width = 32;
+    const int height = 32;
+    const std::size_t pixels = (std::size_t)width * (std::size_t)height;
+    struct Case {
+        const char* what;
+        bool offset;
+        HydraRender::FitModeEnum fit;
+    };
+    const Case cases[] = {
+        { "expand", false, HydraRender::eFitModeExpand },
+        { "horizontal", false, HydraRender::eFitModeHorizontal },
+        { "vertical", false, HydraRender::eFitModeVertical },
+        { "vertical offset", true, HydraRender::eFitModeExpand },
+    };
+    std::vector<float> widePath;
+    std::vector<float> offsetPath;
+    for (const Case& c : cases) {
+        std::vector<std::string> overrides = { wall() };
+        if (c.offset) {
+            overrides.push_back(kApertureOffset);
+        }
+        std::vector<float> frustum;
+        ASSERT_TRUE(renderMoonRay(overrides, c.fit, width, height, 2., false, &frustum)) << c.what;
+        std::vector<float> path;
+        ASSERT_TRUE(renderMoonRay(overrides, c.fit, width, height, 2., true, &path)) << c.what;
+        EXPECT_GT(meanOf(path, width, 0, width - 1, 0, height - 1), 0.02f) << c.what << ": nothing rendered";
+        EXPECT_LE(countDifferent(frustum, path, 0.1f), pixels / 50) << c.what << ": the path render is not framed as the frustum's";
+        if (c.offset) {
+            offsetPath = path;
+        } else if (c.fit == HydraRender::eFitModeExpand) {
+            widePath = path;
+        }
+    }
+    std::vector<float> squarePath;
+    ASSERT_TRUE(renderMoonRay({ wall() }, HydraRender::eFitModeExpand, width, height, 1., true, &squarePath));
+    EXPECT_GT(countDifferent(squarePath, widePath, 0.1f), pixels / 10) << "the pixel aspect does not reach the path render";
+    EXPECT_GT(countDifferent(widePath, offsetPath, 0.1f), pixels / 10) << "the aperture offset does not reach the path render";
+}
+
+// At 64 x 48 the quads cover about columns 4 to 22, 23 to 41 and 42 to 60 over rows 15 to 33. The
+// faces after the hole keep their own colours, given per face or per face vertex: a remap that
+// dropped the wrong entries would shift the hole's red onto the middle quad, or the middle's
+// green onto the right.
+TEST(MoonRayCamera, TheFacesBesideAHoleKeepTheirOwnPrimvars)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const int width = 64;
+    const int height = 48;
+    const MoonRaySampling sampling(16);
+    for (int faceVarying = 0; faceVarying < 2; ++faceVarying) {
+        const char* const what = faceVarying ? "face-varying" : "uniform";
+        std::vector<float> image;
+        ASSERT_TRUE(renderMoonRay({ holeStrip(faceVarying != 0) }, HydraRender::eFitModeExpand, width, height, 1., true, &image)) << what;
+        const int y0 = 19;
+        const int y1 = 29;
+        float hole = 0.f;
+        float middle[3];
+        float right[3];
+        for (int c = 0; c < 3; ++c) {
+            hole = std::max(hole, channelOf(image, width, c, 8, 18, y0, y1));
+            middle[c] = channelOf(image, width, c, 27, 37, y0, y1);
+            right[c] = channelOf(image, width, c, 46, 56, y0, y1);
+        }
+        ASSERT_GT(middle[1], 0.05f) << what << ": the middle quad is not green";
+        EXPECT_GT(middle[1], 4.f * middle[0]) << what << ": the middle quad has the hole's red";
+        EXPECT_GT(middle[1], 4.f * middle[2]) << what << ": the middle quad has the right's blue";
+        ASSERT_GT(right[2], 0.05f) << what << ": the right quad is not blue";
+        EXPECT_GT(right[2], 4.f * right[0]) << what << ": the right quad has the hole's red";
+        EXPECT_GT(right[2], 4.f * right[1]) << what << ": the right quad has the middle's green";
+        EXPECT_LT(hole, 0.02f * middle[1]) << what << ": the hole face is drawn";
+    }
 }

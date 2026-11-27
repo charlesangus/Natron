@@ -1904,7 +1904,6 @@ struct SceneViewportRenderer::Implementation {
                                            int height) const
     {
         HydraRender::EngineCamera camera;
-        camera.renderer = rendererId;
         camera.camera = renderCameraPath();
         camera.fit = HydraRender::eFitModeVertical;
         camera.frustum = computeFrustum(width, height);

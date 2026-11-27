@@ -332,10 +332,10 @@ TEST_F(HydraRenderCameraTest, AnInactiveCameraFails)
     EXPECT_NE(std::string::npos, error.find("inactive")) << error;
 }
 
-// The render settings' pixel aspect decides, not one worked back from the image's aspect: a
-// 2048x1556 format of square pixels, whose aspect times 1556 / 2048 is not exactly 1 in doubles,
-// reaches Cycles and MoonRay by path.
-TEST(HydraRenderCameraSelection, ASquarePixelFormatRendersThroughTheCamera)
+// The render settings' pixel aspect is read as authored, not worked back from the image's aspect:
+// a 2048x1556 format of square pixels, whose aspect times 1556 / 2048 is not exactly 1 in doubles,
+// keeps pixels of exactly 1.
+TEST(HydraRenderCameraSelection, ASquarePixelFormatKeepsSquarePixels)
 {
     const PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::CreateAnonymous(".usda");
     ASSERT_TRUE(layer->ImportFromString("#usda 1.0\n"
@@ -348,21 +348,5 @@ TEST(HydraRenderCameraSelection, ASquarePixelFormatRendersThroughTheCamera)
     ASSERT_TRUE(stage);
     const RenderSettingsPrim::StandardAttributes standard = RenderSettingsPrim::standardAttributes(PXR_NS::UsdRenderSettings(stage->GetPrimAtPath(PXR_NS::SdfPath("/Settings"))));
     ASSERT_EQ(PXR_NS::GfVec2i(2048, 1556), standard.resolution);
-    const char* const ids[] = { kRenderDelegateCyclesId, kMoonRayRendererId };
-    for (int i = 0; i < 2; ++i) {
-        EXPECT_TRUE(HydraRender::rendersThroughCamera(ids[i], HydraRender::eFitModeExpand, standard.pixelAspectRatio)) << ids[i];
-    }
-}
-
-// Every delegate frames by the camera at any fit and pixel aspect.
-TEST(HydraRenderCameraSelection, EveryDelegateHonoursEveryFraming)
-{
-    const HydraRender::FitModeEnum fits[] = { HydraRender::eFitModeFill, HydraRender::eFitModeHorizontal, HydraRender::eFitModeVertical, HydraRender::eFitModeExpand };
-    const char* const framing[] = { kRenderDelegateStormId, kMoonRayRendererId, kRenderDelegateCyclesId };
-    for (int i = 0; i < 3; ++i) {
-        for (int f = 0; f < 4; ++f) {
-            EXPECT_TRUE(HydraRender::rendersThroughCamera(framing[i], fits[f], 1.)) << framing[i];
-            EXPECT_TRUE(HydraRender::rendersThroughCamera(framing[i], fits[f], 2.)) << framing[i];
-        }
-    }
+    EXPECT_EQ(1.f, standard.pixelAspectRatio);
 }

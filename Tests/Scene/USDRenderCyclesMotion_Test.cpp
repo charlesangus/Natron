@@ -261,15 +261,12 @@ TEST(USDRenderCyclesMotion, TheShutterBlursMovingPoints)
 
 // Cycles frames the camera by its path as by the frustum cameraFrustum() gives for it, at the
 // fill fit of an image wider than the aperture and at the expand fit of pixels twice as wide as
-// tall, and the two framings differ. Where rendersThroughCamera() is false the path render goes
-// through the frustum as well, which would match it whatever Cycles does.
+// tall, and the two framings differ.
 TEST(USDRenderCyclesMotion, ThePathFramesAsTheFrustum)
 {
     if (!CyclesTestUtils::cyclesOrSkip()) {
         return;
     }
-    ASSERT_TRUE(HydraRender::rendersThroughCamera(kRenderDelegateCyclesId, HydraRender::eFitModeFill, 1.));
-    ASSERT_TRUE(HydraRender::rendersThroughCamera(kRenderDelegateCyclesId, HydraRender::eFitModeExpand, 2.));
     const FixedSampling sampling;
     const std::string text = sceneOf("", kSquares);
     const int width = kSize;
@@ -289,4 +286,35 @@ TEST(USDRenderCyclesMotion, ThePathFramesAsTheFrustum)
     EXPECT_LE(coverageDifferences(wideFrustum, widePath), pixels / 50) << "pixel aspect 2";
 
     EXPECT_GT(coverageDifferences(fillPath, widePath), pixels / 10) << "the framings do not differ";
+}
+
+// The horizontal and vertical fits of pixels twice as wide as tall, and a vertical aperture
+// offset, which the pixel aspect scales as the aperture's height, frame by path as by the frustum.
+TEST(USDRenderCyclesMotion, EveryFitAndOffsetFramesAsTheFrustum)
+{
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    const FixedSampling sampling;
+    const int width = kSize;
+    const int height = kSize / 2;
+    const std::size_t pixels = (std::size_t)width * height;
+    struct Case {
+        const char* what;
+        const char* camera;
+        HydraRender::FitModeEnum fit;
+    };
+    const Case cases[] = {
+        { "horizontal", "", HydraRender::eFitModeHorizontal },
+        { "vertical", "", HydraRender::eFitModeVertical },
+        { "vertical offset", "        float verticalApertureOffset = 4\n", HydraRender::eFitModeExpand },
+    };
+    for (const Case& c : cases) {
+        const std::string text = sceneOf(c.camera, kSquares);
+        std::vector<float> frustum;
+        ASSERT_TRUE(renderScene(text, width, height, c.fit, 2., false, &frustum)) << c.what;
+        std::vector<float> path;
+        ASSERT_TRUE(renderScene(text, width, height, c.fit, 2., true, &path)) << c.what;
+        EXPECT_LE(coverageDifferences(frustum, path), pixels / 50) << c.what;
+    }
 }

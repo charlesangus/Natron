@@ -62,6 +62,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Gui/CurveEditor.h"
 #include "Gui/DopeSheetEditor.h"
 #include "Gui/FloatingWidget.h"
+#include "Gui/GeoSpreadsheetPanel.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
@@ -448,6 +449,7 @@ TabWidget::createMenu(const QPoint& globalPos)
     menu.addAction( tr("Progress Panel here"), this, SLOT(moveProgressPanelHere()) );
     menu.addAction(tr("Scene Graph here"), this, SLOT(moveSceneGraphHere()));
     menu.addAction(tr("New Scene Graph"), this, SLOT(newSceneGraphHere()));
+    menu.addAction(tr("Geometry Spreadsheet here"), this, SLOT(moveGeoSpreadsheetHere()));
 
     std::map<NATRON_PYTHON_NAMESPACE::PyPanel*, std::string> userPanels = _imp->gui->getPythonPanels();
     if ( !userPanels.empty() ) {
@@ -886,6 +888,12 @@ void
 TabWidget::moveSceneGraphHere()
 {
     moveTab(_imp->gui->getSceneGraphPanel(), _imp->gui->getSceneGraphPanel(), this);
+}
+
+void
+TabWidget::moveGeoSpreadsheetHere()
+{
+    moveTab(_imp->gui->getGeoSpreadsheetPanel(), _imp->gui->getGeoSpreadsheetPanel(), this);
 }
 
 void

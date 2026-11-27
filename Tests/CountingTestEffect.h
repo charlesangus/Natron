@@ -112,6 +112,7 @@ public:
 
         records().clear();
         hook() = RenderHook();
+        regionOfDefinitionHook() = RenderHook();
         knobChangedHook() = KnobChangedHook();
         maxRendering() = 0;
     }
@@ -192,11 +193,28 @@ public:
         return found == records().end() ? std::vector<double>() : found->second.times;
     }
 
-    static void noteRegionOfDefinition(const Node* node)
+    /**
+     * @brief Called from every getRegionOfDefinition, outside the registry's lock.
+     **/
+    static void setRegionOfDefinitionHook(const RenderHook& rodHook)
     {
         std::lock_guard<std::mutex> k(mutex());
 
-        ++records()[node].regionsOfDefinition;
+        regionOfDefinitionHook() = rodHook;
+    }
+
+    static void noteRegionOfDefinition(const Node* node)
+    {
+        RenderHook rodHook;
+        {
+            std::lock_guard<std::mutex> k(mutex());
+
+            ++records()[node].regionsOfDefinition;
+            rodHook = regionOfDefinitionHook();
+        }
+        if (rodHook) {
+            rodHook(node);
+        }
     }
 
     /**
@@ -259,6 +277,13 @@ private:
     }
 
     static RenderHook& hook()
+    {
+        static RenderHook h;
+
+        return h;
+    }
+
+    static RenderHook& regionOfDefinitionHook()
     {
         static RenderHook h;
 

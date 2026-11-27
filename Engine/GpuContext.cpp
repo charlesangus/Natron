@@ -25,6 +25,7 @@
 #include <cstring>
 #include <exception>
 #include <shared_mutex>
+#include <vector>
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDebug>
@@ -86,6 +87,54 @@ GpuContext::setReadyHookForTesting(const ReadyHook& hook)
 
     slot.hook = hook;
     readyHookOn.store(bool(hook));
+}
+
+namespace {
+struct LossReleasers {
+    std::mutex mutex;
+    std::vector<GpuContext::LossReleaser> releasers;
+};
+
+LossReleasers&
+lossReleasers()
+{
+    static LossReleasers* list = new LossReleasers;
+
+    return *list;
+}
+}
+
+void
+GpuContext::addLossReleaser(const LossReleaser& release)
+{
+    LossReleasers& list = lossReleasers();
+    std::lock_guard<std::mutex> l(list.mutex);
+
+    list.releasers.push_back(release);
+}
+
+namespace {
+struct TeardownWaiters {
+    std::mutex mutex;
+    std::vector<GpuContext::TeardownWaiter> waiters;
+};
+
+TeardownWaiters&
+teardownWaiters()
+{
+    static TeardownWaiters* list = new TeardownWaiters;
+
+    return *list;
+}
+}
+
+void
+GpuContext::addTeardownWaiter(const TeardownWaiter& wait)
+{
+    TeardownWaiters& list = teardownWaiters();
+    std::lock_guard<std::mutex> l(list.mutex);
+
+    list.waiters.push_back(wait);
 }
 
 struct GpuContext::Shared {
@@ -186,6 +235,24 @@ GpuContext::~GpuContext()
     if (_shared->hookId != 0) {
         HostImageMemory::removeFreeHook(_shared->hookId);
     }
+    if (_shared->runtime) {
+        std::vector<TeardownWaiter> waiters;
+        bool idle = true;
+
+        {
+            TeardownWaiters& list = teardownWaiters();
+            std::lock_guard<std::mutex> l(list.mutex);
+
+            waiters = list.waiters;
+        }
+        for (const TeardownWaiter& wait : waiters) {
+            idle = wait(*_shared->runtime) && idle;
+        }
+        if (!idle) {
+            qWarning("GPU work still running at teardown: the GPU runtime is left alive.");
+            gpu::GpuDevice::parkForever(std::shared_ptr<gpu::GpuRuntime>(std::move(_shared->runtime)));
+        }
+    }
     _shared->runtime.reset();
     if (_shared->alignmentChanged) {
         HostImageMemory::setImportAlignment(_shared->previousAlignment);
@@ -266,6 +333,18 @@ GpuContext::runtime() const
     return nullptr;
 }
 
+std::uint64_t
+GpuContext::generation() const
+{
+#ifdef NATRON_HAVE_GPU
+    if (gpu::GpuRuntime* rt = runtime()) {
+        return rt->generation();
+    }
+#endif
+
+    return 0;
+}
+
 std::shared_ptr<void>
 GpuContext::holdRuntime()
 {
@@ -307,6 +386,18 @@ GpuContext::recoverIfLost()
     }
     if (!rt->isLost()) {
         return true;
+    }
+    {
+        // Copied out, so that a releaser may take holdMutex, through a token it drops, or register another.
+        std::vector<LossReleaser> releasers;
+        {
+            LossReleasers& list = lossReleasers();
+            std::lock_guard<std::mutex> l(list.mutex);
+            releasers = list.releasers;
+        }
+        for (const LossReleaser& release : releasers) {
+            release();
+        }
     }
     std::lock_guard<std::mutex> k(_shared->holdMutex);
     if (_shared->timedOutForSession) {

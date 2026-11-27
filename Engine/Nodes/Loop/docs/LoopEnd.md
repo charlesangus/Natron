@@ -275,6 +275,6 @@ within 1e-6 relative, from the device's division (mean) and rounding.
   chain, and a region that does not fit runs in narrower strips.
 - CPU fallback: a step falls back, and the render still succeeds, when the pool cannot hold even
   one strip of it (a budget below one image), when its previous step is missing on the device,
-  when a feedback tail's layer differs from the LoopBegin's (the CPU conforms it), and under the
-  legacy scheduler, where one render folds every iteration. A depth other than float also keeps
+  when a feedback tail's layer differs from the LoopBegin's (the CPU conforms it), and on a direct
+  pull, where one render folds every iteration. A depth other than float also keeps
   it on the CPU.

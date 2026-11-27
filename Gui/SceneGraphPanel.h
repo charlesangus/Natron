@@ -37,6 +37,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Gui/GuiFwd.h"
+#include "Gui/NodeSourceBar.h"
 #include "Gui/PanelWidget.h"
 
 NATRON_NAMESPACE_ENTER
@@ -101,11 +102,6 @@ class SceneGraphPanel
     GCC_DIAG_SUGGEST_OVERRIDE_ON
 
 public:
-    enum FollowEnum {
-        eFollowViewer = 0,
-        eFollowSelection
-    };
-
     explicit SceneGraphPanel(Gui* gui);
 
     ~SceneGraphPanel() override;
@@ -122,9 +118,9 @@ public:
     void releaseNodeStages();
 
     // What the panel shows when not pinned: the active viewer's scene, or the selected node's.
-    void setFollow(FollowEnum follow);
+    void setFollow(NodeSourceBar::FollowEnum follow);
 
-    FollowEnum getFollow() const;
+    NodeSourceBar::FollowEnum getFollow() const;
 
     // The node whose scene is shown, pinned or viewed; null for none.
     NodePtr getShownNode() const;
@@ -163,10 +159,7 @@ private Q_SLOTS:
     void onFilterEdited();
     void onFilterStep();
     void onApplyToNode();
-    void onPinToggled(bool pinned);
-    void onNodeChosen(int index);
     void onPinnedPoll();
-    void onSelectionPoll();
     void onPinnedSynced(bool ok, const QString& error);
     void onModelReset();
     void onExpanded(const QModelIndex& index);

@@ -165,6 +165,16 @@ GpuBinding::storage(uint32_t binding, const GpuBuffer& buffer)
 }
 
 GpuBinding
+GpuBinding::storage(uint32_t binding, const GpuBuffer& buffer, VkDeviceSize offset, VkDeviceSize size)
+{
+    GpuBinding b = storage(binding, buffer);
+    b.bufferSize = size;
+    b.offset = offset;
+    b.ranged = true;
+    return b;
+}
+
+GpuBinding
 GpuBinding::uniform(uint32_t binding, const GpuUniformBuffer& buffer)
 {
     GpuBinding b;
@@ -636,7 +646,10 @@ GpuKernel::recordBindings(VkCommandBuffer cmd, std::span<const GpuBinding> bindi
             if (uniform && b.bufferSize < decl.blockBytes) {
                 return fail(VK_ERROR_INITIALIZATION_FAILED, where + " holds " + std::to_string(b.bufferSize) + " bytes for a " + std::to_string(decl.blockBytes) + "-byte uniform block");
             }
-            bufferInfos.push_back({ b.buffer, 0, VK_WHOLE_SIZE });
+            if (b.ranged && b.bufferSize == 0) {
+                return fail(VK_ERROR_INITIALIZATION_FAILED, where + " binds an empty range");
+            }
+            bufferInfos.push_back({ b.buffer, b.offset, b.ranged ? b.bufferSize : VK_WHOLE_SIZE });
             w.pBufferInfo = &bufferInfos.back();
             break;
         }

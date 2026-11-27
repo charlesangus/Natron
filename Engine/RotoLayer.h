@@ -102,8 +102,33 @@ public:
     ///MT-safe
     std::list<RotoItemPtr> getItems_mt_safe() const;
 
+    /**
+     * @brief The layer's transform knobs, named like a shape's. They move everything inside the
+     * layer.
+     **/
+    virtual const std::list<KnobIPtr>& getKnobs() const OVERRIDE FINAL;
+
+    /**
+     * @brief The transform the layer's own knobs make.
+     **/
+    void getLocalTransformAtTime(double time, Transform::Matrix3x3* matrix) const;
+
+    /**
+     * @brief The layer's own transform after those of its ancestor layers, when the context
+     * composes layer transforms; otherwise the identity.
+     **/
+    void getTransformAtTime(double time, Transform::Matrix3x3* matrix) const;
+
+    /**
+     * @brief Appends the hash of the layer's transform knobs.
+     **/
+    void appendTransformContentHash(ContentHasher& h) const;
+
 protected:
     virtual void appendLiveContentHash(ContentHasher& h) const OVERRIDE;
+
+private:
+    void onTransformKnobChanged();
 
 private:
 

@@ -269,7 +269,7 @@ TEST_F(NativeColorCorrectTest, IdentityConditions)
     EXPECT_TRUE(identityOf(pair.native, window));
 }
 
-TEST_F(NativeColorCorrectTest, BothSchedulerModesAgreeWithNoUnplannedPull)
+TEST_F(NativeColorCorrectTest, DirectAndScheduledAgreeWithNoUnplannedPull)
 {
     ParityPair pair = makePair(true);
     ASSERT_TRUE(bool(pair.native));

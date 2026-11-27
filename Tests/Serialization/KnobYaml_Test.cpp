@@ -264,6 +264,23 @@ makeKnob(const KnobTypeCase& type,
         if (traits.isDouble && (type.dimension == 2)) {
             knob.useHostOverlayHandle = true;
         }
+        if (traits.isDouble || traits.isInt) {
+            knob.userProperties.sliderDisabled = true;
+        }
+        if (traits.isDouble) {
+            knob.userProperties.spatial = true;
+            knob.userProperties.valueIsNormalized = std::vector<int>(type.dimension, 1);
+            knob.userProperties.valueIsNormalized.back() = 2;
+            knob.userProperties.dimensionNames = std::vector<std::string>(type.dimension, "side");
+        } else if (traits.isColor) {
+            knob.userProperties.dimensionNames = { "c", "m", "y", "k" };
+        } else if (traits.isString) {
+            knob.userProperties.preferredRows = 6;
+        } else if (traits.isLayerSelect) {
+            knob.userProperties.allowNone = true;
+            knob.userProperties.allowAll = true;
+            knob.userProperties.allLabel = "Matching";
+        }
         break;
     }
 
@@ -579,6 +596,55 @@ TEST(KnobYaml, SpecialDoublesAndAwkwardStrings)
     ++it;
     Serialization::completeKnobSerialization(&(*it), "Path", 1);
     expectKnobsEqual(YamlTest::canonicalKnob(empty), *it);
+}
+
+TEST(KnobYaml, UserKnobPropertiesAreWrittenOnlyWhenTheyDifferFromTheDefaults)
+{
+    KnobSerialization plain = makeKnob(kKnobTypes[2], eKnobVariantUserKnob);
+    plain.userProperties = Serialization::KnobUserPropertiesSerialization();
+    const std::string plainText = Serialization::encodeKnobsYaml({ plain });
+    for (const char* key : { "noSlider", "rectangle", "spatial", "normalized", "rows", "allowNone", "allowAll", "allLabel", "dimensionNames" }) {
+        EXPECT_EQ(std::string::npos, plainText.find(key)) << key << " in\n"
+                                                          << plainText;
+    }
+    EXPECT_TRUE(Serialization::KnobUserPropertiesSerialization() == decodeOne(plainText).userProperties);
+
+    KnobSerialization area = plain;
+    area.userProperties.sliderDisabled = true;
+    area.userProperties.isRectangle = true;
+    area.userProperties.spatial = true;
+    area.userProperties.valueIsNormalized = { 0, 2 };
+    area.userProperties.dimensionNames = { "w", "h" };
+    const std::string areaText = Serialization::encodeKnobsYaml({ area });
+    EXPECT_NE(std::string::npos, areaText.find("noSlider: true")) << areaText;
+    EXPECT_NE(std::string::npos, areaText.find("rectangle: true")) << areaText;
+    EXPECT_NE(std::string::npos, areaText.find("spatial: true")) << areaText;
+    EXPECT_NE(std::string::npos, areaText.find("normalized: [\"none\", \"y\"]")) << areaText;
+    EXPECT_NE(std::string::npos, areaText.find("dimensionNames: [\"w\", \"h\"]")) << areaText;
+    EXPECT_TRUE(area.userProperties == decodeOne(areaText).userProperties);
+
+    KnobSerialization layer = makeKnob(kKnobTypes[10], eKnobVariantUserKnob);
+    layer.userProperties = Serialization::KnobUserPropertiesSerialization();
+    layer.userProperties.allowNone = true;
+    layer.userProperties.allLabel = "Matching";
+    const std::string layerText = Serialization::encodeKnobsYaml({ layer });
+    EXPECT_NE(std::string::npos, layerText.find("allowNone: true")) << layerText;
+    EXPECT_EQ(std::string::npos, layerText.find("allowAll")) << layerText;
+    EXPECT_TRUE(layer.userProperties == decodeOne(layerText).userProperties);
+
+    KnobSerialization note = makeKnob(kKnobTypes[4], eKnobVariantUserKnob);
+    note.userProperties = Serialization::KnobUserPropertiesSerialization();
+    note.userProperties.preferredRows = 4;
+    const std::string noteText = Serialization::encodeKnobsYaml({ note });
+    EXPECT_NE(std::string::npos, noteText.find("rows: 4")) << noteText;
+    EXPECT_EQ(4, decodeOne(noteText).userProperties.preferredRows);
+
+    std::string badText = areaText;
+    const std::string normalized = "normalized: [\"none\", \"y\"]";
+    const std::size_t at = badText.find(normalized);
+    ASSERT_NE(std::string::npos, at);
+    badText.replace(at, normalized.size(), "normalized: [\"none\", \"z\"]");
+    expectDecodeError(badText, "expected none, x or y, not z");
 }
 
 TEST(KnobYaml, UnknownKeysAreIgnoredWithWarnings)

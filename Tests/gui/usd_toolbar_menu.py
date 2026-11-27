@@ -96,6 +96,8 @@ try:
         require("USD" in tops, "the nodes menu has a USD entry")
         if "3D" in tops:
             check(tops.index("USD") == tops.index("3D") + 1, "USD follows 3D")
+        elif "Geometry" in tops:
+            check(tops.index("USD") == tops.index("Geometry") - 1, "with no 3D entry, USD sits just before Geometry")
         elif "Deep" in tops:
             check(tops.index("USD") == tops.index("Deep") - 1, "with no 3D entry, USD sits just before Deep")
         usd_action, usd_menu = top_level("USD")

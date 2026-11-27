@@ -296,12 +296,13 @@ protected:
     static bool renderRGBA(const NodePtr& node,
                            unsigned int mipmapLevel,
                            const RectI& window,
-                           RenderSchedulerModeEnum mode,
+                           bool scheduled,
                            std::vector<float>* pixels)
     {
         std::vector<RenderedPlane> planes;
         std::string error;
-        const bool rendered = renderNodePlanesInMode(node, kTime, ViewIdx(0), mipmapLevel, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), mode, true /*byPassCache*/, &planes, &error);
+        const bool rendered = scheduled ? renderNodePlanesScheduled(node, kTime, ViewIdx(0), mipmapLevel, window, true /*byPassCache*/, &planes, &error)
+                                        : renderNodePlanesDirect(node, kTime, ViewIdx(0), mipmapLevel, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, true /*byPassCache*/);
         EXPECT_TRUE(rendered) << error;
         if (!rendered || (planes.size() != 1) || (planes[0].channels.size() != 4) || (planes[0].window != window)) {
             return false;
@@ -344,12 +345,10 @@ TEST_F(StretchRegionOfInterestTest, AStretchInputMissedByTheWindowIsAskedForItsE
 // never rendered and the window is black.
 TEST_F(StretchRegionOfInterestTest, OnlyAStretchInputMissedByTheWindowIsFetched)
 {
-    const RenderSchedulerModeEnum modes[] = { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph };
-
     for (int black = 0; black < 2; ++black) {
-        for (RenderSchedulerModeEnum mode : modes) {
+        for (bool scheduled : { false, true }) {
             for (unsigned int level = 0; level < 2; ++level) {
-                const std::string what = std::string(black ? "black" : "stretch") + (mode == eRenderSchedulerModeLegacy ? ", legacy" : ", task graph") + ", mipmap level " + std::to_string(level);
+                const std::string what = std::string(black ? "black" : "stretch") + (scheduled ? ", scheduled" : ", direct") + ", mipmap level " + std::to_string(level);
                 NodePtr source;
                 NodePtr op;
                 ASSERT_TRUE(createCountingGraph(black != 0, &source, &op)) << what;
@@ -357,7 +356,7 @@ TEST_F(StretchRegionOfInterestTest, OnlyAStretchInputMissedByTheWindowIsFetched)
 
                 const RectI window = kFarWindow.toPixelEnclosing(level, 1.);
                 std::vector<float> got;
-                ASSERT_TRUE(renderRGBA(op, level, window, mode, &got)) << what;
+                ASSERT_TRUE(renderRGBA(op, level, window, scheduled, &got)) << what;
                 ASSERT_EQ((std::size_t)window.width() * window.height() * 4, got.size()) << what;
 
                 const float want = black ? 0.f : kCountingValue;
@@ -382,8 +381,6 @@ TEST_F(StretchRegionOfInterestTest, OnlyAStretchInputMissedByTheWindowIsFetched)
 // the same row.
 TEST_F(StretchRegionOfInterestTest, AWindowPastTheSourceRepeatsItsEdgeColumn)
 {
-    const RenderSchedulerModeEnum modes[] = { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph };
-
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
     NodePtr op = createNode(QString::fromUtf8(kStretchShiftOpPluginID));
     ASSERT_TRUE(source && op);
@@ -392,10 +389,10 @@ TEST_F(StretchRegionOfInterestTest, AWindowPastTheSourceRepeatsItsEdgeColumn)
     const RectI window = kFarWindow.toPixelEnclosing(0, 1.);
     ASSERT_GE(window.y1, 0);
     ASSERT_LE(window.y2, kParitySourceHeight);
-    for (RenderSchedulerModeEnum mode : modes) {
-        const std::string what = (mode == eRenderSchedulerModeLegacy) ? "legacy" : "task graph";
+    for (bool scheduled : { false, true }) {
+        const std::string what = scheduled ? "scheduled" : "direct";
         std::vector<float> got;
-        ASSERT_TRUE(renderRGBA(op, 0, window, mode, &got)) << what;
+        ASSERT_TRUE(renderRGBA(op, 0, window, scheduled, &got)) << what;
 
         std::size_t mismatches = 0;
         for (int y = window.y1; y < window.y2; ++y) {

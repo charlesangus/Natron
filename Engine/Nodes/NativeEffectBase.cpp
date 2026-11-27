@@ -45,6 +45,8 @@
 #include "Engine/AppManager.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/DeepImage.h"
+#include "Engine/FrameArgsOverlay.h"
+#include "Engine/GeoDetail.h"
 #include "Engine/IsolatedJob.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
@@ -684,12 +686,14 @@ NativeEffectBase::forEachDeepChunk(const std::vector<RectI>& chunks,
 {
     QThread* const callingThread = QThread::currentThread();
     const FrameRenderContext* const frameContext = AppTLS::currentFrameContext();
+    const FrameArgsOverlayPtr frameArgsHead = FrameArgsOverlay::currentHead();
     const IsolatedJob* const job = IsolatedJob::current();
+    const bool scheduledTask = AppTLS::isRunningScheduledTask();
     RenderCancellation cancel(this);
     std::atomic<int> chunksRun(0);
 
     const std::function<void(int)> runChunk = [&](int i) {
-        AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, frameContext, job, AppTLS::eSpawnKindHostFrameThreading);
+        AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, frameContext, frameArgsHead, job, AppTLS::eSpawnKindHostFrameThreading, scheduledTask);
 
         if (!aborted()) {
             body(chunks[i]);
@@ -992,6 +996,63 @@ NativeEffectBase::renderDeepReshapingChannels(const DeepRenderActionArgs& args,
     }
 
     return eStatusOK;
+}
+
+namespace {
+StatusEnum
+finishGeometry(GeoDetailBuilder& builder,
+               const std::function<StatusEnum(GeoDetailBuilder&, std::string*)>& build,
+               GeoDetailConstPtr* outputDetail,
+               std::string* errorMessage)
+{
+    std::string buildError;
+    const StatusEnum st = build(builder, &buildError);
+
+    if (st != eStatusOK) {
+        if (errorMessage) {
+            *errorMessage = buildError;
+        }
+
+        return st;
+    }
+    *outputDetail = std::make_shared<const GeoDetail>(builder.finish());
+
+    return eStatusOK;
+}
+} // anonymous namespace
+
+StatusEnum
+NativeEffectBase::renderGeometryFromInput(const GeoRenderActionArgs& args,
+                                          int inputNb,
+                                          const GeoBuildFunc& mutate,
+                                          GeoDetailConstPtr* outputDetail,
+                                          std::string* errorMessage)
+{
+    assert(outputDetail);
+    const GeoDetailConstPtr input = args.getInputDetail(inputNb);
+
+    if (!input) {
+        if (errorMessage) {
+            *errorMessage = getScriptName_mt_safe() + ": no geometry on input " + getInputLabel(inputNb);
+        }
+
+        return eStatusFailed;
+    }
+
+    GeoDetailBuilder builder(*input);
+
+    return finishGeometry(builder, mutate, outputDetail, errorMessage);
+}
+
+StatusEnum
+NativeEffectBase::renderGeometryGenerator(const GeoBuildFunc& generate,
+                                          GeoDetailConstPtr* outputDetail,
+                                          std::string* errorMessage)
+{
+    assert(outputDetail);
+    GeoDetailBuilder builder;
+
+    return finishGeometry(builder, generate, outputDetail, errorMessage);
 }
 
 bool

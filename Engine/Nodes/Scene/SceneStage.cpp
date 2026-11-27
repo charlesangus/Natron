@@ -418,6 +418,12 @@ SceneStage::getEditCount() const
     return _editCount;
 }
 
+void
+SceneStage::noteLayerEdit()
+{
+    ++_editCount;
+}
+
 bool
 SceneStage::setPreviewTransforms(const std::vector<std::pair<std::string, PXR_NS::GfMatrix4d>>& deltas,
                                  double timeCode)

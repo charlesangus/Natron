@@ -247,6 +247,16 @@ TEST(NodeCategoryDomain, SplitGroupingResolvesDomainCategories)
     EXPECT_EQ(eNodeCategoryDeep, category);
 }
 
+TEST(NodeCategoryDomain, GeometryGroupingIsNative3D)
+{
+    NodeCategoryEnum category = eNodeCategoryOther;
+    std::list<std::string> grouping;
+
+    grouping.push_back(PLUGIN_GROUP_GEOMETRY);
+    ASSERT_TRUE(Node::domainCategoryFromGrouping(grouping, &category));
+    EXPECT_EQ(eNodeCategoryNative3D, category);
+}
+
 TEST(NodeCategoryDomain, NonDomainGroupingIsNotADomainCategory)
 {
     NodeCategoryEnum category = eNodeCategoryOther;

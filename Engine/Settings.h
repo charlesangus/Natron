@@ -189,6 +189,7 @@ public:
 
     U64 getMaximumDiskCacheNodeSize() const;
 
+    U64 getMaximumGeoDetailCacheSize() const;
     U64 getDiskTierSizeBytes() const;
 
     std::string getDiskTierLocation() const;
@@ -481,8 +482,6 @@ public:
      **/
     std::string getDefaultOCIOConfigSourceForNewProjects() const;
 
-    RenderSchedulerModeEnum getRenderSchedulerMode() const;
-
     GpuComputeModeEnum getGpuComputeMode() const;
     // The UUID id of the chosen GPU device, or "" for automatic.
     std::string getGpuDevice() const;
@@ -643,7 +642,6 @@ private:
     KnobIntPtr _numberOfParallelRenders;
     KnobBoolPtr _useThreadPool;
     KnobIntPtr _nThreadsPerEffect;
-    KnobChoicePtr _renderSchedulerMode;
     KnobBoolPtr _queueRenders;
 
     // General/Rendering
@@ -732,8 +730,8 @@ private:
     KnobIntPtr _maxViewerDiskCacheGB;
     KnobIntPtr _maxDiskCacheNodeGB;
 
-    /// Deep renders are large and must not be able to evict the entire 2D image cache above, so
-    /// they get a separate budget entirely, RAM-only (deep has no on-disk cache in v1).
+    /// Geometry gets its own RAM-only budget, separate from the node cache.
+    KnobIntPtr _maxGeometryCacheGB;
     KnobPathPtr _diskCachePath;
     KnobPathPtr _diskTierLocation;
     KnobIntPtr _diskTierSize;

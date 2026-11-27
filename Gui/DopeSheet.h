@@ -232,7 +232,7 @@ public:
     DSKnob(int dimension,
            QTreeWidgetItem* nameItem,
            const KnobIPtr& knob,
-           const RotoDrawableItemPtr& item);
+           const RotoItemPtr& item);
 
     // A Bezier's shape keys
     DSKnob(QTreeWidgetItem* nameItem,
@@ -251,7 +251,7 @@ public:
     KnobIPtr getInternalKnob() const;
 
     // The curve-context item the row belongs to, null for a node's own knob
-    RotoDrawableItemPtr getRotoItem() const;
+    RotoItemPtr getRotoItem() const;
 
     // Set only for a shape row
     BezierPtr getBezier() const;

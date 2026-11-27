@@ -180,13 +180,14 @@ sameValue(float reference,
     return std::bit_cast<std::uint32_t>(reference) == std::bit_cast<std::uint32_t>(rendered);
 }
 
-// Compares one plane, bit for bit when `strict` and within crossConfigTolerance() otherwise, and
-// reports the first difference and the count.
+// Compares one plane, bit for bit when `strict` and within crossConfigTolerance() otherwise, or by
+// `acceptance` when it is set, and reports the first difference and the count.
 bool
 expectSamePlane(const std::string& what,
                 const ParityF32Image& reference,
                 const RenderedPlane& rendered,
-                bool strict)
+                bool strict,
+                const GoldenValueAcceptance& acceptance)
 {
     const std::size_t nComps = rendered.channels.size();
     std::size_t mismatches = 0;
@@ -196,7 +197,7 @@ expectSamePlane(const std::string& what,
     for (std::size_t i = 0; i < reference.pixels.size(); ++i) {
         const float a = reference.pixels[i];
         const float b = rendered.pixels[i];
-        if (strict ? sameValue(a, b) : crossConfigTolerance().accepts(a, b)) {
+        if (acceptance ? acceptance(a, b) : (strict ? sameValue(a, b) : crossConfigTolerance().accepts(a, b))) {
             continue;
         }
         if (mismatches == 0) {
@@ -429,7 +430,8 @@ checkGolden(const NodePtr& node,
             const std::string& group,
             const std::string& caseName,
             unsigned mipmapLevel,
-            double time)
+            double time,
+            const GoldenPlaneAcceptance& planeAcceptance)
 {
     const RectI window = goldenWindow(mipmapLevel);
     std::list<ImageLayerDesc> layers;
@@ -530,7 +532,8 @@ checkGolden(const NodePtr& node,
             ok = false;
             continue;
         }
-        ok = expectSamePlane(what, references[i], planes[i], strict) && ok;
+        const GoldenPlaneAcceptance::const_iterator custom = planeAcceptance.find(planes[i].layer.getLayerID());
+        ok = expectSamePlane(what, references[i], planes[i], strict, (custom != planeAcceptance.end()) ? custom->second : GoldenValueAcceptance()) && ok;
     }
 
     return ok;

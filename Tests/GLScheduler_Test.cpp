@@ -250,7 +250,7 @@ protected:
 
         std::shared_ptr<Observed> observed = _observed;
         DefaultScheduler::setFrameStatsObserverForTests([observed](int /*time*/, ViewIdx /*view*/, const RenderStatsPtr& stats) {
-            if (!stats || (appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph)) {
+            if (!stats) {
                 return;
             }
             ObservedFrame frame;

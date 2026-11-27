@@ -48,13 +48,13 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Image.h"
 #include "Engine/Settings.h"
 
-#include "Gui/KnobGui.h"
-#include "Gui/KnobUndoCommand.h"
-#include "Gui/GuiAppInstance.h"
 #include "Gui/Gui.h"
+#include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiMacros.h"
-
+#include "Gui/KnobEditMode.h"
+#include "Gui/KnobGui.h"
+#include "Gui/KnobUndoCommand.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -154,6 +154,12 @@ KnobWidgetDnD::mousePress(QMouseEvent* e)
 
         return true;
     }
+    // While a panel is in edit mode a plain drag of a knob's label carries the knob to it; the
+    // press still reaches the label so that a click does what it always did.
+    if (buttonDownIsLeft(e) && modCASIsNone(e) && (_imp->dimension == -1) && KnobEditMode::isAnyPanelEditing()) {
+        _imp->dragPos = e->pos();
+        _imp->dragging = true;
+    }
 
     return false;
 }
@@ -245,13 +251,18 @@ KnobWidgetDnD::startDrag()
     QFontMetrics fmetrics(font, 0);
     Qt::KeyboardModifiers mods = QApplication::keyboardModifiers();
     bool isExprMult = ( mods & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier) ) == (Qt::ControlModifier | Qt::ShiftModifier);
+    const bool editing = !isExprMult && KnobEditMode::isAnyPanelEditing();
+    const bool plainDrag = (mods & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier)) == Qt::NoModifier;
     QString textFirstLine;
-    if (isExprMult) {
+    if (editing && plainDrag) {
+        textFirstLine = tr("Adding a linked parameter from:");
+    } else if (editing) {
+        textFirstLine = tr("Linking (hard-link), or adding a copy, from:");
+    } else if (isExprMult) {
         textFirstLine = tr("Linking (expression):");
     } else {
         textFirstLine = tr("Linking (hard-link) from:");
     }
-
 
     QString knobLine;
     EffectInstance* isEffect = dynamic_cast<EffectInstance*>( internalKnob->getHolder() );
@@ -279,7 +290,11 @@ KnobWidgetDnD::startDrag()
     }
 
     QString textThirdLine;
-    if (dragDim == -1) {
+    if (editing && plainDrag) {
+        textThirdLine = tr("Drop it on a panel in edit mode");
+    } else if (editing) {
+        textThirdLine = tr("Drop it on a parameter's label, or on a panel in edit mode for a copy of the whole parameter");
+    } else if (dragDim == -1) {
         textThirdLine = tr("Drag it to the label of another parameter of the same type");
     } else {
         textThirdLine = tr("Drag it to a dimension of another parameter of the same type");
@@ -397,7 +412,7 @@ KnobWidgetDnD::drop(QDropEvent* e)
                 targetDim = -1;
             }
 
-            Qt::KeyboardModifiers mods = QApplication::keyboardModifiers();
+            Qt::KeyboardModifiers mods = e->modifiers();
             if ( ( mods & (Qt::ControlModifier | Qt::AltModifier | Qt::ShiftModifier) ) == (Qt::ControlModifier | Qt::ShiftModifier) ) {
                 EffectInstance* effect = dynamic_cast<EffectInstance*>( source->getHolder() );
                 if (!effect) {

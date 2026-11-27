@@ -371,7 +371,7 @@ private:
             QThread::msleep((unsigned long)delayKnob->getValue());
         }
         KnobDoublePtr valueKnob = _value.lock();
-        double value = (valueKnob ? valueKnob->getValue() : 0.) + contextTestValue(renderContext(getParallelRenderArgsTLS()));
+        double value = (valueKnob ? valueKnob->getValue() : 0.) + contextTestValue(renderContext(getFrameArgs()));
         KnobBoolPtr varyingKnob = _varying.lock();
         if (varyingKnob && varyingKnob->getValue()) {
             value *= CountingTestRegistry::renders(getNode());
@@ -503,7 +503,7 @@ private:
                   unsigned int* mask)
     {
         float value = 0.f;
-        if (!pullFirstPixel(control, renderContext(getParallelRenderArgsTLS()), time, view, mipmapLevel, &value) || (value < 0.f)) {
+        if (!pullFirstPixel(control, renderContext(getFrameArgs()), time, view, mipmapLevel, &value) || (value < 0.f)) {
             return false;
         }
         *mask = (unsigned int)value;
@@ -538,7 +538,7 @@ private:
         if (!source || !control || !readMask(control, args.time, args.view, mipmapLevel, &mask)) {
             return eStatusFailed;
         }
-        const RenderContextPtr context = renderContext(getParallelRenderArgsTLS());
+        const RenderContextPtr context = renderContext(getFrameArgs());
         float sum = 0.f;
         for (int i = 0; i < kProbeTestContexts; ++i) {
             if (!(mask & (1u << i))) {
@@ -663,7 +663,7 @@ private:
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         CountingTestRegistry::noteRender(getNode().get());
-        const RenderContextPtr context = renderContext(getParallelRenderArgsTLS());
+        const RenderContextPtr context = renderContext(getFrameArgs());
         const double k = contextTestValue(context, recursiveProbeVariable().name);
         float value = (float)k;
         if (k < depth()) {

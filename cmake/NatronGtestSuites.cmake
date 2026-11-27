@@ -25,6 +25,21 @@ function(natron_add_gtest_suites target)
         set(arg_DISCOVERY_TIMEOUT 60)
     endif()
 
+    # The test process dumps its stacks shortly before ctest's timeout (Tests/TestWatchdog.h) and
+    # has no other way to learn it. ENVIRONMENT_MODIFICATION rather than ENVIRONMENT, so it
+    # composes with a registration's own ENVIRONMENT.
+    list(FIND arg_PROPERTIES ENVIRONMENT_MODIFICATION env_modification_index)
+    if(NOT env_modification_index EQUAL -1)
+        message(FATAL_ERROR "natron_add_gtest_suites: ENVIRONMENT_MODIFICATION is set from TIMEOUT; "
+                            "the registration's own would replace it.")
+    endif()
+    list(FIND arg_PROPERTIES TIMEOUT timeout_index)
+    if(NOT timeout_index EQUAL -1)
+        math(EXPR timeout_index "${timeout_index} + 1")
+        list(GET arg_PROPERTIES ${timeout_index} timeout_value)
+        list(APPEND arg_PROPERTIES ENVIRONMENT_MODIFICATION "NATRON_TEST_CTEST_TIMEOUT_S=set:${timeout_value}")
+    endif()
+
     # A target may be registered several times, with different prefixes or filters; each
     # registration needs its own cached listing.
     get_property(counter TARGET ${target} PROPERTY NATRON_GTEST_SUITES_COUNTER)

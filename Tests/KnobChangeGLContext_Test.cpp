@@ -147,7 +147,7 @@ TEST_F(KnobChangeGLContext, NonRenderingSetterAttachesNoContext)
 
     {
         std::shared_ptr<ParallelRenderArgsSetter> setter = makeSetter(node, false);
-        ParallelRenderArgsPtr args = effect->getParallelRenderArgsTLS();
+        ParallelRenderArgsPtr args = effect->getFrameArgs();
         ASSERT_TRUE(bool(args));
         EXPECT_FALSE(bool(args->openGLContext.lock()));
         EXPECT_FALSE(bool(effect->getThreadLocalOpenGLContext()));
@@ -155,7 +155,7 @@ TEST_F(KnobChangeGLContext, NonRenderingSetterAttachesNoContext)
 
     {
         std::shared_ptr<ParallelRenderArgsSetter> setter = makeSetter(node, true);
-        ParallelRenderArgsPtr args = effect->getParallelRenderArgsTLS();
+        ParallelRenderArgsPtr args = effect->getFrameArgs();
         ASSERT_TRUE(bool(args));
         EXPECT_TRUE(bool(args->openGLContext.lock()));
         EXPECT_TRUE(bool(effect->getThreadLocalOpenGLContext()));

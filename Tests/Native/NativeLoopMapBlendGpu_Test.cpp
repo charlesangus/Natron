@@ -120,15 +120,11 @@ protected:
     {
         BaseTest::SetUp();
         NativeShapeTest::resetProject(getApp(), kWidth, kHeight);
-        _savedMode = appPTR->getRenderSchedulerMode();
-        // Render continuations reach the GPU only under the task graph.
-        appPTR->setRenderSchedulerMode(eRenderSchedulerModeTaskGraph);
     }
 
     virtual void TearDown() OVERRIDE
     {
         TileStats::setEnabled(false);
-        appPTR->setRenderSchedulerMode(_savedMode);
         getApp()->getProject()->reset(false, true);
         BaseTest::TearDown();
     }
@@ -228,9 +224,6 @@ protected:
         EXPECT_EQ(1, gpuRunsOf(result, end)) << what << ": the blend fell back to the CPU";
         expectMatchesCpu(result, what);
     }
-
-private:
-    RenderSchedulerModeEnum _savedMode = eRenderSchedulerModeTaskGraph;
 };
 
 // A vertical ramp Map spans every level, most pixels between two iterations: each interpolation

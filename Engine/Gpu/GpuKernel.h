@@ -103,8 +103,14 @@ struct GpuBinding {
     VkImageView view = VK_NULL_HANDLE;
     VkSampler sampler = VK_NULL_HANDLE;
     VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_MAX_ENUM;
+    // With ranged, the descriptor covers bufferSize bytes from offset instead of the whole buffer.
+    VkDeviceSize offset = 0;
+    bool ranged = false;
 
     static GpuBinding storage(uint32_t binding, const GpuBuffer& buffer);
+    // The bytes [offset, offset + size) of buffer, so that a buffer over the storage buffer range is bound a part at
+    // a time. offset is a multiple of the device's minStorageBufferOffsetAlignment.
+    static GpuBinding storage(uint32_t binding, const GpuBuffer& buffer, VkDeviceSize offset, VkDeviceSize size);
     static GpuBinding uniform(uint32_t binding, const GpuUniformBuffer& buffer);
     // Fills a combined image sampler, a sampled image or a sampler binding, whichever the kernel declares.
     static GpuBinding texture(uint32_t binding, const GpuTexture& texture);

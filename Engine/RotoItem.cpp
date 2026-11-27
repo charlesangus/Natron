@@ -614,6 +614,27 @@ RotoItem::notifyContentRehashedForTests() const
     }
 }
 
+const std::list<KnobIPtr>&
+RotoItem::getKnobs() const
+{
+    static const std::list<KnobIPtr> none;
+
+    return none;
+}
+
+KnobIPtr
+RotoItem::getKnobByName(const std::string& name) const
+{
+    const std::list<KnobIPtr>& knobs = getKnobs();
+    for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        if ((*it)->getName() == name) {
+            return *it;
+        }
+    }
+
+    return KnobIPtr();
+}
+
 U64
 RotoItem::getContentHash() const
 {
@@ -657,6 +678,10 @@ RotoItem::appendLiveContentHash(ContentHasher& h) const
     // Recursive so that the hash of a lone item, as folded by its internal nodes, still sees
     // a deactivated ancestor layer.
     h.appendBool(isDeactivatedRecursive());
+    // An item is drawn through its ancestor layers' transforms.
+    for (RotoLayerPtr layer = getParentLayer(); layer; layer = layer->getParentLayer()) {
+        layer->appendTransformContentHash(h);
+    }
 }
 
 NATRON_NAMESPACE_EXIT

@@ -45,9 +45,12 @@
 #include <OpenColorIO/OpenColorIO.h>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Geometry/GeoViewerLayer.h"
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
+
+#include "Gui/StaleCueLook.h"
 
 // Free of USD: the viewer tab includes it, and USD's headers need the full Python API. Everything
 // that touches pxr lives in SceneViewport.cpp.
@@ -56,6 +59,7 @@ class QContextMenuEvent;
 class QKeyEvent;
 class QMouseEvent;
 class QOpenGLContextGroup;
+class QPainter;
 class QResizeEvent;
 class QWheelEvent;
 
@@ -66,6 +70,8 @@ struct SceneDrawDelta;
 struct SceneDrawChange;
 class SceneDrawStates;
 class SceneDrawTiming;
+class SceneStageEditor;
+struct GeoDisplayOptions;
 class UndoHistory;
 class SceneTransformTarget;
 struct SceneTransformDrag;
@@ -202,6 +208,13 @@ public:
     // syncScene(), and shows the stage at frame from then on: a paint never sees one without the
     // other.
     bool syncScene(const ScenePayload& payload, double frame, double framesPerSecond, std::string* error, U64 serial = 0);
+
+    /**
+     * @brief Runs the stage editor's pending edits on the stage as last synced, without a payload:
+     * what a change of the editor's own state, as a component pick is, needs. False if nothing
+     * changed. MT-safe, as syncScene() is.
+     **/
+    bool refreshStageEdits();
 
     /**
      * @brief Shows payload at the project frame (a project running at framesPerSecond). The free
@@ -760,6 +773,22 @@ public:
     void clearTransformHandles();
 
     /**
+     * @brief Draws translate handles along the world axes at @p origin (world space), for dragging
+     * picked geometry components, until clearComponentHandles(). They take the place of the
+     * selection's and the op's handles, and a drag of them previews nothing on the stage: the
+     * caller edits the geometry instead.
+     **/
+    void setComponentHandles(const double origin[3]);
+
+    void clearComponentHandles();
+
+    // Whether component handles are set.
+    bool hasComponentHandles() const;
+
+    // Whether the drag under way is of the component handles.
+    bool isComponentTransformDrag() const;
+
+    /**
      * @brief The transform widget's tool, frame and origin (SceneTransform::ToolEnum, SpaceEnum
      * and PivotEnum): the handles of the tool on the selected prims.
      **/
@@ -891,8 +920,43 @@ public:
      **/
     std::vector<std::string> pickRect(int x0, int y0, int x1, int y1, int width, int height, bool* busy = nullptr);
 
+    /**
+     * @brief The points, edges or faces of @p type drawn in the rectangle with corners (x0, y0)
+     * and (x1, y1), pixels of a width x height view counted from the top left: the one nearest its
+     * centre if @p nearest, else all. Each hit is the prim drawing it and the component's index in
+     * that prim; picking primitives also hits prims drawn whole, index -1, with the instancers
+     * drawing them. Storm only. Needs the context of render() current.
+     **/
+    std::vector<GeoViewerLayer::ComponentHit> pickComponents(GeoComponentEnum type, int x0, int y0, int x1, int y1, int width, int height,
+                                                             bool nearest, bool* busy = nullptr);
+
+    /**
+     * @brief While @p active, highlights the edges and faces given by prim path and index, as
+     * GeoViewerLayer::componentHighlights() makes them, instead of the selected prims.
+     **/
+    void setComponentHighlight(bool active,
+                               std::vector<std::pair<std::string, std::vector<int>>> edges,
+                               std::vector<std::pair<std::string, std::vector<int>>> faces);
+
+    /**
+     * @brief Highlights the points and faces given by prim path and index, besides whatever else is
+     * highlighted. Empty vectors clear it.
+     **/
+    void setDisplayHighlight(std::vector<std::pair<std::string, std::vector<GeoIndex>>> points,
+                             std::vector<std::pair<std::string, std::vector<GeoIndex>>> faces);
+
     // Destroys the engine. Needs the context of render() current.
     void releaseGL();
+
+    // Lets the GL hand-off go if its GPU was lost, so that it does not keep the GPU from being recreated.
+    // Takes the viewer lock. Needs the context of render() current.
+    void releaseLostDevice();
+
+    /**
+     * @brief Lets the GL hand-off go with the GPU memory it holds; the next frame the GPU renders builds
+     * it again. The frame shown stays. Takes the viewer lock. Needs the context of render() current.
+     **/
+    void releaseDeviceUpload();
 
     // releaseGL() but for the overlays' GL objects, which releaseOverlayGL() frees in the context
     // they are drawn in. Needs the context of render() current.
@@ -979,10 +1043,41 @@ public:
     // Ends a progressive render and frees its engine and threads; the next render() starts another.
     void releaseRefinement();
 
+    /**
+     * @brief Sets what every sync adds to the stage after composing the payload, null for nothing.
+     * Takes effect from the next sync.
+     **/
+    void setStageEditor(const std::shared_ptr<SceneStageEditor>& editor);
+
+    /**
+     * @brief The view and projection of the last frame drawn, as one row-major matrix taking a
+     * world-space row vector to clip space, and the size it was drawn at in pixels. False before
+     * the first frame. Any thread.
+     **/
+    bool getDrawnView(double viewProjection[16],
+                      int* width,
+                      int* height) const;
+
     // How long the last upload of a progressive frame to its texture took, in milliseconds, and how
     // many pixels it had; -1 and 0 before the first.
     double getLastUploadMs() const;
     int getLastUploadPixels() const;
+
+    // How the last progressive frame reached its texture: "interop:" and the GL hand-off's path
+    // ("zerocopy", "hostsync" or "readback") for a GPU frame of the Natron Utility renderer
+    // imported from the device, "upload" for one uploaded from host memory; empty before one.
+    std::string getLastFramePath() const;
+
+    // Whether the probe allows no GL hand-off path in the context of render(), or NATRON_VIEWER_HANDOFF refuses
+    // them, so that GPU frames go through the host.
+    bool isHandoffUnsupported() const;
+
+    // "zerocopy", "hostsync" or "readback": the fastest GL hand-off path the probe found for the context of
+    // render(); empty before a GPU frame reached it.
+    std::string getHandoffBest() const;
+
+    // Why the last GPU frame went through the host rather than the GL hand-off; empty when it did not.
+    std::string getHandoffError() const;
 
 private:
     RenderStatusEnum renderLocked(unsigned int fbo, int width, int height, bool followScene);
@@ -1054,6 +1149,15 @@ public:
     // Shows message instead of a scene.
     void setError(const QString& message);
 
+    // The 2D viewer's stale cue, drawn over the view the same way.
+    void setStaleCue(StaleCueStyleEnum style, bool visible);
+
+    bool isStaleCueVisible() const;
+
+    // Whether what is drawn is behind the latest scene asked for: a sync, its take-in or the frame
+    // after an edit is still to come. Navigation alone never makes the view out of date.
+    bool isOutOfDate() const;
+
     void clearScene();
 
     const QString& getError() const;
@@ -1083,6 +1187,9 @@ public:
     void setRenderEverything(bool on);
 
     void setRefinementPaused(bool paused);
+
+    // What the view draws over geometry it is shown. A change syncs the scene shown again.
+    void setGeoDisplayOptions(const GeoDisplayOptions& options);
 
     void setLookThroughCamera(const QString& path);
 
@@ -1128,6 +1235,107 @@ public:
     QStringList getSelection() const;
 
     /**
+     * @brief What a click or marquee picks: whole prims, or the points, edges or primitives of
+     * the geometry shown. Components are picked only while the view shows geometry; elsewhere the
+     * mode is kept and prims are picked. The component selection is converted to the new mode: points to primitives keeps the primitives whose points are all selected, and points to edges the edges with both ends selected; primitives give all their points or edges, edges give their ends or the primitives using them. Objects clears it.
+     **/
+    void setGeoPickMode(GeoComponentEnum mode);
+
+    GeoComponentEnum getGeoPickMode() const;
+
+    // Whether the view shows geometry, where components can be picked, rather than a scene.
+    void setGeometryContext(bool geometry);
+
+    bool isGeometryContext() const;
+
+    /**
+     * @brief Creates a node from the selection, through the selection actions: from the prims at
+     * paths, or in the geometry context from the picked components, or with prims picked (Objects)
+     * from the primitives the prims at paths are made of.
+     **/
+    void createFromSelection(const QStringList& paths);
+
+    /**
+     * @brief createFromSelection() from the prims at paths whatever is picked, as from a list of
+     * prims: in the geometry context, the primitives they are made of.
+     **/
+    void createFromPrims(const QStringList& paths);
+
+    bool componentsPickable() const;
+
+    /**
+     * @brief The picked points or primitives, by number, or edges, by point numbers, of the
+     * geometry shown. It outlives the geometry it was picked on: each new geometry highlights the
+     * same numbers.
+     **/
+    const GeoComponentSelection& getComponentSelection() const;
+
+    // Takes @p selection as it is; componentSelectionChanged() if that changes the selection.
+    void setComponentSelection(const GeoComponentSelection& selection);
+
+    /**
+     * @brief Display only, and only in the scene context: highlights the points (class Points) or
+     * faces (class Primitives) of the prim at @p primPath, besides the selected prims, replacing
+     * any earlier highlight. Nothing for another class or an empty list, which clears it, as does
+     * entering the geometry context. natronSceneHighlightCount reads the number highlighted.
+     **/
+    void setSceneComponentHighlight(const std::string& primPath,
+                                    GeoAttribClassEnum cls,
+                                    std::vector<GeoIndex> indices);
+
+    void clearSceneComponentHighlight();
+
+    // Picks the mode of @p selection and takes it as it is, without carrying the previous selection over to that mode.
+    void setPickedComponents(const GeoComponentSelection& selection);
+
+    /**
+     * @brief Grows the component selection by @p steps rings of neighbours, or shrinks it for a
+     * negative count; nothing while no components are picked or selected.
+     **/
+    void expandComponentSelection(int steps);
+
+    // Picks @p mode, carrying the component selection over to it as setGeoPickMode() does.
+    void convertComponentSelection(GeoComponentEnum mode);
+
+    // The component selection carried over to @p type as setGeoPickMode() carries it.
+    static GeoComponentSelection convertedComponentSelection(const GeoDetail& detail, const GeoComponentSelection& selection, GeoComponentEnum type);
+
+    // @p selection as the group pattern that selects it in @p detail; empty when it is empty.
+    // @p collapseFull false writes a full point or primitive selection as explicit numbers, not "*".
+    static std::string componentSelectionPattern(const GeoDetail& detail, const GeoComponentSelection& selection, bool collapseFull = true);
+
+    /**
+     * @brief The numbers of @p type (points, edges or primitives) that the group @p pattern selects
+     * in @p detail, as selection; a blank pattern selects every element. False with @p error set
+     * for a malformed pattern.
+     **/
+    static bool componentSelectionFromPattern(const GeoDetail& detail, GeoComponentEnum type, const std::string& pattern, GeoComponentSelection* selection, std::string* error);
+
+    // The geometry the component selection is picked on, null when none is shown.
+    GeoDetailConstPtr shownDetail() const;
+
+    /**
+     * @brief Whether the view is reselecting, as beginReselect() starts it. While it is, Enter
+     * hands the selection to the commitReselect selection action and Escape to cancelReselect.
+     **/
+    bool isReselecting() const;
+
+    // Starts reselecting: shows @p selection, in its type's pick mode, remembering the pick mode and selection it replaces.
+    void beginReselect(const GeoComponentSelection& selection);
+
+    // Ends reselecting, putting back the pick mode and selection beginReselect() replaced.
+    void endReselect();
+
+    // Combines @p picked with the component selection as select() combines prims.
+    void selectComponents(const GeoComponentSelection& picked, SelectionModeEnum mode);
+
+    // The component of the pick mode nearest pos (widget coordinates); busy as for pickPrimAt().
+    GeoComponentSelection pickComponentsAt(const QPoint& pos, bool* busy = nullptr);
+
+    // The components of the pick mode drawn in rect (widget coordinates).
+    GeoComponentSelection pickComponentsIn(const QRect& rect, bool* busy = nullptr);
+
+    /**
      * @brief Sets the function that names the node whose transform handles are drawn while the
      * transform widget shows none on the selection: a USDEditTransform with its settings panel
      * open, or null for none. Dragging a handle sets the node's Translate, Rotate or Scale once,
@@ -1159,12 +1367,19 @@ public:
 
     /**
      * @brief What the selection is used for. setOnNodeBlocker says why setOnNode can't take the
-     * paths now, or nothing when it can.
+     * paths now, or nothing when it can. In the geometry context, creating from the selection
+     * calls createFromComponents with the geometry shown, null for none, and the component
+     * selection instead of createFromSelection.
      **/
     struct SelectionActions {
         std::function<QString(const QStringList& paths)> setOnNodeBlocker;
         std::function<void(const QStringList& paths)> setOnNode;
         std::function<void(const QStringList& paths)> createFromSelection;
+        std::function<void(const GeoDetailConstPtr& detail, const GeoComponentSelection& selection)> createFromComponents;
+        // Reselect for Current Node was asked for; commitReselect and cancelReselect answer Enter and Escape while reselecting.
+        std::function<void()> reselect;
+        std::function<void(const GeoComponentSelection& selection)> commitReselect;
+        std::function<void()> cancelReselect;
     };
 
     void setSelectionActions(const SelectionActions& actions);
@@ -1214,6 +1429,9 @@ public:
      * that sync. Main thread; never waits for a sync under way, the engine going once it ends.
      **/
     void releaseEngine();
+
+    // The renderer's releaseDeviceUpload(), in this widget's context. Main thread.
+    void releaseDeviceUpload();
 
     /**
      * @brief Calls read with this viewer's draw states, unless an edit of many rows holds them,
@@ -1325,6 +1543,11 @@ Q_SIGNALS:
 
     void selectionChanged(const QStringList& paths);
 
+    void componentSelectionChanged();
+
+    // A GeoComponentEnum.
+    void geoPickModeChanged(int mode);
+
     // From the context menu's Renderer submenu.
     void rendererChanged(const QString& id);
 
@@ -1347,6 +1570,9 @@ Q_SIGNALS:
 
     // First thing in the destructor, with the renderer still whole (main thread).
     void closing();
+
+    // isOutOfDate() changed (main thread).
+    void outOfDateChanged(bool outOfDate);
 
 protected:
     void initializeGL() override;
@@ -1380,6 +1606,17 @@ private:
 
     void publishRefineState();
 
+    /**
+     * @brief Hands the pick mode and component selection to the view's guides and highlight, and
+     * mirrors them into natronGeoPickMode ("objects", "points", "edges" or "primitives"),
+     * natronGeoComponents (whether components are picked), natronGeoSelection (the selection's
+     * group pattern, empty for none) and natronGeoSelectionCount.
+     **/
+    void refreshComponentState();
+
+    // Maps the component selection onto the geometry last synced, for the engine to highlight.
+    void refreshComponentHighlight();
+
     // Starts dragging the transform handle at pos (widget coordinates). False if none is there, or
     // with busy set if an edit holds the stage and it can't tell.
     bool beginHandleDrag(const QPoint& pos, bool* busy = nullptr);
@@ -1392,6 +1629,19 @@ private:
 
     // Writes the change of the op handle drag under way to its node, as one undo step.
     bool commitOpHandleDrag(double change);
+
+    /**
+     * @brief Draws translate handles at the centre of the picked components while the view shows
+     * a GeoEdit node whose edits apply to the geometry shown, and none otherwise.
+     **/
+    void refreshComponentHandles();
+
+    /**
+     * @brief Writes the component drag under way, moved by change, to its GeoEdit's edits: with
+     * @p commit, as one undo step (restoring the edits from before the drag when change moves
+     * nothing), else without one, as a live preview. True if a commit wrote an edit.
+     **/
+    bool writeComponentDrag(double change, bool commit);
 
     /**
      * @brief Mirrors the handles drawn into natronSceneTransformHandles (handle, x, y in widget
@@ -1512,6 +1762,16 @@ private:
 
     // Draws the composing status over what the framebuffer has, or the background if it has no scene.
     void paintComposingStatus();
+
+    void paintStaleCue(QPainter& painter);
+
+    void publishGeoBounds();
+
+    // Publishes natronGeoPick for the selected prims and the geometry synced last.
+    void publishGeoPick();
+
+    // Emits outOfDateChanged() when isOutOfDate() has changed since the last call.
+    void publishOutOfDate();
 
     bool isComposing() const;
 

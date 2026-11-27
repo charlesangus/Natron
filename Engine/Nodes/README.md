@@ -610,7 +610,7 @@ plug-in. Neither checks the doc, icon or kernel fragments.
 
 ## Data kinds
 
-`DataKindEnum` (`Global/Enums.h`) has five values:
+`DataKindEnum` (`Global/Enums.h`) has six values:
 
 - `eDataKindImage` -- a flat raster image. The default for every input and
   output that doesn't say otherwise, so every existing node and every OFX
@@ -649,6 +649,16 @@ plug-in. Neither checks the doc, icon or kernel fragments.
   (`Engine/Nodes/IO/RawMetadata.h`), not in the kind. There is no adapter
   between raw and image: the conversion is always a node in the graph. Raw
   edges have their own Preferences colour (`edgeRawColor`).
+- `eDataKindGeometry` -- native SOP-style geometry: a copy-on-write `GeoDetail`
+  with one shared point pool, vertices and primitives indexing it, and
+  detail/primitive/vertex/point attributes. Like Scene it is a different payload
+  from an image, so geometry never reaches an image or scene input, and there is
+  no adapter between them. At this stage of the framework, this is a
+  **declaration only** until M54 - Native Geometry Data Model phase 54.1 lands: a
+  node can declare an input or output as `eDataKindGeometry` and have that
+  participate in connection typing, but there is no detail type, no geometry
+  cache and no `renderGeometry()` path yet. Geometry pipes take the Native 3D node
+  colour preference (`native3DNodesColor`).
 
 A node declares kinds via `NodeSpec::inputs[i].kind` and
 `NodeSpec::outputKind` (or, off `NativeEffectBase`, by
@@ -1532,10 +1542,10 @@ records the region. `renderGpu()` reads each requested output from
   memory its own pending inputs hold. The continuation then runs on the thread
   that renders the node, and both read the requested outputs as store hits
   with `pullRenderContinuationRequest()`.
-- **Legacy scheduler, frames the task graph does not take, unplanned pulls.**
+- **Frames the task graph does not take, unplanned pulls.**
   `renderRoI()` runs the probe inline, pulls each request one after the other
   on the probing thread, keeps the images for the render, then runs the
-  continuation. Both schedulers give bit-identical output.
+  continuation. Planned and direct pulls give bit-identical output.
 - **Lifetime.** The probe must not keep the images it reads past its return.
   Whatever the continuation captures lives until it has run or the render was
   dropped. An aborted frame drops its pending extension and never runs the

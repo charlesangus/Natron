@@ -106,6 +106,7 @@ state()
 }
 
 thread_local int readDepth = 0;
+thread_local int writeDepth = 0;
 
 bool
 onMainThread()
@@ -506,8 +507,13 @@ SceneWriteBarrier::runExclusive(const std::function<void()>& write,
             }
         }
     };
+    struct WriteScope {
+        WriteScope() { ++writeDepth; }
+        ~WriteScope() { --writeDepth; }
+    };
     try {
         if (write) {
+            const WriteScope writing;
             write();
         }
     } catch (...) {
@@ -603,6 +609,12 @@ bool
 SceneWriteBarrier::isReadingOnThisThread()
 {
     return readDepth > 0;
+}
+
+bool
+SceneWriteBarrier::isWritingOnThisThread()
+{
+    return writeDepth > 0;
 }
 
 U64

@@ -46,6 +46,7 @@
 #include "Engine/FileStampRegistry.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneTeardown.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -279,6 +280,41 @@ struct SceneStage::DeferredLoadsWake {
     std::atomic<bool> ready { false };
 };
 
+// Counts the changes of the stage a SceneWriteBarrier write makes, on the writing thread: those
+// are edits of shared layers, which the owner's own syncs and loads never are.
+class SceneStage::OutsideEdits
+    : public PXR_NS::TfWeakBase {
+public:
+    explicit OutsideEdits(const PXR_NS::UsdStageRefPtr& stage)
+    {
+        _key = PXR_NS::TfNotice::Register(PXR_NS::TfCreateWeakPtr(this), &OutsideEdits::changed, PXR_NS::UsdStageWeakPtr(stage));
+    }
+
+    ~OutsideEdits()
+    {
+        PXR_NS::TfNotice::Revoke(_key);
+    }
+
+    OutsideEdits(const OutsideEdits&) = delete;
+    OutsideEdits& operator=(const OutsideEdits&) = delete;
+
+    U64 getCount() const
+    {
+        return _count.load();
+    }
+
+private:
+    void changed(const PXR_NS::UsdNotice::ObjectsChanged& /*notice*/)
+    {
+        if (SceneWriteBarrier::isWritingOnThisThread()) {
+            ++_count;
+        }
+    }
+
+    std::atomic<U64> _count { 0 };
+    PXR_NS::TfNotice::Key _key;
+};
+
 SceneStage::SceneStage(PXR_NS::UsdStage::InitialLoadSet load)
     : _deferredWake(std::make_shared<DeferredLoadsWake>())
 {
@@ -295,6 +331,9 @@ SceneStage::SceneStage(PXR_NS::UsdStage::InitialLoadSet load)
     // fields that change.
     SceneOps::writeRootMetadata(_root, _metadata, nullptr);
     _stage = SceneOps::openStage(_root, load);
+    if (_stage) {
+        _outsideEdits.reset(new OutsideEdits(_stage));
+    }
 }
 
 SceneStage::~SceneStage()
@@ -415,7 +454,7 @@ SceneStage::getCommonBaseLength(const ScenePayload& payload) const
 U64
 SceneStage::getEditCount() const
 {
-    return _editCount;
+    return _editCount + (_outsideEdits ? _outsideEdits->getCount() : 0);
 }
 
 void

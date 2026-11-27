@@ -4314,7 +4314,7 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
         std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
         unchanged = _imp->sceneStage && _imp->sceneStage->isValid() && _imp->loadRulesMade && (_imp->shown == !payload.isEmpty())
             && !((serial != 0) && (serial > _imp->previewClearAfter.load())) && _imp->sceneStage->isSyncedTo(staged)
-            && !(editor && editor->hasPendingEdits());
+            && (_imp->sceneStage->getEditCount() == _imp->stageEditCount) && !(editor && editor->hasPendingEdits());
     }
     if (unchanged) {
         if (!_imp->takeSyncLoadSet(payload)) {
@@ -4368,12 +4368,15 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
         before.renderSettingsPrimPath.clear();
         after.renderSettingsPrimPath.clear();
         StageChangePaths changes(_imp->sceneStage->getStage());
+        // A layer of the stack refreshed in place leaves the stack as it is: sync() edits nothing.
+        const bool editedOutside = _imp->sceneStage->getEditCount() != _imp->stageEditCount;
         if (_imp->sceneStage->sync(staged)) {
             // An edit of the render settings prims alone restarts nothing here: what of it the
             // render takes, the active prim's settings for its renderer, reaches it through
             // ProgressiveRender::setSettings(), which makes the engine again when they differ.
             restart = changes.outsideRender || !changes.any || (before != after);
         }
+        restart = restart || editedOutside;
         bool renderChanged = false;
         if (editor && editor->editStage(*_imp->sceneStage, &renderChanged)) {
             _imp->sceneStage->noteLayerEdit();
@@ -4422,11 +4425,16 @@ SceneViewportRenderer::refreshStageEdits()
     bool renderChanged = false;
     {
         const std::unique_lock<std::shared_mutex> lock = _imp->lockExclusive();
-        if (!_imp->sceneStage || !_imp->sceneStage->isValid() || !editor->editStage(*_imp->sceneStage, &renderChanged)) {
+        if (!_imp->sceneStage || !_imp->sceneStage->isValid()) {
+            return false;
+        }
+        const bool editedOutside = _imp->sceneStage->getEditCount() != _imp->stageEditCount;
+        if (!editor->editStage(*_imp->sceneStage, &renderChanged)) {
             return false;
         }
         _imp->sceneStage->noteLayerEdit();
         _imp->stageEditCount = _imp->sceneStage->getEditCount();
+        renderChanged = renderChanged || editedOutside;
     }
     if (renderChanged) {
         _imp->progressive->invalidate();
@@ -5164,9 +5172,11 @@ SceneViewportRenderer::serviceStageLoads(const std::function<bool()>& cancelled)
                 before.renderSettingsPrimPath.clear();
                 after.renderSettingsPrimPath.clear();
                 StageChangePaths changes(imp->sceneStage->getStage());
+                const bool editedOutside = imp->sceneStage->getEditCount() != imp->stageEditCount;
                 if (imp->sceneStage->sync(payload)) {
                     *restart = changes.outsideRender || !changes.any || (before != after);
                 }
+                *restart = *restart || editedOutside;
                 const SceneMetadata& metadata = payload.getMetadata();
                 imp->zUp = (metadata.upAxis == SceneMetadata::eUpAxisZ);
                 imp->metersPerUnit = metadata.metersPerUnit;

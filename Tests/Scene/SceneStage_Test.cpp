@@ -45,6 +45,7 @@
 
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_USING
@@ -211,6 +212,27 @@ TEST(SceneStageTest, SyncingTheAppliedStackSendsNothing)
     EXPECT_FALSE(stage.sync(stack({ a, b })));
     EXPECT_EQ(0, log.notices);
     EXPECT_EQ(edits, stage.getEditCount());
+}
+
+// A layer of the stack edited in place leaves the same stack to sync, so only the count tells the
+// owner the stage moved.
+TEST(SceneStageTest, ALayerEditedInPlaceUnderTheBarrierCountsAsAnEdit)
+{
+    const PXR_NS::SdfLayerRefPtr a = makeLayer("def Sphere \"A\"\n{\n}\n", kZUp);
+    SceneStage stage;
+
+    ASSERT_TRUE(stage.isValid());
+    stage.sync(stack({ a }));
+    const U64 edits = stage.getEditCount();
+
+    a->GetPrimAtPath(PXR_NS::SdfPath("/A"))->SetDocumentation("outside the barrier");
+    EXPECT_EQ(edits, stage.getEditCount());
+
+    std::string error;
+    ASSERT_TRUE(SceneWriteBarrier::runExclusive([&a]() { PXR_NS::SdfCreatePrimInLayer(a, PXR_NS::SdfPath("/B")); }, &error)) << error;
+    EXPECT_NE(edits, stage.getEditCount());
+    EXPECT_TRUE(stage.getStage()->GetPrimAtPath(PXR_NS::SdfPath("/B")).IsValid());
+    EXPECT_FALSE(stage.sync(stack({ a })));
 }
 
 // Metadata is written only when it changes, and a change notifies / as changed info, never as a

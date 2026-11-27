@@ -160,6 +160,9 @@ public:
     // Whether the calling thread holds a ReadScope.
     static bool isReadingOnThisThread();
 
+    // Whether the calling thread is running the write of runExclusive().
+    static bool isWritingOnThisThread();
+
     // How many writes have run in this process.
     static U64 getWriteCount();
 

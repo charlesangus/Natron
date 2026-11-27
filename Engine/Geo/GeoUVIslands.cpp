@@ -376,13 +376,18 @@ geoComputeUVIslands(const GeoDetail& detail,
             for (;;) {
                 used[(std::size_t)vertex] = 1;
                 loop.push_back(vertex);
-                if (at == origin) {
-                    break;
-                }
                 // Where several boundary edges leave a point, as where a cut branches, the one
                 // that follows is found by turning round the point through the polygons joined
-                // there; any other would close the loop early.
+                // there; any other would close the loop early. The loop's first point can recur
+                // along it, so reaching it closes the loop only when the turn leads back to the
+                // first edge or finds nothing.
                 GeoOffset next = forward ? nextRoundPoint(vertex) : GeoIndexMap::kInvalidOffset;
+                if (next == first) {
+                    break;
+                }
+                if ((at == origin) && ((next == GeoIndexMap::kInvalidOffset) || used[(std::size_t)next])) {
+                    break;
+                }
                 if ((next == GeoIndexMap::kInvalidOffset) || used[(std::size_t)next]) {
                     next = takeFrom(starting, at);
                 }

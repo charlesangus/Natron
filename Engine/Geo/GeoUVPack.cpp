@@ -917,7 +917,14 @@ Packer::packOnce(std::size_t iteration,
 
     std::vector<int> order = _toPack;
     if (iteration == 0) {
-        std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return _areas[a] > _areas[b]; });
+        // Areas are compared in whole cells so that islands of one size, whose computed areas
+        // differ only by rounding where they sit, keep their input order.
+        const double cell = _px * _px;
+        std::vector<long long> cells(_areas.size());
+        for (std::size_t i = 0; i < _areas.size(); ++i) {
+            cells[i] = std::llround(_areas[i] / cell);
+        }
+        std::stable_sort(order.begin(), order.end(), [&](int a, int b) { return cells[a] > cells[b]; });
     } else {
         std::seed_seq seq { p.seed, static_cast<std::uint32_t>(iteration) };
         std::mt19937 rng(seq);

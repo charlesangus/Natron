@@ -553,11 +553,12 @@ TEST(GeoUVProject, FixPolesGivesPoleVerticesTheirNeighboursU)
         }
     }
 
-    // Unfixed, every pole vertex gets the same undefined longitude.
+    // Unfixed, every pole vertex gets the same undefined longitude, up to the whole turns Fix
+    // Boundary Seams adds to keep it beside its face's other vertices.
     params.fixPoles = false;
     forEachPrimitiveUV(project(sphere(segments, 3), params), [](GeoOffset, GeoOffset, const std::array<double, 3>& p, double u, double) {
         if (std::hypot(p[0], p[2]) < 1e-9) {
-            EXPECT_NEAR(0.5, u, 1e-6);
+            EXPECT_NEAR(0.5, u - std::floor(u), 1e-6);
         }
     });
 }

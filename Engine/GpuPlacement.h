@@ -67,10 +67,15 @@ struct PlacementInputs {
     // Whether the task's effect reads raw-kind data from an input. Unset: none does.
     std::function<bool(const FrameGraph::Task&)> readsRaw;
 
+    // Whether the task's effect offers a render continuation, whose probe the scheduler runs before the task's region.
+    // Unset: EffectInstance::offersRenderContinuation().
+    std::function<bool(const FrameGraph::Task&)> offersContinuation;
+
     // How much a candidate weighs. When set and regionGain is not, regions are judged by regionWeightGain() with it.
     std::function<GpuWeight(const FrameGraph::Task&)> taskWeight;
 
-    // Whether the consumer of the root takes it in device memory, so that a region holding it need not download it.
+    // Whether the consumer of the root takes it in device memory, so that a region holding it need not download it. In
+    // an extension's graph, the roots are the tasks read from the store by the task the extension resumes.
     bool rootOnDevice = false;
 
     // What running a region on the GPU gains over the CPU; it is accepted when positive, else shrunk. The graph it is
@@ -86,7 +91,8 @@ double taskPixelCount(const FrameGraph::Task& task);
 
 /**
  * @brief Whether region moves no image between the devices: every external input is already on the GPU, or served from
- * the device tier, and no output is consumed on the CPU, the root counting as consumed on the CPU unless rootOnDevice.
+ * the device tier, and no output is consumed on the CPU, the root, and a task read from outside the graph
+ * (Task::consumers counting more reads than Task::consumerTasks), counting as consumed on the CPU unless rootOnDevice.
  **/
 bool regionTransfersAreFree(const FrameGraph& graph,
                             const FrameGraph::Region& region,
@@ -120,6 +126,10 @@ const int kMaxRegionShrinkSteps = 16;
  * does, else starts a region of its own. The invariant holds after every step, so each region is convex: no path leaves
  * it, through a CPU task or another region, and comes back, which is what lets a region run as one task. Each region is
  * then evaluated with regionGain, or by regionWeightGain() with taskWeight when only that is set, in topological order.
+ *
+ * A candidate that offers a render continuation always starts a region of its own, and that region never merges with
+ * another: its probe runs before the region and reads the task's dependencies from the frame store, so none of them
+ * may be a member, and the scheduler probes one continuation per region. Its consumers may still join it.
  *
  * A region that gains nothing is shrunk greedily: each step drops the member on its boundary (with a dependency or a
  * consumer outside it, or the root) whose removal leaves the most gain, among those whose removal keeps the
@@ -248,6 +258,15 @@ PlacementInputs makeRenderPlacementInputs(const FrameRenderContextPtr& context);
  * placeGraphWithShadow() returns, and is left untouched when this returns false.
  **/
 bool placeRenderGraph(FrameGraph& graph, const FrameRenderContextPtr& context, ShadowPlacement* shadow = nullptr);
+
+/**
+ * @brief Places the graph of a render continuation's extension as placeRenderGraph() places a frame's, under the
+ * extension's context: the weight rule decides, a task that reuses the store counts as cached, and the roots, which the
+ * task the extension resumes reads from the store, count as read on the device when rootsReadOnDevice. A region holding
+ * a root then leaves it in the store on the device. Returns whether it placed. Same thread requirement as
+ * makeRenderPlacementInputs().
+ **/
+bool placeExtensionGraph(FrameGraph& graph, const FrameRenderContextPtr& context, bool rootsReadOnDevice);
 
 NATRON_NAMESPACE_EXIT
 

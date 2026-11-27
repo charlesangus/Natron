@@ -86,3 +86,44 @@ Not a Feature member: it ships on its own under E9 - USD And 3D.
 - 2026-11-25 — Full SOP Import control audit, In or Out each with a reason (user, grill).
 - 2026-11-25 — The reference app's defaults exactly: Define, prefix `/<node name>`, adjust-for-hierarchy on; the round trip picks Overlay explicitly, or uses M612 - USDGeoModify Node (user, grill).
 - 2026-11-25 — Split from M610 - GeoToUSD Attribute And Material Controls for size (planner).
+- 2026-11-26 — Control audit (P1.T1). Every SOP Import control, with where it lands (implementer):
+
+  | Control | Verdict | Knob / reason |
+  |---|---|---|
+  | SOP Path | Out | The Geometry input replaces it. |
+  | Load As Reference | In, M609 | `loadAsReference` |
+  | Sublayer Style | In, M609 | `layerStyle`: Sublayer, Copy Into Node Layer. "Merge Into Existing Active Layer" is Out: there is no shared active layer between nodes. |
+  | Layer Save Path | Out | The USD writer decides where layers are saved. |
+  | Adjust Transforms For Input Hierarchy | In, M609 | `adjustTransformsForInputHierarchy` (on) |
+  | Reference Type | In, M609 | `referenceType` |
+  | Reference Primitive | In, M609 | `referencePrimitive` (Automatic, Default, Specific) |
+  | Reference Primitive Path | In, M609 | `referencePrimitivePath` |
+  | Primitive Path | In, M609 | Folded into `pathPrefix`: with Load As Reference the arc goes on the prefix prim. |
+  | Make Instanceable | In, M609 | `makeInstanceable` |
+  | Parent Primitive Kind | In, M609 | `parentPrimitiveKind` |
+  | Parent Primitive Type | In, M609 | `parentPrimitiveType` (Xform, Scope, None) |
+  | Import Group | Exists | `group` |
+  | Group Type | Exists | `groupType` |
+  | Import Path Prefix | In, M609 | `pathPrefix` (replaces `rootPath`) |
+  | Path Attributes | In, M609 | `pathAttributes` (`path,name`) |
+  | Prefix Absolute Paths | In, M609 | `prefixAbsolutePaths` |
+  | Packed USD Primitives | In, M609 | `packedUsdPrimitives` |
+  | Other Primitives | In, M609 | `otherPrimitives` |
+  | Define Only Leaf Primitives | In, M609 | `defineOnlyLeafPrimitives` |
+  | Packed Primitives | In, M609 | `packedPrimitives` gains Create Xforms |
+  | Kind Authoring | In, M609 | `kindAuthoring` |
+  | Bind Materials, Use XformCommonAPI, Treat Polygons as Subdivision Surfaces, Subdivision Group, Reverse Polygon Vertex Ordering | In, M610 | Attribute and material side. |
+  | Set Missing Widths | In, M610 | Exists as `defaultPointWidth`; the mode (on/off) goes with the attribute controls. |
+  | Author Time Samples (modes), Set Default Primitive, Topology Attributes | In, M610 | Time-sample and topology modes. |
+  | Attributes, Indexed Attributes, Constant Attributes, the attribute type lists, Set Default Values | In, M610 | Attribute patterns. |
+  | Subset Attributes, Prefix Subsets, Subset Groups, USD Custom Attributes, Translate UV To ST | In, M610 | Attribute and subset side. |
+  | Agents, NURBS Curves, NURBS Surfaces, Height Fields | Out | Natron geometry has no such primitives. |
+  | Capture Weights | Out | No skinning in Natron geometry. |
+  | The per-control Enable toggles, the `usdconfig*` detail attributes | Out | Milestone Out: knobs can be expression-driven. |
+- 2026-11-26 — Defaults the local docs do not state, chosen and flagged for the user (implementer): Kind Authoring One Component, Parent Primitive Kind None, Reference Type Weaker Payload, Packed USD Primitives Overlay Transforms, and Packed Primitives kept at Point Instancer (today's default; the docs only say Create Xforms is used for packed folders). The stated defaults are matched: Path Attributes `path,name`, prefix `/<node name>`, Prefix Absolute Paths off, Define, Adjust on.
+- 2026-11-26 — The `pathPrefix` default follows renames through the scene nodes' rename helper (`getSceneNodeDefaultPrimPath` / `followSceneNodeRename`), not an expression: a hand-set value stays. This resolves the unconfirmed assumption (implementer).
+- 2026-11-26 — Intermediate prims the input already holds are written as typeless `def`s with no kind, so Parent Primitive Type and Kind Authoring never retype them. Packed partitions (instancers, native instances, Create Xforms) are always `def`. Packed USD overrides are always `over` (implementer).
+- 2026-11-26 — Overlay Transforms on meshes, curves and points writes only `xformOp:transform` (plus `xformOpOrder`): the input prim's own local transform, or the world origin for a prim the input lacks, since gprims carry no transform in Natron geometry (implementer).
+- 2026-11-26 — Moving geometry read from a vanished prim under the prefix (SourceGone) is kept for Define only. With Overlay the path is kept and listed as an overlay without a prim (implementer).
+- 2026-11-26 — Adjust Transforms is baked into points and matrices. Geometry not read from USD counts as world space, as does USDToGeo's flattened geometry. With Load As Reference it is unused, because the referenced layer is converted without the Scene input (implementer).
+- 2026-11-26 — The gtest lives at `Tests/Scene/GeoToUSDPaths_Test.cpp` (globbed by `Tests/CMakeLists.txt`), because `Tests/Geometry/` does not exist. Existing node-level tests pin `pathPrefix` to `/geo` (implementer).

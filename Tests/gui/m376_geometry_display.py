@@ -31,7 +31,7 @@ TOGGLES = ("pointMarkers", "pointNumbers", "primitiveNumbers", "normals")
 try:
     from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
     from PySide6.QtGui import QGuiApplication, QMouseEvent
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QWidget
 
     from guitest import check, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
 
@@ -83,14 +83,14 @@ try:
                 and not v.property("natronSceneError"))
 
     def row():
-        rows = [w for w in QApplication.allWidgets() if w.objectName() == "geoDisplayRow"]
+        rows = [w for w in QApplication.allWidgets() if w.objectName() == "sceneDisplayBar"]
         return rows[0] if rows else None
 
     def control(name):
         r = row()
         if r is None:
             return None
-        found = [w for w in r.children() if hasattr(w, "objectName") and w.objectName() == name]
+        found = [w for w in r.findChildren(QWidget) if w.objectName() == name]
         return found[0] if found else None
 
     def framebuffer():
@@ -140,10 +140,10 @@ try:
         shot("m376-geometry.png")
 
         r = row()
-        check(r is not None and r.isVisible(), "the geometry display row shows while geometry is viewed")
+        check(r is not None and r.isVisible(), "the display bar shows while geometry is viewed")
         for name in TOGGLES + ("normalScale", "highlightGroup"):
             check(viewer.getParam(name) is not None, "the Viewer has a %s parameter" % name)
-            check(control(name) is not None, "the geometry display row has a %s control" % name)
+            check(control(name) is not None, "the display bar has a %s control" % name)
 
         all_off()
         yield settle()

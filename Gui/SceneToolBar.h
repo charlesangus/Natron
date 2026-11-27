@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef Gui_GeoDisplayBar_h
-#define Gui_GeoDisplayBar_h
+#ifndef Gui_SceneToolBar_h
+#define Gui_SceneToolBar_h
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -29,32 +29,36 @@
 #include "Global/Macros.h"
 
 #include <functional>
+#include <vector>
 
+#include <QPointer>
 #include <QWidget>
 
 class QButtonGroup;
-class QCheckBox;
-class QDoubleSpinBox;
-class QLineEdit;
+class QToolButton;
 
 NATRON_NAMESPACE_ENTER
 
-struct GeoDisplayOptions;
+class SceneViewport;
 
 /**
- * @brief The viewer toolbar row of geometry display toggles. Each control is named after the
- * viewer knob it shows.
+ * @brief The 3D view's left bar: the transform tools, then the geometry pick modes. The hidden
+ * transformToolSlot and snapSlot widgets hold the places of tools still to come.
  **/
-class GeoDisplayBar
+class SceneToolBar
     : public QWidget {
 public:
-    explicit GeoDisplayBar(QWidget* parent);
+    explicit SceneToolBar(QWidget* parent);
 
-    // Shows @p options without calling the edit callback.
-    void setOptions(const GeoDisplayOptions& options);
+    // The view whose tool the buttons pick and show; set once it exists.
+    void setViewport(SceneViewport* viewport);
 
-    // Called with the options the controls show after the user changes one.
-    void setEditCallback(const std::function<void(const GeoDisplayOptions&)>& callback);
+    /**
+     * @brief Whether the buttons act: the transform tools while the 3D view is shown, the pick
+     * modes while it shows geometry. Buttons that cannot act are disabled, never hidden, so the
+     * bar keeps its layout.
+     **/
+    void setActive(bool shown, bool geometry);
 
     // Shows the pick mode, a GeoComponentEnum, without calling the pick mode callback.
     void setPickMode(int mode);
@@ -63,20 +67,16 @@ public:
     void setPickModeCallback(const std::function<void(int)>& callback);
 
 private:
-    GeoDisplayOptions currentOptions() const;
-    void edited();
+    void refreshTools();
 
-    QCheckBox* _pointMarkers;
-    QCheckBox* _pointNumbers;
-    QCheckBox* _primitiveNumbers;
-    QCheckBox* _normals;
-    QDoubleSpinBox* _normalScale;
-    QLineEdit* _highlightGroup;
+    QPointer<SceneViewport> _viewport;
+    // In the order of the view's transform tool actions.
+    std::vector<QToolButton*> _toolButtons;
     QButtonGroup* _pickModes;
     std::function<void(int)> _pickModeCallback;
-    std::function<void(const GeoDisplayOptions&)> _callback;
+    bool _shown = false;
 };
 
 NATRON_NAMESPACE_EXIT
 
-#endif // Gui_GeoDisplayBar_h
+#endif // Gui_SceneToolBar_h

@@ -226,10 +226,17 @@
         <file>Resources/Icons/natron/marker-node-root.svg</file>
         <file>Resources/Icons/natron/marker-r.svg</file>
         <file>Resources/Icons/natron/marker-z.svg</file>
+        <file>Resources/Icons/natron/normals.svg</file>
         <file>Resources/Icons/natron/open-close-curve.svg</file>
         <file>Resources/Icons/natron/out-point.svg</file>
+        <file>Resources/Icons/natron/pick-edges.svg</file>
+        <file>Resources/Icons/natron/pick-points.svg</file>
+        <file>Resources/Icons/natron/pick-primitives.svg</file>
         <file>Resources/Icons/natron/play-reverse.svg</file>
+        <file>Resources/Icons/natron/point-markers.svg</file>
+        <file>Resources/Icons/natron/point-numbers.svg</file>
         <file>Resources/Icons/natron/pressure.svg</file>
+        <file>Resources/Icons/natron/primitive-numbers.svg</file>
         <file>Resources/Icons/natron/rectangle-handles.svg</file>
         <file>Resources/Icons/natron/remove-feather.svg</file>
         <file>Resources/Icons/natron/remove-points.svg</file>

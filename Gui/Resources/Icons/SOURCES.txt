@@ -148,10 +148,17 @@ natron/marker-linear.svg | Natron custom ("marker-linear", diamond key marker) |
 natron/marker-node-root.svg | Natron custom ("marker-node-root", closed-tab key marker) | GPL-2.0-or-later
 natron/marker-r.svg | Natron custom ("marker-r", ring with an R inside) | GPL-2.0-or-later
 natron/marker-z.svg | Natron custom ("marker-z", ring with a Z inside) | GPL-2.0-or-later
+natron/normals.svg | Natron custom ("normals", curved surface with two arrows standing off it) | GPL-2.0-or-later
 natron/open-close-curve.svg | Natron custom ("open-close-curve", solid arc completed by a dashed arc) | GPL-2.0-or-later
 natron/out-point.svg | Natron custom ("out-point", mirrored in-point) | GPL-2.0-or-later
+natron/pick-edges.svg | Natron custom ("pick-edges", triangle with one heavy edge) | GPL-2.0-or-later
+natron/pick-points.svg | Natron custom ("pick-points", triangle with filled dots at its corners) | GPL-2.0-or-later
+natron/pick-primitives.svg | Natron custom ("pick-primitives", filled triangle) | GPL-2.0-or-later
 natron/play-reverse.svg | Natron custom ("play-reverse", Lucide play mirrored horizontally) | GPL-2.0-or-later
+natron/point-markers.svg | Natron custom ("point-markers", polyline with filled square points) | GPL-2.0-or-later
+natron/point-numbers.svg | Natron custom ("point-numbers", filled dot with a number sign) | GPL-2.0-or-later
 natron/pressure.svg | Natron custom ("pressure", tapered S-squiggle) | GPL-2.0-or-later
+natron/primitive-numbers.svg | Natron custom ("primitive-numbers", triangle with a number sign) | GPL-2.0-or-later
 natron/rectangle-handles.svg | Natron custom ("rectangle-handles", rectangle with corner handles) | GPL-2.0-or-later
 natron/remove-feather.svg | Natron custom ("remove-feather", pen nib, feather point and a minus) | GPL-2.0-or-later
 natron/remove-points.svg | Natron custom ("remove-points", pen-tool nib with a minus) | GPL-2.0-or-later

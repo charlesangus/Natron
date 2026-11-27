@@ -284,6 +284,7 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
 
     if (const ViewerInstance* viewer = dynamic_cast<const ViewerInstance*>(effect.get())) {
         viewer->sceneViewToSerialization(&serialization->sceneView);
+        serialization->viewerBars = viewer->getViewerBars();
     }
 
     NodeGroup* isGroupNode = isEffectGroup();

@@ -42,7 +42,7 @@ try:
     from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
     from PySide6.QtGui import QGuiApplication, QMouseEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QWidget
 
     from guitest import check, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
 
@@ -91,14 +91,14 @@ try:
                 and not v.property("natronSceneError"))
 
     def row():
-        rows = [w for w in QApplication.allWidgets() if w.objectName() == "geoDisplayRow"]
+        rows = [w for w in QApplication.allWidgets() if w.objectName() == "sceneToolBar"]
         return rows[0] if rows else None
 
     def control(name):
         r = row()
         if r is None:
             return None
-        found = [w for w in r.children() if hasattr(w, "objectName") and w.objectName() == name]
+        found = [w for w in r.findChildren(QWidget) if w.objectName() == name]
         return found[0] if found else None
 
     def framebuffer():

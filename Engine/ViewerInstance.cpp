@@ -478,6 +478,31 @@ ViewerInstance::onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr
     } else {
         _loadedSceneView.reset();
     }
+    if (serialization && !serialization->viewerBars.isDefault()) {
+        _viewerBars.reset(new Serialization::ViewerBarsSerialization(serialization->viewerBars));
+    } else {
+        _viewerBars.reset();
+    }
+}
+
+Serialization::ViewerBarsSerialization
+ViewerInstance::getViewerBars() const
+{
+    std::lock_guard<std::mutex> lock(_sceneViewMutex);
+
+    return _viewerBars ? *_viewerBars : Serialization::ViewerBarsSerialization();
+}
+
+void
+ViewerInstance::setViewerBars(const Serialization::ViewerBarsSerialization& bars)
+{
+    std::lock_guard<std::mutex> lock(_sceneViewMutex);
+
+    if (bars.isDefault()) {
+        _viewerBars.reset();
+    } else {
+        _viewerBars.reset(new Serialization::ViewerBarsSerialization(bars));
+    }
 }
 
 Serialization::SceneViewSerialization

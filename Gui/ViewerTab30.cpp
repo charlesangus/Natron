@@ -41,6 +41,7 @@
 #include <QCheckBox>
 #include <QToolBar>
 
+#include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -62,6 +63,7 @@
 #include "Gui/NodeGui.h"
 #include "Gui/NodeViewerContext.h"
 #include "Gui/ScaleSliderQWidget.h"
+#include "Gui/SceneTopBar.h"
 #include "Gui/SpinBox.h"
 #include "Gui/TimeLineGui.h"
 #include "Gui/ViewerGL.h"
@@ -613,6 +615,23 @@ ViewerTab::createNodeViewerInterface(const NodeGuiPtr& n)
 /**
  * @brief Set the current viewer interface for a given plug-in to be the one of the given node
  **/
+namespace {
+
+// A node making a scene or geometry shows its viewer controls as tool options in the 3D view's top bar.
+bool
+showsToolOptions(const NodeGuiPtr& n)
+{
+    const EffectInstancePtr effect = n->getNode()->getEffectInstance();
+    if (!effect) {
+        return false;
+    }
+    const DataKindEnum kind = effect->getOutputDataKind();
+
+    return (kind == eDataKindScene) || (kind == eDataKindGeometry);
+}
+
+} // namespace
+
 void
 ViewerTab::setPluginViewerInterface(const NodeGuiPtr& n)
 {
@@ -662,62 +681,33 @@ ViewerTab::setPluginViewerInterface(const NodeGuiPtr& n)
         }
     }
 
-    // If there are other interface active, add it after them
-    int index;
-    if ( _imp->currentNodeContext.empty() ) {
-        // insert before the viewer
-        index = _imp->mainLayout->indexOf(_imp->viewerContainer);
-#       ifdef DEBUG_VIEWERCONTAINER
-        qDebug() << "viewer container" << _imp->viewerContainer << "index" << index;
-#       endif
-    } else {
-        // Remove the oldest opened interface if we reached the maximum
+    // Remove the oldest opened interface if we reached the maximum
+    if (!_imp->currentNodeContext.empty()) {
         int maxNodeContextOpened = appPTR->getCurrentSettings()->getMaxOpenedNodesViewerContext();
-#       ifdef DEBUG_VIEWERCONTAINER
-        qDebug() << "currentNodeContext(" << (int)_imp->currentNodeContext.size() << "):";
-        for (std::list<ViewerTabPrivate::PluginViewerContext>::const_iterator it = _imp->currentNodeContext.begin();
-             it != _imp->currentNodeContext.end();
-             ++it) {
-            qDebug() << QString::fromUtf8(it->slot.c_str()) << (QObject*)it->currentNode.lock().get() << it->currentContext.get() << it->currentContext->getContainerWidget();
-        }
-#       endif
-        while ( (int)_imp->currentNodeContext.size() >= maxNodeContextOpened ) {
+        while (!_imp->currentNodeContext.empty() && ((int)_imp->currentNodeContext.size() >= maxNodeContextOpened)) {
             const ViewerTabPrivate::PluginViewerContext& oldestNodeViewerInterface = _imp->currentNodeContext.front();
             removeNodeViewerInterface(oldestNodeViewerInterface.currentNode.lock(), false /*permanently*/, false /*setAnother*/);
-#           ifdef DEBUG_VIEWERCONTAINER
-            qDebug() << "after removal, currentNodeContext(" << (int)_imp->currentNodeContext.size() << "):";
-            for (std::list<ViewerTabPrivate::PluginViewerContext>::const_iterator it = _imp->currentNodeContext.begin();
-                 it != _imp->currentNodeContext.end();
-                 ++it) {
-                qDebug() << QString::fromUtf8(it->slot.c_str()) << (QObject*)it->currentNode.lock().get() << it->currentContext.get() << it->currentContext->getContainerWidget();
-            }
-#           endif
-        }
-        if ( _imp->currentNodeContext.empty() ) {
-            // insert before the viewer
-            index = _imp->mainLayout->indexOf(_imp->viewerContainer);
-        } else {
-            QWidget* container = _imp->currentNodeContext.back().currentContext->getContainerWidget();
-            index = _imp->mainLayout->indexOf(container);
-#           ifdef DEBUG_VIEWERCONTAINER
-            qDebug() << "container" << container << "index" << index;
-#           endif
-            assert(index != -1);
-            if (index >= 0) {
-                ++index;
-            }
         }
     }
-    assert(index >= 0);
-    if (index >= 0) {
-        assert(newContainer);
-        if (newContainer) {
+
+    if (newContainer && showsToolOptions(n)) {
+        _imp->sceneTopBar->addToolOptions(newContainer);
+        QMutexLocker l(&_imp->visibleToolbarsMutex);
+        newContainer->setVisible(_imp->topToolbarVisible);
+    } else if (newContainer) {
+        // After the other interfaces in the main layout, else before the viewer.
+        int index = -1;
+        for (std::list<ViewerTabPrivate::PluginViewerContext>::reverse_iterator it2 = _imp->currentNodeContext.rbegin();
+             (index < 0) && (it2 != _imp->currentNodeContext.rend()); ++it2) {
+            index = _imp->mainLayout->indexOf(it2->currentContext->getContainerWidget());
+        }
+        index = (index >= 0) ? (index + 1) : _imp->mainLayout->indexOf(_imp->viewerContainer);
+        assert(index >= 0);
+        if (index >= 0) {
             _imp->mainLayout->insertWidget(index, newContainer);
-            {
-                QMutexLocker l(&_imp->visibleToolbarsMutex);
-                if (_imp->topToolbarVisible) {
-                    newContainer->show();
-                }
+            QMutexLocker l(&_imp->visibleToolbarsMutex);
+            if (_imp->topToolbarVisible) {
+                newContainer->show();
             }
         }
     }
@@ -779,10 +769,14 @@ ViewerTab::removeNodeViewerInterface(const NodeGuiPtr& n,
         }
     }
     if (activeItemContainer) {
-        int buttonsBarIndex = _imp->mainLayout->indexOf(activeItemContainer);
-        assert(buttonsBarIndex >= 0);
-        if (buttonsBarIndex >= 0) {
-            _imp->mainLayout->removeWidget(activeItemContainer);
+        if (_imp->sceneTopBar->hasToolOptions(activeItemContainer)) {
+            _imp->sceneTopBar->removeToolOptions(activeItemContainer);
+        } else {
+            int buttonsBarIndex = _imp->mainLayout->indexOf(activeItemContainer);
+            assert(buttonsBarIndex >= 0);
+            if (buttonsBarIndex >= 0) {
+                _imp->mainLayout->removeWidget(activeItemContainer);
+            }
         }
         activeItemContainer->hide();
     }

@@ -41,8 +41,9 @@
 
 #include <functional>
 
-#include <QSize>
 #include <QEnterEvent>
+#include <QList>
+#include <QSize>
 
 NATRON_NAMESPACE_ENTER
 
@@ -543,6 +544,10 @@ public Q_SLOTS:
 
     void toggleTripleSync(bool toggled);
 
+public:
+    // The checkable Tool Bar, Display Bar and Top Bar actions, which show the 3D view's bars.
+    QList<QAction*> getViewerBarToggleActions() const;
+
 private Q_SLOTS:
 
     void onViewerKnobValueChanged(ViewSpec view, int dimension, int reason);
@@ -555,12 +560,23 @@ private Q_SLOTS:
 
     void onRenderEverythingButtonClicked(bool on);
 
-    // Shows the scene view's renderer row only for a progressive renderer.
+    // Shows the 3D view's bars as the view kind and the user's bar flags ask, and the top bar's
+    // progressive controls only for a progressive renderer.
     void refreshSceneRenderRow();
 
     void refreshRefineSamplesLabel();
 
+    // Records the bar flags of the current view kind from the toggle actions and saves them.
+    void onViewerBarToggled();
+
 private:
+    // Takes the bar flags the viewer node was loaded with.
+    void loadViewerBars();
+    // Checks the bar toggle actions from the flags of the current view kind.
+    void refreshViewerBarActions();
+    // Adds the bar toggles and the geometry display toggles to the 3D view's context menu.
+    void extendSceneContextMenu(QMenu* menu);
+
     // Shows the viewer node's knobs in the widgets and in the GL viewer, with no widget signal.
     void refreshFromViewerKnob(const std::string& name);
     void refreshAllFromViewerKnobs();

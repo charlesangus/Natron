@@ -122,6 +122,45 @@ namespace YamlDetail {
             return view;
         }
 
+        // The flags in their declaration order, with the keys they are saved under.
+        const std::pair<const char*, bool ViewerBarsSerialization::*> kViewerBarFlags[] = {
+            { "toolBar2D", &ViewerBarsSerialization::toolBar2D },
+            { "toolBar3D", &ViewerBarsSerialization::toolBar3D },
+            { "displayBar2D", &ViewerBarsSerialization::displayBar2D },
+            { "displayBar3D", &ViewerBarsSerialization::displayBar3D },
+            { "topBar3D", &ViewerBarsSerialization::topBar3D },
+        };
+
+        void
+        emitViewerBars(YAML::Emitter& em,
+                       const ViewerBarsSerialization& bars)
+        {
+            em << YAML::BeginMap;
+            for (const auto& flag : kViewerBarFlags) {
+                emitKey(em, flag.first);
+                em << YAML::Value;
+                emitBool(em, bars.*(flag.second));
+            }
+            em << YAML::EndMap;
+        }
+
+        ViewerBarsSerialization
+        readViewerBars(const YAML::Node& node,
+                       const std::string& context,
+                       YamlWarnings* warnings)
+        {
+            ViewerBarsSerialization bars;
+            MapReader reader(node, context, warnings);
+            for (const auto& flag : kViewerBarFlags) {
+                if (YAML::Node value = reader.get(flag.first)) {
+                    bars.*(flag.second) = readBool(value, context + "." + flag.first);
+                }
+            }
+            reader.finish();
+
+            return bars;
+        }
+
         void
         emitNode(YAML::Emitter& em,
                  const NodeSerialization& node,
@@ -206,6 +245,11 @@ namespace YamlDetail {
                 emitKey(em, "sceneView");
                 em << YAML::Value;
                 emitSceneView(em, node.sceneView);
+            }
+            if (!node.viewerBars.isDefault()) {
+                emitKey(em, "viewerBars");
+                em << YAML::Value;
+                emitViewerBars(em, node.viewerBars);
             }
             BlobEncodeContext blobs { &sink, fullName, usedPaths };
             if (node.hasRotoContext) {
@@ -307,6 +351,9 @@ namespace YamlDetail {
             }
             if (YAML::Node sceneView = reader.get("sceneView")) {
                 data.sceneView = readSceneView(sceneView, context + ".sceneView", warnings);
+            }
+            if (YAML::Node viewerBars = reader.get("viewerBars")) {
+                data.viewerBars = readViewerBars(viewerBars, context + ".viewerBars", warnings);
             }
             if (YAML::Node roto = reader.get("roto")) {
                 data.hasRotoContext = true;

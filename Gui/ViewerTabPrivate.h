@@ -39,6 +39,8 @@ CLANG_DIAG_OFF(uninitialized)
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
+class QAction;
+
 #include "Global/Enums.h"
 
 #include "Engine/EngineFwd.h"
@@ -47,6 +49,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/UndoGesture.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
+#include "Serialization/NodeSerialization.h"
 
 #include "Gui/ComboBox.h"
 #include "Gui/GuiFwd.h"
@@ -56,7 +59,9 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 class SceneBreadcrumbBar;
-class GeoDisplayBar;
+class SceneDisplayBar;
+class SceneToolBar;
+class SceneTopBar;
 class SceneViewport;
 
 struct ViewerTabPrivate
@@ -90,16 +95,20 @@ struct ViewerTabPrivate
     /*Viewer Settings*/
     QWidget* firstSettingsRow, *secondSettingsRow;
     QHBoxLayout* firstRowLayout, *secondRowLayout;
-    // The progressive render's controls, shown with the scene view and enabled while it renders with
-    // other than Storm.
-    QWidget* sceneRenderRow;
-    QHBoxLayout* sceneRenderRowLayout;
+    // The 3D view's bars: tools on the left, display on the right, menus and render controls on top.
+    SceneToolBar* sceneToolBar;
+    SceneDisplayBar* sceneDisplayBar;
+    SceneTopBar* sceneTopBar;
+    // The top bar's progressive render controls, kept here for the slots that read them.
     SpinBox* maxSamplesBox;
     Button* refinementPausedButton;
     Button* renderEverythingButton;
     Label* refineSamplesLabel;
-    // The geometry display toggles, shown while the scene view shows geometry.
-    GeoDisplayBar* geoDisplayRow;
+    // Which bars the user shows, saved with the viewer; the 2D flags apply while it shows an image.
+    Serialization::ViewerBarsSerialization bars;
+    QAction* toggleToolBarAction;
+    QAction* toggleDisplayBarAction;
+    QAction* toggleTopBarAction;
 
     /*1st row*/
     //ComboBox* viewerLayers;

@@ -242,6 +242,9 @@ USDEditTransform::initializeKnobs()
     mode->setAnimationEnabled(false);
     page->addKnob(mode);
     _mode = mode;
+    // The 3D view's top bar shows it as a tool option while the node's panel is open.
+    mode->setInViewerContextLabel(tr("Mode"));
+    addKnobToViewerUI(mode);
 
     _transform.create(this, page);
 

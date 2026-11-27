@@ -3896,6 +3896,7 @@ ViewerGL::populateMenu()
     showHideMenu->addAction(showHideLeftToolbar);
     showHideMenu->addAction(showHideRightToolbar);
     showHideMenu->addAction(showHideTopToolbar);
+    showHideMenu->addActions(_imp->viewerTab->getViewerBarToggleActions());
     showHideMenu->addAction(showAll);
     showHideMenu->addAction(hideAll);
 

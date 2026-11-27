@@ -143,6 +143,7 @@ holds its default.
 | `roto` | The roto context (layers, beziers, strokes). |
 | `tracker` | The tracker context. |
 | `sceneView` | A viewer's 3D view: what it draws and which payloads it loads. See below. |
+| `viewerBars` | Which of a viewer's 3D bars show. See below. |
 | `children` | For a group, a map of its nodes, in this same schema. |
 
 A viewer's `sceneView` holds what the viewer set and never what the graph's nodes set, which
@@ -159,6 +160,12 @@ their knobs carry. It has three keys, each left out when empty:
 On reopening, the viewer puts the states in place and asks for the loads, and both work the same
 way as the ones the user asks for: cancelling the loads stops them, a load that fails badges its
 row, and the rest restores.
+
+A viewer's `viewerBars` holds whether its tool, display and top bars show, as booleans:
+`toolBar2D`, `toolBar3D`, `displayBar2D`, `displayBar3D` and `topBar3D`. The 2D keys apply while
+the viewer shows an image, the 3D keys while it shows a scene or geometry; the top bar shows only
+in the 3D view. The map is left out while every flag has its default: the bars shown in the 3D
+view and hidden in the 2D view. A key left out takes its default.
 
 `pos`, `size`, `color` and `overlay` are the node's layout. A node that has no saved layout
 writes none of them. Backdrops are nodes, so they use the same fields.

@@ -111,6 +111,25 @@ struct SceneViewSerialization {
 };
 
 /**
+ * @brief Which of a viewer's 3D bars show, kept apart for its 2D and 3D views. The top bar shows
+ * only in the 3D view, so it has no 2D state.
+ **/
+struct ViewerBarsSerialization {
+    bool toolBar2D = false;
+    bool toolBar3D = true;
+    bool displayBar2D = false;
+    bool displayBar3D = true;
+    bool topBar3D = true;
+
+    bool operator==(const ViewerBarsSerialization&) const = default;
+
+    bool isDefault() const
+    {
+        return *this == ViewerBarsSerialization();
+    }
+};
+
+/**
  * @brief The saved state of one node: its plug-in, names and knobs, its input connections, its
  * roto and tracker data, its user knob layout and, for a group or a multi-instance node, the
  * nodes it holds. Node names are script names.
@@ -158,6 +177,9 @@ struct NodeSerialization {
     // A viewer's only; empty for every other node.
     SceneViewSerialization sceneView;
 
+    // A viewer's only; the defaults for every other node.
+    ViewerBarsSerialization viewerBars;
+
     NodeSerialization()
         : id()
         , label()
@@ -181,6 +203,7 @@ struct NodeSerialization {
         , children()
         , cacheID()
         , sceneView()
+        , viewerBars()
     {
     }
 };

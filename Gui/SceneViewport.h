@@ -55,8 +55,10 @@
 // Free of USD: the viewer tab includes it, and USD's headers need the full Python API. Everything
 // that touches pxr lives in SceneViewport.cpp.
 
+class QAction;
 class QContextMenuEvent;
 class QKeyEvent;
+class QMenu;
 class QMouseEvent;
 class QOpenGLContextGroup;
 class QPainter;
@@ -1362,6 +1364,30 @@ public:
 
     void setTransformPivot(int pivot);
 
+    /**
+     * @brief The actions the view's bars and its context menu share, so both always show one state:
+     * one per transform tool and per draw mode (named after their script names), the proxy, render
+     * and guide purposes, one per lighting mode, and Show Grid. Their shortcuts only show in menus;
+     * the keys themselves go through the view's own key handling.
+     **/
+    const QList<QAction*>& getTransformToolActions() const;
+    const QList<QAction*>& getDrawModeActions() const;
+    const QList<QAction*>& getPurposeActions() const;
+    const QList<QAction*>& getLightingActions() const;
+    QAction* getShowGridAction() const;
+
+    /**
+     * @brief Empties menu and fills it with the context menu's Renderer, Look Through, View or
+     * Clipping entries as the view stands now, for a bar to rebuild each time its menu opens.
+     **/
+    void populateRendererMenu(QMenu* menu);
+    void populateLookThroughMenu(QMenu* menu);
+    void populateViewMenu(QMenu* menu);
+    void populateClippingMenu(QMenu* menu);
+
+    // Called with the context menu before it opens, to add entries the view does not own.
+    void setContextMenuExtender(const std::function<void(QMenu*)>& extend);
+
     // The node whose scene is shown: new cameras are placed near it, in its group.
     void setViewedNodeProvider(const std::function<NodePtr()>& provider);
 
@@ -1554,6 +1580,12 @@ Q_SIGNALS:
     // Whenever the natronSceneSamples family of properties is published.
     void refineStateChanged();
 
+    /**
+     * @brief The draw mode, grid, purposes, lighting, transform tool, space or pivot, renderer,
+     * camera looked through, view mode, view lock or automatic clipping changed, by key, menu or bar.
+     **/
+    void displayStateChanged();
+
     // The renderer's stage holds the latest requested scene, or none (main thread).
     void sceneSynced();
 
@@ -1605,6 +1637,14 @@ private:
     void publishState();
 
     void publishRefineState();
+
+    void createDisplayActions();
+
+    /**
+     * @brief Checks the shared actions from the view's state, and emits displayStateChanged() if
+     * that state differs from the last one announced, or always with @p announce.
+     **/
+    void syncDisplayActions(bool announce);
 
     /**
      * @brief Hands the pick mode and component selection to the view's guides and highlight, and

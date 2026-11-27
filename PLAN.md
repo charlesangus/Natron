@@ -687,7 +687,7 @@ future core work has solid ground to build on.
 | M612 | USDGeoModify Node | todo | M609, M610, M611, M159 |  | E9 | F42 | | [M612-usdgeomodify-node.md](PLAN/MILESTONES/M612-usdgeomodify-node.md) |
 | M613 | Geometry Node Handles Rollout | todo | M604 |  | E28 |  | | [M613-geometry-node-handles-rollout.md](PLAN/MILESTONES/M613-geometry-node-handles-rollout.md) |
 | M628 | Texture Budget For Small Devices | todo | - |  | E9 |  | | [M628-texture-budget-for-small-devices.md](PLAN/MILESTONES/M628-texture-budget-for-small-devices.md) |
-| M629 | Stable USDRead Placeholder Digest | todo | - |  | E9 | M629-stable-usdread-placeholder-digest.md | | [Caching by a USDRead](PLAN/MILESTONES/Caching by a USDRead) |
+| M629 | Stable USDRead Placeholder Digest | todo | - |  | E9 |  | | [M629-stable-usdread-placeholder-digest.md](PLAN/MILESTONES/M629-stable-usdread-placeholder-digest.md) |
 | M630 | Headlight Toggle Relighting | todo | - |  | E9 | M630-headlight-toggle-relighting.md | | [Turning the per-pass headlight off](PLAN/MILESTONES/Turning the per-pass headlight off) |
 | M631 | Main GUI Check Failures | todo | - |  | E2 | M631-main-gui-check-failures.md | | [m52_layer_stack fails|m600_nodes_selection fails|GUI scripts failing on main](PLAN/MILESTONES/m52_layer_stack fails|m600_nodes_selection fails|GUI scripts failing on main) |
 | M632 | Linear Input Data Refresh | todo | M299 |  | E6 | M632-linear-input-data-refresh.md | | [Input-data refresh scales](PLAN/MILESTONES/Input-data refresh scales) |

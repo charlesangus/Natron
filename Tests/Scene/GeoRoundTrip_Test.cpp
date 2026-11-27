@@ -280,6 +280,10 @@ protected:
         ASSERT_TRUE(unpack != NULL);
         unpack->setValue(true);
 
+        KnobChoice* other = dynamic_cast<KnobChoice*>(_toUSD->getKnobByName(kGeoToUSDParamOtherPrimitives).get());
+        ASSERT_TRUE(other != NULL);
+        other->setValueFromID("define", 0);
+
         connectNodes(_reader, _toGeo, 0, true);
         connectNodes(_toGeo, _toUSD, kGeoToUSDInputGeometry, true);
         connectNodes(_reader, _toUSD, kGeoToUSDInputScene, true);
@@ -410,7 +414,7 @@ TEST_F(GeoRoundTripTest, PrimsReadByNameAloneArePlacedByThatNameAndCarryNoReader
     const PXR_NS::UsdStageRefPtr after = stageOf(result, &resultLease);
     ASSERT_TRUE(after);
 
-    KnobString* rootPath = dynamic_cast<KnobString*>(_toUSD->getKnobByName(kGeoToUSDParamRootPath).get());
+    KnobString* rootPath = dynamic_cast<KnobString*>(_toUSD->getKnobByName(kGeoToUSDParamPathPrefix).get());
     ASSERT_TRUE(rootPath != NULL);
     const PXR_NS::UsdPrim body = after->GetPrimAtPath(PXR_NS::SdfPath(rootPath->getValue() + "/Body"));
     EXPECT_TRUE(body && body.IsA<PXR_NS::UsdGeomMesh>());

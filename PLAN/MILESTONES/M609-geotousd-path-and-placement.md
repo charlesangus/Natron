@@ -54,27 +54,27 @@ Not a Feature member: it ships on its own under E9 - USD And 3D.
 
 ## Phase 609.1: Controls
 
-- [ ] M609.P1.T1 — Control audit and the path knobs
+- [x] M609.P1.T1 — Control audit and the path knobs
   - files: `Engine/Nodes/Geometry/GeoToUSD.{h,cpp}` (~:325-421), `Engine/Nodes/Geometry/GeoUsdConvert.{h,cpp}` (~:160-170, ~:791-860), `Tests/Geometry/GeoToUSDPaths_Test.cpp` (new), `Tests/CMakeLists.txt`, this milestone file's `## Decisions`
   - approach: First write the audit of every SOP Import control (from `.local/docs/houdini/nodes/lop/sopimport.md` and `.local/docs/houdini/solaris/sop_import.md`) into `## Decisions`, each In (M609 or M610) or Out with a reason. Then replace `rootPath` with `pathPrefix` and add `pathAttributes` and `prefixAbsolutePaths`. Partitioning takes the first non-empty listed attribute, sanitises names, suffixes incompatible types, and names unattributed geometry `mesh_0` and so on.
   - verify: gtest: `path=/a/b` with prefix `/pre` stays `/a/b`, and with Prefix Absolute it becomes `/pre/a/b`; `name=leg` gives `/pre/leg`; a mesh and curves at one path become `_0`/`_1` siblings; no attribute gives `mesh_0`.
   - size: M
-- [ ] M609.P1.T2 — Define/Overlay modes, leaf-only definition and parent type/kind
+- [x] M609.P1.T2 — Define/Overlay modes, leaf-only definition and parent type/kind
   - files: `Engine/Nodes/Geometry/GeoUsdConvert.cpp` (`ensurePrim` ~:1035, ~:1445-1451), `Engine/Nodes/Geometry/GeoToUSD.cpp`, `Tests/Geometry/GeoToUSDPaths_Test.cpp`
   - approach: Replace the implicit over rule with `otherPrimitives`: Define authors `def`; Overlay authors `over` with the full data; Overlay Transforms authors `over` with only the xform. Remove the silent `eGeoUsdPlacedCollision` move (Define on an existing path redefines it). `defineOnlyLeafPrimitives` authors intermediate prims as overs. `parentPrimitiveType` and `kindAuthoring` apply to the intermediate prims created. Report Overlay paths with no prim below in the node message.
   - verify: gtest on an input stage containing `/a/m`: Define gives a `def` spec, Overlay an `over`, and Overlay Transforms an `over` holding only `xformOp:transform`; Overlay on a missing path warns.
   - size: M
-- [ ] M609.P1.T3 — Packed handling and Adjust Transforms For Input Hierarchy
+- [x] M609.P1.T3 — Packed handling and Adjust Transforms For Input Hierarchy
   - files: `Engine/Nodes/Geometry/GeoUsdConvert.{h,cpp}` (`eGeoUsdPrimOverride` ~:72), `Engine/Nodes/Geometry/GeoToUSD.{h,cpp}`, `Tests/Geometry/GeoToUSDPaths_Test.cpp`
   - approach: `packedUsdPrimitives` chooses Ignore, Overlay Transforms or Overlay Transforms And Attributes (constant primvars). `packedPrimitives` gains Create Xforms. `adjustTransformsForInputHierarchy` inverts the world transform of the input's existing ancestors of each prim and authors the result as the local transform, so world position is kept. That generalises today's "relative to the input's parent" rule for packed overrides to every partition.
   - verify: gtest: a world-space detail under an input ancestor translated by (1,0,0) lands at the same world position with the adjustment on, and is offset by (1,0,0) with it off.
   - size: M
-- [ ] M609.P1.T4 — Load As Reference and layer style
+- [x] M609.P1.T4 — Load As Reference and layer style
   - files: `Engine/Nodes/Geometry/GeoToUSD.cpp` (~:989-1020, `emitSceneLayer`), `Tests/Geometry/GeoToUSDPaths_Test.cpp`
   - approach: `layerStyle` replaces `copyIntoLayer`: Sublayer (today's default, the `natrongeo` layer as a sublayer) or Copy Into Node Layer. `loadAsReference` instead references or payloads the geometry layer onto a prim, with `referenceType` (Weaker/Stronger Payload, Weaker/Stronger Reference) and `referencePrimitive` (Automatic/Default/Specific). The prim path is the prefix; it is created with `parentPrimitiveType` if missing.
   - verify: gtest: Load As Reference with a payload gives a prim with one payload arc to the geometry layer, and the composed stage has the mesh under it.
   - size: M
-- [ ] M609.P1.T5 — Node message, docs and GUI check
+- [x] M609.P1.T5 — Node message, docs and GUI check
   - files: `Engine/Nodes/Geometry/GeoToUSD.cpp`, `Engine/Nodes/Geometry/docs/GeoToUSD.md`, `Tests/gui/m609_geotousd_paths.py`
   - approach: The node message lists up to 20 partitions, each with its path and whether it was defined or overlaid. The docs explain each control and the round-trip recipe. A GUI script builds USDRead(fixture) → USDToGeo → GeoTransform → GeoToUSD(Overlay) → USDMerge and checks the edited prim is at its original path with its parent xform intact.
   - verify: the script passes under Xvfb; the docs build (the existing docs check, if there is one).

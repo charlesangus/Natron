@@ -42,6 +42,7 @@ import ctypes
 import os
 import re
 import sys
+import time
 import traceback
 
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
@@ -696,15 +697,32 @@ try:
                 continue
         return found
 
-    def unfold_switch(node, dims):
+    def unfold_switch_once(node, dims):
         """The row's dimension switch: the checkable button, labelled with the dimension count, beside
-        dimension 0's field."""
+        dimension 0's field. Every intermediate widget stays referenced while it is walked, and a
+        wrapper that died with the widget under it raises RuntimeError."""
         fields = unfold_fields(node, 0)
-        row = fields[0].parentWidget().parentWidget() if len(fields) == 1 else None
-        for b in (row.findChildren(QAbstractButton) if row is not None else []):
+        if len(fields) != 1:
+            return None
+        field = fields[0]
+        box = field.parentWidget()
+        row = box.parentWidget() if box is not None else None
+        buttons = row.findChildren(QAbstractButton) if row is not None else []
+        for b in buttons:
             if b.isCheckable() and b.text() == str(dims) and b.isVisible():
                 return b
         return None
+
+    def unfold_switch(node, dims):
+        """unfold_switch_once, retried after a settle for as long as a wrapper turns up dead."""
+        deadline = time.time() + PANEL_TIMEOUT_S
+        while True:
+            try:
+                return unfold_switch_once(node, dims)
+            except RuntimeError:
+                if time.time() > deadline:
+                    raise
+            yield ("sleep", SETTLE_MS)
 
     def unfold_steps():
         tag = "unfold"
@@ -720,7 +738,7 @@ try:
         ok = yield from open_panel(node)
         require(ok, "%s: the panel of %s opens" % (tag, node.getLabel()))
 
-        switch = unfold_switch(node, dims)
+        switch = yield from unfold_switch(node, dims)
         require(switch is not None, "%s: %s has a dimension switch" % (tag, UNFOLD_PARAM))
         require(not switch.isChecked(), "%s: %s starts folded" % (tag, UNFOLD_PARAM))
         check(not unfold_fields(node, 2), "%s: folded, %s shows no field for dimension 2" % (tag, UNFOLD_PARAM))

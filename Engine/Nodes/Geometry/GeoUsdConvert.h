@@ -101,6 +101,9 @@ struct GeoUsdInputScene {
 
 typedef std::shared_ptr<const GeoUsdInputScene> GeoUsdInputSceneConstPtr;
 
+/** @brief Attribute defaults keyed by property path. */
+typedef std::unordered_map<PXR_NS::SdfPath, PXR_NS::VtValue, PXR_NS::SdfPath::Hash> GeoUsdValueMap;
+
 struct GeoUsdConvertOptions {
     // Unpathed primitives and relative path values go under this prim.
     PXR_NS::SdfPath rootPath { "/geo" };
@@ -231,6 +234,14 @@ public:
     /** @brief The offsets of the primitives the partition's prim is made of, in prim order. */
     const std::vector<std::size_t>& partitionPrimitives(std::size_t partition) const;
 
+    /**
+     * @brief The partition's attribute defaults that are built from the detail, keyed by property
+     * path, built on first use. Static defaults (subdivisionScheme, a points prim's fallback
+     * widths, ...) are not in it; field() answers those. The arrays are shared, never copied, by
+     * whoever holds them.
+     **/
+    std::shared_ptr<const GeoUsdValueMap> partitionValues(std::size_t partition) const;
+
     /** @brief Whether the partition's attribute values have been built or adopted. */
     bool isPartitionBuilt(std::size_t partition) const;
 
@@ -307,9 +318,8 @@ private:
     void finishSpecs();
     const SpecEntry* findEntry(const PXR_NS::SdfPath& path) const;
     const GeoUsdConvert* delegateFor(const SpecEntry& entry) const;
-    std::shared_ptr<const std::unordered_map<PXR_NS::SdfPath, PXR_NS::VtValue, PXR_NS::SdfPath::Hash>> partitionValues(std::size_t partition) const;
     void buildValues(const Partition& partition,
-                     std::unordered_map<PXR_NS::SdfPath, PXR_NS::VtValue, PXR_NS::SdfPath::Hash>& values) const;
+                     GeoUsdValueMap& values) const;
     U64 computeSignature(const Partition& partition) const;
     void visitPrim(const PXR_NS::SdfPath& path,
                    const std::function<bool(const PXR_NS::SdfPath&)>& visitor,

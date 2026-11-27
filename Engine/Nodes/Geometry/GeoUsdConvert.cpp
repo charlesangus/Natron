@@ -66,8 +66,6 @@ PXR_NAMESPACE_USING_DIRECTIVE
 
 NATRON_NAMESPACE_ENTER
 
-typedef std::unordered_map<SdfPath, VtValue, SdfPath::Hash> GeoUsdValueMap;
-
 namespace {
 
 struct Tokens {

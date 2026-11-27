@@ -686,7 +686,7 @@ future core work has solid ground to build on.
 | M611 | USDToGeo Source Controls | doing | M358 | bosley-executor | E9 | F42 | | [M611-usdtogeo-source-controls.md](PLAN/MILESTONES/M611-usdtogeo-source-controls.md) |
 | M612 | USDGeoModify Node | todo | M609, M610, M611, M159 |  | E9 | F42 | | [M612-usdgeomodify-node.md](PLAN/MILESTONES/M612-usdgeomodify-node.md) |
 | M613 | Geometry Node Handles Rollout | todo | M604 |  | E28 |  | | [M613-geometry-node-handles-rollout.md](PLAN/MILESTONES/M613-geometry-node-handles-rollout.md) |
-| M628 | Texture Budget For Small Devices | todo | - |  | E9 | M628-texture-budget-for-small-devices.md | | [automatic GPU texture budget](PLAN/MILESTONES/automatic GPU texture budget) |
+| M628 | Texture Budget For Small Devices | todo | - |  | E9 |  | | [M628-texture-budget-for-small-devices.md](PLAN/MILESTONES/M628-texture-budget-for-small-devices.md) |
 | M629 | Stable USDRead Placeholder Digest | todo | - |  | E9 | M629-stable-usdread-placeholder-digest.md | | [Caching by a USDRead](PLAN/MILESTONES/Caching by a USDRead) |
 | M630 | Headlight Toggle Relighting | todo | - |  | E9 | M630-headlight-toggle-relighting.md | | [Turning the per-pass headlight off](PLAN/MILESTONES/Turning the per-pass headlight off) |
 | M631 | Main GUI Check Failures | todo | - |  | E2 | M631-main-gui-check-failures.md | | [m52_layer_stack fails|m600_nodes_selection fails|GUI scripts failing on main](PLAN/MILESTONES/m52_layer_stack fails|m600_nodes_selection fails|GUI scripts failing on main) |
@@ -699,6 +699,8 @@ future core work has solid ground to build on.
 | M638 | Self-Dimension Expression Listeners | todo | - |  | E14 | M638-self-dimension-expression-listeners.md | | [An expression reading another dimension](PLAN/MILESTONES/An expression reading another dimension) |
 | M639 | Ctest Load Flakes | todo | - |  | E2 | M639-ctest-load-flakes.md | | [Delegate render tests flake|SplitOnGapsTest stalls|CyclesDelegate.DrawFilterHidesPrimsAndLights flaked](PLAN/MILESTONES/Delegate render tests flake|SplitOnGapsTest stalls|CyclesDelegate.DrawFilterHidesPrimsAndLights flaked) |
 | M640 | USDToGeo Primvar Promotion | todo | M611 |  | E9 | F42 | | [M640-usdtogeo-primvar-promotion.md](PLAN/MILESTONES/M640-usdtogeo-primvar-promotion.md) |
+| M641 | Quiet Info Messages | todo | M418 |  | E14 | M641-quiet-info-messages.md | | [USDToGeo info message opens a dialog](PLAN/MILESTONES/USDToGeo info message opens a dialog) |
+| M642 | Pause At Loop Wrap | todo | - |  | E10 | M642-pause-at-loop-wrap.md | | [Pausing at a playback loop wrap](PLAN/MILESTONES/Pausing at a playback loop wrap) |
 
 # Epics
 

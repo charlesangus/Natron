@@ -1,7 +1,5 @@
 ## Pending
 
-- **Layered document flatten: clipping and group isolation** (PM, 2026-11-25, from the M79 - Layered Document Readers review): when a PSD or KRA has no stored composite, the flattened composite ignores clipping masks and group isolation; only Normal-over is documented. PSD and Krita clip differently, so this is a design task.
-
 - **For-Each loop thread scaling** (PM, 2026-11-25, from the M402 - Geometry Loops bench): 10,000 connectivity pieces cook in 1684 ms on 1 thread and 1404 ms on 4 (1.20x). Profile where the per-piece work serialises (piece extraction, merge, per-iteration setup or a lock), and re-bench on a many-core host.
 
 - **User knob properties still not saved** (PM, 2026-11-25, from the F16 - User Knob Editor review): increments and decimals, Double matrix display, primPathHint, customHTMLText, and per-dimension min/max for Int/Double/Color (one range is saved for all dimensions). They are lost on save/load, copy/paste and Ctrl-drop copy. Parametric min/max is dropped by the copy too.

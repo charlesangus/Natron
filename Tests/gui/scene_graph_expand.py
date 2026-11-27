@@ -29,6 +29,7 @@ Run through Tests/gui/run-gui-test.sh. Exit status 0 only if every check passed.
 import os
 import re
 import sys
+import time
 import traceback
 
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
@@ -698,7 +699,30 @@ try:
         require(view_input(usd), "connect the Viewer back to the island's USDRead")
         ok = yield ("until", lambda: not expanding(), POLL_TIMEOUT_S)
         check(ok, "showing another node stops the expansion")
-        ok = yield ("until", lambda: [path_of(i) for i in rows()] == [WORLD], POLL_TIMEOUT_S)
+        # The poll runs on the GUI thread: a long gap between polls is the GUI thread held, not the
+        # viewer or the panel slow, and tells the two kinds of stall apart.
+        polled = []
+
+        def lists_world():
+            polled.append(time.time())
+            return [path_of(i) for i in rows()] == [WORLD]
+
+        ok = yield ("until", lists_world, POLL_TIMEOUT_S)
+        if not ok:
+            gaps = [b - a for a, b in zip(polled, polled[1:])]
+            v = view()
+            viewer_state = {}
+            if v is not None:
+                for name in ("natronSceneSyncRequests", "natronSceneComposing", "natronSceneSynced", "natronSceneShown",
+                             "natronSceneError", "natronSceneLoadsPending", "natronSceneMainWaitMs", "natronSceneMainWaitMaxMs",
+                             "natronSceneSyncedAtMs", "natronSceneRefining", "natronSceneActiveRenderer"):
+                    viewer_state[name] = v.property(name)
+            panel_state = {}
+            for name in ("natronSceneGraphNode", "natronSceneGraphHasScene", "natronSceneGraphSwitching",
+                         "natronSceneGraphStageEditCount", "natronSceneGraphStageNotices", "natronSceneGraphExpanding"):
+                panel_state[name] = panel().property(name)
+            report("NOTE /World stall: %d polls, longest gap %.2fs, now %d ms; viewer %r; panel %r"
+                   % (len(polled), max(gaps) if gaps else 0.0, int(time.time() * 1000), viewer_state, panel_state))
         check(ok, "the panel lists /World again (rows %r, status %r, scene drawn %r)"
               % ([path_of(i) for i in rows()], status(), scene_drawn()))
 

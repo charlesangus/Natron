@@ -3127,7 +3127,7 @@ rendersThroughCamera(const std::string& renderer,
     };
     static const Delegate kDelegates[] = {
         { &CyclesAovs::isCycles, false, false },
-        { &MoonRayAovs::isMoonRay, false, false },
+        { &MoonRayAovs::isMoonRay, true, true },
     };
     for (const Delegate& delegate : kDelegates) {
         if (delegate.matches(renderer)) {

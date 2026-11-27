@@ -293,9 +293,7 @@ countDifferent(const std::vector<float>& a,
 // At 64 x 48 the still cube's front face spans about columns 22 to 42; with the shutter open it
 // sweeps to about 17 and 47. The columns just past each still edge pick up the swept cube, the
 // middle stays lit in both.
-// Disabled: the pinned hdMoonray samples the cube's transform at the frame alone, so nothing moves
-// over the shutter.
-TEST(MoonRayCamera, DISABLED_TheShutterBlursAMovingCube)
+TEST(MoonRayCamera, TheShutterBlursAMovingCube)
 {
     if (!moonRayOrSkip()) {
         return;
@@ -326,9 +324,7 @@ TEST(MoonRayCamera, DISABLED_TheShutterBlursAMovingCube)
 // MoonRay frames the scene camera by its path as by the frustum cameraFrustum() gives for it at
 // the fill fit, for an image wider and one narrower than the aperture; fill and expand differ, so
 // the fit reaches the render.
-// Disabled: the pinned hdMoonray conforms by the camera's own window policy, ignoring the render's,
-// so rendersThroughCamera() keeps MoonRay on the frustum for any fit but expand.
-TEST(MoonRayCamera, DISABLED_TheFillFitFramesAsTheFrustum)
+TEST(MoonRayCamera, TheFillFitFramesAsTheFrustum)
 {
     if (!moonRayOrSkip()) {
         return;

@@ -135,7 +135,7 @@ set_tests_properties(USDRenderSingleSampleTest PROPERTIES ENVIRONMENT "HDX_MSAA_
 # These suites skip when the MoonRay plug-in is missing, which would hide a bundling or plug-in
 # discovery regression in a build that does carry MoonRay.
 if(NATRON_MOONRAY_BUNDLED)
-    foreach(_suite MoonRayDelegate VolumeRenderMoonRay)
+    foreach(_suite MoonRayDelegate MoonRayCamera VolumeRenderMoonRay)
         if(NOT "${_suite}" IN_LIST NATRON_GTEST_SUITE_TESTS)
             message(FATAL_ERROR "SuiteProperties.cmake: '${_suite}' is not a registered test; "
                                 "update the suite name or it would silently lose its properties.")

@@ -163,9 +163,9 @@ struct EngineCamera {
 
 /**
  * @brief Whether the delegate renderer frames an image by the scene camera, per fit and pixelAspect,
- * as cameraFrustum() does. Storm does; hdCycles always fits the aperture and hdMoonray takes the
- * camera's own fit, both ignoring the window policy and the pixels' aspect, so they agree only for
- * the expand fit with square pixels. Where it is false the engine renders through the frustum.
+ * as cameraFrustum() does. Storm and hdMoonray do; hdCycles always fits the aperture, ignoring the
+ * window policy and the pixels' aspect, so it agrees only for the expand fit with square pixels.
+ * Where it is false the engine renders through the frustum.
  **/
 bool rendersThroughCamera(const std::string& renderer,
                           FitModeEnum fit,

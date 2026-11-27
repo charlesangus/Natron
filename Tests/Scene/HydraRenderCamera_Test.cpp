@@ -354,21 +354,21 @@ TEST(HydraRenderCameraSelection, ASquarePixelFormatRendersThroughTheCamera)
     }
 }
 
-// Storm frames by the camera at any fit and pixel aspect; Cycles and MoonRay ignore the window
-// policy and the pixels' aspect, so only the expand fit of square pixels may reach them by path.
-TEST(HydraRenderCameraSelection, OnlyStormHonoursEveryFraming)
+// Storm and MoonRay frame by the camera at any fit and pixel aspect; Cycles ignores the window
+// policy and the pixels' aspect, so only the expand fit of square pixels may reach it by path.
+TEST(HydraRenderCameraSelection, StormAndMoonRayHonourEveryFraming)
 {
     const HydraRender::FitModeEnum fits[] = { HydraRender::eFitModeFill, HydraRender::eFitModeHorizontal, HydraRender::eFitModeVertical, HydraRender::eFitModeExpand };
-    for (int f = 0; f < 4; ++f) {
-        EXPECT_TRUE(HydraRender::rendersThroughCamera(kRenderDelegateStormId, fits[f], 1.));
-        EXPECT_TRUE(HydraRender::rendersThroughCamera(kRenderDelegateStormId, fits[f], 2.));
-    }
-    const char* const ids[] = { kRenderDelegateCyclesId, kMoonRayRendererId };
+    const char* const framing[] = { kRenderDelegateStormId, kMoonRayRendererId };
     for (int i = 0; i < 2; ++i) {
-        EXPECT_TRUE(HydraRender::rendersThroughCamera(ids[i], HydraRender::eFitModeExpand, 1.));
-        EXPECT_FALSE(HydraRender::rendersThroughCamera(ids[i], HydraRender::eFitModeExpand, 2.));
-        EXPECT_FALSE(HydraRender::rendersThroughCamera(ids[i], HydraRender::eFitModeFill, 1.));
-        EXPECT_FALSE(HydraRender::rendersThroughCamera(ids[i], HydraRender::eFitModeHorizontal, 1.));
-        EXPECT_FALSE(HydraRender::rendersThroughCamera(ids[i], HydraRender::eFitModeVertical, 1.));
+        for (int f = 0; f < 4; ++f) {
+            EXPECT_TRUE(HydraRender::rendersThroughCamera(framing[i], fits[f], 1.)) << framing[i];
+            EXPECT_TRUE(HydraRender::rendersThroughCamera(framing[i], fits[f], 2.)) << framing[i];
+        }
     }
+    EXPECT_TRUE(HydraRender::rendersThroughCamera(kRenderDelegateCyclesId, HydraRender::eFitModeExpand, 1.));
+    EXPECT_FALSE(HydraRender::rendersThroughCamera(kRenderDelegateCyclesId, HydraRender::eFitModeExpand, 2.));
+    EXPECT_FALSE(HydraRender::rendersThroughCamera(kRenderDelegateCyclesId, HydraRender::eFitModeFill, 1.));
+    EXPECT_FALSE(HydraRender::rendersThroughCamera(kRenderDelegateCyclesId, HydraRender::eFitModeHorizontal, 1.));
+    EXPECT_FALSE(HydraRender::rendersThroughCamera(kRenderDelegateCyclesId, HydraRender::eFitModeVertical, 1.));
 }

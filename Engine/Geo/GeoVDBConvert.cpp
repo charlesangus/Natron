@@ -1363,6 +1363,18 @@ geoPolygonsToSdf(const GeoDetail& source,
         if (params.buildFog) {
             openvdb::FloatGrid::Ptr fog = signedDistance ? grid->deepCopy() : grid;
             openvdb::tools::sdfToFogVolume(*fog, float(bands.ramp * voxelSize));
+            if (params.fillInterior) {
+                // sdfToFogVolume scales every interior voxel by 1/cutoff without clamping, so voxels of a
+                // filled interior deeper than the ramp would read above one.
+                openvdb::tree::LeafManager<openvdb::FloatTree> leaves(fog->tree());
+                leaves.foreach ([](openvdb::FloatTree::LeafNodeType& leaf, std::size_t /*leafIndex*/) {
+                    for (auto it = leaf.beginValueOn(); it; ++it) {
+                        if (*it > 1.f) {
+                            it.setValue(1.f);
+                        }
+                    }
+                });
+            }
             addGrid(result, params.fogName, fog);
         }
     }

@@ -399,7 +399,10 @@ TEST(VDBResampleTest, ExplicitModeTranslatesInVoxels)
     ASSERT_NE(grid, nullptr);
     EXPECT_NEAR(grid->voxelSize()[0], kVoxel, 1e-9);
     const openvdb::tools::GridSampler<openvdb::FloatGrid, openvdb::tools::BoxSampler> sampler(*grid);
-    EXPECT_LT(sampler.wsSample(openvdb::Vec3d(0., 20. * kVoxel, 0.)), -0.9f);
+    // The sphere is a narrow-band level set: its deep inside reads the negated background, not its distance.
+    EXPECT_NEAR(sampler.wsSample(openvdb::Vec3d(0., 20. * kVoxel, 0.)), -grid->background(), 1e-5f);
+    EXPECT_NEAR(sampler.wsSample(openvdb::Vec3d(0., -0.5, 0.)), grid->background(), 1e-5f);
+    EXPECT_NEAR(sampler.wsSample(openvdb::Vec3d(0., 1. + 18. * kVoxel, 0.)), -2.f * float(kVoxel), 0.5f * float(kVoxel));
     EXPECT_NEAR(sampler.wsSample(openvdb::Vec3d(0., 1. + 20. * kVoxel, 0.)), 0.f, float(kVoxel));
 
     params.transform.scale = { 1., 0., 1. };

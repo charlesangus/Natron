@@ -34,6 +34,8 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -152,6 +154,7 @@ struct Aov {
 struct AovPlane {
     PXR_NS::TfToken name;
     int channels = 0;
+    // Empty when the request's aovPixels leaves the AOV out.
     std::vector<float> pixels;
 };
 
@@ -197,6 +200,10 @@ struct Request {
     // The settings RenderVars give the AOVs every render has, by the delegate's name of each. A
     // change of them makes the owner's engine again.
     std::vector<Aov> builtInAovs;
+    // The aovs whose pixels the result carries, every one's when unset. The others come back with
+    // their channel count and no pixels: converting each pass of a large frame costs time and memory
+    // a render asked for a few of its layers does not need.
+    std::optional<std::set<PXR_NS::TfToken>> aovPixels;
     // The camera's shutter:open and shutter:close, in frames relative to time.
     double shutterOpen = 0.;
     double shutterClose = 0.;

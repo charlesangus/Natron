@@ -1537,6 +1537,14 @@ USDRender::render(const RenderActionArgs& args)
         return fail(error);
     }
     HydraRender::Request& request = setup.request;
+    request.aovPixels = std::set<PXR_NS::TfToken>();
+    for (std::size_t i = 0; setup.spec && (i < setup.spec->aovs.size()); ++i) {
+        for (const std::pair<ImageLayerDesc, ImagePtr>& output : args.outputLayers) {
+            if (output.second && (output.first.getLayerID() == setup.spec->aovs[i].layer.getLayerID())) {
+                request.aovPixels->insert(setup.spec->aovs[i].aov.name);
+            }
+        }
+    }
     const RectI& pixels = setup.pixels;
     const std::vector<std::string> liveTextureUris = setup.liveTextureUris;
     // A texture that cannot reach the renderer for want of room in shared memory stops the render

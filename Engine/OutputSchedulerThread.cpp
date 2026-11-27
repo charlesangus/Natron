@@ -2254,6 +2254,17 @@ DefaultScheduler::runWriterView(WriterFrame& frame,
             return false;
         }
 
+        if (outputKind == eDataKindGeometry) {
+            // Geometry has no region or planes to request: the frame is the writer's
+            // whole output, which it then writes.
+            std::string error;
+            if (!evaluateAndWriteGeometryFrame(output, time, view, &frame.retCode, &error)) {
+                frame.fail(error);
+            }
+
+            return false;
+        }
+
         // The frame's region, layers and layout all come from the snapshot its args took,
         // so an edit made while the sequence renders cannot pair one state's region with
         // another's layout.
@@ -2262,16 +2273,6 @@ DefaultScheduler::runWriterView(WriterFrame& frame,
         StatusEnum stat = activeInputToRender->getRegionOfDefinition_public(activeInputToRenderHash, time, scale, view, &rod, &isProjectFormat);
         if (stat == eStatusFailed) {
             frame.fail("Error caught while rendering");
-
-            return false;
-        }
-        if (outputKind == eDataKindGeometry) {
-            // Geometry has no region or planes to request: the frame is the writer's
-            // whole output, which it then writes.
-            std::string error;
-            if (!evaluateAndWriteGeometryFrame(output, time, view, &frame.retCode, &error)) {
-                frame.fail(error);
-            }
 
             return false;
         }

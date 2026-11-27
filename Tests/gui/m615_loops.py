@@ -23,7 +23,8 @@ Sections:
     script's own work on the GUI thread, so the gap across it is left out;
   - pairs: the Loop menu's GeoForEach, GeoSolver and Loop entries each create their begin and end
     (fed by the selected GeoPrimitive for the geometry kinds), the begin feeding the end placed
-    below it, both selected, and one Ctrl+Z removes both; the single begin and end entries stay.
+    below it, both selected; one Ctrl+Z removes both and one Ctrl+Shift+Z restores them wired;
+    the single begin and end entries stay.
     app.createLoopPair() of each kind returns [begin, end] wired the same way, and of an unknown
     kind creates nothing.
 Screenshots: m615_loops_hulls.png, m615_loops_drive_menu_foreach.png,
@@ -75,7 +76,7 @@ try:
     from PySide6.QtCore import QMetaObject, QRect, Qt, QTimer
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QWidget
+    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow, QWidget
 
     import guitest as gt
     from guitest import OUT, check, plugin_problem, report, require, run, section, shot, widgets_of
@@ -110,13 +111,21 @@ try:
                 return hold(gt.menu_of(a))
         return None
 
-    def undo_in_graph():
+    def key_in_graph(key, mods):
+        """Sends key to the node graph; undo and redo are window shortcuts, which only an active
+        window receives."""
+        win = next((w for w in QApplication.topLevelWidgets() if isinstance(w, QMainWindow) and w.isVisible()), None)
+        require(win is not None, "found the main window")
+        win.activateWindow()
+        win.raise_()
+        ok = yield ("until", lambda: win.isActiveWindow(), 10.0)
+        require(ok, "the main window is active for the undo shortcuts")
         view = node_graph_view()
         if view is None:
-            check(False, "the node graph is on screen for Ctrl+Z")
+            check(False, "the node graph is on screen for the undo shortcuts")
             return
         view.setFocus()
-        QTest.keyClick(view, Qt.Key_Z, Qt.ControlModifier)
+        QTest.keyClick(view, key, mods)
         QApplication.processEvents()
 
     def param(node, name):
@@ -543,9 +552,17 @@ try:
             check(end.getPosition()[1] > begin.getPosition()[1] + begin.getSize()[1],
                   "%s: the %s is below the %s" % (kind, end_id, begin_id))
             names = (begin.getScriptName(), end.getScriptName())
-            undo_in_graph()
+            yield from key_in_graph(Qt.Key_Z, Qt.ControlModifier)
             ok = yield ("until", lambda: not (set(names) & root_names()), 5.0)
             check(ok, "%s: one undo removes both nodes (left %r)" % (kind, sorted(set(names) & root_names())))
+            yield from key_in_graph(Qt.Key_Z, Qt.ControlModifier | Qt.ShiftModifier)
+            ok = yield ("until", lambda: set(names) <= root_names(), 5.0)
+            check(ok, "%s: one redo restores both nodes (have %r)" % (kind, sorted(set(names) & root_names())))
+            if ok:
+                check(input_name(end, 0) == begin.getScriptName(),
+                      "%s: after the redo the %s feeds the %s again (%r)" % (kind, begin_id, end_id, input_name(end, 0)))
+                end.destroy(False)
+                begin.destroy(False)
             if source is not None:
                 source.destroy(False)
 

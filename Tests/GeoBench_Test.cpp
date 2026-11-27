@@ -63,6 +63,7 @@
 #include "Engine/Project.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
+#include "Tests/Scene/GeoToUSDTestUtils.h"
 
 NATRON_NAMESPACE_USING
 
@@ -218,6 +219,7 @@ protected:
         if (node) {
             _nodes.push_back(node);
         }
+        pinGeoToUSDPathPrefix(node, pluginID);
 
         return node;
     }

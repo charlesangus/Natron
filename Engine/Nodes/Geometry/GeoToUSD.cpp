@@ -56,6 +56,7 @@
 #include "Engine/Nodes/Geometry/GeoSdfFileFormat.h"
 #include "Engine/Nodes/Geometry/GeoUsdConvert.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
@@ -92,6 +93,8 @@ packedModeArgument(GeoUsdPackedModeEnum mode)
         return "native";
     case eGeoUsdPackedUnpack:
         return "unpack";
+    case eGeoUsdPackedCreateXforms:
+        return "xforms";
     case eGeoUsdPackedPointInstancer:
     default:
         return "instancer";
@@ -153,8 +156,10 @@ struct Gathered {
     double frame = 0.;
     GeoDetailConstPtr detail;
     GeoUsdInputSceneConstPtr inputScene;
+    // With Load As Reference: the Scene input's prims on the way to the prefix, which the
+    // geometry is converted without.
+    GeoUsdInputSceneConstPtr referenceScene;
     std::vector<std::string> missing;
-    std::vector<std::string> collisions;
 };
 
 struct NodeSettings {
@@ -163,6 +168,12 @@ struct NodeSettings {
     GeoUsdConvertOptions options;
     bool copy = false;
     bool timeSamples = false;
+    bool reference = false;
+    GeoToUSD::ReferenceTypeEnum referenceType = GeoToUSD::eReferenceTypeWeakerPayload;
+    GeoToUSD::ReferencePrimitiveEnum referencePrimitive = GeoToUSD::eReferencePrimitiveAutomatic;
+    PXR_NS::SdfPath referencePrimitivePath;
+    bool makeInstanceable = false;
+    PXR_NS::TfToken parentPrimitiveKind;
 };
 
 U64
@@ -172,14 +183,12 @@ inputSceneHash(const GeoUsdInputSceneConstPtr& scene)
 }
 
 // The paths the detail names that only an input prim gives a meaning to and that prim is missing:
-// packed USD sources, and absolute paths outside the root read from USD, which move under it. In
-// *collisions, the absolute paths outside the root of geometry not read from USD that the input
-// already holds, which move under it too.
+// packed USD sources, and, with Define, absolute paths outside the root read from USD, which move
+// under it.
 std::vector<std::string>
 missingSources(const GeoUsdDetailPaths& paths,
                const GeoUsdConvertOptions& options,
-               const GeoUsdInputSceneConstPtr& scene,
-               std::vector<std::string>* collisions)
+               const GeoUsdInputSceneConstPtr& scene)
 {
     std::vector<std::string> missing;
     for (const PXR_NS::SdfPath& path : paths.sourcePaths) {
@@ -187,14 +196,15 @@ missingSources(const GeoUsdDetailPaths& paths,
             missing.push_back(path.GetString());
         }
     }
+    if (options.otherPrimitives != eGeoUsdOtherDefine) {
+        return missing;
+    }
     const PXR_NS::SdfPath root = (options.rootPath.IsAbsolutePath() && options.rootPath.IsPrimPath()) ? options.rootPath : PXR_NS::SdfPath("/geo");
     for (std::size_t i = 0; i < paths.paths.size(); ++i) {
         GeoUsdPlacementEnum placement = eGeoUsdPlacedAsRequested;
         geoUsdPlacedPath(paths.paths[i], root, scene.get(), paths.pathsFromUsd[i] != 0, &placement);
         if (placement == eGeoUsdPlacedSourceGone) {
             missing.push_back(paths.paths[i].GetString());
-        } else if (placement == eGeoUsdPlacedCollision) {
-            collisions->push_back(paths.paths[i].GetString());
         }
     }
 
@@ -260,9 +270,9 @@ struct GeoToUSD::Implementation {
                             Gathered* out,
                             std::string* errorMessage) const;
 
-    // The natrongeo key: the node, its root and mode, the frame when timeKeyed, and the view
-    // unless it is negative (layerView()).
-    std::string layerKey(const GeoUsdConvertOptions& options,
+    // The natrongeo key: the node, its conversion options and whether it is referenced, the
+    // frame when timeKeyed, and the view unless it is negative (layerView()).
+    std::string layerKey(const NodeSettings& settings,
                          bool timeKeyed,
                          double frame,
                          int view) const;
@@ -357,27 +367,110 @@ GeoToUSD::initializeKnobs()
     page->addKnob(groupType);
     _groupType = groupType;
 
-    KnobStringPtr rootPath = createKnob<KnobString>(tr("Root Path"));
-    rootPath->setName(kGeoToUSDParamRootPath);
-    rootPath->setHintToolTip(tr("The prim primitives without a path attribute go under, and relative paths are "
-                                "resolved against.")
+    KnobStringPtr pathAttributes = createKnob<KnobString>(tr("Path Attributes"));
+    pathAttributes->setName(kGeoToUSDParamPathAttributes);
+    pathAttributes->setHintToolTip(tr("The string attributes that name the prim each primitive becomes, separated by "
+                                      "commas or spaces. A primitive takes the first one with a value; loose points "
+                                      "read the point attributes of these names. Characters a prim name cannot hold "
+                                      "become _.")
+                                       .toStdString());
+    pathAttributes->setDefaultValue("path,name");
+    pathAttributes->setAnimationEnabled(false);
+    page->addKnob(pathAttributes);
+    _pathAttributes = pathAttributes;
+
+    KnobStringPtr pathPrefix = createKnob<KnobString>(tr("Path Prefix"));
+    pathPrefix->setName(kGeoToUSDParamPathPrefix);
+    pathPrefix->setHintToolTip(tr("The prim relative paths are resolved against, and that geometry without a path "
+                                  "goes under as mesh_0, curves_0, points_0 and so on. With Load As Reference, the "
+                                  "prim that holds the reference. Defaults to the node's name, and follows a "
+                                  "rename until it is edited.")
+                                   .toStdString());
+    pathPrefix->setDefaultValue(getSceneNodeDefaultPrimPath(this, PLUGINID_NATRON_GEOTOUSD));
+    pathPrefix->setAnimationEnabled(false);
+    page->addKnob(pathPrefix);
+    _pathPrefix = pathPrefix;
+
+    KnobBoolPtr prefixAbsolute = createKnob<KnobBool>(tr("Prefix Absolute Paths"));
+    prefixAbsolute->setName(kGeoToUSDParamPrefixAbsolutePaths);
+    prefixAbsolute->setHintToolTip(tr("On, absolute paths go under Path Prefix as well: /a/b becomes <prefix>/a/b. "
+                                      "Off, they stay where they say.")
+                                       .toStdString());
+    prefixAbsolute->setDefaultValue(false);
+    prefixAbsolute->setAnimationEnabled(false);
+    page->addKnob(prefixAbsolute);
+    _prefixAbsolutePaths = prefixAbsolute;
+
+    KnobChoicePtr otherPrimitives = createKnob<KnobChoice>(tr("Other Primitives"));
+    otherPrimitives->setName(kGeoToUSDParamOtherPrimitives);
+    otherPrimitives->setHintToolTip(tr("What meshes, curves and points become. Packed geometry is always defined.").toStdString());
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("define", tr("Define").toStdString(),
+                                       tr("A def for each prim: on a path the Scene input holds, it redefines the "
+                                          "prim with this geometry's type and properties.")
+                                           .toStdString()));
+        options.push_back(ChoiceOption("overlay", tr("Overlay").toStdString(),
+                                       tr("An over for each prim, with the full geometry. It only edits a prim the "
+                                          "Scene input holds; an over with nothing below it is not drawn.")
+                                           .toStdString()));
+        options.push_back(ChoiceOption("overlayTransforms", tr("Overlay Transforms").toStdString(),
+                                       tr("An over for each prim that holds only its transform. Meshes, curves and "
+                                          "points have none of their own, so this keeps the Scene input's transform.")
+                                           .toStdString()));
+        otherPrimitives->populateChoices(options);
+    }
+    otherPrimitives->setDefaultValue(0);
+    otherPrimitives->setAnimationEnabled(false);
+    page->addKnob(otherPrimitives);
+    _otherPrimitives = otherPrimitives;
+
+    KnobBoolPtr leafOnly = createKnob<KnobBool>(tr("Define Only Leaf Primitives"));
+    leafOnly->setName(kGeoToUSDParamDefineOnlyLeafPrimitives);
+    leafOnly->setHintToolTip(tr("On, the prims above the geometry's own prims are overs, so they define nothing the "
+                                "Scene input does not already hold. Off, the ones the Scene input lacks are defined "
+                                "with Parent Primitive Type.")
                                  .toStdString());
-    rootPath->setDefaultValue("/geo");
-    rootPath->setAnimationEnabled(false);
-    page->addKnob(rootPath);
-    _rootPath = rootPath;
+    leafOnly->setDefaultValue(false);
+    leafOnly->setAnimationEnabled(false);
+    page->addKnob(leafOnly);
+    _defineOnlyLeafPrimitives = leafOnly;
+
+    KnobChoicePtr packedUsd = createKnob<KnobChoice>(tr("Packed USD Primitives"));
+    packedUsd->setName(kGeoToUSDParamPackedUsdPrimitives);
+    packedUsd->setHintToolTip(tr("What packed USD primitives, which stand for a prim USDToGeo read without its "
+                                 "geometry, become.")
+                                  .toStdString());
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("ignore", tr("Ignore").toStdString(),
+                                       tr("Nothing: the prims they stand for keep their transforms.").toStdString()));
+        options.push_back(ChoiceOption("overlayTransforms", tr("Overlay Transforms").toStdString(),
+                                       tr("An over of the prim each one stands for, holding its transform.").toStdString()));
+        options.push_back(ChoiceOption("overlayTransformsAndAttributes", tr("Overlay Transforms And Attributes").toStdString(),
+                                       tr("An over of the prim each one stands for, holding its transform and its "
+                                          "primitive and point attributes as constant primvars.")
+                                           .toStdString()));
+        packedUsd->populateChoices(options);
+    }
+    packedUsd->setDefaultValue(1);
+    packedUsd->setAnimationEnabled(false);
+    page->addKnob(packedUsd);
+    _packedUsdPrimitives = packedUsd;
 
     KnobChoicePtr packed = createKnob<KnobChoice>(tr("Packed Primitives"));
     packed->setName(kGeoToUSDParamPackedPrimitives);
-    packed->setHintToolTip(tr("What packed geometry primitives become. Packed USD primitives always override "
-                              "the prim they were read from.")
-                               .toStdString());
+    packed->setHintToolTip(tr("What packed geometry primitives become.").toStdString());
     {
         std::vector<ChoiceOption> options;
-        options.push_back(ChoiceOption("instancer", tr("Point Instancer").toStdString(),
-                                       tr("One point instancer per path, with one prototype per embedded geometry.").toStdString()));
+        options.push_back(ChoiceOption("xforms", tr("Create Xforms").toStdString(),
+                                       tr("One Xform per packed primitive, holding its transform and a copy of its "
+                                          "geometry.")
+                                           .toStdString()));
         options.push_back(ChoiceOption("native", tr("Native Instances").toStdString(),
                                        tr("One instanceable prim per packed primitive, referencing a shared prototype.").toStdString()));
+        options.push_back(ChoiceOption("instancer", tr("Point Instancer").toStdString(),
+                                       tr("One point instancer per path, with one prototype per embedded geometry.").toStdString()));
         options.push_back(ChoiceOption("unpack", tr("Unpack").toStdString(),
                                        tr("The embedded geometry, copied and transformed per packed primitive.").toStdString()));
         packed->populateChoices(options);
@@ -386,6 +479,161 @@ GeoToUSD::initializeKnobs()
     packed->setAnimationEnabled(false);
     page->addKnob(packed);
     _packedPrimitives = packed;
+
+    KnobChoicePtr parentType = createKnob<KnobChoice>(tr("Parent Primitive Type"));
+    parentType->setName(kGeoToUSDParamParentPrimitiveType);
+    parentType->setHintToolTip(tr("The type of the prims defined above the geometry's own prims where the Scene "
+                                  "input has none, Path Prefix included.")
+                                   .toStdString());
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("Xform", tr("Xform").toStdString(), std::string()));
+        options.push_back(ChoiceOption("Scope", tr("Scope").toStdString(), std::string()));
+        options.push_back(ChoiceOption("none", tr("None").toStdString(), tr("Typeless prims.").toStdString()));
+        parentType->populateChoices(options);
+    }
+    parentType->setDefaultValue(0);
+    parentType->setAnimationEnabled(false);
+    page->addKnob(parentType);
+    _parentPrimitiveType = parentType;
+
+    KnobChoicePtr kinds = createKnob<KnobChoice>(tr("Kind Authoring"));
+    kinds->setName(kGeoToUSDParamKindAuthoring);
+    kinds->setHintToolTip(tr("The model kinds given to the prims defined above the geometry's own prims, so that "
+                             "the scene's model hierarchy reaches them. Prims the Scene input holds keep theirs.")
+                              .toStdString());
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("component", tr("One Component").toStdString(),
+                                       tr("The topmost defined prim is a component.").toStdString()));
+        options.push_back(ChoiceOption("nested", tr("Nested Groups And Components").toStdString(),
+                                       tr("The lowest defined prims are components, the ones above them groups.").toStdString()));
+        options.push_back(ChoiceOption("assembly", tr("Nested Assembly, Groups, And Components").toStdString(),
+                                       tr("As Nested Groups And Components, with the topmost prim an assembly.").toStdString()));
+        options.push_back(ChoiceOption("none", tr("None").toStdString(), tr("No kinds.").toStdString()));
+        kinds->populateChoices(options);
+    }
+    kinds->setDefaultValue(0);
+    kinds->setAnimationEnabled(false);
+    page->addKnob(kinds);
+    _kindAuthoring = kinds;
+
+    KnobBoolPtr adjust = createKnob<KnobBool>(tr("Adjust Transforms For Input Hierarchy"));
+    adjust->setName(kGeoToUSDParamAdjustTransformsForInputHierarchy);
+    adjust->setHintToolTip(tr("On, geometry keeps its world position under the Scene input's transformed prims: "
+                              "their world transform is undone in the points and transforms written. Geometry "
+                              "USDToGeo read in its prim's own space is written as it is. Off, the geometry is "
+                              "written as it is, and moves with the prims above it.")
+                               .toStdString());
+    adjust->setDefaultValue(true);
+    adjust->setAnimationEnabled(false);
+    page->addKnob(adjust);
+    _adjustTransformsForInputHierarchy = adjust;
+
+    KnobBoolPtr asReference = createKnob<KnobBool>(tr("Load As Reference"));
+    asReference->setName(kGeoToUSDParamLoadAsReference);
+    asReference->setHintToolTip(tr("On, the geometry's layer is put on the Path Prefix prim as a reference or "
+                                   "payload instead of a sublayer, so it can be loaded and unloaded or instanced. "
+                                   "The geometry is then converted on its own, without the Scene input.")
+                                    .toStdString());
+    asReference->setDefaultValue(false);
+    asReference->setAnimationEnabled(false);
+    page->addKnob(asReference);
+    _loadAsReference = asReference;
+
+    KnobChoicePtr referenceType = createKnob<KnobChoice>(tr("Reference Type"));
+    referenceType->setName(kGeoToUSDParamReferenceType);
+    referenceType->setHintToolTip(tr("The arc that brings in the geometry's layer, and whether it is weaker or "
+                                     "stronger than the arcs the prim already has.")
+                                      .toStdString());
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("weakerPayload", tr("Weaker Payload").toStdString(), std::string()));
+        options.push_back(ChoiceOption("strongerPayload", tr("Stronger Payload").toStdString(), std::string()));
+        options.push_back(ChoiceOption("weakerReference", tr("Weaker Reference").toStdString(), std::string()));
+        options.push_back(ChoiceOption("strongerReference", tr("Stronger Reference").toStdString(), std::string()));
+        referenceType->populateChoices(options);
+    }
+    referenceType->setDefaultValue((int)eReferenceTypeWeakerPayload);
+    referenceType->setAnimationEnabled(false);
+    page->addKnob(referenceType);
+    _referenceType = referenceType;
+
+    KnobChoicePtr referencePrim = createKnob<KnobChoice>(tr("Reference Primitive"));
+    referencePrim->setName(kGeoToUSDParamReferencePrimitive);
+    referencePrim->setHintToolTip(tr("The prim of the geometry's layer that is referenced.").toStdString());
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("automatic", tr("Automatic").toStdString(),
+                                       tr("The Path Prefix prim, else the layer's first root Xform, else its first root prim.").toStdString()));
+        options.push_back(ChoiceOption("default", tr("Default").toStdString(),
+                                       tr("The layer's default prim. The geometry's layer has none, so this "
+                                          "references nothing until one is set downstream.")
+                                           .toStdString()));
+        options.push_back(ChoiceOption("specific", tr("Specific").toStdString(),
+                                       tr("The prim Reference Primitive Path names.").toStdString()));
+        referencePrim->populateChoices(options);
+    }
+    referencePrim->setDefaultValue((int)eReferencePrimitiveAutomatic);
+    referencePrim->setAnimationEnabled(false);
+    page->addKnob(referencePrim);
+    _referencePrimitive = referencePrim;
+
+    KnobStringPtr referencePath = createKnob<KnobString>(tr("Reference Primitive Path"));
+    referencePath->setName(kGeoToUSDParamReferencePrimitivePath);
+    referencePath->setHintToolTip(tr("With Reference Primitive Specific: the prim of the geometry's layer to reference.").toStdString());
+    referencePath->setAnimationEnabled(false);
+    page->addKnob(referencePath);
+    _referencePrimitivePath = referencePath;
+
+    KnobBoolPtr instanceable = createKnob<KnobBool>(tr("Make Instanceable"));
+    instanceable->setName(kGeoToUSDParamMakeInstanceable);
+    instanceable->setHintToolTip(tr("Marks the Path Prefix prim instanceable, so prims referencing the same geometry "
+                                    "share it.")
+                                     .toStdString());
+    instanceable->setDefaultValue(false);
+    instanceable->setAnimationEnabled(false);
+    page->addKnob(instanceable);
+    _makeInstanceable = instanceable;
+
+    KnobChoicePtr parentKind = createKnob<KnobChoice>(tr("Parent Primitive Kind"));
+    parentKind->setName(kGeoToUSDParamParentPrimitiveKind);
+    parentKind->setHintToolTip(tr("With Load As Reference, the kind of the prims created above the Path Prefix prim, "
+                                  "where the Scene input lacks them.")
+                                   .toStdString());
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("none", tr("None").toStdString(), tr("No kind.").toStdString()));
+        options.push_back(ChoiceOption("component", tr("Component").toStdString(), std::string()));
+        options.push_back(ChoiceOption("group", tr("Group").toStdString(), std::string()));
+        options.push_back(ChoiceOption("assembly", tr("Assembly").toStdString(), std::string()));
+        options.push_back(ChoiceOption("subcomponent", tr("Subcomponent").toStdString(), std::string()));
+        parentKind->populateChoices(options);
+    }
+    parentKind->setDefaultValue(0);
+    parentKind->setAnimationEnabled(false);
+    page->addKnob(parentKind);
+    _parentPrimitiveKind = parentKind;
+
+    KnobChoicePtr layerStyle = createKnob<KnobChoice>(tr("Layer Style"));
+    layerStyle->setName(kGeoToUSDParamLayerStyle);
+    layerStyle->setHintToolTip(tr("How the geometry reaches the scene when it is not loaded as a reference.").toStdString());
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("sublayer", tr("Sublayer").toStdString(),
+                                       tr("The geometry is served as it is, converted only where the scene reads it, "
+                                          "and edits reach the scene without rebuilding it.")
+                                           .toStdString()));
+        options.push_back(ChoiceOption("copy", tr("Copy Into Node Layer").toStdString(),
+                                       tr("The whole geometry is converted and copied into the node's layer: slower, "
+                                          "and every change copies it again.")
+                                           .toStdString()));
+        layerStyle->populateChoices(options);
+    }
+    layerStyle->setDefaultValue((int)eLayerStyleSublayer);
+    layerStyle->setAnimationEnabled(false);
+    page->addKnob(layerStyle);
+    _layerStyle = layerStyle;
 
     KnobDoublePtr pointWidth = createKnob<KnobDouble>(tr("Default Point Width"));
     pointWidth->setName(kGeoToUSDParamDefaultPointWidth);
@@ -399,45 +647,55 @@ GeoToUSD::initializeKnobs()
     page->addKnob(pointWidth);
     _defaultPointWidth = pointWidth;
 
-    KnobBoolPtr copy = createKnob<KnobBool>(tr("Copy Into Layer"));
-    copy->setName(kGeoToUSDParamCopyIntoLayer);
-    copy->setHintToolTip(tr("Off, the geometry is served to the scene as it is, converted only where the scene "
-                            "reads it, and edits reach the scene without rebuilding it. On, the whole geometry is "
-                            "converted and copied into the node's layer: slower, and every change copies it again.")
-                             .toStdString());
-    copy->setDefaultValue(false);
-    copy->setAnimationEnabled(false);
-    page->addKnob(copy);
-    _copyIntoLayer = copy;
-
     KnobBoolPtr samples = createKnob<KnobBool>(tr("Author Time Samples"));
     samples->setName(kGeoToUSDParamAuthorTimeSamples);
-    samples->setHintToolTip(tr("With Copy Into Layer: evaluates the geometry at every frame of the project range "
-                               "and authors each value as a time sample. Off, the layer holds the current frame "
-                               "only.")
+    samples->setHintToolTip(tr("With Layer Style Copy Into Node Layer: evaluates the geometry at every frame of the "
+                               "project range and authors each value as a time sample. Off, the layer holds the "
+                               "current frame only.")
                                 .toStdString());
     samples->setDefaultValue(false);
     samples->setAnimationEnabled(false);
     page->addKnob(samples);
     _authorTimeSamples = samples;
 
-    updateTimeSamplesEnabled();
+    updateKnobsEnabled();
 }
 
 void
-GeoToUSD::updateTimeSamplesEnabled()
+GeoToUSD::updateKnobsEnabled()
 {
-    const KnobBoolPtr copy = _copyIntoLayer.lock();
-    const KnobBoolPtr samples = _authorTimeSamples.lock();
-    if (copy && samples) {
-        samples->setAllDimensionsEnabled(copy->getValue());
-    }
+    const KnobBoolPtr asReference = _loadAsReference.lock();
+    const KnobChoicePtr layerStyle = _layerStyle.lock();
+    const KnobChoicePtr referencePrim = _referencePrimitive.lock();
+    const bool reference = asReference && asReference->getValue();
+    const bool copy = !reference && layerStyle && (layerStyle->getValue() == (int)eLayerStyleCopyIntoNodeLayer);
+    const bool specific = referencePrim && (referencePrim->getValue() == (int)eReferencePrimitiveSpecific);
+    const auto enable = [](const auto& weak, bool enabled) {
+        if (const auto knob = weak.lock()) {
+            knob->setAllDimensionsEnabled(enabled);
+        }
+    };
+    enable(_referenceType, reference);
+    enable(_referencePrimitive, reference);
+    enable(_referencePrimitivePath, reference && specific);
+    enable(_makeInstanceable, reference);
+    enable(_parentPrimitiveKind, reference);
+    // A referenced layer is converted without the Scene input and served, never copied.
+    enable(_layerStyle, !reference);
+    enable(_adjustTransformsForInputHierarchy, !reference);
+    enable(_authorTimeSamples, copy);
 }
 
 void
 GeoToUSD::onKnobsLoaded()
 {
-    updateTimeSamplesEnabled();
+    updateKnobsEnabled();
+}
+
+void
+GeoToUSD::onScriptNameChanged(const std::string& /*fullyQualifiedName*/)
+{
+    followSceneNodeRename(_pathPrefix.lock(), getSceneNodeDefaultPrimPath(this, PLUGINID_NATRON_GEOTOUSD));
 }
 
 bool
@@ -447,9 +705,9 @@ GeoToUSD::knobChanged(KnobI* k,
                       double /*time*/,
                       bool /*originatedFromMainThread*/)
 {
-    const KnobBoolPtr copy = _copyIntoLayer.lock();
-    if (copy && (k == copy.get())) {
-        updateTimeSamplesEnabled();
+    const KnobI* watched[] = { _loadAsReference.lock().get(), _layerStyle.lock().get(), _referencePrimitive.lock().get() };
+    if (k && (std::find(std::begin(watched), std::end(watched), k) != std::end(watched))) {
+        updateKnobsEnabled();
 
         return true;
     }
@@ -462,15 +720,16 @@ GeoToUSD::Implementation::readSettings(GeoToUSD* node,
                                        NodeSettings* settings,
                                        std::string* errorMessage) const
 {
-    const KnobStringPtr root = node->_rootPath.lock();
-    const std::string rootText = root ? root->getValue() : std::string("/geo");
+    const KnobStringPtr root = node->_pathPrefix.lock();
+    const std::string rootText = root ? root->getValue() : getSceneNodeDefaultPrimPath(node, PLUGINID_NATRON_GEOTOUSD);
     const PXR_NS::SdfPath rootPath = PXR_NS::SdfPath::IsValidPathString(rootText) ? PXR_NS::SdfPath(rootText) : PXR_NS::SdfPath();
     if (rootPath.IsEmpty() || !rootPath.IsAbsolutePath() || !rootPath.IsPrimPath()) {
-        *errorMessage = tr("Root Path \"%1\" is not an absolute prim path.").arg(QString::fromStdString(rootText)).toStdString();
+        *errorMessage = tr("Path Prefix \"%1\" is not an absolute prim path.").arg(QString::fromStdString(rootText)).toStdString();
 
         return false;
     }
-    settings->options.rootPath = rootPath;
+    GeoUsdConvertOptions& options = settings->options;
+    options.rootPath = rootPath;
 
     const KnobStringPtr group = node->_group.lock();
     if (group) {
@@ -482,29 +741,123 @@ GeoToUSD::Implementation::readSettings(GeoToUSD* node,
         settings->groupType = kGroupTypes[typeIndex];
     }
 
-    const KnobChoicePtr packed = node->_packedPrimitives.lock();
-    switch (packed ? packed->getValue() : (int)ePackedPrimitivesPointInstancer) {
+    options.pathAttributes.clear();
+    if (const KnobStringPtr names = node->_pathAttributes.lock()) {
+        const std::string text = names->getValue();
+        std::size_t begin = 0;
+        while (begin < text.size()) {
+            const std::size_t end = std::min(text.find_first_of(", \t", begin), text.size());
+            if (end > begin) {
+                options.pathAttributes.push_back(text.substr(begin, end - begin));
+            }
+            begin = end + 1;
+        }
+    }
+    const auto boolValue = [](const KnobBoolWPtr& weak, bool fallback) {
+        const KnobBoolPtr knob = weak.lock();
+
+        return knob ? knob->getValue() : fallback;
+    };
+    const auto choiceValue = [](const KnobChoiceWPtr& weak, int fallback) {
+        const KnobChoicePtr knob = weak.lock();
+
+        return knob ? knob->getValue() : fallback;
+    };
+    options.prefixAbsolutePaths = boolValue(node->_prefixAbsolutePaths, false);
+    switch (choiceValue(node->_otherPrimitives, 0)) {
+    case 1:
+        options.otherPrimitives = eGeoUsdOtherOverlay;
+        break;
+    case 2:
+        options.otherPrimitives = eGeoUsdOtherOverlayTransforms;
+        break;
+    default:
+        options.otherPrimitives = eGeoUsdOtherDefine;
+        break;
+    }
+    options.defineOnlyLeafPrimitives = boolValue(node->_defineOnlyLeafPrimitives, false);
+    switch (choiceValue(node->_packedUsdPrimitives, 1)) {
+    case 0:
+        options.packedUsdPrimitives = eGeoUsdPackedUsdIgnore;
+        break;
+    case 2:
+        options.packedUsdPrimitives = eGeoUsdPackedUsdOverlayTransformsAndAttributes;
+        break;
+    default:
+        options.packedUsdPrimitives = eGeoUsdPackedUsdOverlayTransforms;
+        break;
+    }
+    switch (choiceValue(node->_packedPrimitives, (int)ePackedPrimitivesPointInstancer)) {
+    case ePackedPrimitivesCreateXforms:
+        options.packedMode = eGeoUsdPackedCreateXforms;
+        break;
     case ePackedPrimitivesNativeInstances:
-        settings->options.packedMode = eGeoUsdPackedNativeInstances;
+        options.packedMode = eGeoUsdPackedNativeInstances;
         break;
     case ePackedPrimitivesUnpack:
-        settings->options.packedMode = eGeoUsdPackedUnpack;
+        options.packedMode = eGeoUsdPackedUnpack;
         break;
     case ePackedPrimitivesPointInstancer:
     default:
-        settings->options.packedMode = eGeoUsdPackedPointInstancer;
+        options.packedMode = eGeoUsdPackedPointInstancer;
+        break;
+    }
+    switch (choiceValue(node->_parentPrimitiveType, 0)) {
+    case 1:
+        options.parentPrimitiveType = PXR_NS::TfToken("Scope");
+        break;
+    case 2:
+        options.parentPrimitiveType = PXR_NS::TfToken();
+        break;
+    default:
+        options.parentPrimitiveType = PXR_NS::TfToken("Xform");
+        break;
+    }
+    switch (choiceValue(node->_kindAuthoring, 0)) {
+    case 1:
+        options.kindAuthoring = eGeoUsdKindNestedGroupsAndComponents;
+        break;
+    case 2:
+        options.kindAuthoring = eGeoUsdKindNestedAssemblyGroupsAndComponents;
+        break;
+    case 3:
+        options.kindAuthoring = eGeoUsdKindNone;
+        break;
+    default:
+        options.kindAuthoring = eGeoUsdKindOneComponent;
         break;
     }
 
     const KnobDoublePtr width = node->_defaultPointWidth.lock();
     if (width) {
-        settings->options.defaultPointWidth = width->getValue();
+        options.defaultPointWidth = width->getValue();
     }
 
-    const KnobBoolPtr copy = node->_copyIntoLayer.lock();
-    settings->copy = copy && copy->getValue();
-    const KnobBoolPtr samples = node->_authorTimeSamples.lock();
-    settings->timeSamples = settings->copy && samples && samples->getValue();
+    settings->reference = boolValue(node->_loadAsReference, false);
+    // A referenced layer is converted on its own, so nothing above the prefix moves it.
+    options.adjustTransformsForInputHierarchy = !settings->reference && boolValue(node->_adjustTransformsForInputHierarchy, true);
+    settings->copy = !settings->reference && (choiceValue(node->_layerStyle, (int)eLayerStyleSublayer) == (int)eLayerStyleCopyIntoNodeLayer);
+    settings->timeSamples = settings->copy && boolValue(node->_authorTimeSamples, false);
+    if (settings->reference) {
+        const int type = choiceValue(node->_referenceType, (int)eReferenceTypeWeakerPayload);
+        settings->referenceType = ((type >= 0) && (type <= (int)eReferenceTypeStrongerReference)) ? (ReferenceTypeEnum)type : eReferenceTypeWeakerPayload;
+        const int prim = choiceValue(node->_referencePrimitive, (int)eReferencePrimitiveAutomatic);
+        settings->referencePrimitive = ((prim >= 0) && (prim <= (int)eReferencePrimitiveSpecific)) ? (ReferencePrimitiveEnum)prim : eReferencePrimitiveAutomatic;
+        if (settings->referencePrimitive == eReferencePrimitiveSpecific) {
+            const KnobStringPtr path = node->_referencePrimitivePath.lock();
+            const std::string text = path ? path->getValue() : std::string();
+            settings->referencePrimitivePath = PXR_NS::SdfPath::IsValidPathString(text) ? PXR_NS::SdfPath(text) : PXR_NS::SdfPath();
+            if (!settings->referencePrimitivePath.IsAbsolutePath() || !settings->referencePrimitivePath.IsPrimPath()) {
+                *errorMessage = tr("Reference Primitive Path \"%1\" is not an absolute prim path.").arg(QString::fromStdString(text)).toStdString();
+
+                return false;
+            }
+        }
+        settings->makeInstanceable = boolValue(node->_makeInstanceable, false);
+        const char* const kinds[] = { "", "component", "group", "assembly", "subcomponent" };
+        const int kind = choiceValue(node->_parentPrimitiveKind, 0);
+        settings->parentPrimitiveKind = PXR_NS::TfToken(((kind >= 0) && (kind < 5)) ? kinds[kind] : "");
+    }
 
     return true;
 }
@@ -542,10 +895,14 @@ GeoToUSD::Implementation::gather(GeoToUSD* node,
         return eRenderRoIRetCodeAborted;
     }
 
-    const GeoUsdDetailPaths paths = geoUsdDetailPaths(*out->detail, options);
+    // A referenced layer is converted without the Scene input, which only tells what is on
+    // the way to the prefix.
+    const GeoUsdDetailPaths paths = settings.reference ? GeoUsdDetailPaths() : geoUsdDetailPaths(*out->detail, options);
     const EffectInstancePtr sceneInput = node->getInput(kGeoToUSDInputScene);
-    if (paths.paths.empty() || !sceneInput || !sceneInput->producesSceneData()) {
-        out->missing = missingSources(paths, options, out->inputScene, &out->collisions);
+    if ((!settings.reference && paths.paths.empty()) || !sceneInput || !sceneInput->producesSceneData()) {
+        if (!settings.reference) {
+            out->missing = missingSources(paths, options, out->inputScene);
+        }
 
         return eRenderRoIRetCodeOk;
     }
@@ -569,6 +926,9 @@ GeoToUSD::Implementation::gather(GeoToUSD* node,
         for (const PXR_NS::SdfPath& path : paths.sourcePaths) {
             named.push_back(path.GetString());
         }
+        if (settings.reference) {
+            named.push_back(options.rootPath.GetString());
+        }
         SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(*inputScene, SceneLoadSet::withPaths(inputContext.loadSet, named), errorMessage);
         const PXR_NS::UsdStageRefPtr stage = lease.getStage();
         if (!stage) {
@@ -581,23 +941,43 @@ GeoToUSD::Implementation::gather(GeoToUSD* node,
         const AppInstancePtr app = node->getApp();
         const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
         const PXR_NS::UsdTimeCode time(SceneOps::frameToTimeCode(*inputScene, frame, fps));
-        out->inputScene = geoUsdCaptureInputScene(stage, time, paths.paths, paths.sourcePaths);
+        if (settings.reference) {
+            out->referenceScene = geoUsdCaptureInputScene(stage, time, std::vector<PXR_NS::SdfPath>(), std::vector<PXR_NS::SdfPath> { options.rootPath });
+        } else {
+            out->inputScene = geoUsdCaptureInputScene(stage, time, paths.paths, paths.sourcePaths);
+        }
     }
-    out->missing = missingSources(paths, options, out->inputScene, &out->collisions);
+    if (!settings.reference) {
+        out->missing = missingSources(paths, options, out->inputScene);
+    }
 
     return cancel.check() ? eRenderRoIRetCodeAborted : eRenderRoIRetCodeOk;
 } // GeoToUSD::Implementation::gather
 
 std::string
-GeoToUSD::Implementation::layerKey(const GeoUsdConvertOptions& options,
+GeoToUSD::Implementation::layerKey(const NodeSettings& settings,
                                    bool timeKeyed,
                                    double frame,
                                    int view) const
 {
+    // Every option is in the key: a layer is built once with the options registered for it.
+    const GeoUsdConvertOptions& options = settings.options;
     ContentHasher h;
     h.appendString(options.rootPath.GetString());
+    h.appendI64((std::int64_t)options.pathAttributes.size());
+    for (const std::string& name : options.pathAttributes) {
+        h.appendString(name);
+    }
+    h.appendBool(options.prefixAbsolutePaths);
     h.appendI64((std::int64_t)options.packedMode);
+    h.appendI64((std::int64_t)options.otherPrimitives);
+    h.appendBool(options.defineOnlyLeafPrimitives);
+    h.appendI64((std::int64_t)options.packedUsdPrimitives);
+    h.appendString(options.parentPrimitiveType.GetString());
+    h.appendI64((std::int64_t)options.kindAuthoring);
+    h.appendBool(options.adjustTransformsForInputHierarchy);
     h.appendDouble(options.defaultPointWidth);
+    h.appendBool(settings.reference);
     std::string key = instanceKey + "-" + hexKey(h.finalize());
     if (timeKeyed) {
         key += "-f" + frameKey(frame);
@@ -629,6 +1009,7 @@ GeoToUSD::Implementation::serve(const std::string& key,
         entry.lastUse = ++useCount;
         if (!entry.slot) {
             entry.slot = std::make_shared<Slot>();
+            GeoLayers::setConvertOptions(key, options);
             const std::weak_ptr<Slot> weakSlot = entry.slot;
             GeoLayers::setProvider(key, [weakSlot]() {
                 const std::shared_ptr<Slot> slot = weakSlot.lock();
@@ -735,7 +1116,7 @@ GeoToUSD::prepareSceneSources(const EvaluateSceneArgs& args,
     const bool timeKeyed = isFrameVaryingOrAnimated_Recursive();
     PXR_NS::SdfLayerRefPtr layer;
     bool current = false;
-    (void)_imp->serve(_imp->layerKey(settings.options, timeKeyed, args.time, layerView(*this, args.view)), settings.options, timeKeyed, gathered, true, &layer, &current, &error);
+    (void)_imp->serve(_imp->layerKey(settings, timeKeyed, args.time, layerView(*this, args.view)), settings.options, timeKeyed, gathered, true, &layer, &current, &error);
 
     return aborted() ? eRenderRoIRetCodeAborted : eRenderRoIRetCodeOk;
 }
@@ -896,7 +1277,6 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
         return eStatusFailed;
     }
     std::vector<std::string> missing;
-    std::vector<std::string> collisions;
     for (std::size_t i = 0; i < frames.size(); ++i) {
         if (codes[i] != eRenderRoIRetCodeOk) {
             if (codes[i] == eRenderRoIRetCodeFailed) {
@@ -916,11 +1296,6 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
                 missing.push_back(path);
             }
         }
-        for (const std::string& path : gathered[i].collisions) {
-            if (std::find(collisions.begin(), collisions.end(), path) == collisions.end()) {
-                collisions.push_back(path);
-            }
-        }
     }
 
     // After the gather: rendering the geometry can tell its nodes that it does not vary after all.
@@ -930,7 +1305,7 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
     std::string identifier;
     if (!copy && !isEmptyDetail(gathered.front().detail)) {
         bool current = false;
-        if (!_imp->serve(_imp->layerKey(settings.options, timeKeyed, args.time, layerView(*this, args.view)), settings.options, timeKeyed, gathered.front(), false, &geoLayer, &current, errorMessage)) {
+        if (!_imp->serve(_imp->layerKey(settings, timeKeyed, args.time, layerView(*this, args.view)), settings.options, timeKeyed, gathered.front(), false, &geoLayer, &current, errorMessage)) {
             setPersistentMessage(eMessageTypeError, *errorMessage);
 
             return eStatusFailed;
@@ -944,6 +1319,9 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
             geoLayer = PXR_NS::SdfLayerRefPtr();
         }
     }
+    // A reference needs a layer to point at: a stale served layer is replaced by a copy in an
+    // anonymous layer of its own.
+    const bool referenceCopy = settings.reference && copy && !isEmptyDetail(gathered.front().detail);
 
     std::vector<std::unique_ptr<const GeoUsdConvert>> converts;
     std::vector<std::string> sheared;
@@ -972,13 +1350,43 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
                 noteSheared(*convert);
             }
         }
-    } else if (const std::shared_ptr<const GeoUsdConvert> served = geoLayer ? geoLayerConvert(geoLayer) : std::shared_ptr<const GeoUsdConvert>()) {
+    }
+    const std::shared_ptr<const GeoUsdConvert> served = geoLayer ? geoLayerConvert(geoLayer) : std::shared_ptr<const GeoUsdConvert>();
+    if (served) {
         noteSheared(*served);
+    }
+    const GeoUsdConvert* reported = served.get();
+    for (std::size_t i = 0; !reported && (i < converts.size()); ++i) {
+        if (converts[i] && (gathered[i].frame == args.time)) {
+            reported = converts[i].get();
+        }
+    }
+    if (!reported && !converts.empty()) {
+        reported = converts.front().get();
+    }
+    if (referenceCopy && converts.front()) {
+        geoLayer = PXR_NS::SdfLayer::CreateAnonymous("geotousd");
+        if (!converts.front()->author(geoLayer, PXR_NS::UsdTimeCode::Default(), errorMessage)) {
+            setPersistentMessage(eMessageTypeError, *errorMessage);
+
+            return eStatusFailed;
+        }
     }
 
     ContentHasher facts;
     facts.appendBool(copy);
     facts.appendString(identifier);
+    facts.appendBool(settings.reference);
+    if (settings.reference) {
+        facts.appendI64((std::int64_t)settings.referenceType);
+        facts.appendI64((std::int64_t)settings.referencePrimitive);
+        facts.appendString(settings.referencePrimitivePath.GetString());
+        facts.appendBool(settings.makeInstanceable);
+        facts.appendString(settings.parentPrimitiveKind.GetString());
+        facts.appendString(settings.options.parentPrimitiveType.GetString());
+        facts.appendString(settings.options.rootPath.GetString());
+        facts.appendU64(gathered.front().referenceScene ? gathered.front().referenceScene->hash : 0);
+    }
     if (copy) {
         for (const Gathered& g : gathered) {
             facts.appendDouble(g.frame);
@@ -991,8 +1399,100 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
     reads.factsDigest = facts.finalize();
     reads.frameRange = settings.timeSamples;
 
+    // Outside the author callback, which the scene-layer memo skips when nothing changed.
+    std::string referenceWarning;
+    if (settings.reference && geoLayer && (settings.referencePrimitive == eReferencePrimitiveDefault) && !geoLayer->HasDefaultPrim()) {
+        referenceWarning = tr("Reference Primitive is Default, but the geometry's layer has no default prim, so the "
+                              "reference brings nothing in.")
+                               .toStdString();
+    }
+    const auto authorReference = [&](const SceneLayerEdit& edit) {
+        const PXR_NS::SdfPath& prefix = settings.options.rootPath;
+        const GeoUsdInputScene* scene = gathered.front().referenceScene.get();
+        PXR_NS::SdfPrimSpecHandle prim = PXR_NS::SdfCreatePrimInLayer(edit.layer, prefix);
+        if (!prim) {
+            return false;
+        }
+        for (PXR_NS::SdfPath at = prefix; at != PXR_NS::SdfPath::AbsoluteRootPath(); at = at.GetParentPath()) {
+            if (scene && scene->find(at)) {
+                continue;
+            }
+            PXR_NS::SdfPrimSpecHandle spec = edit.layer->GetPrimAtPath(at);
+            spec->SetSpecifier(PXR_NS::SdfSpecifierDef);
+            if (at != prefix) {
+                if (!settings.options.parentPrimitiveType.IsEmpty()) {
+                    spec->SetTypeName(settings.options.parentPrimitiveType.GetString());
+                }
+                if (!settings.parentPrimitiveKind.IsEmpty()) {
+                    spec->SetKind(settings.parentPrimitiveKind);
+                }
+            }
+        }
+        if (settings.makeInstanceable) {
+            prim->SetInstanceable(true);
+        }
+        PXR_NS::SdfPath target;
+        switch (settings.referencePrimitive) {
+        case eReferencePrimitiveSpecific:
+            target = settings.referencePrimitivePath;
+            break;
+        case eReferencePrimitiveDefault:
+            break;
+        case eReferencePrimitiveAutomatic: {
+            // The geometry is converted under the prefix, so the prefix prim is the branch to
+            // bring in; a root prim of a nested prefix would nest it a second time below itself.
+            if (geoLayer->GetPrimAtPath(prefix)) {
+                target = prefix;
+                break;
+            }
+            for (const PXR_NS::SdfPrimSpecHandle& root : geoLayer->GetRootPrims()) {
+                if (target.IsEmpty()) {
+                    target = root->GetPath();
+                }
+                if (root->GetTypeName() == PXR_NS::TfToken("Xform")) {
+                    target = root->GetPath();
+                    break;
+                }
+            }
+            break;
+        }
+        }
+        const std::string asset = geoLayer->GetIdentifier();
+        const bool stronger = (settings.referenceType == eReferenceTypeStrongerPayload) || (settings.referenceType == eReferenceTypeStrongerReference);
+        if ((settings.referenceType == eReferenceTypeWeakerPayload) || (settings.referenceType == eReferenceTypeStrongerPayload)) {
+            const PXR_NS::SdfPayload payload(asset, target);
+            if (stronger) {
+                prim->GetPayloadList().Prepend(payload);
+            } else {
+                prim->GetPayloadList().Append(payload);
+            }
+        } else {
+            const PXR_NS::SdfReference reference(asset, target);
+            if (stronger) {
+                prim->GetReferenceList().Prepend(reference);
+            } else {
+                prim->GetReferenceList().Append(reference);
+            }
+        }
+        if (edit.dependencies) {
+            std::shared_ptr<SceneLayerDependencies> dependencies = std::make_shared<SceneLayerDependencies>();
+            dependencies->layers.push_back(geoLayer);
+            *edit.dependencies = dependencies;
+        }
+
+        return true;
+    };
     const auto author = [&](const SceneLayerEdit& edit, std::string* error) {
         SceneNodeAuthoring::authorLayerMetadata(edit);
+        if (settings.reference) {
+            if (geoLayer && !authorReference(edit)) {
+                *error = tr("The prim %1 could not be authored.").arg(QString::fromStdString(settings.options.rootPath.GetString())).toStdString();
+
+                return false;
+            }
+
+            return true;
+        }
         if (!copy) {
             if (geoLayer) {
                 edit.layer->InsertSubLayerPath(identifier);
@@ -1023,40 +1523,66 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
         return eStatusFailed;
     }
 
-    if (missing.empty() && collisions.empty() && sheared.empty()) {
-        clearPersistentMessage(false);
-
-        return eStatusOK;
-    }
+    const std::vector<PXR_NS::SdfPath> noPaths;
+    const std::vector<PXR_NS::SdfPath>& overlaysWithoutPrim = reported ? reported->overlaysWithoutPrim() : noPaths;
+    const bool warn = !missing.empty() || !sheared.empty() || !overlaysWithoutPrim.empty() || !referenceWarning.empty();
     QString message;
+    const auto section = [&](const QString& heading) {
+        if (!message.isEmpty()) {
+            message += QString::fromUtf8("\n");
+        }
+        message += heading;
+    };
+    if (reported && (reported->partitionCount() > 0)) {
+        // Where the geometry went, so a path or mode mistake shows without inspecting the stage.
+        const std::size_t kListed = 20;
+        const std::size_t count = reported->partitionCount();
+        section(tr("Prims written:"));
+        for (std::size_t i = 0; (i < count) && (i < kListed); ++i) {
+            message += QString::fromUtf8("\n  ") + QString::fromStdString(reported->partitionPath(i).GetString()) + QString::fromUtf8("  ") + (reported->isPartitionOverlay(i) ? tr("overlaid") : tr("defined"));
+        }
+        if (count > kListed) {
+            message += QString::fromUtf8("\n  ") + tr("and %1 more").arg((qulonglong)(count - kListed));
+        }
+    }
+    if (!overlaysWithoutPrim.empty()) {
+        section(tr("Overlaid, but not in the Scene input, so not drawn:"));
+        for (const PXR_NS::SdfPath& path : overlaysWithoutPrim) {
+            message += QString::fromUtf8("\n  ") + QString::fromStdString(path.GetString());
+        }
+    }
     if (!missing.empty()) {
-        message = tr("Not in the Scene input, so not overridden (unpacked geometry read from these paths goes "
-                     "under the Root Path):");
+        if (settings.options.otherPrimitives == eGeoUsdOtherDefine) {
+            section(tr("Not in the Scene input, so not overridden (geometry read from these paths goes under "
+                       "the Path Prefix):"));
+        } else {
+            section(tr("Not in the Scene input, so not overridden:"));
+        }
         for (const std::string& path : missing) {
             message += QString::fromUtf8("\n  ") + QString::fromStdString(path);
         }
     }
-    if (!collisions.empty()) {
-        if (!message.isEmpty()) {
-            message += QString::fromUtf8("\n");
-        }
-        message += tr("Already in the Scene input, and only geometry read from a prim overrides it, so this "
-                      "geometry goes under the Root Path:");
-        for (const std::string& path : collisions) {
-            message += QString::fromUtf8("\n  ") + QString::fromStdString(path);
-        }
-    }
     if (!sheared.empty()) {
-        if (!message.isEmpty()) {
-            message += QString::fromUtf8("\n");
-        }
-        message += tr("Sheared packed geometry, written as native instances because a point instancer cannot hold "
-                      "shear:");
+        section(tr("Sheared packed geometry, written as native instances because a point instancer cannot hold "
+                   "shear:"));
         for (const std::string& path : sheared) {
             message += QString::fromUtf8("\n  ") + QString::fromStdString(path);
         }
     }
-    setPersistentMessage(eMessageTypeWarning, message.toStdString());
+    if (!referenceWarning.empty()) {
+        section(QString::fromStdString(referenceWarning));
+    }
+    if (message.isEmpty()) {
+        clearPersistentMessage(false);
+
+        return eStatusOK;
+    }
+    if (warn) {
+        setPersistentMessage(eMessageTypeWarning, message.toStdString());
+    } else if (const NodePtr node = getNode()) {
+        // A posted info message opens a dialog in the GUI instead of staying on the node.
+        node->setQuietInfoMessage(message.toStdString());
+    }
 
     return eStatusOK;
 } // GeoToUSD::renderScene

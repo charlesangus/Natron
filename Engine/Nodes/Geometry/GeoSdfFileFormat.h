@@ -37,6 +37,7 @@
 NATRON_NAMESPACE_ENTER
 
 struct GeoUsdInputScene;
+struct GeoUsdConvertOptions;
 
 /**
  * @brief Geometry served to OpenUSD as layers, without writing files.
@@ -57,7 +58,7 @@ bool registerPlugin(std::string* errorMessage);
 
 /**
  * @brief The layer identifier serving @p key. @p rootPath and @p packedMode ("instancer",
- * "native" or "unpack") become file format arguments when not empty, and so does @p consumer: a
+ * "native", "xforms" or "unpack") become file format arguments when not empty, and so does @p consumer: a
  * layer opened for a consumer is a layer of its own, served by the provider registered for that
  * consumer, so its owner can refresh it without disturbing the stages composing the others.
  **/
@@ -85,6 +86,16 @@ void setInputScene(const std::string& key,
                    const std::string& consumer = std::string());
 std::shared_ptr<const GeoUsdInputScene> currentInputScene(const std::string& key,
                                                           const std::string& consumer = std::string());
+/**
+ * @brief The conversion options @p key's layer is built with, before its file format arguments
+ * apply; their inputScene is ignored, see setInputScene(). Without them the defaults apply.
+ * Taken by the next open of the layer; a refresh keeps the options the layer was built with.
+ **/
+void setConvertOptions(const std::string& key,
+                       const GeoUsdConvertOptions& options,
+                       const std::string& consumer = std::string());
+GeoUsdConvertOptions currentConvertOptions(const std::string& key,
+                                           const std::string& consumer = std::string());
 bool hasProvider(const std::string& key,
                  const std::string& consumer = std::string());
 

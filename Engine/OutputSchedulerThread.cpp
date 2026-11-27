@@ -130,6 +130,39 @@ unsupportedOutputKindMessage(const NodePtr& writer)
     return std::string("No scheduler support for the output data kind of ") + writer->getScriptName_mt_safe() + " yet";
 }
 
+bool
+evaluateAndWriteGeometryFrame(const OutputEffectInstancePtr& writer,
+                              double time,
+                              ViewIdx view,
+                              EffectInstance::RenderRoIRetCode* retCode,
+                              std::string* error)
+{
+    GeoDetailConstPtr detail;
+    std::string evaluationError;
+    *retCode = writer->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(time, view, false /*byPassCache*/), &detail, &evaluationError);
+    if (*retCode == EffectInstance::eRenderRoIRetCodeFailed) {
+        *error = evaluationError.empty() ? std::string("Error caught while rendering") : evaluationError;
+
+        return false;
+    }
+    if (*retCode != EffectInstance::eRenderRoIRetCodeOk) {
+        return true;
+    }
+    if (!detail) {
+        *error = writer->getScriptName_mt_safe() + ": Nothing to write at frame " + QString::number(time).toStdString();
+
+        return false;
+    }
+    std::string writeError;
+    if (writer->writeGeometryFrame(time, view, detail, &writeError) == eStatusFailed) {
+        *error = writeError.empty() ? std::string("Error caught while writing") : writeError;
+
+        return false;
+    }
+
+    return true;
+}
+
 NATRON_NAMESPACE_ANONYMOUS_EXIT
 
 static MetaTypesRegistration registration;
@@ -1478,7 +1511,9 @@ OutputSchedulerThread::admitFrames()
         QThreadPool* pool = QThreadPool::globalInstance();
         const int poolMax = std::max(1, pool->maxThreadCount());
         const int userSettingParallelRenders = appPTR->getCurrentSettings()->getNumberOfParallelRenders();
-        const int cap = (userSettingParallelRenders > 0) ? userSettingParallelRenders : poolMax;
+        const OutputEffectInstancePtr output = _imp->outputEffect.lock();
+        const bool inOrder = output && output->rendersFramesInOrder();
+        const int cap = inOrder ? 1 : ((userSettingParallelRenders > 0) ? userSettingParallelRenders : poolMax);
         _imp->admissionSlots = std::min(_imp->admissionSlots, cap);
         if (_imp->nAdmittedFrames >= cap) {
             return;
@@ -2113,7 +2148,7 @@ DefaultScheduler::startWriterView(const std::shared_ptr<WriterFrame>& frame)
     if (output) {
         // These pull their inputs and wait for them, which only the worker may do. Deciding before the frame's args
         // are installed keeps the scheduler thread from building a request the worker would build again.
-        if (output->writesFrameRangeAtOnce()) {
+        if (output->writesFrameRangeAtOnce() || (output->getOutputDataKind() == eDataKindGeometry)) {
             onWorker = true;
         } else if (output->getOutputDataKind() == eDataKindDeep) {
             frame->fallbackReason = "deep output";
@@ -2214,6 +2249,17 @@ DefaultScheduler::runWriterView(WriterFrame& frame,
                 int type = 0;
                 activeInputNode->getPersistentMessage(&message, &type, false);
                 frame.fail(message.isEmpty() ? std::string("Error caught while writing") : message.toStdString());
+            }
+
+            return false;
+        }
+
+        if (outputKind == eDataKindGeometry) {
+            // Geometry has no region or planes to request: the frame is the writer's
+            // whole output, which it then writes.
+            std::string error;
+            if (!evaluateAndWriteGeometryFrame(output, time, view, &frame.retCode, &error)) {
+                frame.fail(error);
             }
 
             return false;

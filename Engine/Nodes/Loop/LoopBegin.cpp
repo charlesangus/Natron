@@ -29,6 +29,7 @@
 
 #include <QtCore/QString>
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ContentHasher.h"
@@ -72,6 +73,15 @@ plannedAt(const EffectInstance* effect,
     return args && args->request && args->request->getFrameViewRequest(time, view);
 }
 } // anonymous namespace
+
+void
+noteEditAtLatestRenderSequence(std::atomic<U64>* editedAt)
+{
+    const U64 latest = AbortableRenderInfo::getLatestRenderSequence();
+    U64 seen = editedAt->load();
+    while ((seen < latest) && !editedAt->compare_exchange_weak(seen, latest)) {
+    }
+}
 
 void
 refreshLoopMessage(const NodePtr& node,

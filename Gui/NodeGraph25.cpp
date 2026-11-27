@@ -655,6 +655,7 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
                         args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, hint.y(), 1);
                         args.setProperty<bool>(kCreateNodeArgsPropDeferSettingsPanel, true);
                         getGui()->getApp()->createNode(args);
+                        buildScheduledPanels();
 
                         intercepted = true;
                         break;

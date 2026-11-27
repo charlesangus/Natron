@@ -83,6 +83,8 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/LensBrowser.h"
 #include "Gui/Menu.h"
 #include "Gui/NodeCreationTrace.h"
+#include "Gui/NodeGraph.h"
+#include "Gui/NodeGui.h"
 #include "Gui/PreviewThread.h"
 #include "Gui/QtEnumConvert.h"
 #include "Gui/SplashScreen.h"
@@ -1818,7 +1820,13 @@ GuiApplicationManagerPrivate::createNodeFromNodesMenu(const QString& pluginID,
     if (nodesMenuArgsDecorator) {
         nodesMenuArgsDecorator(args);
     }
-    app->createNode(args);
+    NodePtr node = app->createNode(args);
+    // The panel is built before any event runs, so the node and its panel are shown in one frame.
+    NodeGuiPtr nodeGui = node ? std::dynamic_pointer_cast<NodeGui>(node->getNodeGui()) : NodeGuiPtr();
+    NodeGraph* graph = nodeGui ? nodeGui->getDagGui() : 0;
+    if (graph) {
+        graph->buildScheduledPanels();
+    }
 }
 
 void

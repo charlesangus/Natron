@@ -1786,6 +1786,89 @@ private:
     static const std::string _typeNameStr;
 };
 
+/**
+ * @brief A table of strings whose columns the holder sets right after creating the knob: each
+ * column has a label, a stable tag persisted in the table value, and the text a new row starts
+ * with. Every cell is edited in place.
+ **/
+class KnobRowTable
+    : public KnobTable {
+public:
+    struct Column {
+        std::string label;
+        std::string tag;
+        std::string defaultValue;
+    };
+
+    static KnobHelper* BuildKnob(KnobHolder* holder,
+                                 const std::string& label,
+                                 int dimension,
+                                 bool declaredByPlugin = true)
+    {
+        return new KnobRowTable(holder, label, dimension, declaredByPlugin);
+    }
+
+    KnobRowTable(KnobHolder* holder,
+                 const std::string& description,
+                 int dimension,
+                 bool declaredByPlugin)
+        : KnobTable(holder, description, dimension, declaredByPlugin)
+    {
+    }
+
+    virtual ~KnobRowTable()
+    {
+    }
+
+    void setColumns(const std::vector<Column>& columns)
+    {
+        _columns = columns;
+    }
+
+    const std::vector<Column>& getColumns() const
+    {
+        return _columns;
+    }
+
+    virtual int getColumnsCount() const OVERRIDE FINAL
+    {
+        return (int)_columns.size();
+    }
+
+    virtual std::string getColumnLabel(int col) const OVERRIDE FINAL
+    {
+        return ((col >= 0) && (col < (int)_columns.size())) ? _columns[col].label : std::string();
+    }
+
+    virtual std::string getColumnTag(int col) const OVERRIDE FINAL
+    {
+        return ((col >= 0) && (col < (int)_columns.size())) ? _columns[col].tag : std::string();
+    }
+
+    virtual bool isCellEnabled(int /*row*/,
+                               int /*col*/,
+                               const QStringList& /*values*/) const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
+    virtual bool useEditButton() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    static const std::string& typeNameStatic() WARN_UNUSED_RETURN;
+
+private:
+    virtual const std::string& typeName() const OVERRIDE FINAL
+    {
+        return typeNameStatic();
+    }
+
+    std::vector<Column> _columns;
+    static const std::string _typeNameStr;
+};
+
 NATRON_NAMESPACE_EXIT
 
 #endif // NATRON_ENGINE_KNOBTYPES_H

@@ -290,6 +290,7 @@ UtilityRenderParam::releaseGpu()
     // Memory given back may be what the remembered scene lacked.
     _gpuFallback = false;
 
+#ifdef NATRON_HAVE_GPU
     std::set<UtilityRenderBuffer*> buffers;
     {
         const std::lock_guard<std::mutex> l(_buffersMutex);
@@ -298,6 +299,7 @@ UtilityRenderParam::releaseGpu()
     for (UtilityRenderBuffer* buffer : buffers) {
         buffer->releaseDevice();
     }
+#endif
 }
 
 void

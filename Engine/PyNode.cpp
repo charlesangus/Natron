@@ -672,6 +672,8 @@ Effect::createParamWrapperForKnob(const KnobIPtr& knob)
         return new ButtonParam(isButton);
     } else if (isSep) {
         return new SeparatorParam(isSep);
+    } else if (KnobRowTablePtr isRowTable = std::dynamic_pointer_cast<KnobRowTable>(knob)) {
+        return new StringParamBase(isRowTable);
     }
 
     return NULL;

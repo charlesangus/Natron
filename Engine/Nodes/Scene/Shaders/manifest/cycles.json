@@ -4,7 +4,7 @@
   "source": {
     "library": "hdCycles.so (Cycles NodeType registry)",
     "repository": "https://github.com/charlesangus/cycles",
-    "commit": "18a83a2d068da290444ea768a5fc6e0ea3c89687",
+    "commit": "ad82c8eec79b8c4f61926ce74fa84ba09b55731d",
     "generator": "tools/shaders/dump_cycles_manifest.cpp"
   },
   "nodes": [

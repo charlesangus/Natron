@@ -116,11 +116,16 @@ try:
             image = QGuiApplication.primaryScreen().grabWindow(0, origin.x(), origin.y(), v.width(), v.height()).toImage()
         return image
 
-    def differs(a, b, step=2):
+    def differs(a, b, step=2, around=None, radius=12):
+        """Whether the frames differ, sampling every step pixels, or every pixel within radius of around."""
         if a.size() != b.size():
             return True
-        for y in range(0, a.height(), step):
-            for x in range(0, a.width(), step):
+        xs, ys = range(0, a.width(), step), range(0, a.height(), step)
+        if around is not None:
+            xs = range(max(0, around.x() - radius), min(a.width(), around.x() + radius + 1))
+            ys = range(max(0, around.y() - radius), min(a.height(), around.y() + radius + 1))
+        for y in ys:
+            for x in xs:
                 if a.pixel(x, y) != b.pixel(x, y):
                     return True
         return False
@@ -258,7 +263,7 @@ try:
         if check(hit is not None, "a click on the cube's corner selects one point (%r)" % pattern()):
             check(pattern() != "" and not pattern().startswith("p"), "the selection is a point number (%r)" % pattern())
             yield settle()
-            check(differs(before, framebuffer()), "the selected point is drawn highlighted")
+            check(differs(before, framebuffer(), around=hit), "the selected point is drawn highlighted")
             shot("m361-point.png")
             picked = pattern()
             click(hit, Qt.ShiftModifier)

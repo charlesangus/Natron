@@ -642,6 +642,10 @@ ViewerTab::setPluginViewerInterface(const NodeGuiPtr& n)
     if ( it == _imp->nodesContext.end() ) {
         return;
     }
+    // A new viewer and a finished panel build also land here; the top bar holds only open panels' tool options.
+    if (showsToolOptions(n) && !n->isSettingsPanelVisible()) {
+        return;
+    }
 
     std::string slot = ViewerTabPrivate::getViewerSlot(n->getNode());
     std::list<ViewerTabPrivate::PluginViewerContext>::iterator foundActive = _imp->findActiveNodeContextForSlot(slot);

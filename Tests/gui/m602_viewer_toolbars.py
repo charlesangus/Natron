@@ -382,7 +382,7 @@ try:
         QMetaObject.invokeMethod(graphs[0], "showSelectedNodeSettingsPanel")
         ok = yield ("until", lambda: options.isVisible(), POLL_TIMEOUT_S)
         check(ok, "opening the USDEditTransform panel shows its tool options in the top bar")
-        mode = [w for w in options.findChildren(QWidget) if w.isVisible() and w.metaObject().className() == "ComboBox"]
+        mode = [w for w in options.findChildren(QWidget) if w.isVisible() and w.metaObject().className().split("::")[-1] == "ComboBox"]
         check(bool(mode), "the tool options show the Mode choice")
         shot("m602-tool-options.png")
         gt.close_all_panels()

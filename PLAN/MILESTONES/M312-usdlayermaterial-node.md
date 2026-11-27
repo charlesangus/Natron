@@ -98,3 +98,4 @@ What exists today:
 
 ## Decisions
 - 2026-11-26 (PM): file overlap with M315 - Direct Texel Painting (USDTexturePaint). M312.P1.T1 lands before M315 starts.
+- 2026-11-27 — **Paint Only: the mode drives the session source (user, option A).** In Paint Only each session view renders transparent black, so brushes that read the texture (blur, smear, clone, dodge, burn) see nothing under them in that mode. Bake Output writes the current mode's set; the over-base set in Paint Only is rebuilt as the paint-only set laid over the Bake Inputs base. Switching mode after a Bake Output asks for a new bake. This replaces "Bake Output always writes both sets". Paint Only colour is premultiplied by coverage, so the layer mix is original * (1 - a) + paint (PM).

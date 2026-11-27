@@ -35,8 +35,6 @@
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Scene/PrimSelector.h"
 
-// Free of USD, like every node header.
-
 #define PLUGINID_NATRON_USDLAYERMATERIAL "USDLayerMaterial"
 
 #define kUSDLayerMaterialParamPrimPattern "primPattern"

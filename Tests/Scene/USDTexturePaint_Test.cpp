@@ -3988,4 +3988,23 @@ TEST_F(USDTexturePaintTest, PaintOnlyBakeOutputKeepsThePaintAndLocksTheMode)
     EXPECT_FALSE(USDTexturePaint::isSessionFrozen(session));
     undoBakeOutput(paint, command, false);
     EXPECT_FALSE(mode->isEnabled(0)) << "locked again on redo";
+
+    const std::string name = paint->getScriptName();
+    ProjectPtr project = getApp()->getProject();
+    const QString dirPath = dir.path() + QLatin1Char('/');
+    const QString fileName = QString::fromUtf8("texture-paint-paint-only.ntpz");
+    QString savedFilePath;
+    ASSERT_TRUE(project->saveProject(dirPath, fileName, &savedFilePath));
+    mode.reset();
+    command.reset();
+    session.reset();
+    paint.reset();
+    project->reset(false, true);
+    appPTR->clearAllCaches();
+    ASSERT_TRUE(project->loadProject(dirPath, fileName));
+
+    NodePtr loaded = project->getNodeByName(name);
+    ASSERT_TRUE(bool(loaded));
+    EXPECT_FALSE(getKnob<KnobChoice>(loaded, kUSDTexturePaintParamOutputMode)->isEnabled(0)) << "locked once loaded";
+    EXPECT_EQ(0u, countDifferences(baked, tileTexels(renderTile(loaded)), 1e-3f)) << "paint only once loaded";
 }

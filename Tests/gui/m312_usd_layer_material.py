@@ -26,7 +26,7 @@ BAKE_TIMEOUT_S = 180.0
 SHOW_TIMEOUT_S = 60.0
 SETTLE_MS = 500
 STARTUP_TIMEOUT_S = 60.0
-NUKE = 0
+NAVIGATION_MODE_0 = 0
 PAINT_ONLY = 1
 MIN_RED_PIXELS = 100
 MIN_BLUE_PIXELS = 200
@@ -50,7 +50,7 @@ try:
     navigation = NatronEngine.natron.getSettings().getParam("viewer3DNavigation")
     require(navigation is not None, "Preferences have a viewer3DNavigation parameter")
     original_navigation = navigation.getValue()
-    navigation.setValue(NUKE)
+    navigation.setValue(NAVIGATION_MODE_0)
 
     # Software GL reports a few MB free, under the automatic budget's headroom, so that budget would
     # load no texture and the paint would read its texture's transparent fallback.

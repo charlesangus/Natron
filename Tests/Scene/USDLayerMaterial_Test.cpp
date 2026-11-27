@@ -145,6 +145,84 @@ def Xform "World"
 }
 )usda";
 
+// /World/Dual's material has a MaterialX surface beside its UsdPreviewSurface; /World/Faces has no
+// binding of its own, and its subset Front is bound to /World/Looks/Shared.
+const char* const kDualAndSubset = R"usda(#usda 1.0
+(
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Mesh "Dual" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-2, -2, 0), (0, -2, 0), (0, 2, 0), (-2, 2, 0)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        rel material:binding = </World/Looks/Dual>
+    }
+
+    def Mesh "Faces"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(0, -2, 0), (2, -2, 0), (2, 2, 0), (0, 2, 0)]
+        texCoord2f[] primvars:st = [(1, 0), (2, 0), (2, 1), (1, 1)] (
+            interpolation = "vertex"
+        )
+
+        def GeomSubset "Front" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            uniform token elementType = "face"
+            uniform token familyName = "materialBind"
+            int[] indices = [0]
+            rel material:binding = </World/Looks/Shared>
+        }
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Shared"
+        {
+            token outputs:surface.connect = </World/Looks/Shared/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (1, 0, 0)
+                token outputs:surface
+            }
+        }
+
+        def Material "Dual"
+        {
+            token outputs:surface.connect = </World/Looks/Dual/Preview.outputs:surface>
+            token outputs:mtlx:surface.connect = </World/Looks/Dual/Surface.outputs:out>
+
+            def Shader "Preview"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0, 0, 1)
+                token outputs:surface
+            }
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "ND_standard_surface_surfaceshader"
+                token outputs:out
+            }
+        }
+    }
+}
+)usda";
+
 const int kSmallTile = 1024;
 
 template <typename KNOB>
@@ -508,6 +586,61 @@ TEST_F(USDLayerMaterialTest, MaterialXAndUnboundPrimsWarnAndKeepTheirMaterial)
     EXPECT_TRUE(message.contains(QString::fromUtf8("/World/X"))) << message.toStdString();
     EXPECT_TRUE(message.contains(QString::fromUtf8("no bound material"))) << message.toStdString();
     EXPECT_TRUE(message.contains(QString::fromUtf8("/World/Bare"))) << message.toStdString();
+}
+
+// Storm reads a MaterialX surface before the universal one, so a material with both stays as it is.
+TEST_F(USDLayerMaterialTest, AMaterialWithAMaterialXSurfaceBesideAPreviewSurfaceWarns)
+{
+    NodePtr reader = asset(kDualAndSubset);
+    NodePtr paint = constant(0., 0.5, 0., 0.5);
+    NodePtr node = layer(reader, "/World/Dual", paint);
+    ASSERT_TRUE(reader && paint && node);
+    setLayer(node, "diffuseColor", "rgba");
+
+    PXR_NS::UsdStageRefPtr stage = compose(node);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ("/World/Looks/Dual", boundMaterial(stage, "/World/Dual"));
+    EXPECT_FALSE(bool(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Looks/Dual_layered"))));
+    int type = 0;
+    const QString message = getMessage(node, &type);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("MaterialX layering is not implemented"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("/World/Dual"))) << message.toStdString();
+}
+
+TEST_F(USDLayerMaterialTest, AGprimWhoseSubsetsAreBoundIsNotReportedUnbound)
+{
+    NodePtr reader = asset(kDualAndSubset);
+    NodePtr paint = constant(0., 0.5, 0., 0.5);
+    NodePtr node = layer(reader, "/World/Faces", paint);
+    ASSERT_TRUE(reader && paint && node);
+    setLayer(node, "diffuseColor", "rgba");
+
+    PXR_NS::UsdStageRefPtr stage = compose(node);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ("/World/Looks/Shared_layered", boundMaterial(stage, "/World/Faces/Front"));
+    EXPECT_EQ("", boundMaterial(stage, "/World/Faces"));
+    int type = 0;
+    const QString message = getMessage(node, &type);
+    EXPECT_FALSE(message.contains(QString::fromUtf8("no bound material"))) << message.toStdString();
+}
+
+TEST_F(USDLayerMaterialTest, ADisabledPaintInputWithNothingToPassThroughWarns)
+{
+    NodePtr reader = asset();
+    NodePtr paint = constant(0., 0.5, 0., 0.5);
+    NodePtr node = layer(reader, "/World/A", paint);
+    ASSERT_TRUE(reader && paint && node);
+    setLayer(node, "diffuseColor", "rgba");
+    paint->setNodeDisabled(true);
+
+    PXR_NS::UsdStageRefPtr stage = compose(node);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ("/World/Looks/Shared", boundMaterial(stage, "/World/A"));
+    int type = 0;
+    const QString message = getMessage(node, &type);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("The Paint input gives no image"))) << message.toStdString();
 }
 
 TEST_F(USDLayerMaterialTest, AProjectedCardLaysThePaintOverItsPlate)

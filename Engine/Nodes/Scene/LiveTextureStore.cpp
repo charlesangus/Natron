@@ -85,8 +85,10 @@ copyRow(const Image::ReadAccess& access,
         }
         switch (numComps) {
         case 1:
-            // An alpha-only image: its one channel is the first, which scalar inputs read.
-            row[0] = row[1] = row[2] = row[3] = pix[0] * scale;
+            // An alpha-only image: its one channel is the first, which scalar inputs read. A
+            // premultiplied delivery is composited by its alpha, and a plane without one covers fully.
+            row[0] = row[1] = row[2] = pix[0] * scale;
+            row[3] = premultiplied ? 1.f : row[0];
             break;
         case 2:
             row[0] = pix[0] * scale;

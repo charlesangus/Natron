@@ -67,7 +67,6 @@ enum PurposeEnum {
 // UsdPreviewSurface inputs the layered terminal reads unmixed, besides the mixable ones.
 const char* const kCopiedInputs[] = { "useSpecularWorkflow", "opacityMode", "opacityThreshold", "ior", "displacement" };
 
-// At most this many prims are named in one warning.
 const int kNamedPrims = 5;
 
 enum BackendEnum {
@@ -688,6 +687,7 @@ USDLayerMaterial::renderScene(const SceneRenderActionArgs& args,
     Plan plan;
     plan.purpose = purposeToken(purposeKnob->getValue());
     QStringList warnings;
+    bool noPaintImage = false;
     for (const std::string& input : getMixableInputs()) {
         const std::string plane = getInputPlane(input, args.time);
         if (plane.empty()) {
@@ -697,6 +697,7 @@ USDLayerMaterial::renderScene(const SceneRenderActionArgs& args,
             LiveTextureSource live;
             std::string udimError;
             if (!SceneNodeAuthoring::getLiveTextureSource(*this, kUSDLayerMaterialInputPaint, plane, &live, &udimError)) {
+                noPaintImage = true;
                 continue;
             }
             live.premultiplied = true;
@@ -711,7 +712,12 @@ USDLayerMaterial::renderScene(const SceneRenderActionArgs& args,
     }
     if (plan.inputPlanes.empty()) {
         *outputScene = upstream;
-        if (getInput(kUSDLayerMaterialInputPaint)) {
+        if (getInput(kUSDLayerMaterialInputPaint) && noPaintImage) {
+            setPersistentMessage(eMessageTypeWarning,
+                                 tr("The Paint input gives no image: it is disabled with no input to pass through. The scene "
+                                    "is passed through unchanged.")
+                                     .toStdString());
+        } else if (getInput(kUSDLayerMaterialInputPaint)) {
             setPersistentMessage(eMessageTypeWarning,
                                  tr("No plane of the Paint input lies over any input: its metadata names no purpose and no Layer "
                                     "menu picks a plane. The scene is passed through unchanged.")
@@ -745,7 +751,6 @@ USDLayerMaterial::renderScene(const SceneRenderActionArgs& args,
             return eStatusFailed;
         }
 
-        // The geometry under the matched prims, each with the material bound to it.
         std::vector<std::string> instances;
         PXR_NS::SdfPathSet visited;
         for (const PXR_NS::SdfPath& path : found.paths) {
@@ -773,8 +778,9 @@ USDLayerMaterial::renderScene(const SceneRenderActionArgs& args,
                 target.path = it->GetPath();
                 target.material = bound ? bound.GetPath() : PXR_NS::SdfPath();
                 if (subset) {
-                    // A subset bound as its gprim is covers with it; one bound apart is left out of
-                    // the gprim's collection, which would otherwise outrank its own binding.
+                    // A subset bound to its gprim's material is covered by the gprim's collection. One
+                    // bound to another material is excluded from it, since the root's
+                    // strongerThanDescendants binding would otherwise override the subset's own.
                     std::vector<Target>::iterator parent = std::find_if(targets.begin(), targets.end(), [&target](const Target& t) { return t.path == target.path.GetParentPath(); });
                     if ((parent != targets.end()) && (parent->material == target.material)) {
                         continue;
@@ -790,7 +796,6 @@ USDLayerMaterial::renderScene(const SceneRenderActionArgs& args,
             warnings.push_back(tr("The prims of instances keep their material: %1.").arg(describePrims(instances)));
         }
 
-        // Each bound material, classified once.
         std::map<PXR_NS::SdfPath, int> layeredIndex;
         std::set<PXR_NS::SdfPath> usedPaths;
         std::vector<std::string> unbound;
@@ -803,7 +808,10 @@ USDLayerMaterial::renderScene(const SceneRenderActionArgs& args,
         const std::string nodeName = getNode() ? getNode()->getFullyQualifiedName() : std::string("USDLayerMaterial");
         for (const Target& target : targets) {
             if (target.material.IsEmpty()) {
-                unbound.push_back(target.path.GetString());
+                // An unbound gprim excludes exactly its bound subsets, which are layered.
+                if (target.excludes.empty()) {
+                    unbound.push_back(target.path.GetString());
+                }
                 continue;
             }
             std::map<PXR_NS::SdfPath, int>::iterator known = layeredIndex.find(target.material);
@@ -836,6 +844,11 @@ USDLayerMaterial::renderScene(const SceneRenderActionArgs& args,
                             stacked.push_back(tr("the plate of %1").arg(QString::fromStdString(target.material.GetString())).toStdString());
                         }
                     }
+                } else if (material && isMaterialX(material, surface)) {
+                    // Storm reads a MaterialX surface before the universal one, so the layered
+                    // terminal would replace the look the viewer shows.
+                    materialX.push_back(target.path.GetString());
+                    usable = false;
                 } else if (inside && (shaderIdOf(surface) == PXR_NS::TfToken("UsdPreviewSurface"))) {
                     layered.backend = eBackendPreviewSurface;
                     if (!layeredBefore) {
@@ -849,9 +862,6 @@ USDLayerMaterial::renderScene(const SceneRenderActionArgs& args,
                             stacked.push_back(tr("%1 of %2").arg(QString::fromStdString(mapped.first)).arg(QString::fromStdString(target.material.GetString())).toStdString());
                         }
                     }
-                } else if (material && isMaterialX(material, surface)) {
-                    materialX.push_back(target.path.GetString());
-                    usable = false;
                 } else {
                     problems[target.material.GetString()].push_back(target.path.GetString());
                     usable = false;

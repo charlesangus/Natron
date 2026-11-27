@@ -642,6 +642,59 @@ TEST_F(LiveTextureTest, ANamedPlaneIsRenderedInsteadOfTheColour)
     EXPECT_NEAR(0.1, colourCenter[2], 1e-5);
 }
 
+// A one-channel plane delivered premultiplied has no alpha, so it covers fully; delivered straight,
+// its one channel is also its alpha.
+TEST_F(LiveTextureTest, APremultipliedOneChannelPlaneIsOpaque)
+{
+    std::string error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded,
+              getApp()->getProject()->addLayer(ImageLayerDesc("mask", std::vector<std::string>(1, "A")), LayerRegistryEntry::eOriginUser, &error))
+        << error;
+
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    ASSERT_TRUE(bool(constant));
+    KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName(kConstantParamColor).get());
+    ASSERT_TRUE(color != NULL);
+    color->setValue(0.4, ViewSpec::all(), 0);
+    color->setValue(0.2, ViewSpec::all(), 1);
+    color->setValue(0.1, ViewSpec::all(), 2);
+    color->setValue(1., ViewSpec::all(), 3);
+    NodePtr shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+    ASSERT_TRUE(bool(shuffle));
+    connectNodes(constant, shuffle, Shuffle::eInputMain, true);
+    KnobLayerSelectPtr out = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(kShuffleParamOut1));
+    ASSERT_TRUE(bool(out));
+    out->setLayer("mask");
+
+    LiveTextureSource straight;
+    straight.node = shuffle;
+    straight.nodeName = shuffle->getFullyQualifiedName();
+    straight.layer = "mask";
+    straight.contentHash = shuffle->getEffectInstance()->getHash();
+    straight.firstFrame = 1.;
+    straight.lastFrame = 1.;
+    LiveTextureSource premultiplied = straight;
+    premultiplied.premultiplied = true;
+
+    LiveTextureSourceList sources;
+    sources.push_back(straight);
+    sources.push_back(premultiplied);
+    ASSERT_EQ(0, prepareOffMainThread(sources, 1.)) << LiveTextureStore::instance().getFailure(premultiplied.getUri(1.));
+    const LiveTextureBufferConstPtr buffer = LiveTextureStore::instance().find(premultiplied.getUri(1.));
+    ASSERT_TRUE(bool(buffer));
+    const float* center = buffer->getRow(buffer->getHeight() / 2) + 4 * (buffer->getWidth() / 2);
+    for (int channel = 0; channel < 3; ++channel) {
+        EXPECT_NEAR(0.4, center[channel], 1e-5) << channel;
+    }
+    EXPECT_NEAR(1., center[3], 1e-5);
+    const LiveTextureBufferConstPtr straightBuffer = LiveTextureStore::instance().find(straight.getUri(1.));
+    ASSERT_TRUE(bool(straightBuffer));
+    const float* straightCenter = straightBuffer->getRow(straightBuffer->getHeight() / 2) + 4 * (straightBuffer->getWidth() / 2);
+    for (int channel = 0; channel < 4; ++channel) {
+        EXPECT_NEAR(0.4, straightCenter[channel], 1e-5) << channel;
+    }
+}
+
 // A plane the node does not have fails, naming the plane, rather than serving another.
 TEST_F(LiveTextureTest, AMissingPlaneFailsNamingIt)
 {

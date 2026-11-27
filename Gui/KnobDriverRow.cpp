@@ -50,10 +50,11 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
-#include "Engine/Nodes/Loop/LoopEnd.h"
+#include "Engine/Nodes/Loop/LoopBlock.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RenderContext.h"
 
@@ -217,22 +218,33 @@ QStringList
 loopVariables(const NodePtr& node)
 {
     QStringList variables;
-    const std::vector<NodePtr> ends = LoopEnd::enclosingLoopEnds(node);
+    const std::vector<NodePtr> ends = LoopBlocks::enclosingEnds(node);
 
     if (ends.empty()) {
         return variables;
     }
-    for (const char* name : kLoopVariables) {
-        variables.push_back(QString::fromUtf8("loop.") + QString::fromUtf8(name));
+    // The default driver variable first; loop.* is the nearest block's variable where blocks share a name.
+    variables.push_back(QString::fromUtf8(kKnobDriverDefaultVariable));
+    for (const NodePtr& end : ends) {
+        const LoopBlockEnd* block = LoopBlockEnd::of(end);
+        if (!block) {
+            continue;
+        }
+        for (const std::string& name : block->getBlockVariables()) {
+            const QString variable = QString::fromUtf8("loop.") + QString::fromUtf8(name.c_str());
+            if (!variables.contains(variable)) {
+                variables.push_back(variable);
+            }
+        }
     }
     for (const NodePtr& end : ends) {
-        const LoopEnd* loopEnd = dynamic_cast<const LoopEnd*>(end->getEffectInstance().get());
-        const std::string loopName = loopEnd ? loopEnd->getLoopName() : std::string();
+        const LoopBlockEnd* block = LoopBlockEnd::of(end);
+        const std::string loopName = block ? block->getBlockLoopName() : std::string();
         if (loopName.empty()) {
             continue;
         }
-        for (const char* name : kLoopVariables) {
-            variables.push_back(QString::fromUtf8("loops.%1.%2").arg(QString::fromUtf8(loopName.c_str()), QString::fromUtf8(name)));
+        for (const std::string& name : block->getBlockVariables()) {
+            variables.push_back(QString::fromUtf8("loops.%1.%2").arg(QString::fromUtf8(loopName.c_str()), QString::fromUtf8(name.c_str())));
         }
     }
 
@@ -264,7 +276,8 @@ loopNameKnobs(const std::vector<NodePtr>& ends)
     std::vector<KnobIPtr> knobs;
 
     for (const NodePtr& end : ends) {
-        const KnobIPtr name = LoopEnd::isLoopEnd(end) ? end->getKnobByName(kLoopEndParamName) : KnobIPtr();
+        const LoopBlockEnd* block = LoopBlockEnd::of(end);
+        const KnobIPtr name = block ? KnobIPtr(block->getBlockNameKnob()) : KnobIPtr();
         if (name && (std::find(knobs.begin(), knobs.end(), name) == knobs.end())) {
             knobs.push_back(name);
         }
@@ -329,7 +342,7 @@ previewValue(const KnobIPtr& knob,
         return 0.;
     }
     const double time = knob->getCurrentTime();
-    const RenderContextPtr context = LoopEnd::previewContextOf(nodeOf(knob), time);
+    const RenderContextPtr context = LoopBlocks::previewContextOf(nodeOf(knob), time);
     ActionContextScope scope(bool(context), context);
 
     return isDouble ? isDouble->getValueAtTime(time, dimension) : (double)isInt->getValueAtTime(time, dimension);
@@ -880,7 +893,7 @@ KnobDriverRow::KnobDriverRow(const KnobGuiPtr& knobGui,
 
     _preview = new Label(this);
     _preview->setObjectName(QString::fromUtf8("driverPreview"));
-    _preview->setToolTip(tr("The value at the iteration the LoopEnd's Single Pass Iteration names."));
+    _preview->setToolTip(tr("The value at the iteration the loop previews: its Single Pass Iteration, or for a solver the last substep of the current frame."));
     layout->addWidget(_preview);
     layout->addStretch();
 
@@ -942,9 +955,9 @@ void
 KnobDriverRow::connectLoopEnds(const NodePtr& node)
 {
     disconnectWatched();
-    // Every knob of a LoopEnd may move the preview iteration or the variables a body reads, its
+    // Every knob of a block end may move the preview iteration or the variables a body reads, its
     // name, which names its loops.<name>.* variables, included.
-    const std::vector<NodePtr> ends = LoopEnd::enclosingLoopEnds(node);
+    const std::vector<NodePtr> ends = LoopBlocks::enclosingEnds(node);
     std::vector<KnobIPtr> knobs;
     for (const NodePtr& end : ends) {
         const std::vector<KnobIPtr>& endKnobs = end->getKnobs();

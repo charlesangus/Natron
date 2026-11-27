@@ -3095,6 +3095,12 @@ private:
 
     bool getValueFromExpression_pod(double time, ViewIdx view, int dimension, bool clamp, double* ret);
 
+    // Whether a setValue() held back while the holder renders would set a keyframe once applied.
+    bool isQueuedWriteKeying(ViewSpec view, int dimension, const KeyFrame* newKey) const;
+
+    // Whether dimension holds v and every write queued for it is a v without a keyframe.
+    bool isQueuedWriteUnchanged(const T& v, int dimension) const;
+
     //////////////////////////////////////////////////////////////////////
     /////////////////////////////////// End implementation of KnobI
     //////////////////////////////////////////////////////////////////////

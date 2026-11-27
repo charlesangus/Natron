@@ -622,12 +622,14 @@ TEST(VolumeRenderCycles, ASurfaceOnlyMaterialKeepsTheDefaultVolume)
     expectASurfaceOnlyMaterialKeepsTheDefaultVolume(kRenderDelegateCyclesId);
 }
 
+// Cycles reads the velocity where it shades and looks the density up back along it, so it blurs
+// the density only as far as the velocity grid reaches, as MoonRay does.
 TEST(VolumeRenderCycles, VelocityBlursTheVolume)
 {
     if (!CyclesTestUtils::cyclesOrSkip()) {
         return;
     }
-    expectVelocityBlursTheVolume(kRenderDelegateCyclesId);
+    expectVelocityBlursTheVolume(kRenderDelegateCyclesId, kDilatedVelocity, kDilatedVelocityOpenShutter);
 }
 
 TEST(VolumeRenderMoonRay, TheVolumeDarkensItsSide)

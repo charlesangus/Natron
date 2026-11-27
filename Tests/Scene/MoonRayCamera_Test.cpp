@@ -53,7 +53,9 @@ NATRON_NAMESPACE_USING
 namespace {
 const char* const kCamera = "/World/Cam";
 
-// A 4:3 camera ten units up +z looking down -z, lit by a distant light shining down -z.
+// A 4:3 camera ten units up +z looking down -z, lit by a distant light shining down -z. The light
+// is normalized so its intensity is the irradiance it gives; otherwise it is the radiance of a
+// half-degree sun, which leaves the scene almost black.
 const char* const kCameraAndLight = "#usda 1.0\n"
                                     "(\n"
                                     "    defaultPrim = \"World\"\n"
@@ -73,7 +75,8 @@ const char* const kCameraAndLight = "#usda 1.0\n"
                                     "    }\n"
                                     "    def DistantLight \"Sun\"\n"
                                     "    {\n"
-                                    "        float inputs:intensity = 3\n"
+                                    "        float inputs:intensity = 1\n"
+                                    "        bool inputs:normalize = 1\n"
                                     "    }\n"
                                     "}\n";
 

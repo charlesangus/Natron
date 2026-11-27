@@ -43,22 +43,22 @@ Ships on its own under E9 - USD And 3D.
 
 ## Phase 611.1: Controls
 
-- [ ] M611.P1.T1 — Control audit, naming and traversal knobs
+- [x] M611.P1.T1 — Control audit, naming and traversal knobs
   - files: `Engine/Nodes/Geometry/USDToGeo.{h,cpp}`, `Engine/Nodes/Geometry/GeoUsdConvert.{h,cpp}` (`geoUsdReadPrim` ~:2640-2690, `geoAppendPackedUSD`), `Tests/Geometry/USDToGeoControls_Test.cpp` (new), `Tests/CMakeLists.txt`, this file's `## Decisions`
   - approach: Write the audit from `.local/docs/houdini/nodes/sop/lopimport.md` and `.local/docs/houdini/nodes/sop/unpackusd.md` (and `nodes/lop/sopmodify.md` for the export controls) into `## Decisions`. Add `pathAttribute`, `nameAttribute`, `traversal`, `purpose`, `excludeInactivePrimitives` and `importPointInstances` (one packed primitive per instance). Apply them in the prim walk before reading.
   - verify: gtest on an in-memory stage: Components traversal yields one packed primitive per component; `nameAttribute=name` writes leaf names; an inactive prim is skipped by default.
   - size: M
-- [ ] M611.P1.T2 — Time sample and pivot location
+- [x] M611.P1.T2 — Time sample and pivot location
   - files: `Engine/Nodes/Geometry/USDToGeo.cpp`, `Tests/Geometry/USDToGeoControls_Test.cpp`
   - approach: `timeSample` Static reads at `importFrame` and makes the cook time-invariant (the hash ignores time). `pivotLocation` puts the packed primitive's point at the bounds centroid or at the prim origin.
   - verify: gtest: Static at frame 10 returns the same P at frames 1 and 20; Origin puts the packed point at the prim's translate.
   - size: M
-- [ ] M611.P1.T3 — Primvar and attribute import, ST to UV, usdxform and material path
+- [x] M611.P1.T3 — Primvar and attribute import, ST to UV, usdxform and material path
   - files: `Engine/Nodes/Geometry/GeoUsdConvert.cpp`, `Engine/Nodes/Geometry/USDToGeo.cpp`, `Tests/Geometry/USDToGeoControls_Test.cpp`
   - approach: Filter primvars with `importPrimvars` (plus inherited primvars from ancestors when on) and custom attributes with `importAttributes`. `nonTransformingPrimvars` marks attributes the GeoTransform family must not transform. Use the existing attribute-type metadata if there is one, and record it otherwise. `translateStToUv` renames `st` to `uv`. Unpacked prims get `usdxform`; with `applyInverseUsdTransform` the inverse is applied, so points sit in the prim's local space. `importMaterialPath` writes `usdmaterialpath` from the resolved binding, per subset.
   - verify: gtest: `importPrimvars=^displayColor` drops Cd; `usdxform` equals the prim's world matrix; a prim bound to `/mtl/a` gets `usdmaterialpath=/mtl/a`; with inverse applied, P equals the prim's local points.
   - size: M
-- [ ] M611.P1.T4 — Round-trip test and docs
+- [x] M611.P1.T4 — Round-trip test and docs
   - files: `Tests/Geometry/GeoRoundTrip_Test.cpp` (new), `Engine/Nodes/Geometry/docs/USDToGeo.md`, `Tests/CMakeLists.txt`
   - approach: A gtest that runs a stage through USDToGeo (unpacked) and GeoToUSD (Overlay, M609's controls) with no edit, and checks that the composed result equals the input for points, primvars, xforms and material bindings. Document every control and the round trip.
   - verify: the round-trip gtest passes for a nested, transformed, material-bound mesh.
@@ -98,3 +98,4 @@ Ships on its own under E9 - USD And 3D.
   - The remaining SOP Modify (export) controls — Out of this milestone: M609, M610 and M612.
   - Tests live in `Tests/Scene/` (globbed by CMake), not the nonexistent `Tests/Geometry/`, so `Tests/CMakeLists.txt` is unchanged.
 - 2026-11-26 — **Apply Inverse USD Transform kept (user):** a port carries every control, and M612's round trip uses it explicitly. Test fixes for the inactive-prim predicate and invisible point instances in 35fee8ed66.
+- 2026-11-27 (PM) — T1–T4 landed in f240d92423 and 35fee8ed66 (milestone/m611-usdtogeo-source-controls); m611-gate3 release (full ctest) green at 4fb0ed2741 after merging F42 (main with the #397 cancel-latency fix).

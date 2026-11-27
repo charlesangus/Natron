@@ -1,8 +1,5 @@
 ## Pending
 
-- **GUI check m52_layer_stack fails, possibly flaky** (user + PM, 2026-11-26, from M599 - Runner Efficiency's gate4, run on 60af66f86f): 4 of 136 checks failed: "selecting the right variant changes the viewer", "the cube is green ({'r': (21, 603.7)})", "the displayColor primvar changes the viewer", "the right variant shows the blue cube, not the red one". M599 changes only CI, so the cause is main-side (suspects: F7 - Natron Utility Core's viewer/render changes, or flakiness in when the viewer refreshes after a variant switch). Reproduce on main, decide flaky test vs real regression, fix.
-- **GUI check m600_nodes_selection fails, possibly flaky** (user + PM, 2026-11-26, from M599 - Runner Efficiency's gate4): 2 of 51 checks failed: "[spreadsheet] Tab on the Geometry Spreadsheet opens the tab menu" and "[spreadsheet] Tab and GeoTransform from the Geometry Spreadsheet create a GeoTransform". Main-side cause (focus or shortcut routing on the Geometry Spreadsheet panel; check recent shortcut and panel changes on main). Reproduce on main, decide flaky test vs real regression, fix.
-
 - **Input-data refresh scales badly on long chains** (PM, 2026-11-26, from M299 - Roto Render Performance): `AppManager::clearAllCaches` → `forceComputeInputDependentDataOnAllTrees` recurses about 80 frames of `refreshInputRelatedDataInternal` down a 70-item Merge chain, so `Operators/RotoPaintDirectCompositeTest` takes 9–38 s per case under -j4 (it calls `CacheStress::clearEverything` before every render). M299 runs that entry serially as a stopgap. Profile and make the refresh linear in the graph size; related to the O(N²) upstream walks in the 2026-09-25 render-scaling findings.
 
 - **Shared geometry group selection** (user, 2026-11-25, raised during M600 - Native Geometry UAT Round 2): extract the Group / Group Type logic into one shared component used by every native geometry node, so no node reinvents it or differs from the others in how it presents or applies the rule. GeoUVProject only got a Group Type knob in M600. The component covers:
@@ -14,12 +11,6 @@
   Audit every Geo* node that takes a Group (GeoTransform, GeoUVProject, GeoDisplace, GeoWrangle, …) and move each onto it, with one shared test. When in doubt, match Houdini. Feature: F15 follow-up, or a standalone milestone after F15 lands.
 
 - **VDB grids in the geometry file cache** (PM, 2026-11-25, from the M417 - VDB Volume Primitive review): M403 - Geometry File Cache (in F18) does not serialize `GeoDetail::sharedGrids()`, but M417 (in F22) makes VDB primitives valid. When F18 and F22 meet, whichever lands second must add grid stream I/O to the GeoFileFormat writer and reader. Until then, a cached detail with VDB prims reloads with a dangling `vdbGrid` index and throws "VDB primitive has no grid". Add a round-trip test.
-
-- **GUI scripts failing on main** (PM, 2026-11-25): an A/B run on main's own workflow (mainref-gui-ab, main 83241b652, AppImage from run 45653134112) fails the same checks as M599's runs. M599 - Runner Efficiency is not the cause. Needs a fix milestone:
-  - `m146_panel_viewer_slot`: Roto/RotoPaint viewer interface and viewer slot hand-off (4 checks). Likely M511 - Viewer Toolbar Fits 1920x1080's combo eliding, unconfirmed.
-  - `m275_viewer_widget_editing`: translate/scale snap back after release, a real value change, not timing.
-  - `m121_routing_mix`: `[adjustbbox]` Num Pixels 0 leaves the centre empty.
-  - `m224_shape_drag`: the script locks onto viewer text. Its fix (e9347fd229) is on M299 - Roto Render Performance's branch and lands with it.
 
 - **Layered document flatten: clipping and group isolation** (PM, 2026-11-25, from the M79 - Layered Document Readers review): when a PSD or KRA has no stored composite, the flattened composite ignores clipping masks and group isolation; only Normal-over is documented. PSD and Krita clip differently, so this is a design task.
 

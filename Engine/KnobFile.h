@@ -72,9 +72,9 @@ public:
 
     static const std::string & typeNameStatic();
 
-    void setAsInputImage()
+    void setAsInputImage(bool isInputImage = true)
     {
-        _isInputImage = true;
+        _isInputImage = isInputImage;
     }
 
     bool isInputImageFile() const
@@ -235,9 +235,9 @@ public:
                    bool declaredByPlugin);
     static const std::string & typeNameStatic();
 
-    void setAsOutputImageFile()
+    void setAsOutputImageFile(bool isOutputImage = true)
     {
-        _isOutputImage = true;
+        _isOutputImage = isOutputImage;
     }
 
     bool isOutputImageFile() const

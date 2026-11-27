@@ -43,6 +43,9 @@
 #include "TestOfxPluginPath.h"
 #include "TestPlaneChoiceTakeOvers.h"
 #include "TestRetiredOfxIds.h"
+// Registers the fatal-signal stack dump and the stall dump for every suite, not only the ones
+// that start a TestWatchdog.
+#include "TestWatchdog.h"
 #include "TwoPlaneTestEffect.h"
 
 using namespace NATRON_NAMESPACE;

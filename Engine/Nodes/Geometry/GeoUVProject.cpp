@@ -44,6 +44,7 @@
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Geometry/GeoInterpolate.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
+#include "Engine/Nodes/InputConnectSwitch.h"
 #include "Engine/Nodes/Scene/GeoCameraProjection.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
@@ -218,8 +219,23 @@ projectGeoUVs(GeoDetailBuilder& detail,
 
         return false;
     }
-    GeoElementMask primitives;
-    if (!geoSelectElements(detail.detail(), eGeoAttribClassPrimitive, params.group, &primitives, errorMessage)) {
+    const bool blankGroup = geoSplitPattern(params.group).empty();
+    GeoGroupTypeEnum groupType = params.groupType;
+    if (blankGroup) {
+        groupType = eGeoGroupTypePoints;
+    } else if (groupType == eGeoGroupTypeGuess) {
+        const GeoGroupTypeEnum allowed[] = { eGeoGroupTypePoints, eGeoGroupTypePrimitives };
+        if (!geoGuessGroupType(detail.detail(), params.group, allowed, eGeoGroupTypePrimitives, &groupType, errorMessage)) {
+            return false;
+        }
+    } else if (groupType == eGeoGroupTypeEdges) {
+        *errorMessage = "The Group Type must be points or primitives.";
+
+        return false;
+    }
+    const bool selectsPoints = (groupType == eGeoGroupTypePoints);
+    GeoElementMask selected;
+    if (!geoSelectElements(detail.detail(), selectsPoints ? eGeoAttribClassPoint : eGeoAttribClassPrimitive, params.group, &selected, errorMessage)) {
         return false;
     }
 
@@ -227,28 +243,47 @@ projectGeoUVs(GeoDetailBuilder& detail,
     std::vector<std::pair<GeoOffset, std::array<double, 2>>> uvs;
     {
         const GeoDetail& d = detail.detail();
-        GeoElementMask written;
-        if (onPoints) {
-            written.assign((std::size_t)d.pointMap().offsetSize(), 0);
-        }
-        d.primitiveMap().forEachLive([&](GeoIndex, GeoOffset primitive) {
-            if (!primitives[(std::size_t)primitive]) {
-                return;
-            }
-            const GeoVertexRange range = d.primitiveVertices(primitive);
-            for (GeoOffset i = 0; i < range.count; ++i) {
-                const GeoOffset vertex = range.start + i;
-                const GeoOffset point = d.vertexPoint(vertex);
-                if (onPoints) {
-                    if (written[(std::size_t)point]) {
-                        continue;
-                    }
-                    written[(std::size_t)point] = 1;
+        auto project = [&](GeoOffset element,
+                           GeoOffset point) {
+            const Vec3 p = d.pointPosition(point);
+            uvs.emplace_back(element, params.projection == eGeoUVProjectionCamera ? cameraUV(p, params.cameraWorldToFrame) : planarUV(p, params));
+        };
+        if (selectsPoints && onPoints) {
+            d.pointMap().forEachLive([&](GeoIndex, GeoOffset point) {
+                if (selected[(std::size_t)point]) {
+                    project(point, point);
                 }
-                const Vec3 p = d.pointPosition(point);
-                uvs.emplace_back(onPoints ? point : vertex, params.projection == eGeoUVProjectionCamera ? cameraUV(p, params.cameraWorldToFrame) : planarUV(p, params));
+            });
+        } else if (selectsPoints) {
+            d.vertexMap().forEachLive([&](GeoIndex, GeoOffset vertex) {
+                const GeoOffset point = d.vertexPoint(vertex);
+                if (selected[(std::size_t)point]) {
+                    project(vertex, point);
+                }
+            });
+        } else {
+            GeoElementMask written;
+            if (onPoints) {
+                written.assign((std::size_t)d.pointMap().offsetSize(), 0);
             }
-        });
+            d.primitiveMap().forEachLive([&](GeoIndex, GeoOffset primitive) {
+                if (!selected[(std::size_t)primitive]) {
+                    return;
+                }
+                const GeoVertexRange range = d.primitiveVertices(primitive);
+                for (GeoOffset i = 0; i < range.count; ++i) {
+                    const GeoOffset vertex = range.start + i;
+                    const GeoOffset point = d.vertexPoint(vertex);
+                    if (onPoints) {
+                        if (written[(std::size_t)point]) {
+                            continue;
+                        }
+                        written[(std::size_t)point] = 1;
+                    }
+                    project(onPoints ? point : vertex, point);
+                }
+            });
+        }
     }
     if (uvs.empty()) {
         return true;
@@ -346,13 +381,39 @@ GeoUVProject::initializeKnobs()
     };
 
     _group = createString(tr("Group"), kGeoUVProjectParamGroup,
-                          tr("The primitives whose vertices get texture coordinates, as a group pattern: group names, "
-                             "element numbers, @attribute comparisons, ! and ^. Empty projects onto every primitive."),
+                          tr("The elements that get texture coordinates, as a group pattern: group names, "
+                             "element numbers, @attribute comparisons, ! and ^. Empty selects every element of the "
+                             "Attribute Class: every point, including points no primitive uses, or every vertex. "
+                             "Anything outside the selection keeps its uv."),
                           std::string());
+
+    KnobChoicePtr groupType = createKnob<KnobChoice>(tr("Group Type").toStdString());
+    groupType->setName(kGeoUVProjectParamGroupType);
+    groupType->setHintToolTip(tr("Whether the Group selects points or primitives. Ignored when the Group is empty.").toStdString());
+    {
+        std::vector<ChoiceOption> types;
+        types.push_back(ChoiceOption("points", tr("Points").toStdString(),
+                                     tr("Only the selected points are written, with Attribute Class Vertex the vertices on them. "
+                                        "Points no primitive uses can be selected.")
+                                         .toStdString()));
+        types.push_back(ChoiceOption("primitives", tr("Primitives").toStdString(),
+                                     tr("Only the selected primitives' vertices, or the points they use, are written. "
+                                        "Points no primitive uses are never written.")
+                                         .toStdString()));
+        types.push_back(ChoiceOption("guess", tr("Guess from Group").toStdString(),
+                                     tr("The class the Group names: a group name means the class that has it, "
+                                        "and plain numbers mean primitives.")
+                                         .toStdString()));
+        groupType->populateChoices(types);
+    }
+    groupType->setDefaultValue(2);
+    groupType->setAnimationEnabled(false);
+    page->addKnob(groupType);
+    _groupType = groupType;
 
     KnobChoicePtr projection = createKnob<KnobChoice>(tr("Projection").toStdString());
     projection->setName(kGeoUVProjectParamProjection);
-    projection->setHintToolTip(tr("How points are mapped to texture coordinates.").toStdString());
+    projection->setHintToolTip(tr("How points are mapped to texture coordinates. Connecting the Camera input switches it to Camera.").toStdString());
     {
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption("planar", tr("Planar").toStdString(),
@@ -447,18 +508,20 @@ GeoUVProject::initializeKnobs()
     attributeClass->setName(kGeoUVProjectParamAttributeClass);
     attributeClass->setHintToolTip(tr("Whether the texture coordinates are written on vertices or on points. The uv "
                                       "depends only on a point's position, so both give the same texture coordinates; "
-                                      "a point shared with primitives outside the Group changes their uv too.")
+                                      "a point shared with elements outside the Group changes their uv too.")
                                        .toStdString());
     {
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption("vertex", tr("Vertex").toStdString(),
-                                       tr("On the vertices of the primitives in the Group. A point attribute of the same "
+                                       tr("On the vertices the Group selects: those of the selected primitives, or on the selected "
+                                          "points. With an empty Group, on every vertex. A point attribute of the same "
                                           "name is removed, its values kept on the vertices outside the Group.")
                                            .toStdString()));
         options.push_back(ChoiceOption("point", tr("Point").toStdString(),
-                                       tr("On the points the primitives in the Group use, once per point. A vertex "
-                                          "attribute of the same name is removed; when the point attribute is new, "
-                                          "the points not written take the value of their first vertex.")
+                                       tr("On the points the Group selects: the selected points, or the points the selected "
+                                          "primitives use. With an empty Group, on every point, including points no "
+                                          "primitive uses, such as a scattered point cloud. A vertex attribute of the same name is removed; when the point "
+                                          "attribute is new, the points not written take the value of their first vertex.")
                                            .toStdString()));
         attributeClass->populateChoices(options);
     }
@@ -499,6 +562,13 @@ void
 GeoUVProject::onKnobsLoaded()
 {
     updateEnabled();
+}
+
+void
+GeoUVProject::onInputChanged(int inputNo)
+{
+    NativeEffectBase::onInputChanged(inputNo);
+    switchChoiceOnInputConnected(*this, inputNo, 1, _projection.lock(), (int)eGeoUVProjectionCamera);
 }
 
 bool
@@ -582,6 +652,10 @@ GeoUVProject::readParams(double time,
         }
     };
     p.group = text(_group, p.group);
+    if (const KnobChoicePtr groupType = _groupType.lock()) {
+        const int value = groupType->getValueAtTime(time, 0, view);
+        p.groupType = (value == 0) ? eGeoGroupTypePoints : ((value == 1) ? eGeoGroupTypePrimitives : eGeoGroupTypeGuess);
+    }
     if (const KnobChoicePtr projection = _projection.lock()) {
         p.projection = projection->getValueAtTime(time, 0, view) == (int)eGeoUVProjectionCamera ? eGeoUVProjectionCamera : eGeoUVProjectionPlanar;
     }

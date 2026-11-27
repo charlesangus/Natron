@@ -59,7 +59,7 @@ for node in ${BENCH_CASES:-grade hsv}; do
                             mkdir -p "$dir"
                             rm -f "$dir"/render.prof.*
                             echo "== $tag"
-                            run_env=(NATRON_GPU="$gpu" NATRON_RENDER_SCHEDULER=taskgraph
+                            run_env=(NATRON_GPU="$gpu"
                                 NATRON_RENDER_PROFILE="$dir/render.prof" NATRON_GUI_TEST_OUT="$dir"
                                 BENCH_SCENARIO="$scenario" BENCH_CASE="$node" BENCH_ZOOM="$zoom" BENCH_PANEL="$panel"
                                 BENCH_AUTOPROXY="$proxy" BENCH_RAM_PERCENT="$ram" BENCH_REP="$rep"

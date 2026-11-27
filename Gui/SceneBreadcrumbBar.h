@@ -54,7 +54,8 @@ class SceneViewport;
  * be clicked, though their menu and drag still work; a hover tells what the prim is. A drag from a
  * segment carries its path and a drag from the "+N" badge carries every selected path; a click on the
  * badge toggles a SceneBreadcrumbListPopup listing them all. When the bar is too narrow the middle
- * segments fold into a "..." button whose menu lists them.
+ * segments fold into a "..." button whose menu lists them. The viewer hides it while the view
+ * shows native geometry.
  *
  * The widget publishes natronBreadcrumbSegments (see Segment::toVariant()), natronBreadcrumbPath,
  * natronBreadcrumbMore and natronBreadcrumbElided for GUI tests. Its buttons are named

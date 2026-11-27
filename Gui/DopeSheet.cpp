@@ -55,6 +55,7 @@
 #include "Engine/Nodes/Time/TimeOffset.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoDrawableItem.h"
+#include "Engine/RotoLayer.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
@@ -225,7 +226,7 @@ touchKey(UndoScope* scope,
         return;
     }
     // An item's knobs and shape have no holder; the host node owns their edits.
-    RotoDrawableItemPtr item = knob->getRotoItem();
+    RotoItemPtr item = knob->getRotoItem();
     RotoCurveContextPtr context = item ? item->getContext() : RotoCurveContextPtr();
     if (context) {
         scope->touchNode(context->getNode());
@@ -1167,7 +1168,7 @@ DopeSheet::pasteKeys(const std::vector<DopeSheetKey>& keys, bool relative)
     }
     UndoScope scope;
     for (std::list<DSKnobPtr>::const_iterator it = dstKnobs.begin(); it != dstKnobs.end(); ++it) {
-        RotoDrawableItemPtr item = (*it)->getRotoItem();
+        RotoItemPtr item = (*it)->getRotoItem();
         RotoCurveContextPtr context = item ? item->getContext() : RotoCurveContextPtr();
         if (context) {
             scope.touchNode(context->getNode());
@@ -1382,7 +1383,7 @@ DopeSheet::onPaintedFrameChanged()
         return;
     }
     DSKnobPtr row = found->second.lock();
-    RotoDrawableItemPtr item = row ? row->getRotoItem() : RotoDrawableItemPtr();
+    RotoDrawableItemPtr item = row ? std::dynamic_pointer_cast<RotoDrawableItem>(row->getRotoItem()) : RotoDrawableItemPtr();
     // A knob freed and another allocated at its address must not reach the old row.
     if (!item || (item->getLifeTimeFrameKnob() != knob)) {
         _imp->paintedFrameRows.erase(found);
@@ -1448,7 +1449,7 @@ public:
     KnobIWPtr knob;
     DriverCurveGuiPtr driverCurve;
     std::list<DSKnob*> driverRows;
-    RotoDrawableItemWPtr item;
+    std::weak_ptr<RotoItem> item;
     BezierWPtr bezier;
     bool paintedFrame;
 };
@@ -1519,7 +1520,7 @@ DSKnob::DSKnob(QTreeWidgetItem* nameItem,
 DSKnob::DSKnob(int dimension,
                QTreeWidgetItem* nameItem,
                const KnobIPtr& knob,
-               const RotoDrawableItemPtr& item)
+               const RotoItemPtr& item)
     : _imp(new DSKnobPrivate)
 {
     assert(knob && item);
@@ -1631,7 +1632,7 @@ DSKnob::getInternalKnob() const
  *
  *
  */
-RotoDrawableItemPtr
+RotoItemPtr
 DSKnob::getRotoItem() const
 {
     return _imp->item.lock();
@@ -1683,7 +1684,7 @@ DSKnob::getKeyFrames(int dimension) const
     BezierPtr bezier = getBezier();
 
     if (_imp->paintedFrame) {
-        RotoDrawableItemPtr item = getRotoItem();
+        RotoDrawableItemPtr item = std::dynamic_pointer_cast<RotoDrawableItem>(getRotoItem());
         KnobIntPtr frameKnob = item ? item->getLifeTimeFrameKnob() : KnobIntPtr();
         if (frameKnob) {
             const int frame = frameKnob->getValueAtTime(frameKnob->getCurrentTime(), 0, ViewIdx(0), false, true);
@@ -2080,7 +2081,7 @@ addKnobRows(DSTreeItemKnobMap* map,
             QTreeWidgetItem* parent,
             const KnobIPtr& knob,
             const KnobGuiPtr& knobGui,
-            const RotoDrawableItemPtr& item)
+            const RotoItemPtr& item)
 {
     QString label = QString::fromUtf8(knob->getLabel().c_str());
 
@@ -2181,7 +2182,7 @@ DSNode::DSNode(DopeSheet *model,
             continue;
         }
 
-        DSKnob* knobRow = addKnobRows(&_imp->itemKnobMap, _imp->nameItem, knob, knobGui, RotoDrawableItemPtr());
+        DSKnob* knobRow = addKnobRows(&_imp->itemKnobMap, _imp->nameItem, knob, knobGui, RotoItemPtr());
 
         // The start and end of the knob's loop drivers, laid out as in the curve editor.
         KnobHelper* helper = dynamic_cast<KnobHelper*>(knob.get());
@@ -2332,6 +2333,30 @@ DSNode::rebuildItemRows()
     _imp->itemRows.clear();
     _imp->dopeSheetModel->unregisterPaintedFrameRows(oldPaintedRows);
 
+    const auto addItemKnobRows = [this](const RotoItemPtr& item, QTreeWidgetItem* itemRow) {
+        const std::list<KnobIPtr>& itemKnobs = item->getKnobs();
+        for (std::list<KnobIPtr>::const_iterator itK = itemKnobs.begin(); itK != itemKnobs.end(); ++itK) {
+            const KnobIPtr& knob = *itK;
+            if (!knob->canAnimate() || !knob->isAnimationEnabled()) {
+                continue;
+            }
+            addKnobRows(&_imp->itemKnobMap, itemRow, knob, KnobGuiPtr(), item);
+
+            KnobSignalSlotHandlerPtr handler = knob->getSignalSlotHandler();
+            if (!handler) {
+                continue;
+            }
+            const char* knobSignals[] = { SIGNAL(keyFrameSet(double, ViewSpec, int, int, bool)),
+                                          SIGNAL(keyFrameRemoved(double, ViewSpec, int, int)),
+                                          SIGNAL(keyFrameMoved(ViewSpec, int, double, double)),
+                                          SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
+                                          SIGNAL(animationRemoved(ViewSpec, int)) };
+            for (std::size_t i = 0; i < sizeof(knobSignals) / sizeof(knobSignals[0]); ++i) {
+                QObject::connect(handler.get(), knobSignals[i], _imp->dopeSheetModel, SLOT(onItemKnobKeyframesChanged()), Qt::UniqueConnection);
+            }
+        }
+    };
+
     std::list<RotoDrawableItemPtr> items = context->getCurvesByRenderOrder(false);
     for (std::list<RotoDrawableItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
         const RotoDrawableItemPtr& item = *it;
@@ -2366,27 +2391,20 @@ DSNode::rebuildItemRows()
             }
         }
 
-        const std::list<KnobIPtr>& itemKnobs = item->getKnobs();
-        for (std::list<KnobIPtr>::const_iterator itK = itemKnobs.begin(); itK != itemKnobs.end(); ++itK) {
-            const KnobIPtr& knob = *itK;
-            if (!knob->canAnimate() || !knob->isAnimationEnabled()) {
-                continue;
-            }
-            addKnobRows(&_imp->itemKnobMap, itemRow, knob, KnobGuiPtr(), item);
+        addItemKnobRows(item, itemRow);
+    }
 
-            KnobSignalSlotHandlerPtr handler = knob->getSignalSlotHandler();
-            if (!handler) {
-                continue;
-            }
-            const char* knobSignals[] = { SIGNAL(keyFrameSet(double, ViewSpec, int, int, bool)),
-                                          SIGNAL(keyFrameRemoved(double, ViewSpec, int, int)),
-                                          SIGNAL(keyFrameMoved(ViewSpec, int, double, double)),
-                                          SIGNAL(keyFrameInterpolationChanged(double, ViewSpec, int)),
-                                          SIGNAL(animationRemoved(ViewSpec, int)) };
-            for (std::size_t i = 0; i < sizeof(knobSignals) / sizeof(knobSignals[0]); ++i) {
-                QObject::connect(handler.get(), knobSignals[i], _imp->dopeSheetModel, SLOT(onItemKnobKeyframesChanged()), Qt::UniqueConnection);
-            }
-        }
+    if (!context->layersOwnTransforms()) {
+        return;
+    }
+    const std::list<RotoLayerPtr>& layers = context->getLayers();
+    for (std::list<RotoLayerPtr>::const_iterator it = layers.begin(); it != layers.end(); ++it) {
+        QTreeWidgetItem* layerRow = createKnobNameItem(QString::fromUtf8((*it)->getLabel().c_str()),
+                                                       eDopeSheetItemTypeRotoItem,
+                                                       -1,
+                                                       _imp->nameItem);
+        _imp->itemRows.push_back(layerRow);
+        addItemKnobRows(*it, layerRow);
     }
 } // DSNode::rebuildItemRows
 

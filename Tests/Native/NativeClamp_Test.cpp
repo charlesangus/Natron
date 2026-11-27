@@ -176,7 +176,7 @@ TEST_F(NativeClampTest, IdentityWhenBothSidesAreOff)
     EXPECT_TRUE(isIdentityAt(node));
 }
 
-TEST_F(NativeClampTest, SchedulerModesAgreeWithNoUnplannedPulls)
+TEST_F(NativeClampTest, DirectAndScheduledAgreeWithNoUnplannedPulls)
 {
     ParityPair pair = makePair(true);
     ASSERT_TRUE(bool(pair.native));

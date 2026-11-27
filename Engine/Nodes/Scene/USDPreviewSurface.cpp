@@ -316,6 +316,23 @@ USDPreviewSurface::initializeKnobs()
     _roughnessTexture = makeTextureKnob(this, page, tr("Roughness Texture"), kUSDPreviewSurfaceParamRoughnessTexture,
                                         tr("An image file whose first channel replaces Roughness, read as raw values at the "
                                            "prims' st texture coordinates. Authored even when it does not resolve."));
+
+    KnobBoolPtr useSpecularWorkflow = createKnob<KnobBool>(tr("Use Specular Workflow"));
+    useSpecularWorkflow->setName(kUSDPreviewSurfaceParamUseSpecularWorkflow);
+    useSpecularWorkflow->setHintToolTip(tr("When on, Specular Color sets the colour of the reflection facing the viewer and "
+                                           "Metallic is ignored; when off, Metallic and IOR set it "
+                                           "(inputs:useSpecularWorkflow)."));
+    useSpecularWorkflow->setDefaultValue(false);
+    page->addKnob(useSpecularWorkflow);
+    _useSpecularWorkflow = useSpecularWorkflow;
+    _specularColor = makeColorKnob(this, page, tr("Specular Color"), kUSDPreviewSurfaceParamSpecularColor,
+                                   tr("The colour of the reflection facing the viewer in the specular workflow "
+                                      "(inputs:specularColor), in the project working space, written unchanged."),
+                                   0.);
+    _clearcoat = makeUnitKnob(this, page, tr("Clearcoat"), kUSDPreviewSurfaceParamClearcoat,
+                              tr("The strength of a second, clear reflective layer over the surface (inputs:clearcoat)."), 0.);
+    _clearcoatRoughness = makeUnitKnob(this, page, tr("Clearcoat Roughness"), kUSDPreviewSurfaceParamClearcoatRoughness,
+                                       tr("The roughness of the clearcoat layer (inputs:clearcoatRoughness)."), 0.01);
     _emissiveColor = makeColorKnob(this, page, tr("Emissive Color"), kUSDPreviewSurfaceParamEmissiveColor,
                                    tr("Light the surface gives off (inputs:emissiveColor), in the project working space, "
                                       "written unchanged."),
@@ -323,6 +340,56 @@ USDPreviewSurface::initializeKnobs()
     _emissiveTexture = makeTextureKnob(this, page, tr("Emissive Texture"), kUSDPreviewSurfaceParamEmissiveTexture,
                                        tr("An image file whose colour replaces Emissive Color, read at the prims' st texture "
                                           "coordinates. Authored even when it does not resolve."));
+
+    _opacity = makeUnitKnob(this, page, tr("Opacity"), kUSDPreviewSurfaceParamOpacity,
+                            tr("How much of the surface is there (inputs:opacity). Below 1 in the Transparent mode the "
+                               "surface is glass: what is behind it shows through, bent by IOR. In the Presence mode the "
+                               "rest is a hole. An image whose alpha Use Alpha takes replaces it."),
+                            1.);
+    KnobChoicePtr opacityMode = createKnob<KnobChoice>(tr("Opacity Mode"));
+    opacityMode->setName(kUSDPreviewSurfaceParamOpacityMode);
+    opacityMode->setHintToolTip(tr("What Opacity below 1 means (inputs:opacityMode). An image whose alpha Use Alpha takes "
+                                   "is always read in the Presence mode."));
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("transparent", tr("Transparent").toStdString(),
+                                       tr("A clear surface that still reflects, and refracts by IOR.").toStdString()));
+        options.push_back(ChoiceOption("presence", tr("Presence").toStdString(),
+                                       tr("Partial coverage: where it is transparent there is no surface at all.").toStdString()));
+        opacityMode->populateChoices(options);
+    }
+    opacityMode->setDefaultValue(0);
+    opacityMode->setAnimationEnabled(false);
+    page->addKnob(opacityMode);
+    _opacityMode = opacityMode;
+    _opacityThreshold = makeUnitKnob(this, page, tr("Opacity Threshold"), kUSDPreviewSurfaceParamOpacityThreshold,
+                                     tr("Above 0, the surface is cut out wherever Opacity is below it and fully opaque "
+                                        "elsewhere (inputs:opacityThreshold)."),
+                                     0.);
+
+    KnobDoublePtr ior = createKnob<KnobDouble>(tr("IOR"));
+    ior->setName(kUSDPreviewSurfaceParamIor);
+    ior->setHintToolTip(tr("The index of refraction (inputs:ior): how strongly a dielectric reflects, and how far light "
+                           "bends through a surface whose Opacity is below 1. 1.5 is glass, 1.33 water, 1 bends nothing."));
+    ior->setDefaultValue(1.5);
+    ior->setMinimum(0.);
+    ior->setDisplayMinimum(1.);
+    ior->setDisplayMaximum(3.);
+    page->addKnob(ior);
+    _ior = ior;
+    _occlusion = makeUnitKnob(this, page, tr("Occlusion"), kUSDPreviewSurfaceParamOcclusion,
+                              tr("Ambient occlusion, 1 for none (inputs:occlusion). Renderers that compute their own "
+                                 "shadowing ignore it."),
+                              1.);
+
+    KnobDoublePtr displacement = createKnob<KnobDouble>(tr("Displacement"));
+    displacement->setName(kUSDPreviewSurfaceParamDisplacement);
+    displacement->setHintToolTip(tr("How far the surface moves along its normal, in scene units (inputs:displacement)."));
+    displacement->setDefaultValue(0.);
+    displacement->setDisplayMinimum(-1.);
+    displacement->setDisplayMaximum(1.);
+    page->addKnob(displacement);
+    _displacement = displacement;
 
     auto makeMultiplyKnobs = [this, &page](const char* toggleName, const char* primvarName, const QString& colorLabel, KnobBoolWPtr* toggleOut, KnobStringWPtr* primvarOut) {
         KnobBoolPtr toggle = createKnob<KnobBool>(tr("%1 Multiply By Primvar").arg(colorLabel));
@@ -401,7 +468,18 @@ USDPreviewSurface::authorLayer(const SceneLayerEdit& edit,
     KnobDoublePtr roughness = _roughness.lock();
     KnobColorPtr emissiveColor = _emissiveColor.lock();
     KnobBoolPtr useAlpha = _useAlpha.lock();
-    if (!diffuseColor || !metallic || !roughness || !emissiveColor || !useAlpha) {
+    KnobBoolPtr useSpecularWorkflow = _useSpecularWorkflow.lock();
+    KnobColorPtr specularColor = _specularColor.lock();
+    KnobDoublePtr clearcoat = _clearcoat.lock();
+    KnobDoublePtr clearcoatRoughness = _clearcoatRoughness.lock();
+    KnobDoublePtr opacity = _opacity.lock();
+    KnobChoicePtr opacityMode = _opacityMode.lock();
+    KnobDoublePtr opacityThreshold = _opacityThreshold.lock();
+    KnobDoublePtr ior = _ior.lock();
+    KnobDoublePtr occlusion = _occlusion.lock();
+    KnobDoublePtr displacement = _displacement.lock();
+    if (!diffuseColor || !metallic || !roughness || !emissiveColor || !useAlpha || !useSpecularWorkflow || !specularColor || !clearcoat
+        || !clearcoatRoughness || !opacity || !opacityMode || !opacityThreshold || !ior || !occlusion || !displacement) {
         *errorMessage = tr("The node is being destroyed").toStdString();
 
         return false;
@@ -439,6 +517,31 @@ USDPreviewSurface::authorLayer(const SceneLayerEdit& edit,
         && authorValue(metallicInput.GetAttr(), edit, isAnimated(metallic), floatAt(metallic))
         && authorValue(roughnessInput.GetAttr(), edit, isAnimated(roughness), floatAt(roughness))
         && authorValue(emissiveInput.GetAttr(), edit, isAnimated(emissiveColor), colorAt(emissiveColor));
+
+    const struct {
+        const char* name;
+        KnobDoublePtr knob;
+    } scalars[] = {
+        { "clearcoat", clearcoat },
+        { "clearcoatRoughness", clearcoatRoughness },
+        { "opacity", opacity },
+        { "opacityThreshold", opacityThreshold },
+        { "ior", ior },
+        { "occlusion", occlusion },
+        { "displacement", displacement },
+    };
+    for (const auto& scalar : scalars) {
+        const PXR_NS::UsdShadeInput input = surface.CreateInput(PXR_NS::TfToken(scalar.name), PXR_NS::SdfValueTypeNames->Float);
+        authored = authored && input && authorValue(input.GetAttr(), edit, isAnimated(scalar.knob), floatAt(scalar.knob));
+    }
+    const PXR_NS::UsdShadeInput specularInput = surface.CreateInput(PXR_NS::TfToken("specularColor"), PXR_NS::SdfValueTypeNames->Color3f);
+    const PXR_NS::UsdShadeInput workflowInput = surface.CreateInput(PXR_NS::TfToken("useSpecularWorkflow"), PXR_NS::SdfValueTypeNames->Int);
+    const PXR_NS::UsdShadeInput modeInput = surface.CreateInput(PXR_NS::TfToken("opacityMode"), PXR_NS::SdfValueTypeNames->Token);
+    authored = authored && specularInput && workflowInput && modeInput
+        && authorValue(specularInput.GetAttr(), edit, isAnimated(specularColor), colorAt(specularColor))
+        && authorValue(workflowInput.GetAttr(), edit, isAnimated(useSpecularWorkflow),
+                       [&useSpecularWorkflow](double frame) { return useSpecularWorkflow->getValueAtTime(frame) ? 1 : 0; })
+        && modeInput.Set(PXR_NS::TfToken(opacityMode->getValue() == 1 ? "presence" : "transparent"));
     if (!authored) {
         *errorMessage = tr("USD could not author the surface of the material at %1.").arg(pathString).toStdString();
 

@@ -1046,14 +1046,24 @@ GpuRecordContext::copyBuffer(const GpuBuffer& src, const GpuBuffer& dst, std::sp
     VkMemoryBarrier2 after { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
     after.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
     after.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-    after.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    after.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT
+        | VK_PIPELINE_STAGE_2_HOST_BIT;
     after.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT
-        | VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        | VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT | VK_ACCESS_2_HOST_READ_BIT;
     VkDependencyInfo dep2 { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
     dep2.memoryBarrierCount = 1;
     dep2.pMemoryBarriers = &after;
     vkCmdPipelineBarrier2(cmd_, &dep2);
     return {};
+}
+
+GpuStatus
+GpuRecordContext::copyBuffer(const GpuBuffer& src, VkDeviceSize srcOffset, const GpuBuffer& dst, VkDeviceSize dstOffset,
+                             VkDeviceSize bytes)
+{
+    const VkBufferCopy region { srcOffset, dstOffset, bytes };
+
+    return copyBuffer(src, dst, std::span<const VkBufferCopy>(&region, 1));
 }
 
 GpuStatus

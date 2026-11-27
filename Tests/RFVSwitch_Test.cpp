@@ -67,7 +67,12 @@ variablesGroupOf(const NodePtr& node)
     return std::dynamic_pointer_cast<KnobGroup>(node->getKnobByName(kRFVSetParamVariables));
 }
 
-const RenderSchedulerModeEnum kModes[] = { eRenderSchedulerModeTaskGraph, eRenderSchedulerModeLegacy };
+enum RenderPull {
+    eRenderPullScheduled,
+    eRenderPullDirect
+};
+
+const RenderPull kPulls[] = { eRenderPullScheduled, eRenderPullDirect };
 
 // Keeps what is recorded inside an open step.
 class RowsRecorder
@@ -371,7 +376,7 @@ protected:
     }
 
     bool renderPixel(const NodePtr& root,
-                     RenderSchedulerModeEnum mode,
+                     RenderPull mode,
                      double time,
                      bool byPassCache,
                      float* pixel,
@@ -379,7 +384,7 @@ protected:
     {
         std::vector<RenderedPlane> planes;
         const RectI roi(0, 0, kCountingTestSize, kCountingTestSize);
-        if (!renderNodePlanesInMode(root, time, ViewIdx(0), 0 /*mipmapLevel*/, roi, std::list<ImageLayerDesc>(), mode, byPassCache, &planes, error)) {
+        if (!(mode == eRenderPullScheduled ? renderNodePlanesScheduled(root, time, ViewIdx(0), 0 /*mipmapLevel*/, roi, byPassCache, &planes, error) : renderNodePlanesDirect(root, time, ViewIdx(0), 0 /*mipmapLevel*/, roi, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, error, byPassCache))) {
             return false;
         }
         if (planes.empty() || planes.front().pixels.empty()) {
@@ -394,7 +399,7 @@ protected:
 
     // The red of root's first pixel at time, or -1.
     float renderFirstPixel(const NodePtr& root,
-                           RenderSchedulerModeEnum mode,
+                           RenderPull mode,
                            double time = 1.,
                            bool byPassCache = true)
     {
@@ -434,7 +439,7 @@ TEST_F(RFVSwitchTest, ProjectVariableChoosesTheInput)
     connectNodes(b, rfvSwitch, 1, true);
     connectNodes(c, rfvSwitch, 2, true);
 
-    for (RenderSchedulerModeEnum mode : kModes) {
+    for (RenderPull mode : kPulls) {
         shot->setValue("sh010");
         CountingTestRegistry::reset();
         EXPECT_EQ(10.f, renderFirstPixel(rfvSwitch, mode));
@@ -465,7 +470,7 @@ TEST_F(RFVSwitchTest, ProjectVariableEditThroughTheCacheSwitches)
     connectNodes(a, rfvSwitch, 0, true);
     connectNodes(b, rfvSwitch, 1, true);
 
-    for (RenderSchedulerModeEnum mode : kModes) {
+    for (RenderPull mode : kPulls) {
         shot->setValue("sh010");
         EXPECT_EQ(10.f, renderFirstPixel(rfvSwitch, mode, 1., false /*byPassCache*/));
         shot->setValue("sh030");
@@ -496,7 +501,7 @@ TEST_F(RFVSwitchTest, TwoSetsBelowOneSwitchPickTheirOwnInputs)
     connectNodes(rfvSwitch, setA, 0, true);
     connectNodes(rfvSwitch, setB, 0, true);
 
-    for (RenderSchedulerModeEnum mode : kModes) {
+    for (RenderPull mode : kPulls) {
         CountingTestRegistry::reset();
         EXPECT_EQ(11.f, renderFirstPixel(setA, mode));
         EXPECT_EQ(1, CountingTestRegistry::renders(a));
@@ -543,7 +548,7 @@ TEST_F(RFVSwitchTest, DiamondHitAndFirstInputFallback)
     connectNodes(setA, merge, 0, true);
     connectNodes(setC, merge, 1, true);
 
-    for (RenderSchedulerModeEnum mode : kModes) {
+    for (RenderPull mode : kPulls) {
         CountingTestRegistry::reset();
         // The merge's own 1, plus b under 'a' and a under 'c'.
         EXPECT_EQ(1.f + 20.f + 10.f, renderFirstPixel(merge, mode));
@@ -573,7 +578,7 @@ TEST_F(RFVSwitchTest, AnimatedSetVariableIsMatchedAtTheFrame)
     connectNodes(b, rfvSwitch, 1, true);
     connectNodes(rfvSwitch, set, 0, true);
 
-    for (RenderSchedulerModeEnum mode : kModes) {
+    for (RenderPull mode : kPulls) {
         EXPECT_EQ(10.f, renderFirstPixel(set, mode, 1.));
         EXPECT_EQ(20.f, renderFirstPixel(set, mode, 2.));
         EXPECT_EQ(10.f, renderFirstPixel(set, mode, 1., false /*byPassCache*/));
@@ -595,7 +600,7 @@ TEST_F(RFVSwitchTest, ExpressionSetVariableIsMatchedAtTheFrame)
     connectNodes(b, rfvSwitch, 1, true);
     connectNodes(rfvSwitch, set, 0, true);
 
-    for (RenderSchedulerModeEnum mode : kModes) {
+    for (RenderPull mode : kPulls) {
         EXPECT_EQ(10.f, renderFirstPixel(set, mode, 1.));
         EXPECT_EQ(20.f, renderFirstPixel(set, mode, 2.));
     }
@@ -610,7 +615,7 @@ TEST_F(RFVSwitchTest, NoMatchFailsTheRenderAndPostsWhy)
     ASSERT_TRUE(a && rfvSwitch);
     connectNodes(a, rfvSwitch, 0, true);
 
-    for (RenderSchedulerModeEnum mode : kModes) {
+    for (RenderPull mode : kPulls) {
         float pixel = 0.f;
         std::string error;
         EXPECT_FALSE(renderPixel(rfvSwitch, mode, 1., true, &pixel, &error));
@@ -623,7 +628,7 @@ TEST_F(RFVSwitchTest, NoMatchFailsTheRenderAndPostsWhy)
 
     KnobStringPtr shot = addProjectString("shot", "sh999");
     ASSERT_TRUE(bool(shot));
-    for (RenderSchedulerModeEnum mode : kModes) {
+    for (RenderPull mode : kPulls) {
         float pixel = 0.f;
         std::string error;
         EXPECT_FALSE(renderPixel(rfvSwitch, mode, 1., true, &pixel, &error));
@@ -636,7 +641,7 @@ TEST_F(RFVSwitchTest, NoMatchFailsTheRenderAndPostsWhy)
     // Line 2 chooses input 1, which is not connected: black with an empty region of definition,
     // so the render succeeds and has no pixels to read (or reads zero).
     shot->setValue("sh020");
-    for (RenderSchedulerModeEnum mode : kModes) {
+    for (RenderPull mode : kPulls) {
         float pixel = -1.f;
         std::string error;
         if (renderPixel(rfvSwitch, mode, 1., true, &pixel, &error)) {
@@ -824,25 +829,25 @@ TEST_F(RFVSwitchTest, EveryVariableTypeIsMatchedAsItsText)
     for (const Case& c : cases) {
         variable->setValue(c.variable);
         setPatterns(rfvSwitch, std::string(c.miss) + "\n" + c.text);
-        for (RenderSchedulerModeEnum mode : kModes) {
+        for (RenderPull mode : kPulls) {
             EXPECT_EQ(20.f, renderFirstPixel(rfvSwitch, mode)) << c.variable;
         }
         // A glob sees the same text.
         setPatterns(rfvSwitch, std::string("\n") + c.text[0] + "*");
-        EXPECT_EQ(20.f, renderFirstPixel(rfvSwitch, eRenderSchedulerModeTaskGraph)) << c.variable;
+        EXPECT_EQ(20.f, renderFirstPixel(rfvSwitch, eRenderPullScheduled)) << c.variable;
     }
 
     // The no-match message shows the text that was matched.
     variable->setValue("scale");
     setPatterns(rfvSwitch, "nothing");
     float pixel = 0.f;
-    EXPECT_FALSE(renderPixel(rfvSwitch, eRenderSchedulerModeTaskGraph, 1., true, &pixel, &error));
+    EXPECT_FALSE(renderPixel(rfvSwitch, eRenderPullScheduled, 1., true, &pixel, &error));
     EXPECT_TRUE(messageOf(rfvSwitch).contains(QString::fromUtf8("scale = \"1, 2.5, -3\""))) << messageOf(rfvSwitch).toStdString();
 
     // A choice shows, and matches, the label of its option rather than its index.
     variable->setValue("mode");
     setPatterns(rfvSwitch, "nothing");
-    EXPECT_FALSE(renderPixel(rfvSwitch, eRenderSchedulerModeTaskGraph, 1., true, &pixel, &error));
+    EXPECT_FALSE(renderPixel(rfvSwitch, eRenderPullScheduled, 1., true, &pixel, &error));
     EXPECT_TRUE(messageOf(rfvSwitch).contains(QString::fromUtf8("mode = \"High Quality\""))) << messageOf(rfvSwitch).toStdString();
 } // EveryVariableTypeIsMatchedAsItsText
 
@@ -863,13 +868,13 @@ TEST_F(RFVSwitchTest, SetOnlyChoiceIsMatchedByItsLabel)
     connectNodes(c, rfvSwitch, 2, true);
     connectNodes(rfvSwitch, set, 0, true);
 
-    for (RenderSchedulerModeEnum m : kModes) {
+    for (RenderPull m : kPulls) {
         EXPECT_EQ(20.f, renderFirstPixel(set, m));
     }
 
     ASSERT_NO_THROW(mode->setExpression(0, "1 if frame < 1.5 else 0", false, true));
     ASSERT_TRUE(RFV::isTimeVarying(mode));
-    for (RenderSchedulerModeEnum m : kModes) {
+    for (RenderPull m : kPulls) {
         EXPECT_EQ(20.f, renderFirstPixel(set, m, 1.));
         EXPECT_EQ(30.f, renderFirstPixel(set, m, 2.));
     }
@@ -892,7 +897,7 @@ TEST_F(RFVSwitchTest, SetChoiceOverridingAProjectChoiceUsesItsOwnLabels)
     connectNodes(c, rfvSwitch, 2, true);
     connectNodes(rfvSwitch, set, 0, true);
 
-    for (RenderSchedulerModeEnum mode : kModes) {
+    for (RenderPull mode : kPulls) {
         EXPECT_EQ(30.f, renderFirstPixel(set, mode));
         EXPECT_EQ(10.f, renderFirstPixel(rfvSwitch, mode));
     }
@@ -908,7 +913,7 @@ TEST_F(RFVSwitchTest, SetChoiceOverridingAProjectChoiceUsesItsOwnLabels)
     connectNodes(rfvSwitch, outer, 0, true);
     connectNodes(outer, set, 0, true);
     setPatterns(rfvSwitch, "Alpha\n1\nYankee");
-    for (RenderSchedulerModeEnum mode : kModes) {
+    for (RenderPull mode : kPulls) {
         EXPECT_EQ(20.f, renderFirstPixel(set, mode));
     }
 }
@@ -927,7 +932,7 @@ TEST_F(RFVSwitchTest, MessageFollowsTheRenderContext)
     connectNodes(a, rfvSwitch, 0, true);
     connectNodes(rfvSwitch, set, 0, true);
 
-    for (RenderSchedulerModeEnum mode : kModes) {
+    for (RenderPull mode : kPulls) {
         for (int i = 0; i < 3; ++i) {
             EXPECT_EQ(10.f, renderFirstPixel(set, mode, 1., false));
             EXPECT_FALSE(rfvSwitch->hasPersistentMessage()) << messageOf(rfvSwitch).toStdString();
@@ -954,10 +959,10 @@ TEST_F(RFVSwitchTest, MessageFollowsTheRenderContext)
     // Matching the project's value too ends the failure of the switch's own render.
     float pixel = 0.f;
     std::string error;
-    EXPECT_FALSE(renderPixel(rfvSwitch, eRenderSchedulerModeTaskGraph, 1., false, &pixel, &error));
+    EXPECT_FALSE(renderPixel(rfvSwitch, eRenderPullScheduled, 1., false, &pixel, &error));
     EXPECT_TRUE(rfvSwitch->hasPersistentMessage());
     shot->setValue("sh011");
-    EXPECT_EQ(10.f, renderFirstPixel(rfvSwitch, eRenderSchedulerModeTaskGraph, 1., false));
+    EXPECT_EQ(10.f, renderFirstPixel(rfvSwitch, eRenderPullScheduled, 1., false));
     EXPECT_FALSE(rfvSwitch->hasPersistentMessage()) << messageOf(rfvSwitch).toStdString();
 } // MessageFollowsTheRenderContext
 
@@ -974,7 +979,7 @@ TEST_F(RFVSwitchTest, SetValueEditThroughTheCacheSwitches)
     connectNodes(b, rfvSwitch, 1, true);
     connectNodes(rfvSwitch, set, 0, true);
 
-    for (RenderSchedulerModeEnum mode : kModes) {
+    for (RenderPull mode : kPulls) {
         value->setValue("sh010");
         EXPECT_EQ(10.f, renderFirstPixel(set, mode, 1., false));
         value->setValue("sh030");
@@ -1013,7 +1018,7 @@ TEST_F(RFVSwitchTest, MatchVariableWritesOneRowPerOption)
     EXPECT_FALSE(rfvSwitch->hasPersistentMessage()) << messageOf(rfvSwitch).toStdString();
 
     const float expected[] = { 10.f, 20.f, 30.f };
-    for (RenderSchedulerModeEnum mode : kModes) {
+    for (RenderPull mode : kPulls) {
         for (int option = 0; option < 3; ++option) {
             variant->setValue(option);
             EXPECT_EQ(expected[option], renderFirstPixel(rfvSwitch, mode)) << option;
@@ -1102,7 +1107,7 @@ TEST_F(RFVSwitchTest, MatchVariableCapsTheRowsAtTheMaximum)
     EXPECT_TRUE(messageOf(rfvSwitch).contains(QString::fromUtf8("the last 6 were left out"))) << messageOf(rfvSwitch).toStdString();
 
     many->setValue(0);
-    for (RenderSchedulerModeEnum mode : kModes) {
+    for (RenderPull mode : kPulls) {
         EXPECT_EQ(10.f, renderFirstPixel(rfvSwitch, mode));
         EXPECT_TRUE(messageOf(rfvSwitch).contains(QString::fromUtf8("the last 6 were left out"))) << messageOf(rfvSwitch).toStdString();
     }
@@ -1134,7 +1139,7 @@ TEST_F(RFVSwitchTest, MatchVariableWritesTheMostRows)
     connectNodes(first, rfvSwitch, 0, true);
     connectNodes(middle, rfvSwitch, middleRow, true);
     connectNodes(last, rfvSwitch, kRFVSwitchMaxRows - 1, true);
-    for (RenderSchedulerModeEnum mode : kModes) {
+    for (RenderPull mode : kPulls) {
         many->setValue(0);
         EXPECT_EQ(10.f, renderFirstPixel(rfvSwitch, mode));
         many->setValue(middleRow);
@@ -1229,7 +1234,7 @@ TEST_F(RFVSwitchTest, ManyRowsSurviveSaveAndLoad)
 
     KnobStringPtr shot = std::dynamic_pointer_cast<KnobString>(RFV::findDeclaredVariable(project.get(), "shot"));
     ASSERT_TRUE(bool(shot));
-    for (RenderSchedulerModeEnum mode : kModes) {
+    for (RenderPull mode : kPulls) {
         shot->setValue("p0");
         EXPECT_EQ(10.f, renderFirstPixel(loaded, mode));
         shot->setValue("p" + std::to_string(middleRow));

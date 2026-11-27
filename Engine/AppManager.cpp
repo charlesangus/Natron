@@ -221,6 +221,8 @@ struct ShutdownState {
 
     std::mutex watchdogMutex;
     bool watchdogArmed = false;
+    // Unset while the watchdog is not armed, or is turned off.
+    std::optional<std::chrono::steady_clock::time_point> watchdogDeadline;
     std::atomic<const char*> stage { "quitting" };
 };
 
@@ -274,8 +276,10 @@ armShutdownWatchdog(const char* stage)
     if (seconds <= 0.) {
         return;
     }
-    std::thread([seconds]() {
-        std::this_thread::sleep_for(std::chrono::duration<double>(seconds));
+    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(seconds));
+    state.watchdogDeadline = deadline;
+    std::thread([seconds, deadline]() {
+        std::this_thread::sleep_until(deadline);
         char line[512];
         int n = std::snprintf(line, sizeof(line), "Natron: shutdown stalled for %g s while %s; exiting with 124 (" kNatronShutdownWatchdogEnv " sets the limit)\n",
                               seconds, shutdownState().stage.load());
@@ -285,6 +289,22 @@ armShutdownWatchdog(const char* stage)
         }
         _exit(124);
     }).detach();
+}
+
+// The time left before the shutdown watchdog ends the process, at most capMs. capMs if it is not
+// armed or is turned off.
+int
+shutdownWatchdogRemainingMs(int capMs)
+{
+    ShutdownState& state = shutdownState();
+    std::lock_guard<std::mutex> k(state.watchdogMutex);
+
+    if (!state.watchdogDeadline) {
+        return capMs;
+    }
+    const long long remaining = std::chrono::duration_cast<std::chrono::milliseconds>(*state.watchdogDeadline - std::chrono::steady_clock::now()).count();
+
+    return (int)std::clamp<long long>(remaining, 0, capMs);
 }
 
 void
@@ -613,15 +633,6 @@ AppManager::AppManager()
     assert(!_instance);
     _instance = this;
 
-    // Read before the settings load: CI selects the scheduler per job through the environment.
-    {
-        std::optional<RenderSchedulerModeEnum> envMode = parseRenderSchedulerModeEnv(std::getenv("NATRON_RENDER_SCHEDULER"));
-        if (envMode) {
-            _imp->renderSchedulerMode = (int)*envMode;
-            _imp->renderSchedulerEnvOverride = true;
-        }
-    }
-
     CacheRetention::readAdmissionPolicyOverrideFromEnvironment();
 
     QObject::connect( this, SIGNAL(s_requestOFXDialogOnMainThread(OfxImageEffectInstance*,void*)), this, SLOT(onOFXDialogOnMainThreadReceived(OfxImageEffectInstance*,void*)) );
@@ -864,6 +875,25 @@ AppManager::~AppManager()
         // and the delegates' libraries unload at exit: the process ends here instead, the
         // caches already saved, without running static destructors or atexit handlers.
         qWarning("A viewer's render delegate did not stop; exiting without the rest of the teardown.");
+        std::fflush(nullptr);
+        std::_Exit(EXIT_FAILURE);
+    }
+
+    // The engines' delegates run threads and child processes of their own, which exit would cut
+    // short or leave running. Both waits fit in what the shutdown watchdog has left, less a margin,
+    // so the render processes are always ended before it fires and leaves them orphaned.
+    constexpr int kWatchdogMarginMs = 1000;
+    const auto teardownBudgetMs = [](int capMs) {
+        return std::max(0, shutdownWatchdogRemainingMs(capMs + kWatchdogMarginMs) - kWatchdogMarginMs);
+    };
+    setTeardownStage("releasing the render delegates' engines");
+    const bool enginesReleased = SceneCaches::releaseCpuRenderEnginesAndWait(teardownBudgetMs(10000));
+    setTeardownStage("waiting for MoonRay's render processes");
+    (void)MoonRayRuntime::endRenderProcesses(teardownBudgetMs(5500));
+    if (!enginesReleased) {
+        // The render thread is still releasing them, in OpenUSD and the delegates' libraries, which
+        // the rest of the teardown frees: as for a viewer's delegate above, the process ends here.
+        qWarning("A render delegate's engine was not released; exiting without the rest of the teardown.");
         std::fflush(nullptr);
         std::_Exit(EXIT_FAILURE);
     }
@@ -1212,7 +1242,6 @@ AppManager::loadInternal(const CLArgs& cl)
 
         return ok;
     }
-    onRenderSchedulerModeSettingChanged(_imp->_settings->getRenderSchedulerMode());
     {
         const GpuResolvedMode gpuMode = GpuContext::resolveMode(_imp->_settings->getGpuComputeMode(), std::getenv("NATRON_GPU"));
         const std::string gpuDeviceId = _imp->_settings->getGpuDevice();
@@ -1812,6 +1841,7 @@ AppManager::clearDiskCache()
     if (_imp->_nodeCache) {
         _imp->_nodeCache->clearPins();
     }
+    geoClearVDBCacheDirectory();
 }
 
 void
@@ -1838,7 +1868,7 @@ AppManager::clearPluginsLoadedCache()
 void
 AppManager::freeGpuMemory()
 {
-    SceneCaches::releaseRenderEngines();
+    SceneCaches::releaseRenderEnginesGpuMemory();
     SceneCaches::releaseLiveTextures();
     releaseSceneViewEngines(false);
     if (_imp->gpuContext) {
@@ -3535,7 +3565,7 @@ AppManager::getNodeCacheHost() const
 std::shared_ptr<CacheDiskTier>
 AppManager::getNodeCacheDiskTier() const
 {
-    return _imp->_nodeCache->diskTier();
+    return _imp->_nodeCache ? _imp->_nodeCache->diskTier() : std::shared_ptr<CacheDiskTier>();
 }
 
 void
@@ -3572,35 +3602,6 @@ AppManager::setNThreadsPerEffect(int nThreadsPerEffect)
     QMutexLocker l(&_imp->nThreadsMutex);
 
     _imp->nThreadsPerEffect = nThreadsPerEffect;
-}
-
-std::optional<RenderSchedulerModeEnum>
-AppManager::parseRenderSchedulerModeEnv(const char* value)
-{
-    if (!value) {
-        return std::nullopt;
-    }
-    const std::string str(value);
-    if (str == "legacy") {
-        return eRenderSchedulerModeLegacy;
-    }
-    if (str == "taskgraph") {
-        return eRenderSchedulerModeTaskGraph;
-    }
-
-    return std::nullopt;
-}
-
-RenderSchedulerModeEnum
-AppManager::getRenderSchedulerMode() const
-{
-    return (RenderSchedulerModeEnum)_imp->renderSchedulerMode.load();
-}
-
-void
-AppManager::setRenderSchedulerMode(RenderSchedulerModeEnum mode)
-{
-    _imp->renderSchedulerMode = (int)mode;
 }
 
 GpuContext*
@@ -3657,22 +3658,13 @@ AppManagerPrivate::dropDeviceTier()
 std::unique_ptr<GpuContext>
 AppManager::swapGpuContextForTests(std::unique_ptr<GpuContext> context)
 {
+    // The caller usually destroys the context returned, which the scene engines and their queued
+    // releases may still be using.
+    SceneCaches::releaseRenderEnginesAndWait();
     _imp->dropDeviceTier();
     _imp->gpuContext.swap(context);
 
     return context;
-}
-
-void
-AppManager::onRenderSchedulerModeSettingChanged(RenderSchedulerModeEnum mode)
-{
-    if (_imp->renderSchedulerEnvOverride) {
-        return;
-    }
-    _imp->renderSchedulerMode = (int)mode;
-
-    // Real renders in legacy mode keep the last placement, so nothing else would clear the regions of the old mode.
-    ViewerInstance::requestGpuPlacementDryRunForEveryViewer();
 }
 
 void
@@ -3719,11 +3711,7 @@ AppManager::getNCPUsAvailableForEffect()
     }
 
     // Threads already running for the multiThreadSuite + parallel renders
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
     const int runningThreadsCount = getNRunningThreads();
-#else
-    const int runningThreadsCount = 0;
-#endif
 
     // better than QThread::idealThreadCount();, because it can be set by a global preference:
     int maxThreadsCount = QThreadPool::globalInstance()->maxThreadCount();

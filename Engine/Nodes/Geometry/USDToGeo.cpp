@@ -358,7 +358,14 @@ USDToGeo::renderGeometry(const GeoRenderActionArgs& args,
             return eStatusOK;
         }
 
+        // Volume grids can be large files read whole, so a cancelled render stops between them.
+        const GeoVDBAbortFunc readAborted = [this]() { return aborted(); };
         for (const PXR_NS::SdfPath& path : matches) {
+            if (aborted()) {
+                *error = "aborted";
+
+                return eStatusFailed;
+            }
             const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
             if (!prim || prim.IsInstanceProxy() || !isReadableUnpacked(prim)) {
                 skipped.push_back(path.GetString());
@@ -367,7 +374,12 @@ USDToGeo::renderGeometry(const GeoRenderActionArgs& args,
             varying = varying || unpackedMightVary(prim, flatten);
             const PXR_NS::GfMatrix4d world = xforms.GetLocalToWorldTransform(prim);
             std::string readError;
-            if (!geoUsdReadPrim(prim, time, flatten ? &world : nullptr, builder, &warnings, &readError)) {
+            if (!geoUsdReadPrim(prim, time, flatten ? &world : nullptr, builder, &warnings, &readError, readAborted)) {
+                if (aborted()) {
+                    *error = "aborted";
+
+                    return eStatusFailed;
+                }
                 skipped.push_back(path.GetString() + ": " + readError);
             }
         }
@@ -382,6 +394,10 @@ USDToGeo::renderGeometry(const GeoRenderActionArgs& args,
     },
                                                       outputDetail, errorMessage);
     if (status != eStatusOK) {
+        // A cancelled render is not an error the node should show.
+        if (aborted()) {
+            return status;
+        }
         setPersistentMessage(eMessageTypeError, *errorMessage);
 
         return status;

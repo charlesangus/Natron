@@ -269,25 +269,25 @@ dequeueAll(const AppInstancePtr& app)
 bool
 reference(const AppInstancePtr& app,
           const GateGraph& g,
-          RenderSchedulerModeEnum mode,
+          bool scheduled,
           RenderedPlane* out,
           std::string* error)
 {
     clearEverything(app);
 
-    return renderProbe(g.blur, kTime, 0, kWindow, mode, true, out, error);
+    return (scheduled ? renderProbeScheduled : renderProbeDirect)(g.blur, kTime, 0, kWindow, true, out, error);
 }
 
 std::string
 checkCached(const GateGraph& g,
-            RenderSchedulerModeEnum mode,
+            bool scheduled,
             const RenderedPlane& ref,
             const std::string& what)
 {
     RenderedPlane got;
     std::string error;
 
-    if (!renderProbe(g.blur, kTime, 0, kWindow, mode, false, &got, &error)) {
+    if (!(scheduled ? renderProbeScheduled : renderProbeDirect)(g.blur, kTime, 0, kWindow, false, &got, &error)) {
         return what + ": the cached render failed: " + error;
     }
     const std::string diff = compareExact(ref, got);
@@ -301,14 +301,14 @@ class GatedRender {
 public:
     GatedRender(Gate* gate,
                 const GateGraph& g,
-                RenderSchedulerModeEnum mode)
+                bool scheduled)
         : _gate(gate)
     {
         gate->arm();
         const NodePtr probe = g.blur;
-        _thread = std::thread([this, probe, mode]() {
+        _thread = std::thread([this, probe, scheduled]() {
             RenderingFlagSetter flag(probe);
-            _ok = renderProbe(probe, kTime, 0, kWindow, mode, false, &_plane, &_error);
+            _ok = (scheduled ? renderProbeScheduled : renderProbeDirect)(probe, kTime, 0, kWindow, false, &_plane, &_error);
         });
     }
 
@@ -361,7 +361,7 @@ std::string
 raceRound(const AppInstancePtr& app,
           Gate* gate,
           const GateGraph& g,
-          RenderSchedulerModeEnum mode,
+          bool scheduled,
           const Edit& edit,
           RaceKind kind)
 {
@@ -369,11 +369,11 @@ raceRound(const AppInstancePtr& app,
     RenderedPlane after;
     std::string error;
 
-    if (!reference(app, g, mode, &before, &error)) {
+    if (!reference(app, g, scheduled, &before, &error)) {
         return "the reference before the edit failed: " + error;
     }
     edit.apply();
-    const bool afterOk = reference(app, g, mode, &after, &error);
+    const bool afterOk = reference(app, g, scheduled, &after, &error);
     edit.undo();
     if (!afterOk) {
         return "the reference after the edit failed: " + error;
@@ -382,7 +382,7 @@ raceRound(const AppInstancePtr& app,
     clearEverything(app);
     std::string workerMismatch;
     {
-        GatedRender first(gate, g, mode);
+        GatedRender first(gate, g, scheduled);
         if (!first.waitHeld()) {
             return "the render never reached the gate";
         }
@@ -392,7 +392,7 @@ raceRound(const AppInstancePtr& app,
             // The queue is still pending: a second render starts on the old inputs, and a
             // dequeue attempted under it must wait for it to end.
             clearEverything(app);
-            GatedRender second(gate, g, mode);
+            GatedRender second(gate, g, scheduled);
             if (!second.waitHeld()) {
                 return "the restarted render never reached the gate";
             }
@@ -424,23 +424,23 @@ raceRound(const AppInstancePtr& app,
         return workerMismatch;
     }
 
-    std::string mismatch = checkCached(g, mode, after, "after the edit");
+    std::string mismatch = checkCached(g, scheduled, after, "after the edit");
     if (!mismatch.empty()) {
         return mismatch;
     }
     edit.undo();
     dequeueAll(app);
-    mismatch = checkCached(g, mode, before, "back to the state before the edit");
+    mismatch = checkCached(g, scheduled, before, "back to the state before the edit");
     if (!mismatch.empty()) {
         return mismatch;
     }
     edit.apply();
     dequeueAll(app);
 
-    return checkCached(g, mode, after, "the edit made again");
+    return checkCached(g, scheduled, after, "the edit made again");
 } // raceRound
 
-// Every seed, both modes, kRounds edits each; one gtest failure per failing seed and mode.
+// Every seed, both pulls, kRounds edits each; one gtest failure per failing seed and pull.
 int
 runRaces(const AppInstancePtr& app,
          RaceKind kind)
@@ -453,7 +453,7 @@ runRaces(const AppInstancePtr& app,
     CountingTestRegistry::setRenderHook([&gate](const Node* node) { gate.hold(node); });
     for (std::size_t s = 0; s < seeds.size(); ++s) {
         for (int m = 0; m < 2; ++m) {
-            const RenderSchedulerModeEnum mode = (m == 0) ? eRenderSchedulerModeLegacy : eRenderSchedulerModeTaskGraph;
+            const bool scheduled = (m == 1);
             const char* modeName = (m == 0) ? "legacy" : "task graph";
             std::printf("[ STRESS   ] seed %u, %s, %d rounds\n", seeds[s], modeName, rounds);
             std::fflush(stdout);
@@ -470,7 +470,7 @@ runRaces(const AppInstancePtr& app,
             for (int r = 0; r < rounds; ++r) {
                 const Edit edit = (kind == eRaceKnobs) ? knobEdit(rng, g) : topologyEdit(rng, g);
                 log << "  " << r << ": " << edit.name << "\n";
-                const std::string mismatch = raceRound(app, &gate, g, mode, edit, kind);
+                const std::string mismatch = raceRound(app, &gate, g, scheduled, edit, kind);
                 if (!mismatch.empty()) {
                     ++failures;
                     ADD_FAILURE() << "cache stress race: NATRON_CACHE_STRESS_SEED=" << seeds[s] << " round " << r << " (" << modeName << "): "
@@ -599,14 +599,14 @@ inputChangedRound(const AppInstancePtr& app,
         return "could not connect the narrow source";
     }
     clearEverything(app);
-    if (!renderProbe(filter, kTime, 0, kWindow, eRenderSchedulerModeLegacy, true, &refNarrow, &error)) {
+    if (!renderProbeDirect(filter, kTime, 0, kWindow, true, &refNarrow, &error)) {
         return "the narrow reference failed: " + error;
     }
     if (!filter->replaceInput(wide, 0)) {
         return "could not connect the wide source";
     }
     clearEverything(app);
-    if (!renderProbe(filter, kTime, 0, kWindow, eRenderSchedulerModeLegacy, true, &refWide, &error)) {
+    if (!renderProbeDirect(filter, kTime, 0, kWindow, true, &refWide, &error)) {
         return "the wide reference failed: " + error;
     }
     if (compareExact(refWide, refNarrow).empty()) {
@@ -631,7 +631,7 @@ inputChangedRound(const AppInstancePtr& app,
             return std::string(step.what) + ": the edit failed";
         }
         RenderedPlane got;
-        if (!renderProbe(filter, kTime, 0, kWindow, eRenderSchedulerModeLegacy, false, &got, &error)) {
+        if (!renderProbeDirect(filter, kTime, 0, kWindow, false, &got, &error)) {
             return std::string(step.what) + ": the cached render failed: " + error;
         }
         const std::string diff = compareExact(*step.ref, got);
@@ -716,12 +716,12 @@ groupInputRound(const AppInstancePtr& app,
         return g.group->connectInput(g.b, 1);
     };
     clearEverything(app);
-    if (!renderProbe(g.grade, kTime, 0, kWindow, eRenderSchedulerModeLegacy, true, &refWith, &error)) {
+    if (!renderProbeDirect(g.grade, kTime, 0, kWindow, true, &refWith, &error)) {
         return "the reference with both inputs failed: " + error;
     }
     remove();
     clearEverything(app);
-    const bool withoutOk = renderProbe(g.grade, kTime, 0, kWindow, eRenderSchedulerModeLegacy, true, &refWithout, &error);
+    const bool withoutOk = renderProbeDirect(g.grade, kTime, 0, kWindow, true, &refWithout, &error);
     if (!restore()) {
         return "could not restore the second input";
     }
@@ -735,10 +735,10 @@ groupInputRound(const AppInstancePtr& app,
     clearEverything(app);
     dequeueAll(app);
     for (int m = 0; m < 2; ++m) {
-        const RenderSchedulerModeEnum mode = (m == 0) ? eRenderSchedulerModeLegacy : eRenderSchedulerModeTaskGraph;
+        const bool scheduled = (m == 1);
         const std::string modeName = (m == 0) ? "legacy" : "task graph";
         RenderedPlane got;
-        if (!renderProbe(g.grade, kTime, 0, kWindow, mode, false, &got, &error)) {
+        if (!(scheduled ? renderProbeScheduled : renderProbeDirect)(g.grade, kTime, 0, kWindow, false, &got, &error)) {
             return modeName + ", both inputs: the cached render failed: " + error;
         }
         std::string diff = compareExact(refWith, got);
@@ -750,7 +750,7 @@ groupInputRound(const AppInstancePtr& app,
             if (group->getNInputs() != 1) {
                 return modeName + ": the removed input came back after the dequeue";
             }
-            if (!renderProbe(g.grade, kTime, 0, kWindow, mode, false, &got, &error)) {
+            if (!(scheduled ? renderProbeScheduled : renderProbeDirect)(g.grade, kTime, 0, kWindow, false, &got, &error)) {
                 return modeName + ", input removed: the cached render failed: " + error;
             }
             diff = compareExact(refWithout, got);
@@ -1082,13 +1082,13 @@ std::string
 demotionUnderAWaitingRender(const AppInstancePtr& app,
                             Gate* gate,
                             const GateGraph& g,
-                            RenderSchedulerModeEnum mode,
+                            bool scheduled,
                             CacheDiskTier& tier)
 {
     RenderedPlane ref;
     std::string error;
 
-    if (!reference(app, g, mode, &ref, &error)) {
+    if (!reference(app, g, scheduled, &ref, &error)) {
         return "the reference failed: " + error;
     }
     clearEverything(app);
@@ -1103,7 +1103,7 @@ demotionUnderAWaitingRender(const AppInstancePtr& app,
     for (int i = 1; i <= 3; ++i) {
         value->setValue(original + 0.25 * i, ViewSpec::all(), 0);
         RenderedPlane other;
-        if (!renderProbe(g.blur, kTime, 0, kWindow, mode, false, &other, &error)) {
+        if (!(scheduled ? renderProbeScheduled : renderProbeDirect)(g.blur, kTime, 0, kWindow, false, &other, &error)) {
             return "rendering another state failed: " + error;
         }
     }
@@ -1112,11 +1112,11 @@ demotionUnderAWaitingRender(const AppInstancePtr& app,
     const double ramPercent = appPTR->getCurrentSettings()->getRamMaximumPercent();
     std::string mismatch;
     {
-        GatedRender first(gate, g, mode);
+        GatedRender first(gate, g, scheduled);
         if (!first.waitHeld()) {
             return "the render never reached the gate";
         }
-        GatedRender waiting(gate, g, mode);
+        GatedRender waiting(gate, g, scheduled);
         // Gives the second render time to reach the pending entries. If it is slower the round
         // still checks the same results, only with the wait starting after the demotion.
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -1161,13 +1161,13 @@ demotionUnderAWaitingRender(const AppInstancePtr& app,
 
     tier.forgetProbes();
 
-    return checkCached(g, mode, ref, "after the demotion");
+    return checkCached(g, scheduled, ref, "after the demotion");
 } // demotionUnderAWaitingRender
 
 std::string
 promotionOfAPartialEntry(const AppInstancePtr& app,
                          const GateGraph& g,
-                         RenderSchedulerModeEnum mode,
+                         bool scheduled,
                          CacheDiskTier& tier)
 {
     const RectI half(0, 0, kCountingTestSize / 2, kCountingTestSize);
@@ -1176,16 +1176,16 @@ promotionOfAPartialEntry(const AppInstancePtr& app,
     std::string error;
 
     clearEverything(app);
-    // The task graph never bypasses the cache, so in that mode these leave entries behind until the
+    // The task graph never bypasses the cache, so in a scheduled pull these leave entries behind until the
     // clear below.
-    if (!renderProbe(g.blur, kTime, 0, half, mode, true, &halfReference, &error) || !renderProbe(g.blur, kTime, 0, kWindow, mode, true, &wholeReference, &error)) {
+    if (!(scheduled ? renderProbeScheduled : renderProbeDirect)(g.blur, kTime, 0, half, true, &halfReference, &error) || !(scheduled ? renderProbeScheduled : renderProbeDirect)(g.blur, kTime, 0, kWindow, true, &wholeReference, &error)) {
         return "the references failed: " + error;
     }
 
     clearEverything(app);
     RenderedPlane plane;
     const std::uint64_t publishedBefore = tier.publishedFiles();
-    if (!renderProbe(g.blur, kTime, 0, half, mode, false, &plane, &error)) {
+    if (!(scheduled ? renderProbeScheduled : renderProbeDirect)(g.blur, kTime, 0, half, false, &plane, &error)) {
         return "the partial render failed: " + error;
     }
     if (!publishWhatIsInRam(tier, publishedBefore)) {
@@ -1195,7 +1195,7 @@ promotionOfAPartialEntry(const AppInstancePtr& app,
     tier.forgetProbes();
 
     const int rendersBefore = CountingTestRegistry::renders(g.gate);
-    if (!renderProbe(g.blur, kTime, 0, half, mode, false, &plane, &error)) {
+    if (!(scheduled ? renderProbeScheduled : renderProbeDirect)(g.blur, kTime, 0, half, false, &plane, &error)) {
         return "the promoted render failed: " + error;
     }
     std::string diff = compareExact(halfReference, plane);
@@ -1206,7 +1206,7 @@ promotionOfAPartialEntry(const AppInstancePtr& app,
         return "the region on disk was rendered again";
     }
 
-    if (!renderProbe(g.blur, kTime, 0, kWindow, mode, false, &plane, &error)) {
+    if (!(scheduled ? renderProbeScheduled : renderProbeDirect)(g.blur, kTime, 0, kWindow, false, &plane, &error)) {
         return "the render of the rest failed: " + error;
     }
     diff = compareExact(wholeReference, plane);
@@ -1260,15 +1260,15 @@ TEST_F(CacheStressTieredChild, DemotionWhileARenderWaits)
         gate.hold(node);
     });
     for (int m = 0; m < 2; ++m) {
-        const RenderSchedulerModeEnum mode = (m == 0) ? eRenderSchedulerModeLegacy : eRenderSchedulerModeTaskGraph;
+        const bool scheduled = (m == 1);
         GateGraph g;
         std::string error;
         ASSERT_TRUE(buildCachedGateGraph(app, &g, &error)) << error;
         gate.setNode(g.gate.get());
         slowNode.store(g.gate.get());
         for (int r = 0; r < rounds; ++r) {
-            const std::string mismatch = demotionUnderAWaitingRender(app, &gate, g, mode, *tier);
-            EXPECT_TRUE(mismatch.empty()) << "mode " << m << " round " << r << ": " << mismatch;
+            const std::string mismatch = demotionUnderAWaitingRender(app, &gate, g, scheduled, *tier);
+            EXPECT_TRUE(mismatch.empty()) << "pull " << m << " round " << r << ": " << mismatch;
         }
         slowNode.store(nullptr);
         gate.setNode(nullptr);
@@ -1296,13 +1296,13 @@ TEST_F(CacheStressTieredChild, PromotionOfAPartialEntry)
         }
     });
     for (int m = 0; m < 2; ++m) {
-        const RenderSchedulerModeEnum mode = (m == 0) ? eRenderSchedulerModeLegacy : eRenderSchedulerModeTaskGraph;
+        const bool scheduled = (m == 1);
         GateGraph g;
         std::string error;
         ASSERT_TRUE(buildCachedGateGraph(app, &g, &error)) << error;
         slowNode.store(g.gate.get());
-        const std::string mismatch = promotionOfAPartialEntry(app, g, mode, *tier);
-        EXPECT_TRUE(mismatch.empty()) << "mode " << m << ": " << mismatch;
+        const std::string mismatch = promotionOfAPartialEntry(app, g, scheduled, *tier);
+        EXPECT_TRUE(mismatch.empty()) << "pull " << m << ": " << mismatch;
         slowNode.store(nullptr);
     }
     EXPECT_EQ(0U, tier->writeFailures());

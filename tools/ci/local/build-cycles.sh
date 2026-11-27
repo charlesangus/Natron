@@ -34,13 +34,28 @@ plugin_dir="${usd_prefix}/plugin/usd"
 test -f "${usd_prefix}/pxrConfig.cmake"
 test -f "${plugin_dir}/plugInfo.json"
 
+# Fetches $1 to $2. wget --tries covers dropped connections; the outer loop also retries a whole
+# failed transfer (a refused connection or a server error), which a CI runner's network sees often.
+download() {
+    local attempt
+    for attempt in 1 2 3; do
+        if wget -q --tries=3 --timeout=60 -O "$2" "$1"; then
+            return 0
+        fi
+        echo "build-cycles.sh: download of $1 failed (attempt ${attempt} of 3)" >&2
+        sleep $((attempt * 10))
+    done
+    echo "build-cycles.sh: could not download $1" >&2
+    return 1
+}
+
 work="$(mktemp -d /tmp/cycles-build.XXXXXX)"
 src="${work}/src"
 build="${work}/build"
 helpers="${work}/cmake"
 mkdir -p "$src" "$build" "${helpers}/ocio" "${helpers}/no-epoxy"
 
-wget -q -O "${work}/cycles.tar.gz" "$url"
+download "$url" "${work}/cycles.tar.gz"
 echo "${sha256}  ${work}/cycles.tar.gz" | sha256sum -c -
 tar -xzf "${work}/cycles.tar.gz" -C "$src" --strip-components=1
 test -f "${src}/src/hydra/plugInfo.json"
@@ -62,6 +77,47 @@ fi
 cycles_plug_info="${src}/src/hydra/resources/plugInfo.json"
 grep -q '"priority": 0' "$cycles_plug_info"
 sed -i 's/"priority": 0/"priority": 99/' "$cycles_plug_info"
+
+# Cycles reads VDB volumes only through NanoVDB: without it VDBImageLoader::load_metadata
+# (src/scene/image_vdb.cpp) fails every grid and a UsdVol Volume renders as nothing. NanoVDB is
+# header-only and ships in the OpenVDB source tree; the image's OpenVDB is a library install
+# without it, so the headers come from the matching OpenVDB release, since its OpenVDB-to-NanoVDB
+# conversion compiles against the image's OpenVDB headers. FindUSDPixar.cmake forces
+# WITH_CYCLES_NANOVDB off whenever it takes libraries from USD's directory, on the assumption that
+# NanoVDB is missing there; that override is dropped so the headers below are used.
+nanovdb_version=13.0.0
+nanovdb_sha256=4d6a91df5f347017496fe8d22c3dbb7c4b5d7289499d4eb4d53dd2c75bb454e1
+openvdb_version_h="${usd_prefix}/include/openvdb/version.h"
+# The headers must match the installed OpenVDB; under set -e a bare grep would stop the build with
+# no word on why, so a mismatch names both versions.
+openvdb_installed="$(sed -nE 's/^#[[:space:]]*define[[:space:]]+OPENVDB_LIBRARY_(MAJOR|MINOR|PATCH)_VERSION_NUMBER[[:space:]]+([0-9]+)[[:space:]]*$/\2/p' "$openvdb_version_h" 2>/dev/null | paste -sd. - || true)"
+if [ "$openvdb_installed" != "$nanovdb_version" ]; then
+    echo "build-cycles.sh: NanoVDB ${nanovdb_version} needs OpenVDB ${nanovdb_version}, but ${openvdb_version_h} declares '${openvdb_installed:-no version}'; update nanovdb_version and nanovdb_sha256 to the image's OpenVDB" >&2
+    exit 1
+fi
+nanovdb_root="${work}/nanovdb"
+mkdir -p "${nanovdb_root}/include"
+download "https://github.com/AcademySoftwareFoundation/openvdb/archive/refs/tags/v${nanovdb_version}.tar.gz" \
+    "${work}/openvdb.tar.gz"
+echo "${nanovdb_sha256}  ${work}/openvdb.tar.gz" | sha256sum -c -
+tar -xzf "${work}/openvdb.tar.gz" -C "${nanovdb_root}/include" --strip-components=2 \
+    "openvdb-${nanovdb_version}/nanovdb/nanovdb"
+test -f "${nanovdb_root}/include/nanovdb/NanoVDB.h"
+find_usd="${src}/src/cmake/Modules/FindUSDPixar.cmake"
+grep -q '^  set(WITH_CYCLES_NANOVDB OFF)$' "$find_usd"
+sed -i -e '/NanoVDB is not part of the USD package/d' -e '/^  set(WITH_CYCLES_NANOVDB OFF)$/d' "$find_usd"
+# FindNanoVDB.cmake finds <root>/include/nanovdb/NanoVDB.h and sets NANOVDB_INCLUDE_DIR to
+# <root>/include, which only the bf::dependencies::optional::nanovdb target carries. cycles_util
+# compiles util/nanovdb.cpp without linking that target, relying on OpenVDB's include directory to
+# hold NanoVDB as well, as Blender's precompiled OpenVDB does; the image's does not. cycles_util
+# takes it PUBLIC, as it does OpenVDB, so scene and hydra sources that reach util/nanovdb.h get it
+# too. Applied only when missing, so a source that has caught up builds unpatched.
+util_cmake="${src}/src/util/CMakeLists.txt"
+if ! grep -q 'bf::dependencies::optional::nanovdb' "$util_cmake"; then
+    grep -q '^  PUBLIC bf::dependencies::optional::openvdb$' "$util_cmake"
+    sed -i '/^  PUBLIC bf::dependencies::optional::openvdb$/a\  PUBLIC bf::dependencies::optional::nanovdb' "$util_cmake"
+fi
+grep -q '^  PUBLIC bf::dependencies::optional::nanovdb$' "$util_cmake"
 
 # The image's pxrConfig.cmake still names the Conan build tree for each dependency's <Pkg>_DIR;
 # point them at the image's installs, as cmake/NatronUsd.cmake does for Natron's own configure.
@@ -105,7 +161,8 @@ cmake -S "$src" -B "$build" -G Ninja \
     -DWITH_CYCLES_OPENIMAGEDENOISE="$oidn" \
     -DWITH_CYCLES_OPENSUBDIV=ON \
     -DWITH_CYCLES_OPENVDB=ON \
-    -DWITH_CYCLES_NANOVDB=OFF \
+    -DWITH_CYCLES_NANOVDB=ON \
+    -DNANOVDB_ROOT_DIR="$nanovdb_root" \
     -DWITH_CYCLES_OSL=OFF \
     -DWITH_CYCLES_ALEMBIC=OFF \
     -DWITH_CYCLES_PUGIXML=OFF \
@@ -119,6 +176,14 @@ cmake -S "$src" -B "$build" -G Ninja \
     -DWITH_CYCLES_CUDA_BINARIES=OFF \
     -DWITH_CYCLES_HIP_BINARIES=OFF \
     -DWITH_GTESTS=OFF
+# WITH_NANOVDB is a plain variable, not a cache entry; its compile definition is the proof it held.
+grep -q -- '-DWITH_NANOVDB' "${build}/build.ninja"
+# The define alone compiled util/nanovdb.cpp without the headers' directory; its compile line must
+# carry both.
+nanovdb_edge="$(awk '/^build src\/util\/CMakeFiles\/cycles_util\.dir\/nanovdb\.cpp\.o:/ { on = 1 }
+    on && /^$/ { exit } on' "${build}/build.ninja")"
+grep -q -- '-DWITH_NANOVDB' <<<"$nanovdb_edge"
+grep -Eq -- "(-I|-isystem )${nanovdb_root}/include( |\$)" <<<"$nanovdb_edge"
 
 # The CPU kernel translation units each take several GB to compile; one job per 3 GB of RAM keeps
 # a 16 GB CI runner out of the OOM killer.

@@ -673,8 +673,7 @@ TEST_F(PerFrameMetadataTest, KeyedSwitchRendersEachFramesLayout)
             const int frame = (i == 0) ? firstFrame : 3 - firstFrame;
             std::vector<RenderedPlane> planes;
             std::string error;
-            ASSERT_TRUE(renderNodePlanesInMode(switchNode, frame, ViewIdx(0), 0, RectI(0, 0, 8, 8), std::list<ImageLayerDesc>(),
-                                               eRenderSchedulerModeTaskGraph, true, &planes, &error))
+            ASSERT_TRUE(renderNodePlanesScheduled(switchNode, frame, ViewIdx(0), 0, RectI(0, 0, 8, 8), true, &planes, &error))
                 << "frame=" << frame << " " << error;
             const RenderedPlane* color = NULL;
             for (std::size_t p = 0; p < planes.size(); ++p) {
@@ -790,28 +789,22 @@ renderRedAt(const NodePtr& node,
     return true;
 }
 
-// Renders on this thread's renderRoI path, and restores the scheduler mode and empties the caches
-// on the way out, so no image cached here outlives the test.
-class LegacyRenderScope {
+// Empties the caches on entry and on the way out, so no image cached by a renderRoI pull on this
+// thread outlives the test.
+class DirectRenderScope {
 public:
-    LegacyRenderScope()
-        : _saved(appPTR->getRenderSchedulerMode())
+    DirectRenderScope()
     {
-        appPTR->setRenderSchedulerMode(eRenderSchedulerModeLegacy);
         appPTR->clearAllCaches();
     }
 
-    ~LegacyRenderScope()
+    ~DirectRenderScope()
     {
-        appPTR->setRenderSchedulerMode(_saved);
         appPTR->clearAllCaches();
     }
 
-    LegacyRenderScope(const LegacyRenderScope&) = delete;
-    LegacyRenderScope& operator=(const LegacyRenderScope&) = delete;
-
-private:
-    RenderSchedulerModeEnum _saved;
+    DirectRenderScope(const DirectRenderScope&) = delete;
+    DirectRenderScope& operator=(const DirectRenderScope&) = delete;
 };
 
 // A Constant whose colour is edited, below a Blur that caches its output. The Constant fills the
@@ -858,7 +851,7 @@ const int kProbeY = 116;
 // state before it. Going back to that state brings its hash back, and must not find that image.
 TEST_F(CleanHashCacheTest, RenderOverlappingAnEditCachesNothingUnderTheOldHash)
 {
-    LegacyRenderScope scope;
+    DirectRenderScope scope;
     CachedConstantBlur graph;
     ASSERT_TRUE(createConstantBlur(&graph));
 
@@ -940,7 +933,7 @@ TEST_F(CleanHashCacheTest, EditDuringARenderLeavesNoStaleImageForAConcurrentLook
     const RectI roi(0, 0, kCountingTestSize, kCountingTestSize);
     const int probe = kCountingTestSize / 2;
 
-    LegacyRenderScope scope;
+    DirectRenderScope scope;
     CountingTestRegistry::reset();
     RenderHookScope hookScope;
     NodePtr upstream = createNode(QString::fromUtf8(kTestPluginIDCounting));

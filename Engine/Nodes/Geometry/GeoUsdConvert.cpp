@@ -60,6 +60,7 @@
 #define emit
 #endif
 
+#include "Engine/Geo/GeoOpUtils.h"
 #include "Engine/Hash64.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -1449,6 +1450,11 @@ GeoUsdConvert::planProperties(Partition& p)
             if ((cls == eGeoAttribClassPoint && isPathAttributeName(_options.pathAttributes, name)) || (cls == eGeoAttribClassDetail && name == kGeoUsdWorldSpaceAttr) || ((cls == eGeoAttribClassPoint || cls == eGeoAttribClassPrimitive) && name == kGeoUsdSourceAttr)) {
                 continue;
             }
+            // Records of where geometry was read from and of the prim's state, which a primvar
+            // would only shadow.
+            if ((cls == eGeoAttribClassPoint || cls == eGeoAttribClassPrimitive) && (name == kGeoUsdXformAttr || name == kGeoUsdMaterialPathAttr || name == kGeoUsdActiveAttr || name == kGeoUsdVisibilityAttr)) {
+                continue;
+            }
             if (a.isArray()) {
                 _warnings.push_back("The array attribute " + name + " is not exported");
                 continue;
@@ -2786,7 +2792,8 @@ scatterComponents(GeoAttribute& a,
 }
 
 // Writes @p value, one element per offset (only the first for the detail class), into the
-// attribute @p name. uv widens texture coordinates to three components.
+// attribute @p name. uv widens texture coordinates to three components. A non-transforming
+// attribute drops its type info, which is what geometry transforms go by.
 void
 readValue(ReadTarget& t,
           GeoAttribClassEnum cls,
@@ -2794,7 +2801,8 @@ readValue(ReadTarget& t,
           const SdfValueTypeName& typeName,
           int elementSize,
           const VtValue& value,
-          const std::vector<std::size_t>& offsets)
+          const std::vector<std::size_t>& offsets,
+          bool nonTransforming = false)
 {
     const SdfValueTypeName scalar = typeName.GetScalarType();
     const std::size_t expected = offsets.size();
@@ -2902,12 +2910,78 @@ readValue(ReadTarget& t,
     desc.name = name;
     desc.storage = type->storage;
     desc.tupleSize = tuple;
-    desc.typeInfo = (texCoord || elementSize > 1) ? eGeoTypeInfoNone : type->typeInfo;
+    desc.typeInfo = (texCoord || elementSize > 1 || nonTransforming) ? eGeoTypeInfoNone : type->typeInfo;
     GeoAttribute* a = writableAttribute(t, cls, desc);
     if (!a) {
         return;
     }
     scatterComponents(*a, offsets, flat);
+}
+
+void
+writeString(ReadTarget& t,
+            GeoAttribClassEnum cls,
+            const std::string& name,
+            const std::vector<std::size_t>& offsets,
+            const std::string& value)
+{
+    if (name.empty() || offsets.empty()) {
+        return;
+    }
+    GeoAttributeDesc desc;
+    desc.name = name;
+    desc.storage = eGeoStorageString;
+    if (GeoAttribute* a = writableAttribute(t, cls, desc)) {
+        for (std::size_t off : offsets) {
+            a->setString(off, value);
+        }
+    }
+}
+
+// usdactive only exists once an inactive prim is read, so the geometry read before then is
+// marked active when it is created, and every prim read after writes its own state.
+void
+writeActive(ReadTarget& t,
+            GeoAttribClassEnum cls,
+            const std::vector<std::size_t>& offsets,
+            bool active)
+{
+    if (offsets.empty() || (active && !t.builder.detail().findAttribute(cls, kGeoUsdActiveAttr))) {
+        return;
+    }
+    GeoAttributeDesc desc;
+    desc.name = kGeoUsdActiveAttr;
+    desc.storage = eGeoStorageInt32;
+    const bool created = !t.builder.detail().findAttribute(cls, kGeoUsdActiveAttr);
+    GeoAttribute* a = writableAttribute(t, cls, desc);
+    if (!a) {
+        return;
+    }
+    if (created) {
+        const std::size_t first = *std::min_element(offsets.begin(), offsets.end());
+        for (std::size_t off = 0; off < first; ++off) {
+            a->set<std::int32_t>(off, 1);
+        }
+    }
+    for (std::size_t off : offsets) {
+        a->set<std::int32_t>(off, active ? 1 : 0);
+    }
+}
+
+std::string
+boundMaterialPath(const UsdPrim& prim)
+{
+    const UsdShadeMaterial material = UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial();
+
+    return material ? material.GetPath().GetString() : std::string();
+}
+
+// Import Attributes covers the attributes no schema reads: primvars have their own filter and
+// transforms are read as the prim's.
+bool
+isCustomReadable(const UsdAttribute& attribute)
+{
+    return attribute.IsCustom() && !UsdGeomPrimvar::IsPrimvar(attribute) && !UsdGeomXformOp::IsXformOp(attribute);
 }
 
 } // namespace
@@ -2916,6 +2990,34 @@ bool
 geoUsdReadPrim(const UsdPrim& prim,
                UsdTimeCode time,
                const GfMatrix4d* worldTransform,
+               GeoDetailBuilder& builder,
+               std::vector<std::string>* warnings,
+               std::string* errorMessage)
+{
+    return geoUsdReadPrim(prim, time, worldTransform, GeoUsdReadOptions(), builder, warnings, errorMessage);
+}
+
+void
+geoUsdReadValue(GeoDetailBuilder& builder,
+                GeoAttribClassEnum cls,
+                const std::string& name,
+                const SdfValueTypeName& typeName,
+                int elementSize,
+                const VtValue& value,
+                const std::vector<std::size_t>& offsets,
+                bool nonTransforming,
+                const std::string& context,
+                std::vector<std::string>* warnings)
+{
+    ReadTarget target { builder, warnings, context };
+    readValue(target, cls, name, typeName, elementSize, value, offsets, nonTransforming);
+}
+
+bool
+geoUsdReadPrim(const UsdPrim& prim,
+               UsdTimeCode time,
+               const GfMatrix4d* worldTransform,
+               const GeoUsdReadOptions& options,
                GeoDetailBuilder& builder,
                std::vector<std::string>* warnings,
                std::string* errorMessage)
@@ -2998,9 +3100,6 @@ geoUsdReadPrim(const UsdPrim& prim,
     }
     std::vector<std::size_t> primOffsets;
     std::vector<std::size_t> vertexOffsets;
-    GeoAttributeDesc sourceDesc;
-    sourceDesc.name = kGeoUsdSourceAttr;
-    sourceDesc.storage = eGeoStorageInt32;
     if (!counts.empty()) {
         const GeoOffset firstVertex = builder.detail().vertexMap().offsetSize();
         std::vector<GeoOffset> corners(indices.size());
@@ -3017,33 +3116,62 @@ geoUsdReadPrim(const UsdPrim& prim,
         for (std::size_t i = 0; i < indices.size(); ++i) {
             vertexOffsets[i] = std::size_t(firstVertex + GeoOffset(i));
         }
-        GeoAttributeDesc pathDesc;
-        pathDesc.name = "path";
-        pathDesc.storage = eGeoStorageString;
-        if (GeoAttribute* path = writableAttribute(target, eGeoAttribClassPrimitive, pathDesc)) {
-            const std::string value = prim.GetPath().GetString();
-            for (std::size_t off : primOffsets) {
-                path->setString(off, value);
-            }
-        }
-        if (GeoAttribute* source = writableAttribute(target, eGeoAttribClassPrimitive, sourceDesc)) {
-            for (std::size_t off : primOffsets) {
+    }
+    // What the prim becomes is named and marked on its primitives, or on its points for a
+    // points prim, which has no primitives.
+    const GeoAttribClassEnum ownerClass = isPoints ? eGeoAttribClassPoint : eGeoAttribClassPrimitive;
+    const std::vector<std::size_t>& ownerOffsets = isPoints ? pointOffsets : primOffsets;
+    writeString(target, ownerClass, options.pathAttribute, ownerOffsets, prim.GetPath().GetString());
+    writeString(target, ownerClass, options.nameAttribute, ownerOffsets, prim.GetName().GetString());
+    if (!ownerOffsets.empty()) {
+        GeoAttributeDesc sourceDesc;
+        sourceDesc.name = kGeoUsdSourceAttr;
+        sourceDesc.storage = eGeoStorageInt32;
+        if (GeoAttribute* source = writableAttribute(target, ownerClass, sourceDesc)) {
+            for (std::size_t off : ownerOffsets) {
                 source->set<std::int32_t>(off, 1);
             }
         }
-    } else if (isPoints) {
-        GeoAttributeDesc pathDesc;
-        pathDesc.name = "path";
-        pathDesc.storage = eGeoStorageString;
-        if (GeoAttribute* path = writableAttribute(target, eGeoAttribClassPoint, pathDesc)) {
-            const std::string value = prim.GetPath().GetString();
-            for (std::size_t off : pointOffsets) {
-                path->setString(off, value);
+    }
+    writeActive(target, ownerClass, ownerOffsets, prim.IsActive());
+    if (options.usdXform && !ownerOffsets.empty()) {
+        GeoAttributeDesc xformDesc;
+        xformDesc.name = kGeoUsdXformAttr;
+        xformDesc.storage = eGeoStorageFloat64;
+        xformDesc.tupleSize = 16;
+        if (GeoAttribute* xform = writableAttribute(target, ownerClass, xformDesc)) {
+            const GeoMatrix4 m = geoMatrixFromUsd(*options.usdXform);
+            for (std::size_t off : ownerOffsets) {
+                xform->setTuple<double>(off, std::span<const double>(m.data(), m.size()));
             }
         }
-        if (GeoAttribute* source = writableAttribute(target, eGeoAttribClassPoint, sourceDesc)) {
-            for (std::size_t off : pointOffsets) {
-                source->set<std::int32_t>(off, 1);
+    }
+    if (options.importMaterialPath && !ownerOffsets.empty()) {
+        // Faces of a subset with its own binding take the subset's material; the rest the prim's.
+        std::vector<std::string> materials(ownerOffsets.size(), boundMaterialPath(prim));
+        if (isMesh) {
+            for (const UsdGeomSubset& subset : UsdShadeMaterialBindingAPI(prim).GetMaterialBindSubsets()) {
+                const std::string material = boundMaterialPath(subset.GetPrim());
+                if (material.empty()) {
+                    continue;
+                }
+                VtIntArray members;
+                subset.GetIndicesAttr().Get(&members, time);
+                for (int i : members) {
+                    if (i >= 0 && std::size_t(i) < materials.size()) {
+                        materials[std::size_t(i)] = material;
+                    }
+                }
+            }
+        }
+        if (std::any_of(materials.begin(), materials.end(), [](const std::string& m) { return !m.empty(); })) {
+            GeoAttributeDesc materialDesc;
+            materialDesc.name = kGeoUsdMaterialPathAttr;
+            materialDesc.storage = eGeoStorageString;
+            if (GeoAttribute* a = writableAttribute(target, ownerClass, materialDesc)) {
+                for (std::size_t i = 0; i < ownerOffsets.size(); ++i) {
+                    a->setString(ownerOffsets[i], materials[i]);
+                }
             }
         }
     }
@@ -3076,13 +3204,19 @@ geoUsdReadPrim(const UsdPrim& prim,
 
     const UsdGeomPrimvarsAPI primvars(prim);
     std::vector<std::string> detailNames;
-    for (const UsdGeomPrimvar& pv : primvars.GetPrimvarsWithValues()) {
+    // Inherited primvars come with the prim's own, which override an ancestor's of the same name.
+    const std::vector<UsdGeomPrimvar> primvarList = options.importInheritedPrimvars ? primvars.FindPrimvarsWithInheritance() : primvars.GetPrimvarsWithValues();
+    for (const UsdGeomPrimvar& pv : primvarList) {
+        const std::string usdName = pv.GetPrimvarName().GetString();
+        if (!pv.HasValue() || !geoNameMatchesPattern(options.importPrimvars, usdName)) {
+            continue;
+        }
         VtValue value;
         if (!pv.ComputeFlattened(&value, time)) {
             continue;
         }
-        std::string name = pv.GetPrimvarName().GetString();
-        if (name == "st") {
+        std::string name = usdName;
+        if (name == "st" && options.translateStToUv) {
             name = "uv";
         } else if (name == "displayColor") {
             name = "Cd";
@@ -3093,9 +3227,41 @@ geoUsdReadPrim(const UsdPrim& prim,
             target.warn("the primvar " + name + " has an interpolation geometry cannot hold and is skipped");
             continue;
         }
-        readValue(target, cls, name, pv.GetTypeName(), pv.GetElementSize(), value, *offsets);
+        readValue(target, cls, name, pv.GetTypeName(), pv.GetElementSize(), value, *offsets, geoNameMatchesPattern(options.nonTransformingPrimvars, usdName));
         if (cls == eGeoAttribClassDetail) {
             detailNames.push_back(name);
+        }
+    }
+    if (!options.importAttributes.empty()) {
+        for (const UsdAttribute& attribute : prim.GetAuthoredAttributes()) {
+            const std::string name = attribute.GetName().GetString();
+            if (!isCustomReadable(attribute) || !geoNameMatchesPattern(options.importAttributes, name)) {
+                continue;
+            }
+            VtValue value;
+            if (!attribute.Get(&value, time)) {
+                continue;
+            }
+            // A custom attribute has no interpolation, so its element count decides its class.
+            GeoAttribClassEnum cls = eGeoAttribClassDetail;
+            const std::vector<std::size_t>* offsets = &detailOffsets;
+            if (value.IsArrayValued()) {
+                const std::size_t n = value.GetArraySize();
+                if (n == pointOffsets.size() && n > 0) {
+                    cls = eGeoAttribClassPoint;
+                    offsets = &pointOffsets;
+                } else if (n == vertexOffsets.size() && n > 0) {
+                    cls = eGeoAttribClassVertex;
+                    offsets = &vertexOffsets;
+                } else if (n == primOffsets.size() && n > 0) {
+                    cls = eGeoAttribClassPrimitive;
+                    offsets = &primOffsets;
+                }
+            }
+            readValue(target, cls, name, attribute.GetTypeName(), 1, value, *offsets);
+            if (cls == eGeoAttribClassDetail) {
+                detailNames.push_back(name);
+            }
         }
     }
 

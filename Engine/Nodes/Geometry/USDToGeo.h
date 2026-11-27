@@ -40,14 +40,55 @@
 #define kUSDToGeoParamPrimPattern "primPattern"
 #define kUSDToGeoParamUnpack "unpack"
 #define kUSDToGeoParamFlattenTransforms "flattenTransforms"
+#define kUSDToGeoParamPathAttribute "pathAttribute"
+#define kUSDToGeoParamNameAttribute "nameAttribute"
+#define kUSDToGeoParamTraversal "traversal"
+#define kUSDToGeoParamPurpose "purpose"
+#define kUSDToGeoParamExcludeInactivePrimitives "excludeInactivePrimitives"
+#define kUSDToGeoParamImportPointInstances "importPointInstances"
+#define kUSDToGeoParamTimeSample "timeSample"
+#define kUSDToGeoParamImportFrame "importFrame"
+#define kUSDToGeoParamPivotLocation "pivotLocation"
+#define kUSDToGeoParamImportPrimvars "importPrimvars"
+#define kUSDToGeoParamImportInheritedPrimvars "importInheritedPrimvars"
+#define kUSDToGeoParamImportAttributes "importAttributes"
+#define kUSDToGeoParamNonTransformingPrimvars "nonTransformingPrimvars"
+#define kUSDToGeoParamWriteUsdXform "writeUsdXform"
+#define kUSDToGeoParamApplyInverseUsdTransform "applyInverseUsdTransform"
+#define kUSDToGeoParamTranslateStToUv "translateStToUv"
+#define kUSDToGeoParamImportMaterialPath "importMaterialPath"
 
 NATRON_NAMESPACE_ENTER
+
+/** @brief Which prims at or below each matched prim become geometry. */
+enum USDToGeoTraversalEnum {
+    eUSDToGeoTraversalNone = 0,
+    // The outermost prims of kind component.
+    eUSDToGeoTraversalComponents,
+    // The outermost gprims, and point instancers.
+    eUSDToGeoTraversalGprims,
+    // The outermost prims of kind group, assemblies included.
+    eUSDToGeoTraversalGroups,
+};
+
+enum USDToGeoTimeSampleEnum {
+    eUSDToGeoTimeSampleAnimated = 0,
+    eUSDToGeoTimeSampleStatic,
+};
+
+/** @brief Where a packed primitive's point goes. */
+enum USDToGeoPivotLocationEnum {
+    eUSDToGeoPivotLocationCentroid = 0,
+    eUSDToGeoPivotLocationOrigin,
+};
 
 /**
  * @brief Turns the prims a pattern matches in the input scene into geometry at the current frame.
  * Packed, each imageable prim becomes one packed USD primitive and no point array is read;
  * unpacked, meshes, points and curves become polygons, points and curves in one point pool.
- * Every primitive's `path` holds its source prim path.
+ * The controls follow a USD import: which prims (traversal, purpose, activation, point instances),
+ * at which time, and what an unpacked prim carries besides its points (primvars, custom
+ * attributes, its world transform and its bound material).
  **/
 class USDToGeo
     : public NativeEffectBase {
@@ -93,17 +134,36 @@ private:
     virtual StatusEnum getPreferredMetadataAt(double time,
                                               ViewIdx view,
                                               NodeMetadata& metadata) OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual bool isOutputTimeInvariantWhateverInputs() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual StatusEnum renderGeometry(const GeoRenderActionArgs& args,
                                       GeoDetailConstPtr* outputDetail,
                                       std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    void updateFlattenEnabled();
+    void updateEnabled();
+    bool isStatic() const;
     void setFrameVarying(U64 hash,
                          bool varying);
 
     PrimSelector _primPattern;
     KnobBoolWPtr _unpack;
     KnobBoolWPtr _flatten;
+    KnobStringWPtr _pathAttribute;
+    KnobStringWPtr _nameAttribute;
+    KnobChoiceWPtr _traversal;
+    KnobStringWPtr _purpose;
+    KnobBoolWPtr _excludeInactive;
+    KnobBoolWPtr _importPointInstances;
+    KnobChoiceWPtr _timeSample;
+    KnobDoubleWPtr _importFrame;
+    KnobChoiceWPtr _pivotLocation;
+    KnobStringWPtr _importPrimvars;
+    KnobBoolWPtr _importInheritedPrimvars;
+    KnobStringWPtr _importAttributes;
+    KnobStringWPtr _nonTransformingPrimvars;
+    KnobBoolWPtr _writeUsdXform;
+    KnobBoolWPtr _applyInverseUsdTransform;
+    KnobBoolWPtr _translateStToUv;
+    KnobBoolWPtr _importMaterialPath;
 
     // Whether the geometry read at the node hash _varyingHash may differ between frames, learnt
     // by a render: metadata cannot compose the input scene to ask.

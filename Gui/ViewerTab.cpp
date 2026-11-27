@@ -38,9 +38,10 @@
 #include <QUndoCommand>
 
 #include <QAction>
-#include <QVBoxLayout>
 #include <QCheckBox>
+#include <QMenu>
 #include <QPalette>
+#include <QVBoxLayout>
 
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"

@@ -36,13 +36,18 @@
 #include <stdexcept>
 #include <vector>
 
+#include <QThread>
+
 #include <ofxNatron.h>
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
+#include "Engine/CacheTier.h"
+#include "Engine/FrameArgsOverlay.h"
 #include "Engine/Image.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
@@ -64,6 +69,7 @@
 #include "Engine/RotoPoint.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/RotoUndoCommand.h"
+#include "Engine/TLSHolder.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
 #include "Engine/VectorFollowKnobs.h"
@@ -921,6 +927,8 @@ namespace {
 
 std::atomic<bool> gDirectCompositeEnabled(true);
 std::atomic<unsigned long long> gDirectCompositeRenders(0);
+std::atomic<bool> gParallelMaskFetchEnabled(true);
+std::function<void()> gDirectMaskFetchHook;
 
 // Rows between abort checks of a direct composite band.
 const int kDirectAbortCheckRows = 16;
@@ -1065,6 +1073,101 @@ enum class DirectTreeResult {
     Aborted
 };
 
+// An item's mask a direct composite folds as input `input` of Merge `merge`.
+struct DirectMaskJob {
+    std::size_t merge = 0;
+    std::size_t input = 0;
+    RotoDrawableItemPtr item;
+    ImageLayerDesc components;
+    ImageBitDepthEnum depth = eImageBitDepthFloat;
+    RectD rotoSrcRod;
+};
+
+/*
+ * Fetches every job's mask from the cache or rasterises it, and hands each to its fold input.
+ * The masks do not depend on one another, so they may be fetched in any order and on any thread,
+ * as long as each fetch sees the render thread's frame and context: those are what its cache key
+ * is made of.
+ */
+DirectTreeResult
+fetchItemMasks(RotoPaint& self,
+               const std::vector<DirectMaskJob>& jobs,
+               double time,
+               ViewIdx view,
+               unsigned int mipmapLevel,
+               std::vector<DirectMerge>* merges)
+{
+    std::vector<ImagePtr> masks(jobs.size());
+    const auto fetch = [&](std::size_t i) {
+        const DirectMaskJob& job = jobs[i];
+        if (gDirectMaskFetchHook) {
+            gDirectMaskFetchHook();
+        }
+        masks[i] = job.item->renderMaskFromStroke(job.components, time, view, job.depth, mipmapLevel, job.rotoSrcRod);
+    };
+
+    const int nThreads = appPTR->getNCPUsAvailableForEffect();
+    if (!gParallelMaskFetchEnabled || (jobs.size() < 2) || (nThreads < 2)) {
+        for (std::size_t i = 0; i < jobs.size(); ++i) {
+            if (self.aborted()) {
+                return DirectTreeResult::Aborted;
+            }
+            fetch(i);
+            if (!masks[i]) {
+                break;
+            }
+        }
+    } else {
+        if (self.aborted()) {
+            return DirectTreeResult::Aborted;
+        }
+        QThread* const callingThread = QThread::currentThread();
+        const FrameRenderContext* const frameContext = AppTLS::currentFrameContext();
+        const FrameArgsOverlayPtr frameArgsHead = FrameArgsOverlay::currentHead();
+        const IsolatedJob* const isolatedJob = IsolatedJob::current();
+        const bool scheduledTask = AppTLS::isRunningScheduledTask();
+        RenderContextPtr actingContext;
+        const bool acting = ActionContextScope::current(&actingContext);
+        RenderCancellation cancel(&self);
+        const std::function<void(int)> fetchOnPool = [&](int i) {
+            // A mask fetch reads the effects' frame args and abort state as an action of the
+            // render would, so a helper inherits all of the render thread's data.
+            AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, frameContext, frameArgsHead, isolatedJob, AppTLS::eSpawnKindMultiThreadSuite, scheduledTask);
+            // The acting context is a plain thread_local that no spawn copies, and the mask key
+            // folds in the context the Merge answers under.
+            ActionContextScope actionContext(acting && (QThread::currentThread() != callingThread), actingContext);
+            // Only the render thread publishes the abort to cancel, and it may be rasterising a
+            // large mask itself, so a helper asks too before it starts another.
+            if (cancel.check() || self.aborted()) {
+                return;
+            }
+            fetch((std::size_t)i);
+        };
+        {
+            // Run serially, each mask's raster would be timed as a render nested in this one and
+            // left out of its cost; timed as one block, the wait for the helpers is too.
+            CacheRecomputeStopwatch masksAreNotThisRender;
+            parallelForCancellable((int)jobs.size(), nThreads, cancel, fetchOnPool);
+        }
+        if (cancel.check()) {
+            return DirectTreeResult::Aborted;
+        }
+    }
+
+    for (std::size_t i = 0; i < jobs.size(); ++i) {
+        if (!masks[i]) {
+            // A mask that failed to render is not an empty one: the node path owns the failure.
+            return self.aborted() ? DirectTreeResult::Aborted : DirectTreeResult::NodePath;
+        }
+        if (!isFloatRGBA(masks[i])) {
+            return DirectTreeResult::NodePath;
+        }
+        (*merges)[jobs[i].merge].inputs[jobs[i].input].image = masks[i];
+    }
+
+    return DirectTreeResult::Done;
+} // fetchItemMasks
+
 /*
  * Composites a concatenated tree as its global Merges would, folding each item's cached mask in
  * place of rendering the item's Roto effect and each Merge. Anything the fold below does not
@@ -1104,6 +1207,7 @@ renderConcatenatedTree(RotoPaint& self,
 
     bool bReads = false;
     std::vector<DirectMerge> merges;
+    std::vector<DirectMaskJob> maskJobs;
     NodePtr previousNode;
     for (const NodePtr& node : chain) {
         DirectMerge direct;
@@ -1204,20 +1308,22 @@ renderConcatenatedTree(RotoPaint& self,
                     (void)st;
                 }
             }
-            if (self.aborted()) {
-                return DirectTreeResult::Aborted;
-            }
-            input.image = item->renderMaskFromStroke(maskComps, time, view, maskDepth, mipmapLevel, rotoSrcRod);
-            if (!input.image) {
-                // A mask that failed to render is not an empty one: the node path owns the failure.
-                return self.aborted() ? DirectTreeResult::Aborted : DirectTreeResult::NodePath;
-            }
-            if (!isFloatRGBA(input.image)) {
-                return DirectTreeResult::NodePath;
-            }
+            DirectMaskJob job;
+            job.merge = merges.size();
+            job.input = direct.inputs.size();
+            job.item = item;
+            job.components = maskComps;
+            job.depth = maskDepth;
+            job.rotoSrcRod = rotoSrcRod;
+            maskJobs.push_back(job);
             direct.inputs.push_back(input);
         }
         merges.push_back(direct);
+    }
+
+    const DirectTreeResult fetched = fetchItemMasks(self, maskJobs, time, view, mipmapLevel, &merges);
+    if (fetched != DirectTreeResult::Done) {
+        return fetched;
     }
 
     if (bReads) {
@@ -1335,6 +1441,24 @@ unsigned long long
 RotoPaint::getDirectCompositeRenderCount()
 {
     return gDirectCompositeRenders;
+}
+
+void
+RotoPaint::setParallelMaskFetchEnabled(bool enabled)
+{
+    gParallelMaskFetchEnabled = enabled;
+}
+
+bool
+RotoPaint::isParallelMaskFetchEnabled()
+{
+    return gParallelMaskFetchEnabled;
+}
+
+void
+RotoPaint::setDirectMaskFetchHook(const std::function<void()>& hook)
+{
+    gDirectMaskFetchHook = hook;
 }
 
 StatusEnum

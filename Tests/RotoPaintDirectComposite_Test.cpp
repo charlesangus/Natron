@@ -26,15 +26,27 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
+#include <exception>
+#include <functional>
 #include <iostream>
 #include <list>
+#include <map>
+#include <memory>
 #include <ostream>
 #include <sstream>
 #include <string>
 #include <vector>
 
+#include <QByteArray>
+#include <QFile>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QString>
+#include <QTemporaryDir>
+#include <QThread>
+#include <QThreadPool>
 
 #include <gtest/gtest.h>
 
@@ -43,6 +55,7 @@
 #include "NativeParity.h"
 #include "RenderBothWays.h"
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
@@ -52,12 +65,17 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
+#include "Engine/RectD.h"
 #include "Engine/RectI.h"
+#include "Engine/RenderScale.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoLatencyProbe.h"
 #include "Engine/RotoPaint.h"
+#include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -141,11 +159,16 @@ protected:
         getApp()->getProject()->reset(false, true);
         appPTR->clearAllCaches();
         RotoPaint::setDirectCompositeEnabled(true);
+        RotoPaint::setParallelMaskFetchEnabled(true);
+        RotoPaint::setDirectMaskFetchHook(std::function<void()>());
     }
 
     void TearDown() override
     {
+        RotoRenderProfile::stop();
         RotoPaint::setDirectCompositeEnabled(true);
+        RotoPaint::setParallelMaskFetchEnabled(true);
+        RotoPaint::setDirectMaskFetchHook(std::function<void()>());
         appPTR->clearAllCaches();
         BaseTest::TearDown();
     }
@@ -270,6 +293,99 @@ protected:
         expectPathsMatch(1, RectI(0, 0, 128, 128), rgb);
     }
 
+    // Masks rasterised, rather than served by the cache, while body runs, as the render profile
+    // records them; -1 when the profile could not be read.
+    int maskMisses(const std::function<void()>& body)
+    {
+        QTemporaryDir dir;
+        if (!dir.isValid()) {
+            ADD_FAILURE() << "no temporary directory";
+
+            return -1;
+        }
+        const QString path = dir.filePath(QString::fromUtf8("roto-profile.jsonl"));
+        if (!RotoRenderProfile::start(path)) {
+            ADD_FAILURE() << "the render profile did not start";
+
+            return -1;
+        }
+        body();
+        RotoRenderProfile::stop();
+
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly)) {
+            ADD_FAILURE() << "the render profile wrote nothing";
+
+            return -1;
+        }
+        int count = 0;
+        for (const QByteArray& line : f.readAll().split('\n')) {
+            if (line.trimmed().isEmpty()) {
+                continue;
+            }
+            const QJsonObject object = QJsonDocument::fromJson(line).object();
+            if ((object.value(QString::fromUtf8("kind")).toString() == QString::fromUtf8("mask")) && !object.value(QString::fromUtf8("hit")).toBool(true)) {
+                ++count;
+            }
+        }
+
+        return count;
+    }
+
+    bool renderThroughCache(const RectI& roi,
+                            std::vector<RenderedPlane>* out)
+    {
+        std::string error;
+        const bool ok = renderNodePlanesDirect(_roto, 1., ViewIdx(0), 0, roi, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), out, &error, false /*byPassCache*/);
+        EXPECT_TRUE(ok) << error;
+
+        return ok;
+    }
+
+    // Frame 1 over roi as the viewer asks for it, under abortInfo.
+    EffectInstance::RenderRoIRetCode renderAbortable(const AbortableRenderInfoPtr& abortInfo,
+                                                     const RectI& roi)
+    {
+        FrameRequestMap request;
+        ParallelRenderArgsSetter frameRenderArgs(1.,
+                                                 ViewIdx(0),
+                                                 true /*isRenderUserInteraction*/,
+                                                 false /*isSequential*/,
+                                                 abortInfo,
+                                                 _roto,
+                                                 0 /*textureIndex*/,
+                                                 getApp()->getTimeLine().get(),
+                                                 NodePtr(),
+                                                 false /*isAnalysis*/,
+                                                 false /*draftMode*/,
+                                                 RenderStatsPtr());
+        const EffectInstancePtr effect = _roto->getEffectInstance();
+        const RectD canonicalWindow = roi.toCanonical_noClipping(0, effect->getTimeInvariantMetadata()->getPixelAspectRatio(-1));
+        if (EffectInstance::computeRequestPass(1., ViewIdx(0), 0, canonicalWindow, _roto, request) == eStatusFailed) {
+            return EffectInstance::eRenderRoIRetCodeFailed;
+        }
+        frameRenderArgs.updateNodesRequest(request);
+        EffectInstance::RenderRoIArgs args(1.,
+                                           RenderScale::fromMipmapLevel(0),
+                                           0 /*mipmapLevel*/,
+                                           ViewIdx(0),
+                                           true /*byPassCache*/,
+                                           roi,
+                                           RectD(),
+                                           std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()),
+                                           eImageBitDepthFloat,
+                                           false /*calledFromGetImage*/,
+                                           0 /*caller*/,
+                                           eStorageModeRAM,
+                                           1.);
+        std::map<ImageLayerDesc, ImagePtr> planes;
+        try {
+            return effect->renderRoI(args, &planes);
+        } catch (const std::exception&) {
+            return EffectInstance::eRenderRoIRetCodeFailed;
+        }
+    }
+
     NodePtr _roto;
     NodePtr _source;
     RotoContextPtr _context;
@@ -383,6 +499,93 @@ TEST_F(RotoPaintDirectCompositeTest, MixedOperatorsKeepTheNodePath)
     _context->refreshRotoPaintTree();
     const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
     EXPECT_EQ(0ULL, expectPathsMatch(0, kWindow, rgba));
+}
+
+// Masks fetched concurrently composite exactly as masks fetched one after another, and are
+// cached under the same keys: either way of fetching is served what the other rasterised.
+TEST_F(RotoPaintDirectCompositeTest, ParallelMaskFetchMatchesSerialFetch)
+{
+    buildScene(150, eMergeOver);
+    if (HasFatalFailure()) {
+        return;
+    }
+    const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
+    const RectI windows[] = { kWindow, RectI(20, 10, 100, 120) };
+    for (const RectI& roi : windows) {
+        SCOPED_TRACE(std::to_string(roi.x1) + "," + std::to_string(roi.y1) + " " + std::to_string(roi.x2) + "," + std::to_string(roi.y2));
+        std::string error;
+        std::vector<RenderedPlane> serial;
+        RotoPaint::setParallelMaskFetchEnabled(false);
+        EXPECT_TRUE(render(true, 0, roi, rgba, &serial, &error)) << error;
+        RotoPaint::setParallelMaskFetchEnabled(true);
+        const unsigned long long before = RotoPaint::getDirectCompositeRenderCount();
+        std::vector<RenderedPlane> parallel;
+        EXPECT_TRUE(render(true, 0, roi, rgba, &parallel, &error)) << error;
+        EXPECT_GT(RotoPaint::getDirectCompositeRenderCount(), before);
+        ASSERT_EQ(serial.size(), parallel.size());
+        for (std::size_t i = 0; i < serial.size(); ++i) {
+            EXPECT_EQ(std::string(), compareExact(serial[i], parallel[i])) << "plane " << i;
+        }
+    }
+
+    // An upstream edit re-renders the tree but keeps every mask.
+    clearEverything(getApp());
+    std::vector<RenderedPlane> out;
+    RotoPaint::setParallelMaskFetchEnabled(false);
+    EXPECT_GT(maskMisses([&]() { renderThroughCache(kWindow, &out); }), 0);
+    ASSERT_TRUE(setKnobValues(_source, kConstantParamColor, { 0.3, 0.4, 0.5, 0.7 }));
+    RotoPaint::setParallelMaskFetchEnabled(true);
+    EXPECT_EQ(0, maskMisses([&]() { renderThroughCache(kWindow, &out); }));
+    clearEverything(getApp());
+    EXPECT_GT(maskMisses([&]() { renderThroughCache(kWindow, &out); }), 0);
+    ASSERT_TRUE(setKnobValues(_source, kConstantParamColor, { 0.1, 0.2, 0.3, 0.9 }));
+    RotoPaint::setParallelMaskFetchEnabled(false);
+    EXPECT_EQ(0, maskMisses([&]() { renderThroughCache(kWindow, &out); }));
+}
+
+// An abort while the masks are fetched starts no further fetch beyond those already running on
+// other threads, none runs once the render has returned, and what it left cached is whole.
+TEST_F(RotoPaintDirectCompositeTest, AbortWhileFetchingMasksReturnsPromptly)
+{
+    buildScene(240, eMergeOver);
+    if (HasFatalFailure()) {
+        return;
+    }
+    const int activeItems = 160;
+    const int abortAt = 4;
+    const AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+    std::atomic<int> fetches(0);
+    RotoPaint::setDirectMaskFetchHook([&]() {
+        if (++fetches == abortAt) {
+            abortInfo->setAborted();
+        }
+    });
+    clearEverything(getApp());
+    const unsigned long long before = RotoPaint::getDirectCompositeRenderCount();
+    const EffectInstance::RenderRoIRetCode code = renderAbortable(abortInfo, kWindow);
+    const int atReturn = fetches.load();
+    QThread::msleep(200);
+    const int afterWait = fetches.load();
+    RotoPaint::setDirectMaskFetchHook(std::function<void()>());
+
+    EXPECT_NE(EffectInstance::eRenderRoIRetCodeFailed, code);
+    EXPECT_EQ(before, RotoPaint::getDirectCompositeRenderCount());
+    EXPECT_GE(atReturn, abortAt);
+    EXPECT_LE(atReturn, abortAt + std::max(1, QThreadPool::globalInstance()->maxThreadCount()));
+    EXPECT_LT(atReturn, activeItems);
+    EXPECT_EQ(atReturn, afterWait);
+
+    // The edit makes the tree render again over the masks the aborted render cached.
+    ASSERT_TRUE(setKnobValues(_source, kConstantParamColor, { 0.3, 0.4, 0.5, 0.7 }));
+    std::vector<RenderedPlane> overCachedMasks;
+    renderThroughCache(kWindow, &overCachedMasks);
+    std::vector<RenderedPlane> cold;
+    std::string error;
+    EXPECT_TRUE(render(true, 0, kWindow, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &cold, &error)) << error;
+    ASSERT_EQ(cold.size(), overCachedMasks.size());
+    for (std::size_t i = 0; i < cold.size(); ++i) {
+        EXPECT_EQ(std::string(), compareExact(cold[i], overCachedMasks[i])) << "plane " << i;
+    }
 }
 
 const DirectCase kCases[] = {

@@ -39,6 +39,7 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <pxr/usd/sdf/listOp.h>
 #include <pxr/usd/usdGeom/basisCurves.h>
 #include <pxr/usd/usdGeom/gprim.h>
 #include <pxr/usd/usdGeom/pointInstancer.h>
@@ -226,6 +227,15 @@ hasKind(const PXR_NS::UsdPrim& prim,
     return PXR_NS::UsdModelAPI(prim).GetKind(&kind) && !kind.IsEmpty() && PXR_NS::KindRegistry::IsA(kind, baseKind);
 }
 
+// UsdPrimIsLoaded is false on every inactive prim, so it cannot be part of the predicate that
+// reads them; the read stage loads every payload, so dropping it loses nothing.
+PXR_NS::Usd_PrimFlagsPredicate
+readPredicate(bool includeInactive)
+{
+    return includeInactive ? PXR_NS::Usd_PrimFlagsPredicate(PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract)
+                           : PXR_NS::Usd_PrimFlagsPredicate(PXR_NS::UsdPrimDefaultPredicate);
+}
+
 struct TraversalWalk {
     USDToGeoTraversalEnum traversal = eUSDToGeoTraversalNone;
     PXR_NS::TfTokenVector purposes;
@@ -285,9 +295,7 @@ struct TraversalWalk {
 
             return;
         }
-        const PXR_NS::Usd_PrimFlagsPredicate predicate = includeInactive ? (PXR_NS::UsdPrimIsLoaded && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract)
-                                                                         : PXR_NS::Usd_PrimFlagsPredicate(PXR_NS::UsdPrimDefaultPredicate);
-        for (const PXR_NS::UsdPrim& child : prim.GetFilteredChildren(predicate)) {
+        for (const PXR_NS::UsdPrim& child : prim.GetFilteredChildren(readPredicate(includeInactive))) {
             visit(child);
         }
     }
@@ -403,9 +411,14 @@ appendPointInstances(PackedContext& c,
     instancer.GetProtoIndicesAttr().Get(&protoIndices, c.time);
     PXR_NS::SdfPathVector prototypes;
     instancer.GetPrototypesRel().GetForwardedTargets(&prototypes);
-    const std::vector<bool> mask = instancer.ComputeMaskAtTime(c.time);
     PXR_NS::VtInt64Array ids;
     instancer.GetIdsAttr().Get(&ids, c.time);
+    // ComputeMaskAtTime also masks invisibleIds, which are read as hidden instances rather than
+    // dropped, so only inactiveIds decide whether an instance is active.
+    PXR_NS::SdfInt64ListOp inactiveIdsOp;
+    prim.GetMetadata(PXR_NS::UsdGeomTokens->inactiveIds, &inactiveIdsOp);
+    const std::vector<std::int64_t> inactiveIdList = inactiveIdsOp.GetAppliedItems();
+    const std::unordered_set<std::int64_t> inactive(inactiveIdList.begin(), inactiveIdList.end());
     PXR_NS::VtInt64Array invisibleIds;
     instancer.GetInvisibleIdsAttr().Get(&invisibleIds, c.time);
     const std::unordered_set<std::int64_t> invisible(invisibleIds.begin(), invisibleIds.end());
@@ -421,11 +434,11 @@ appendPointInstances(PackedContext& c,
             warnings->push_back(context + ": instance " + std::to_string(i) + " has no prototype and is skipped");
             continue;
         }
-        const bool active = mask.empty() || mask[i];
+        const std::int64_t id = (i < ids.size()) ? ids[i] : std::int64_t(i);
+        const bool active = inactive.count(id) == 0;
         const GeoOffset primitive = appendPacked(c, prototype, instancerWorld, transforms[i] * instancerWorld, active);
         PackedRecord& record = c.records.back();
         pivots.push_back(std::size_t(record.point));
-        const std::int64_t id = (i < ids.size()) ? ids[i] : std::int64_t(i);
         record.invisible = invisible.count(id) != 0;
         if (!active && !includeInactive) {
             dropped->push_back(primitive);
@@ -913,8 +926,7 @@ USDToGeo::renderGeometry(const GeoRenderActionArgs& args,
             return eStatusFailed;
         }
         std::vector<PXR_NS::SdfPath> matches;
-        const bool selected = includeInactive ? SceneOps::selectPrimsWithPredicate(stage, pattern, &matches, error, PXR_NS::UsdPrimIsLoaded && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract)
-                                              : SceneOps::selectPrims(stage, pattern, &matches, error);
+        const bool selected = SceneOps::selectPrimsWithPredicate(stage, pattern, &matches, error, readPredicate(includeInactive));
         if (!selected) {
             return eStatusFailed;
         }

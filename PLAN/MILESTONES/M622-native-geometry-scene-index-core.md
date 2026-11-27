@@ -47,3 +47,4 @@ Background: `PLAN/DESIGN/2026-11-26-m617-research/` (bypass-feasibility.md §0-�
 ## Decisions
 - 2026-11-26 — Built from GeoUsdConvert (user): the viewer and export share one interpretation of the geometry, so parity risk stays low. Building straight from GeoDetail was rejected.
 - 2026-11-26 — Viewer only (user): final render, USDWrite and GeoToUSD keep authoring USD through GeoUsdConvert. Native geometry composed onto USD prims needs composition and stays staged.
+- 2026-11-27 (PM) — PR #405 review round 1 (Claude; Codex out of quota): 1 medium, 4 low, 4 nit, all fixed in 10e682c604 on milestone/m622-native-geometry-scene-index-core (convert-options guard on partition adoption, input-scene converts rejected, ancestor-xform and type-churn tests). Visibility/purpose inheritance and resetXformStack can't be built from a detail without an input scene, so only defaults are tested.

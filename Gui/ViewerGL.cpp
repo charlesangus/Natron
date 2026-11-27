@@ -64,6 +64,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/NodeGuiI.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/OfxOverlayInteract.h"
+#include "Engine/OverlayDrawProbe.h"
 #include "Engine/Project.h"
 #include "Engine/RotoLatencyProbe.h"
 #include "Engine/Settings.h"
@@ -860,7 +861,19 @@ ViewerGL::drawOverlay(unsigned int mipmapLevel)
            Draw the overlays corresponding to the image displayed on the viewer, not the current timeline's time
          */
         double time = getCurrentlyDisplayedTime();
+        OverlayDrawProbe* drawProbe = OverlayDrawProbe::instance();
+        double drawStartMs = 0.;
+        if (drawProbe) {
+            // Finishing the GL queue on both sides charges the pass with the GPU work it queued,
+            // not just the time to issue it.
+            glFinish();
+            drawStartMs = OverlayDrawProbe::nowMs();
+        }
         _imp->viewerTab->drawOverlays( time, RenderScale::fromMipmapLevel(mipmapLevel) );
+        if (drawProbe) {
+            glFinish();
+            drawProbe->notePass(drawStartMs, OverlayDrawProbe::nowMs());
+        }
 
         glCheckErrorIgnoreOSXBug();
 

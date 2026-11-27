@@ -328,8 +328,29 @@ tools/bench/gui/run.sh --xvfb --driver roto --reps 5
 tools/bench/gui/run.sh --host --driver roto --appimage Natron-x86_64.AppImage
 ```
 
+The default roto run does everything (strokes over a 300-node graph, 200-key shapes, then the overlay
+ops) and takes hours on the N100 host. For the M434 overlay gate use the overlay preset:
+
+```
+tools/bench/gui/run.sh --xvfb --preset overlay --appimage PATH
+```
+
+It implies `--driver roto`, runs only `overlay_draw` (1, 30 and 100 shapes, then the 50-track
+Tracker) in one Natron with the shapes grown in place from one count to the next, 3 reps per case
+(43 overlay passes a rep, so about 130 per case for the p95), 300 s per op and a 30 minute cap on the
+whole run. Expect 10 to 15 minutes on the N100 host: the shape cases took about 7 minutes there
+(building the 100 shapes about 80 s, a rep at 100 shapes about 55 s), and the Tracker case is not yet
+measured. The cap is there so a run that never starts ends in 30 minutes, not 6 hours. `--reps` and
+`GUI_BENCH_TIMEOUT` still override it. Without `--reps`, `--driver roto` runs 5 reps per op.
+
+Larger counts are not in the preset, since building the shapes slows down with every shape added:
+going from 100 to 300 shapes took about 23 minutes on the N100 host. Ask for them explicitly, with room
+for the build and for reps several times slower than at 100 shapes, for example
+`--overlay-shapes 1,30,100,300` with `GUI_BENCH_TIMEOUT=5400 GUI_BENCH_OP_TIMEOUT_S=900`.
+
 The result is `<UTC>-<host>-<mode>-roto.jsonl`; its directory also holds `latency.jsonl`, the
-latency probe's log. `run.sh` sets `NATRON_ROTO_LATENCY_LOG` for this driver only, and passes
+latency probe's log, and `overlay-draw.jsonl`, the overlay draw probe's. `run.sh` sets
+`NATRON_ROTO_LATENCY_LOG` and `NATRON_OVERLAY_DRAW_LOG` for this driver only, and passes
 every `ROTO_BENCH_*` variable into the container. `--sizes`, `--topologies` and `--self-check`
 don't apply.
 
@@ -339,6 +360,7 @@ don't apply.
 | `pen_up` | as above | A short 50 px stroke; times the release, which waits for the stroke's final render on the main thread. |
 | `drag_point`, `drag_tangent`, `drag_feather`, `transform_box` | `roto-shapes`, shapes | Drags the top point, its right tangent, its feather bar or the top-left handle of the transform box of one shape on a Roto node holding 1, 30 or 100 shapes of 24 points keyed on 200 frames. Each drag is undone through the Edit menu and checked. |
 | `hover` | `roto-shapes`, shapes | The cursor crosses the viewer over every shape with no button down. |
+| `overlay_draw` | `roto-overlay`, shapes; `tracker-tracks`, tracks | A hover pass across the viewer, then a 40 px drag of the selected shape's top point, on a Roto node holding 1, 30, 100 or 500 feathered shapes of 24 points on one key; then a hover pass and a 25 px drag of the middle track's centre on a Tracker holding 50 tracks over a CheckerBoard. Shape drags are undone and checked; the track centre is set back and checked. |
 
 `median_ms` and `p95_ms` hold the op's headline cost, which is what `compare.py` diffs; the
 record's `headline` field names it:
@@ -346,6 +368,8 @@ record's `headline` field names it:
 - `latency` (stroke ops): pen-to-pixel time, from the input event to the end of the viewer paint
   that first showed the point, over every stroke point of every rep;
 - `values` (`pen_up`): the release;
+- `values` (`overlay_draw`): the viewer's overlay pass alone, from the overlay draw probe, over
+  every hover and drag event of every rep;
 - `rep` (shape ops, and stroke ops without the probe): the per-rep wall time. Each event forces a
   synchronous viewer repaint, so overlay cost lands in the event that caused it.
 
@@ -354,11 +378,15 @@ Every record also carries `rep_median_ms`, `latency_p50_ms`/`latency_p95_ms`, `l
 `overlay_p50_ms`/`overlay_p95_ms` (timed synchronous viewer repaints: during the drag for shape
 ops, over the finished stroke for stroke ops). Shape drags add no stroke points, so their latency
 fields are empty. `setup` records give the time to build the upstream graph and the shapes.
+`overlay_draw` records also carry `overlay_draw_hover_p50_ms`/`_p95_ms` and
+`overlay_draw_drag_p50_ms`/`_p95_ms`, with the pass counts behind them.
 
 Strokes are paced at `ROTO_BENCH_PEN_INTERVAL_MS` (default 8 ms, a 125 Hz tablet). After each
 stroke the driver waits until the latency log stops growing, then deletes the stroke. Other
 knobs: `ROTO_BENCH_BRUSHES`, `ROTO_BENCH_FORMATS`, `ROTO_BENCH_UPSTREAM`, `ROTO_BENCH_SHAPES`,
-`ROTO_BENCH_POINTS`, `ROTO_BENCH_KEYS`, `ROTO_BENCH_STROKE_EVENTS`, `ROTO_BENCH_DRAG_EVENTS`.
+`ROTO_BENCH_POINTS`, `ROTO_BENCH_KEYS`, `ROTO_BENCH_STROKE_EVENTS`, `ROTO_BENCH_DRAG_EVENTS`,
+`ROTO_BENCH_OVERLAY_SHAPES` (default 1,30,100; `--overlay-shapes` sets it), `ROTO_BENCH_OVERLAY_KEYS` (default 1) and
+`ROTO_BENCH_OVERLAY_TRACKS` (default 50). `--ops overlay_draw` runs only the overlay passes.
 `--ops stroke` selects every stroke op.
 
 ### The latency probe
@@ -376,6 +404,19 @@ The stamps are milliseconds on `steady_clock`, the clock of the stall log and of
 being requested, starting and finishing, the frame's texture upload, and the end of the viewer's
 `paintGL`. A render covers every point added before it was requested. A stage a point never went
 through is `null`. Without the variable the probe costs one branch per stage.
+
+### The overlay draw probe
+
+When `NATRON_OVERLAY_DRAW_LOG` names a file, every viewer paint appends one line for its overlay
+pass, the interacts of every node drawn over the image:
+
+```
+{"start_ms": ..., "end_ms": ..., "duration_ms": ...}
+```
+
+The stamps are on `steady_clock` too. The GL queue is finished on both sides of the pass, so the
+duration includes the GPU work the overlays queued, not just the time to issue it; that wait is
+only paid while the variable is set.
 
 ## Comparing
 

@@ -6,11 +6,16 @@
 #
 # Options:
 #   --driver gui|roto        gui_bench.py (node graph, default) or roto_bench.py (roto/paint)
-#   --preset gate|full|create  the matrix (default gate): gate is comp at 300,3000 nodes; full is chain,
+#   --preset gate|full|create|overlay  the matrix (default gate): gate is comp at 300,3000 nodes; full is chain,
 #                            wide, comp and mixed at 300,1000,3000. Both use --reps auto and the graph cache.
 #                            create is mixed at 0,300,3000 nodes running only the node-creation ops
 #                            create_by_shortcut, tab_menu_open, tab_menu_create and create_then_key (20 reps
 #                            each; --reps does not apply); --ops, --sizes and --topologies still override it
+#                            overlay is the M434 overlay_draw gate: roto driver (implied), only overlay_draw,
+#                            3 reps, a 30 minute cap on the run and 300 s per op, at 1, 30 and 100 shapes
+#   --overlay-shapes N[,N...]  roto driver: the overlay_draw shape counts (ROTO_BENCH_OVERLAY_SHAPES,
+#                            default 1,30,100); larger counts take far longer to build, so raise
+#                            GUI_BENCH_TIMEOUT and GUI_BENCH_OP_TIMEOUT_S with them
 #   --stages                 write NATRON_NODE_CREATION_STAGE_LOG beside the result, so the node-creation
 #                            ops also record a per-stage split of the creation and the tab menu
 #   --sizes N[,N...]         node counts (overrides the preset)
@@ -35,7 +40,8 @@
 #   --wait                   --xvfb only: run in the foreground rather than detached
 #
 # --sizes, --topologies and --self-check apply to the gui driver; the roto driver reads its
-# ROTO_BENCH_* variables (see roto_bench.py) and also writes NATRON_ROTO_LATENCY_LOG beside the result.
+# ROTO_BENCH_* variables (see roto_bench.py) and also writes NATRON_ROTO_LATENCY_LOG and
+# NATRON_OVERLAY_DRAW_LOG beside the result.
 #
 # --xvfb runs detached (setsid, immune to the caller exiting): it prints the result path and
 # writes the exit code to <result>.done when it finishes. --host runs in the foreground.
@@ -73,6 +79,7 @@ usage() {
 
 mode=""
 driver=gui
+driver_given=0
 appimage=""
 preset=gate
 sizes=""
@@ -93,10 +100,11 @@ while [ $# -gt 0 ]; do
     case $1 in
         --xvfb) mode=xvfb ;;
         --host) mode=host ;;
-        --driver) driver=${2:?--driver needs gui or roto}; shift ;;
+        --driver) driver=${2:?--driver needs gui or roto}; driver_given=1; shift ;;
         --appimage) appimage=${2:?--appimage needs a path}; shift ;;
-        --preset) preset=${2:?--preset needs gate, full or create}; shift ;;
+        --preset) preset=${2:?--preset needs gate, full, create or overlay}; shift ;;
         --stages) stages=1 ;;
+        --overlay-shapes) export ROTO_BENCH_OVERLAY_SHAPES=${2:?--overlay-shapes needs a list}; shift ;;
         --sizes) sizes=${2:?--sizes needs a list}; shift ;;
         --topologies) topologies=${2:?--topologies needs a list}; shift ;;
         --reps) reps=${2:?--reps needs a count}; shift ;;
@@ -117,6 +125,7 @@ while [ $# -gt 0 ]; do
     shift
 done
 [ -n "$mode" ] || usage
+[ "$preset" = overlay ] && [ "$driver_given" -eq 0 ] && driver=roto
 case $driver in
     gui) suffix="" ;;
     roto) suffix="-roto" ;;
@@ -127,7 +136,10 @@ case $preset in
     full) preset_sizes=300,1000,3000 preset_topologies=chain,wide,comp,mixed preset_restarts=unlimited preset_ops="" ;;
     create) preset_sizes=0,300,3000 preset_topologies=mixed preset_restarts=0
             preset_ops=create_by_shortcut,tab_menu_open,tab_menu_create,create_then_key ;;
-    *) echo "unknown preset: $preset (gate, full or create)" >&2; exit 2 ;;
+    overlay) preset_sizes=300 preset_topologies=comp preset_restarts=0 preset_ops=overlay_draw preset_reps=3
+             preset_timeout=1800 preset_op_timeout=300
+             [ "$driver" = roto ] || { echo "--preset overlay runs the roto driver" >&2; exit 2; } ;;
+    *) echo "unknown preset: $preset (gate, full, create or overlay)" >&2; exit 2 ;;
 esac
 if [ -n "$rerun" ]; then
     if [ -n "$ops" ]; then
@@ -145,7 +157,12 @@ case $restarts in
     ''|*[!0-9]*) echo "--restarts needs a count or unlimited, not $restarts" >&2; exit 2 ;;
 esac
 topologies=${topologies:-$preset_topologies}
-reps=${reps:-${GUI_BENCH_REPS:-auto}}
+reps=${reps:-${GUI_BENCH_REPS:-${preset_reps:-auto}}}
+# A run that never reaches its first op (a script that fails while loading leaves Natron idle) is held
+# only until the preset's cap, which is why the overlay preset's is 30 minutes and not the 6 hours of the rest.
+GUI_BENCH_TIMEOUT=${GUI_BENCH_TIMEOUT:-${preset_timeout:-21600}}
+GUI_BENCH_WATCHDOG_S=${GUI_BENCH_WATCHDOG_S:-$GUI_BENCH_TIMEOUT}
+GUI_BENCH_OP_TIMEOUT_S=${GUI_BENCH_OP_TIMEOUT_S:-${preset_op_timeout:-30}}
 graph_cache=${graph_cache:-$repo/build/bench/gui/graph-cache}
 case $graph_cache in /*) ;; *) graph_cache=$(pwd)/$graph_cache ;; esac
 if [ -n "$baseline" ]; then
@@ -213,8 +230,8 @@ if [ "$mode" = xvfb ] && [ "${NATRON_IN_CONTAINER:-}" != 1 ]; then
     done
     # The host name belongs to the machine, not the container.
     exec "$repo/tools/ci/local/devshell.sh" env GUI_BENCH_STAMP="$stamp" GUI_BENCH_HOSTNAME="$(hostname -s)" \
-        GUI_BENCH_OP_TIMEOUT_S="${GUI_BENCH_OP_TIMEOUT_S:-30}" GUI_BENCH_IDLE_S="${GUI_BENCH_IDLE_S:-5}" \
-        GUI_BENCH_TIMEOUT="${GUI_BENCH_TIMEOUT:-21600}" GUI_BENCH_WATCHDOG_S="${GUI_BENCH_WATCHDOG_S:-21600}" \
+        GUI_BENCH_OP_TIMEOUT_S="$GUI_BENCH_OP_TIMEOUT_S" GUI_BENCH_IDLE_S="${GUI_BENCH_IDLE_S:-5}" \
+        GUI_BENCH_TIMEOUT="$GUI_BENCH_TIMEOUT" GUI_BENCH_WATCHDOG_S="$GUI_BENCH_WATCHDOG_S" \
         GUI_BENCH_SKIP_WEDGED="${GUI_BENCH_SKIP_WEDGED:-1}" GUI_BENCH_HOLD_FILE="${GUI_BENCH_HOLD_FILE:-}" \
         GUI_BENCH_HOLD_S="${GUI_BENCH_HOLD_S:-120}" GUI_BENCH_PTRACER_ANY="${GUI_BENCH_PTRACER_ANY:-0}" \
         "${roto_env[@]}" "$self" "${args[@]}" --wait
@@ -249,7 +266,7 @@ fi
 mkdir -p "$graph_cache"
 export GUI_BENCH_SIZES=$sizes GUI_BENCH_TOPOLOGIES=$topologies GUI_BENCH_REPS=$reps GUI_BENCH_OPS=$ops
 export GUI_BENCH_GRAPH_CACHE=$graph_cache GUI_BENCH_BASELINE=$baseline
-export GUI_BENCH_OP_TIMEOUT_S=${GUI_BENCH_OP_TIMEOUT_S:-30}
+export GUI_BENCH_OP_TIMEOUT_S
 export GUI_BENCH_FORCED_REPAINT=$forced_repaint
 export GUI_BENCH_SELF_CHECK=$self_check GUI_BENCH_OUT=$result GUI_BENCH_MODE=$mode
 export GUI_BENCH_GIT_SHA GUI_BENCH_APPIMAGE_NAME="" GUI_BENCH_APPIMAGE_BYTES="" GUI_BENCH_APPIMAGE_MTIME="" \
@@ -263,13 +280,13 @@ if [ -n "$appimage" ]; then
     GUI_BENCH_APPIMAGE_SHA256=$(sha256sum "$appimage" | cut -c1-64)
     echo "AppImage $GUI_BENCH_APPIMAGE_NAME, $GUI_BENCH_APPIMAGE_BYTES bytes, modified $GUI_BENCH_APPIMAGE_MTIME, sha256 ${GUI_BENCH_APPIMAGE_SHA256:0:16}"
 fi
-timeout_s=${GUI_BENCH_TIMEOUT:-21600}
+timeout_s=$GUI_BENCH_TIMEOUT
 script="$repo/tools/bench/gui/${driver}_bench.py"
 if [ "$driver" = roto ]; then
-    export NATRON_ROTO_LATENCY_LOG="$work/latency.jsonl"
-    rm -f "$NATRON_ROTO_LATENCY_LOG"
+    export NATRON_ROTO_LATENCY_LOG="$work/latency.jsonl" NATRON_OVERLAY_DRAW_LOG="$work/overlay-draw.jsonl"
+    rm -f "$NATRON_ROTO_LATENCY_LOG" "$NATRON_OVERLAY_DRAW_LOG"
 else
-    unset NATRON_ROTO_LATENCY_LOG
+    unset NATRON_ROTO_LATENCY_LOG NATRON_OVERLAY_DRAW_LOG
 fi
 if [ "$stages" -eq 1 ]; then
     export NATRON_NODE_CREATION_STAGE_LOG="$work/node-creation-stages.jsonl"

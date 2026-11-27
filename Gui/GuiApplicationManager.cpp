@@ -70,6 +70,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Optics/LensKnobs.h"
+#include "Engine/OverlayDrawProbe.h"
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/RotoLatencyProbe.h"
@@ -1205,6 +1206,7 @@ GuiApplicationManager::initGui(const CLArgs& args)
     _imp->stallMonitor = StallMonitor::createFromEnvironment();
     // Never stopped: render threads may still hold it at exit, and each line is flushed as written.
     RotoLatencyProbe::startFromEnvironment();
+    OverlayDrawProbe::startFromEnvironment();
     NodeCreationStageLog::startFromEnvironment();
 
     Optics::LensKnobs::setBrowseHandler([](const KnobStringPtr& lens, const Optics::LensPreviewContext& context) { LensBrowser::open(lens, context); });

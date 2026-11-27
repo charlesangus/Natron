@@ -137,8 +137,11 @@ protected:
             ASSERT_NE(shape, nullptr);
             _shapes.push_back(shape);
         }
-        _ui->selectedItems.clear();
-        _ui->selectedItems.push_back(_shapes[1]);
+        // Selected through the context: removing an item resyncs the interact's selection from it.
+        _context->clearSelection(RotoItem::eSelectionReasonOther);
+        _context->select(_shapes[1], RotoItem::eSelectionReasonOther);
+        ASSERT_EQ(1u, _ui->selectedItems.size());
+        ASSERT_EQ(_shapes[1].get(), _ui->selectedItems.front().get());
         _effect->setCurrentViewportForOverlays_public(&_viewport);
     }
 
@@ -362,11 +365,25 @@ TEST_F(RotoCurvesOverlayCacheTest, LockingTheSelectedShapeRebuildsItWithoutContr
     const OverlayDrawList* selectedList = _viewport.drawn[1];
     ASSERT_NE(0u, pointPrimitiveCount(selectedList));
 
-    _shapes[1]->setLocked(true, false, RotoItem::eSelectionReasonOther);
+    // Any other reason deselects the locked shape; the overlay reason keeps it selected.
+    _shapes[1]->setLocked(true, false, RotoItem::eSelectionReasonOverlayInteract);
+    ASSERT_EQ(1u, _ui->selectedItems.size());
     EXPECT_EQ(1u, redraw());
     ASSERT_EQ(3u, _viewport.drawn.size());
     EXPECT_EQ(selectedList, _viewport.drawn[1]);
     EXPECT_EQ(0u, pointPrimitiveCount(selectedList));
+}
+
+TEST_F(RotoCurvesOverlayCacheTest, LockingTheSelectedShapeFromThePanelDeselectsItIntoOneList)
+{
+    redraw();
+    ASSERT_EQ(3u, _viewport.drawn.size());
+
+    _shapes[1]->setLocked(true, false, RotoItem::eSelectionReasonSettingsPanel);
+    EXPECT_TRUE(_ui->selectedItems.empty());
+    EXPECT_EQ(1u, redraw());
+    ASSERT_EQ(1u, _viewport.drawn.size());
+    EXPECT_EQ(0u, pointPrimitiveCount(_viewport.drawn[0]));
 }
 
 TEST_F(RotoCurvesOverlayCacheTest, HidingTheLastShapeDropsItsListAndShowingItRebuildsOnlyThat)

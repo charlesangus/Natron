@@ -461,7 +461,7 @@ getVariable(const std::string& name,
     // of a project variable read for a render reads under that render's context.
     RenderContextPtr context;
     const bool acting = ActionContextScope::current(&context);
-    const ParallelRenderArgsPtr frameArgs = (effect && effect->isRenderingTLS()) ? effect->getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
+    const ParallelRenderArgsPtr frameArgs = (effect && effect->isRenderingTLS()) ? effect->getFrameArgs() : ParallelRenderArgsPtr();
     if (!acting) {
         if (frameArgs) {
             context = effect->getCurrentRenderContext();

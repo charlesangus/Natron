@@ -27,6 +27,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -37,9 +39,11 @@
 
 #include "Engine/DeepImage.h"
 #include "Engine/DeepLayers.h"
+#include "Engine/FileSystemModel.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/RectI.h"
 #include "Engine/ViewIdx.h"
@@ -74,19 +78,124 @@ DeepRead::initializeKnobs()
     filename->setIsMetadataSlave(true);
     page->addKnob(filename);
     _filename = filename;
+
+    _timeDomain.create(this, page);
+    _timeDomain.refreshKnobState();
 }
 
-std::string
-DeepRead::getFilenameAt(double time,
-                        ViewIdx view) const
+void
+DeepRead::onKnobsLoaded()
+{
+    _timeDomain.refreshKnobState();
+}
+
+bool
+DeepRead::knobChanged(KnobI* k,
+                      ValueChangedReasonEnum reason,
+                      ViewSpec /*view*/,
+                      double /*time*/,
+                      bool /*originatedFromMainThread*/)
 {
     KnobFilePtr filename = _filename.lock();
 
-    if (!filename) {
-        return std::string();
+    if (filename && (k == filename.get())) {
+        if (reason != eValueChangedReasonTimeChanged) {
+            invalidateFrameListing();
+            // The host only fills the original range in for the nodes it treats as readers.
+            NodePtr node = getNode();
+            if (node) {
+                node->computeFrameRangeForReader(filename.get());
+            }
+        }
+
+        return false;
     }
 
-    return filename->getFileName((int)std::floor(time + 0.5), view);
+    return _timeDomain.knobChanged(k, reason);
+}
+
+std::shared_ptr<const DeepRead::FrameListing>
+DeepRead::frameListing() const
+{
+    KnobFilePtr filename = _filename.lock();
+    const std::string pattern = filename ? filename->getResolvedPath() : std::string();
+    {
+        std::lock_guard<std::mutex> lock(_listingMutex);
+        if (_listing && (_listing->pattern == pattern)) {
+            return _listing;
+        }
+    }
+
+    std::shared_ptr<FrameListing> listing = std::make_shared<FrameListing>();
+    listing->pattern = pattern;
+    if (!pattern.empty()) {
+        std::map<int, std::map<int, std::string>> sequence;
+        FileSystemModel::filesListFromPattern(pattern, &sequence);
+        // SequenceParsing files the matches of a pattern without a frame number under frame -1, and
+        // a frame number it parses has no sign.
+        if (!sequence.empty() && (sequence.begin()->first >= 0)) {
+            listing->singleImage = false;
+            for (std::map<int, std::map<int, std::string>>::const_iterator it = sequence.begin(); it != sequence.end(); ++it) {
+                listing->frames.insert(listing->frames.end(), it->first);
+            }
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(_listingMutex);
+    _listing = listing;
+
+    return listing;
+}
+
+void
+DeepRead::invalidateFrameListing()
+{
+    std::lock_guard<std::mutex> lock(_listingMutex);
+    _listing.reset();
+}
+
+DeepRead::Source
+DeepRead::sourceAt(double time,
+                   ViewIdx view) const
+{
+    Source source;
+    KnobFilePtr filename = _filename.lock();
+
+    if (!filename || filename->getValue().empty()) {
+        return source;
+    }
+
+    const std::shared_ptr<const FrameListing> listing = frameListing();
+    const ReadTimeDomain::Settings settings = _timeDomain.settingsAt(time);
+    const ReadTimeDomain::Result result = listing->singleImage ? ReadTimeDomain::resolveStill(time, settings) : ReadTimeDomain::resolve(time, settings, listing->frames);
+
+    source.kind = result.kind;
+    source.message = result.message;
+    int frame = result.frame;
+    if (result.kind != ReadTimeDomain::Result::eFile) {
+        const std::set<int>::const_iterator first = listing->frames.lower_bound(settings.firstFrame);
+        frame = (first != listing->frames.end()) ? *first : settings.firstFrame;
+    }
+    source.path = filename->getFileName(frame, view);
+
+    return source;
+}
+
+void
+DeepRead::getFrameRange(double* first,
+                        double* last)
+{
+    KnobFilePtr filename = _filename.lock();
+
+    if (!filename || filename->getValue().empty()) {
+        *first = std::numeric_limits<int>::min();
+        *last = std::numeric_limits<int>::max();
+
+        return;
+    }
+    const ReadTimeDomain::FrameRange range = ReadTimeDomain::outputRange(_timeDomain.settingsAt(0.));
+    *first = range.min;
+    *last = range.max;
 }
 
 StatusEnum
@@ -96,10 +205,16 @@ DeepRead::getRegionOfDefinition(U64 /*hash*/,
                                 ViewIdx view,
                                 RectD* rod)
 {
-    const std::string filename = getFilenameAt(time, view);
+    const Source source = sourceAt(time, view);
+    const std::string& filename = source.path;
 
     if (filename.empty()) {
         setPersistentMessage(eMessageTypeError, tr("No deep file to read.").toStdString());
+
+        return eStatusFailed;
+    }
+    if (source.kind == ReadTimeDomain::Result::eError) {
+        setPersistentMessage(eMessageTypeError, source.message);
 
         return eStatusFailed;
     }
@@ -155,7 +270,7 @@ DeepRead::getPreferredMetadataAt(double time,
                                  NodeMetadata& metadata)
 {
     // Each frame and view of a sequence is its own file, with its own display window.
-    const std::string filename = getFilenameAt(time, view);
+    const std::string filename = sourceAt(time, view).path;
 
     if (filename.empty()) {
         return eStatusFailed;
@@ -180,8 +295,13 @@ DeepRead::getPreferredMetadataAt(double time,
 
     // The render cache keys on time only for frame-varying nodes; without this every frame of a
     // sequence would be served frame 1's samples.
+    // A still is black or an error outside its range under those settings.
     KnobFilePtr filenameKnob = _filename.lock();
-    metadata.setIsFrameVarying(filenameKnob && isFrameSequencePattern(filenameKnob->getValue()));
+    const ReadTimeDomain::Settings settings = _timeDomain.settingsAt(time);
+    const auto changesOutside = [](ReadTimeDomain::BeforeAfter mode) {
+        return (mode == ReadTimeDomain::eBeforeAfterBlack) || (mode == ReadTimeDomain::eBeforeAfterError);
+    };
+    metadata.setIsFrameVarying(filenameKnob && (isFrameSequencePattern(filenameKnob->getValue()) || changesOutside(settings.before) || changesOutside(settings.after)));
 
     return eStatusOK;
 }
@@ -193,7 +313,7 @@ DeepRead::getDeepLayers(double time,
 {
     layers->clear();
 
-    const std::string filename = getFilenameAt(time, view);
+    const std::string filename = sourceAt(time, view).path;
     if (filename.empty()) {
         return;
     }
@@ -223,21 +343,31 @@ DeepRead::getDeepLayers(double time,
 void
 DeepRead::purgeCaches()
 {
-    std::lock_guard<std::mutex> locker(_layersMemoMutex);
-    _layersMemoValid = false;
-    _layersMemo.clear();
+    {
+        std::lock_guard<std::mutex> locker(_layersMemoMutex);
+        _layersMemoValid = false;
+        _layersMemo.clear();
+    }
+    invalidateFrameListing();
 }
 
 StatusEnum
 DeepRead::renderDeep(const DeepRenderActionArgs& args)
 {
-    const std::string filename = getFilenameAt(args.time, args.view);
+    const Source source = sourceAt(args.time, args.view);
+    const std::string& filename = source.path;
 
     if (filename.empty()) {
         setPersistentMessage(eMessageTypeError, tr("No deep file to read.").toStdString());
 
         return eStatusFailed;
     }
+    if (source.kind == ReadTimeDomain::Result::eError) {
+        setPersistentMessage(eMessageTypeError, source.message);
+
+        return eStatusFailed;
+    }
+    const bool black = source.kind == ReadTimeDomain::Result::eBlack;
 
     OIIO::ImageInput::unique_ptr input = OIIO::ImageInput::open(filename);
     if (!input) {
@@ -259,8 +389,12 @@ DeepRead::renderDeep(const DeepRenderActionArgs& args)
     const int dataHeight = spec.height;
     const int displayTop = spec.full_y + spec.full_height;
 
+    // A black frame has no samples but the channels of the sequence, so that the layers reported
+    // for it hold.
     OIIO::DeepData deepData;
-    if (!input->read_native_deep_image(0, 0, deepData)) {
+    if (black) {
+        deepData.init(spec);
+    } else if (!input->read_native_deep_image(0, 0, deepData)) {
         setPersistentMessage(eMessageTypeError, input->geterror());
 
         return eStatusFailed;
@@ -327,10 +461,10 @@ DeepRead::renderDeep(const DeepRenderActionArgs& args)
 
     // Samples are transported in the order the file stores them, so tidiness is whatever the
     // file's author left behind: not this node's to claim.
-    return renderDeepTwoPass(args, channelNames, alphaChannelIndex, [&deepData, &filePixelIndex](int x, int y) -> U32 {
+    return renderDeepTwoPass(args, channelNames, alphaChannelIndex, [&deepData, &filePixelIndex, black](int x, int y) -> U32 {
         const int pixel = filePixelIndex(x, y);
 
-        return (pixel < 0) ? 0 : (U32)deepData.samples(pixel); }, [&deepData, &filePixelIndex, &fileChannels, zChannel, zBackChannel](int x, int y, const MutableDeepPixelView& out) {
+        return (black || (pixel < 0)) ? 0 : (U32)deepData.samples(pixel); }, [&deepData, &filePixelIndex, &fileChannels, zChannel, zBackChannel](int x, int y, const MutableDeepPixelView& out) {
         const int pixel = filePixelIndex(x, y);
 
         if (pixel < 0) {

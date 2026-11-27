@@ -102,6 +102,30 @@ private:
     std::unique_ptr<AbortableThreadPrivate> _imp;
 };
 
+/**
+ * @brief Installs abort info on the current thread, if it is an AbortableThread, until the scope ends, then puts back
+ * what the thread held before. EffectInstance::aborted() keeps the first abort info it finds on a thread that has none,
+ * so a long-lived thread preparing frame after frame must install each frame's this way, or it reads one that ended.
+ **/
+class ScopedThreadAbortInfo {
+public:
+    ScopedThreadAbortInfo(bool isRenderResponseToUserInteraction,
+                          const AbortableRenderInfoPtr& abortInfo,
+                          const EffectInstancePtr& treeRoot);
+
+    ~ScopedThreadAbortInfo();
+
+    ScopedThreadAbortInfo(const ScopedThreadAbortInfo&) = delete;
+    ScopedThreadAbortInfo& operator=(const ScopedThreadAbortInfo&) = delete;
+
+private:
+    AbortableThread* _thread;
+    bool _hadPrevious;
+    bool _previousIsRenderResponseToUserInteraction;
+    AbortableRenderInfoWPtr _previousAbortInfo;
+    EffectInstanceWPtr _previousTreeRoot;
+};
+
 #define REPORT_CURRENT_THREAD_ACTION(actionName, node) \
     { \
         QThread* thread = QThread::currentThread(); \

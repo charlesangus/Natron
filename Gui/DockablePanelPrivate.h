@@ -87,6 +87,8 @@ struct DockablePanelPrivate
     Button* _undoButton;
     Button* _redoButton;
     Button* _restoreDefaultsButton;
+    Button* _editButton;
+    KnobEditMode* _editMode;
     bool _minimized; /*!< true if the panel is minimized*/
     bool _floating; /*!< true if the panel is floating*/
     FloatingWidget* _floatingWidget;

@@ -1209,7 +1209,7 @@ SplineWarp::getCachedFieldResolutions() const
 bool
 SplineWarp::isDraftRender() const
 {
-    ParallelRenderArgsPtr args = getParallelRenderArgsTLS();
+    ParallelRenderArgsPtr args = getFrameArgs();
 
     return args && args->draftMode;
 }

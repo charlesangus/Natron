@@ -44,6 +44,7 @@
 #include "Engine/Project.h"
 #include "Engine/ProjectPathVariableCommands.h"
 #include "Engine/RFV.h"
+#include "Engine/UserKnobEdit.h"
 #include "Engine/Utils.h" // convertFromPlainText
 
 #include "Gui/ActionShortcuts.h"
@@ -1951,10 +1952,7 @@ AddKnobDialog::onOkClicked()
             try {
                 std::string expr;
                 if ( oldKnobScriptName != _imp->knob->getName() ) {
-                    //Change in expressions the script-name
-                    QString estr = QString::fromUtf8( it->second[i].first.c_str() );
-                    estr.replace( QString::fromUtf8( oldKnobScriptName.c_str() ), QString::fromUtf8( _imp->knob->getName().c_str() ) );
-                    expr = estr.toStdString();
+                    expr = renameUserKnobInExpression(_imp->panel->getHolder(), it->first, it->second[i].first, oldKnobScriptName, _imp->knob->getName());
                 } else {
                     expr = it->second[i].first;
                 }

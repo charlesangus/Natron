@@ -264,7 +264,7 @@ TEST_F(NativeSaturationTest, IdentityConditions)
     EXPECT_EQ(0, inputNb);
 }
 
-TEST_F(NativeSaturationTest, BothSchedulerModesAgreeWithNoUnplannedPull)
+TEST_F(NativeSaturationTest, DirectAndScheduledAgreeWithNoUnplannedPull)
 {
     ParityPair pair = makePair(true);
     ASSERT_TRUE(bool(pair.native));

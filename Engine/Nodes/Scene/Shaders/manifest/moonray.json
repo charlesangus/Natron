@@ -4,7 +4,7 @@
   "source": {
     "description": "rdl2 class JSON exported from each rdl2 DSO by rdl2_json_exporter",
     "repository": "https://github.com/charlesangus/openmoonray.git",
-    "commit": "ee4955e34243094c8331ec2cdd17724a449ba94c",
+    "commit": "d169038bc95a8908abb64025a306413213dca36e",
     "submodules": {
       "moonray/moonray": {
         "repository": "https://github.com/charlesangus/moonray",

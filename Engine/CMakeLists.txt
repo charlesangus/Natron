@@ -259,6 +259,8 @@ target_link_libraries(NatronEngine
         $<$<BOOL:${NATRON_GPU}>:NatronGpu>
         onnxruntime::headers
         CDT
+        # Public: Geo/GeoVDB.h names openvdb's types, and the tests and the GUI include it.
+        OpenVDB::openvdb
     PRIVATE
         ${SHIBOKEN_LIB}
         ${PYSIDE_LIB}

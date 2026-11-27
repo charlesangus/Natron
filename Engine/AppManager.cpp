@@ -130,6 +130,7 @@
 #include "Engine/Dot.h"
 #include "Engine/FileSystemModel.h"
 #include "Engine/GPUContextPool.h"
+#include "Engine/Geo/GeoVDB.h"
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuDevice.h"
 #endif
@@ -1173,6 +1174,7 @@ AppManager::loadInternal(const CLArgs& cl)
 
     registerEngineMetaTypes();
     registerGuiMetaTypes();
+    geoInitializeOpenVDB();
 
     qApp->setOrganizationName( QString::fromUtf8(NATRON_ORGANIZATION_NAME) );
     qApp->setOrganizationDomain( QString::fromUtf8(NATRON_ORGANIZATION_DOMAIN) );
@@ -1839,6 +1841,7 @@ AppManager::clearDiskCache()
     if (_imp->_nodeCache) {
         _imp->_nodeCache->clearPins();
     }
+    geoClearVDBCacheDirectory();
 }
 
 void
@@ -3562,7 +3565,7 @@ AppManager::getNodeCacheHost() const
 std::shared_ptr<CacheDiskTier>
 AppManager::getNodeCacheDiskTier() const
 {
-    return _imp->_nodeCache->diskTier();
+    return _imp->_nodeCache ? _imp->_nodeCache->diskTier() : std::shared_ptr<CacheDiskTier>();
 }
 
 void

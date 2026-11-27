@@ -46,14 +46,18 @@ enum GeoPrimitiveTypeEnum : std::int32_t {
     eGeoPrimitivePolyline,
     eGeoPrimitivePackedGeometry,
     eGeoPrimitivePackedUSD,
+    eGeoPrimitiveVDB,
 };
 
 bool geoPrimitiveTypeIsValid(std::int32_t type);
 bool geoPrimitiveIsPacked(GeoPrimitiveTypeEnum type);
 
+/** @brief Packed and VDB primitives: exactly one vertex, on the primitive's point. */
+bool geoPrimitiveIsSingleVertex(GeoPrimitiveTypeEnum type);
+
 /**
  * @brief Fewest vertices a primitive of this type keeps before a point delete destroys it as
- * degenerate: 3 for a polygon, 2 for a polyline, 1 for a packed primitive.
+ * degenerate: 3 for a polygon, 2 for a polyline, 1 for a packed or VDB primitive.
  **/
 GeoOffset geoPrimitiveMinVertexCount(GeoPrimitiveTypeEnum type);
 

@@ -36,6 +36,7 @@
 #include <vector>
 
 #include "Engine/Geo/GeoPacked.h"
+#include "Engine/Geo/GeoVDB.h"
 #include "Engine/GeoDetail.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
@@ -55,6 +56,13 @@ inline constexpr const char* kGeoUsdWorldSpaceAttr = "usdWorldSpace";
  **/
 inline constexpr const char* kGeoUsdSourceAttr = "usdSource";
 
+/**
+ * @brief A primitive string attribute on VDB primitives read from a USD volume: the field
+ * relationship the grid came through, without its namespace. An override of that volume authors
+ * the same field again rather than adding one beside it. Not exported.
+ **/
+inline constexpr const char* kGeoUsdFieldAttr = "usdField";
+
 /** @brief How packed geometry primitives become USD prims. */
 enum GeoUsdPackedModeEnum {
     eGeoUsdPackedPointInstancer = 0,
@@ -71,6 +79,8 @@ enum GeoUsdPrimKindEnum {
     eGeoUsdPrimNativeInstances,
     // An over on a packed USD primitive's source path, carrying its local transform.
     eGeoUsdPrimOverride,
+    // A UsdVolVolume of VDB primitives, one OpenVDBAsset field child per grid.
+    eGeoUsdPrimVolume,
 };
 
 /** @brief What the stage the converted layer will be composed over holds at one prim. */
@@ -83,6 +93,8 @@ struct GeoUsdInputPrim {
     // Attribute values at the conversion's time, primvars flattened; "<primvar>:indices" is
     // present when the primvar is indexed. Only captured for prims the detail itself names.
     std::unordered_map<PXR_NS::TfToken, PXR_NS::VtValue, PXR_NS::TfToken::HashFunctor> values;
+    // A volume's OpenVDB field relationships, namespace stripped, and the field prims they target.
+    std::vector<std::pair<PXR_NS::TfToken, PXR_NS::SdfPath>> fields;
     U64 hash = 0;
 };
 
@@ -110,6 +122,12 @@ struct GeoUsdConvertOptions {
     // When set, prims the input already holds are authored as overs and transforms are written
     // relative to the input's parents, so that the composed result lands where the detail puts it.
     GeoUsdInputSceneConstPtr inputScene;
+    // Where VDB primitives' grids are written; empty for geoVDBCacheDirectory().
+    std::string volumeDirectory;
+    // Asked while volume files are hashed and written during construction; a volume whose file
+    // the abort stopped is left without one. Cleared once construction is done, since it is the
+    // building render's.
+    GeoVDBAbortFunc aborted;
 };
 
 /**
@@ -174,6 +192,22 @@ GeoUsdInputSceneConstPtr geoUsdCaptureInputScene(const PXR_NS::UsdStageRefPtr& s
  * the space of their prim, or in world space when the detail says so (kGeoUsdWorldSpaceAttr);
  * normal and vector attributes then follow the points back into prim space.
  *
+ * VDB primitives sharing a `path` (the `name` attribute names their grids, not their prim)
+ * gather into one UsdVolVolume, unpathed ones into volume_0 under the root. In primitive order, a
+ * field name already in the current volume starts the next one: the volumes of one path are its
+ * volume_0, volume_1... children (under the root when unpathed), noted in volumeNotes(). Each grid
+ * becomes an OpenVDBAsset child prim named after its field, the grid's name, else the field it
+ * was read through, else "field", bound by a field:<name> relationship. All of a volume's grids
+ * are written, in primitive order, to one content-addressed file under the volume directory
+ * (geoEnsureVDBFile()), which every field's filePath names. The file stores each grid under, and
+ * its field's fieldName names it by, the grid's name, else the field it was read through, else
+ * "field"; fieldIndex tells same-named grids of the file apart and is 0 for the others. Grid
+ * transforms are in the space of the volume prim, as points are: a new prim gets an identity
+ * transform and an over keeps the input's, unless the detail is in world space, when the volume
+ * prim's transform cancels its parents'. Packed geometry holding volumes becomes a point
+ * instancer as any other, so a volume copied by packed primitives is one prototype and one file
+ * however many copies there are.
+ *
  * With an input scene, a partition read from USD (kGeoUsdSourceAttr) whose prim the input holds
  * becomes an over of it. Meshes, curves and points of the input's type then carry points, plus
  * the values that differ from the input's; topology only when it differs, in full. A partition
@@ -222,6 +256,18 @@ public:
     const std::vector<PXR_NS::SdfPath>& shearedInstances() const
     {
         return _shearedInstances;
+    }
+
+    /** @brief The paths whose grids make several volumes, and the fields renamed for an input's field prims. */
+    const std::vector<std::string>& volumeNotes() const
+    {
+        return _volumeNotes;
+    }
+
+    /** @brief The grids whose file could not be written, so their fields have none. */
+    const std::vector<std::string>& volumeWriteFailures() const
+    {
+        return _volumeWriteFailures;
     }
 
     std::size_t partitionCount() const;
@@ -319,6 +365,8 @@ private:
     GeoUsdConvertOptions _options;
     std::vector<std::string> _warnings;
     std::vector<PXR_NS::SdfPath> _shearedInstances;
+    std::vector<std::string> _volumeNotes;
+    std::vector<std::string> _volumeWriteFailures;
     std::vector<std::unique_ptr<Partition>> _partitions;
     std::unordered_map<PXR_NS::SdfPath, SpecEntry, PXR_NS::SdfPath::Hash> _specs;
     PXR_NS::SdfPath _topPath;
@@ -326,34 +374,49 @@ private:
 
 /** @brief GeoMatrix4 (column vectors) as a GfMatrix4d (row vectors), and back. */
 PXR_NS::GfMatrix4d geoUsdMatrix(const GeoMatrix4& m);
+
+/**
+ * @brief Ensures the file of every volume of @p detail and of the packed geometry in it is in
+ * place as GeoUsdConvert writes it, under @p options' volume directory: marks a file found as
+ * used, and writes one that is gone, such as after the disk cache was cleared or evicted it. Asks
+ * @p aborted between and within files (geoEnsureVDBFile()) and returns false once it says so; a
+ * write that fails is left for GeoUsdConvert to report.
+ **/
+bool geoUsdEnsureVolumeFiles(const GeoDetail& detail,
+                             const GeoUsdConvertOptions& options,
+                             const GeoVDBAbortFunc& aborted);
 GeoMatrix4 geoMatrixFromUsd(const PXR_NS::GfMatrix4d& m);
 
 /**
  * @brief The detail with every packed geometry primitive replaced by its contents, transformed
- * by its local transform, recursively. Unpacked primitives take the packed primitive's
- * primitive attributes and primitive groups. Packed USD primitives inside packed geometry are
- * dropped with a warning.
+ * by its local transform, recursively; a VDB primitive's grid takes the transform on top of its
+ * own and keeps its name. Unpacked primitives take the packed primitive's primitive attributes
+ * and primitive groups. Packed USD primitives inside packed geometry are dropped with a warning.
  **/
 GeoDetail geoUnpackPackedGeometry(const GeoDetail& source,
                                   std::vector<std::string>* warnings);
 
 /**
- * @brief Appends a UsdGeomMesh, UsdGeomBasisCurves or UsdGeomPoints prim to @p builder at
+ * @brief Appends a UsdGeomMesh, UsdGeomBasisCurves, UsdGeomPoints or UsdVolVolume prim to @p builder at
  * @p time, the inverse of GeoUsdConvert's mapping, and sets each new primitive's `path` to the
  * prim path, or for a points prim, which has no primitives, each new point's `path`, and marks
  * them with kGeoUsdSourceAttr. With @p worldTransform, positions are baked into that space, and
  * normal and vector attributes too, normals by its inverse transpose and renormalised.
- * GeomSubsets of faces become primitive groups and bool primvars become groups. An attribute that exists in
+ * GeomSubsets of faces become primitive groups and bool primvars become groups. A volume's
+ * OpenVDBAsset fields with a file become VDB primitives named after the field's grid, their grids
+ * read from the files; other fields are skipped with a warning. An attribute that exists in
  * the builder with another description is skipped with a warning. Returns false with
  * *errorMessage set for another prim type or inconsistent topology, leaving the builder as it
- * was.
+ * was. @p aborted is asked before each volume field's grid is read; once it says so, the read
+ * fails the same way.
  **/
 bool geoUsdReadPrim(const PXR_NS::UsdPrim& prim,
                     PXR_NS::UsdTimeCode time,
                     const PXR_NS::GfMatrix4d* worldTransform,
                     GeoDetailBuilder& builder,
                     std::vector<std::string>* warnings,
-                    std::string* errorMessage);
+                    std::string* errorMessage,
+                    const GeoVDBAbortFunc& aborted = GeoVDBAbortFunc());
 
 NATRON_NAMESPACE_EXIT
 

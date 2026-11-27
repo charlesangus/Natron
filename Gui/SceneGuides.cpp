@@ -30,9 +30,11 @@
 #include <limits>
 
 #include <pxr/usd/usd/primRange.h>
+#include <pxr/usd/usdGeom/boundable.h>
 #include <pxr/usd/usdGeom/gprim.h>
 #include <pxr/usd/usdLux/cylinderLight.h>
 #include <pxr/usd/usdLux/diskLight.h>
+#include <pxr/usd/usdVol/volume.h>
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -178,6 +180,31 @@ namespace {
 
         return true;
     }
+
+    // The twelve edges of the prim's authored extent; none when it has no extent.
+    void
+    buildBoxLines(const UsdPrim& prim,
+                  const GfMatrix4d& m,
+                  UsdTimeCode time,
+                  std::vector<GfVec3d>* segments)
+    {
+        VtVec3fArray extent;
+        if (!UsdGeomBoundable(prim).GetExtentAttr().Get(&extent, time) || extent.size() != 2) {
+            return;
+        }
+        const GfVec3d lo(extent[0]);
+        const GfVec3d hi(extent[1]);
+        const auto corner = [&](int i) {
+            return GfVec3d((i & 1) ? hi[0] : lo[0], (i & 2) ? hi[1] : lo[1], (i & 4) ? hi[2] : lo[2]);
+        };
+        for (int i = 0; i < 8; ++i) {
+            for (int bit = 1; bit < 8; bit <<= 1) {
+                if (!(i & bit)) {
+                    addSegment(m, corner(i), corner(i | bit), segments);
+                }
+            }
+        }
+    }
 } // anonymous namespace
 
 const char*
@@ -200,6 +227,8 @@ getGuideKindName(GuideKindEnum kind)
         return "domeLight";
     case eGuideKindOtherLight:
         return "light";
+    case eGuideKindVolume:
+        return "volume";
     }
 
     return "";
@@ -211,6 +240,11 @@ getGuideKind(const UsdPrim& prim,
 {
     if (prim.IsA<UsdGeomCamera>()) {
         *kind = eGuideKindCamera;
+
+        return true;
+    }
+    if (prim.IsA<UsdVolVolume>()) {
+        *kind = eGuideKindVolume;
 
         return true;
     }
@@ -330,6 +364,7 @@ buildLightLines(const UsdPrim& prim,
 
     switch (kind) {
     case eGuideKindCamera:
+    case eGuideKindVolume:
         break;
     case eGuideKindDistantLight: {
         // A disc of parallel rays shining down -Z.
@@ -431,6 +466,8 @@ buildGuides(const UsdStageRefPtr& stage,
             GfCamera camera = UsdGeomCamera(prim).GetCamera(time);
             camera.SetTransform(localToWorld);
             buildCameraLines(camera, length, &guide.segments);
+        } else if (source.kind == eGuideKindVolume) {
+            buildBoxLines(prim, localToWorld, time, &guide.segments);
         } else {
             buildLightLines(prim, source.kind, localToWorld, time, length, &guide.segments);
         }

@@ -119,6 +119,8 @@ const int kSlowScanMs = 60000;
 const int kBuildStampIntervalMs = 60000;
 const std::uint64_t kDeadBuildAgeNs = 7ULL * 24ULL * 3600ULL * 1000000000ULL;
 const char kBuildStampName[] = "lastlive";
+// A file under files/ named with a leading dot is still being written. Past this age its writer died.
+const std::uint64_t kAbandonedPlainFileNs = 24ULL * 3600ULL * 1000000000ULL;
 const std::size_t kPublishScan = 256;
 const std::size_t kPublishBatch = 8;
 const int kPublishBackoffMs = 30000;
@@ -811,6 +813,7 @@ struct EvictionSample {
     CacheDiskStats stats;
     int deadRank; // lower goes first; every live build shares the highest
     double score;
+    bool plainFile = false; // under files/: no header, judged by its modification time
 };
 }
 
@@ -867,6 +870,7 @@ struct CacheDiskTier::Imp {
     std::string buildDir;
     std::string autoDir;
     std::string pinsDir;
+    std::string filesDir;
     std::string publishLockPath;
     std::string pinLockPath;
     std::string sessionsDir;
@@ -1315,6 +1319,17 @@ struct CacheDiskTier::Imp {
                     std::uint64_t base,
                     int deadRank,
                     std::vector<EvictionSample>* sample) const;
+    // The regular files under <build>/files, in walk order.
+    std::vector<std::string> listPlainFiles(const std::string& build) const;
+    // Samples files[*next...] cyclically from *next until the sample holds limit entries or every
+    // file was looked at; *next counts the files looked at.
+    void samplePlainFiles(const std::vector<std::string>& files,
+                          std::size_t first,
+                          std::size_t* next,
+                          std::size_t limit,
+                          int deadRank,
+                          std::uint64_t now,
+                          std::vector<EvictionSample>* sample) const;
     void refreshBudget(const std::map<std::string, LedgerRecord>& ledgers);
     void evictPass(const std::map<std::string, LedgerRecord>& ledgers);
     void offerPublishCandidates();
@@ -1730,7 +1745,7 @@ CacheDiskTier::Imp::scanOnce()
     std::uint64_t total = 0;
 
     for (const std::string& build : buildNames()) {
-        for (const char* section : { "auto", "pins" }) {
+        for (const char* section : { "auto", "pins", "files" }) {
             // A live build's pins are on their own budget. A dead build's count, so that pressure
             // reclaims them along with its automatic files.
             if ((std::strcmp(section, "pins") == 0) && (liveBuilds.count(build) != 0)) {
@@ -2060,6 +2075,64 @@ CacheDiskTier::Imp::sampleFile(const std::string& path,
     sample->push_back(std::move(sampled));
 }
 
+std::vector<std::string>
+CacheDiskTier::Imp::listPlainFiles(const std::string& build) const
+{
+    std::vector<std::string> files;
+    std::error_code error;
+    fs::recursive_directory_iterator it(config.root + '/' + build + "/files", fs::directory_options::skip_permission_denied, error);
+    const fs::recursive_directory_iterator end;
+    while (!error && (it != end)) {
+        if (stopping.load()) {
+            break;
+        }
+        std::error_code typeError;
+        if (it->is_regular_file(typeError) && !typeError) {
+            files.push_back(it->path().string());
+        }
+        it.increment(error);
+    }
+
+    return files;
+}
+
+void
+CacheDiskTier::Imp::samplePlainFiles(const std::vector<std::string>& files,
+                                     std::size_t first,
+                                     std::size_t* next,
+                                     std::size_t limit,
+                                     int deadRank,
+                                     std::uint64_t now,
+                                     std::vector<EvictionSample>* sample) const
+{
+    for (; (*next < files.size()) && (sample->size() < limit); ++*next) {
+        if (stopping.load()) {
+            return;
+        }
+        const std::string& path = files[(first + *next) % files.size()];
+        const std::string name = fs::path(path).filename().string();
+        struct stat st;
+        if (::stat(path.c_str(), &st) != 0) {
+            continue;
+        }
+        const std::uint64_t lastUse = (std::uint64_t)st.st_mtim.tv_sec * 1000000000ULL + (std::uint64_t)st.st_mtim.tv_nsec;
+        const bool inProgress = !name.empty() && (name[0] == '.');
+        if (!inProgress || ((now > lastUse) && (now - lastUse > kAbandonedPlainFileNs))) {
+            EvictionSample sampled;
+            sampled.path = path;
+            sampled.name = name;
+            sampled.base = 0;
+            sampled.bytes = (std::uint64_t)st.st_size;
+            sampled.stats.lastUse = lastUse;
+            sampled.stats.recomputeCostNs = CacheEviction::kUnmeasuredCostNs;
+            sampled.deadRank = deadRank;
+            sampled.score = 0.;
+            sampled.plainFile = true;
+            sample->push_back(std::move(sampled));
+        }
+    }
+}
+
 void
 CacheDiskTier::Imp::evictPass(const std::map<std::string, LedgerRecord>& ledgers)
 {
@@ -2109,6 +2182,13 @@ CacheDiskTier::Imp::evictPass(const std::map<std::string, LedgerRecord>& ledgers
             break;
         }
 
+        // Plain files take up to a quarter of the sample before the entries walk, so a build
+        // with many entries still ranks them; the rest is theirs if the entries leave room.
+        const std::vector<std::string> plainFiles = listPlainFiles(build);
+        const std::size_t plainFirst = plainFiles.empty() ? 0 : std::size_t(random() % plainFiles.size());
+        std::size_t plainNext = 0;
+        samplePlainFiles(plainFiles, plainFirst, &plainNext, std::min(CacheEviction::kSample, sample.size() + CacheEviction::kSample / 4), rank, now, &sample);
+
         const unsigned first = random() % kShards;
         for (unsigned i = 0; (i < kShards) && (sample.size() < CacheEviction::kSample); ++i) {
             if (stopping.load()) {
@@ -2150,6 +2230,8 @@ CacheDiskTier::Imp::evictPass(const std::map<std::string, LedgerRecord>& ledgers
             }
             walkedEverything = walkedEverything && (sample.size() < CacheEviction::kSample);
         }
+        samplePlainFiles(plainFiles, plainFirst, &plainNext, CacheEviction::kSample, rank, now, &sample);
+        walkedEverything = walkedEverything && (plainNext == plainFiles.size());
         if (deadBuild) {
             deadSampled += sample.size() - sampledBefore;
             if (walkedEverything && (sample.size() == sampledBefore)) {
@@ -2200,7 +2282,9 @@ CacheDiskTier::Imp::evictPass(const std::map<std::string, LedgerRecord>& ledgers
         if (::unlink(s.path.c_str()) == 0) {
             ledgerDelta.fetch_sub((std::int64_t)s.bytes);
         }
-        forgetBase(s.base);
+        if (!s.plainFile) {
+            forgetBase(s.base);
+        }
         remaining -= (double)s.bytes;
     }
 } // CacheDiskTier::Imp::evictPass
@@ -2295,6 +2379,7 @@ CacheDiskTier::open(const Config& config)
     imp.buildDir = config.root + '/' + config.buildId;
     imp.autoDir = imp.buildDir + "/auto";
     imp.pinsDir = imp.buildDir + "/pins";
+    imp.filesDir = imp.buildDir + "/files";
     imp.sessionsDir = config.root + "/sessions";
     imp.tmpDir = config.root + "/tmp/" + imp.session;
     imp.ledgerPath = imp.sessionsDir + '/' + imp.session;
@@ -2676,6 +2761,57 @@ CacheDiskTier::clearAuto()
         std::lock_guard<std::mutex> lock(imp.knownMutex);
         imp.known.clear();
     }
+
+    std::lock_guard<std::mutex> lock(imp.scanMutex);
+    if (moved) {
+        imp.clearedPaths.push_back(cleared);
+    }
+    imp.scanRequested = true;
+    imp.scanCond.notify_all();
+}
+
+std::string
+CacheDiskTier::filesDirectory(const std::string& section) const
+{
+    return _imp->filesDir + '/' + section;
+}
+
+namespace {
+
+bool
+isUnder(const std::string& path,
+        const std::string& dir)
+{
+    return (path.size() > dir.size() + 1) && (path.compare(0, dir.size(), dir) == 0) && (path[dir.size()] == '/');
+}
+
+} // namespace
+
+void
+CacheDiskTier::noteFileWritten(const std::string& path)
+{
+    struct stat st;
+
+    if (isUnder(path, _imp->filesDir) && (::stat(path.c_str(), &st) == 0)) {
+        _imp->ledgerDelta.fetch_add((std::int64_t)st.st_size);
+    }
+}
+
+void
+CacheDiskTier::noteFileUsed(const std::string& path)
+{
+    if (isUnder(path, _imp->filesDir)) {
+        // Atime is no measure of use on a relatime or noatime mount, so eviction reads the mtime.
+        (void)::utimensat(AT_FDCWD, path.c_str(), NULL, 0);
+    }
+}
+
+void
+CacheDiskTier::clearFiles()
+{
+    Imp& imp = *_imp;
+    const std::string cleared = imp.tmpDir + "/cleared-" + std::to_string(imp.clearCounter.fetch_add(1));
+    const bool moved = ::rename(imp.filesDir.c_str(), cleared.c_str()) == 0;
 
     std::lock_guard<std::mutex> lock(imp.scanMutex);
     if (moved) {

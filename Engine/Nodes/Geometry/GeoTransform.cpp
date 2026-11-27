@@ -42,6 +42,7 @@
 #include "Engine/ChoiceOption.h"
 #include "Engine/Geo/GeoGroupOps.h"
 #include "Engine/Geo/GeoTopology.h"
+#include "Engine/Geo/GeoVDB.h"
 #include "Engine/KnobTypes.h"
 
 NATRON_NAMESPACE_ENTER
@@ -499,13 +500,20 @@ GeoTransform::applyMatrix(GeoDetailBuilder& builder,
 
     const GeoDetail& detail = builder.detail();
     std::vector<std::pair<GeoOffset, GeoMatrix4>> packed;
+    std::vector<GeoOffset> volumes;
     for (GeoOffset prim : geoMaskedOffsets(sel.primitives)) {
-        if (geoPrimitiveIsPacked(detail.primitiveType(prim))) {
+        const GeoPrimitiveTypeEnum type = detail.primitiveType(prim);
+        if (geoPrimitiveIsPacked(type)) {
             packed.emplace_back(prim, geoMatrixMultiply(transform, geoPackedTransform(detail, prim)));
+        } else if (type == eGeoPrimitiveVDB) {
+            volumes.push_back(prim);
         }
     }
     for (const auto& [prim, m] : packed) {
         geoSetPackedTransform(builder, prim, m);
+    }
+    for (const GeoOffset prim : volumes) {
+        geoTransformVDB(builder, prim, transform);
     }
 
     return true;

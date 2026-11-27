@@ -1285,6 +1285,50 @@ TEST(CacheDiskTierPersistenceTest, ASessionReapedByMistakeRegistersAgainAndKeeps
     EXPECT_EQ(0U, session.tier->writeFailures());
 }
 
+TEST(CacheDiskTierPersistenceTest, PlainFilesShareTheBudgetGoLeastRecentlyUsedFirstAndClear)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    Session session(dir.path(), "CacheDiskTierPersistence_PlainFiles");
+    ASSERT_TRUE(session.tier != nullptr);
+
+    const std::size_t kBytes = 1024 * 1024;
+    const std::string section = session.tier->filesDirectory("vdb");
+    const std::string used = section + "/used.vdb";
+    const std::string stale = section + "/stale.vdb";
+    const std::string writing = section + "/.writing.vdb.partial-1-0";
+    ASSERT_TRUE(writeFile(used, kBytes));
+    ASSERT_TRUE(writeFile(stale, kBytes));
+    ASSERT_TRUE(writeFile(writing, 4096));
+    session.tier->noteFileWritten(used);
+    session.tier->noteFileWritten(stale);
+    ageByDays(used, 3);
+    ageByDays(stale, 2);
+    session.tier->noteFileUsed(used);
+
+    session.tier->maintainNow(true);
+    ASSERT_GE(session.tier->used(), 2 * kBytes);
+
+    session.tier->setSizeBytes((std::uint64_t)((double)kBytes * 1.5 / NATRON_CACHE_LIMIT_PERCENT));
+    session.tier->maintainNow(true);
+    EXPECT_FALSE(exists(stale));
+    EXPECT_TRUE(exists(used));
+
+    session.tier->setSizeBytes(1);
+    session.tier->maintainNow(true);
+    EXPECT_FALSE(exists(used));
+    EXPECT_TRUE(exists(writing));
+
+    session.tier->setSizeBytes(256ULL * 1024 * 1024);
+    ASSERT_TRUE(writeFile(used, kBytes));
+    session.tier->noteFileWritten(used);
+    session.tier->clearFiles();
+    session.tier->maintainNow(true);
+    EXPECT_FALSE(exists(used));
+    EXPECT_FALSE(exists(writing));
+    EXPECT_EQ(0U, session.tier->used());
+}
+
 TEST(CacheDiskTierPersistenceTest, ASaltedEntryIsNeverPublishedOrLookedFor)
 {
     QTemporaryDir dir;

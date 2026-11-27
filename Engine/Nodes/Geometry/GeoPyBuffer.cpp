@@ -1187,6 +1187,8 @@ primitiveTypeName(GeoPrimitiveTypeEnum type)
         return "packed_geometry";
     case eGeoPrimitivePackedUSD:
         return "packed_usd";
+    case eGeoPrimitiveVDB:
+        return "vdb";
     }
 
     return "unknown";

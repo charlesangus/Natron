@@ -93,6 +93,8 @@ set(Tests_SOURCES
     GeoSubdivide_Test.cpp
     GeoTransform_Test.cpp
     GeoUVProject_Test.cpp
+    GeoVDB_Test.cpp
+    GeoVDBRead_Test.cpp
     GeoWrangleParams_Test.cpp
     GeoWrangle_Test.cpp
     GLScheduler_Test.cpp

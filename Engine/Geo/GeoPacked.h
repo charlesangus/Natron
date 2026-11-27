@@ -104,7 +104,7 @@ GeoOffset geoAppendPackedUSD(GeoDetailBuilder& builder,
                              const GeoMatrix4& worldTransform,
                              const GeoBounds& localBounds);
 
-/** @brief Bounds of the live points and of the nested packed primitives; zero when empty. */
+/** @brief Bounds of the live points, the nested packed primitives and the VDB primitives; zero when empty. */
 GeoBounds geoDetailBounds(const GeoDetail& detail);
 
 GeoMatrix4 geoPackedTransform(const GeoDetail& detail, GeoOffset primitive);

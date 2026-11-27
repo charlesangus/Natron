@@ -718,12 +718,27 @@ GeoToUSD::prepareSceneSources(const EvaluateSceneArgs& args,
     const NodePtr node = getNode();
     NodeSettings settings;
     std::string error;
-    if (!node || node->isNodeDisabled() || !_imp->readSettings(this, &settings, &error) || settings.copy) {
+    if (!node || node->isNodeDisabled() || !_imp->readSettings(this, &settings, &error)) {
         return eRenderRoIRetCodeOk;
     }
 
-    Gathered gathered;
     RenderCancellation cancel(this);
+    const GeoVDBAbortFunc aborted = [&cancel]() { return cancel.check(); };
+    // Every evaluation, a memoized one too, marks its volume files used and puts back those the
+    // disk cache dropped, so the layer never names a file that is gone.
+    if (settings.copy) {
+        const EffectInstancePtr geometry = getInput(kGeoToUSDInputGeometry);
+        GeoDetailConstPtr detail;
+        std::string ignored;
+        if (geometry && geometry->producesGeometryData() && (geometry->evaluateGeometry(EvaluateGeometryArgs(args.time, args.view), &detail, &ignored) == eRenderRoIRetCodeOk) && detail
+            && selectGeometry(detail, settings.group, settings.groupType, &detail, &ignored) && !geoUsdEnsureVolumeFiles(*detail, settings.options, aborted)) {
+            return eRenderRoIRetCodeAborted;
+        }
+
+        return cancel.check() ? eRenderRoIRetCodeAborted : eRenderRoIRetCodeOk;
+    }
+
+    Gathered gathered;
     const RenderRoIRetCode code = _imp->gather(this, args.time, args.view, nullptr, getSceneInputContext_public(kGeoToUSDInputScene, args.context, args.time, args.view), settings, cancel, &gathered, &error);
     if (code == eRenderRoIRetCodeAborted) {
         return code;
@@ -731,6 +746,9 @@ GeoToUSD::prepareSceneSources(const EvaluateSceneArgs& args,
     // renderScene() reports what failed here, and copies a layer this could not refresh.
     if ((code != eRenderRoIRetCodeOk) || isEmptyDetail(gathered.detail)) {
         return eRenderRoIRetCodeOk;
+    }
+    if (!geoUsdEnsureVolumeFiles(*gathered.detail, settings.options, aborted)) {
+        return eRenderRoIRetCodeAborted;
     }
     const bool timeKeyed = isFrameVaryingOrAnimated_Recursive();
     PXR_NS::SdfLayerRefPtr layer;
@@ -910,6 +928,14 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
             return eStatusFailed;
         }
     }
+    {
+        const GeoVDBAbortFunc aborted = [&cancel]() { return cancel.check(); };
+        for (const Gathered& g : gathered) {
+            if (!isEmptyDetail(g.detail) && !geoUsdEnsureVolumeFiles(*g.detail, settings.options, aborted)) {
+                return eStatusFailed;
+            }
+        }
+    }
     for (std::size_t i = 0; i < frames.size(); ++i) {
         for (const std::string& path : gathered[i].missing) {
             if (std::find(missing.begin(), missing.end(), path) == missing.end()) {
@@ -947,10 +973,22 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
 
     std::vector<std::unique_ptr<const GeoUsdConvert>> converts;
     std::vector<std::string> sheared;
+    std::vector<std::string> volumeNotes;
+    std::vector<std::string> volumeFailures;
     const auto noteSheared = [&](const GeoUsdConvert& convert) {
         for (const PXR_NS::SdfPath& path : convert.shearedInstances()) {
             if (std::find(sheared.begin(), sheared.end(), path.GetString()) == sheared.end()) {
                 sheared.push_back(path.GetString());
+            }
+        }
+        for (const std::string& note : convert.volumeNotes()) {
+            if (std::find(volumeNotes.begin(), volumeNotes.end(), note) == volumeNotes.end()) {
+                volumeNotes.push_back(note);
+            }
+        }
+        for (const std::string& failure : convert.volumeWriteFailures()) {
+            if (std::find(volumeFailures.begin(), volumeFailures.end(), failure) == volumeFailures.end()) {
+                volumeFailures.push_back(failure);
             }
         }
     };
@@ -962,6 +1000,7 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
             }
             GeoUsdConvertOptions options = settings.options;
             options.inputScene = gathered[i].inputScene;
+            options.aborted = [&cancel]() { return cancel.check(); };
             converts[i].reset(new GeoUsdConvert(gathered[i].detail, options));
         });
         if (cancel.check()) {
@@ -1023,7 +1062,7 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
         return eStatusFailed;
     }
 
-    if (missing.empty() && collisions.empty() && sheared.empty()) {
+    if (missing.empty() && collisions.empty() && sheared.empty() && volumeNotes.empty() && volumeFailures.empty()) {
         clearPersistentMessage(false);
 
         return eStatusOK;
@@ -1056,7 +1095,16 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
             message += QString::fromUtf8("\n  ") + QString::fromStdString(path);
         }
     }
-    setPersistentMessage(eMessageTypeWarning, message.toStdString());
+    for (const std::vector<std::string>* notes : { &volumeFailures, &volumeNotes }) {
+        for (const std::string& note : *notes) {
+            if (!message.isEmpty()) {
+                message += QString::fromUtf8("\n");
+            }
+            message += QString::fromStdString(note);
+        }
+    }
+    const bool onlyVolumeNotes = missing.empty() && collisions.empty() && sheared.empty() && volumeFailures.empty();
+    setPersistentMessage(onlyVolumeNotes ? eMessageTypeInfo : eMessageTypeWarning, message.toStdString());
 
     return eStatusOK;
 } // GeoToUSD::renderScene

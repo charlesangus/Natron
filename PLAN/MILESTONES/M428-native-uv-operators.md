@@ -47,7 +47,7 @@ Algorithms:
 **Assumption (unconfirmed):** Blender's ABF++ separates cleanly from BMesh.
 
 ## Phase 428.1: UV Project
-- [ ] M428.P1.T1 — GeoUVProject: SOP projections and transform
+- [x] M428.P1.T1 — GeoUVProject: SOP projections and transform
   - files: `Engine/Nodes/Geometry/GeoUVProject.{h,cpp}`, `Tests/GeoUVProject_Test.cpp`
   - approach:
     - Replace Planar/axis/fit/invert with the SOP set and transform knobs. Labels match script names; no backward compatibility.
@@ -57,7 +57,7 @@ Algorithms:
     - A grid, cylinder, sphere and torus give the closed-form uv for each projection.
     - Transform and Rotate Order change the result as expected.
   - size: L
-- [ ] M428.P1.T2 — GeoUVProject: Initialize, ranges, Angle, seam and pole fixes
+- [x] M428.P1.T2 — GeoUVProject: Initialize, ranges, Angle, seam and pole fixes
   - files: `Engine/Nodes/Geometry/GeoUVProject.{h,cpp}`, `Tests/GeoUVProject_Test.cpp`
   - approach:
     - Initialize fits the TRS to the group bounds by Method (undoable).
@@ -71,7 +71,7 @@ Algorithms:
   - size: M
 
 ## Phase 428.2: Island topology and packing
-- [ ] M428.P2.T1 — UV island and seam topology helper
+- [x] M428.P2.T1 — UV island and seam topology helper
   - files: `Engine/Geo/GeoUVIslands.{h,cpp}` (new), `Tests/GeoUVIslands_Test.cpp`, `Tests/CMakeLists.txt`
   - approach:
     - Islands come from uv connectivity (with tolerance), from seam or separator edge groups, or from an island attribute.
@@ -80,7 +80,7 @@ Algorithms:
     - A cube with seams gives the expected islands.
     - uv-split and seam-split agree.
   - size: M
-- [ ] M428.P2.T2 — Raster island packer
+- [x] M428.P2.T2 — Raster island packer
   - files: `Engine/Geo/GeoUVPack.{h,cpp}` (new), `Tests/GeoUVPack_Test.cpp`
   - approach:
     - Rasterize islands at Search Resolution, with padding in pixels.

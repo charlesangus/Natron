@@ -239,20 +239,16 @@ public:
         _next = 0;
     }
 
-    // The cache of the next list, made empty on first use.
-    OverlayDrawListCache& next()
+    OverlayDrawListCache& next(std::size_t* index = nullptr)
     {
         if (_next == _caches.size()) {
             _caches.emplace_back(new OverlayDrawListCache());
         }
+        if (index) {
+            *index = _next;
+        }
 
         return *_caches[_next++];
-    }
-
-    // How many lists next() has walked since restart().
-    std::size_t walked() const
-    {
-        return _next;
     }
 
     void trim()

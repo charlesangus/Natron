@@ -3191,17 +3191,12 @@ addCurveVertices(OverlayDrawListPen& pen,
     pen.end();
 }
 
-bool
-isItemSelected(const SelectedItems& selectedItems,
-               const RotoDrawableItem* item)
+const Bezier*
+bezierOf(const SelectedCP& points)
 {
-    for (SelectedItems::const_iterator it = selectedItems.begin(); it != selectedItems.end(); ++it) {
-        if (it->get() == item) {
-            return true;
-        }
-    }
+    const BezierCPPtr& point = points.first ? points.first : points.second;
 
-    return false;
+    return point ? point->getBezier().get() : nullptr;
 }
 
 void
@@ -3214,9 +3209,31 @@ appendPointer(ContentHasher& hasher,
 } // anonymous namespace
 
 void
+RotoCurveInteract::getCurvesOverlaySelection(CurvesOverlaySelection* selection) const
+{
+    for (SelectedItems::const_iterator it = selectedItems.begin(); it != selectedItems.end(); ++it) {
+        selection->items.insert(it->get());
+    }
+    for (SelectedCPs::const_iterator it = selectedCps.begin(); it != selectedCps.end(); ++it) {
+        const Bezier* first = it->first ? it->first->getBezier().get() : nullptr;
+        const Bezier* second = it->second ? it->second->getBezier().get() : nullptr;
+        if (first) {
+            selection->cps[first].push_back(&*it);
+        }
+        if (second && (second != first)) {
+            selection->cps[second].push_back(&*it);
+        }
+    }
+    selection->hoveredFeatherBar = bezierOf(featherBarBeingHovered);
+    selection->draggedFeatherBar = bezierOf(featherBarBeingDragged);
+    selection->draggedTangent = tangentBeingDragged ? tangentBeingDragged->getBezier().get() : nullptr;
+}
+
+void
 RotoCurveInteract::appendCurveItemSignature(double time,
                                             bool featherVisible,
                                             const RotoDrawableItemPtr& item,
+                                            const CurvesOverlaySelection& selection,
                                             const std::pair<double, double>& pixelScale,
                                             std::vector<BezierOverlayPolygonsConstPtr>* polygons,
                                             ContentHasher* hasherOut) const
@@ -3236,7 +3253,7 @@ RotoCurveInteract::appendCurveItemSignature(double time,
     for (int c = 0; c < 4; ++c) {
         hasher.appendDouble(curveColor[c]);
     }
-    const bool selected = isItemSelected(selectedItems, item.get());
+    const bool selected = selection.isSelected(item.get());
     hasher.appendBool(selected);
 
     Bezier* isBezier = dynamic_cast<Bezier*>(item.get());
@@ -3271,16 +3288,32 @@ RotoCurveInteract::appendCurveItemSignature(double time,
             // The feather hint lines are as long on screen as the canonical direction they follow.
             hasher.appendI64(std::llround(1e6 * pixelScale.first / pixelScale.second));
             hasher.appendI64((int)selectedTool);
-            hasher.appendI64((int)state);
-            appendPointer(hasher, tangentBeingDragged.get());
-            appendPointer(hasher, featherBarBeingHovered.first.get());
-            appendPointer(hasher, featherBarBeingHovered.second.get());
-            appendPointer(hasher, featherBarBeingDragged.first.get());
-            appendPointer(hasher, featherBarBeingDragged.second.get());
-            hasher.appendU64(selectedCps.size());
-            for (SelectedCPs::const_iterator it = selectedCps.begin(); it != selectedCps.end(); ++it) {
-                appendPointer(hasher, it->first.get());
-                appendPointer(hasher, it->second.get());
+            const std::vector<const SelectedCP*>* ownCps = selection.cpsOf(isBezier);
+            hasher.appendU64(ownCps ? ownCps->size() : 0);
+            if (ownCps) {
+                for (std::vector<const SelectedCP*>::const_iterator it = ownCps->begin(); it != ownCps->end(); ++it) {
+                    appendPointer(hasher, (*it)->first.get());
+                    appendPointer(hasher, (*it)->second.get());
+                }
+            }
+            hasher.appendBool(ownCps && isDraggingOnePoint());
+            const bool tangentDragged = (selection.draggedTangent == isBezier) && ((state == eEventStateDraggingLeftTangent) || (state == eEventStateDraggingRightTangent));
+            hasher.appendBool(tangentDragged);
+            if (tangentDragged) {
+                hasher.appendI64((int)state);
+                appendPointer(hasher, tangentBeingDragged.get());
+            }
+            const bool hovered = (selection.hoveredFeatherBar == isBezier);
+            hasher.appendBool(hovered);
+            if (hovered) {
+                appendPointer(hasher, featherBarBeingHovered.first.get());
+                appendPointer(hasher, featherBarBeingHovered.second.get());
+            }
+            const bool featherBarDragged = (state == eEventStateDraggingFeatherBar) && (selection.draggedFeatherBar == isBezier);
+            hasher.appendBool(featherBarDragged);
+            if (featherBarDragged) {
+                appendPointer(hasher, featherBarBeingDragged.first.get());
+                appendPointer(hasher, featherBarBeingDragged.second.get());
             }
             const std::list<BezierCPPtr>& cps = isBezier->getControlPoints();
             hasher.appendU64(cps.size());
@@ -3300,6 +3333,7 @@ void
 RotoCurveInteract::buildCurveItemOverlay(double time,
                                          bool featherVisible,
                                          const RotoDrawableItemPtr& item,
+                                         const CurvesOverlaySelection& selection,
                                          const std::pair<double, double>& pixelScale,
                                          OverlayDrawListPen& pen)
 {
@@ -3314,7 +3348,7 @@ RotoCurveInteract::buildCurveItemOverlay(double time,
         if (selectedTool != eRotoToolSelectAll) {
             return;
         }
-        if (!isItemSelected(selectedItems, isStroke)) {
+        if (!selection.isSelected(isStroke)) {
             return;
         }
 
@@ -3348,7 +3382,7 @@ RotoCurveInteract::buildCurveItemOverlay(double time,
         const bool isLoop = !isBezier->isOpenBezier() && isBezier->isCurveFinished();
 
         /// draw the control points if the bezier is selected
-        const bool selected = isItemSelected(selectedItems, isBezier);
+        const bool selected = selection.isSelected(isBezier);
 
         BezierOverlayPolygonsConstPtr polygons = isBezier->getOverlayPolygons(time, featherVisible);
 
@@ -3401,7 +3435,10 @@ RotoCurveInteract::buildCurveItemOverlay(double time,
             if (nextCp != cps.end()) {
                 ++nextCp;
             }
-            const bool draggingOnePoint = (selectedCps.size() == 1) && ((state == eEventStateDraggingSelectedControlPoints) || (state == eEventStateDraggingControlPoint));
+            const bool draggingOnePoint = isDraggingOnePoint();
+            static const std::vector<const SelectedCP*> noCps;
+            const std::vector<const SelectedCP*>* ownCps = selection.cpsOf(isBezier);
+            const std::vector<const SelectedCP*>& shapeCps = ownCps ? *ownCps : noCps;
             for (std::list<BezierCPPtr>::const_iterator it2 = cps.begin(); it2 != cps.end();
                  ++it2) {
                 if (nextCp == cps.end()) {
@@ -3447,9 +3484,8 @@ RotoCurveInteract::buildCurveItemOverlay(double time,
 
                 pen.setSmoothPoints(true);
                 pen.pointSize(cpWidth);
-                for (SelectedCPs::const_iterator cpIt = selectedCps.begin();
-                     cpIt != selectedCps.end();
-                     ++cpIt) {
+                for (std::vector<const SelectedCP*>::const_iterator itSel = shapeCps.begin(); itSel != shapeCps.end(); ++itSel) {
+                    const SelectedCP* cpIt = *itSel;
                     /// if the control point is selected, draw its tangent handles
                     if (cpIt->first == *it2) {
                         buildSelectedCp(pen, time, cpIt->first, x, y, transform);
@@ -3688,6 +3724,7 @@ RotoCurveInteract::appendToolsOverlaySignature(const std::pair<double, double>& 
 void
 RotoCurveInteract::drawCurvesOverlayRun(double time,
                                         bool featherVisible,
+                                        const CurvesOverlaySelection& selection,
                                         const std::pair<double, double>& pixelScale,
                                         std::list<RotoDrawableItemPtr>::const_iterator first,
                                         std::list<RotoDrawableItemPtr>::const_iterator last,
@@ -3700,11 +3737,11 @@ RotoCurveInteract::drawCurvesOverlayRun(double time,
     hasher.appendDouble(time);
     hasher.appendBool(featherVisible);
     for (std::list<RotoDrawableItemPtr>::const_iterator it = first; it != last; ++it) {
-        appendCurveItemSignature(time, featherVisible, *it, pixelScale, &polygons, &hasher);
+        appendCurveItemSignature(time, featherVisible, *it, selection, pixelScale, &polygons, &hasher);
     }
 
-    const std::size_t index = _curvesOverlay.walked();
-    OverlayDrawListCache& cache = _curvesOverlay.next();
+    std::size_t index;
+    OverlayDrawListCache& cache = _curvesOverlay.next(&index);
     if (index == _curvesOverlayHolds.size()) {
         _curvesOverlayHolds.push_back(CurvesOverlayRunHold());
     }
@@ -3723,7 +3760,7 @@ RotoCurveInteract::drawCurvesOverlayRun(double time,
         hold.items.clear();
         for (std::list<RotoDrawableItemPtr>::const_iterator it = first; it != last; ++it) {
             hold.items.push_back(*it);
-            buildCurveItemOverlay(time, featherVisible, *it, pixelScale, pen);
+            buildCurveItemOverlay(time, featherVisible, *it, selection, pixelScale, pen);
         }
         hold.polygons.swap(polygons);
     }
@@ -3745,17 +3782,19 @@ RotoCurveInteract::drawCurvesOverlay(double time)
     const std::list<RotoDrawableItemPtr> drawables = getCurveContext()->getCurvesByRenderOrder();
 
     const OverlayDrawState drawState = _host->getOverlayDrawState();
+    CurvesOverlaySelection selection;
+    getCurvesOverlaySelection(&selection);
     _curvesOverlay.restart();
     std::list<RotoDrawableItemPtr>::const_iterator first = drawables.begin();
     while (first != drawables.end()) {
         std::list<RotoDrawableItemPtr>::const_iterator last = first;
         ++last;
-        if (!isItemSelected(selectedItems, first->get())) {
-            while ((last != drawables.end()) && !isItemSelected(selectedItems, last->get())) {
+        if (!selection.isSelected(first->get())) {
+            while ((last != drawables.end()) && !selection.isSelected(last->get())) {
                 ++last;
             }
         }
-        drawCurvesOverlayRun(time, featherVisible, pixelScale, first, last, overlay, drawState);
+        drawCurvesOverlayRun(time, featherVisible, selection, pixelScale, first, last, overlay, drawState);
         first = last;
     }
     _curvesOverlay.trim();

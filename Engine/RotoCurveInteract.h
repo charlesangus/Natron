@@ -30,6 +30,8 @@
 
 #include <list>
 #include <memory>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -777,10 +779,41 @@ public:
                          double x, double y,
                          const Transform::Matrix3x3& transform);
 
+    // The selection split by the shape it shows on, so that a shape's list hashes only the
+    // interact state drawn on it: with every shape selected, a hover or a point click on one shape
+    // then rebuilds that shape's list alone.
+    struct CurvesOverlaySelection {
+        std::unordered_set<const RotoDrawableItem*> items;
+        std::unordered_map<const Bezier*, std::vector<const SelectedCP*>> cps;
+        const Bezier* hoveredFeatherBar = nullptr;
+        const Bezier* draggedFeatherBar = nullptr;
+        const Bezier* draggedTangent = nullptr;
+
+        bool isSelected(const RotoDrawableItem* item) const
+        {
+            return items.find(item) != items.end();
+        }
+
+        const std::vector<const SelectedCP*>* cpsOf(const Bezier* bezier) const
+        {
+            std::unordered_map<const Bezier*, std::vector<const SelectedCP*>>::const_iterator found = cps.find(bezier);
+
+            return (found == cps.end()) ? nullptr : &found->second;
+        }
+    };
+
+    void getCurvesOverlaySelection(CurvesOverlaySelection* selection) const;
+
+    bool isDraggingOnePoint() const
+    {
+        return (selectedCps.size() == 1) && ((state == eEventStateDraggingSelectedControlPoints) || (state == eEventStateDraggingControlPoint));
+    }
+
     // Everything buildCurveItemOverlay() draws item from, appending the polygons it reads.
     void appendCurveItemSignature(double time,
                                   bool featherVisible,
                                   const RotoDrawableItemPtr& item,
+                                  const CurvesOverlaySelection& selection,
                                   const std::pair<double, double>& pixelScale,
                                   std::vector<BezierOverlayPolygonsConstPtr>* polygons,
                                   ContentHasher* hasher) const;
@@ -788,6 +821,7 @@ public:
     void buildCurveItemOverlay(double time,
                                bool featherVisible,
                                const RotoDrawableItemPtr& item,
+                               const CurvesOverlaySelection& selection,
                                const std::pair<double, double>& pixelScale,
                                OverlayDrawListPen& pen);
 
@@ -795,6 +829,7 @@ public:
     // their signature changed.
     void drawCurvesOverlayRun(double time,
                               bool featherVisible,
+                              const CurvesOverlaySelection& selection,
                               const std::pair<double, double>& pixelScale,
                               std::list<RotoDrawableItemPtr>::const_iterator first,
                               std::list<RotoDrawableItemPtr>::const_iterator last,

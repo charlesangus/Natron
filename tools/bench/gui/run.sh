@@ -12,10 +12,13 @@
 #                            create_by_shortcut, tab_menu_open, tab_menu_create and create_then_key (20 reps
 #                            each; --reps does not apply); --ops, --sizes and --topologies still override it
 #                            overlay is the M434 overlay_draw gate: roto driver (implied), only overlay_draw,
-#                            3 reps, a 30 minute cap on the run and 300 s per op, at 1, 30 and 100 shapes
+#                            3 reps, a 30 minute cap on the run and 300 s per op, at 1, 30 and 100 shapes,
+#                            and overlay_draw_all (every shape and point selected) at 30 shapes
 #   --overlay-shapes N[,N...]  roto driver: the overlay_draw shape counts (ROTO_BENCH_OVERLAY_SHAPES,
 #                            default 1,30,100); larger counts take far longer to build, so raise
 #                            GUI_BENCH_TIMEOUT and GUI_BENCH_OP_TIMEOUT_S with them
+#   --overlay-all-shapes N[,N...]  roto driver: the overlay_draw_all shape counts
+#                            (ROTO_BENCH_OVERLAY_ALL_SHAPES, default 30)
 #   --stages                 write NATRON_NODE_CREATION_STAGE_LOG beside the result, so the node-creation
 #                            ops also record a per-stage split of the creation and the tab menu
 #   --sizes N[,N...]         node counts (overrides the preset)
@@ -105,6 +108,7 @@ while [ $# -gt 0 ]; do
         --preset) preset=${2:?--preset needs gate, full, create or overlay}; shift ;;
         --stages) stages=1 ;;
         --overlay-shapes) export ROTO_BENCH_OVERLAY_SHAPES=${2:?--overlay-shapes needs a list}; shift ;;
+        --overlay-all-shapes) export ROTO_BENCH_OVERLAY_ALL_SHAPES=${2:?--overlay-all-shapes needs a list}; shift ;;
         --sizes) sizes=${2:?--sizes needs a list}; shift ;;
         --topologies) topologies=${2:?--topologies needs a list}; shift ;;
         --reps) reps=${2:?--reps needs a count}; shift ;;
@@ -136,7 +140,7 @@ case $preset in
     full) preset_sizes=300,1000,3000 preset_topologies=chain,wide,comp,mixed preset_restarts=unlimited preset_ops="" ;;
     create) preset_sizes=0,300,3000 preset_topologies=mixed preset_restarts=0
             preset_ops=create_by_shortcut,tab_menu_open,tab_menu_create,create_then_key ;;
-    overlay) preset_sizes=300 preset_topologies=comp preset_restarts=0 preset_ops=overlay_draw preset_reps=3
+    overlay) preset_sizes=300 preset_topologies=comp preset_restarts=0 preset_ops=overlay_draw,overlay_draw_all preset_reps=3
              preset_timeout=1800 preset_op_timeout=300
              [ "$driver" = roto ] || { echo "--preset overlay runs the roto driver" >&2; exit 2; } ;;
     *) echo "unknown preset: $preset (gate, full, create or overlay)" >&2; exit 2 ;;

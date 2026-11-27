@@ -25,7 +25,9 @@
 
 #include "Global/Macros.h"
 
+#include <list>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -45,6 +47,8 @@
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RotoContext.h"
+#include "Engine/RotoItem.h"
+#include "Engine/RotoLayer.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoPaintInteract.h"
 #include "Engine/ViewIdx.h"
@@ -125,11 +129,11 @@ protected:
         ASSERT_NE(roto, nullptr);
         _ui = roto->getInteract();
         ASSERT_NE(_ui, nullptr);
-        RotoContextPtr context = _node->getRotoContext();
-        ASSERT_NE(context, nullptr);
-        _time = context->getTimelineCurrentTime();
+        _context = _node->getRotoContext();
+        ASSERT_NE(_context, nullptr);
+        _time = _context->getTimelineCurrentTime();
         for (int i = 0; i < 3; ++i) {
-            BezierPtr shape = context->makeSquare(10. + 100. * i, 20., 40., _time);
+            BezierPtr shape = _context->makeSquare(10. + 100. * i, 20., 40., _time);
             ASSERT_NE(shape, nullptr);
             _shapes.push_back(shape);
         }
@@ -145,6 +149,7 @@ protected:
         }
         _ui.reset();
         _shapes.clear();
+        _context.reset();
         _effect.reset();
         _node.reset();
         getApp()->getProject()->reset(false, true);
@@ -162,8 +167,61 @@ protected:
         return _ui->curvesOverlayRebuildCount() - before;
     }
 
+    // The index in _shapes of the shape that list starts with, -1 if none.
+    int shapeAt(const OverlayDrawList* list) const
+    {
+        if (list->points().empty()) {
+            return -1;
+        }
+        const double x = list->points().front().x;
+        for (std::size_t i = 0; i < _shapes.size(); ++i) {
+            if (!_shapes[i]) {
+                continue;
+            }
+            const double left = 10. + 100. * i;
+            if ((x >= left - 1.) && (x <= left + 41.)) {
+                return (int)i;
+            }
+        }
+
+        return -1;
+    }
+
+    // The index in _shapes of the item drawn at position in render order.
+    int shapeInRenderOrder(std::size_t position) const
+    {
+        const std::list<RotoDrawableItemPtr> order = _context->getCurvesByRenderOrder();
+        std::list<RotoDrawableItemPtr>::const_iterator it = order.begin();
+        for (std::size_t i = 0; (i < position) && (it != order.end()); ++i) {
+            ++it;
+        }
+        if (it == order.end()) {
+            return -1;
+        }
+        for (std::size_t i = 0; i < _shapes.size(); ++i) {
+            if (_shapes[i] && (_shapes[i].get() == it->get())) {
+                return (int)i;
+            }
+        }
+
+        return -1;
+    }
+
+    static std::size_t pointPrimitiveCount(const OverlayDrawList* list)
+    {
+        std::size_t count = 0;
+        for (std::size_t i = 0; i < list->primitives().size(); ++i) {
+            if (list->primitives()[i].type == OverlayDrawList::ePrimitiveTypePoints) {
+                ++count;
+            }
+        }
+
+        return count;
+    }
+
     NodePtr _node;
     EffectInstancePtr _effect;
+    RotoContextPtr _context;
     RotoPaintInteractPtr _ui;
     std::vector<BezierPtr> _shapes;
     RecordingViewport _viewport;
@@ -230,6 +288,147 @@ TEST_F(RotoCurvesOverlayCacheTest, MovingAnUnselectedShapeRebuildsOnlyItsRun)
     redraw();
     _shapes[2]->movePointByIndex(0, _time, 2., 1.);
     EXPECT_EQ(1u, redraw());
+}
+
+TEST_F(RotoCurvesOverlayCacheTest, ListsFollowRenderOrderWithTheSelectedShapeBetweenItsNeighbours)
+{
+    redraw();
+    ASSERT_EQ(3u, _viewport.drawn.size());
+    EXPECT_EQ(1, shapeInRenderOrder(1));
+    for (std::size_t i = 0; i < 3; ++i) {
+        EXPECT_EQ(shapeInRenderOrder(i), shapeAt(_viewport.drawn[i])) << i;
+    }
+    EXPECT_EQ(0u, pointPrimitiveCount(_viewport.drawn[0]));
+    EXPECT_NE(0u, pointPrimitiveCount(_viewport.drawn[1]));
+    EXPECT_EQ(0u, pointPrimitiveCount(_viewport.drawn[2]));
+}
+
+TEST_F(RotoCurvesOverlayCacheTest, DeletingTheLastShapeDropsTheTrailingList)
+{
+    redraw();
+    const std::vector<const OverlayDrawList*> lists = _viewport.drawn;
+    ASSERT_EQ(3u, lists.size());
+    const unsigned long long before[2] = { lists[0]->buildId(), lists[1]->buildId() };
+
+    const int last = shapeInRenderOrder(2);
+    ASSERT_NE(-1, last);
+    _context->removeItem(_shapes[last]);
+    _shapes[last].reset();
+
+    EXPECT_EQ(0u, redraw());
+    ASSERT_EQ(2u, _viewport.drawn.size());
+    EXPECT_EQ(lists[0], _viewport.drawn[0]);
+    EXPECT_EQ(lists[1], _viewport.drawn[1]);
+    EXPECT_EQ(before[0], lists[0]->buildId());
+    EXPECT_EQ(before[1], lists[1]->buildId());
+}
+
+TEST_F(RotoCurvesOverlayCacheTest, DeletingTheFirstShapeRebuildsTheListsThatShifted)
+{
+    redraw();
+    const int first = shapeInRenderOrder(0);
+    ASSERT_NE(-1, first);
+    _context->removeItem(_shapes[first]);
+    _shapes[first].reset();
+
+    EXPECT_EQ(2u, redraw());
+    ASSERT_EQ(2u, _viewport.drawn.size());
+    EXPECT_EQ(1, shapeAt(_viewport.drawn[0]));
+    EXPECT_NE(0u, pointPrimitiveCount(_viewport.drawn[0]));
+    EXPECT_EQ(shapeInRenderOrder(1), shapeAt(_viewport.drawn[1]));
+    EXPECT_EQ(0u, pointPrimitiveCount(_viewport.drawn[1]));
+}
+
+TEST_F(RotoCurvesOverlayCacheTest, SelectingAnotherShapeRepartitionsTheLists)
+{
+    redraw();
+    const int first = shapeInRenderOrder(0);
+    ASSERT_NE(-1, first);
+    _ui->selectedItems.clear();
+    _ui->selectedItems.push_back(_shapes[first]);
+
+    EXPECT_EQ(2u, redraw());
+    ASSERT_EQ(2u, _viewport.drawn.size());
+    EXPECT_EQ(first, shapeAt(_viewport.drawn[0]));
+    EXPECT_NE(0u, pointPrimitiveCount(_viewport.drawn[0]));
+    EXPECT_EQ(shapeInRenderOrder(1), shapeAt(_viewport.drawn[1]));
+    EXPECT_EQ(0u, pointPrimitiveCount(_viewport.drawn[1]));
+}
+
+TEST_F(RotoCurvesOverlayCacheTest, LockingTheSelectedShapeRebuildsItWithoutControlPoints)
+{
+    redraw();
+    ASSERT_EQ(3u, _viewport.drawn.size());
+    const OverlayDrawList* selectedList = _viewport.drawn[1];
+    ASSERT_NE(0u, pointPrimitiveCount(selectedList));
+
+    _shapes[1]->setLocked(true, false, RotoItem::eSelectionReasonOther);
+    EXPECT_EQ(1u, redraw());
+    ASSERT_EQ(3u, _viewport.drawn.size());
+    EXPECT_EQ(selectedList, _viewport.drawn[1]);
+    EXPECT_EQ(0u, pointPrimitiveCount(selectedList));
+}
+
+TEST_F(RotoCurvesOverlayCacheTest, HidingTheLastShapeDropsItsListAndShowingItRebuildsOnlyThat)
+{
+    redraw();
+    const std::vector<const OverlayDrawList*> lists = _viewport.drawn;
+    ASSERT_EQ(3u, lists.size());
+
+    const int last = shapeInRenderOrder(2);
+    ASSERT_NE(-1, last);
+    _shapes[last]->setGloballyActivated(false, true);
+    EXPECT_EQ(0u, redraw());
+    ASSERT_EQ(2u, _viewport.drawn.size());
+    EXPECT_EQ(lists[0], _viewport.drawn[0]);
+    EXPECT_EQ(lists[1], _viewport.drawn[1]);
+
+    _shapes[last]->setGloballyActivated(true, true);
+    EXPECT_EQ(1u, redraw());
+    ASSERT_EQ(3u, _viewport.drawn.size());
+    EXPECT_EQ(lists[0], _viewport.drawn[0]);
+    EXPECT_EQ(lists[1], _viewport.drawn[1]);
+    EXPECT_EQ(last, shapeAt(_viewport.drawn[2]));
+}
+
+TEST_F(RotoCurvesOverlayCacheTest, MovingTheSelectedShapeToAnEndOfTheRenderOrderMergesTheOthers)
+{
+    redraw();
+    RotoLayerPtr layer = _shapes[1]->getParentLayer();
+    ASSERT_NE(layer, nullptr);
+    layer->insertItem(_shapes[1], 0);
+    const int position = (shapeInRenderOrder(0) == 1) ? 0 : ((shapeInRenderOrder(2) == 1) ? 2 : -1);
+    ASSERT_NE(-1, position);
+    const std::size_t selectedList = (position == 0) ? 0 : 1;
+
+    redraw();
+    ASSERT_EQ(2u, _viewport.drawn.size());
+    EXPECT_EQ(1, shapeAt(_viewport.drawn[selectedList]));
+    EXPECT_NE(0u, pointPrimitiveCount(_viewport.drawn[selectedList]));
+    EXPECT_EQ(0u, pointPrimitiveCount(_viewport.drawn[1 - selectedList]));
+    EXPECT_EQ(shapeInRenderOrder(position == 0 ? 1 : 0), shapeAt(_viewport.drawn[1 - selectedList]));
+}
+
+TEST_F(RotoCurvesOverlayCacheTest, WithEveryShapeSelectedAHoverOrAPointClickRebuildsOnlyThatShape)
+{
+    _ui->selectedItems.clear();
+    for (std::size_t i = 0; i < _shapes.size(); ++i) {
+        _ui->selectedItems.push_back(_shapes[i]);
+    }
+    EXPECT_EQ(3u, redraw());
+    ASSERT_EQ(3u, _viewport.drawn.size());
+
+    _ui->featherBarBeingHovered = std::make_pair(_shapes[1]->getControlPointAtIndex(0), _shapes[1]->getFeatherPointAtIndex(0));
+    EXPECT_EQ(1u, redraw());
+    _ui->featherBarBeingHovered = std::make_pair(BezierCPPtr(), BezierCPPtr());
+    EXPECT_EQ(1u, redraw());
+
+    _ui->selectedCps.push_back(std::make_pair(_shapes[2]->getControlPointAtIndex(1), _shapes[2]->getFeatherPointAtIndex(1)));
+    EXPECT_EQ(1u, redraw());
+    _ui->selectedCps.push_back(std::make_pair(_shapes[0]->getControlPointAtIndex(1), _shapes[0]->getFeatherPointAtIndex(1)));
+    EXPECT_EQ(1u, redraw());
+    _ui->selectedCps.clear();
+    EXPECT_EQ(2u, redraw());
 }
 
 TEST(OverlayDrawListSequence, ListsKeepTheirAddressAndOnlyChangedOnesRebuild)

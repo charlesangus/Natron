@@ -23,6 +23,9 @@ Ops, each with GUI_BENCH_REPS repetitions:
                    selected shape's top point or the middle track's centre; every shape has its
                    feather and one stays selected; the headline is the overlay pass alone, read
                    from NATRON_OVERLAY_DRAW_LOG, and the record also splits it into hover and drag
+    overlay_draw_all  (topology roto-overlay-all, n = shapes, for each ROTO_BENCH_OVERLAY_ALL_SHAPES
+                   count) overlay_draw with every shape and every point selected, so the hover
+                   lights feather bars on any shape and the drag moves all of them
 
 Configured by the environment:
     GUI_BENCH_REPS, GUI_BENCH_OPS, GUI_BENCH_OP_TIMEOUT_S, GUI_BENCH_SEED, GUI_BENCH_OUT
@@ -39,6 +42,7 @@ Configured by the environment:
     ROTO_BENCH_DRAG_EVENTS  mouse moves per drag or hover pass (default 20)
     ROTO_BENCH_ADD_SHAPE_TIMEOUT_S  how long add_shape waits for the new shape (default 10)
     ROTO_BENCH_OVERLAY_SHAPES  shape counts for overlay_draw (default 1,30,100)
+    ROTO_BENCH_OVERLAY_ALL_SHAPES  shape counts for overlay_draw_all (default 30)
     ROTO_BENCH_OVERLAY_KEYS    keyframes per overlay_draw shape (default 1)
     ROTO_BENCH_OVERLAY_TRACKS  tracks for overlay_draw's Tracker (default 50)
     NATRON_OVERLAY_DRAW_LOG the overlay draw probe's log; overlay_draw needs it
@@ -109,6 +113,7 @@ PEN_INTERVAL_MS = int(os.environ.get("ROTO_BENCH_PEN_INTERVAL_MS", "8"))
 DRAG_EVENTS = int(os.environ.get("ROTO_BENCH_DRAG_EVENTS", "20"))
 ADD_SHAPE_TIMEOUT_S = float(os.environ.get("ROTO_BENCH_ADD_SHAPE_TIMEOUT_S", "10"))
 OVERLAY_SHAPE_COUNTS = sorted(int(v) for v in env_list("ROTO_BENCH_OVERLAY_SHAPES", "1,30,100"))
+OVERLAY_ALL_SHAPE_COUNTS = sorted(int(v) for v in env_list("ROTO_BENCH_OVERLAY_ALL_SHAPES", "30"))
 OVERLAY_KEYS = int(os.environ.get("ROTO_BENCH_OVERLAY_KEYS", "1"))
 OVERLAY_TRACKS = int(os.environ.get("ROTO_BENCH_OVERLAY_TRACKS", "50"))
 
@@ -995,14 +1000,20 @@ try:
         return {"setup": setup, "before": before, "events": events, "after": after,
                 "teardown": teardown, "headline": "values"}
 
-    def roto_overlay_draw_op(sc):
+    def roto_overlay_draw_op(sc, every=False):
         """overlay_draw on the Roto shapes: the target shape stays selected and its top point is
-        dragged; each rep is undone and checked."""
+        dragged; each rep is undone and checked. With every, all shapes and all their points are
+        selected instead, and the drag moves them all."""
         def select(st):
             st["original"] = sc.snapshot()
             click(sc.gl, sc.empty_spot())
-            top = sc.target_pts[0]
-            click(sc.gl, sc.widget_of(top[0], top[1]))
+            if every:
+                # The first Ctrl+A selects every shape, the second every point of them.
+                select_all_points(sc.gl)
+                select_all_points(sc.gl)
+            else:
+                top = sc.target_pts[0]
+                click(sc.gl, sc.widget_of(top[0], top[1]))
             yield ("sleep", 0)
 
         def drag(st):
@@ -1046,7 +1057,9 @@ try:
         send_key(gl, Qt.Key_Q)
         # A finer grid than shape_phase's, so the largest count fits beside the target.
         sc = ShapeCtx(node, gl, vmap, app.timelineGetTime(), grid=(32, 24), keys=OVERLAY_KEYS)
-        for count in OVERLAY_SHAPE_COUNTS:
+        counts = OVERLAY_SHAPE_COUNTS if selected("overlay_draw") else []
+        all_counts = OVERLAY_ALL_SHAPE_COUNTS if selected("overlay_draw_all") else []
+        for count in sorted(set(counts) | set(all_counts)):
             gt.section("overlay-shapes-%d" % count)
             view(None)
             t0 = mono_ms()
@@ -1057,8 +1070,13 @@ try:
             view(node)
             yield ("sleep", RENDER_MS)
             extra = {"format": FORMATS[SHAPE_FORMAT], "shapes": count, "points": POINTS, "keys": OVERLAY_KEYS}
-            for cmd in run_op("overlay_draw", roto_overlay_draw_op(sc), "roto-overlay", count, extra):
-                yield cmd
+            if count in counts:
+                for cmd in run_op("overlay_draw", roto_overlay_draw_op(sc), "roto-overlay", count, extra):
+                    yield cmd
+            if count in all_counts:
+                for cmd in run_op("overlay_draw_all", roto_overlay_draw_op(sc, every=True), "roto-overlay-all",
+                                  count, extra):
+                    yield cmd
         view(None)
         node.destroy(False)
         yield ("sleep", SETTLE_MS)
@@ -1214,11 +1232,12 @@ try:
         if any(selected(k) for k in ("drag_point", "drag_tangent", "drag_feather", "transform_box", "hover")):
             for cmd in shape_phase():
                 yield cmd
-        if selected("overlay_draw"):
+        if selected("overlay_draw") or selected("overlay_draw_all"):
             if not OVERLAY_DRAW_LOG:
                 report("NOTE NATRON_OVERLAY_DRAW_LOG is not set; overlay_draw has nothing to measure")
             for cmd in overlay_shape_phase():
                 yield cmd
+        if selected("overlay_draw"):
             for cmd in overlay_track_phase():
                 yield cmd
         _out.close()

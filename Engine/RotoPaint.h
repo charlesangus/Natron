@@ -169,12 +169,7 @@ private:
 
     virtual void getPluginShortcuts(std::list<PluginActionShortcut>* shortcuts) OVERRIDE FINAL;
     virtual void drawOverlay(double time, const RenderScale & renderScale, ViewIdx view) OVERRIDE FINAL;
-    virtual bool hasOverlayDrawList() const OVERRIDE FINAL
-    {
-        return true;
-    }
-
-    virtual bool isOverlayDrawListCached() const OVERRIDE FINAL
+    virtual bool hasOverlay() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return true;
     }

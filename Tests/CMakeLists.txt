@@ -74,6 +74,9 @@ set(Tests_SOURCES
     GeoDetailCache_Test.cpp
     GeoDelete_Test.cpp
     GeoDisplace_Test.cpp
+    GeoFileFormat_Test.cpp
+    GeoFileCache_Test.cpp
+    GeoFile_Test.cpp
     GeoEdit_Test.cpp
     GeoGroup_Test.cpp
     GeoGroupOps_Test.cpp
@@ -133,6 +136,7 @@ set(Tests_SOURCES
     LinkedNode_Test.cpp
     NodeContentHash_Test.cpp
     NodeDestroyWatcher_Test.cpp
+    NodeConvert_Test.cpp
     NodeId_Test.cpp
     GraphOpApply_Test.cpp
     GraphEditRecorder_Test.cpp

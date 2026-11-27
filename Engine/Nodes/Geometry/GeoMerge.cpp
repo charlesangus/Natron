@@ -255,6 +255,14 @@ GeoDetail
 GeoMerge::merge(std::span<const GeoDetailConstPtr> inputs,
                 std::vector<std::string>* warnings)
 {
+    return *merge(inputs, warnings, std::function<bool()>());
+}
+
+std::optional<GeoDetail>
+GeoMerge::merge(std::span<const GeoDetailConstPtr> inputs,
+                std::vector<std::string>* warnings,
+                const std::function<bool()>& cancelled)
+{
     std::vector<const GeoDetail*> details;
     for (const GeoDetailConstPtr& input : inputs) {
         if (input) {
@@ -271,6 +279,9 @@ GeoMerge::merge(std::span<const GeoDetailConstPtr> inputs,
     bool precision64 = false;
     ClassUnion unions[kGeoAttribClassCount];
     for (std::size_t k = 0; k < details.size(); ++k) {
+        if (cancelled && cancelled()) {
+            return std::nullopt;
+        }
         const GeoDetail& in = *details[k];
         precision64 = precision64 || in.pointPrecision64();
         for (GeoAttribClassEnum cls : kAllClasses) {
@@ -320,6 +331,9 @@ GeoMerge::merge(std::span<const GeoDetailConstPtr> inputs,
     }
 
     for (std::size_t k = 1; k < details.size(); ++k) {
+        if (cancelled && cancelled()) {
+            return std::nullopt;
+        }
         const GeoDetail& in = *details[k];
         const AppendedInput appended = appendTopology(builder, in);
         for (GeoAttribClassEnum cls : { eGeoAttribClassPoint, eGeoAttribClassVertex, eGeoAttribClassPrimitive }) {

@@ -952,3 +952,8 @@ Reference: Nuke 17's EdgeExtend (`.local/docs/nuke/html/content/reference_guide/
 - **SplitOnGapsTest stalls at startup** (PM, 2026-11-26): timed out at 300 s on f18-gate1 (passed on the serial rerun), and the watchdog dumped it "still running 225 s after the process started, phase 'start'" in m496-rep8's ctest leg. The stall is before the test body, so look at the watchdog stacks from rep8's log for what process start waits on (likely shared with other startup-phase stalls under -j4).
 
 - **CyclesDelegate.DrawFilterHidesPrimsAndLights flaked once** (PM, 2026-11-26, m199-gate14): saw `/World/a` still visible after the draw filter hid it; passed on rerun. Watch whether it repeats on main or only on M199's branch (scheduler timing).
+
+### 2026-11-27 — change-request — USDToGeo detail-attribute promotion
+- from: bosley-executor (cat-pm)
+- refs: M611
+- body: M611 - USDToGeo Source Controls keeps constant primvars as detail attributes (the audit's "Detail Attributes promotion — Out for now"). Review of PR #406 found constant instancer primvars then don't reach instance points. Proposed follow-up: the reference set's Promote to Primitive if Different / Primitive / Point / Vertex control on USDToGeo, applied to unpacked prims and point instances alike so they agree.

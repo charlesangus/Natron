@@ -57,6 +57,7 @@ enum class Builtin : std::int32_t {
     eNumelem,
     eFrame,
     eTime,
+    eTimeInc,
 };
 
 enum class Fn : std::uint8_t {
@@ -959,9 +960,12 @@ GeoKernelWorker::gatherSlot(std::size_t s, std::size_t first, int laneCount, Ker
     const GeoDetail& in = _run._input;
 
     if (slot.builtin) {
-        if (slot.builtinId == Builtin::eFrame || slot.builtinId == Builtin::eTime) {
+        if (slot.builtinId == Builtin::eFrame || slot.builtinId == Builtin::eTime || slot.builtinId == Builtin::eTimeInc) {
             float* out = registers.f(b.registers[0]);
-            const float v = float(slot.builtinId == Builtin::eFrame ? _run._options.frame : _run._options.time);
+            const double value = slot.builtinId == Builtin::eFrame ? _run._options.frame
+                : slot.builtinId == Builtin::eTime                 ? _run._options.time
+                                                                   : _run._options.timeInc;
+            const float v = float(value);
             std::fill(out, out + laneCount, v);
             return;
         }
@@ -1006,6 +1010,7 @@ GeoKernelWorker::gatherSlot(std::size_t s, std::size_t first, int laneCount, Ker
                 break;
             case Builtin::eFrame:
             case Builtin::eTime:
+            case Builtin::eTimeInc:
                 break;
             }
             out[l] = clampInt32(v);
@@ -1486,6 +1491,7 @@ builtinTable()
         { "numelem", { Builtin::eNumelem, B::eInt } },
         { "Frame", { Builtin::eFrame, B::eFloat } },
         { "Time", { Builtin::eTime, B::eFloat } },
+        { "TimeInc", { Builtin::eTimeInc, B::eFloat } },
     };
     return table;
 }

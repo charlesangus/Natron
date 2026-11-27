@@ -197,6 +197,25 @@ resolve(double time, const Settings& settings, const std::set<int>& framesOnDisk
     }
     return error("Missing frame " + std::to_string(frame));
 }
+
+Result
+resolveStill(double time, const Settings& settings)
+{
+    // Past this many frames the range is no longer enumerated.
+    constexpr long long kMaxStillFrames = 1 << 16;
+    std::set<int> inRange;
+
+    if ((long long)settings.lastFrame - settings.firstFrame < kMaxStillFrames) {
+        for (int f = settings.firstFrame; f <= settings.lastFrame; ++f) {
+            inRange.insert(inRange.end(), f);
+        }
+    } else {
+        inRange.insert(settings.firstFrame);
+        inRange.insert(settings.lastFrame);
+    }
+
+    return resolve(time, settings, inRange);
+}
 } // namespace ReadTimeDomain
 
 NATRON_NAMESPACE_EXIT

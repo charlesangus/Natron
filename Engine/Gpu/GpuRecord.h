@@ -24,6 +24,7 @@
 namespace gpu {
 
 class GpuPipelineCache;
+class GpuAccelRecorder;
 
 // One piece of work on the compute queue, or on the graphics queue for a raster context, recorded and submitted
 // by the thread that created it, in one command buffer unless chargeWork() split it. Node code goes through this
@@ -230,8 +231,12 @@ public:
                                std::span<const VkBufferCopy> regions);
 
     // Records copies of `regions` from `src` into `dst`, both buffers of this device, ordered after the dispatches
-    // recorded before it and visible to those recorded after.
+    // recorded before it and visible to those recorded after and to host reads once the context's work is done.
     GpuStatus copyBuffer(const GpuBuffer& src, const GpuBuffer& dst, std::span<const VkBufferCopy> regions);
+
+    // Records a copy of `bytes` from src at srcOffset into dst at dstOffset, as copyBuffer() with one region does.
+    GpuStatus copyBuffer(const GpuBuffer& src, VkDeviceSize srcOffset, const GpuBuffer& dst, VkDeviceSize dstOffset,
+                         VkDeviceSize bytes);
 
     // Records filling the first `size` bytes of `dst` with the 32-bit `value`, ordered and made visible as copyBuffer()
     // is. size is a multiple of 4.
@@ -288,6 +293,8 @@ public:
     GpuStatus submit(std::span<const TimelineValue> waits, TimelineValue signal, const std::function<bool()>& stop = {});
 
 private:
+    // Acceleration-structure builds record Vulkan commands of their own into the context's buffer.
+    friend class GpuAccelRecorder;
     struct FinishedBatch {
         VkCommandBuffer cmd = VK_NULL_HANDLE;
         uint64_t work = 0;
@@ -348,6 +355,9 @@ private:
     std::vector<VkBuffer> touched_;
     VkCommandPool pool_ = VK_NULL_HANDLE;
     VkCommandBuffer cmd_ = VK_NULL_HANDLE;
+    // The build scratch acceleration-structure builds share; the barrier before each build orders the previous
+    // build's scratch writes before it.
+    GpuBuffer* accelScratch_ = nullptr;
     std::vector<FinishedBatch> finished_;
     uint64_t work_ = 0;
     bool open_ = false;

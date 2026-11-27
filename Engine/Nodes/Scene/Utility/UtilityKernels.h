@@ -1,0 +1,370 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+#ifndef Engine_Nodes_Scene_Utility_UtilityKernels_h
+#define Engine_Nodes_Scene_Utility_UtilityKernels_h
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include <cstddef>
+#include <cstdint>
+
+#include "Global/Macros.h"
+
+NATRON_NAMESPACE_ENTER
+
+// The reconstruction filters, as RayGenParams::filter in Kernels/RayGen.slang numbers them.
+enum KernelPixelFilter : std::uint32_t {
+    eKernelPixelFilterBox = 0,
+    eKernelPixelFilterTriangle = 1,
+    eKernelPixelFilterGaussian = 2,
+    eKernelPixelFilterBlackmanHarris = 3,
+};
+
+// Mirrors the kMapping constants in Kernels/RayGen.slang.
+enum KernelRayMapping : std::uint32_t {
+    eKernelRayMappingCamera = 0,
+    eKernelRayMappingSpherical = 1,
+    eKernelRayMappingCylindrical = 2,
+    eKernelRayMappingUvUnwrap = 3,
+};
+
+// Mirrors RayGenParams in Kernels/RayGen.slang, where each position is a float3 with the scalar after
+// it in the same 16 bytes.
+struct KernelRayGenParams {
+    float nearAtCentre[3];
+    float filterWidth;
+    float nearPerX[3];
+    std::uint32_t sampleIndex;
+    float nearPerY[3];
+    std::uint32_t seed;
+    float farAtCentre[3];
+    std::uint32_t samplesPerSide;
+    float farPerX[3];
+    std::uint32_t filter;
+    float farPerY[3];
+    std::uint32_t mapping;
+    std::int32_t windowX;
+    std::int32_t windowY;
+    std::int32_t windowWidth;
+    std::int32_t windowHeight;
+    std::int32_t tileX;
+    std::int32_t tileY;
+    std::int32_t tileWidth;
+    std::int32_t tileHeight;
+};
+static_assert(sizeof(KernelRayGenParams) == 128, "KernelRayGenParams must fit the 128 bytes of push constants every device has");
+
+// Mirrors ShadeParams in Kernels/ShadeSurface.slang.
+struct KernelShadeParams {
+    float projection[4];
+    float viewZAtNear;
+    float viewZAtFar;
+    std::uint32_t count;
+    std::uint32_t padding;
+    float pixelFootprint[4];
+    // First light of the pass, lights in the pass, words per link mask, lights in the scene.
+    std::uint32_t lighting[4];
+    // Frame x and y of the first hit's pixel, the width of the rows the hits cover, the sample seed.
+    std::uint32_t pixels[4];
+    // The bounce shaded, 0 for camera rays; the bounces the frame traces; the most by reflection and by
+    // refraction.
+    std::uint32_t bounce[4];
+};
+
+// Mirrors PathState in Kernels/UtilityTypes.slang.
+struct KernelPathState {
+    float throughput[4];
+    // The pixel's index in the batch, then the bounces taken in all, by reflection and by refraction.
+    std::uint32_t counters[4];
+};
+
+// Mirrors ShadeLightsParams in Kernels/ShadeLights.slang.
+struct KernelShadeLightsParams {
+    std::uint32_t count;
+    std::uint32_t lightBatch;
+    std::uint32_t padding[2];
+};
+
+// Mirrors ResolveParams in Kernels/ResolveHits.slang.
+struct KernelResolveParams {
+    float pixelFootprint[4];
+    std::uint32_t count;
+    std::uint32_t flags;
+    std::uint32_t linkWords;
+    std::uint32_t passIndex;
+};
+
+// ResolveParams::flags in Kernels/ResolveHits.slang.
+const std::uint32_t kKernelResolveMerge = 1u;
+const std::uint32_t kKernelResolveLast = 2u;
+const std::uint32_t kKernelResolveShadow = 4u;
+const std::uint32_t kKernelResolveShadowLinked = 8u;
+
+// LightRecord::kind.y bits in Kernels/UtilityTypes.slang.
+const std::uint32_t kKernelLightCastsShadows = 1u;
+const std::uint32_t kKernelLightIes = 2u;
+const std::uint32_t kKernelLightShaped = 4u;
+const std::uint32_t kKernelLightDomeImportance = 8u;
+const std::uint32_t kKernelLightPoint = 16u;
+
+// Mirrors LightRecord in Kernels/UtilityTypes.slang.
+struct KernelLightRecord {
+    float position[4];
+    float axisX[4];
+    float axisY[4];
+    float axisZ[4];
+    float radiance[4];
+    float shaping[4];
+    float focusTint[4];
+    std::uint32_t kind[4];
+    std::uint32_t data[4];
+};
+
+// Mirrors GeometryRecord in Kernels/UtilityTypes.slang.
+struct KernelGeometryRecord {
+    std::uint32_t colorOffset;
+    std::uint32_t colorBinding;
+    std::int32_t primId;
+    std::uint32_t triangleOffset;
+    std::uint32_t materialIndex;
+    std::uint32_t stOffset;
+    std::uint32_t stBinding;
+    std::uint32_t pointOffset;
+    std::uint32_t normalOffset;
+    std::uint32_t normalBinding;
+    std::uint32_t pointSteps;
+    std::uint32_t pointStride;
+    std::uint32_t normalSteps;
+    std::uint32_t normalStride;
+};
+
+const std::uint32_t kKernelStBindingNone = 0xffffffffu;
+const std::uint32_t kKernelNormalBindingNone = 0xffffffffu;
+// The flags above the binding in GeometryRecord::colorBinding in Kernels/UtilityTypes.slang.
+const std::uint32_t kKernelColorBindingMask = 0xffu;
+const std::uint32_t kKernelColorNoDisplayColor = 0x100u;
+const std::uint32_t kKernelColorNoDisplayOpacity = 0x200u;
+// The flags of MaterialRecord::kind.z in Kernels/UtilityTypes.slang.
+const std::uint32_t kKernelMaterialDiffuseFromDisplayColor = 1u;
+const std::uint32_t kKernelMaterialOpacityFromDisplayOpacity = 2u;
+const std::uint32_t kKernelMaterialEmissiveFromDisplayColor = 4u;
+const std::uint32_t kKernelMaterialOpacityPresence = 8u;
+
+// Mirrors MaterialRecord in Kernels/UtilityTypes.slang.
+struct KernelMaterialRecord {
+    float diffuseColor[4];
+    float emissiveColor[4];
+    float specularColor[4];
+    float surface[4];
+    float coverage[4];
+    std::uint32_t kind[4];
+    std::int32_t textures[12];
+};
+
+// Mirrors TextureBinding in Kernels/UtilityTypes.slang.
+struct KernelTextureBinding {
+    float scale[4];
+    float bias[4];
+    float fallback[4];
+    float uvTransform[4];
+    float uvRotation[4];
+    std::int32_t image[4];
+    std::uint32_t channels[4];
+};
+
+// Mirrors ProjectionRecord in Kernels/UtilityTypes.slang.
+struct KernelProjectionRecord {
+    float worldToProjector[16];
+    float geometryFrame[16];
+    float geometryFrameInverse[16];
+    float plateTransform[4];
+    float projectorOrigin[4];
+    std::int32_t settings[4];
+    std::int32_t plate[4];
+};
+
+// The kTable slots in Kernels/UtilityTypes.slang: the tables ShadeSurface and ResolveHits read through
+// their addresses, from a buffer of one KernelTableAddress per slot.
+enum KernelTableSlot : std::uint32_t {
+    eKernelTableGeometries = 0,
+    eKernelTableColors = 1,
+    eKernelTableTriangles = 2,
+    eKernelTableInstanceIds = 3,
+    eKernelTablePoints = 4,
+    eKernelTableInstanceTransforms = 5,
+    eKernelTableSts = 6,
+    eKernelTableNormals = 7,
+    eKernelTableLightData = 8,
+    eKernelTableLinkMasks = 9,
+    eKernelTableTexels = 10,
+    eKernelTableInstanceMotion = 11,
+    eKernelTableMotionRows = 12,
+    eKernelTableCount = 13,
+};
+
+// kRayArrays in Kernels/UtilityTypes.slang: the float arrays of a ray batch.
+const std::size_t kKernelRayArrays = 9;
+// kNoMotion and kMotionRowsPerStep in Kernels/UtilityTypes.slang.
+const std::uint32_t kKernelNoMotion = 0xffffffffu;
+const std::uint32_t kKernelMotionRowsPerStep = 4;
+// kCameraRowsPerStep in Kernels/RayGen.slang: a moving camera's frustum in its view space, six rows, then
+// its view-to-world transform as kKernelMotionRowsPerStep motion rows.
+const std::uint32_t kKernelCameraRowsPerStep = 6 + kKernelMotionRowsPerStep;
+
+// Mirrors the address of DeviceTable in Kernels/UtilityTypes.slang: a device address on the GPU, a host
+// pointer in the C++ build.
+struct KernelTableAddress {
+    std::uint32_t low;
+    std::uint32_t high;
+};
+
+inline KernelTableAddress
+kernelTableAddress(std::uint64_t address)
+{
+    return KernelTableAddress { static_cast<std::uint32_t>(address & 0xffffffffull), static_cast<std::uint32_t>(address >> 32) };
+}
+
+// The buffers ShadeSurface reads and writes, with the layouts its bindings declare.
+struct KernelShadeBuffers {
+    const float* rays = nullptr;
+    const float* hitSurface = nullptr;
+    const std::uint32_t* hitIds = nullptr;
+    const KernelGeometryRecord* geometries = nullptr;
+    std::size_t geometryCount = 0;
+    const float* colors = nullptr; // four per colour
+    std::size_t colorCount = 0;
+    const std::int32_t* triangles = nullptr; // three per triangle
+    std::size_t triangleIndexCount = 0;
+    const std::int32_t* instanceIds = nullptr;
+    std::size_t instanceCount = 0;
+    float* colorOut = nullptr; // four per ray
+    float* depthOut = nullptr;
+    std::int32_t* primIdOut = nullptr;
+    std::int32_t* instanceIdOut = nullptr;
+    const KernelMaterialRecord* materials = nullptr;
+    std::size_t materialCount = 0;
+    const KernelTextureBinding* textureBindings = nullptr;
+    std::size_t textureBindingCount = 0;
+    const std::uint32_t* images = nullptr; // four per image: width, height, levels, first texel
+    std::size_t imageCount = 0;
+    const float* texels = nullptr; // four per texel
+    std::size_t texelCount = 0;
+    const KernelProjectionRecord* projections = nullptr;
+    std::size_t projectionCount = 0;
+    const float* points = nullptr; // four per point
+    std::size_t pointCount = 0;
+    const float* instanceTransforms = nullptr; // eight rows of four per instance
+    std::size_t instanceTransformRowCount = 0;
+    const float* sts = nullptr; // two per value
+    std::size_t stCount = 0;
+    const KernelLightRecord* lights = nullptr;
+    std::size_t lightCount = 0;
+    const float* lightData = nullptr;
+    std::size_t lightDataCount = 0;
+    const std::uint32_t* linkMasks = nullptr; // two masks of lighting[2] words per instance
+    std::size_t linkMaskCount = 0;
+    const std::uint32_t* instanceMotion = nullptr; // one per instance
+    std::size_t instanceMotionCount = 0;
+    const float* motionRows = nullptr; // four per row
+    std::size_t motionRowCount = 0;
+    // lighting[1] shadow rays per hit, light-major: rays in the nine-array layout, a contribution of
+    // four floats and the light index of each.
+    float* shadowRays = nullptr;
+    float* shadowContributions = nullptr;
+    std::uint32_t* shadowLights = nullptr;
+    const float* normals = nullptr; // four per value
+    std::size_t normalCount = 0;
+    // Past the first bounce, each ray's path; when a bounce follows, each ray's continuation in the
+    // nine-array layout and its path.
+    const KernelPathState* paths = nullptr;
+    float* nextRays = nullptr;
+    KernelPathState* nextPaths = nullptr;
+};
+
+// The per-batch buffers ResolveHits reads and writes besides the scene's tables, count rays each.
+struct KernelResolveBuffers {
+    const float* rays = nullptr; // nine arrays
+    float* hitSurface = nullptr; // three arrays
+    std::uint32_t* hitIds = nullptr; // three arrays
+    const float* nextHitSurface = nullptr;
+    const std::uint32_t* nextHitIds = nullptr;
+    float* retrace = nullptr; // nine arrays
+    // Shadow rays only: the verdict, the light of each ray, and its contribution of four floats, which
+    // transmissive surfaces dim.
+    std::uint32_t* blocked = nullptr;
+    const std::uint32_t* rayLights = nullptr;
+    float* shadowContributions = nullptr;
+};
+
+/**
+ * @brief Runs the C++ build of RayGen.slang for one tile, writing tileWidth * tileHeight rays in the
+ * nine-array layout of Kernels/UtilityTypes.slang, and when weights is not null each ray's filter
+ * weight. cameraSteps holds a moving camera's steps as RayGen.slang's cameraSteps binding lays them
+ * out, cameraStepRows rows of four; without them the camera is params' frustum. MT-safe.
+ **/
+void runRayGenKernel(const KernelRayGenParams& params,
+                     float* rays,
+                     float* weights = nullptr,
+                     const float* cameraSteps = nullptr,
+                     std::size_t cameraStepRows = 0);
+
+/**
+ * @brief Runs the C++ build of RayGenUv.slang for one tile, as runRayGenKernel() does, reading a
+ * WavefrontUnwrap's grid and triangles. It writes each ray's hit
+ * too, in the three-array layouts of Tracer::HitBatch, as the bake traces no primary rays. MT-safe.
+ **/
+void runRayGenUvKernel(const KernelRayGenParams& params,
+                       const std::int32_t* grid,
+                       const float* triangles,
+                       float* rays,
+                       float* hitSurface,
+                       std::uint32_t* hitIds,
+                       float* weights = nullptr);
+
+/**
+ * @brief Runs the C++ build of ShadeSurface.slang over params.count hits. MT-safe.
+ **/
+void runShadeSurfaceKernel(const KernelShadeParams& params,
+                           const KernelShadeBuffers& buffers);
+
+/**
+ * @brief Runs the C++ build of ResolveHits.slang over params.count rays, reading the scene from the
+ * tables of buffers. MT-safe.
+ **/
+void runResolveHitsKernel(const KernelResolveParams& params,
+                          const KernelShadeBuffers& tables,
+                          const KernelResolveBuffers& buffers);
+
+/**
+ * @brief Runs the C++ build of ShadeLights.slang: adds to colorOut the contributions of the
+ * params.lightBatch shadow rays per hit that blocked marks 0. MT-safe.
+ **/
+void runShadeLightsKernel(const KernelShadeLightsParams& params,
+                          float* colorOut,
+                          const float* shadowContributions,
+                          const std::uint32_t* blocked);
+
+NATRON_NAMESPACE_EXIT
+
+#endif // Engine_Nodes_Scene_Utility_UtilityKernels_h

@@ -997,6 +997,14 @@ GeoDisplay::paintLabels(QPainter& painter,
 }
 
 bool
+GeoDisplay::hasGeometry() const
+{
+    std::lock_guard<std::mutex> lock(_imp->mutex);
+
+    return !_imp->converts.empty();
+}
+
+bool
 GeoDisplay::pickPrimitives(const std::string& primPath,
                            GeoViewerLayer::Pick* pick) const
 {

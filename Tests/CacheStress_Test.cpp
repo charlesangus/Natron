@@ -796,8 +796,8 @@ TEST_F(CacheStressTest, FrameExpression)
 }
 
 // An RGB render of a node leaves an image a later RGBA request of the same node must not serve,
-// since its alpha is not the node's. Only Legacy renders the layers asked for, so the RGB render is
-// a Legacy one; the RGBA one runs in both modes.
+// since its alpha is not the node's. Only the direct pull renders the layers asked for, so the RGB render
+// is a direct one; the RGBA one runs through both pulls.
 TEST_F(CacheStressTest, RgbThenRgbaRequest)
 {
     const AppInstancePtr app = getApp();
@@ -809,17 +809,16 @@ TEST_F(CacheStressTest, RgbThenRgbaRequest)
 
     clearEverything(app);
     RenderedPlane reference;
-    ASSERT_TRUE(renderProbe(probe, 1., 0, g.window, eRenderSchedulerModeLegacy, true, &reference, &error)) << error;
+    ASSERT_TRUE(renderProbeDirect(probe, 1., 0, g.window, true, &reference, &error)) << error;
     ASSERT_EQ(4u, reference.channels.size());
 
-    const RenderSchedulerModeEnum modes[] = { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph };
-    for (RenderSchedulerModeEnum mode : modes) {
+    for (bool scheduled : { false, true }) {
         clearEverything(app);
         std::vector<RenderedPlane> planes;
         ASSERT_TRUE(renderNodePlanesDirect(probe, 1., ViewIdx(0), 0, g.window, rgb, &planes, &error, false)) << error;
         RenderedPlane got;
-        ASSERT_TRUE(renderProbe(probe, 1., 0, g.window, mode, false, &got, &error)) << error;
-        EXPECT_EQ(std::string(), compareExact(reference, got)) << "mode " << (int)mode;
+        ASSERT_TRUE((scheduled ? renderProbeScheduled : renderProbeDirect)(probe, 1., 0, g.window, false, &got, &error)) << error;
+        EXPECT_EQ(std::string(), compareExact(reference, got)) << (scheduled ? "scheduled" : "direct");
     }
 }
 
@@ -838,15 +837,14 @@ TEST_F(CacheStressTest, RgbaThenRgbRequest)
     ASSERT_TRUE(renderNodePlanesDirect(probe, 1., ViewIdx(0), 0, g.window, rgb, &reference, &error, false)) << error;
     ASSERT_FALSE(reference.empty());
 
-    const RenderSchedulerModeEnum modes[] = { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph };
-    for (RenderSchedulerModeEnum mode : modes) {
+    for (bool scheduled : { false, true }) {
         clearEverything(app);
         RenderedPlane rgba;
-        ASSERT_TRUE(renderProbe(probe, 1., 0, g.window, mode, false, &rgba, &error)) << error;
+        ASSERT_TRUE((scheduled ? renderProbeScheduled : renderProbeDirect)(probe, 1., 0, g.window, false, &rgba, &error)) << error;
         std::vector<RenderedPlane> planes;
         ASSERT_TRUE(renderNodePlanesDirect(probe, 1., ViewIdx(0), 0, g.window, rgb, &planes, &error, false)) << error;
         ASSERT_FALSE(planes.empty());
-        EXPECT_EQ(std::string(), compareExact(reference.front(), planes.front())) << "mode " << (int)mode;
+        EXPECT_EQ(std::string(), compareExact(reference.front(), planes.front())) << (scheduled ? "scheduled" : "direct");
     }
 }
 
@@ -861,25 +859,24 @@ TEST_F(CacheStressTest, Mip0AndMip1Requests)
     const NodePtr probe = g.nodes[g.probe];
     const RectI windows[] = { g.window, g.window.downscalePowerOfTwoSmallestEnclosing(1) };
 
-    const RenderSchedulerModeEnum modes[] = { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph };
-    for (RenderSchedulerModeEnum mode : modes) {
+    for (bool scheduled : { false, true }) {
         RenderedPlane references[2];
         for (unsigned mip = 0; mip < 2; ++mip) {
             clearEverything(app);
-            ASSERT_TRUE(renderProbe(probe, 1., mip, windows[mip], mode, true, &references[mip], &error)) << error;
+            ASSERT_TRUE((scheduled ? renderProbeScheduled : renderProbeDirect)(probe, 1., mip, windows[mip], true, &references[mip], &error)) << error;
         }
         for (unsigned first = 0; first < 2; ++first) {
             const unsigned second = 1 - first;
             clearEverything(app);
             RenderedPlane firstPlane;
-            ASSERT_TRUE(renderProbe(probe, 1., first, windows[first], mode, false, &firstPlane, &error)) << error;
-            EXPECT_EQ(std::string(), compareExact(references[first], firstPlane)) << "mode " << (int)mode << " mip " << first;
+            ASSERT_TRUE((scheduled ? renderProbeScheduled : renderProbeDirect)(probe, 1., first, windows[first], false, &firstPlane, &error)) << error;
+            EXPECT_EQ(std::string(), compareExact(references[first], firstPlane)) << (scheduled ? "scheduled" : "direct") << " mip " << first;
             RenderedPlane secondPlane;
-            ASSERT_TRUE(renderProbe(probe, 1., second, windows[second], mode, false, &secondPlane, &error)) << error;
-            EXPECT_EQ(std::string(), compareExact(references[second], secondPlane)) << "mode " << (int)mode << " mip " << second;
+            ASSERT_TRUE((scheduled ? renderProbeScheduled : renderProbeDirect)(probe, 1., second, windows[second], false, &secondPlane, &error)) << error;
+            EXPECT_EQ(std::string(), compareExact(references[second], secondPlane)) << (scheduled ? "scheduled" : "direct") << " mip " << second;
             RenderedPlane firstAgain;
-            ASSERT_TRUE(renderProbe(probe, 1., first, windows[first], mode, false, &firstAgain, &error)) << error;
-            EXPECT_EQ(std::string(), compareExact(references[first], firstAgain)) << "mode " << (int)mode << " mip " << first;
+            ASSERT_TRUE((scheduled ? renderProbeScheduled : renderProbeDirect)(probe, 1., first, windows[first], false, &firstAgain, &error)) << error;
+            EXPECT_EQ(std::string(), compareExact(references[first], firstAgain)) << (scheduled ? "scheduled" : "direct") << " mip " << first;
         }
     }
 }
@@ -972,7 +969,7 @@ TEST_F(CacheStressTest, NonHashedKnobSweep)
         }
         RenderedPlane plane;
         std::string error;
-        if (!renderProbe(node, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &plane, &error)) {
+        if (!renderProbeDirect(node, 1., 0, kWindow, false, &plane, &error)) {
             continue;
         }
         for (std::size_t t = 0; t < targets.size(); ++t) {
@@ -990,9 +987,9 @@ TEST_F(CacheStressTest, NonHashedKnobSweep)
             ++edits;
             RenderedPlane cached, reference;
             std::string cachedError, referenceError;
-            const bool cachedOk = renderProbe(node, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &cached, &cachedError);
+            const bool cachedOk = renderProbeDirect(node, 1., 0, kWindow, false, &cached, &cachedError);
             clearEverything(getApp());
-            const bool referenceOk = renderProbe(node, 1., 0, kWindow, eRenderSchedulerModeLegacy, true, &reference, &referenceError);
+            const bool referenceOk = renderProbeDirect(node, 1., 0, kWindow, true, &reference, &referenceError);
             if (referenceOk && !cachedOk) {
                 failures.push_back(label + ": the cached render failed: " + cachedError);
             } else if (referenceOk) {
@@ -1003,7 +1000,7 @@ TEST_F(CacheStressTest, NonHashedKnobSweep)
             }
             edit.revert();
             // Refills the caches under the reverted state for the next edit.
-            (void)renderProbe(node, 1., 0, kWindow, eRenderSchedulerModeLegacy, false, &plane, &error);
+            (void)renderProbeDirect(node, 1., 0, kWindow, false, &plane, &error);
         }
     }
 

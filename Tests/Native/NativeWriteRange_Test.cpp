@@ -59,6 +59,7 @@
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Project.h"
+#include "Engine/RenderScheduler.h"
 #include "Engine/RenderStats.h"
 #include "Engine/ViewIdx.h"
 
@@ -70,26 +71,6 @@ const int kWidth = 32;
 const int kHeight = 24;
 const int kUnset = std::numeric_limits<int>::min();
 const int kUnbounded = std::numeric_limits<int>::max();
-
-class SchedulerModeGuard {
-public:
-    explicit SchedulerModeGuard(RenderSchedulerModeEnum mode)
-        : _saved(appPTR->getRenderSchedulerMode())
-    {
-        appPTR->setRenderSchedulerMode(mode);
-    }
-
-    ~SchedulerModeGuard()
-    {
-        appPTR->setRenderSchedulerMode(_saved);
-    }
-
-    SchedulerModeGuard(const SchedulerModeGuard&) = delete;
-    SchedulerModeGuard& operator=(const SchedulerModeGuard&) = delete;
-
-private:
-    RenderSchedulerModeEnum _saved;
-};
 
 std::string
 numbered(const std::string& stem,
@@ -481,13 +462,13 @@ TEST_F(NativeWriteRangeTest, TheFileNameIsTheSubLabel)
     EXPECT_EQ(std::string("label.####.exr"), _writer->getSublabel());
 }
 
-TEST_F(NativeWriteRangeTest, BothSchedulerModesWriteTheSameFilesWithoutUnplannedPulls)
+TEST_F(NativeWriteRangeTest, WritesEveryFrameOfTheRangeWithoutUnplannedPulls)
 {
     std::shared_ptr<std::mutex> mutex = std::make_shared<std::mutex>();
     std::shared_ptr<std::vector<ObservedFrame>> observed = std::make_shared<std::vector<ObservedFrame>>();
 
     DefaultScheduler::setFrameStatsObserverForTests([mutex, observed](int time, ViewIdx /*view*/, const RenderStatsPtr& stats) {
-        if (!stats || (appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph)) {
+        if (!stats) {
             return;
         }
         ObservedFrame frame;
@@ -497,30 +478,16 @@ TEST_F(NativeWriteRangeTest, BothSchedulerModesWriteTheSameFilesWithoutUnplanned
         observed->push_back(frame);
     });
 
-    setFile(_writer, pathOf("legacy.####.exr"));
-    {
-        SchedulerModeGuard mode(eRenderSchedulerModeLegacy);
-        render(_writer, 1, 3, 1);
-    }
     setFile(_writer, pathOf("graph.####.exr"));
-    {
-        SchedulerModeGuard mode(eRenderSchedulerModeTaskGraph);
-        render(_writer, 1, 3, 1);
-    }
+    render(_writer, 1, 3, 1);
 
     for (int frame = 1; frame <= 3; ++frame) {
         SCOPED_TRACE(frame);
-        OIIO::ImageSpec legacySpec;
-        OIIO::ImageSpec graphSpec;
-        std::vector<float> legacyPixels;
-        std::vector<float> graphPixels;
+        OIIO::ImageSpec spec;
+        std::vector<float> pixels;
 
-        ASSERT_TRUE(readPixels(pathOf(numbered("legacy", frame)), &legacySpec, &legacyPixels));
-        ASSERT_TRUE(readPixels(pathOf(numbered("graph", frame)), &graphSpec, &graphPixels));
-        EXPECT_EQ(legacySpec.width, graphSpec.width);
-        EXPECT_EQ(legacySpec.height, graphSpec.height);
-        EXPECT_EQ(legacySpec.nchannels, graphSpec.nchannels);
-        EXPECT_TRUE(legacyPixels == graphPixels);
+        ASSERT_TRUE(readPixels(pathOf(numbered("graph", frame)), &spec, &pixels));
+        EXPECT_FALSE(pixels.empty());
     }
 
     std::lock_guard<std::mutex> lock(*mutex);
@@ -528,4 +495,26 @@ TEST_F(NativeWriteRangeTest, BothSchedulerModesWriteTheSameFilesWithoutUnplanned
     for (std::size_t i = 0; i < observed->size(); ++i) {
         EXPECT_EQ(0, (*observed)[i].unplannedPulls) << "frame " << (*observed)[i].time;
     }
+}
+
+// The pool thread that ends a frame is still in the writer's scheduler for a moment after the blocking render
+// returns; destroying the writer at once, again and again, gives a scheduler that let go of it too early the chance to
+// crash.
+TEST_F(NativeWriteRangeTest, DestroyingTheWriterRightAfterItsRenderIsSafe)
+{
+    const int kRounds = 30;
+    const int poolWaitsBefore = FrameFuture::getPoolThreadWaitsForTests();
+
+    for (int round = 0; round < kRounds; ++round) {
+        SCOPED_TRACE(round);
+        NodePtr writer = createNode(QString::fromUtf8(PLUGINID_NATRON_WRITE), PLUGIN_MAJOR_NATRON_WRITE);
+        ASSERT_TRUE(bool(writer));
+        connectNodes(_checker, writer, 0, true);
+        const std::string name = "teardown" + std::to_string(round);
+        setFile(writer, pathOf(name + ".####.exr"));
+        render(writer, 1, 2, 1);
+        EXPECT_TRUE(fileExists(numbered(name, 2)));
+        writer->destroyNode(true, false);
+    }
+    EXPECT_EQ(0, FrameFuture::getPoolThreadWaitsForTests() - poolWaitsBefore);
 }

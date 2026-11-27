@@ -34,6 +34,7 @@ get_property(NatronGpu_RASTERS GLOBAL PROPERTY SLANG_RASTER_REGISTRY_NatronGpu)
 
 add_library(NatronGpu STATIC
     GpuDevice.cpp
+    GpuAccel.cpp
     GpuBuffer.cpp
     GpuBufferPool.cpp
     GpuKernel.cpp
@@ -46,6 +47,7 @@ add_library(NatronGpu STATIC
     GpuTexture.cpp
     GpuTransfer.cpp
     GpuBlur.cpp
+    GpuAperture.cpp
     GpuDownscale.cpp
     GpuMorphology.cpp
     GpuResample.cpp

@@ -285,7 +285,7 @@ TEST_F(NativeNoiseTest, TilesMatchTheWholeFrame)
     }
 }
 
-TEST_F(NativeNoiseTest, RendersTheSameInBothSchedulerModes)
+TEST_F(NativeNoiseTest, RendersTheSameDirectAndScheduled)
 {
     resetProject();
     NodePtr node = makeNoise(NoiseCore::kNoiseTypeSimplex);

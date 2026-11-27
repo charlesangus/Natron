@@ -196,6 +196,61 @@ TEST(MoonRayAovs, WarnsOnePerKindAndKeepsOtherErrorsForTheNode)
     EXPECT_EQ(std::string("RenderPassState without camera is unsupported"), MoonRayAovs::errorText(stage, notices));
 }
 
+TEST(MoonRayAovs, KeepsMoonRaysTextForALightAlsoNamedAsUnsupported)
+{
+    const PXR_NS::UsdStageRefPtr stage = lightStage();
+    const PXR_NS::TfTokenVector supported = { PXR_NS::HdPrimTypeTokens->distantLight, PXR_NS::HdPrimTypeTokens->mesh };
+    const std::vector<MoonRayAovs::Light> lights = MoonRayAovs::unsupportedLights(stage, supported);
+    ASSERT_EQ(1u, lights.size());
+
+    std::vector<MoonRayAovs::Notice> notices;
+    notices.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Portal: no portal support"));
+    notices.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Portal: no portal support"));
+    notices.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Portal: bad rotation"));
+
+    const std::string warning = MoonRayAovs::warningText(stage, lights, notices);
+    EXPECT_NE(std::string::npos, warning.find("/World/Portal (PortalLight: no portal support; bad rotation)")) << warning;
+    EXPECT_EQ(std::string::npos, warning.find("/World/Portal (PortalLight)")) << warning;
+}
+
+TEST(MoonRayAovs, KeepsMoonRaysTextForEachPrimOnce)
+{
+    const PXR_NS::UsdStageRefPtr stage = lightStage();
+    std::vector<MoonRayAovs::Notice> notices;
+    notices.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground/proto_0: unknown Rprim type foo"));
+    notices.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground/proto_0: unknown Rprim type foo"));
+    notices.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground/proto_0: another problem"));
+
+    const std::string warning = MoonRayAovs::warningText(stage, std::vector<MoonRayAovs::Light>(), notices);
+    EXPECT_EQ(std::string("MoonRay could not render these prims as authored: /World/Ground (unknown Rprim type foo), /World/Ground (another problem)"), warning);
+}
+
+TEST(MoonRayAovs, DropsOnlyTheFrameHoldPrimvarNoticesThatAreNotTranslated)
+{
+    const PXR_NS::UsdStageRefPtr stage = lightStage();
+    std::vector<MoonRayAovs::Notice> benign;
+    benign.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground.primvars:natronProjectionFrameHold1: GfMatrix4d not translated"));
+    benign.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground.primvars:natronProjectionFrameHold12Column0: VtArray<GfVec4f> not translated"));
+    benign.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground.primvars:natronProjectionFrameHold1Column2: VtArray<GfVec4f> not translated"));
+    const char* const frames[] = { "m20", "m20Column1", "1_5", "m0_25Column2", "1ep20", "m1_5em05", "2_5ep100Column0", "m1ep20" };
+    for (const char* frame : frames) {
+        benign.push_back(notice(MoonRayAovs::Notice::eLevelWarning, std::string("/World/Ground.primvars:natronProjectionFrameHold") + frame + ": GfMatrix4d not translated"));
+    }
+    EXPECT_TRUE(MoonRayAovs::warningText(stage, std::vector<MoonRayAovs::Light>(), benign).empty());
+
+    std::vector<MoonRayAovs::Notice> kept;
+    kept.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground.primvars:natronProjectionFrameHoldmm1: GfMatrix4d not translated"));
+    kept.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground.primvars:natronProjectionFrameHold1_: GfMatrix4d not translated"));
+    kept.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground.primvars:natronProjectionFrameHold1e: GfMatrix4d not translated"));
+    kept.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground.primvars:natronProjectionFrameHoldX: GfMatrix4d not translated"));
+    kept.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground.primvars:natronProjectionFrameHold1Column3: VtArray<GfVec4f> not translated"));
+    kept.push_back(notice(MoonRayAovs::Notice::eLevelWarning, "/World/Ground.primvars:foo: GfMatrix4d not translated"));
+    const std::string warning = MoonRayAovs::warningText(stage, std::vector<MoonRayAovs::Light>(), kept);
+    EXPECT_NE(std::string::npos, warning.find("natronProjectionFrameHoldX")) << warning;
+    EXPECT_NE(std::string::npos, warning.find("natronProjectionFrameHold1Column3")) << warning;
+    EXPECT_NE(std::string::npos, warning.find("(foo: ")) << warning;
+}
+
 TEST(MoonRayAovs, NamesTheTextureFilesNotThePrimsTheyShade)
 {
     const PXR_NS::UsdStageRefPtr stage = lightStage();

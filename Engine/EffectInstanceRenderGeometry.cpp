@@ -104,27 +104,6 @@ collectGeometryFramesForInput(const FramesNeededMap& framesNeeded,
     }
 }
 
-// Pops the fallback frame args evaluateGeometry() pushes when it is called outside of a render
-// set up by the scheduler, so a later direct call does not key its cache lookup with this call's
-// hash and time.
-class ScopedGeometryFallbackFrameArgs {
-public:
-    explicit ScopedGeometryFallbackFrameArgs(const EffectInstance::EffectTLSDataPtr& tls)
-        : _tls(tls)
-    {
-    }
-
-    ~ScopedGeometryFallbackFrameArgs()
-    {
-        if (_tls && !_tls->frameArgs.empty()) {
-            _tls->frameArgs.pop_back();
-        }
-    }
-
-private:
-    EffectInstance::EffectTLSDataPtr _tls;
-};
-
 void
 setGeometryError(std::string* errorMessage,
                  const std::string& message)
@@ -270,11 +249,11 @@ EffectInstance::evaluateGeometry(const EvaluateGeometryArgs& args,
         return _imp->mainInstance->evaluateGeometry(args, outputDetail, errorMessage);
     }
 
-    EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
-    assert(tls);
-    ParallelRenderArgsPtr frameArgs;
-    std::unique_ptr<ScopedGeometryFallbackFrameArgs> fallbackFrameArgs;
-    if (tls->frameArgs.empty()) {
+    ParallelRenderArgsPtr frameArgs = getFrameArgs();
+    // Popped when the call returns, so a later direct call does not key its cache lookup with this
+    // call's hash and time.
+    FrameArgsToken fallbackFrameArgs;
+    if (!frameArgs) {
         // A direct call (a test, a script): give the cache key a hash and the abort flag
         // somewhere to live, as renderDeepRoI() does.
         frameArgs = std::make_shared<ParallelRenderArgs>();
@@ -289,10 +268,7 @@ EffectInstance::evaluateGeometry(const EvaluateGeometryArgs& args,
         frameArgs->isSequentialRender = false;
         frameArgs->isRenderResponseToUserInteraction = true;
         frameArgs->isFrameVaryingOrAnimated = isFrameVaryingOrAnimated_Recursive();
-        tls->frameArgs.push_back(frameArgs);
-        fallbackFrameArgs.reset(new ScopedGeometryFallbackFrameArgs(tls));
-    } else {
-        frameArgs = tls->frameArgs.back();
+        fallbackFrameArgs = FrameArgsToken(this, frameArgs);
     }
 
     if (aborted()) {

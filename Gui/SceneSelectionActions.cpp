@@ -486,8 +486,9 @@ placeBelow(const NodePtr& viewed,
     const QSize viewedSize = viewedGui->getSize();
     const QSize createdSize = createdGui->getSize();
     const QPointF viewedPos = viewedGui->scenePos();
+    const double captionDrop = viewedGui->messageCaptionDrop();
     const QPointF position(viewedPos.x() + (viewedSize.width() - createdSize.width()) / 2.,
-                           viewedPos.y() + viewedSize.height() + NodeGui::DEFAULT_OFFSET_BETWEEN_NODES);
+                           viewedPos.y() + viewedSize.height() + captionDrop + NodeGui::DEFAULT_OFFSET_BETWEEN_NODES);
     for (const NodePtr& output : outputs) {
         if (NodeGuiPtr outputGui = std::dynamic_pointer_cast<NodeGui>(output->getNodeGui())) {
             outputGui->moveBelowPositionRecursively(QRectF(position, createdSize));
@@ -831,7 +832,8 @@ setGroupFromComponents(Gui* gui,
     }
     const GeoComponentSelection carried = SceneViewport::convertedComponentSelection(*detail, selection, type);
     // A selection the class keeps nothing of selects nothing, where an empty pattern would select everything.
-    const std::string pattern = carried.empty() ? std::string("^*") : SceneViewport::componentSelectionPattern(*detail, carried);
+    // A full selection keeps its explicit numbers: "*" would also take in elements added upstream later.
+    const std::string pattern = carried.empty() ? std::string("^*") : SceneViewport::componentSelectionPattern(*detail, carried, false);
 
     KnobChoicePtr typeKnob;
     int typeIndex = -1;

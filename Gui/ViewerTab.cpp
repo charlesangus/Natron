@@ -84,6 +84,7 @@
 #include "Gui/TimeLineGui.h"
 #include "Gui/UndoHistory.h"
 #include "Gui/ViewerGL.h"
+#include "Gui/ViewerZoomLadder.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -544,20 +545,13 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->zoomCombobox->addAction(zoomInAction);
     _imp->zoomCombobox->addAction(zoomOutAction);
     _imp->zoomCombobox->addSeparator();
-    _imp->zoomCombobox->addItem( QString::fromUtf8("10%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("25%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("50%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("75%") );
-    _imp->zoomCombobox->addAction(level100Action);
-    _imp->zoomCombobox->addItem( QString::fromUtf8("125%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("150%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("200%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("400%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("800%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("1600%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("2400%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("3200%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("6400%") );
+    for (int percent : kViewerZoomPresetsPercent) {
+        if (percent == 100) {
+            _imp->zoomCombobox->addAction(level100Action);
+        } else {
+            _imp->zoomCombobox->addItem(QString::number(percent) + QLatin1Char('%'));
+        }
+    }
     _imp->zoomCombobox->setMaximumWidthFromText( QString::fromUtf8("100000%") );
 
     _imp->firstRowLayout->addWidget(_imp->zoomCombobox);
@@ -941,7 +935,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->sceneRenderRowLayout->addWidget(_imp->refineSamplesLabel);
     _imp->sceneRenderRowLayout->addStretch();
     _imp->sceneRenderRow->hide();
-    // The first switch to a progressive renderer shows the row: its style sheet polish is done
+    // The first switch to the 3D view shows the row: its style sheet polish is done
     // now rather than on that switch.
     _imp->sceneRenderRow->ensurePolished();
     QObject::connect(_imp->maxSamplesBox, SIGNAL(valueChanged(double)), this, SLOT(onMaxSamplesBoxChanged(double)));
@@ -1569,6 +1563,7 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->sceneViewport = new SceneViewport(_imp->viewerSubContainer);
         _imp->sceneViewport->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         _imp->sceneViewport->hide();
+        QObject::connect(_imp->sceneViewport, &SceneViewport::outOfDateChanged, this, &ViewerTab::onSceneOutOfDateChanged);
         const int index = _imp->viewerSubContainerLayout->indexOf(_imp->viewer);
         _imp->sceneBreadcrumbBar = new SceneBreadcrumbBar(_imp->sceneViewport, _imp->viewerSubContainer);
         _imp->sceneBreadcrumbBar->hide();
@@ -1712,6 +1707,7 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->viewer->show();
     }
     refreshSceneRenderRow();
+    applyStaleCueInput();
     Q_EMIT sceneViewChanged();
 } // onActiveInputDataKindChanged
 
@@ -2070,17 +2066,26 @@ ViewerTab::refreshSceneRenderRow()
         QMutexLocker l(&_imp->visibleToolbarsMutex);
         topVisible = _imp->topToolbarVisible;
     }
-    const bool progressive = isShowingScene() && (_imp->sceneViewport->getRenderer().getActiveRendererId() != kRenderDelegateStormId);
+    const bool scene = isShowingScene();
+    const bool progressive = scene && (_imp->sceneViewport->getRenderer().getActiveRendererId() != kRenderDelegateStormId);
 
-    const bool show = topVisible && progressive;
-    const bool geometry = isShowingScene() && _imp->viewerNode && (_imp->viewerNode->getActiveInputDataKind() == eDataKindGeometry);
+    // The row stays for every renderer so switching renderers never resizes the 3D view, which would
+    // rescale its fitted framing.
+    const bool show = topVisible && scene;
+    const bool geometry = scene && _imp->viewerNode && (_imp->viewerNode->getActiveInputDataKind() == eDataKindGeometry);
     const bool showGeometry = topVisible && geometry;
     const bool toggled = (_imp->sceneRenderRow->isVisibleTo(this) != show) || (_imp->geoDisplayRow->isVisibleTo(this) != showGeometry);
     _imp->sceneRenderRow->setVisible(show);
+    _imp->maxSamplesBox->setEnabled(progressive);
+    _imp->refinementPausedButton->setEnabled(progressive);
     _imp->geoDisplayRow->setVisible(showGeometry);
     // Without geometry, as downstream of a conversion to a scene, only prims are picked.
     if (_imp->sceneViewport) {
         _imp->sceneViewport->setGeometryContext(geometry);
+    }
+    // Geometry is shown as prims named after its pieces, not a scene to walk through by path.
+    if (_imp->sceneBreadcrumbBar) {
+        _imp->sceneBreadcrumbBar->setVisible(scene && !geometry);
     }
     refreshRefineSamplesLabel();
     if (toggled) {
@@ -2094,6 +2099,11 @@ void
 ViewerTab::refreshRefineSamplesLabel()
 {
     if (!_imp->sceneViewport || !_imp->sceneRenderRow->isVisible()) {
+        return;
+    }
+    if (_imp->sceneViewport->getRenderer().getActiveRendererId() == kRenderDelegateStormId) {
+        _imp->refineSamplesLabel->clear();
+
         return;
     }
     const SceneViewportRenderer::RefineStatus refine = _imp->sceneViewport->getRenderer().getRefineStatus();

@@ -189,7 +189,7 @@ protected:
         }
     }
 
-    void expectBothSchedulerModesAgree(const NodePtr& node)
+    void expectDirectAndScheduledAgree(const NodePtr& node)
     {
         std::vector<int> poolSizes;
         poolSizes.push_back(1);
@@ -305,7 +305,7 @@ TEST_F(NativeTransformTest, ChainConcatenates)
     EXPECT_EQ(first.native->getEffectInstance(), im.newInputEffect);
     EXPECT_EQ(first.source->getEffectInstance(), im.newInputEffect->getInput(im.newInputNbToFetchFrom));
 
-    expectBothSchedulerModesAgree(chain.native);
+    expectDirectAndScheduledAgree(chain.native);
 }
 
 // Transform offers its matrix only while no mask is applied and mix is 1; it always applies the
@@ -463,7 +463,7 @@ TEST_F(NativeTransformTest, UnversionedRequestsGetTheNativeTransforms)
     EXPECT_EQ(kNativeTransformMajor, transform->getMajorVersion());
 }
 
-TEST_F(NativeTransformTest, RendersTheSameInBothSchedulerModes)
+TEST_F(NativeTransformTest, RendersTheSameDirectAndScheduled)
 {
     resetProject();
     NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
@@ -473,7 +473,7 @@ TEST_F(NativeTransformTest, RendersTheSameInBothSchedulerModes)
     connectNodes(source, node, 0, true);
     ASSERT_TRUE(setKnobValues(node, kTransformNodeParamRotate, { 30. }));
     ASSERT_TRUE(setKnobValues(node, kTransformNodeParamScale, { 0.5, 0.5 }));
-    expectBothSchedulerModesAgree(node);
+    expectDirectAndScheduledAgree(node);
 
     NodePtr mask = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
     NodePtr masked = createNode(QString::fromUtf8(kTransformID), kNativeTransformMajor);
@@ -484,7 +484,7 @@ TEST_F(NativeTransformTest, RendersTheSameInBothSchedulerModes)
     ASSERT_TRUE(setKnobValues(masked, "enableMask_Mask", { 1. }));
     ASSERT_TRUE(setKnobValues(masked, kTransformNodeParamTranslate, { 4.5, -2.25 }));
     ASSERT_TRUE(setKnobValues(masked, kOfxMixParamName, { 0.5 }));
-    expectBothSchedulerModesAgree(masked);
+    expectDirectAndScheduledAgree(masked);
 }
 
 // A masked Transform takes the transform of an upstream Transform as the host concatenates it, so the
@@ -836,7 +836,7 @@ TEST_F(NativeTransformEdgeModeTest, ConcatenationStopsWhereTheModesDiffer)
             second->getEffectInstance()->tryConcatenateTransforms(kTime, false, ViewIdx(0), RenderScale::identity, &transforms);
             const bool same = resolveEdgeMode(c.choice, sourceMode) == sourceMode;
             EXPECT_EQ(same ? 1u : 0u, transforms.count(0)) << what;
-            expectBothSchedulerModesAgree(second);
+            expectDirectAndScheduledAgree(second);
         }
     }
 }

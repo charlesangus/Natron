@@ -157,6 +157,7 @@ set(Tests_SOURCES
     RippleEditModes_Test.cpp
     RotoUndoGesture_Test.cpp
     RotoDragUndo_Test.cpp
+    RotoInsertPointDrag_Test.cpp
     RotoOverlayHomography_Test.cpp
     RotoDragRenderThrottle_Test.cpp
     RotoKeyDuringRender_Test.cpp
@@ -199,6 +200,7 @@ set(Tests_SOURCES
     NodeColorSampler_Test.cpp
     OSGLContext_Test.cpp
     PersistentMessage_Test.cpp
+    PlaybackTimer_Test.cpp
     PluginIdentity_Test.cpp
     ImagePasteBands_Test.cpp
     PoolParallelFor_Test.cpp
@@ -247,7 +249,6 @@ set(Tests_SOURCES
     RenderRange_Test.cpp
     RenderScheduler_Test.cpp
     RenderSchedulerAbort_Test.cpp
-    RenderSchedulerMode_Test.cpp
     RotoFeatherBanding_Test.cpp
     RotoFeatherDrag_Test.cpp
     RotoLayer_Test.cpp
@@ -262,6 +263,7 @@ set(Tests_SOURCES
     Tracker_Test.cpp
     TwoPlaneRender_Test.cpp
     TypedPassthrough_Test.cpp
+    UserKnobEdit_Test.cpp
     WeightedInterpolation_Test.cpp
     WriteAllLayers_Test.cpp
     ImageConvert_Test.cpp
@@ -437,6 +439,7 @@ set(GuiTests_SOURCES
     ValueKnobGlobalModeTarget_Test.cpp
     ViewerPixelGrid_Test.cpp
     ViewerStaleCueTiming_Test.cpp
+    ViewerZoomLadder_Test.cpp
     WindowPlacement_Test.cpp
     guimain.cpp
 )
@@ -482,8 +485,9 @@ include(NatronGtestSuites)
 # TIMEOUT 300 turns a scheduler wait that never returns (OutputSchedulerThread.cpp's
 # bufEmptyCondition wait has no predicate, loop or timeout) into a failed suite instead of a process
 # that never exits; SuiteProperties.cmake raises it for the suites that run longer than that.
-natron_add_gtest_suites(Tests PROPERTIES TIMEOUT 300)
-natron_add_gtest_suites(GuiTests PROPERTIES TIMEOUT 300)
+set(NATRON_TEST_DEFAULT_TIMEOUT_S 300)
+natron_add_gtest_suites(Tests PROPERTIES TIMEOUT ${NATRON_TEST_DEFAULT_TIMEOUT_S})
+natron_add_gtest_suites(GuiTests PROPERTIES TIMEOUT ${NATRON_TEST_DEFAULT_TIMEOUT_S})
 # Per-suite properties go in an include that ctest runs after the includes registered above, once
 # their add_test() calls have run.
 # SuiteProperties.cmake runs at ctest time and cannot see configure-time variables, so what it needs
@@ -502,7 +506,7 @@ if(EXISTS "${NATRON_USD_PREFIX}/plugin/usd/hdCycles.so")
 else()
     set(NATRON_CYCLES_BUNDLED OFF)
 endif()
-file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake "set(NATRON_CYCLES_BUNDLED ${NATRON_CYCLES_BUNDLED})\nset(NATRON_MOONRAY_BUNDLED ${NATRON_MOONRAY_BUNDLED})\n")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake "set(NATRON_CYCLES_BUNDLED ${NATRON_CYCLES_BUNDLED})\nset(NATRON_MOONRAY_BUNDLED ${NATRON_MOONRAY_BUNDLED})\nset(NATRON_TEST_DEFAULT_TIMEOUT_S ${NATRON_TEST_DEFAULT_TIMEOUT_S})\n")
 set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake)
 set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/SuiteProperties.cmake)
 

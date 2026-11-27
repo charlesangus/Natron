@@ -69,3 +69,4 @@ Member of F40 - 3D Viewer Tools; its UAT is collected at the Feature (PLAN.md co
 - 2026-11-27 — **Icon tweaks (user):** the Scene Lights icon gets rays coming from the light (it read as off); the Show Grid icon must be simpler, it was too busy.
 - 2026-11-27 — Scene Lights (bulb with rays) and the simplified Show Grid icon approved (user, 9dcf585154). Node handle tool icon rejected; options being drawn.
 - 2026-11-27 — Node handle tool icon: option E (pivot dot with an up arrow, a rotation arc and an outlined square) (user).
+- 2026-11-27 — Screenshots approved (user): bars on geometry, tool options with the node handle tool, orthographic view icon, Select drawing no node handles (gate6 build, 04466aa8db; c19cc062a8 adds only the binding-count test fix).

@@ -28,7 +28,7 @@ Member of F22 - Native VDB: branches off and merges into `feature/f22-native-vdb
 
 ## Phase 418.1: Conversion library
 
-- [ ] M418.P1.T1 — `GeoVDBConvert` library
+- [x] M418.P1.T1 — `GeoVDBConvert` library
   - files: `Engine/Geo/GeoVDBConvert.{h,cpp}`, `Tests/GeoVDBConvert_Test.cpp`
   - approach: Wrap `meshToVolume` (from the detail's triangulated polygons, with an optional polygon-index grid), `ParticlesToLevelSet` (a point-list adapter over `P`/`pscale`/`v`), `volumeToMesh` and SDF/fog conversion, taking and returning native types (`GeoDetail` and VDB primitives).
   - verify: `GeoVDBConvert_Test`: a unit sphere mesh → SDF has distance ≈ −1 at the centre and ≈ 0 on the surface; SDF → polygons gives a mesh within one voxel of the sphere; one particle of `pscale` 0.5 gives a 0.5-radius sphere.
@@ -36,12 +36,12 @@ Member of F22 - Native VDB: branches off and merges into `feature/f22-native-vdb
 
 ## Phase 418.2: Nodes
 
-- [ ] M418.P2.T1 — `VDBFromPolygons` and `VDBFromParticles`
+- [x] M418.P2.T1 — `VDBFromPolygons` and `VDBFromParticles`
   - files: `Engine/Nodes/Geometry/VDBFromPolygons.{h,cpp,reg.inc}`, `Engine/Nodes/Geometry/VDBFromParticles.{h,cpp,reg.inc}`, `Tests/VDBFrom_Test.cpp`
   - approach: Nodes over the library, with the SOPs' knob sets and attribute-grid options; output VDB prims named from knobs.
   - verify: `VDBFrom_Test`: attribute `Cd` from a coloured mesh lands in a `Cd` grid with matching values near the surface; particle trails stretch the SDF along `v`.
   - size: M
-- [ ] M418.P2.T2 — `ConvertVDB` and `VDBResample`
+- [x] M418.P2.T2 — `ConvertVDB` and `VDBResample`
   - files: `Engine/Nodes/Geometry/ConvertVDB.{h,cpp,reg.inc}`, `Engine/Nodes/Geometry/VDBResample.{h,cpp,reg.inc}`, `Tests/ConvertVDB_Test.cpp`
   - approach: ConvertVDB modes Polygons / Fog / SDF with isovalue and adaptivity; resample via OpenVDB `GridTransformer` / `resampleToMatch`.
   - verify: `ConvertVDB_Test`: adaptivity 0.5 gives fewer polygons than 0 with the same bounds; resampling to double voxel size halves the active-voxel count per axis within tolerance.
@@ -49,7 +49,7 @@ Member of F22 - Native VDB: branches off and merges into `feature/f22-native-vdb
 
 ## Phase 418.3: Proof
 
-- [ ] M418.P3.T1 — GUI check and docs
+- [x] M418.P3.T1 — GUI check and docs
   - files: `Tests/gui/m418_vdb_conversion.py`, `Engine/Nodes/Geometry/docs/*.md`
   - approach: Mesh → SDF → polygons round trip and particles → SDF → polygons in the viewer. Docs written fresh.
   - verify: the script passes under Xvfb; screenshots sent with SendUserFile for the Feature's UAT.
@@ -63,3 +63,4 @@ Member of F22 - Native VDB: branches off and merges into `feature/f22-native-vdb
 
 Shared design: `PLAN/DECISIONS/2026-11-12-geometry-simulation-expansion.md`.
 - 2026-11-23 — Implemented (gate queued). PM defaults, to confirm at F22 UAT: an open mesh to SDF gives an unsigned band with a note suggesting Fog, Fill Interior off, or closing the mesh; Fog output guesses an inside and warns; ConvertVDB polygons do not inherit the VDB name; VDBResample in Reference mode with no reference VDB errors.
+- 2026-11-27 (PM) — Tasks landed in ef7c1b12e6 and follow-ups 4f5f9dadec (GeoVDBConvertGrid beside M417's GeoVDBNamedGrid), 610ad193b1 (fog winding, particle skip count, quiet info, resample test expectations) and 928df9880d (SceneStage counts in-place layer edits under the scene write barrier, so the viewer redraws when GeoToUSD's upstream geometry changes; a shared viewer fix). m418-gate4 (fast, full ctest, m418 GUI + m254/m376/m361 viewer scripts) green at 928df9880d.

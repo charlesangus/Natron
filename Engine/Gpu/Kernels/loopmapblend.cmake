@@ -1,0 +1,1 @@
+slang_add_kernel(loopmapblend_accumulate Kernels/loopmapblend.slang ENTRY loopmapblend_accumulate REGISTRY NatronGpu)

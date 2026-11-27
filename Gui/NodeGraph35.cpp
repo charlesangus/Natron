@@ -547,6 +547,23 @@ NodeGraph::showMenu(const QPoint & pos)
     QObject::connect( expandGroup, SIGNAL(triggered()), this, SLOT(expandSelectedGroups()) );
     editMenu->addAction(expandGroup);
 
+    editMenu->setToolTipsVisible(true);
+    QString makeINodeReason;
+    QAction* makeINode = new QAction(tr("Make I-Node"), editMenu);
+    makeINode->setEnabled(canMakeINodeFromSelection(&makeINodeReason));
+    makeINode->setToolTip(makeINode->isEnabled()
+                              ? tr("Replace the node by its I-variant, or wrap the selection in a Map Blend loop.")
+                              : makeINodeReason);
+    QObject::connect(makeINode, SIGNAL(triggered()), this, SLOT(makeINodeFromSelection()));
+    editMenu->addAction(makeINode);
+
+    QString makeBaseNodeReason;
+    QAction* makeBaseNode = new QAction(tr("Make Base Node"), editMenu);
+    makeBaseNode->setEnabled(canMakeBaseNodeFromSelection(&makeBaseNodeReason));
+    makeBaseNode->setToolTip(makeBaseNode->isEnabled() ? tr("Replace the I-node by its base node.") : makeBaseNodeReason);
+    QObject::connect(makeBaseNode, SIGNAL(triggered()), this, SLOT(makeBaseNodeFromSelection()));
+    editMenu->addAction(makeBaseNode);
+
     QAction* findAction = new ActionWithShortcut(kShortcutGroupNodegraph, kShortcutIDActionGraphFindNode,
                                                  kShortcutDescActionGraphFindNode, editMenu);
     editMenu->addAction(findAction);

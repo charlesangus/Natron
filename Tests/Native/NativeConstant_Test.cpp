@@ -378,7 +378,7 @@ TEST_F(NativeConstantTest, UnversionedRequestsGetTheNativeGenerator)
     EXPECT_EQ(kNativeConstantMajor, unversioned->getMajorVersion());
 }
 
-TEST_F(NativeConstantTest, RendersTheSameInBothSchedulerModes)
+TEST_F(NativeConstantTest, RendersTheSameDirectAndScheduled)
 {
     resetProject();
     std::vector<int> poolSizes;

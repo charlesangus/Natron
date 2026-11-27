@@ -110,6 +110,14 @@ if(NOT "TextRenderer" IN_LIST NATRON_GTEST_SUITE_TESTS)
 endif()
 set_tests_properties(TextRenderer PROPERTIES ENVIRONMENT "NATRON_TEST_REQUIRE_GL=1")
 
+# One MSAA sample puts Storm's depth at the pixel's centre for this suite's comparison with a ray. The
+# setting is read once per process and would change the bits of every other Storm render in it.
+if(NOT "USDRenderSingleSampleTest" IN_LIST NATRON_GTEST_SUITE_TESTS)
+    message(FATAL_ERROR "SuiteProperties.cmake: 'USDRenderSingleSampleTest' is not a registered test; "
+                        "update the suite name or it would silently lose its properties.")
+endif()
+set_tests_properties(USDRenderSingleSampleTest PROPERTIES ENVIRONMENT "HDX_MSAA_SAMPLE_COUNT=1")
+
 # MoonRayDelegate skips when the MoonRay plug-in is missing, which would hide a bundling or plug-in
 # discovery regression in a build that does carry MoonRay.
 if(NATRON_MOONRAY_BUNDLED)
@@ -123,7 +131,7 @@ endif()
 # These suites skip when the Cycles plug-in is missing, which would hide a bundling or plug-in
 # discovery regression in a build that does carry Cycles.
 if(NATRON_CYCLES_BUNDLED)
-    foreach(_suite CyclesDelegate USDRenderCyclesMaterialTest)
+    foreach(_suite CyclesDelegate USDRenderCyclesMaterialTest USDRenderCyclesInstancerTest)
         if(NOT "${_suite}" IN_LIST NATRON_GTEST_SUITE_TESTS)
             message(FATAL_ERROR "SuiteProperties.cmake: '${_suite}' is not a registered test; "
                                 "update the suite name or it would silently lose its properties.")

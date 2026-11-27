@@ -81,6 +81,7 @@ public:
     bool isChecked() const;
     virtual KnobIPtr getKnob() const OVERRIDE FINAL;
     TabGroup* getOrCreateTabWidget();
+    TabGroup* getTabWidget() const { return _tabGroup; }
 
     void removeTabWidget();
 

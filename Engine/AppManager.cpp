@@ -160,6 +160,7 @@
 #include "Engine/TrackerNode.h"
 
 #include "Engine/Nodes/Deep/DeepRead.h"
+#include "Engine/Nodes/Geometry/GeoSdfFileFormat.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
 #include "Engine/Nodes/IO/OiioWriteSupport.h"
 #include "Engine/Nodes/IO/RawExtensions.h"
@@ -631,15 +632,6 @@ AppManager::AppManager()
     assert(!_instance);
     _instance = this;
 
-    // Read before the settings load: CI selects the scheduler per job through the environment.
-    {
-        std::optional<RenderSchedulerModeEnum> envMode = parseRenderSchedulerModeEnv(std::getenv("NATRON_RENDER_SCHEDULER"));
-        if (envMode) {
-            _imp->renderSchedulerMode = (int)*envMode;
-            _imp->renderSchedulerEnvOverride = true;
-        }
-    }
-
     CacheRetention::readAdmissionPolicyOverrideFromEnvironment();
 
     QObject::connect( this, SIGNAL(s_requestOFXDialogOnMainThread(OfxImageEffectInstance*,void*)), this, SLOT(onOFXDialogOnMainThreadReceived(OfxImageEffectInstance*,void*)) );
@@ -738,6 +730,10 @@ AppManager::loadFromArgs(const CLArgs& cl)
         std::string liveTextureError;
         if (!SceneCaches::registerLiveTextures(&liveTextureError)) {
             std::cerr << liveTextureError << std::endl;
+        }
+        std::string geoLayerError;
+        if (!GeoLayers::registerPlugin(&geoLayerError)) {
+            std::cerr << geoLayerError << std::endl;
         }
     }
 
@@ -918,8 +914,12 @@ AppManager::~AppManager()
     if (_imp->_viewerCache) {
         _imp->_viewerCache->waitForDeleterThread();
     }
+    if (_imp->_geoDetailCache) {
+        _imp->_geoDetailCache->waitForDeleterThread();
+    }
     _imp->_nodeCache.reset();
     _imp->_viewerCache.reset();
+    _imp->_geoDetailCache.reset();
 
     setTeardownStage("finalizing Python");
     tearDownPython();
@@ -1240,7 +1240,6 @@ AppManager::loadInternal(const CLArgs& cl)
 
         return ok;
     }
-    onRenderSchedulerModeSettingChanged(_imp->_settings->getRenderSchedulerMode());
     {
         const GpuResolvedMode gpuMode = GpuContext::resolveMode(_imp->_settings->getGpuComputeMode(), std::getenv("NATRON_GPU"));
         const std::string gpuDeviceId = _imp->_settings->getGpuDevice();
@@ -1520,12 +1519,15 @@ AppManager::loadInternalAfterInitGui(const CLArgs& cl)
         size_t maxCacheRAM = _imp->_settings->getRamMaximumPercent() * getSystemTotalRAM();
         U64 viewerCacheSize = _imp->_settings->getMaximumViewerDiskCacheSize();
         U64 maxDiskCacheNode = _imp->_settings->getMaximumDiskCacheNodeSize();
+        U64 maxGeoDetailCache = _imp->_settings->getMaximumGeoDetailCacheSize();
 
         _imp->_nodeCache = std::make_shared<Cache<Image> >("NodeCache", NATRON_CACHE_VERSION, maxCacheRAM, 1.);
         _imp->_nodeCache->useEvictionScore();
         _imp->_nodeCache->setDiskTier(openNodeCacheDiskTier(*_imp->_settings));
         setNodeCachePinBudget(maxDiskCacheNode);
         _imp->_viewerCache = std::make_shared<Cache<FrameEntry>>("ViewerCache", NATRON_CACHE_VERSION, viewerCacheSize, 0.);
+        // RAM-only with its own budget, so geometry can never evict the image caches.
+        _imp->_geoDetailCache = std::make_shared<Cache<GeoDetailCacheEntry>>("GeoDetailCache", NATRON_CACHE_VERSION, maxGeoDetailCache, 1.);
         _imp->setViewerCacheTileSize();
     } catch (std::logic_error&) {
         // ignore
@@ -1863,7 +1865,7 @@ AppManager::clearPluginsLoadedCache()
 void
 AppManager::freeGpuMemory()
 {
-    SceneCaches::releaseRenderEngines();
+    SceneCaches::releaseRenderEnginesGpuMemory();
     SceneCaches::releaseLiveTextures();
     releaseSceneViewEngines(false);
     if (_imp->gpuContext) {
@@ -1904,6 +1906,9 @@ AppManager::clearCaches(bool inRamOnly)
     if (_imp->_viewerCache) {
         _imp->_viewerCache->waitForDeleterThread();
     }
+    if (_imp->_geoDetailCache) {
+        _imp->_geoDetailCache->waitForDeleterThread();
+    }
 
     if (inRamOnly) {
         clearLastRenderedTextures();
@@ -1919,6 +1924,9 @@ AppManager::clearCaches(bool inRamOnly)
     } else {
         clearDiskCache();
         clearNodeCache();
+    }
+    if (_imp->_geoDetailCache) {
+        _imp->_geoDetailCache->clear();
     }
     SceneCaches::releaseIdleQueryStages();
     // Not freeGpuMemory(): the GPU pool's free buffers are what the next renders reuse.
@@ -2052,6 +2060,13 @@ AppManager::setNodeCachePinBudget(U64 bytes)
     if (_imp->_nodeCache && _imp->_nodeCache->diskTier()) {
         _imp->_nodeCache->diskTier()->setPinBudget(bytes);
     }
+}
+
+void
+AppManager::setApplicationsCachesMaximumGeoDetailCacheSize(unsigned long long size)
+{
+    _imp->_geoDetailCache->setMaximumCacheSize(size);
+    _imp->_geoDetailCache->setMaximumInMemorySize(1);
 }
 
 void
@@ -2817,6 +2832,7 @@ void
 AppManager::clearExceedingEntriesFromNodeCache()
 {
     _imp->_nodeCache->clearExceedingEntries();
+    _imp->_geoDetailCache->clearExceedingEntries();
 }
 
 const PluginsMap&
@@ -2938,6 +2954,12 @@ AppManager::removeFromNodeCache(const DeepImageCacheEntryPtr& entry)
 }
 
 void
+AppManager::removeFromGeoDetailCache(const GeoDetailCacheEntryPtr& entry)
+{
+    _imp->_geoDetailCache->removeEntry(entry);
+}
+
+void
 AppManager::removeFromNodeCache(U64 hash)
 {
     _imp->_nodeCache->removeEntry(hash);
@@ -2977,6 +2999,8 @@ AppManager::getMemoryStatsForCacheEntryHolder(const CacheEntryHolder* holder,
     std::size_t viewerCacheDisk = 0;
     std::size_t nodeCacheMem = 0;
     std::size_t nodeCacheDisk = 0;
+    std::size_t geoCacheMem = 0;
+    std::size_t geoCacheDisk = 0; // the geometry cache is RAM-only, so this is always 0
     const Node* isNode = dynamic_cast<const Node*>(holder);
     if (isNode) {
         ViewerInstance* isViewer = isNode->isEffectViewer();
@@ -2985,11 +3009,12 @@ AppManager::getMemoryStatsForCacheEntryHolder(const CacheEntryHolder* holder,
         }
     }
     _imp->_nodeCache->getMemoryStatsForCacheEntryHolder(holder, &nodeCacheMem, &nodeCacheDisk);
+    _imp->_geoDetailCache->getMemoryStatsForCacheEntryHolder(holder, &geoCacheMem, &geoCacheDisk);
 
     const CacheDiskTierPtr tier = _imp->_nodeCache->diskTier();
     const std::size_t pinnedDisk = tier ? (std::size_t)tier->pinnedBytesOf(holder->getCacheID()) : 0;
 
-    *ramOccupied = viewerCacheMem + nodeCacheMem;
+    *ramOccupied = viewerCacheMem + nodeCacheMem + geoCacheMem;
     *diskOccupied = viewerCacheDisk + nodeCacheDisk + pinnedDisk;
 }
 
@@ -3002,6 +3027,7 @@ AppManager::removeAllCacheEntriesForHolder(const CacheEntryHolder* holder,
         _imp->_nodeCache->diskTier()->releaseHolder(holder->getCacheID());
     }
     _imp->_viewerCache->removeAllEntriesForHolderPublic(holder, blocking);
+    _imp->_geoDetailCache->removeAllEntriesForHolderPublic(holder, blocking);
 }
 
 const QString &
@@ -3084,6 +3110,21 @@ AppManager::getDeepImageOrCreate(const DeepImageKey& key,
                                  DeepImageCacheEntryPtr* returnValue) const
 {
     return _imp->_nodeCache->getOrCreate(key, params, 0, returnValue);
+}
+
+bool
+AppManager::getGeoDetail(const GeoDetailKey& key,
+                         std::list<GeoDetailCacheEntryPtr>* returnValue) const
+{
+    return _imp->_geoDetailCache->get(key, returnValue);
+}
+
+bool
+AppManager::getGeoDetailOrCreate(const GeoDetailKey& key,
+                                 const GeoDetailParamsPtr& params,
+                                 GeoDetailCacheEntryPtr* returnValue) const
+{
+    return _imp->_geoDetailCache->getOrCreate(key, params, 0, returnValue);
 }
 
 bool
@@ -3472,7 +3513,10 @@ AppManager::isNodeCacheAlmostFull() const
 bool
 AppManager::evictLRUFromMemoryCaches()
 {
-    return _imp->_nodeCache->evictLRUInMemoryEntry();
+    bool evictedFromNodeCache = _imp->_nodeCache->evictLRUInMemoryEntry();
+    bool evictedFromGeoDetailCache = _imp->_geoDetailCache->evictLRUInMemoryEntry();
+
+    return evictedFromNodeCache || evictedFromGeoDetailCache;
 }
 
 void
@@ -3557,35 +3601,6 @@ AppManager::setNThreadsPerEffect(int nThreadsPerEffect)
     _imp->nThreadsPerEffect = nThreadsPerEffect;
 }
 
-std::optional<RenderSchedulerModeEnum>
-AppManager::parseRenderSchedulerModeEnv(const char* value)
-{
-    if (!value) {
-        return std::nullopt;
-    }
-    const std::string str(value);
-    if (str == "legacy") {
-        return eRenderSchedulerModeLegacy;
-    }
-    if (str == "taskgraph") {
-        return eRenderSchedulerModeTaskGraph;
-    }
-
-    return std::nullopt;
-}
-
-RenderSchedulerModeEnum
-AppManager::getRenderSchedulerMode() const
-{
-    return (RenderSchedulerModeEnum)_imp->renderSchedulerMode.load();
-}
-
-void
-AppManager::setRenderSchedulerMode(RenderSchedulerModeEnum mode)
-{
-    _imp->renderSchedulerMode = (int)mode;
-}
-
 GpuContext*
 AppManager::getGpuContext() const
 {
@@ -3640,22 +3655,13 @@ AppManagerPrivate::dropDeviceTier()
 std::unique_ptr<GpuContext>
 AppManager::swapGpuContextForTests(std::unique_ptr<GpuContext> context)
 {
+    // The caller usually destroys the context returned, which the scene engines and their queued
+    // releases may still be using.
+    SceneCaches::releaseRenderEnginesAndWait();
     _imp->dropDeviceTier();
     _imp->gpuContext.swap(context);
 
     return context;
-}
-
-void
-AppManager::onRenderSchedulerModeSettingChanged(RenderSchedulerModeEnum mode)
-{
-    if (_imp->renderSchedulerEnvOverride) {
-        return;
-    }
-    _imp->renderSchedulerMode = (int)mode;
-
-    // Real renders in legacy mode keep the last placement, so nothing else would clear the regions of the old mode.
-    ViewerInstance::requestGpuPlacementDryRunForEveryViewer();
 }
 
 void
@@ -3702,11 +3708,7 @@ AppManager::getNCPUsAvailableForEffect()
     }
 
     // Threads already running for the multiThreadSuite + parallel renders
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
     const int runningThreadsCount = getNRunningThreads();
-#else
-    const int runningThreadsCount = 0;
-#endif
 
     // better than QThread::idealThreadCount();, because it can be set by a global preference:
     int maxThreadsCount = QThreadPool::globalInstance()->maxThreadCount();

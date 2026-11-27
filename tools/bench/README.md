@@ -29,6 +29,7 @@ for finding where the time goes. Everything runs in the `natron-dev` container a
 | `reformat_filter_bench.sh`, `reformat_filter_bench.py` | CPU cost of a 4x Reformat downscale with Cubic and Lanczos 3, a main AppImage against a branch AppImage. |
 | `classify.py` | Prints a boundedness verdict (CPU, bandwidth, IO, RAM, host overhead) per result record. |
 | `bezier_keying_bench.py` | Keys Roto Beziers at 1..K frames in NatronRenderer and prints the keying time per K, the median per-edit cost and the log-log slope against K. |
+| `geo_scale.py` | Times GeoTransform, GeoEdit, GeoDelete, GeoToUSD, `geoEncodePattern` and `geoExpandPoints` on a 10M-point grid with the bench-only `DISABLED_GeoBenchTest` suite (`Tests/GeoBench_Test.cpp`) of two `Tests` binaries, and prints median time and peak RSS per stage, before against after. |
 
 Topologies: `chain` (N Grades in series), `mixed` (Grade/Blur/Transform/ColorCorrect in series),
 `wide` (sources merged by a balanced tree), `comp` (seeded random DAG with fan-out and merges).
@@ -152,12 +153,9 @@ records with the same `settings`, and records without the field count as empty.
 To compare runs made under different settings, pass `--pair-settings BEFORE_SETTINGS AFTER_SETTINGS`:
 rows of the first file whose `settings` equal the first value pair with rows of the second file whose
 `settings` equal the second, and `default` selects rows with empty `settings`. For example
-`compare.py --pair-settings renderSchedulerMode=0 renderSchedulerMode=1 legacy.jsonl taskgraph.jsonl`
-prints the Task graph / Legacy ratios.
+`compare.py --pair-settings default someKnob=1 before.jsonl after.jsonl`
+prints the ratios of the second file's rows to the first's.
 
-`BENCH_SETTINGS=renderSchedulerMode=0|1` selects the render scheduler: 1 (Task graph) is the
-default when unset, 0 selects Legacy pull. A run with empty `settings` therefore measures the
-Task graph scheduler.
 
 With `BENCH_RANGE` > 0 the record carries `range_frames`, `range_wall_s`, `range_cpu_s` and
 `range_parallelism` (`range_cpu_s / range_wall_s`, null without a range). `compare.py` prints the
@@ -199,7 +197,7 @@ while 20-frame runs throttle. Compare only runs of equal length that started fro
 ## GPU region bench
 
 `tools/bench/gpu_region_bench.sh <Natron.AppImage> [out-dir]` (default `build/bench/gpu-region`) runs each
-case with `NATRON_GPU=off` and `NATRON_GPU=auto` under `NATRON_RENDER_SCHEDULER=taskgraph` and
+case with `NATRON_GPU=off` and `NATRON_GPU=auto` with
 `NATRON_RENDER_PROFILE`, interleaved, the order flipping each round (`BENCH_ROUNDS`, default 3). Nothing is
 warmed up: pipeline compile, host import and pinning, pool warm-up and first-frame placement are part of
 every number. Kinds (`BENCH_KINDS`, run in this order):
@@ -354,8 +352,7 @@ edited node (`grade` or `hsv`), viewer zoom (`fit` or `100`), edited node's pane
 `NATRON_GPU` (`off` or `auto`) and the auto-proxy preference (`off` or `on`). Each run builds the Canon
 fixture -> RawPrepare -> RawTemperature -> RawHighlights -> RawDemosaic -> RawInputColor -> edited node
 -> Viewer, makes a few untimed edits, then changes one knob of the edited node `BENCH_EDITS` times
-(default 20). It needs the render profile, so it sets `NATRON_RENDER_PROFILE` and
-`NATRON_RENDER_SCHEDULER=taskgraph`.
+(default 20). It needs the render profile, so it sets `NATRON_RENDER_PROFILE`.
 
 `<out-dir>/edit_latency.jsonl` gets one line per edit: `latency_ms` (knob set to the profile file
 being written with the first completed viewer frame; the file's modification time, so a few

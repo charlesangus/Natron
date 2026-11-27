@@ -160,7 +160,7 @@ public:
     RotoLayerPtr addLayer();
 
 private:
-    RotoLayerPtr addLayerInternal(bool declarePython);
+    RotoLayerPtr addLayerInternal(bool declarePython, bool selectLayer);
 
 public:
     /**
@@ -393,6 +393,28 @@ public:
     virtual void composeItemTransform(const RotoDrawableItem& item, double time, const Transform::Matrix3x3& local, Transform::Matrix3x3* matrix) const;
 
     /**
+     * @brief Whether a layer's transform knobs move what is inside it, and the node's transform
+     * knobs edit a selected layer's. False for a host that keeps layer transforms of its own.
+     **/
+    virtual bool layersOwnTransforms() const
+    {
+        return true;
+    }
+
+    /**
+     * @brief The frame item's own transform applies in: the transforms of its ancestor layers,
+     * outermost first. The identity when there are none or layersOwnTransforms() is false.
+     **/
+    void getParentLayersTransformAtTime(const RotoItem& item, double time, Transform::Matrix3x3* matrix) const;
+
+    /**
+     * @brief The frame the node's transform knobs edit in: the ancestor layers' transform of the
+     * layer or item they show. Returns false, with the identity, when there is no such frame.
+     * Main thread.
+     **/
+    bool getTransformKnobsFrameAtTime(double time, Transform::Matrix3x3* matrix) const;
+
+    /**
      * @brief Whether a follow's fit may key item's own transform knobs. They only move item while no
      * other item's transform takes their place; when one does, the fit is keyed on item's points.
      **/
@@ -422,21 +444,13 @@ protected:
     }
 
     /**
-     * @brief True when a layer has a transform of its own, so a selected layer counts as one more
-     * transform in the selection.
-     **/
-    virtual bool layersOwnTransforms() const
-    {
-        return false;
-    }
-
-    /**
      * @brief Ties the Transform page to the selection's one transform: the node's transform knobs
      * show the item's own knobs and edits on them reach those alone, when the selection holds
-     * exactly one transform and it is an item's that pageEditsTransform() allows. Where
-     * layersOwnTransforms(), an item inside a selected layer does not count. With more than one
-     * transform selected, none, or one the page must not edit, nothing is tied and the page is
-     * disabled, which hides the transform handle too. Main thread only.
+     * exactly one transform and it is one that pageEditsTransform() allows. A selected layer is
+     * one transform, and an item inside it does not count. Where layersOwnTransforms(), a tied
+     * layer's own knobs are shown and edited; otherwise the host edits it through the page. With
+     * more than one transform selected, none, or one the page must not edit, nothing is tied and
+     * the page is disabled, which hides the transform handle too. Main thread only.
      **/
     void refreshTransformKnobTies();
 
@@ -753,6 +767,12 @@ private:
      * item they show. A null item stops the following.
      **/
     void mirrorItem(const RotoDrawableItemPtr& item);
+
+    /**
+     * @brief Makes the node's transform knobs show layer's, and follow them, instead of the
+     * mirrored item's. A null layer gives them back to the mirrored item.
+     **/
+    void mirrorLayer(const RotoLayerPtr& layer);
     bool mirrorsKnob(const RotoDrawableItem& item, const KnobI* proxy) const;
     bool forwardsKnob(const RotoDrawableItem& item, const KnobI* proxy) const;
 

@@ -49,6 +49,9 @@
 #define kUSDRenderParamSettingsPrim "settingsPrim"
 #define kUSDRenderParamHeadlight "headlight"
 #define kUSDRenderParamRenderer "renderer"
+#define kUSDRenderParamRenderPurpose "renderPurpose"
+#define kUSDRenderParamProxyPurpose "proxyPurpose"
+#define kUSDRenderParamGuidePurpose "guidePurpose"
 
 // The id of the Settings Prim entry that renders with the stage's active render settings prim
 // (its renderSettingsPrimPath metadata).
@@ -78,9 +81,10 @@ public:
                        "with no colour transform; depth.Z is the distance along the camera's view axis in scene "
                        "units, +inf where nothing was hit; primId.id identifies the prim seen at each pixel by a "
                        "hash of its path, bit-cast to float as Cryptomatte does, 0 where nothing was hit, and the "
-                       "frame metadata maps each hash to its path. The renderers other than Storm also fill the "
+                       "frame metadata maps each hash to its path. The renderers other than Storm and Natron Utility also fill the "
                        "normal layer: the shading normal in camera space, 0 where nothing was hit. Only the scene's lights light it, unless Headlight "
-                       "adds one at the camera. Without a render settings prim, the scene's first camera renders the "
+                       "adds one at the camera. Render Purpose, Proxy Purpose and Guide Purpose choose which prims of "
+                       "those purposes are drawn. Without a render settings prim, the scene's first camera renders the "
                        "project's format.",
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
@@ -234,10 +238,13 @@ private:
         int height = 0;
         double pixelAspectRatio = 1.;
         std::string renderer;
+        // Natron Utility's overscan in pixels, 0 for another renderer, and its device setting.
+        int overscan = 0;
+        std::string utilityDevice;
 
         bool operator==(const SettingsSummary& other) const
         {
-            return (read == other.read) && (error == other.error) && (hasPrim == other.hasPrim) && (width == other.width) && (height == other.height) && (pixelAspectRatio == other.pixelAspectRatio) && (renderer == other.renderer);
+            return (read == other.read) && (error == other.error) && (hasPrim == other.hasPrim) && (width == other.width) && (height == other.height) && (pixelAspectRatio == other.pixelAspectRatio) && (renderer == other.renderer) && (overscan == other.overscan) && (utilityDevice == other.utilityDevice);
         }
     };
 
@@ -269,9 +276,22 @@ private:
     // Shows warning, or clears the node's message when it is empty.
     void showWarning(const std::string& warning);
 
+    /**
+     * @brief Shows what a render that stands left to say: the delegate's errors, else the setup's and
+     * the delegate's warnings, and the device it rendered on when it named one.
+     **/
+    void showRenderMessages(const std::string& setupWarning,
+                            const std::string& resultWarning,
+                            const std::string& errors,
+                            const std::string& device);
+
+    // The Natron Utility device the active settings prim asks for at time and view, Auto without one.
+    std::string utilityDevice(double time, ViewIdx view) const;
+
     // The output format in pixels and its pixel aspect ratio: the active prim's resolution and
-    // pixel aspect ratio, the project's format without one.
-    void outputFormat(double time, ViewIdx view, RectI* format, double* par) const;
+    // pixel aspect ratio, the project's format without one. *overscan, when given, is the pixels a
+    // Natron Utility render adds on every side of it.
+    void outputFormat(double time, ViewIdx view, RectI* format, double* par, int* overscan = nullptr) const;
 
     // The primId table of the output at time and view (every key under kUSDRenderMetadataPrimIdPrefix)
     // under primIdTableHash(), when a render or a reader off the main thread has stored it. Without
@@ -284,6 +304,9 @@ private:
 
     KnobChoiceWPtr _settingsPrim;
     KnobBoolWPtr _headlight;
+    KnobBoolWPtr _renderPurpose;
+    KnobBoolWPtr _proxyPurpose;
+    KnobBoolWPtr _guidePurpose;
     KnobChoiceWPtr _renderer;
     std::atomic<bool> _settingsPrimMenuRefreshPending;
     SceneMenuRefresh _settingsPrimMenuRefresh;

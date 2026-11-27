@@ -421,7 +421,7 @@ gpuOptions(GpuTaskCounts* counts)
 
     options.ops = defaultOps();
     options.steps = stepBudget(kSteps);
-    options.taskGraph = false;
+    options.scheduled = false;
     options.cachedRender = [counts](const NodePtr& node, double time, unsigned mipmapLevel, const RectI& window, RenderedPlane* out, std::string* error) {
         return renderOnGpu(node, time, mipmapLevel, window, counts, out, error);
     };
@@ -464,7 +464,7 @@ runScripted(const AppInstancePtr& app,
             if (pass == 0) {
                 clearEverything(app);
                 RenderedPlane reference;
-                if (!renderProbe(probe, 1., 0, g.window, eRenderSchedulerModeLegacy, true, &reference, &error)) {
+                if (!renderProbeDirect(probe, 1., 0, g.window, true, &reference, &error)) {
                     return "the CPU reference of step " + std::to_string(i) + " (" + what + ") failed: " + error;
                 }
                 references.push_back(reference);

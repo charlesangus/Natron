@@ -622,6 +622,16 @@ Gui::putSettingsPanelFirst(DockablePanel* panel)
             return;
         }
     }
+    notifyPanelForegroundChanged();
+}
+
+void
+Gui::notifyPanelForegroundChanged() const
+{
+    GuiAppInstancePtr app = getApp();
+    if (app) {
+        app->onPanelForegroundChanged();
+    }
 }
 
 void
@@ -688,20 +698,26 @@ Gui::addVisibleDockablePanel(DockablePanel* panel)
             panel->setVisible(true);
         }
 
-        QMutexLocker k(&_imp->openedPanelsMutex);
-        _imp->openedPanels.push_front(panel);
+        {
+            QMutexLocker k(&_imp->openedPanelsMutex);
+            _imp->openedPanels.push_front(panel);
+        }
+        notifyPanelForegroundChanged();
     }
 } // Gui::addVisibleDockablePanel
 
 void
 Gui::removeVisibleDockablePanel(DockablePanel* panel)
 {
-    QMutexLocker k(&_imp->openedPanelsMutex);
-    std::list<DockablePanel*>::iterator it = std::find(_imp->openedPanels.begin(), _imp->openedPanels.end(), panel);
+    {
+        QMutexLocker k(&_imp->openedPanelsMutex);
+        std::list<DockablePanel*>::iterator it = std::find(_imp->openedPanels.begin(), _imp->openedPanels.end(), panel);
 
-    if ( it != _imp->openedPanels.end() ) {
-        _imp->openedPanels.erase(it);
+        if (it != _imp->openedPanels.end()) {
+            _imp->openedPanels.erase(it);
+        }
     }
+    notifyPanelForegroundChanged();
 }
 
 const std::list<DockablePanel*>&

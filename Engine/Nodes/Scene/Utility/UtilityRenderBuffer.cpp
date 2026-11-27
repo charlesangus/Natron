@@ -206,11 +206,10 @@ filmBandRows(const gpu::GpuRecordContext& context,
     return static_cast<std::uint32_t>((fit / quantum) * quantum);
 }
 
-// One unit of the work that bounds a submission is a traced ray; clearing or copying a film's pixel only writes
-// its 48 bytes, so this many of them cost about as much, and a large film starts in a few submissions.
-const std::uint64_t kFilmClearPixelsPerWork = 8;
-// A copy reads as many bytes as it writes.
-const std::uint64_t kFilmCopyPixelsPerWork = kFilmClearPixelsPerWork / 2;
+// Unmeasured, so a film pixel is charged as a whole traced ray: a cheaper charge could start a large film in
+// one submission that a stop waits on.
+const std::uint64_t kFilmClearPixelsPerWork = 1;
+const std::uint64_t kFilmCopyPixelsPerWork = 1;
 
 // The rows of a band one clear dispatch covers: as many as maxThreads threads clear, starting every chunk on the
 // device's offset alignment, and never fewer than that alignment asks for.
@@ -1294,8 +1293,11 @@ UtilityRenderBuffer::beginDeviceFrame(const std::function<gpu::GpuRecordContext*
                                       gpu::GpuKernelRegistry& registry,
                                       gpu::GpuBufferPool& pool,
                                       const std::shared_ptr<const UtilityFilmKernels>& kernels,
-                                      const std::shared_ptr<void>& runtimeHold)
+                                      const std::shared_ptr<void>& runtimeHold,
+                                      bool* superseded)
 {
+    *superseded = false;
+
     const char* const halted = "The Utility renderer's frame stopped or failed before its film was ready";
     gpu::GpuRecordContext* context = record(0);
 
@@ -1411,6 +1413,8 @@ UtilityRenderBuffer::beginDeviceFrame(const std::function<gpu::GpuRecordContext*
         const std::lock_guard<std::mutex> l(_deviceMutex);
 
         if (_deviceEpoch != epoch) {
+            *superseded = true;
+
             return failure("The Utility renderer's film was cleared or released while its frame was starting");
         }
         if (fresh) {

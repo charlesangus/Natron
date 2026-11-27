@@ -251,14 +251,16 @@ public:
      * the device's offset alignment lets a band start on, so that a stop never waits for a whole
      * film. A frame stopped part way keeps the film as it was: the next call clears again, or
      * copies the samples of the earlier calls again. The submissions run outside the buffer's lock,
-     * so that no reader waits on them; a clear() or release meanwhile fails the call.
+     * so that no reader waits on them; a clear() or release meanwhile fails the call with
+     * *superseded set, the frame having been stopped rather than failed.
      **/
     gpu::GpuStatus beginDeviceFrame(const std::function<gpu::GpuRecordContext*(std::uint64_t work)>& record,
                                     std::uint64_t maxWork,
                                     gpu::GpuKernelRegistry& registry,
                                     gpu::GpuBufferPool& pool,
                                     const std::shared_ptr<const UtilityFilmKernels>& kernels,
-                                    const std::shared_ptr<void>& runtimeHold);
+                                    const std::shared_ptr<void>& runtimeHold,
+                                    bool* superseded);
 
     /**
      * @brief Records into context the adding of a batch's colours, for the rays of the width x

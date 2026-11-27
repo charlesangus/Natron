@@ -1700,10 +1700,15 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
                 return &rec.ctx();
             };
 
-            if (gpu::GpuStatus s = deviceColor->beginDeviceFrame(record, kMaxSubmitWork, imp.registry, imp.pool, imp.filmKernels, imp.runtimeHold); !s) {
+            bool superseded = false;
+
+            if (gpu::GpuStatus s = deviceColor->beginDeviceFrame(record, kMaxSubmitWork, imp.registry, imp.pool, imp.filmKernels, imp.runtimeHold, &superseded); !s) {
                 // The recorder has already said why: the frame was stopped or a submission failed.
                 if (halted) {
                     return false;
+                }
+                if (superseded) {
+                    return imp.stopped();
                 }
 
                 return imp.fail("WavefrontGpu could not hold the film on the device", s);

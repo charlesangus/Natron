@@ -1689,7 +1689,23 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
             return false;
         }
         if (deviceColor && (row == 0)) {
-            if (gpu::GpuStatus s = deviceColor->beginDeviceFrame(rec.ctx(), imp.registry, imp.pool, imp.filmKernels, imp.runtimeHold); !s) {
+            bool halted = false;
+            const auto record = [&rec, &halted](std::uint64_t work) -> gpu::GpuRecordContext* {
+                if (!rec.reserve(work)) {
+                    halted = true;
+
+                    return nullptr;
+                }
+
+                return &rec.ctx();
+            };
+
+            if (gpu::GpuStatus s = deviceColor->beginDeviceFrame(record, kMaxSubmitWork, imp.registry, imp.pool, imp.filmKernels, imp.runtimeHold); !s) {
+                // The recorder has already said why: the frame was stopped or a submission failed.
+                if (halted) {
+                    return false;
+                }
+
                 return imp.fail("WavefrontGpu could not hold the film on the device", s);
             }
             rec.ctx().computeBarrier();

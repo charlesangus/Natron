@@ -31,6 +31,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -239,11 +240,18 @@ public:
 
     /**
      * @brief Moves the pixels to the device for a frame's samples: the first call after clear()
-     * records into context the clear to its value; a later one has the samples add to those the film
-     * holds from the frame's earlier calls, and fails if the film is gone. The host pixels are stale
-     * from here until Map() or clear().
+     * records the clear to its value; a later one has the samples add to those the film holds from
+     * the frame's earlier calls, and fails if the film is gone. The host pixels are stale from here
+     * until Map() or clear().
+     *
+     * record gives the context to record the next `work` kernel threads into, having submitted and
+     * waited for what was recorded first when it asks to, or null when the frame was stopped or a
+     * submission failed; the clear then stops part way and the next call clears again. Each clear
+     * dispatch runs at most maxDispatchThreads threads, or the fewest rows the device's offset
+     * alignment lets a band start on, so that a stop never waits for the clear of a whole film.
      **/
-    gpu::GpuStatus beginDeviceFrame(gpu::GpuRecordContext& context,
+    gpu::GpuStatus beginDeviceFrame(const std::function<gpu::GpuRecordContext*(std::uint64_t work)>& record,
+                                    std::uint64_t maxDispatchThreads,
                                     gpu::GpuKernelRegistry& registry,
                                     gpu::GpuBufferPool& pool,
                                     const std::shared_ptr<const UtilityFilmKernels>& kernels,

@@ -206,6 +206,22 @@ filmBandRows(const gpu::GpuRecordContext& context,
     return static_cast<std::uint32_t>((fit / quantum) * quantum);
 }
 
+// The rows of a band one clear dispatch covers: as many as maxThreads threads clear, starting every chunk on the
+// device's offset alignment, and never fewer than that alignment asks for.
+std::uint32_t
+filmClearRows(const gpu::GpuRecordContext& context,
+              std::uint32_t width,
+              std::uint32_t bandRows,
+              std::uint64_t maxThreads)
+{
+    const std::uint64_t pixelRowBytes = static_cast<std::uint64_t>(width) * kFilmPixelBytes;
+    const std::uint64_t alignment = context.device().info().minStorageBufferOffsetAlignment;
+    const std::uint64_t quantum = alignment / std::gcd(alignment, pixelRowBytes);
+    const std::uint64_t rows = std::max(quantum, ((maxThreads / width) / quantum) * quantum);
+
+    return static_cast<std::uint32_t>(std::min<std::uint64_t>(rows, bandRows));
+}
+
 gpu::GpuStatus
 filmTooWide(std::uint32_t width)
 {
@@ -1264,7 +1280,8 @@ UtilityRenderBuffer::canRenderOnDevice() const
 }
 
 gpu::GpuStatus
-UtilityRenderBuffer::beginDeviceFrame(gpu::GpuRecordContext& context,
+UtilityRenderBuffer::beginDeviceFrame(const std::function<gpu::GpuRecordContext*(std::uint64_t work)>& record,
+                                      std::uint64_t maxDispatchThreads,
                                       gpu::GpuKernelRegistry& registry,
                                       gpu::GpuBufferPool& pool,
                                       const std::shared_ptr<const UtilityFilmKernels>& kernels,
@@ -1275,6 +1292,13 @@ UtilityRenderBuffer::beginDeviceFrame(gpu::GpuRecordContext& context,
 
     if ((_format != HdFormatFloat32Vec4) || (_width == 0) || (_height == 0) || (_clearPixel.size() != kFilmPixelBytes) || !kernels) {
         return failure("The Utility renderer's colour cannot be held on the GPU");
+    }
+
+    const char* const halted = "The Utility renderer's frame stopped before its film was ready";
+    gpu::GpuRecordContext* context = record(0);
+
+    if (!context) {
+        return failure(halted);
     }
 
     const bool usable = _film && !_film->released() && (&_film->device == &registry.device()) && (_film->width == _width) && (_film->height == _height);
@@ -1309,35 +1333,45 @@ UtilityRenderBuffer::beginDeviceFrame(gpu::GpuRecordContext& context,
 
         return failure("The Utility renderer's film was released with its GPU");
     }
+
     if (restart) {
-        const std::uint32_t bandRows = filmBandRows(context, _width, _height);
+        const std::uint32_t bandRows = filmBandRows(*context, _width, _height);
 
         if (bandRows == 0) {
             return filmTooWide(_width);
         }
-        for (std::uint32_t first = 0; first < _height; first += bandRows) {
-            const std::uint32_t rows = std::min(bandRows, _height - first);
+
+        const std::uint32_t chunkRows = filmClearRows(*context, _width, bandRows, maxDispatchThreads);
+
+        for (std::uint32_t first = 0; first < _height; first += chunkRows) {
+            const std::uint32_t rows = std::min(chunkRows, _height - first);
+
+            context = record(static_cast<std::uint64_t>(_width) * rows);
+            if (!context) {
+                return failure(halted);
+            }
+
             KernelFilmClearParams params = { { 0, 0, 0, 0 }, _width, rows, 0, 0 };
 
             std::memcpy(params.value, _clearPixel.data(), kFilmPixelBytes);
 
             const std::array<gpu::GpuBinding, 2> bindings = { filmPixelsBand(0, lease.pixels.buffer(), _width, first, rows), filmAccumulationBand(1, lease.accumulation.buffer(), _width, first, rows) };
 
-            if (gpu::GpuStatus s = context.dispatchBindings(lease.kernels->clear, bindings, std::as_bytes(std::span(&params, 1)), { _width, rows, 1 }); !s) {
+            if (gpu::GpuStatus s = context->dispatchBindings(lease.kernels->clear, bindings, std::as_bytes(std::span(&params, 1)), { _width, rows, 1 }); !s) {
                 return s;
             }
         }
     } else if (previous.pixels) {
-        context.computeBarrier();
-        if (gpu::GpuStatus s = context.copyBuffer(previous.pixels.buffer(), 0, lease.pixels.buffer(), 0, bytes); !s) {
+        context->computeBarrier();
+        if (gpu::GpuStatus s = context->copyBuffer(previous.pixels.buffer(), 0, lease.pixels.buffer(), 0, bytes); !s) {
             return s;
         }
-        if (gpu::GpuStatus s = context.copyBuffer(previous.accumulation.buffer(), 0, lease.accumulation.buffer(), 0, 2 * bytes); !s) {
+        if (gpu::GpuStatus s = context->copyBuffer(previous.accumulation.buffer(), 0, lease.accumulation.buffer(), 0, 2 * bytes); !s) {
             return s;
         }
-        context.hold(std::make_shared<UtilityDeviceFilm::Lease>(std::move(previous)));
+        context->hold(std::make_shared<UtilityDeviceFilm::Lease>(std::move(previous)));
     }
-    context.hold(std::make_shared<UtilityDeviceFilm::Lease>(std::move(lease)));
+    context->hold(std::make_shared<UtilityDeviceFilm::Lease>(std::move(lease)));
     _onDevice = true;
     _deviceRestart = false;
 

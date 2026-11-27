@@ -989,21 +989,34 @@ KnobGui::createAnimationMenu(QMenu* menu,
     }
     if (_imp->driverRow) {
         menu->addSeparator();
-        if (LoopDriverEdit::isDriven(knob, dimension)) {
-            QAction* removeAction = new QAction(tr("Remove loop driver"), menu);
-            removeAction->setData(dimension);
-            QObject::connect(removeAction, SIGNAL(triggered()), this, SLOT(onRemoveLoopDriverActionTriggered()));
-            menu->addAction(removeAction);
-        } else {
-            QAction* driveAction = new QAction(tr("Drive from loop"), menu);
-            driveAction->setData(dimension);
-            if (LoopDriverEdit::loopVariables(LoopDriverEdit::nodeOf(knob)).empty()) {
-                driveAction->setEnabled(false);
-                driveAction->setToolTip(tr("The node is not inside a loop: no LoopEnd below it pairs with a LoopBegin above it."));
-                menu->setToolTipsVisible(true);
+        // Unfolded fields scope the menu to one dimension; every dimension stays reachable too.
+        std::vector<int> scopes;
+        if ((dimension >= 0) && (knob->getDimension() > 1)) {
+            scopes.push_back(-1);
+        }
+        scopes.push_back(dimension);
+        const bool outsideLoops = LoopDriverEdit::loopVariables(LoopDriverEdit::nodeOf(knob)).empty();
+        for (int scope : scopes) {
+            QString suffix;
+            if ((scope < 0) && (dimension >= 0)) {
+                suffix = QLatin1Char(' ') + tr("(all dimensions)");
             }
-            QObject::connect(driveAction, SIGNAL(triggered()), this, SLOT(onDriveFromLoopActionTriggered()));
-            menu->addAction(driveAction);
+            if (LoopDriverEdit::isDriven(knob, scope)) {
+                QAction* removeAction = new QAction(tr("Remove loop driver") + suffix, menu);
+                removeAction->setData(scope);
+                QObject::connect(removeAction, SIGNAL(triggered()), this, SLOT(onRemoveLoopDriverActionTriggered()));
+                menu->addAction(removeAction);
+            } else {
+                QAction* driveAction = new QAction(tr("Drive from loop") + suffix, menu);
+                driveAction->setData(scope);
+                if (outsideLoops) {
+                    driveAction->setEnabled(false);
+                    driveAction->setToolTip(tr("The node is not inside a loop: no loop, for-each or solver end below it pairs with a begin above it."));
+                    menu->setToolTipsVisible(true);
+                }
+                QObject::connect(driveAction, SIGNAL(triggered()), this, SLOT(onDriveFromLoopActionTriggered()));
+                menu->addAction(driveAction);
+            }
         }
     }
 } // createAnimationMenu

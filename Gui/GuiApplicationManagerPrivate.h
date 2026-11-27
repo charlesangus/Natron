@@ -170,7 +170,17 @@ struct GuiApplicationManagerPrivate
 
     void addNodesMenuPluginAction(QMenu* menu, const PluginGroupNode& leaf);
 
+    // Under a loop grouping's submenu, an action per loop pair whose begin and end plug-ins exist.
+    void addNodesMenuLoopPairActions(QMenu* menu);
+
+    // The window and the group a node created from the nodes menu goes into; false for none.
+    bool getNodesMenuCreationTarget(GuiAppInstancePtr* app, NodeCollectionPtr* group);
+
+    void makeNodesMenuCreateNodeArgs(CreateNodeArgs& args, const NodeCollectionPtr& group) const;
+
     void createNodeFromNodesMenu(const QString& pluginID, int major, int minor);
+
+    void createLoopPairFromNodesMenu(const QString& kindName);
 
     void clearNodesMenuTarget();
 

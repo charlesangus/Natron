@@ -230,20 +230,20 @@ FileStampRegistry::changedOnDiskMessage(const std::string& path)
     return path + " changed on disk since it was loaded, Reload to read it";
 }
 
-U64
-FileStampRegistry::sequenceStamp(const std::string& pattern)
+FileStampRegistry::SequenceEntry
+FileStampRegistry::sequenceEntry(const std::string& pattern)
 {
     std::uint64_t generation = 0;
     {
         std::lock_guard<std::mutex> k(_mutex);
         std::map<std::string, SequenceEntry>::const_iterator it = _sequences.find(pattern);
         if (it != _sequences.end()) {
-            return it->second.stamp;
+            return it->second;
         }
         generation = _generation;
     }
 
-    const std::vector<SequenceMember> members = listSequence(pattern, &_diskAccesses);
+    std::vector<SequenceMember> members = listSequence(pattern, &_diskAccesses);
     std::vector<U64> memberStamps(members.size());
     SequenceEntry entry;
     entry.directory = parentDirectory(pattern);
@@ -254,16 +254,45 @@ FileStampRegistry::sequenceStamp(const std::string& pattern)
             Entry member;
             member.identity = members[i].identity;
             member.stamp = computeStamp(members[i].path, member.identity);
-            // A member stamped on its own before keeps that record, so both stamps agree on it.
-            memberStamps[i] = keep ? _entries.emplace(members[i].path, member).first->second.stamp : member.stamp;
+            if (keep) {
+                // A member stamped on its own before keeps that record, so both stamps agree on it.
+                const Entry& kept = _entries.emplace(members[i].path, member).first->second;
+                members[i].identity = kept.identity;
+                memberStamps[i] = kept.stamp;
+            } else {
+                memberStamps[i] = member.stamp;
+            }
         }
         entry.stamp = computeSequenceStamp(pattern, members, memberStamps);
+        std::shared_ptr<std::vector<SequenceFile>> files = std::make_shared<std::vector<SequenceFile>>();
+        files->reserve(members.size());
+        for (SequenceMember& member : members) {
+            SequenceFile file;
+            file.frame = member.frame;
+            file.view = member.view;
+            file.path = std::move(member.path);
+            file.identity = member.identity;
+            files->push_back(std::move(file));
+        }
+        entry.files = files;
         if (keep) {
             _sequences[pattern] = entry;
         }
     }
 
-    return entry.stamp;
+    return entry;
+}
+
+U64
+FileStampRegistry::sequenceStamp(const std::string& pattern)
+{
+    return sequenceEntry(pattern).stamp;
+}
+
+std::shared_ptr<const std::vector<SequenceFile>>
+FileStampRegistry::sequenceFiles(const std::string& pattern)
+{
+    return sequenceEntry(pattern).files;
 }
 
 void

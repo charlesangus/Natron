@@ -158,6 +158,12 @@ Coordination with M370 - Roto Point List Render Isolation, which runs in paralle
   - verify: A parity gtest renders 30-item trees for each operator in use through both paths and compares them bit for bit across depths and components, including inverted and inactive items.
   - size: L
 
+- [ ] M299.P4.T3 — Rasterise items in parallel across the tree
+  - files: `Engine/RotoPaint.cpp` (direct composite path from P4.T2), the per-item mask fetch/raster (`Engine/RotoMaskCache*`, `Engine/RotoShapeRenderNodePrivate*` or wherever P2/P4.T2 fetch masks), `Tests/RotoPaintDirectComposite_Test.cpp`
+  - approach: when the direct composite path is taken, fetch or rasterise every active item's mask concurrently on the render thread pool before compositing in render order; keep the composite order and the mask cache keys unchanged, so output stays bit-identical; respect abort so a cancelled render stops promptly.
+  - verify: RotoPaintDirectComposite_Test and the BezierEdit/RotoFeatherBanding/RotoPaintReference goldens unchanged; roto_render_bench.sh before/after on a cloud VM meets the 2026-11-21 targets (100-shape still UHD later ≥3x, cold ≥1.75x; keyed UHD later ≥1.5x; no median slower than 1.10x).
+  - size: L
+
 **Verification gate:**
 - Full build and PR CI green (debug asserts and release).
 - RotoMaskCache_Test and the new parity and band tests pass. The BezierEdit, RotoFeatherBanding and RotoPaintReference goldens are bit-identical.
@@ -207,3 +213,4 @@ Coordination with M370 - Roto Point List Render Isolation, which runs in paralle
 
 - 2026-11-24 — P3.T3 run without the stroke profile it was deferred on: the lane had stalled with nothing else to do; band equality tests (any band count byte-identical to one surface) guard it. Pattern reuse is keyed on exact radii and stops, not on rounded pressure, which would change output.
 - 2026-11-26 — RotoPaintDirectCompositeTest abort: input images kept their own node's bit depth, and renderHandler copied unprocessed channels, mask/mix and mipmap upscale from a short/byte source into a float output. Fixed in 14ee63ab4f by converting the source to the target depth over the worked rectangle (no cost when depths match). The Operators/ variant's 300 s timeout is test cost under -j4 (per-render clearEverything walks a 70-node Merge chain in main's refresh code): the entry runs serially with a 600 s timeout; the slow refresh is filed to the inbox.
+- 2026-11-27 (PM) — Final-gate bench on a vast VM (main bench/main-6befcdadb7 vs M299 b1af4c7879 release AppImages, run cloud-gpu-20261127T195154Z; results rescued to .local/vast/runs/m299-m514-rescue/): 100-shape still UHD later 3.35→1.51 s (2.2x, target 3x), cold 3.58→2.32 s (1.54x, target 1.75x); keyed UHD later 3.36→2.33 s (1.44x, target 1.5x); 300 shapes 2.3-3.4x; no frame median slower than 1.05x; RSS roughly halved at 2k. Targets missed, so the 2026-11-21 re-plan applies: across-item parallel raster comes back as P4.T3. The roto GUI stroke bench could not run (the VM's X server failed GLX context creation); re-run with the P4.T3 bench.

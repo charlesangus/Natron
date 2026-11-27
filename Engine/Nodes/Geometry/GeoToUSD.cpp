@@ -565,7 +565,7 @@ GeoToUSD::initializeKnobs()
     {
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption("automatic", tr("Automatic").toStdString(),
-                                       tr("The layer's first root Xform, or its first root prim.").toStdString()));
+                                       tr("The Path Prefix prim, else the layer's first root Xform, else its first root prim.").toStdString()));
         options.push_back(ChoiceOption("default", tr("Default").toStdString(),
                                        tr("The layer's default prim. The geometry's layer has none, so this "
                                           "references nothing until one is set downstream.")
@@ -1440,8 +1440,13 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
             }
             break;
         case eReferencePrimitiveAutomatic: {
-            // The layer's default prim, else its first root Xform, else its first root prim.
+            // The geometry is converted under the prefix, so the prefix prim is the branch to
+            // bring in; a root prim of a nested prefix would nest it a second time below itself.
             if (geoLayer->HasDefaultPrim()) {
+                break;
+            }
+            if (geoLayer->GetPrimAtPath(prefix)) {
+                target = prefix;
                 break;
             }
             for (const PXR_NS::SdfPrimSpecHandle& root : geoLayer->GetRootPrims()) {
@@ -1551,8 +1556,12 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
         }
     }
     if (!missing.empty()) {
-        section(tr("Not in the Scene input, so not overridden (geometry read from these paths goes under the "
-                   "Path Prefix):"));
+        if (settings.options.otherPrimitives == eGeoUsdOtherDefine) {
+            section(tr("Not in the Scene input, so not overridden (geometry read from these paths goes under "
+                       "the Path Prefix):"));
+        } else {
+            section(tr("Not in the Scene input, so not overridden:"));
+        }
         for (const std::string& path : missing) {
             message += QString::fromUtf8("\n  ") + QString::fromStdString(path);
         }
@@ -1572,7 +1581,12 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
 
         return eStatusOK;
     }
-    setPersistentMessage(warn ? eMessageTypeWarning : eMessageTypeInfo, message.toStdString());
+    if (warn) {
+        setPersistentMessage(eMessageTypeWarning, message.toStdString());
+    } else if (const NodePtr node = getNode()) {
+        // A posted info message opens a dialog in the GUI instead of staying on the node.
+        node->setQuietInfoMessage(message.toStdString());
+    }
 
     return eStatusOK;
 } // GeoToUSD::renderScene

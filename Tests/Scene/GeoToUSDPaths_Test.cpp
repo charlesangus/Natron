@@ -265,10 +265,12 @@ TEST(GeoToUSDPaths, IncompatibleTypesAtOnePathBecomeSuffixedSiblings)
     ASSERT_TRUE(stage);
     std::set<std::string> types;
     for (const char* path : { "/a/b_0", "/a/b_1" }) {
-        types.insert(stage->GetPrimAtPath(PXR_NS::SdfPath(path)).GetTypeName().GetString());
+        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(PXR_NS::SdfPath(path));
+        ASSERT_TRUE(prim.IsValid()) << path;
+        types.insert(prim.GetTypeName().GetString());
     }
     EXPECT_EQ((std::set<std::string> { "Mesh", "BasisCurves" }), types);
-    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/a/b")).GetTypeName() == PXR_NS::TfToken("Mesh"));
+    EXPECT_FALSE(stage->GetPrimAtPath(PXR_NS::SdfPath("/a/b")).IsValid());
 }
 
 TEST(GeoToUSDPaths, TwoPartitionsOfOneTypeAtOnePathMerge)
@@ -296,7 +298,9 @@ TEST(GeoToUSDPaths, DefineAuthorsADefOnAPrimTheInputHolds)
     const std::unique_ptr<const GeoUsdConvert> convert = convertOver(quadAt("/a/m"), options, sceneLayer());
     ASSERT_EQ(std::size_t(1), convert->partitionCount());
     EXPECT_FALSE(convert->isPartitionOverlay(0));
-    const PXR_NS::SdfPrimSpecHandle spec = authored(*convert)->GetPrimAtPath(PXR_NS::SdfPath("/a/m"));
+    // A spec handle does not keep its layer alive.
+    const PXR_NS::SdfLayerRefPtr layer = authored(*convert);
+    const PXR_NS::SdfPrimSpecHandle spec = layer->GetPrimAtPath(PXR_NS::SdfPath("/a/m"));
     ASSERT_TRUE(spec);
     EXPECT_EQ(PXR_NS::SdfSpecifierDef, spec->GetSpecifier());
     EXPECT_TRUE(spec->GetAttributes().get(PXR_NS::UsdGeomTokens->points));
@@ -326,7 +330,9 @@ TEST(GeoToUSDPaths, OverlayTransformsAuthorsAnOverWithOnlyTheTransform)
     options.otherPrimitives = eGeoUsdOtherOverlayTransforms;
     const std::unique_ptr<const GeoUsdConvert> convert = convertOver(quadAt("/a/m"), options, sceneLayer());
     ASSERT_EQ(std::size_t(1), convert->partitionCount());
-    const PXR_NS::SdfPrimSpecHandle spec = authored(*convert)->GetPrimAtPath(PXR_NS::SdfPath("/a/m"));
+    // A spec handle does not keep its layer alive.
+    const PXR_NS::SdfLayerRefPtr layer = authored(*convert);
+    const PXR_NS::SdfPrimSpecHandle spec = layer->GetPrimAtPath(PXR_NS::SdfPath("/a/m"));
     ASSERT_TRUE(spec);
     EXPECT_EQ(PXR_NS::SdfSpecifierOver, spec->GetSpecifier());
     std::set<std::string> names;

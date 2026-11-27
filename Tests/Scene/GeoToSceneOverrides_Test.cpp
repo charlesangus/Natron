@@ -549,8 +549,12 @@ TEST_F(GeoToSceneOverridesTest, APrunedSourcePathRaisesAWarning)
     int type = 0;
     _toUSD->getPersistentMessage(&message, &type, false);
     EXPECT_EQ((int)eMessageTypeWarning, type);
-    EXPECT_TRUE(message.contains(QString::fromUtf8("/World/C"))) << message.toStdString();
-    EXPECT_FALSE(message.contains(QString::fromUtf8("/World/A"))) << message.toStdString();
+    // The message also lists every prim written, so only the missing-source section is checked.
+    const int missingAt = message.indexOf(QString::fromUtf8("Not in the Scene input"));
+    ASSERT_GE(missingAt, 0) << message.toStdString();
+    const QString missingSection = message.mid(missingAt);
+    EXPECT_TRUE(missingSection.contains(QString::fromUtf8("/World/C"))) << message.toStdString();
+    EXPECT_FALSE(missingSection.contains(QString::fromUtf8("/World/A"))) << message.toStdString();
 }
 
 TEST_F(GeoToSceneOverridesTest, AFlattenedUnpackRoundTripMovesThePointsOnlyByTheEdit)

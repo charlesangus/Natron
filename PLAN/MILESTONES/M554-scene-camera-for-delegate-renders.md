@@ -62,12 +62,12 @@ Natron never hands a Hydra delegate the scene camera. `HydraRender::Request` car
 
 **Verification gate:** `tools/ci/remote/build.sh debug --tests` green, including the P1.T2 framing parity test, the P2.T2 shutter test and both `VelocityBlursTheVolume` tests on Cycles and MoonRay; PR CI into the F1 branch green or the PM's gate standing in for it (§9b).
 
-- [ ] M554.P2.T4 — hdMoonray fork: shutter-window sampling of transforms and primvars, fit override and pixel aspect, fps from time codes per second
+- [x] M554.P2.T4 — hdMoonray fork: shutter-window sampling of transforms and primvars, fit override and pixel aspect, fps from time codes per second
   - files: the hdMoonray fork (branch natron/v2026.29.1: GeometryMixin.cc:121, Primvars.cc:379, Camera.cc:236, RenderPass.cc:85), the image pin
   - approach: per P2.T1 findings; bump the pin in the image
   - verify: moving-cube shutter blur test and fill-fit framing test pass on MoonRay
   - size: L
-- [ ] M554.P2.T5 — Cycles fork: shuttertime/motion_position, object and point motion sampling, velocity_scale = (close − open)/tcps, fit override and pixel aspect
+- [x] M554.P2.T5 — Cycles fork: shuttertime/motion_position, object and point motion sampling, velocity_scale = (close − open)/tcps, fit override and pixel aspect
   - files: the Cycles fork (camera.cpp, render_pass.cpp, integrator.cpp, geometry.inl, volume.cpp), the image pin
   - approach: per P2.T1 findings; re-enable the Cycles VelocityBlursTheVolume test
   - verify: Cycles shutter and volume velocity blur tests pass
@@ -87,3 +87,4 @@ Natron never hands a Hydra delegate the scene camera. `HydraRender::Request` car
 - 2026-11-24 — **Unusable look-through camera (user):** when the viewer looks through a camera that is inactive, unloaded, undefined or an instance proxy, it keeps rendering from the free camera and shows a warning in the viewer naming the path and the reason. It never fails silently.
 - 2026-11-24 — gate7 green at 7f649a6be (viewer warning on an unusable look-through camera). The branch carries M345 - VDB Rendering Fixes' commits, so PR #366 merges into F1 only after M345 does; then merge F1 in (Dockerfile pins come from M345) and re-gate.
 - 2026-11-25 (PM, from the M345 review) — hdMoonray fa6e098 (pinned by M345) already takes motion steps from `camera->GetShutterOpen/Close()` in RenderPass.cc (~:99), so it is untested until this milestone hands delegates the scene camera. The velocity-blur tests re-enabled here must cover it on MoonRay.
+- 2026-11-27 (PM) — P2.T4 (hdMoonray natron/m554-shutter-framing-v2 + hole faces, openmoonray 6bd3642589) and P2.T5 (cycles natron/m554-shutter-framing-v2 a5be12ed65: shutter, fit/pixel aspect, re-dice on dicing-camera move, subdivision holes and boundary rules, volume density bounds widened over the shutter) landed with F1 merged in; every delegate now renders through the camera path. MoonRayCamera tests needed a normalized sun (unnormalized intensity 3 lit to ~1e-4). m554-gate9 debug --tests green at 783f150b12.

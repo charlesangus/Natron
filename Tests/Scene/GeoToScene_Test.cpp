@@ -60,6 +60,7 @@
 #include "Engine/ScenePayload.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
+#include "Tests/Scene/GeoToUSDTestUtils.h"
 
 #include <pxr/usd/usdGeom/basisCurves.h>
 #include <pxr/usd/usdGeom/points.h>
@@ -184,14 +185,7 @@ protected:
         if (node) {
             _nodes.push_back(node);
         }
-        // These tests predate the node-named Path Prefix default and expect /geo.
-        if (node && (std::string(pluginID) == PLUGINID_NATRON_GEOTOUSD)) {
-            KnobString* prefix = dynamic_cast<KnobString*>(node->getKnobByName(kGeoToUSDParamPathPrefix).get());
-            EXPECT_TRUE(prefix != NULL);
-            if (prefix) {
-                prefix->setValue(std::string("/geo"));
-            }
-        }
+        pinGeoToUSDPathPrefix(node, pluginID);
 
         return node;
     }

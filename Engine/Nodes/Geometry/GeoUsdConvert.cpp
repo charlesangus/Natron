@@ -771,6 +771,17 @@ struct GeoUsdConvert::SpecEntry {
         fields.emplace_back(name, std::move(value));
     }
 
+    void erase(const TfToken& name)
+    {
+        for (auto it = fields.begin(); it != fields.end(); ++it) {
+            if (it->first == name) {
+                fields.erase(it);
+
+                return;
+            }
+        }
+    }
+
     const VtValue* get(const TfToken& name) const
     {
         for (const auto& f : fields) {
@@ -972,7 +983,6 @@ GeoUsdConvert::build(bool nested)
     const auto isGprim = [](GeoUsdPrimKindEnum kind) {
         return kind == eGeoUsdPrimMesh || kind == eGeoUsdPrimCurves || kind == eGeoUsdPrimPoints;
     };
-    // Other Primitives applies to meshes, curves and points; packed geometry is always defined.
     const auto overlaid = [&](GeoUsdPrimKindEnum kind) {
         return kind == eGeoUsdPrimOverride || (isGprim(kind) && _options.otherPrimitives != eGeoUsdOtherDefine);
     };
@@ -1029,6 +1039,12 @@ GeoUsdConvert::build(bool nested)
             taken.insert(p->requestedPath);
         }
     }
+    std::map<SdfPath, std::set<int>> kindsPerPath;
+    for (const auto& p : _partitions) {
+        if (!p->requestedPath.IsEmpty()) {
+            kindsPerPath[p->requestedPath].insert(int(p->kind));
+        }
+    }
     std::map<SdfPath, int> nextSuffix;
     std::map<int, int> nextUnpathed;
     for (const auto& p : _partitions) {
@@ -1048,7 +1064,9 @@ GeoUsdConvert::build(bool nested)
             stem = p->requestedPath.GetName();
             const auto inserted = nextSuffix.emplace(p->requestedPath, 0);
             if (inserted.second) {
-                _warnings.push_back("Several prims of incompatible types share the path " + p->requestedPath.GetString() + "; each becomes a sibling suffixed _0, _1, and so on");
+                const std::set<int>& kinds = kindsPerPath[p->requestedPath];
+                const bool onlyXforms = (kinds.size() == 1) && (*kinds.begin() == int(eGeoUsdPrimXform));
+                _warnings.push_back((onlyXforms ? "Several packed primitives share the path " : "Several prims of incompatible types share the path ") + p->requestedPath.GetString() + "; each becomes a sibling suffixed _0, _1, and so on");
             }
             next = &inserted.first->second;
         }
@@ -1094,7 +1112,7 @@ GeoUsdConvert::build(bool nested)
     }
 
     if (!nested) {
-        // The root comes first among its siblings; it is a def when it holds anything defined.
+        // An over root keeps a fully overlaid conversion from defining anything the input lacks.
         bool underRoot = false;
         bool definedUnderRoot = false;
         for (const auto& p : _partitions) {
@@ -1710,7 +1728,16 @@ GeoUsdConvert::addPartitionSpecs(std::size_t index)
             typeName = TfToken();
         }
     }
-    ensurePrim(p.path, specifier, typeName).partition = pi;
+    SpecEntry& own = ensurePrim(p.path, specifier, typeName);
+    if (own.partition < 0) {
+        // An earlier partition below may have created this prim as a defined intermediate; the
+        // mode decides, so an overlay is not defined just because packed geometry sits under it.
+        own.set(SdfFieldKeys->Specifier, VtValue(specifier));
+        if (typeName.IsEmpty()) {
+            own.erase(SdfFieldKeys->TypeName);
+        }
+    }
+    own.partition = pi;
     for (const PropertyPlan& plan : p.properties) {
         addProperty(p.path, plan).partition = pi;
     }

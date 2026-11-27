@@ -1355,7 +1355,6 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
     if (served) {
         noteSheared(*served);
     }
-    // The conversion the node message describes: the served one, or the copy at the current frame.
     const GeoUsdConvert* reported = served.get();
     for (std::size_t i = 0; !reported && (i < converts.size()); ++i) {
         if (converts[i] && (gathered[i].frame == args.time)) {
@@ -1400,7 +1399,13 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
     reads.factsDigest = facts.finalize();
     reads.frameRange = settings.timeSamples;
 
+    // Outside the author callback, which the scene-layer memo skips when nothing changed.
     std::string referenceWarning;
+    if (settings.reference && geoLayer && (settings.referencePrimitive == eReferencePrimitiveDefault) && !geoLayer->HasDefaultPrim()) {
+        referenceWarning = tr("Reference Primitive is Default, but the geometry's layer has no default prim, so the "
+                              "reference brings nothing in.")
+                               .toStdString();
+    }
     const auto authorReference = [&](const SceneLayerEdit& edit) {
         const PXR_NS::SdfPath& prefix = settings.options.rootPath;
         const GeoUsdInputScene* scene = gathered.front().referenceScene.get();
@@ -1408,7 +1413,6 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
         if (!prim) {
             return false;
         }
-        // The prims on the way that the Scene input lacks are defined; the ones it holds stay overs.
         for (PXR_NS::SdfPath at = prefix; at != PXR_NS::SdfPath::AbsoluteRootPath(); at = at.GetParentPath()) {
             if (scene && scene->find(at)) {
                 continue;
@@ -1433,18 +1437,10 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
             target = settings.referencePrimitivePath;
             break;
         case eReferencePrimitiveDefault:
-            if (!geoLayer->HasDefaultPrim()) {
-                referenceWarning = tr("Reference Primitive is Default, but the geometry's layer has no default prim, so the "
-                                      "reference brings nothing in.")
-                                       .toStdString();
-            }
             break;
         case eReferencePrimitiveAutomatic: {
             // The geometry is converted under the prefix, so the prefix prim is the branch to
             // bring in; a root prim of a nested prefix would nest it a second time below itself.
-            if (geoLayer->HasDefaultPrim()) {
-                break;
-            }
             if (geoLayer->GetPrimAtPath(prefix)) {
                 target = prefix;
                 break;

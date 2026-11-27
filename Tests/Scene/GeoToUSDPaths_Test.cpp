@@ -63,7 +63,7 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-// /a holds the mesh /a/m; /T is an Xform translated by (1, 0, 0) with nothing below it.
+// /a holds the mesh /a/m; /T is an Xform translated by (1, 0, 0) holding the mesh /T/m.
 const char* const kScene = "#usda 1.0\n"
                            "\n"
                            "def Xform \"a\"\n"
@@ -80,6 +80,13 @@ const char* const kScene = "#usda 1.0\n"
                            "{\n"
                            "    double3 xformOp:translate = (1, 0, 0)\n"
                            "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+                           "\n"
+                           "    def Mesh \"m\"\n"
+                           "    {\n"
+                           "        int[] faceVertexCounts = [4]\n"
+                           "        int[] faceVertexIndices = [0, 1, 2, 3]\n"
+                           "        point3f[] points = [(0, 0, 5), (1, 0, 5), (1, 1, 5), (0, 1, 5)]\n"
+                           "    }\n"
                            "}\n";
 
 PXR_NS::SdfLayerRefPtr
@@ -390,18 +397,24 @@ TEST(GeoToUSDPaths, OneComponentKindAuthoringMarksThePrefix)
     EXPECT_EQ(PXR_NS::KindTokens->component, kind);
 }
 
-// World-space geometry (as USDToGeo writes with flattened transforms) under /T, translated by
-// (1, 0, 0) in the input.
+// A quad read from /T/m, translated by (1, 0, 0) in the input: with @p worldSpace as USDToGeo
+// writes it with flattened transforms, else in the prim's own space.
 GeoDetailConstPtr
-worldSpaceQuadUnderT()
+quadReadFromT(bool worldSpace)
 {
     GeoDetailBuilder b;
     addQuad(b, 0.);
     setPrimitiveStrings(b, "path", { "/T/m" });
-    GeoAttributeDesc desc;
-    desc.name = kGeoUsdWorldSpaceAttr;
-    desc.storage = eGeoStorageInt32;
-    b.addAttribute(eGeoAttribClassDetail, desc).set<std::int32_t>(0, 1);
+    GeoAttributeDesc source;
+    source.name = kGeoUsdSourceAttr;
+    source.storage = eGeoStorageInt32;
+    b.addAttribute(eGeoAttribClassPrimitive, source).set<std::int32_t>(0, 1);
+    if (worldSpace) {
+        GeoAttributeDesc desc;
+        desc.name = kGeoUsdWorldSpaceAttr;
+        desc.storage = eGeoStorageInt32;
+        b.addAttribute(eGeoAttribClassDetail, desc).set<std::int32_t>(0, 1);
+    }
 
     return std::make_shared<const GeoDetail>(b.finish());
 }
@@ -411,7 +424,7 @@ TEST(GeoToUSDPaths, AdjustingForTheInputHierarchyKeepsTheWorldPosition)
     const PXR_NS::SdfLayerRefPtr input = sceneLayer();
     GeoUsdConvertOptions options = prefixed("/pre");
     options.adjustTransformsForInputHierarchy = true;
-    const std::unique_ptr<const GeoUsdConvert> convert = convertOver(worldSpaceQuadUnderT(), options, input);
+    const std::unique_ptr<const GeoUsdConvert> convert = convertOver(quadReadFromT(true), options, input);
     const PXR_NS::SdfLayerRefPtr geometry = authored(*convert);
     const PXR_NS::UsdStageRefPtr stage = composed(geometry, input);
     ASSERT_TRUE(stage);
@@ -426,7 +439,24 @@ TEST(GeoToUSDPaths, WithoutTheAdjustmentTheInputHierarchyOffsetsTheGeometry)
     const PXR_NS::SdfLayerRefPtr input = sceneLayer();
     GeoUsdConvertOptions options = prefixed("/pre");
     options.adjustTransformsForInputHierarchy = false;
-    const std::unique_ptr<const GeoUsdConvert> convert = convertOver(worldSpaceQuadUnderT(), options, input);
+    const std::unique_ptr<const GeoUsdConvert> convert = convertOver(quadReadFromT(true), options, input);
+    const PXR_NS::SdfLayerRefPtr geometry = authored(*convert);
+    const PXR_NS::UsdStageRefPtr stage = composed(geometry, input);
+    ASSERT_TRUE(stage);
+    const std::vector<PXR_NS::GfVec3d> world = worldPoints(stage, "/T/m");
+    ASSERT_EQ(std::size_t(4), world.size());
+    EXPECT_TRUE(PXR_NS::GfIsClose(PXR_NS::GfVec3d(1., 0., 0.), world[0], 1e-6)) << world[0];
+    EXPECT_TRUE(PXR_NS::GfIsClose(PXR_NS::GfVec3d(2., 1., 0.), world[2], 1e-6)) << world[2];
+}
+
+TEST(GeoToUSDPaths, GeometryReadFromUsdInItsPrimsSpaceIsNotAdjusted)
+{
+    const PXR_NS::SdfLayerRefPtr input = sceneLayer();
+    GeoUsdConvertOptions options = prefixed("/pre");
+    options.adjustTransformsForInputHierarchy = true;
+    const std::unique_ptr<const GeoUsdConvert> convert = convertOver(quadReadFromT(false), options, input);
+    ASSERT_EQ(std::size_t(1), convert->partitionCount());
+    EXPECT_EQ(PXR_NS::SdfPath("/T/m"), convert->partitionPath(0));
     const PXR_NS::SdfLayerRefPtr geometry = authored(*convert);
     const PXR_NS::UsdStageRefPtr stage = composed(geometry, input);
     ASSERT_TRUE(stage);
@@ -464,6 +494,32 @@ TEST(GeoToUSDPaths, CreateXformsGivesEachPackedPrimitiveAnXform)
         }
         EXPECT_TRUE(hasMesh) << convert.partitionPath(i);
     }
+}
+
+TEST(GeoToUSDPaths, AnOverlaidMeshAbovePackedGeometryStaysAnOver)
+{
+    GeoDetailBuilder inner;
+    addQuad(inner, 0.);
+    const GeoDetailConstPtr card = std::make_shared<const GeoDetail>(inner.finish());
+    GeoDetailBuilder b;
+    const GeoOffset pivot = b.appendPoints(1);
+    b.setPointPosition(pivot, 0., 0., 0.);
+    geoAppendPackedGeometry(b, pivot, card, geoMatrixFromUsd(PXR_NS::GfMatrix4d(1.)));
+    addQuad(b, 2.);
+    setPrimitiveStrings(b, "path", { "/q/b", "/q" });
+    GeoUsdConvertOptions options = prefixed("/pre");
+    options.packedMode = eGeoUsdPackedCreateXforms;
+    options.otherPrimitives = eGeoUsdOtherOverlay;
+    const std::unique_ptr<const GeoUsdConvert> convert = convertOver(std::make_shared<const GeoDetail>(b.finish()), options, sceneLayer());
+    ASSERT_EQ(std::size_t(2), convert->partitionCount());
+    EXPECT_EQ(PXR_NS::SdfPath("/q/b"), convert->partitionPath(0));
+    EXPECT_EQ(PXR_NS::SdfPath("/q"), convert->partitionPath(1));
+    EXPECT_TRUE(convert->isPartitionOverlay(1));
+    EXPECT_EQ((std::vector<PXR_NS::SdfPath> { PXR_NS::SdfPath("/q") }), convert->overlaysWithoutPrim());
+    const PXR_NS::SdfLayerRefPtr layer = authored(*convert);
+    const PXR_NS::SdfPrimSpecHandle spec = layer->GetPrimAtPath(PXR_NS::SdfPath("/q"));
+    ASSERT_TRUE(spec);
+    EXPECT_EQ(PXR_NS::SdfSpecifierOver, spec->GetSpecifier());
 }
 
 class GeoToUSDPathsNodeTest
@@ -682,4 +738,12 @@ TEST_F(GeoToUSDPathsNodeTest, ASpecificReferencePrimitiveMustBeAPrimPath)
     std::string error;
     EXPECT_NE(EffectInstance::eRenderRoIRetCodeOk,
               _toUSD->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error));
+    EXPECT_NE(std::string::npos, error.find("Reference Primitive Path")) << error;
+
+    knob<KnobString>(_toUSD, kGeoToUSDParamReferencePrimitivePath)->setValue(std::string("/ref"));
+    ScenePayload valid;
+    error.clear();
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              _toUSD->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &valid, &error))
+        << error;
 }

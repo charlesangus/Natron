@@ -41,7 +41,7 @@ With Define, geometry read from USD whose prim is no longer in the Scene input (
 
 - **Load As Reference**: instead of adding the geometry layer to the scene, it is brought in through an arc on the Path Prefix prim. Prims on the way to the prefix that the Scene input lacks are defined. The prefix keeps its own path, and the geometry layer is converted without the Scene input. Geometry is placed as written, Other Primitives applies within the layer, and Adjust Transforms is not used.
 - **Reference Type**: **Weaker Payload** (the default), **Stronger Payload**, **Weaker Reference** or **Stronger Reference**. A payload can be left unloaded. Weaker arcs are appended to the prim's list and stronger ones are prepended, which matters when the prim already has arcs.
-- **Reference Primitive**: the prim of the geometry layer the arc targets. **Automatic** takes the layer's default prim, else the **Path Prefix** prim, so the geometry lands directly under the prim that holds the arc, else the layer's first root Xform, else its first root prim. **Default** targets the layer's default prim, and warns when the layer has none. **Specific** targets **Reference Primitive Path**.
+- **Reference Primitive**: the prim of the geometry layer the arc targets. **Automatic** takes the **Path Prefix** prim, so the geometry lands directly under the prim that holds the arc, else the layer's first root Xform, else its first root prim. **Default** targets the layer's default prim, and warns when the layer has none. **Specific** targets **Reference Primitive Path**.
 - **Make Instanceable**: marks the prefix prim instanceable.
 - **Parent Primitive Kind**: the kind of the prims created above the prefix (they also take Parent Primitive Type).
 

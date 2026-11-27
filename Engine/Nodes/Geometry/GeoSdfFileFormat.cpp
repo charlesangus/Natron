@@ -116,6 +116,8 @@ optionsFromArguments(const SdfFileFormat::FileFormatArguments& args,
             options->packedMode = eGeoUsdPackedPointInstancer;
         } else if (packed->second == "native") {
             options->packedMode = eGeoUsdPackedNativeInstances;
+        } else if (packed->second == "xforms") {
+            options->packedMode = eGeoUsdPackedCreateXforms;
         } else if (packed->second == "unpack") {
             options->packedMode = eGeoUsdPackedUnpack;
         } else {
@@ -137,6 +139,7 @@ struct Registry {
     std::mutex mutex;
     std::map<std::string, Provider> providers;
     std::map<std::string, GeoUsdInputSceneConstPtr> inputScenes;
+    std::map<std::string, GeoUsdConvertOptions> options;
     U64 generation = 0;
 };
 
@@ -304,14 +307,14 @@ public:
 
             return false;
         }
-        GeoUsdConvertOptions options;
+        const std::string consumer = consumerOf(layer->GetFileFormatArguments());
+        GeoUsdConvertOptions options = GeoLayers::currentConvertOptions(key, consumer);
         std::string error;
         if (!optionsFromArguments(layer->GetFileFormatArguments(), &options, &error)) {
             TF_RUNTIME_ERROR("%s: %s", resolvedPath.c_str(), error.c_str());
 
             return false;
         }
-        const std::string consumer = consumerOf(layer->GetFileFormatArguments());
         options.inputScene = GeoLayers::currentInputScene(key, consumer);
         const GeoDetailConstPtr detail = GeoLayers::currentDetail(key, consumer);
         if (!detail) {
@@ -532,6 +535,30 @@ removeProvider(const std::string& key,
     std::lock_guard<std::mutex> lock(r.mutex);
     r.providers.erase(servedKey(key, consumer));
     r.inputScenes.erase(servedKey(key, consumer));
+    r.options.erase(servedKey(key, consumer));
+}
+
+void
+setConvertOptions(const std::string& key,
+                  const GeoUsdConvertOptions& options,
+                  const std::string& consumer)
+{
+    GeoUsdConvertOptions stored = options;
+    stored.inputScene.reset();
+    Registry& r = registry();
+    std::lock_guard<std::mutex> lock(r.mutex);
+    r.options[servedKey(key, consumer)] = std::move(stored);
+}
+
+GeoUsdConvertOptions
+currentConvertOptions(const std::string& key,
+                      const std::string& consumer)
+{
+    Registry& r = registry();
+    std::lock_guard<std::mutex> lock(r.mutex);
+    const auto it = r.options.find(servedKey(key, consumer));
+
+    return it == r.options.end() ? GeoUsdConvertOptions() : it->second;
 }
 
 void

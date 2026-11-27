@@ -61,6 +61,8 @@ try:
     primitive.getParam("cubeSubdivisions").set(1, 1, 1)
     to_usd = app.createNode("GeoToUSD")
     require(to_usd is not None, "create GeoToUSD", plugin_problem("GeoToUSD"))
+    # The Path Prefix default follows the node name; pin it so CUBE_MESH is stable.
+    to_usd.getParam("pathPrefix").setValue("/geo")
     require(to_usd.connectInput(0, primitive), "connect the GeoToUSD to the GeoPrimitive")
     to_geo = app.createNode("USDToGeo")
     require(to_geo is not None, "create USDToGeo", plugin_problem("USDToGeo"))

@@ -43,10 +43,24 @@
 #define PLUGINID_NATRON_GEOTOUSD "GeoToUSD"
 #define kGeoToUSDParamGroup "group"
 #define kGeoToUSDParamGroupType "groupType"
-#define kGeoToUSDParamRootPath "rootPath"
-#define kGeoToUSDParamAuthorTimeSamples "authorTimeSamples"
+#define kGeoToUSDParamPathAttributes "pathAttributes"
+#define kGeoToUSDParamPathPrefix "pathPrefix"
+#define kGeoToUSDParamPrefixAbsolutePaths "prefixAbsolutePaths"
+#define kGeoToUSDParamOtherPrimitives "otherPrimitives"
+#define kGeoToUSDParamDefineOnlyLeafPrimitives "defineOnlyLeafPrimitives"
+#define kGeoToUSDParamPackedUsdPrimitives "packedUsdPrimitives"
 #define kGeoToUSDParamPackedPrimitives "packedPrimitives"
-#define kGeoToUSDParamCopyIntoLayer "copyIntoLayer"
+#define kGeoToUSDParamParentPrimitiveType "parentPrimitiveType"
+#define kGeoToUSDParamKindAuthoring "kindAuthoring"
+#define kGeoToUSDParamAdjustTransformsForInputHierarchy "adjustTransformsForInputHierarchy"
+#define kGeoToUSDParamLoadAsReference "loadAsReference"
+#define kGeoToUSDParamReferenceType "referenceType"
+#define kGeoToUSDParamReferencePrimitive "referencePrimitive"
+#define kGeoToUSDParamReferencePrimitivePath "referencePrimitivePath"
+#define kGeoToUSDParamMakeInstanceable "makeInstanceable"
+#define kGeoToUSDParamParentPrimitiveKind "parentPrimitiveKind"
+#define kGeoToUSDParamLayerStyle "layerStyle"
+#define kGeoToUSDParamAuthorTimeSamples "authorTimeSamples"
 #define kGeoToUSDParamDefaultPointWidth "defaultPointWidth"
 #define kGeoToUSDInputGeometry 0
 #define kGeoToUSDInputScene 1
@@ -62,18 +76,37 @@ NATRON_NAMESPACE_ENTER
  *
  * Only the part of the detail the group selects (selectGeometry()) is gathered and converted.
  *
- * Primitives read from USD (kGeoUsdSourceAttr) whose path names a prim of the Scene input become
- * overrides of that prim, packed transforms written relative to its parent; other primitives
- * only define new prims. Copy Into Layer authors the detail into the node's
- * own layer instead, optionally as time samples over the project range.
+ * Path Attributes and Path Prefix place each partition (GeoUsdConvert); Other Primitives makes
+ * them defs or overs of the Scene input's prims. Layer Style Copy Into Node Layer authors the
+ * detail into the node's own layer instead, optionally as time samples over the project range.
+ * Load As Reference instead puts the served layer on the prefix prim as a reference or payload.
  **/
 class GeoToUSD
     : public NativeEffectBase {
 public:
     enum PackedPrimitivesEnum {
-        ePackedPrimitivesPointInstancer = 0,
+        ePackedPrimitivesCreateXforms = 0,
         ePackedPrimitivesNativeInstances,
+        ePackedPrimitivesPointInstancer,
         ePackedPrimitivesUnpack
+    };
+
+    enum LayerStyleEnum {
+        eLayerStyleSublayer = 0,
+        eLayerStyleCopyIntoNodeLayer
+    };
+
+    enum ReferenceTypeEnum {
+        eReferenceTypeWeakerPayload = 0,
+        eReferenceTypeStrongerPayload,
+        eReferenceTypeWeakerReference,
+        eReferenceTypeStrongerReference
+    };
+
+    enum ReferencePrimitiveEnum {
+        eReferencePrimitiveAutomatic = 0,
+        eReferencePrimitiveDefault,
+        eReferencePrimitiveSpecific
     };
 
     static constexpr InputSpec kInputs[] = {
@@ -85,13 +118,15 @@ public:
         .id = PLUGINID_NATRON_GEOTOUSD,
         .label = "GeoToUSD",
         .description = "Put geometry on the scene, over the optional Scene input; Group restricts it to the selected "
-                       "points or primitives. Each primitive's path attribute "
-                       "names the prim it becomes; primitives without one go under Root Path. Geometry read with "
-                       "USDToGeo overrides the prim it was read from in place when the Scene input still holds it, "
-                       "so once edited it comes back where it was read from; if that prim is gone it goes under "
-                       "Root Path. Other geometry only defines new prims: a path outside Root Path that the Scene "
-                       "input already holds goes under Root Path, with a warning. The geometry is served to the scene as it is, "
-                       "without a copy; Copy Into Layer copies it into the node's layer instead.",
+                       "points or primitives. The first of the Path Attributes a primitive has names the prim it "
+                       "becomes: relative paths go under Path Prefix, and so do absolute ones with Prefix Absolute "
+                       "Paths; primitives without one go under Path Prefix as mesh_0, curves_0 and so on. Other "
+                       "Primitives defines the prims, or overlays the Scene input's prims at those paths; set it to "
+                       "Overlay to edit geometry read with USDToGeo in place. Packed Primitives and Packed USD "
+                       "Primitives choose what packed geometry becomes. The geometry is served to the scene as it "
+                       "is, without a copy, as a sublayer or as a reference or payload on the Path Prefix prim "
+                       "(Load As Reference); Layer Style Copy Into Node Layer copies it into the node's layer "
+                       "instead.",
         .grouping = PLUGIN_GROUP_GEOMETRY,
         .majorVersion = 1,
         .minorVersion = 0,
@@ -148,14 +183,30 @@ private:
     virtual RenderRoIRetCode prepareSceneSources(const EvaluateSceneArgs& args,
                                                  std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
-    void updateTimeSamplesEnabled();
+    virtual void onScriptNameChanged(const std::string& fullyQualifiedName) OVERRIDE FINAL;
+
+    void updateKnobsEnabled();
 
     KnobStringWPtr _group;
     KnobChoiceWPtr _groupType;
-    KnobStringWPtr _rootPath;
-    KnobBoolWPtr _authorTimeSamples;
+    KnobStringWPtr _pathAttributes;
+    KnobStringWPtr _pathPrefix;
+    KnobBoolWPtr _prefixAbsolutePaths;
+    KnobChoiceWPtr _otherPrimitives;
+    KnobBoolWPtr _defineOnlyLeafPrimitives;
+    KnobChoiceWPtr _packedUsdPrimitives;
     KnobChoiceWPtr _packedPrimitives;
-    KnobBoolWPtr _copyIntoLayer;
+    KnobChoiceWPtr _parentPrimitiveType;
+    KnobChoiceWPtr _kindAuthoring;
+    KnobBoolWPtr _adjustTransformsForInputHierarchy;
+    KnobBoolWPtr _loadAsReference;
+    KnobChoiceWPtr _referenceType;
+    KnobChoiceWPtr _referencePrimitive;
+    KnobStringWPtr _referencePrimitivePath;
+    KnobBoolWPtr _makeInstanceable;
+    KnobChoiceWPtr _parentPrimitiveKind;
+    KnobChoiceWPtr _layerStyle;
+    KnobBoolWPtr _authorTimeSamples;
     KnobDoubleWPtr _defaultPointWidth;
 
     struct Implementation;

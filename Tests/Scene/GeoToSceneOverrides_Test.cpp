@@ -60,6 +60,7 @@
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
+#include "Tests/Scene/GeoToUSDTestUtils.h"
 
 NATRON_NAMESPACE_USING
 
@@ -205,10 +206,12 @@ quadAt(const char* path,
 
 // Converts @p detail under the default root against openScene() as the input.
 std::unique_ptr<const GeoUsdConvert>
-convertOverScene(const GeoDetailConstPtr& detail)
+convertOverScene(const GeoDetailConstPtr& detail,
+                 GeoUsdOtherPrimitivesEnum otherPrimitives)
 {
     const PXR_NS::UsdStageRefPtr stage = openScene();
     GeoUsdConvertOptions options;
+    options.otherPrimitives = otherPrimitives;
     const GeoUsdDetailPaths paths = geoUsdDetailPaths(*detail, options);
     options.inputScene = geoUsdCaptureInputScene(stage, PXR_NS::UsdTimeCode::Default(), paths.paths, paths.sourcePaths);
 
@@ -328,6 +331,7 @@ protected:
         if (node) {
             _nodes.push_back(node);
         }
+        pinGeoToUSDPathPrefix(node, pluginID);
 
         return node;
     }
@@ -380,6 +384,15 @@ protected:
         connectNodes(_toGeo, _transform, 0, true);
         connectNodes(_transform, _toUSD, kGeoToUSDInputGeometry, true);
         connectNodes(sceneInput ? sceneInput : _reader, _toUSD, kGeoToUSDInputScene, true);
+        // The round trip edits prims in place, which is what Overlay is for.
+        setOtherPrimitives("overlay");
+    }
+
+    void setOtherPrimitives(const char* id)
+    {
+        KnobChoice* k = knob<KnobChoice>(_toUSD, kGeoToUSDParamOtherPrimitives);
+        ASSERT_TRUE(k != NULL);
+        k->setValueFromID(id, 0);
     }
 
     static ScenePayload evaluate(const NodePtr& node,
@@ -530,8 +543,12 @@ TEST_F(GeoToSceneOverridesTest, APrunedSourcePathRaisesAWarning)
     int type = 0;
     _toUSD->getPersistentMessage(&message, &type, false);
     EXPECT_EQ((int)eMessageTypeWarning, type);
-    EXPECT_TRUE(message.contains(QString::fromUtf8("/World/C"))) << message.toStdString();
-    EXPECT_FALSE(message.contains(QString::fromUtf8("/World/A"))) << message.toStdString();
+    // The message also lists every prim written, so only the missing-source section is checked.
+    const int missingAt = message.indexOf(QString::fromUtf8("Not in the Scene input"));
+    ASSERT_GE(missingAt, 0) << message.toStdString();
+    const QString missingSection = message.mid(missingAt);
+    EXPECT_TRUE(missingSection.contains(QString::fromUtf8("/World/C"))) << message.toStdString();
+    EXPECT_FALSE(missingSection.contains(QString::fromUtf8("/World/A"))) << message.toStdString();
 }
 
 TEST_F(GeoToSceneOverridesTest, AFlattenedUnpackRoundTripMovesThePointsOnlyByTheEdit)
@@ -610,6 +627,8 @@ TEST_F(GeoToSceneOverridesTest, AnUnpackedPrimMissingFromTheSceneGoesUnderTheRoo
     pattern->setValue(std::string("/World/A"));
     connectNodes(_reader, prune, 0, true);
     build("/World/A", true, prune);
+    // Only Define moves geometry read from a vanished prim under the prefix; Overlay keeps the path.
+    setOtherPrimitives("define");
 
     const ScenePayload result = evaluate(_toUSD);
     SceneQueryPool::Lease lease;
@@ -643,7 +662,7 @@ TEST_F(GeoToSceneOverridesTest, GeometryReadFromAStaticSceneSharesOneLayerAcross
 
 TEST_F(GeoToSceneOverridesTest, GeometryReadFromAPrimTheSceneHoldsOverridesIt)
 {
-    const std::unique_ptr<const GeoUsdConvert> convert = convertOverScene(quadAt("/World/A", true));
+    const std::unique_ptr<const GeoUsdConvert> convert = convertOverScene(quadAt("/World/A", true), eGeoUsdOtherOverlay);
     ASSERT_EQ(std::size_t(1), convert->partitionCount());
     EXPECT_EQ(PXR_NS::SdfPath("/World/A"), convert->partitionPath(0));
     EXPECT_TRUE(convert->warnings().empty());
@@ -652,7 +671,7 @@ TEST_F(GeoToSceneOverridesTest, GeometryReadFromAPrimTheSceneHoldsOverridesIt)
 
 TEST_F(GeoToSceneOverridesTest, GeometryReadFromAVanishedPrimGoesUnderTheRootWithAWarning)
 {
-    const std::unique_ptr<const GeoUsdConvert> convert = convertOverScene(quadAt("/World/Gone", true));
+    const std::unique_ptr<const GeoUsdConvert> convert = convertOverScene(quadAt("/World/Gone", true), eGeoUsdOtherDefine);
     ASSERT_EQ(std::size_t(1), convert->partitionCount());
     EXPECT_EQ(PXR_NS::SdfPath("/geo/World/Gone"), convert->partitionPath(0));
     EXPECT_TRUE(anyWarningHas(*convert, "/World/Gone is not in the input scene"));
@@ -661,20 +680,20 @@ TEST_F(GeoToSceneOverridesTest, GeometryReadFromAVanishedPrimGoesUnderTheRootWit
 
 TEST_F(GeoToSceneOverridesTest, UnreadGeometryAtANewAbsolutePathIsDefinedThereWithoutAWarning)
 {
-    const std::unique_ptr<const GeoUsdConvert> convert = convertOverScene(quadAt("/World/New", false));
+    const std::unique_ptr<const GeoUsdConvert> convert = convertOverScene(quadAt("/World/New", false), eGeoUsdOtherDefine);
     ASSERT_EQ(std::size_t(1), convert->partitionCount());
     EXPECT_EQ(PXR_NS::SdfPath("/World/New"), convert->partitionPath(0));
     EXPECT_TRUE(convert->warnings().empty());
     EXPECT_EQ(PXR_NS::SdfSpecifierDef, authoredSpecifier(*convert, "/World/New"));
 }
 
-TEST_F(GeoToSceneOverridesTest, UnreadGeometryOnAPrimTheSceneHoldsGoesUnderTheRootWithACollisionWarning)
+TEST_F(GeoToSceneOverridesTest, DefinedGeometryOnAPrimTheSceneHoldsRedefinesItInPlace)
 {
-    const std::unique_ptr<const GeoUsdConvert> convert = convertOverScene(quadAt("/World/A", false));
+    const std::unique_ptr<const GeoUsdConvert> convert = convertOverScene(quadAt("/World/A", false), eGeoUsdOtherDefine);
     ASSERT_EQ(std::size_t(1), convert->partitionCount());
-    EXPECT_EQ(PXR_NS::SdfPath("/geo/World/A"), convert->partitionPath(0));
-    EXPECT_TRUE(anyWarningHas(*convert, "/World/A is already in the input scene"));
-    EXPECT_EQ(PXR_NS::SdfSpecifierDef, authoredSpecifier(*convert, "/geo/World/A"));
+    EXPECT_EQ(PXR_NS::SdfPath("/World/A"), convert->partitionPath(0));
+    EXPECT_TRUE(convert->warnings().empty());
+    EXPECT_EQ(PXR_NS::SdfSpecifierDef, authoredSpecifier(*convert, "/World/A"));
 }
 
 TEST_F(GeoToSceneOverridesTest, AFlattenedUnpackRoundTripKeepsNormalsAndVectors)

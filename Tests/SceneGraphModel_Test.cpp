@@ -2115,3 +2115,76 @@ TEST(SceneGraphExpander, CollapseAllBelowClosesTheRememberedRowsBelowTheRoot)
     EXPECT_EQ(closed.back(), QString::fromUtf8("/R"));
     EXPECT_FALSE(tree.isExpanded(model.indexOfPath(QString::fromUtf8("/R"), false)));
 }
+
+TEST(SceneGraphExpander, ALoadingPayloadRowOpensAndIsCountedApartFromUnloadedOnes)
+{
+    PayloadModel fixture;
+    QTreeView tree;
+    tree.setModel(&fixture.model);
+    SceneGraphExpandedPaths remembered;
+    QObject::connect(&tree, &QTreeView::expanded, &tree, [&](const QModelIndex& index) { remembered.insert(fixture.model.pathOf(index)); });
+
+    fixture.source->stage.requestLoad({ PXR_NS::SdfPath(kB0.toStdString()) }, false);
+    fixture.model.markLoading(QStringList(kB0));
+    ASSERT_EQ(SceneGraphModel::ePayloadStateLoading, fixture.model.getPayloadState(kB0));
+
+    SceneGraphExpander expander(&tree, &fixture.model, &remembered);
+    expander.start(SceneGraphExpander::eModeExpandBelow, QStringList({ QString::fromUtf8("/World") }));
+    ASSERT_TRUE(processEventsUntil([&]() { return !expander.isRunning(); }));
+
+    const SceneGraphExpander::Progress& progress = expander.getProgress();
+    EXPECT_EQ(1, progress.loading);
+    EXPECT_EQ(2, progress.unloaded);
+    // Its load is under way already: opening it asks for nothing, and its rows show once it ends.
+    EXPECT_TRUE(tree.isExpanded(fixture.row(kB0)));
+    EXPECT_FALSE(tree.isExpanded(fixture.row(kB1)));
+    EXPECT_FALSE(tree.isExpanded(fixture.row(kB2)));
+    const QString text = SceneGraphExpander::progressText(progress);
+    EXPECT_TRUE(text.contains(QString::fromUtf8("2 unloaded payloads not expanded"))) << text.toStdString();
+    EXPECT_TRUE(text.contains(QString::fromUtf8("1 loading payload not expanded"))) << text.toStdString();
+    EXPECT_EQ(SceneGraphModel::ePayloadStateUnloaded, fixture.model.getPayloadState(kB1));
+    EXPECT_EQ(SceneGraphModel::ePayloadStateUnloaded, fixture.model.getPayloadState(kB2));
+
+    // A restore takes the same rule: the loading row reopens, the unloaded one stays closed.
+    tree.collapse(fixture.row(kB0));
+    remembered.insert(kB0);
+    remembered.insert(kB1);
+    bool restored = false;
+    expander.setRestoreCallback([&](bool) { restored = true; });
+    expander.restore(true, QStringList());
+    ASSERT_TRUE(processEventsUntil([&]() { return restored; }));
+    EXPECT_TRUE(tree.isExpanded(fixture.row(kB0)));
+    EXPECT_FALSE(tree.isExpanded(fixture.row(kB1)));
+}
+
+TEST(SceneGraphExpander, OnlyTheRowsARunFetchedAreItsOwn)
+{
+    const int groupCount = 60;
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(expandableGroups(groupCount));
+
+    SceneGraphModel model;
+    model.setSource(source);
+    QTreeView tree;
+    tree.setModel(&model);
+    // Each opening takes a millisecond, so that the run spans slices.
+    QObject::connect(&tree, &QTreeView::expanded, &tree, []() { std::this_thread::sleep_for(std::chrono::milliseconds(1)); });
+    ASSERT_TRUE(processEventsUntil([&]() { return model.indexOfPath(QString::fromUtf8("/R"), true).isValid(); }));
+
+    SceneGraphExpandedPaths remembered;
+    SceneGraphExpander expander(&tree, &model, &remembered);
+    expander.start(SceneGraphExpander::eModeExpandBelow, QStringList({ QString::fromUtf8("/R") }));
+    ASSERT_TRUE(expander.isRunning());
+    bool ownsSome = expander.ownsRowsUnder(QString::fromUtf8("/R"));
+    for (int i = 0; i < groupCount; ++i) {
+        ownsSome = ownsSome || expander.ownsRowsUnder(groupPath(i));
+    }
+    EXPECT_TRUE(ownsSome);
+    // Rows a load brings in under a row the run did not read are not the run's.
+    EXPECT_FALSE(expander.ownsRowsUnder(QString::fromUtf8("/Elsewhere")));
+    EXPECT_FALSE(expander.ownsRowsUnder(QString()));
+    ASSERT_TRUE(processEventsUntil([&]() { return !expander.isRunning(); }));
+    for (int i = 0; i < groupCount; ++i) {
+        EXPECT_FALSE(expander.ownsRowsUnder(groupPath(i)));
+    }
+}

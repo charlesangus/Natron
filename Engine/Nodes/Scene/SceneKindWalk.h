@@ -82,13 +82,51 @@ struct SceneKindWalkResult {
     bool cancelled = false;
 };
 
+// Whether prim has a payload authored that is not loaded.
+bool isUnloadedPayload(const PXR_NS::UsdPrim& prim);
+
+/**
+ * @brief walkToKind() a part at a time: each walk() goes on from where the last one stopped, so
+ * that a walk can let go of the stage between parts. Only paths are kept between parts. A prim
+ * gone meanwhile is passed over; one that appeared under a prim already walked is not seen.
+ **/
+class SceneKindWalker {
+public:
+    SceneKindWalker(const PXR_NS::SdfPathVector& roots,
+                    const PXR_NS::TfToken& target);
+
+    /**
+     * @brief Walks on until the walk is done or stop, called every pollEvery prims, says to stop.
+     * Returns whether the walk is done. Reads the stage only.
+     **/
+    bool walk(const PXR_NS::UsdStageRefPtr& stage,
+              const std::function<bool()>& stop,
+              std::size_t pollEvery);
+
+    bool isDone() const;
+
+    // What the walk found so far; cancelled is never set here.
+    const SceneKindWalkResult& getResult() const;
+
+    // The prims walked so far.
+    std::size_t getVisitedCount() const;
+
+private:
+    PXR_NS::TfToken _target;
+    // The prims still to visit, the next one last.
+    PXR_NS::SdfPathVector _pending;
+    SceneKindWalkResult _result;
+    std::size_t _visited = 0;
+};
+
 /**
  * @brief Walks the composed prims depth first from each of roots, a root inside another's subtree
  * walked once. The walk descends through prims that pass through or sit above the target's level
  * and stops at the first prim at or below that level, which is a match if its kind is the target:
  * a built-in target matches the kinds that derive from it, a custom one only itself. A custom
- * target derived from no built-in level stops the walk only where it matches. Instances are
- * visited but not walked into, and inactive, undefined and abstract prims are skipped.
+ * target derived from no built-in level stops the walk only where it matches. It goes into
+ * instances through their instance proxies, as the scene graph's rows do, and skips inactive,
+ * undefined and abstract prims.
  *
  * Reads the stage only. cancelled, if set, is polled every few hundred prims; a walk it stops
  * comes back with cancelled set and what it had found.

@@ -1542,10 +1542,22 @@ public Q_SLOTS:
      * the rows and clears every state below them, in one edit, and does not apply to clearBelow. A
      * kind scope edits the loaded prims of that kind only, and the line counts the unloaded
      * payloads the walk could not look inside.
+     *
+     * With a kind scope, setDrawStateOnRowsScoped() walks the stage a slice at a time on the main
+     * thread, each slice bounded by a time budget and letting go of the stage after it, and makes
+     * its edits, as one, once the walk is done. The first slice runs at once: a walk it finishes
+     * returns what it did, a longer one what it has found so far, and scopedDrawProgress() reports
+     * it from then on. A new call, cancelScopedDraw() or another stage stops the walk, which then
+     * has changed nothing.
      **/
     QString loadRows(const QStringList& paths, const QString& scope);
     QString unloadRows(const QStringList& paths, const QString& scope);
     QString setDrawStateOnRowsScoped(const QStringList& paths, const QString& state, const QString& scope);
+    // Stops the walk of a kind-scoped draw state edit under way, if any; nothing is changed.
+    void cancelScopedDraw();
+    bool isScopedDrawRunning() const;
+    // How long one slice of that walk may run for, in milliseconds; 0 walks one prim per slice.
+    void setScopedDrawSliceMs(int ms);
     void clearDrawStates();
     // The state a path resolves to, effective or inherited. Waits for an edit under way.
     QString resolvedDrawState(const QString& path) const;
@@ -1601,6 +1613,10 @@ Q_SIGNALS:
     // isOutOfDate() changed (main thread).
     void outOfDateChanged(bool outOfDate);
 
+    // What a kind-scoped draw state edit's walk has done, after each slice and when it ends or
+    // stops (main thread).
+    void scopedDrawProgress(const QString& text, bool running);
+
 protected:
     void initializeGL() override;
     void resizeGL(int w, int h) override;
@@ -1618,6 +1634,9 @@ protected:
     void contextMenuEvent(QContextMenuEvent* e) override;
 
 private:
+    // Walks on with the kind-scoped draw state edit under way; returns its status line.
+    QString stepScopedDraw();
+
     // Mirrors the error, whether a scene is shown, whether every request is synced, how many
     // engines the renderer made, whether it holds one, its delegate and that delegate's error into
     // the natronSceneError, natronSceneShown, natronSceneSynced, natronSceneEngineCount,

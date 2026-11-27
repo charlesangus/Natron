@@ -222,6 +222,11 @@ const int kMaxRenderPasses = 8;
 // A stage change usually reaches the screen sooner than this, and a status flashing over the old
 // image on every edit would be worse than the short wait.
 const int kComposingStatusDelayMs = 250;
+// A kind-scoped draw state edit's walk: how long a slice may run, how many prims it walks
+// between looks at the clock, and how long it waits when a load holds the stage.
+const int kScopedDrawSliceMs = 12;
+const std::size_t kScopedDrawPollPrims = 64;
+const int kScopedDrawBusyMs = 15;
 // How often the render thread, idle, asks whether the frame it sent the GPU is done.
 const std::chrono::milliseconds kFenceWatchInterval(1);
 // The longest a frame waits after the paint that asked for it for the window's composition, which
@@ -8876,6 +8881,21 @@ struct SceneViewport::Implementation {
     // Also read by the load batch, which gives up on its files when it turns true.
     std::atomic<bool> loadQuit { false };
 
+    // A kind-scoped draw state edit whose walk is under way.
+    struct ScopedDraw {
+        std::unique_ptr<SceneKindWalker> walker;
+        // The stage the walk started on, once a slice has read it; another one stops the walk.
+        PXR_NS::UsdStagePtr stage;
+        bool stageRead = false;
+        bool clearBelow = false;
+        SceneDrawStateEnum state = eSceneDrawStateFull;
+        QString scope;
+        std::size_t rows = 0;
+    };
+    std::unique_ptr<ScopedDraw> scopedDraw;
+    QTimer* scopedDrawTimer = nullptr;
+    int scopedDrawSliceMs = kScopedDrawSliceMs;
+
     // The thread the engine lives on, running jobs in order. Owned apart from the view, as a
     // closed view leaves it to finish destroying the engine on its own.
     struct RenderLoop {
@@ -9762,6 +9782,9 @@ SceneViewport::SceneViewport(QWidget* parent)
         });
     }
 
+    _imp->scopedDrawTimer = new QTimer(this);
+    _imp->scopedDrawTimer->setSingleShot(true);
+    QObject::connect(_imp->scopedDrawTimer, &QTimer::timeout, this, [this]() { (void)stepScopedDraw(); });
     _imp->composingTimer = new QTimer(this);
     _imp->composingTimer->setSingleShot(true);
     _imp->composingTimer->setInterval(kComposingStatusDelayMs);
@@ -11286,6 +11309,30 @@ SceneViewport::unloadRows(const QStringList& paths,
     return SceneGraphModel::unloadingText(rows.size(), scope);
 }
 
+namespace {
+std::vector<SceneDrawRowEdit>
+scopedDrawEdits(const std::vector<std::string>& targets,
+                bool clearBelow,
+                SceneDrawStateEnum drawState,
+                bool below)
+{
+    std::vector<SceneDrawRowEdit> edits;
+
+    for (const std::string& target : targets) {
+        if (clearBelow) {
+            edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindClearBelow, target, eSceneDrawStateFull });
+            continue;
+        }
+        edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindSet, target, drawState });
+        if (below) {
+            edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindClearBelow, target, eSceneDrawStateFull });
+        }
+    }
+
+    return edits;
+}
+} // anonymous namespace
+
 QString
 SceneViewport::setDrawStateOnRowsScoped(const QStringList& paths,
                                         const QString& state,
@@ -11301,54 +11348,135 @@ SceneViewport::setDrawStateOnRowsScoped(const QStringList& paths,
         || rows.empty() || (rows.size() != std::size_t(paths.size()))) {
         return QString();
     }
-    std::vector<std::string> targets = rows;
-    QString targetsText = SceneGraphModel::rowsText(rows.size());
-    QString skippedText;
+    // Its edits are not made yet: the new command replaces it.
+    _imp->scopedDrawTimer->stop();
+    _imp->scopedDraw.reset();
     if (parsed == eRowScopeKind) {
-        SceneKindWalkResult walk;
-        const bool read = _imp->renderer.tryReadStage([&](const SceneStage* stage) {
-            if (stage) {
-                walk = walkToKind(stage->getStage(), toSdfPaths(rows), kind);
-            }
-        });
-        if (!read) {
-            return tr("The scene is busy loading: nothing was changed, try again");
-        }
-        targets.clear();
-        for (const SdfPath& match : walk.matches) {
-            targets.push_back(match.GetString());
-        }
-        targetsText = tr("%1 under %2").arg(SceneGraphModel::kindCountText(scope, targets.size()), SceneGraphModel::rowsText(rows.size()));
-        const std::size_t skipped = walk.unloadedPassThrough.size();
-        if (skipped == 1) {
-            skippedText = tr("; 1 unloaded payload skipped");
-        } else if (skipped > 1) {
-            skippedText = tr("; %1 unloaded payloads skipped").arg(skipped);
-        }
-        if (targets.empty()) {
-            return tr("No loaded %1 under %2%3").arg(SceneGraphModel::kindPluralText(scope), SceneGraphModel::rowsText(rows.size()), skippedText);
-        }
+        std::unique_ptr<Implementation::ScopedDraw> run(new Implementation::ScopedDraw);
+        run->walker.reset(new SceneKindWalker(toSdfPaths(rows), kind));
+        run->clearBelow = clearBelow;
+        run->state = drawState;
+        run->scope = scope;
+        run->rows = rows.size();
+        _imp->scopedDraw = std::move(run);
+
+        return stepScopedDraw();
     }
-    std::vector<SceneDrawRowEdit> edits;
-    for (const std::string& target : targets) {
-        if (clearBelow) {
-            edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindClearBelow, target, eSceneDrawStateFull });
-            continue;
-        }
-        edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindSet, target, drawState });
-        if (parsed == eRowScopeBelow) {
-            edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindClearBelow, target, eSceneDrawStateFull });
-        }
-    }
-    editDrawStateRows(edits);
+    editDrawStateRows(scopedDrawEdits(rows, clearBelow, drawState, parsed == eRowScopeBelow));
+    const QString targetsText = SceneGraphModel::rowsText(rows.size());
     if (clearBelow) {
-        return tr("States cleared below %1%2").arg(targetsText, skippedText);
+        return tr("States cleared below %1").arg(targetsText);
     }
     if (parsed == eRowScopeBelow) {
         return tr("%1 set on %2, states below cleared").arg(SceneGraphModel::drawStateLabel(drawState), targetsText);
     }
 
-    return tr("%1 set on %2%3").arg(SceneGraphModel::drawStateLabel(drawState), targetsText, skippedText);
+    return tr("%1 set on %2").arg(SceneGraphModel::drawStateLabel(drawState), targetsText);
+}
+
+QString
+SceneViewport::stepScopedDraw()
+{
+    Implementation::ScopedDraw* run = _imp->scopedDraw.get();
+
+    if (!run) {
+        return QString();
+    }
+    QElapsedTimer clock;
+    clock.start();
+    const int budgetMs = _imp->scopedDrawSliceMs;
+    bool otherStage = false;
+    bool done = false;
+    const bool read = _imp->renderer.tryReadStage([&](const SceneStage* stage) {
+        const UsdStageRefPtr shown = stage ? stage->getStage() : UsdStageRefPtr();
+        if (!run->stageRead) {
+            run->stageRead = true;
+            run->stage = shown;
+        } else if (!shown || (get_pointer(shown) != get_pointer(run->stage))) {
+            otherStage = true;
+
+            return;
+        }
+        // No scene shown: nothing to walk.
+        if (!shown) {
+            done = true;
+
+            return;
+        }
+        done = run->walker->walk(shown, [&clock, budgetMs]() { return clock.elapsed() >= budgetMs; }, (budgetMs > 0) ? kScopedDrawPollPrims : 1);
+    });
+    const QString kindPlural = SceneGraphModel::kindPluralText(run->scope);
+    const QString rowsText = SceneGraphModel::rowsText(run->rows);
+
+    if (otherStage) {
+        _imp->scopedDraw.reset();
+        const QString text = tr("Stopped: the scene changed, nothing was changed");
+        Q_EMIT scopedDrawProgress(text, false);
+
+        return text;
+    }
+    const SceneKindWalkResult& walk = run->walker->getResult();
+    if (!done) {
+        // A load holding the stage is waited out rather than spun on.
+        _imp->scopedDrawTimer->setInterval(read ? 0 : kScopedDrawBusyMs);
+        _imp->scopedDrawTimer->start();
+        const QString found = SceneGraphModel::kindCountText(run->scope, walk.matches.size());
+        const QString text = run->clearBelow ? tr("Clearing states below the %1 under %2: %3 found so far; Esc stops").arg(kindPlural, rowsText, found)
+                                             : tr("Setting %1 on the %2 under %3: %4 found so far; Esc stops")
+                                                   .arg(SceneGraphModel::drawStateLabel(run->state), kindPlural, rowsText, found);
+        Q_EMIT scopedDrawProgress(text, true);
+
+        return text;
+    }
+    std::vector<std::string> targets;
+    for (const SdfPath& match : walk.matches) {
+        targets.push_back(match.GetString());
+    }
+    QString skippedText;
+    const std::size_t skipped = walk.unloadedPassThrough.size();
+    if (skipped == 1) {
+        skippedText = tr("; 1 unloaded payload skipped");
+    } else if (skipped > 1) {
+        skippedText = tr("; %1 unloaded payloads skipped").arg(skipped);
+    }
+    const bool clearBelow = run->clearBelow;
+    const SceneDrawStateEnum drawState = run->state;
+    const QString targetsText = tr("%1 under %2").arg(SceneGraphModel::kindCountText(run->scope, targets.size()), rowsText);
+    _imp->scopedDraw.reset();
+    QString text;
+    if (targets.empty()) {
+        text = tr("No loaded %1 under %2%3").arg(kindPlural, rowsText, skippedText);
+    } else {
+        editDrawStateRows(scopedDrawEdits(targets, clearBelow, drawState, false));
+        text = clearBelow ? tr("States cleared below %1%2").arg(targetsText, skippedText)
+                          : tr("%1 set on %2%3").arg(SceneGraphModel::drawStateLabel(drawState), targetsText, skippedText);
+    }
+    Q_EMIT scopedDrawProgress(text, false);
+
+    return text;
+} // SceneViewport::stepScopedDraw
+
+void
+SceneViewport::cancelScopedDraw()
+{
+    if (!_imp->scopedDraw) {
+        return;
+    }
+    _imp->scopedDrawTimer->stop();
+    _imp->scopedDraw.reset();
+    Q_EMIT scopedDrawProgress(tr("Stopped: nothing was changed"), false);
+}
+
+bool
+SceneViewport::isScopedDrawRunning() const
+{
+    return bool(_imp->scopedDraw);
+}
+
+void
+SceneViewport::setScopedDrawSliceMs(int ms)
+{
+    _imp->scopedDrawSliceMs = std::max(0, ms);
 }
 
 bool

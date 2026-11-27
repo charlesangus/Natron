@@ -66,10 +66,12 @@ groupedCountText(int count,
     return trExpander(many).arg(QLocale(QLocale::English, QLocale::UnitedStates).toString(count));
 }
 
+// Opening an unloaded or failed payload row would load it. A loading row opens: its load is
+// under way already, and its rows show once it is done.
 bool
 leftClosed(SceneGraphModel::PayloadStateEnum state)
 {
-    return (state == SceneGraphModel::ePayloadStateUnloaded) || (state == SceneGraphModel::ePayloadStateFailed) || (state == SceneGraphModel::ePayloadStateLoading);
+    return (state == SceneGraphModel::ePayloadStateUnloaded) || (state == SceneGraphModel::ePayloadStateFailed);
 }
 
 // QTreeView::expand() and collapse() with no relayout pending lay out the opened or closed row at
@@ -282,6 +284,8 @@ struct SceneGraphExpander::Implementation {
     std::vector<QString> waiting;
     // Rows open, by this run or before it, that showing a row of the kind need not climb past.
     QSet<QString> opened;
+    // Rows whose children the run asked the model for: the rows inserted under them are its own.
+    QSet<QString> fetched;
     // Collapse All Below: the roots, the one being closed, and the last path closed below it,
     // empty before the first; the remembered paths below a root are closed last to first.
     QStringList collapseRoots;
@@ -332,6 +336,7 @@ struct SceneGraphExpander::Implementation {
         queue.clear();
         waiting.clear();
         opened.clear();
+        fetched.clear();
         roots.clear();
         collapseRoots.clear();
         collapseRoot = 0;
@@ -401,9 +406,11 @@ struct SceneGraphExpander::Implementation {
     }
 
     // Asks for the children of index not read yet; returns whether all of them have rows.
-    bool childrenReady(const QModelIndex& index)
+    bool childrenReady(const QModelIndex& index,
+                       const QString& path)
     {
         if (model->canFetchMore(index)) {
+            fetched.insert(path);
             model->fetchMore(index);
         }
 
@@ -426,9 +433,17 @@ struct SceneGraphExpander::Implementation {
                 return;
             }
         }
-        if (leftClosed(model->getPayloadState(path))) {
+        const SceneGraphModel::PayloadStateEnum state = model->getPayloadState(path);
+        if (leftClosed(state) || (state == SceneGraphModel::ePayloadStateLoading)) {
             if (model->hasChildren(index)) {
-                ++progress.unloaded;
+                if (state == SceneGraphModel::ePayloadStateLoading) {
+                    ++progress.loading;
+                    if ((progress.mode == eModeExpandBelow) && open(index)) {
+                        ++progress.changed;
+                    }
+                } else {
+                    ++progress.unloaded;
+                }
                 if (progress.mode == eModeExpandToKind) {
                     reveal(index);
                 }
@@ -442,7 +457,7 @@ struct SceneGraphExpander::Implementation {
         if ((progress.mode == eModeExpandBelow) && open(index)) {
             ++progress.changed;
         }
-        if (!childrenReady(index)) {
+        if (!childrenReady(index, path)) {
             waiting.push_back(path);
 
             return;
@@ -458,7 +473,7 @@ struct SceneGraphExpander::Implementation {
         while ((i < waiting.size()) && (clock.elapsed() < budget)) {
             const QModelIndex index = model->indexOfPath(waiting[i], false);
             const bool gone = !index.isValid();
-            if (gone || childrenReady(index)) {
+            if (gone || childrenReady(index, waiting[i])) {
                 if (!gone) {
                     queue.push_back(Pending { waiting[i], 0 });
                 }
@@ -636,10 +651,8 @@ struct SceneGraphExpander::Implementation {
 
             return;
         }
-        // Opening an unloaded payload row would load it: it stays closed, and remembered, until
-        // the user twirls it.
-        const SceneGraphModel::PayloadStateEnum state = model->getPayloadState(path);
-        if ((state == SceneGraphModel::ePayloadStateUnloaded) || (state == SceneGraphModel::ePayloadStateFailed)) {
+        // It stays closed, and remembered, until the user twirls it.
+        if (leftClosed(model->getPayloadState(path))) {
             return;
         }
         if (index.isValid()) {
@@ -789,6 +802,12 @@ SceneGraphExpander::isApplying() const
     return _imp->applying;
 }
 
+bool
+SceneGraphExpander::ownsRowsUnder(const QString& parent) const
+{
+    return _imp->applying || (_imp->progress.running && _imp->fetched.contains(parent));
+}
+
 const SceneGraphExpander::Progress&
 SceneGraphExpander::getProgress() const
 {
@@ -870,6 +889,10 @@ SceneGraphExpander::progressText(const Progress& progress)
     if ((progress.mode != eModeCollapseBelow) && (progress.unloaded > 0)) {
         text += trExpander(QT_TRANSLATE_NOOP("SceneGraphExpander", "; %1 not expanded"))
                     .arg(groupedCountText(progress.unloaded, QT_TRANSLATE_NOOP("SceneGraphExpander", "1 unloaded payload"), QT_TRANSLATE_NOOP("SceneGraphExpander", "%1 unloaded payloads")));
+    }
+    if ((progress.mode != eModeCollapseBelow) && (progress.loading > 0)) {
+        text += trExpander(QT_TRANSLATE_NOOP("SceneGraphExpander", "; %1 not expanded"))
+                    .arg(groupedCountText(progress.loading, QT_TRANSLATE_NOOP("SceneGraphExpander", "1 loading payload"), QT_TRANSLATE_NOOP("SceneGraphExpander", "%1 loading payloads")));
     }
     if (progress.cancelled) {
         text = trExpander(QT_TRANSLATE_NOOP("SceneGraphExpander", "Stopped. %1")).arg(text);

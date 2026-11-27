@@ -243,12 +243,6 @@ private:
 const std::chrono::milliseconds kCancelPollInterval(10);
 const std::size_t kCancelPollPrims = 1024;
 
-bool
-isUnloadedPayload(const PXR_NS::UsdPrim& prim)
-{
-    return prim.HasAuthoredPayloads() && !prim.IsLoaded();
-}
-
 // The payload assets of prim, whichever layer of its composition authors them, anchored to it.
 std::vector<std::string>
 getPayloadAssets(const PXR_NS::UsdPrim& prim)

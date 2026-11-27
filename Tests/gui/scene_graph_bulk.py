@@ -21,7 +21,10 @@ scene_graph_bulk.pxrplugins registers), each holding a subcomponent payload, and
     Geometry shows checked when every selected row is set Geometry;
   - Hide To natronTestTree sets the bush alone;
   - Expand and BBox on selected rows, and Clear Below;
-  - Load Below loads everything, and Unload Below Component unloads what is below the components;
+  - Load Below loads everything, and Unload Below Component unloads what is below the components
+    and closes their open rows;
+  - Draw To walked a prim per slice runs on, says Esc stops, applies once done, and Esc stops a
+    second one with nothing changed;
   - Load + Draw Below sets Load + Draw on the island and clears the states below it, as one change;
   - BBox To Component from the row menu, found by its object name;
   - with Scene Graph: Draw BBox To Component bound to J in the Shortcut Editor, J in the tree boxes
@@ -583,12 +586,17 @@ try:
         check(summary == "Loading 1 row and every payload below them", "Load Below says what it does (got %r)" % (summary,))
         ok = yield ("until", all_loaded(SUBCOMPONENTS), POLL_TIMEOUT_S)
         check(ok, "Load Below loads every payload below the island (states %r)" % ([state(p) for p in SUBCOMPONENTS],))
+        for path in (ISLAND, GROVE, TREE_A, LEAVES_A, ROCK, MOSS):
+            tree().expand(find(path))
         set_scope("component")
         summary = yield from press("unload")
         check(summary == "Unloading below components under 1 row", "Unload Below Component says what it does (got %r)" % (summary,))
         ok = yield ("until", lambda: all(state(p) == STATE_UNLOADED for p in SUBCOMPONENTS), POLL_TIMEOUT_S)
         check(ok, "Unload Below Component unloads the subcomponents (states %r)" % ([state(p) for p in SUBCOMPONENTS],))
         check(all_loaded([ISLAND] + COMPONENTS)(), "the components stay loaded (states %r)" % ([state(p) for p in [ISLAND] + COMPONENTS],))
+        check(not tree().isExpanded(find(LEAVES_A)) and not tree().isExpanded(find(MOSS)),
+              "Unload Below Component closes the unloaded rows, so a twirl loads them again")
+        check(tree().isExpanded(find(TREE_A)) and tree().isExpanded(find(ROCK)), "the components' rows stay open")
         shot("scene-graph-bulk-unload-below-component.png")
 
         # BBox To Component from the row menu.
@@ -598,6 +606,30 @@ try:
         ok = yield ("until", lambda: all(set_here(p, DRAW_BBOX) for p in COMPONENTS), POLL_TIMEOUT_S)
         check(ok, "BBox To Component from the row menu boxes every component (got %r)" % ([draw(p) for p in COMPONENTS],))
         check(bulk_status() == "BBox set on 4 components under 1 row", "the menu entry writes the status line (got %r)" % (bulk_status(),))
+
+        # A Draw To walk a prim per slice: it reports progress, applies once it is done, and Esc
+        # stops it before it changes anything.
+        def scoped_draw_running():
+            return QMetaObject.invokeMethod(view(), "isScopedDrawRunning", Qt.DirectConnection, Q_RETURN_ARG("bool"))
+
+        QMetaObject.invokeMethod(view(), "setScopedDrawSliceMs", Qt.DirectConnection, Q_ARG("int", 0))
+        summary = invoke("setDrawStateOnRowsScoped", [ISLAND], "geometry", "component")
+        check(summary.endswith("Esc stops") and scoped_draw_running(), "a sliced Geometry To Component runs on (got %r)" % (summary,))
+        check(all(set_here(p, DRAW_BBOX) for p in COMPONENTS), "a running walk changes nothing yet (got %r)" % ([draw(p) for p in COMPONENTS],))
+        ok = yield ("until", lambda: not scoped_draw_running(), POLL_TIMEOUT_S)
+        check(ok, "the sliced walk ends")
+        ok = yield ("until", lambda: all(set_here(p, DRAW_GEOMETRY) for p in COMPONENTS), POLL_TIMEOUT_S)
+        check(ok, "the sliced walk sets Geometry on every component (got %r)" % ([draw(p) for p in COMPONENTS],))
+        check(bulk_status() == "Geometry set on 4 components under 1 row", "the sliced walk's summary reaches the status line (got %r)" % (bulk_status(),))
+        summary = invoke("setDrawStateOnRowsScoped", [ISLAND], "hide", "component")
+        check(scoped_draw_running(), "a second sliced walk runs on (got %r)" % (summary,))
+        tree().setFocus()
+        QTest.keyClick(tree(), Qt.Key_Escape)
+        check(not scoped_draw_running(), "Esc stops the walk")
+        check(bulk_status() == "Stopped: nothing was changed", "the status line says the walk stopped (got %r)" % (bulk_status(),))
+        yield ("sleep", SETTLE_MS)
+        check(all(set_here(p, DRAW_GEOMETRY) for p in COMPONENTS), "a stopped walk changes nothing (got %r)" % ([draw(p) for p in COMPONENTS],))
+        QMetaObject.invokeMethod(view(), "setScopedDrawSliceMs", Qt.DirectConnection, Q_ARG("int", 12))
 
         # Load + Draw Below, by invokeMethod.
         summary = invoke("setDrawStateOnRowsScoped", [ISLAND], "loadAndDraw", "below")

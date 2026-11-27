@@ -106,8 +106,9 @@ private:
  * @brief Opens or closes whole branches of the scene graph's tree a slice at a time on the main
  * thread, each slice bounded by a time budget, so that the window keeps handling events however
  * many rows there are. Rows whose children have not been fetched yet are fetched before the walk
- * goes below them. It never loads a payload: rows of unloaded, failed or loading payloads stay
- * closed and are counted.
+ * goes below them. It never loads a payload: rows of unloaded or failed payloads stay closed, and
+ * the walk does not go below rows of payloads still loading, which Expand All Below opens; both
+ * are counted.
  *
  * Expand All Below opens every row with children below the roots. Expand To <kind> walks down
  * from the roots by walkToKind()'s stop rule (kindWalkStopsAt()): the rows of the kind, and the
@@ -145,8 +146,10 @@ public:
         int changed = 0;
         // Rows of the kind found by Expand To.
         int matches = 0;
-        // Rows of unloaded, failed or loading payloads the walk reached and left closed.
+        // Rows of unloaded or failed payloads the walk reached and left closed.
         int unloaded = 0;
+        // Rows of payloads still loading the walk reached and did not go below.
+        int loading = 0;
         // Slices run so far; each returns to the event loop.
         int slices = 0;
         bool running = false;
@@ -196,9 +199,14 @@ public:
     // now: rows inserted meanwhile are its own.
     bool isApplying() const;
 
+    // Whether rows inserted under parent now are the expander's own: it is applying, or the run
+    // under way asked for parent's children. Rows a load brings in under other rows are not.
+    bool ownsRowsUnder(const QString& parent) const;
+
     const Progress& getProgress() const;
 
-    // What progress says for the status line: "Expanded 4,210 rows; 37 unloaded payloads not expanded".
+    // What progress says for the status line: "Expanded 4,210 rows; 37 unloaded payloads not
+    // expanded; 2 loading payloads not expanded".
     static QString progressText(const Progress& progress);
 
     /**

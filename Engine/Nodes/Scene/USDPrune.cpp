@@ -35,6 +35,7 @@
 #include "Engine/ChoiceOption.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Nodes/Scene/SceneKindWalk.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
@@ -73,12 +74,6 @@ isolatePredicate()
     static const PXR_NS::Usd_PrimFlagsPredicate predicate = PXR_NS::UsdPrimIsActive && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract;
 
     return predicate;
-}
-
-bool
-isUnloadedPayload(const PXR_NS::UsdPrim& prim)
-{
-    return prim.HasAuthoredPayloads() && !prim.IsLoaded();
 }
 
 bool

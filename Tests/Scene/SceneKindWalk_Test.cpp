@@ -348,3 +348,75 @@ TEST(SceneKindWalk, CancelStopsTheWalk)
     EXPECT_LT(result.matches.size(), 2000u);
     EXPECT_GT(result.matches.size(), 0u);
 }
+
+TEST(SceneKindWalk, AWalkerResumedAtEveryPrimFindsWhatOneWalkDoes)
+{
+    PXR_NS::UsdStageRefPtr stage = openStage(kWorld);
+
+    for (const PXR_NS::TfToken& target : { PXR_NS::KindTokens->assembly, PXR_NS::KindTokens->component, PXR_NS::KindTokens->subcomponent, kTree, kSet }) {
+        const SceneKindWalkResult whole = walkToKind(stage, paths({ "/World" }), target);
+        SceneKindWalker walker(paths({ "/World" }), target);
+        int parts = 0;
+        while (!walker.walk(stage, []() { return true; }, 1)) {
+            ++parts;
+            ASSERT_LT(parts, 1000);
+        }
+        EXPECT_TRUE(walker.isDone());
+        EXPECT_GT(parts, 1) << target.GetString();
+        EXPECT_EQ(strings(whole.matches), strings(walker.getResult().matches)) << target.GetString();
+        EXPECT_EQ(strings(whole.unloadedPassThrough), strings(walker.getResult().unloadedPassThrough)) << target.GetString();
+    }
+}
+
+TEST(SceneKindWalk, APrimGoneBetweenPartsIsPassedOver)
+{
+    PXR_NS::UsdStageRefPtr stage = openStage(kWorld);
+    SceneKindWalker walker(paths({ "/World" }), PXR_NS::KindTokens->component);
+
+    ASSERT_FALSE(walker.walk(stage, []() { return true; }, 1));
+    stage->RemovePrim(PXR_NS::SdfPath("/World/Props"));
+    while (!walker.walk(stage, std::function<bool()>(), 1)) {
+    }
+    EXPECT_EQ(std::vector<std::string>({ "/World/City/Block/HouseA", "/World/City/Block/HouseB", "/World/Park/Grove/Oak", "/World/Park/Bench" }),
+              strings(walker.getResult().matches));
+}
+
+TEST(SceneKindWalk, InstancesAreWalkedThroughTheirProxies)
+{
+    PXR_NS::UsdStageRefPtr stage = openStage(R"(
+def Xform "Proto" (kind = "assembly")
+{
+    def Xform "House" (kind = "component")
+    {
+        def Xform "Door" (kind = "subcomponent")
+        {
+        }
+    }
+}
+def Xform "World"
+{
+    def Xform "SetA" (
+        instanceable = true
+        prepend references = </Proto>
+    )
+    {
+    }
+    def Xform "SetB" (
+        instanceable = true
+        prepend references = </Proto>
+    )
+    {
+    }
+}
+)");
+    ASSERT_TRUE(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/SetA")).IsInstance());
+
+    SceneKindWalkResult result = walkToKind(stage, paths({ "/World" }), PXR_NS::KindTokens->component);
+    EXPECT_EQ(std::vector<std::string>({ "/World/SetA/House", "/World/SetB/House" }), strings(result.matches));
+
+    result = walkToKind(stage, paths({ "/World/SetA/House" }), PXR_NS::KindTokens->subcomponent);
+    EXPECT_EQ(std::vector<std::string>({ "/World/SetA/House/Door" }), strings(result.matches));
+
+    result = walkToKind(stage, paths({ "/World" }), PXR_NS::KindTokens->assembly);
+    EXPECT_EQ(std::vector<std::string>({ "/World/SetA", "/World/SetB" }), strings(result.matches));
+}

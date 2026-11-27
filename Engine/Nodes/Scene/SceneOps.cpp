@@ -53,6 +53,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Nodes/Scene/SceneKindWalk.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/ScenePredicates.h"
 #include "Engine/Nodes/Scene/SceneProjectionCameras.h"
@@ -1003,12 +1004,6 @@ namespace {
         static const PXR_NS::Usd_PrimFlagsPredicate predicate = PXR_NS::UsdPrimIsActive && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract;
 
         return predicate;
-    }
-
-    bool
-    isUnloadedPayload(const PXR_NS::UsdPrim& prim)
-    {
-        return prim.HasAuthoredPayloads() && !prim.IsLoaded();
     }
 
     // Whether path is root or below it.

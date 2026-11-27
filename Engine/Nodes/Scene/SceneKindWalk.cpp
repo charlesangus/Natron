@@ -42,11 +42,9 @@ isBuiltInKind(const PXR_NS::TfToken& kind)
 
 // The predicate leaves IsLoaded out, so that an unloaded payload's prim is seen.
 PXR_NS::Usd_PrimFlagsPredicate
-walkPredicate(const PXR_NS::UsdPrim& root)
+walkPredicate()
 {
-    const PXR_NS::Usd_PrimFlagsConjunction flags = PXR_NS::UsdPrimIsActive && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract;
-
-    return root.IsInstanceProxy() ? PXR_NS::UsdTraverseInstanceProxies(flags) : PXR_NS::Usd_PrimFlagsPredicate(flags);
+    return PXR_NS::UsdTraverseInstanceProxies(PXR_NS::UsdPrimIsActive && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract);
 }
 
 PXR_NS::TfToken
@@ -57,12 +55,6 @@ kindOf(const PXR_NS::UsdPrim& prim)
     PXR_NS::UsdModelAPI(prim).GetKind(&kind);
 
     return kind;
-}
-
-bool
-isUnloadedPayload(const PXR_NS::UsdPrim& prim)
-{
-    return prim.HasAuthoredPayloads() && !prim.IsLoaded();
 }
 
 // roots without the invalid paths and those inside another root's subtree, in path order.
@@ -87,6 +79,12 @@ outermostRoots(const PXR_NS::SdfPathVector& roots)
     return kept;
 }
 } // anonymous namespace
+
+bool
+isUnloadedPayload(const PXR_NS::UsdPrim& prim)
+{
+    return prim.HasAuthoredPayloads() && !prim.IsLoaded();
+}
 
 SceneKindLevelEnum
 sceneKindLevel(const PXR_NS::TfToken& kind)
@@ -156,49 +154,105 @@ kindWalkStopsAt(const PXR_NS::TfToken& kind,
     return stops;
 }
 
+SceneKindWalker::SceneKindWalker(const PXR_NS::SdfPathVector& roots,
+                                 const PXR_NS::TfToken& target)
+    : _target(target)
+{
+    const PXR_NS::SdfPathVector kept = outermostRoots(roots);
+
+    _pending.assign(kept.rbegin(), kept.rend());
+}
+
+bool
+SceneKindWalker::walk(const PXR_NS::UsdStageRefPtr& stage,
+                      const std::function<bool()>& stop,
+                      std::size_t pollEvery)
+{
+    if (!stage || _target.IsEmpty()) {
+        _pending.clear();
+
+        return true;
+    }
+    const PXR_NS::Usd_PrimFlagsPredicate predicate = walkPredicate();
+    // The prims below the last pending path taken, the next one last; they all come before the
+    // pending paths, so a stop puts them back after those.
+    std::vector<PXR_NS::UsdPrim> below;
+    std::size_t sincePoll = 0;
+
+    pollEvery = std::max<std::size_t>(1, pollEvery);
+    while (!below.empty() || !_pending.empty()) {
+        if (stop && (sincePoll >= pollEvery)) {
+            sincePoll = 0;
+            if (stop()) {
+                for (const PXR_NS::UsdPrim& prim : below) {
+                    _pending.push_back(prim.GetPath());
+                }
+
+                return false;
+            }
+        }
+        ++sincePoll;
+        PXR_NS::UsdPrim prim;
+        if (!below.empty()) {
+            prim = below.back();
+            below.pop_back();
+        } else {
+            prim = stage->GetPrimAtPath(_pending.back());
+            _pending.pop_back();
+            if (!prim || !predicate(prim)) {
+                continue;
+            }
+        }
+        ++_visited;
+        bool matches = false;
+        if (kindWalkStopsAt(kindOf(prim), _target, &matches)) {
+            if (matches) {
+                _result.matches.push_back(prim.GetPath());
+            }
+            continue;
+        }
+        if (isUnloadedPayload(prim)) {
+            _result.unloadedPassThrough.push_back(prim.GetPath());
+        }
+        const std::size_t first = below.size();
+        for (const PXR_NS::UsdPrim& child : prim.GetFilteredChildren(predicate)) {
+            below.push_back(child);
+        }
+        std::reverse(below.begin() + first, below.end());
+    }
+
+    return true;
+} // SceneKindWalker::walk
+
+bool
+SceneKindWalker::isDone() const
+{
+    return _pending.empty();
+}
+
+const SceneKindWalkResult&
+SceneKindWalker::getResult() const
+{
+    return _result;
+}
+
+std::size_t
+SceneKindWalker::getVisitedCount() const
+{
+    return _visited;
+}
+
 SceneKindWalkResult
 walkToKind(const PXR_NS::UsdStageRefPtr& stage,
            const PXR_NS::SdfPathVector& roots,
            const PXR_NS::TfToken& target,
            const std::function<bool()>& cancelled)
 {
-    SceneKindWalkResult result;
+    SceneKindWalker walker(roots, target);
+    const bool done = walker.walk(stage, cancelled, kCancelPollPrims);
+    SceneKindWalkResult result = walker.getResult();
 
-    if (!stage || target.IsEmpty()) {
-        return result;
-    }
-    std::size_t visited = 0;
-    const auto pollCancelled = [&]() {
-        if (cancelled && ((++visited % kCancelPollPrims) == 0) && cancelled()) {
-            result.cancelled = true;
-        }
-
-        return result.cancelled;
-    };
-
-    for (const PXR_NS::SdfPath& rootPath : outermostRoots(roots)) {
-        const PXR_NS::UsdPrim root = stage->GetPrimAtPath(rootPath);
-        if (!root) {
-            continue;
-        }
-        const PXR_NS::UsdPrimRange range(root, walkPredicate(root));
-        for (PXR_NS::UsdPrimRange::const_iterator it = range.begin(); it != range.end(); ++it) {
-            if (pollCancelled()) {
-                return result;
-            }
-            bool matches = false;
-            if (kindWalkStopsAt(kindOf(*it), target, &matches)) {
-                if (matches) {
-                    result.matches.push_back(it->GetPath());
-                }
-                it.PruneChildren();
-                continue;
-            }
-            if (isUnloadedPayload(*it)) {
-                result.unloadedPassThrough.push_back(it->GetPath());
-            }
-        }
-    }
+    result.cancelled = !done;
 
     return result;
 } // walkToKind
@@ -211,7 +265,7 @@ payloadsBelow(const PXR_NS::UsdPrim& prim)
     if (!prim) {
         return payloads;
     }
-    const PXR_NS::UsdPrimRange range(prim, walkPredicate(prim));
+    const PXR_NS::UsdPrimRange range(prim, walkPredicate());
     for (PXR_NS::UsdPrimRange::const_iterator it = range.begin(); it != range.end(); ++it) {
         if ((*it != prim) && it->HasAuthoredPayloads()) {
             payloads.push_back(it->GetPath());

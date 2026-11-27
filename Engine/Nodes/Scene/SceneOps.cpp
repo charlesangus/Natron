@@ -978,6 +978,16 @@ selectPrims(const PXR_NS::UsdStageRefPtr& stage,
 }
 
 bool
+selectPrimsWithPredicate(const PXR_NS::UsdStageRefPtr& stage,
+                         const std::string& expression,
+                         std::vector<PXR_NS::SdfPath>* paths,
+                         std::string* errorMessage,
+                         const PXR_NS::Usd_PrimFlagsPredicate& predicate)
+{
+    return selectPrimsImpl(stage, expression, paths, errorMessage, std::function<bool()>(), predicate);
+}
+
+bool
 selectPrims(const PXR_NS::UsdStageRefPtr& stage,
             const std::string& expression,
             std::vector<PXR_NS::SdfPath>* paths,

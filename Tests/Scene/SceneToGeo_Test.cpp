@@ -119,7 +119,8 @@ translation(const GeoMatrix4& m)
 }
 
 // Reading from USD marks every primitive, which changes what GeoToUSD authors and so stays in
-// the content hash; the round trip is otherwise the identity.
+// the content hash, and records each prim's world matrix as usdxform; the round trip is
+// otherwise the identity.
 GeoDetail
 withoutUsdSource(const GeoDetail& detail)
 {
@@ -130,6 +131,7 @@ withoutUsdSource(const GeoDetail& detail)
     }
     GeoDetailBuilder b(detail);
     b.removeAttribute(eGeoAttribClassPrimitive, kGeoUsdSourceAttr);
+    b.removeAttribute(eGeoAttribClassPrimitive, kGeoUsdXformAttr);
 
     return b.finish();
 }

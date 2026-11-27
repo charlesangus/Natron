@@ -499,6 +499,16 @@ bool selectPrims(const PXR_NS::UsdStageRefPtr& stage,
                  bool traverseInstanceProxies = false);
 
 /**
+ * @brief selectPrims() visiting the prims @p predicate accepts instead, for callers that also
+ * select prims the default traversal hides, such as inactive ones.
+ **/
+bool selectPrimsWithPredicate(const PXR_NS::UsdStageRefPtr& stage,
+                              const std::string& expression,
+                              std::vector<PXR_NS::SdfPath>* paths,
+                              std::string* errorMessage,
+                              const PXR_NS::Usd_PrimFlagsPredicate& predicate);
+
+/**
  * @brief selectPrims() that polls cancelled as it walks and gives up as soon as it turns true,
  * returning false with *paths and *errorMessage empty.
  **/

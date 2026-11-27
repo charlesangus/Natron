@@ -55,6 +55,26 @@ inline constexpr const char* kGeoUsdWorldSpaceAttr = "usdWorldSpace";
  **/
 inline constexpr const char* kGeoUsdSourceAttr = "usdSource";
 
+/**
+ * @brief A primitive matrix attribute, a point one for points prims, holding the local-to-world
+ * transform of the prim the geometry was read from. It records where the prim was, so it carries
+ * no type info and geometry transforms leave it as it is. Not exported.
+ **/
+inline constexpr const char* kGeoUsdXformAttr = "usdxform";
+
+/**
+ * @brief A primitive string attribute, a point one for points prims, naming the material bound
+ * to the prim, or to the GeomSubset the primitive belongs to, when it was read. Not exported as a
+ * primvar.
+ **/
+inline constexpr const char* kGeoUsdMaterialPathAttr = "usdmaterialpath";
+
+/**
+ * @brief A primitive int attribute, a point one for points prims, 0 on geometry read from an
+ * inactive prim and 1 on the rest, present once an inactive prim has been read.
+ **/
+inline constexpr const char* kGeoUsdActiveAttr = "usdactive";
+
 /** @brief How packed geometry primitives become USD prims. */
 enum GeoUsdPackedModeEnum {
     eGeoUsdPackedPointInstancer = 0,
@@ -184,7 +204,8 @@ GeoUsdInputSceneConstPtr geoUsdCaptureInputScene(const PXR_NS::UsdStageRefPtr& s
  * Attribute classes map detail -> constant, primitive -> uniform, point -> vertex and
  * vertex -> faceVarying, and names map P -> points, N -> normals, uv -> primvars:st,
  * Cd -> primvars:displayColor, pscale -> widths (points and curves), the rest to
- * primvars:<name>. `path`, `name` and the packed intrinsics are not exported. Primitive groups
+ * primvars:<name>. `path`, `name`, kGeoUsdXformAttr, kGeoUsdMaterialPathAttr and the packed
+ * intrinsics are not exported. Primitive groups
  * become UsdGeomSubsets on meshes and bool uniform primvars on curves; point groups become bool
  * vertex primvars; vertex and edge groups are dropped with a warning, as are array attributes.
  *
@@ -354,6 +375,60 @@ bool geoUsdReadPrim(const PXR_NS::UsdPrim& prim,
                     GeoDetailBuilder& builder,
                     std::vector<std::string>* warnings,
                     std::string* errorMessage);
+
+/** @brief What geoUsdReadPrim() reads besides topology and points, and under which names. */
+struct GeoUsdReadOptions {
+    // The string attribute, on primitives or on a points prim's points, holding the prim path;
+    // empty writes none.
+    std::string pathAttribute { "path" };
+    // The same for the prim's name.
+    std::string nameAttribute;
+    // Space-separated globs over USD primvar names, '^' removing (geoNameMatchesPattern()).
+    std::string importPrimvars { "*" };
+    // Adds the constant primvars the prim inherits from its ancestors, filtered the same way.
+    bool importInheritedPrimvars = false;
+    // Globs over custom attributes that are not primvars; each is read into the class its
+    // element count fits: points, then vertices, then primitives, else the detail.
+    std::string importAttributes;
+    // Globs over primvar names read without type info, so geometry transforms leave them alone.
+    std::string nonTransformingPrimvars;
+    bool translateStToUv = true;
+    // When set, written as kGeoUsdXformAttr.
+    const PXR_NS::GfMatrix4d* usdXform = nullptr;
+    // Writes kGeoUsdMaterialPathAttr from the prim's resolved binding, and per GeomSubset.
+    bool importMaterialPath = false;
+};
+
+/**
+ * @brief geoUsdReadPrim() under @p options; the overload above reads with the defaults. Geometry
+ * read from an inactive prim gets kGeoUsdActiveAttr = 0.
+ **/
+bool geoUsdReadPrim(const PXR_NS::UsdPrim& prim,
+                    PXR_NS::UsdTimeCode time,
+                    const PXR_NS::GfMatrix4d* worldTransform,
+                    const GeoUsdReadOptions& options,
+                    GeoDetailBuilder& builder,
+                    std::vector<std::string>* warnings,
+                    std::string* errorMessage);
+
+/**
+ * @brief Writes a USD value of type @p typeName into the attribute @p name of class @p cls, one
+ * element per offset (only the first for the detail class), the way geoUsdReadPrim() reads a
+ * primvar: bool values become a group, strings and tokens a string attribute, uv widens to three
+ * components. With @p nonTransforming the attribute carries no type info. Mismatched counts,
+ * unsupported types and an attribute already there with another description are skipped with a
+ * warning prefixed by @p context.
+ **/
+void geoUsdReadValue(GeoDetailBuilder& builder,
+                     GeoAttribClassEnum cls,
+                     const std::string& name,
+                     const PXR_NS::SdfValueTypeName& typeName,
+                     int elementSize,
+                     const PXR_NS::VtValue& value,
+                     const std::vector<std::size_t>& offsets,
+                     bool nonTransforming,
+                     const std::string& context,
+                     std::vector<std::string>* warnings);
 
 NATRON_NAMESPACE_EXIT
 

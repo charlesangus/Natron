@@ -184,6 +184,14 @@ protected:
         if (node) {
             _nodes.push_back(node);
         }
+        // These tests predate the node-named Path Prefix default and expect /geo.
+        if (node && (std::string(pluginID) == PLUGINID_NATRON_GEOTOUSD)) {
+            KnobString* prefix = dynamic_cast<KnobString*>(node->getKnobByName(kGeoToUSDParamPathPrefix).get());
+            EXPECT_TRUE(prefix != NULL);
+            if (prefix) {
+                prefix->setValue(std::string("/geo"));
+            }
+        }
 
         return node;
     }
@@ -282,10 +290,10 @@ protected:
         ASSERT_TRUE(size != NULL);
         size->setValueAtTime(first, 1., ViewSpec::all(), 0);
         size->setValueAtTime(last, last, ViewSpec::all(), 0);
-        KnobBool* copy = knob<KnobBool>(_toUSD, kGeoToUSDParamCopyIntoLayer);
+        KnobChoice* copy = knob<KnobChoice>(_toUSD, kGeoToUSDParamLayerStyle);
         KnobBool* samples = knob<KnobBool>(_toUSD, kGeoToUSDParamAuthorTimeSamples);
         ASSERT_TRUE(copy && samples);
-        copy->setValue(true);
+        copy->setValueFromID("copy", 0);
         samples->setValue(true);
         KnobInt* range = dynamic_cast<KnobInt*>(getApp()->getProject()->getKnobByName("frameRange").get());
         ASSERT_TRUE(range != NULL);
@@ -326,10 +334,10 @@ private:
     std::vector<NodePtr> _nodes;
 };
 
-TEST_F(GeoToSceneTest, GeometryGoesUnderTheRootPath)
+TEST_F(GeoToSceneTest, GeometryGoesUnderThePathPrefix)
 {
     buildScatter();
-    KnobString* root = knob<KnobString>(_toUSD, kGeoToUSDParamRootPath);
+    KnobString* root = knob<KnobString>(_toUSD, kGeoToUSDParamPathPrefix);
     ASSERT_TRUE(root != NULL);
     root->setValue(std::string("/scatter"));
 
@@ -482,9 +490,9 @@ TEST_F(GeoToSceneTest, UnpackGivesMeshes)
 TEST_F(GeoToSceneTest, CopyIntoLayerAuthorsAnAnonymousLayer)
 {
     buildScatter();
-    KnobBool* copy = knob<KnobBool>(_toUSD, kGeoToUSDParamCopyIntoLayer);
+    KnobChoice* copy = knob<KnobChoice>(_toUSD, kGeoToUSDParamLayerStyle);
     ASSERT_TRUE(copy != NULL);
-    copy->setValue(true);
+    copy->setValueFromID("copy", 0);
 
     const ScenePayload payload = evaluate(_toUSD);
     const std::shared_ptr<const ScenePayloadImpl>& imp = payload.getImpl();

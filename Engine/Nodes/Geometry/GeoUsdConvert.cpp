@@ -267,6 +267,8 @@ kindName(GeoUsdPrimKindEnum kind)
         return "instances";
     case eGeoUsdPrimOverride:
         return "override";
+    case eGeoUsdPrimXform:
+        return "xform";
     }
 
     return "prim";
@@ -286,6 +288,7 @@ kindTypeName(GeoUsdPrimKindEnum kind)
     case eGeoUsdPrimInstancer:
         return tk.pointInstancer;
     case eGeoUsdPrimNativeInstances:
+    case eGeoUsdPrimXform:
         return tk.xform;
     case eGeoUsdPrimOverride:
         break;
@@ -440,14 +443,98 @@ readFromUsd(const GeoAttribute* source,
     return source && (source->get<std::int32_t>(std::size_t(off)) != 0);
 }
 
-// The point attribute that places loose points, when it is a single string.
-const GeoAttribute*
-pointPathAttribute(const GeoDetail& d)
-{
-    const GeoAttribute* a = d.findAttribute(eGeoAttribClassPoint, "path");
+SdfPath resolvePathValue(std::string_view value,
+                         const SdfPath& root,
+                         bool prefixAbsolute);
 
-    return (a && (a->storage() == eGeoStorageString) && (a->tupleSize() == 1) && !a->isArray()) ? a : nullptr;
+// The listed path attributes of class @p cls that are single strings, in list order. With
+// @p warnings, the listed attributes that are not are reported there.
+std::vector<const GeoAttribute*>
+pathAttributes(const GeoDetail& d,
+               GeoAttribClassEnum cls,
+               const std::vector<std::string>& names,
+               std::vector<std::string>* warnings)
+{
+    std::vector<const GeoAttribute*> found;
+    for (const std::string& name : names) {
+        const GeoAttribute* a = d.findAttribute(cls, name);
+        if (!a || (std::find(found.begin(), found.end(), a) != found.end())) {
+            continue;
+        }
+        if ((a->storage() != eGeoStorageString) || (a->tupleSize() != 1) || a->isArray()) {
+            if (warnings && (cls == eGeoAttribClassPrimitive)) {
+                warnings->push_back("The primitive attribute " + name + " is not a single string; it does not place primitives");
+            }
+            continue;
+        }
+        found.push_back(a);
+    }
+
+    return found;
 }
+
+bool
+isPathAttributeName(const std::vector<std::string>& names,
+                    const std::string& name)
+{
+    return std::find(names.begin(), names.end(), name) != names.end();
+}
+
+// Resolves an element's path from the first of a list of path attributes with a non-empty value,
+// each distinct string resolved once.
+class PathResolver {
+public:
+    PathResolver(std::vector<const GeoAttribute*> attributes,
+                 const SdfPath& root,
+                 bool prefixAbsolute)
+        : _attributes(std::move(attributes))
+        , _root(root)
+        , _prefixAbsolute(prefixAbsolute)
+        , _cache(_attributes.size())
+    {
+    }
+
+    bool empty() const
+    {
+        return _attributes.empty();
+    }
+
+    SdfPath operator()(GeoOffset off)
+    {
+        for (std::size_t i = 0; i < _attributes.size(); ++i) {
+            const GeoAttribute& a = *_attributes[i];
+            const std::int32_t s = a.get<std::int32_t>(std::size_t(off));
+            if (s < 0) {
+                continue;
+            }
+            Cache& c = _cache[i];
+            if (std::size_t(s) >= c.paths.size()) {
+                c.paths.resize(std::size_t(s) + 1);
+                c.known.resize(std::size_t(s) + 1, 0);
+            }
+            if (!c.known[std::size_t(s)]) {
+                c.paths[std::size_t(s)] = resolvePathValue(a.getString(std::size_t(off)), _root, _prefixAbsolute);
+                c.known[std::size_t(s)] = 1;
+            }
+            if (!c.paths[std::size_t(s)].IsEmpty()) {
+                return c.paths[std::size_t(s)];
+            }
+        }
+
+        return SdfPath();
+    }
+
+private:
+    struct Cache {
+        std::vector<SdfPath> paths;
+        std::vector<char> known;
+    };
+
+    std::vector<const GeoAttribute*> _attributes;
+    SdfPath _root;
+    bool _prefixAbsolute;
+    std::vector<Cache> _cache;
+};
 
 void
 hashMatrix(Hash64& h,
@@ -460,12 +547,13 @@ hashMatrix(Hash64& h,
 }
 
 // A path attribute value as a prim path: components made valid identifiers, relative values
-// under @p root. Empty when the value names nothing.
+// under @p root, and absolute ones too when @p prefixAbsolute. Empty when the value names nothing.
 SdfPath
 resolvePathValue(std::string_view value,
-                 const SdfPath& root)
+                 const SdfPath& root,
+                 bool prefixAbsolute)
 {
-    SdfPath path = (!value.empty() && value.front() == '/') ? SdfPath::AbsoluteRootPath() : root;
+    SdfPath path = (!value.empty() && value.front() == '/' && !prefixAbsolute) ? SdfPath::AbsoluteRootPath() : root;
     bool any = false;
     std::size_t begin = 0;
     while (begin <= value.size()) {
@@ -710,6 +798,11 @@ struct GeoUsdConvert::Partition {
     // The input holds this prim, and with the type this partition authors.
     bool onInput = false;
     bool sameTypeOnInput = false;
+    // Some of its geometry was read from USD (kGeoUsdSourceAttr).
+    bool readFromUsd = false;
+    // An over rather than a def, and one carrying the transform only.
+    bool overlay = false;
+    bool transformOnly = false;
 
     mutable std::mutex mutex;
     mutable std::shared_ptr<const GeoUsdValueMap> values;
@@ -774,46 +867,41 @@ GeoUsdConvert::build(bool nested)
         _specs.emplace(_topPath, std::move(root));
     }
 
-    const GeoAttribute* pathAttr = nullptr;
-    for (const char* name : { "path", "name" }) {
-        const GeoAttribute* a = d.findAttribute(eGeoAttribClassPrimitive, name);
-        if (!a) {
-            continue;
-        }
-        if (a->storage() != eGeoStorageString || a->tupleSize() != 1 || a->isArray()) {
-            _warnings.push_back(std::string("The primitive attribute ") + name + " is not a single string; it does not place primitives");
-            continue;
-        }
-        pathAttr = a;
-        break;
-    }
+    const std::vector<const GeoAttribute*> primitivePathAttributes = pathAttributes(d, eGeoAttribClassPrimitive, _options.pathAttributes, &_warnings);
+    PathResolver primitivePath(primitivePathAttributes, _options.rootPath, _options.prefixAbsolutePaths);
 
     // Partitions keyed by (path, kind) in first-use order; an empty path means unpathed.
     std::map<std::pair<SdfPath, int>, std::size_t> byKey;
-    std::vector<SdfPath> resolvedByString;
-    std::vector<char> resolvedKnown;
     std::set<SdfPath> overridePaths;
     std::set<SdfPath> fromUsd;
     bool warnedBadUSDPath = false;
     const GeoAttribute* primitiveSource = usdSourceAttribute(d, eGeoAttribClassPrimitive);
 
+    auto newPartition = [&](const SdfPath& path, GeoUsdPrimKindEnum kind) -> Partition& {
+        auto p = std::make_unique<Partition>();
+        p->kind = kind;
+        p->requestedPath = path;
+        _partitions.push_back(std::move(p));
+
+        return *_partitions.back();
+    };
     auto partitionFor = [&](const SdfPath& path, GeoUsdPrimKindEnum kind) -> Partition& {
         const auto key = std::make_pair(path, int(kind));
-        auto it = byKey.find(key);
-        if (it == byKey.end()) {
-            it = byKey.emplace(key, _partitions.size()).first;
-            auto p = std::make_unique<Partition>();
-            p->kind = kind;
-            p->requestedPath = path;
-            _partitions.push_back(std::move(p));
+        const auto it = byKey.find(key);
+        if (it != byKey.end()) {
+            return *_partitions[it->second];
         }
+        byKey.emplace(key, _partitions.size());
 
-        return *_partitions[it->second];
+        return newPartition(path, kind);
     };
 
     forEachLive(d.primitiveMap(), [&](GeoOffset off) {
         const GeoPrimitiveTypeEnum type = d.primitiveType(off);
         if (type == eGeoPrimitivePackedUSD) {
+            if (_options.packedUsdPrimitives == eGeoUsdPackedUsdIgnore) {
+                return;
+            }
             const SdfPath source(std::string(geoPackedUSDPath(d, off)));
             if (source.IsEmpty() || !source.IsAbsolutePath() || !source.IsPrimPath()) {
                 if (!warnedBadUSDPath) {
@@ -837,27 +925,26 @@ GeoUsdConvert::build(bool nested)
         if (type == eGeoPrimitivePolyline) {
             kind = eGeoUsdPrimCurves;
         } else if (type == eGeoPrimitivePackedGeometry) {
-            kind = _options.packedMode == eGeoUsdPackedNativeInstances ? eGeoUsdPrimNativeInstances : eGeoUsdPrimInstancer;
-        }
-        SdfPath path;
-        if (pathAttr) {
-            const std::int32_t s = pathAttr->get<std::int32_t>(std::size_t(off));
-            if (s >= 0) {
-                if (std::size_t(s) >= resolvedByString.size()) {
-                    resolvedByString.resize(std::size_t(s) + 1);
-                    resolvedKnown.resize(std::size_t(s) + 1, 0);
-                }
-                if (!resolvedKnown[std::size_t(s)]) {
-                    resolvedByString[std::size_t(s)] = resolvePathValue(pathAttr->getString(std::size_t(off)), _options.rootPath);
-                    resolvedKnown[std::size_t(s)] = 1;
-                }
-                path = resolvedByString[std::size_t(s)];
+            switch (_options.packedMode) {
+            case eGeoUsdPackedNativeInstances:
+                kind = eGeoUsdPrimNativeInstances;
+                break;
+            case eGeoUsdPackedCreateXforms:
+                kind = eGeoUsdPrimXform;
+                break;
+            case eGeoUsdPackedPointInstancer:
+            case eGeoUsdPackedUnpack:
+                kind = eGeoUsdPrimInstancer;
+                break;
             }
         }
+        const SdfPath path = primitivePath.empty() ? SdfPath() : primitivePath(off);
         if (!path.IsEmpty() && readFromUsd(primitiveSource, off)) {
             fromUsd.insert(path);
         }
-        partitionFor(path, kind).primitives.push_back(std::size_t(off));
+        // Each packed primitive is an Xform of its own, carrying its transform.
+        Partition& p = (kind == eGeoUsdPrimXform) ? newPartition(path, kind) : partitionFor(path, kind);
+        p.primitives.push_back(std::size_t(off));
     });
 
     {
@@ -868,29 +955,13 @@ GeoUsdConvert::build(bool nested)
                 used[std::size_t(p)] = 1;
             }
         });
-        const GeoAttribute* pointPath = pointPathAttribute(d);
+        PathResolver pointPath(pathAttributes(d, eGeoAttribClassPoint, _options.pathAttributes, nullptr), _options.rootPath, _options.prefixAbsolutePaths);
         const GeoAttribute* pointSource = usdSourceAttribute(d, eGeoAttribClassPoint);
-        std::vector<SdfPath> pointPathByString;
-        std::vector<char> pointPathKnown;
         forEachLive(d.pointMap(), [&](GeoOffset p) {
             if (used[std::size_t(p)]) {
                 return;
             }
-            SdfPath path;
-            if (pointPath) {
-                const std::int32_t s = pointPath->get<std::int32_t>(std::size_t(p));
-                if (s >= 0) {
-                    if (std::size_t(s) >= pointPathByString.size()) {
-                        pointPathByString.resize(std::size_t(s) + 1);
-                        pointPathKnown.resize(std::size_t(s) + 1, 0);
-                    }
-                    if (!pointPathKnown[std::size_t(s)]) {
-                        pointPathByString[std::size_t(s)] = resolvePathValue(pointPath->getString(std::size_t(p)), _options.rootPath);
-                        pointPathKnown[std::size_t(s)] = 1;
-                    }
-                    path = pointPathByString[std::size_t(s)];
-                }
-            }
+            const SdfPath path = pointPath.empty() ? SdfPath() : pointPath(p);
             if (!path.IsEmpty() && readFromUsd(pointSource, p)) {
                 fromUsd.insert(path);
             }
@@ -898,27 +969,48 @@ GeoUsdConvert::build(bool nested)
         });
     }
 
+    const auto isGprim = [](GeoUsdPrimKindEnum kind) {
+        return kind == eGeoUsdPrimMesh || kind == eGeoUsdPrimCurves || kind == eGeoUsdPrimPoints;
+    };
+    // Other Primitives applies to meshes, curves and points; packed geometry is always defined.
+    const auto overlaid = [&](GeoUsdPrimKindEnum kind) {
+        return kind == eGeoUsdPrimOverride || (isGprim(kind) && _options.otherPrimitives != eGeoUsdOtherDefine);
+    };
     for (const auto& p : _partitions) {
         if ((p->kind == eGeoUsdPrimOverride) || p->requestedPath.IsEmpty()) {
             continue;
         }
+        p->readFromUsd = fromUsd.count(p->requestedPath) != 0;
+        // An over brings back nothing by itself, so overlaid geometry stays on its path.
+        if (overlaid(p->kind)) {
+            continue;
+        }
         GeoUsdPlacementEnum placement = eGeoUsdPlacedAsRequested;
-        const SdfPath placed = geoUsdPlacedPath(p->requestedPath, _options.rootPath, _options.inputScene.get(), fromUsd.count(p->requestedPath) != 0, &placement);
+        const SdfPath placed = geoUsdPlacedPath(p->requestedPath, _options.rootPath, _options.inputScene.get(), p->readFromUsd, &placement);
         if (placement == eGeoUsdPlacedSourceGone) {
             _warnings.push_back(p->requestedPath.GetString() + " is not in the input scene; it goes under " + _options.rootPath.GetString());
-        } else if (placement == eGeoUsdPlacedCollision) {
-            _warnings.push_back(p->requestedPath.GetString() + " is already in the input scene and the geometry was not read from it; it goes under " + _options.rootPath.GetString());
         }
         p->requestedPath = placed;
     }
 
+    std::map<SdfPath, int> perPath;
+    for (const auto& p : _partitions) {
+        if (!p->requestedPath.IsEmpty()) {
+            perPath[p->requestedPath] += 1;
+        }
+    }
+    // Shear is checked before naming, so an unpathed sheared partition is named for its new kind.
     std::vector<const Partition*> sheared;
     for (const auto& p : _partitions) {
         if (p->kind != eGeoUsdPrimInstancer) {
             continue;
         }
-        // A generated child path is never on the input, so it shares the frame of its base.
-        const GfMatrix4d frame = frameOf(p->requestedPath.IsEmpty() ? _options.rootPath : p->requestedPath);
+        // An unpathed or suffixed prim is never on the input, so it shares the frame of its parent.
+        SdfPath framePath = _options.rootPath;
+        if (!p->requestedPath.IsEmpty()) {
+            framePath = perPath[p->requestedPath] > 1 ? p->requestedPath.GetParentPath() : p->requestedPath;
+        }
+        const GfMatrix4d frame = adjustedFrame(framePath);
         for (std::size_t off : p->primitives) {
             if (shears(relativeTo(geoUsdMatrix(geoPackedTransform(d, GeoOffset(off))), frame))) {
                 p->kind = eGeoUsdPrimNativeInstances;
@@ -928,56 +1020,65 @@ GeoUsdConvert::build(bool nested)
         }
     }
 
-    // Final prim paths: unpathed partitions get <root>/<kind>_0, a path shared by several kinds
-    // (or by a packed USD override) gets one <kind>_0 child per kind.
-    std::map<SdfPath, int> kindsPerPath;
-    for (const auto& p : _partitions) {
-        if (!p->requestedPath.IsEmpty()) {
-            kindsPerPath[p->requestedPath] += 1;
-        }
-    }
+    // Final prim paths: unpathed partitions get <root>/<kind>_0; a path several partitions ask
+    // for (incompatible types, several Xforms, or a packed USD override) gives each partition but
+    // the override a sibling <name>_0, <name>_1 in first-use order.
     std::set<SdfPath> taken;
     for (const auto& p : _partitions) {
-        if (p->kind == eGeoUsdPrimOverride) {
+        if ((p->kind == eGeoUsdPrimOverride) || (!p->requestedPath.IsEmpty() && perPath[p->requestedPath] == 1)) {
             taken.insert(p->requestedPath);
         }
     }
+    std::map<SdfPath, int> nextSuffix;
+    std::map<int, int> nextUnpathed;
     for (const auto& p : _partitions) {
-        if (p->kind == eGeoUsdPrimOverride) {
+        if ((p->kind == eGeoUsdPrimOverride) || (!p->requestedPath.IsEmpty() && perPath[p->requestedPath] == 1)) {
             p->path = p->requestedPath;
-            p->onInput = inputPrim(p->path) != nullptr;
             continue;
         }
-        SdfPath base;
+        SdfPath parent;
+        std::string stem;
+        int* next = nullptr;
         if (p->requestedPath.IsEmpty()) {
-            base = _options.rootPath;
-        } else if (kindsPerPath[p->requestedPath] > 1) {
-            base = p->requestedPath;
-            _warnings.push_back("Primitives of different types share the path " + p->requestedPath.GetString() + "; each type becomes a child prim of it");
+            parent = _options.rootPath;
+            stem = kindName(p->kind);
+            next = &nextUnpathed[int(p->kind)];
         } else {
-            p->path = p->requestedPath;
-            taken.insert(p->path);
-            continue;
+            parent = p->requestedPath.GetParentPath();
+            stem = p->requestedPath.GetName();
+            const auto inserted = nextSuffix.emplace(p->requestedPath, 0);
+            if (inserted.second) {
+                _warnings.push_back("Several prims of incompatible types share the path " + p->requestedPath.GetString() + "; each becomes a sibling suffixed _0, _1, and so on");
+            }
+            next = &inserted.first->second;
         }
-        for (int i = 0;; ++i) {
-            const SdfPath candidate = base.AppendChild(TfToken(kindName(p->kind) + "_" + std::to_string(i)));
-            if (taken.insert(candidate).second) {
+        for (;; ++*next) {
+            const SdfPath candidate = parent.AppendChild(TfToken(stem + "_" + std::to_string(*next)));
+            if (!perPath.count(candidate) && taken.insert(candidate).second) {
                 p->path = candidate;
+                ++*next;
                 break;
             }
         }
     }
+
     for (const Partition* p : sheared) {
         _shearedInstances.push_back(p->path);
         _warnings.push_back("Packed geometry at " + p->path.GetString() + " is sheared, which a point instancer cannot hold; it is written as native instances");
     }
     for (const auto& p : _partitions) {
-        if (p->kind == eGeoUsdPrimOverride) {
-            continue;
-        }
         const GeoUsdInputPrim* input = inputPrim(p->path);
         p->onInput = input != nullptr;
+        if (p->kind == eGeoUsdPrimOverride) {
+            p->overlay = true;
+            continue;
+        }
         p->sameTypeOnInput = input && input->typeName == kindTypeName(p->kind);
+        p->overlay = overlaid(p->kind);
+        p->transformOnly = p->overlay && (_options.otherPrimitives == eGeoUsdOtherOverlayTransforms);
+        if (p->overlay && !p->onInput) {
+            _overlaysWithoutPrim.push_back(p->path);
+        }
     }
 
     {
@@ -993,15 +1094,32 @@ GeoUsdConvert::build(bool nested)
     }
 
     if (!nested) {
+        // The root comes first among its siblings; it is a def when it holds anything defined.
         bool underRoot = false;
+        bool definedUnderRoot = false;
         for (const auto& p : _partitions) {
-            underRoot = underRoot || p->path.HasPrefix(_options.rootPath);
+            if (p->path.HasPrefix(_options.rootPath)) {
+                underRoot = true;
+                definedUnderRoot = definedUnderRoot || !p->overlay;
+            }
         }
         if (underRoot) {
-            ensurePrim(_options.rootPath, SdfSpecifierDef, TfToken());
+            ensurePrim(_options.rootPath, definedUnderRoot ? parentSpecifier(SdfSpecifierDef) : SdfSpecifierOver, TfToken());
         }
     }
 
+    // A prototype or an Xform's contents are self-contained: every path stays under its root.
+    const auto nestedOptions = [&](const SdfPath& root) {
+        GeoUsdConvertOptions sub = _options;
+        sub.inputScene.reset();
+        sub.rootPath = root;
+        sub.prefixAbsolutePaths = true;
+        sub.otherPrimitives = eGeoUsdOtherDefine;
+        sub.defineOnlyLeafPrimitives = false;
+        sub.kindAuthoring = eGeoUsdKindNone;
+
+        return sub;
+    };
     for (std::size_t i = 0; i < _partitions.size(); ++i) {
         Partition& p = *_partitions[i];
         if (p.kind == eGeoUsdPrimInstancer || p.kind == eGeoUsdPrimNativeInstances) {
@@ -1017,17 +1135,32 @@ GeoUsdConvert::build(bool nested)
                 p.instancePrototype.push_back(it->second);
             }
             for (std::size_t k = 0; k < p.prototypeDetails.size(); ++k) {
-                GeoUsdConvertOptions sub = _options;
-                sub.inputScene.reset();
-                sub.rootPath = p.path.AppendChild(tk.prototypes).AppendChild(TfToken("proto_" + std::to_string(k)));
+                const GeoUsdConvertOptions sub = nestedOptions(p.path.AppendChild(tk.prototypes).AppendChild(TfToken("proto_" + std::to_string(k))));
                 p.prototypes.push_back(std::shared_ptr<const GeoUsdConvert>(new GeoUsdConvert(p.prototypeDetails[k], sub, true)));
             }
+        } else if (p.kind == eGeoUsdPrimXform) {
+            p.prototypeDetails.push_back(geoPackedDetail(d, GeoOffset(p.primitives.front())));
+            p.prototypes.push_back(std::shared_ptr<const GeoUsdConvert>(new GeoUsdConvert(p.prototypeDetails.front(), nestedOptions(p.path), true)));
         }
         planProperties(p);
         trimInputOverrides(p);
         addPartitionSpecs(i);
     }
+    if (!nested) {
+        authorKinds();
+    }
     finishSpecs();
+}
+
+SdfSpecifier
+GeoUsdConvert::parentSpecifier(SdfSpecifier childSpecifier) const
+{
+    // An over's ancestors stay overs, so that an over brings nothing into the scene by itself.
+    if ((childSpecifier != SdfSpecifierDef) || _options.defineOnlyLeafPrimitives) {
+        return SdfSpecifierOver;
+    }
+
+    return SdfSpecifierDef;
 }
 
 GeoUsdConvert::SpecEntry&
@@ -1035,23 +1168,24 @@ GeoUsdConvert::ensurePrim(const SdfPath& path,
                           SdfSpecifier specifier,
                           const TfToken& typeName)
 {
-    const Tokens& tk = tokens();
-    // A def would retype a prim the input already holds, so the input's own prims stay overs.
-    if (specifier == SdfSpecifierDef && path != _topPath && inputPrim(path)) {
-        specifier = SdfSpecifierOver;
-    }
+    // An intermediate prim the input holds keeps the input's type; one it lacks gets the parent type.
+    const auto intermediateType = [&]() {
+        return inputPrim(path) ? TfToken() : _options.parentPrimitiveType;
+    };
     auto it = _specs.find(path);
     if (it != _specs.end()) {
         SpecEntry& e = it->second;
         if (e.type == SdfSpecTypePrim) {
             const VtValue* current = e.get(SdfFieldKeys->Specifier);
-            if (specifier == SdfSpecifierDef && current && current->Get<SdfSpecifier>() == SdfSpecifierOver) {
+            // A partition's own prim keeps the specifier its mode gives it.
+            if (specifier == SdfSpecifierDef && e.partition < 0 && current && current->Get<SdfSpecifier>() == SdfSpecifierOver) {
                 e.set(SdfFieldKeys->Specifier, VtValue(SdfSpecifierDef));
-                if (!e.get(SdfFieldKeys->TypeName) && path.HasPrefix(_options.rootPath)) {
-                    e.set(SdfFieldKeys->TypeName, VtValue(tk.xform));
+                const TfToken type = intermediateType();
+                if (typeName.IsEmpty() && !e.get(SdfFieldKeys->TypeName) && !type.IsEmpty()) {
+                    e.set(SdfFieldKeys->TypeName, VtValue(type));
                 }
                 if (path != _topPath) {
-                    ensurePrim(path.GetParentPath(), SdfSpecifierDef, TfToken());
+                    ensurePrim(path.GetParentPath(), parentSpecifier(SdfSpecifierDef), TfToken());
                 }
             }
             if (!typeName.IsEmpty()) {
@@ -1062,7 +1196,7 @@ GeoUsdConvert::ensurePrim(const SdfPath& path,
         return e;
     }
     const SdfPath parent = path.GetParentPath();
-    SpecEntry& parentEntry = ensurePrim(parent, specifier == SdfSpecifierOver ? SdfSpecifierOver : SdfSpecifierDef, TfToken());
+    SpecEntry& parentEntry = ensurePrim(parent, parentSpecifier(specifier), TfToken());
     parentEntry.primChildren.push_back(path.GetNameToken());
 
     SpecEntry e;
@@ -1070,11 +1204,72 @@ GeoUsdConvert::ensurePrim(const SdfPath& path,
     e.set(SdfFieldKeys->Specifier, VtValue(specifier));
     if (!typeName.IsEmpty()) {
         e.set(SdfFieldKeys->TypeName, VtValue(typeName));
-    } else if (specifier == SdfSpecifierDef && path.HasPrefix(_options.rootPath)) {
-        e.set(SdfFieldKeys->TypeName, VtValue(tk.xform));
+    } else if (specifier == SdfSpecifierDef) {
+        const TfToken type = intermediateType();
+        if (!type.IsEmpty()) {
+            e.set(SdfFieldKeys->TypeName, VtValue(type));
+        }
     }
 
     return _specs.emplace(path, std::move(e)).first->second;
+}
+
+void
+GeoUsdConvert::authorKinds()
+{
+    if (_options.kindAuthoring == eGeoUsdKindNone) {
+        return;
+    }
+    // The intermediate prims this conversion defines where the input lacks them.
+    const auto created = [&](const SdfPath& path) -> SpecEntry* {
+        const auto it = _specs.find(path);
+        if (it == _specs.end() || it->second.type != SdfSpecTypePrim || it->second.partition >= 0 || it->second.prototype >= 0) {
+            return nullptr;
+        }
+        const VtValue* specifier = it->second.get(SdfFieldKeys->Specifier);
+        if (!specifier || specifier->Get<SdfSpecifier>() != SdfSpecifierDef || inputPrim(path)) {
+            return nullptr;
+        }
+
+        return &it->second;
+    };
+    std::vector<SdfPath> paths;
+    for (const auto& entry : _specs) {
+        if (created(entry.first)) {
+            paths.push_back(entry.first);
+        }
+    }
+    const TfToken component("component");
+    const TfToken group("group");
+    const TfToken assembly("assembly");
+    for (const SdfPath& path : paths) {
+        SpecEntry& e = *created(path);
+        const bool top = !created(path.GetParentPath());
+        bool leaf = true;
+        for (const TfToken& child : e.primChildren) {
+            if (created(path.AppendChild(child))) {
+                leaf = false;
+                break;
+            }
+        }
+        TfToken kind;
+        switch (_options.kindAuthoring) {
+        case eGeoUsdKindOneComponent:
+            kind = top ? component : TfToken();
+            break;
+        case eGeoUsdKindNestedGroupsAndComponents:
+            kind = leaf ? component : group;
+            break;
+        case eGeoUsdKindNestedAssemblyGroupsAndComponents:
+            kind = leaf ? component : (top ? assembly : group);
+            break;
+        case eGeoUsdKindNone:
+            break;
+        }
+        if (!kind.IsEmpty()) {
+            e.set(SdfFieldKeys->Kind, VtValue(kind));
+        }
+    }
 }
 
 GeoUsdConvert::SpecEntry&
@@ -1134,7 +1329,32 @@ GeoUsdConvert::planProperties(Partition& p)
         p.properties.push_back(std::move(plan));
     };
 
+    // A transform-only prim carries one matrix op; it replaces the input's op order, which
+    // would otherwise lose its reset.
+    auto transformPlans = [&]() {
+        builtin(tokens().xformOpTransform, n->Matrix4d);
+        PropertyPlan order;
+        order.name = UsdGeomTokens->xformOpOrder;
+        order.typeName = n->TokenArray;
+        order.variability = SdfVariabilityUniform;
+        order.source = eGeoUsdSourceStatic;
+        const GeoUsdInputPrim* input = inputPrim(p.path);
+        if (input && input->resetsXformStack) {
+            order.staticDefault = VtValue(VtTokenArray { UsdGeomXformOpTypes->resetXformStack, tokens().xformOpTransform });
+        } else {
+            order.staticDefault = VtValue(VtTokenArray { tokens().xformOpTransform });
+        }
+        used.insert(order.name);
+        p.properties.push_back(std::move(order));
+    };
+    if (p.transformOnly) {
+        transformPlans();
+
+        return;
+    }
+
     std::vector<std::pair<GeoAttribClassEnum, TfToken>> classes;
+    bool attributesOnly = false;
     switch (p.kind) {
     case eGeoUsdPrimMesh:
         builtin(UsdGeomTokens->points, n->Point3fArray);
@@ -1181,24 +1401,20 @@ GeoUsdConvert::planProperties(Partition& p)
     }
     case eGeoUsdPrimNativeInstances:
         return;
-    case eGeoUsdPrimOverride: {
-        builtin(tokens().xformOpTransform, n->Matrix4d);
-        PropertyPlan order;
-        order.name = UsdGeomTokens->xformOpOrder;
-        order.typeName = n->TokenArray;
-        order.variability = SdfVariabilityUniform;
-        order.source = eGeoUsdSourceStatic;
-        // The over replaces the input's op order, which would otherwise lose its reset.
-        const GeoUsdInputPrim* input = inputPrim(p.path);
-        if (input && input->resetsXformStack) {
-            order.staticDefault = VtValue(VtTokenArray { UsdGeomXformOpTypes->resetXformStack, tokens().xformOpTransform });
-        } else {
-            order.staticDefault = VtValue(VtTokenArray { tokens().xformOpTransform });
+    case eGeoUsdPrimOverride:
+        transformPlans();
+        if (_options.packedUsdPrimitives != eGeoUsdPackedUsdOverlayTransformsAndAttributes) {
+            return;
         }
-        p.properties.push_back(std::move(order));
+        // A packed USD primitive is one element; its point is the one its vertex uses.
+        classes = { { eGeoAttribClassPrimitive, UsdGeomTokens->constant },
+                    { eGeoAttribClassPoint, UsdGeomTokens->constant } };
+        attributesOnly = true;
+        break;
+    case eGeoUsdPrimXform:
+        transformPlans();
 
         return;
-    }
     }
 
     const bool widthsAllowed = p.kind == eGeoUsdPrimCurves || p.kind == eGeoUsdPrimPoints;
@@ -1209,10 +1425,10 @@ GeoUsdConvert::planProperties(Partition& p)
             if (cls == eGeoAttribClassPoint && name == GeoDetail::kPositionName) {
                 continue;
             }
-            if (cls == eGeoAttribClassPrimitive && (name == "path" || name == "name" || isPackedIntrinsic(name))) {
+            if (cls == eGeoAttribClassPrimitive && (isPathAttributeName(_options.pathAttributes, name) || isPackedIntrinsic(name))) {
                 continue;
             }
-            if ((cls == eGeoAttribClassPoint && name == "path") || (cls == eGeoAttribClassDetail && name == kGeoUsdWorldSpaceAttr) || ((cls == eGeoAttribClassPoint || cls == eGeoAttribClassPrimitive) && name == kGeoUsdSourceAttr)) {
+            if ((cls == eGeoAttribClassPoint && isPathAttributeName(_options.pathAttributes, name)) || (cls == eGeoAttribClassDetail && name == kGeoUsdWorldSpaceAttr) || ((cls == eGeoAttribClassPoint || cls == eGeoAttribClassPrimitive) && name == kGeoUsdSourceAttr)) {
                 continue;
             }
             if (a.isArray()) {
@@ -1273,6 +1489,9 @@ GeoUsdConvert::planProperties(Partition& p)
         }
     }
 
+    if (attributesOnly) {
+        return;
+    }
     if (p.kind == eGeoUsdPrimPoints && !used.count(UsdGeomTokens->widths)) {
         // USD's fallback width of 1.0 would draw each point a unit wide.
         PropertyPlan width;
@@ -1324,7 +1543,8 @@ GeoUsdConvert::planProperties(Partition& p)
 void
 GeoUsdConvert::trimInputOverrides(Partition& p)
 {
-    if (!p.sameTypeOnInput || (p.kind != eGeoUsdPrimMesh && p.kind != eGeoUsdPrimCurves && p.kind != eGeoUsdPrimPoints)) {
+    // A transform-only over writes nothing the input could already hold.
+    if (p.transformOnly || !p.sameTypeOnInput || (p.kind != eGeoUsdPrimMesh && p.kind != eGeoUsdPrimCurves && p.kind != eGeoUsdPrimPoints)) {
         return;
     }
     const GeoUsdInputPrim& input = *inputPrim(p.path);
@@ -1409,8 +1629,42 @@ GeoUsdConvert::frameOf(const SdfPath& path) const
 }
 
 GfMatrix4d
+GeoUsdConvert::adjustedFrame(const SdfPath& path) const
+{
+    return _options.adjustTransformsForInputHierarchy ? frameOf(path) : GfMatrix4d(1.);
+}
+
+GfMatrix4d
+GeoUsdConvert::localParent(const Partition& p) const
+{
+    if (!_options.adjustTransformsForInputHierarchy) {
+        return GfMatrix4d(1.);
+    }
+    if (const GeoUsdInputPrim* input = inputPrim(p.path)) {
+        return input->parentWorld;
+    }
+
+    return frameOf(p.path.GetParentPath());
+}
+
+GfMatrix4d
+GeoUsdConvert::transformOnlyValue(const Partition& p) const
+{
+    // Meshes, curves and points carry no transform of their own, so the over keeps the input's
+    // local transform, or places a new prim at the world origin.
+    if (const GeoUsdInputPrim* input = inputPrim(p.path)) {
+        return relativeTo(input->world, input->parentWorld);
+    }
+
+    return relativeTo(GfMatrix4d(1.), adjustedFrame(p.path.GetParentPath()));
+}
+
+GfMatrix4d
 GeoUsdConvert::overrideParent(const Partition& p) const
 {
+    if (!_options.adjustTransformsForInputHierarchy) {
+        return GfMatrix4d(1.);
+    }
     if (const GeoUsdInputPrim* input = inputPrim(p.path)) {
         return input->parentWorld;
     }
@@ -1443,12 +1697,15 @@ GeoUsdConvert::addPartitionSpecs(std::size_t index)
     case eGeoUsdPrimNativeInstances:
         typeName = tk.xform;
         break;
+    case eGeoUsdPrimXform:
+        typeName = tk.xform;
+        break;
     case eGeoUsdPrimOverride:
-        specifier = SdfSpecifierOver;
         break;
     }
-    if (p.onInput) {
+    if (p.overlay) {
         specifier = SdfSpecifierOver;
+        // An over of the same type leaves the input's type alone.
         if (p.sameTypeOnInput) {
             typeName = TfToken();
         }
@@ -1475,6 +1732,29 @@ GeoUsdConvert::addPartitionSpecs(std::size_t index)
     }
 
     if (p.prototypes.empty()) {
+        return;
+    }
+    if (p.kind == eGeoUsdPrimXform) {
+        // The packed contents are converted at the Xform's own path; the Xform keeps its own
+        // entry, which carries the transform, and the contents answer for everything below it.
+        const GeoUsdConvert& contents = *p.prototypes.front();
+        const auto root = contents._specs.find(contents._topPath);
+        if (root != contents._specs.end()) {
+            for (const TfToken& child : root->second.primChildren) {
+                _specs[p.path].primChildren.push_back(child);
+            }
+        }
+        for (const auto& [path, entry] : contents._specs) {
+            if (path == contents._topPath) {
+                continue;
+            }
+            SpecEntry marker;
+            marker.type = entry.type;
+            marker.partition = pi;
+            marker.prototype = 0;
+            _specs[path] = std::move(marker);
+        }
+
         return;
     }
     const SdfPath container = p.path.AppendChild(tk.prototypes);
@@ -1581,6 +1861,12 @@ GeoUsdConvert::partitionKind(std::size_t partition) const
 }
 
 bool
+GeoUsdConvert::isPartitionOverlay(std::size_t partition) const
+{
+    return _partitions.at(partition)->overlay;
+}
+
+bool
 GeoUsdConvert::isPartitionBuilt(std::size_t partition) const
 {
     const Partition& p = *_partitions.at(partition);
@@ -1677,8 +1963,18 @@ GeoUsdConvert::computeSignature(const Partition& p) const
     }
     if (p.kind == eGeoUsdPrimOverride) {
         hashMatrix(h, overrideParent(p));
+    } else if (p.kind == eGeoUsdPrimXform) {
+        hashMatrix(h, localParent(p));
+    } else if (p.transformOnly) {
+        hashMatrix(h, transformOnlyValue(p));
     } else {
-        hashMatrix(h, frameOf(p.path));
+        hashMatrix(h, adjustedFrame(p.path));
+    }
+    // The options that change what a partition writes without changing its path or data.
+    h.append(U64(p.overlay) | (U64(p.transformOnly) << 1) | (U64(p.readFromUsd) << 2) | (U64(_options.adjustTransformsForInputHierarchy) << 3));
+    h.append(U64(_options.packedUsdPrimitives));
+    for (const std::string& name : _options.pathAttributes) {
+        h.append(U64(std::hash<std::string>()(name)));
     }
     h.computeHash();
 
@@ -1741,14 +2037,19 @@ GeoUsdConvert::buildValues(const Partition& p,
     const Tokens& tk = tokens();
     const GeoDetail& d = *_detail;
 
-    if (p.kind == eGeoUsdPrimOverride || p.kind == eGeoUsdPrimNativeInstances || p.kind == eGeoUsdPrimInstancer) {
-        if (p.kind == eGeoUsdPrimOverride) {
-            const GfMatrix4d world = geoUsdMatrix(geoPackedTransform(d, GeoOffset(p.primitives.front())));
-            values[p.path.AppendProperty(tk.xformOpTransform)] = VtValue(relativeTo(world, overrideParent(p)));
+    if (p.kind == eGeoUsdPrimXform) {
+        const GfMatrix4d world = geoUsdMatrix(geoPackedTransform(d, GeoOffset(p.primitives.front())));
+        values[p.path.AppendProperty(tk.xformOpTransform)] = VtValue(relativeTo(world, localParent(p)));
 
-            return;
-        }
-        const GfMatrix4d frame = frameOf(p.path);
+        return;
+    }
+    if (p.transformOnly) {
+        values[p.path.AppendProperty(tk.xformOpTransform)] = VtValue(transformOnlyValue(p));
+
+        return;
+    }
+    if (p.kind == eGeoUsdPrimNativeInstances || p.kind == eGeoUsdPrimInstancer) {
+        const GfMatrix4d frame = adjustedFrame(p.path);
         if (p.kind == eGeoUsdPrimNativeInstances) {
             for (std::size_t i = 0; i < p.primitives.size(); ++i) {
                 const SdfPath instancePath = p.path.AppendChild(TfToken("instance_" + std::to_string(i)));
@@ -1777,53 +2078,68 @@ GeoUsdConvert::buildValues(const Partition& p,
     }
 
     std::vector<std::size_t> vertices;
-    VtIntArray counts;
-    for (std::size_t off : p.primitives) {
-        const GeoVertexRange r = d.primitiveVertices(GeoOffset(off));
-        counts.push_back(int(r.count));
-        for (GeoOffset v = r.start; v < r.start + r.count; ++v) {
-            vertices.push_back(std::size_t(v));
-        }
-    }
-
     // The offset behind each USD point.
     std::vector<std::size_t> pointElems;
-    if (p.kind == eGeoUsdPrimPoints) {
-        pointElems = p.points;
-    } else if (p.kind == eGeoUsdPrimCurves) {
-        pointElems.reserve(vertices.size());
-        for (std::size_t v : vertices) {
-            pointElems.push_back(std::size_t(d.vertexPoint(GeoOffset(v))));
+    bool worldSpace = false;
+    GfMatrix4d toPrim(1.);
+    if (p.kind == eGeoUsdPrimOverride) {
+        const GfMatrix4d world = geoUsdMatrix(geoPackedTransform(d, GeoOffset(p.primitives.front())));
+        values[p.path.AppendProperty(tk.xformOpTransform)] = VtValue(relativeTo(world, overrideParent(p)));
+        if (_options.packedUsdPrimitives != eGeoUsdPackedUsdOverlayTransformsAndAttributes) {
+            return;
+        }
+        const GeoVertexRange r = d.primitiveVertices(GeoOffset(p.primitives.front()));
+        if (r.count > 0) {
+            pointElems.push_back(std::size_t(d.vertexPoint(r.start)));
         }
     } else {
-        pointElems.reserve(vertices.size());
-        for (std::size_t v : vertices) {
-            pointElems.push_back(std::size_t(d.vertexPoint(GeoOffset(v))));
+        VtIntArray counts;
+        for (std::size_t off : p.primitives) {
+            const GeoVertexRange r = d.primitiveVertices(GeoOffset(off));
+            counts.push_back(int(r.count));
+            for (GeoOffset v = r.start; v < r.start + r.count; ++v) {
+                vertices.push_back(std::size_t(v));
+            }
         }
-        std::sort(pointElems.begin(), pointElems.end());
-        pointElems.erase(std::unique(pointElems.begin(), pointElems.end()), pointElems.end());
-        VtIntArray indices(vertices.size());
-        for (std::size_t i = 0; i < vertices.size(); ++i) {
-            const std::size_t pt = std::size_t(d.vertexPoint(GeoOffset(vertices[i])));
-            indices[i] = int(std::lower_bound(pointElems.begin(), pointElems.end(), pt) - pointElems.begin());
-        }
-        values[p.path.AppendProperty(UsdGeomTokens->faceVertexIndices)] = VtValue(indices);
-    }
 
-    VtVec3fArray points = gatherPositions(d, pointElems);
-    const bool worldSpace = isWorldSpace(d);
-    const GfMatrix4d toPrim = worldSpace ? relativeTo(GfMatrix4d(1.), frameOf(p.path)) : GfMatrix4d(1.);
-    if (worldSpace) {
-        for (GfVec3f& point : points) {
-            point = GfVec3f(toPrim.Transform(GfVec3d(point)));
+        if (p.kind == eGeoUsdPrimPoints) {
+            pointElems = p.points;
+        } else if (p.kind == eGeoUsdPrimCurves) {
+            pointElems.reserve(vertices.size());
+            for (std::size_t v : vertices) {
+                pointElems.push_back(std::size_t(d.vertexPoint(GeoOffset(v))));
+            }
+        } else {
+            pointElems.reserve(vertices.size());
+            for (std::size_t v : vertices) {
+                pointElems.push_back(std::size_t(d.vertexPoint(GeoOffset(v))));
+            }
+            std::sort(pointElems.begin(), pointElems.end());
+            pointElems.erase(std::unique(pointElems.begin(), pointElems.end()), pointElems.end());
+            VtIntArray indices(vertices.size());
+            for (std::size_t i = 0; i < vertices.size(); ++i) {
+                const std::size_t pt = std::size_t(d.vertexPoint(GeoOffset(vertices[i])));
+                indices[i] = int(std::lower_bound(pointElems.begin(), pointElems.end(), pt) - pointElems.begin());
+            }
+            values[p.path.AppendProperty(UsdGeomTokens->faceVertexIndices)] = VtValue(indices);
         }
-    }
-    values[p.path.AppendProperty(UsdGeomTokens->points)] = VtValue(points);
-    values[p.path.AppendProperty(UsdGeomTokens->extent)] = VtValue(extentOf(points));
-    if (p.kind == eGeoUsdPrimMesh) {
-        values[p.path.AppendProperty(UsdGeomTokens->faceVertexCounts)] = VtValue(counts);
-    } else if (p.kind == eGeoUsdPrimCurves) {
-        values[p.path.AppendProperty(UsdGeomTokens->curveVertexCounts)] = VtValue(counts);
+
+        VtVec3fArray points = gatherPositions(d, pointElems);
+        // Geometry made here is world space; geometry read from USD in its prim's own space is not.
+        worldSpace = _options.adjustTransformsForInputHierarchy && (isWorldSpace(d) || !p.readFromUsd);
+        toPrim = worldSpace ? relativeTo(GfMatrix4d(1.), frameOf(p.path)) : GfMatrix4d(1.);
+        if (worldSpace) {
+            for (GfVec3f& point : points) {
+                point = GfVec3f(toPrim.Transform(GfVec3d(point)));
+            }
+        }
+        values[p.path.AppendProperty(UsdGeomTokens->points)] = VtValue(points);
+        values[p.path.AppendProperty(UsdGeomTokens->extent)] = VtValue(extentOf(points));
+        if (p.kind == eGeoUsdPrimMesh) {
+            values[p.path.AppendProperty(UsdGeomTokens->faceVertexCounts)] = VtValue(counts);
+        } else if (p.kind == eGeoUsdPrimCurves) {
+            values[p.path.AppendProperty(UsdGeomTokens->curveVertexCounts)] = VtValue(counts);
+        }
     }
 
     const std::vector<std::size_t> detailElems { 0 };
@@ -2874,38 +3190,14 @@ geoUsdDetailPaths(const GeoDetail& d,
     const SdfPath root = (options.rootPath.IsAbsolutePath() && options.rootPath.IsPrimPath()) ? options.rootPath : SdfPath("/geo");
     add(root, false, false);
 
-    const auto resolver = [&root](const GeoAttribute* a) {
-        return [a, &root, byString = std::vector<SdfPath>(), known = std::vector<char>()](GeoOffset off) mutable -> SdfPath {
-            const std::int32_t s = a->get<std::int32_t>(std::size_t(off));
-            if (s < 0) {
-                return SdfPath();
-            }
-            if (std::size_t(s) >= byString.size()) {
-                byString.resize(std::size_t(s) + 1);
-                known.resize(std::size_t(s) + 1, 0);
-            }
-            if (!known[std::size_t(s)]) {
-                byString[std::size_t(s)] = resolvePathValue(a->getString(std::size_t(off)), root);
-                known[std::size_t(s)] = 1;
-            }
-
-            return byString[std::size_t(s)];
-        };
-    };
-
-    const GeoAttribute* pathAttr = nullptr;
-    for (const char* name : { "path", "name" }) {
-        const GeoAttribute* a = d.findAttribute(eGeoAttribClassPrimitive, name);
-        if (a && a->storage() == eGeoStorageString && a->tupleSize() == 1 && !a->isArray()) {
-            pathAttr = a;
-            break;
-        }
-    }
     {
         const GeoAttribute* primitiveSource = usdSourceAttribute(d, eGeoAttribClassPrimitive);
-        auto primitivePath = resolver(pathAttr);
+        PathResolver primitivePath(pathAttributes(d, eGeoAttribClassPrimitive, options.pathAttributes, nullptr), root, options.prefixAbsolutePaths);
         forEachLive(d.primitiveMap(), [&](GeoOffset off) {
             if (d.primitiveType(off) == eGeoPrimitivePackedUSD) {
+                if (options.packedUsdPrimitives == eGeoUsdPackedUsdIgnore) {
+                    return;
+                }
                 const SdfPath source(std::string(geoPackedUSDPath(d, off)));
                 if (!source.IsEmpty() && source.IsAbsolutePath() && source.IsPrimPath()) {
                     add(source, true, false);
@@ -2913,17 +3205,17 @@ geoUsdDetailPaths(const GeoDetail& d,
 
                 return;
             }
-            if (pathAttr) {
+            if (!primitivePath.empty()) {
                 add(primitivePath(off), false, readFromUsd(primitiveSource, off));
             }
         });
     }
 
-    if (const GeoAttribute* pointPath = pointPathAttribute(d)) {
+    PathResolver pointPath(pathAttributes(d, eGeoAttribClassPoint, options.pathAttributes, nullptr), root, options.prefixAbsolutePaths);
+    if (!pointPath.empty()) {
         const GeoAttribute* pointSource = usdSourceAttribute(d, eGeoAttribClassPoint);
-        auto pathOf = resolver(pointPath);
         forEachLive(d.pointMap(), [&](GeoOffset off) {
-            add(pathOf(off), false, readFromUsd(pointSource, off));
+            add(pointPath(off), false, readFromUsd(pointSource, off));
         });
     }
 
@@ -2942,8 +3234,6 @@ geoUsdPlacedPath(const SdfPath& requested,
         const bool onInput = scene->find(requested) != nullptr;
         if (fromUsd && !onInput) {
             why = eGeoUsdPlacedSourceGone;
-        } else if (!fromUsd && onInput) {
-            why = eGeoUsdPlacedCollision;
         }
     }
     if (placement) {

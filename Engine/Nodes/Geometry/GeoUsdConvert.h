@@ -60,6 +60,38 @@ enum GeoUsdPackedModeEnum {
     eGeoUsdPackedPointInstancer = 0,
     eGeoUsdPackedNativeInstances,
     eGeoUsdPackedUnpack,
+    // One Xform per packed primitive carrying its transform, its contents converted beneath.
+    eGeoUsdPackedCreateXforms,
+};
+
+/** @brief How meshes, curves and points (everything but packed primitives) are authored. */
+enum GeoUsdOtherPrimitivesEnum {
+    // A def at each path: a prim the input holds there is redefined by it.
+    eGeoUsdOtherDefine = 0,
+    // An over carrying the full data, which only shows where a weaker layer defines the prim.
+    eGeoUsdOtherOverlay,
+    // An over carrying the prim's transform only.
+    eGeoUsdOtherOverlayTransforms,
+};
+
+/** @brief What packed USD primitives become. */
+enum GeoUsdPackedUsdEnum {
+    eGeoUsdPackedUsdIgnore = 0,
+    // An over on the source prim carrying its transform.
+    eGeoUsdPackedUsdOverlayTransforms,
+    // The over also carries the primitive's point and primitive attributes as constant primvars.
+    eGeoUsdPackedUsdOverlayTransformsAndAttributes,
+};
+
+/** @brief Which kinds the intermediate prims a conversion defines get. */
+enum GeoUsdKindAuthoringEnum {
+    eGeoUsdKindNone = 0,
+    // The topmost defined intermediate prims are components; the others get no kind.
+    eGeoUsdKindOneComponent,
+    // Intermediate prims with no intermediate prim below are components, the others groups.
+    eGeoUsdKindNestedGroupsAndComponents,
+    // As nested groups and components, with the topmost intermediate prims assemblies.
+    eGeoUsdKindNestedAssemblyGroupsAndComponents,
 };
 
 /** @brief The USD prim one partition of a detail becomes. */
@@ -71,6 +103,8 @@ enum GeoUsdPrimKindEnum {
     eGeoUsdPrimNativeInstances,
     // An over on a packed USD primitive's source path, carrying its local transform.
     eGeoUsdPrimOverride,
+    // An Xform made from one packed primitive, its contents beneath (eGeoUsdPackedCreateXforms).
+    eGeoUsdPrimXform,
 };
 
 /** @brief What the stage the converted layer will be composed over holds at one prim. */
@@ -102,13 +136,29 @@ struct GeoUsdInputScene {
 typedef std::shared_ptr<const GeoUsdInputScene> GeoUsdInputSceneConstPtr;
 
 struct GeoUsdConvertOptions {
-    // Unpathed primitives and relative path values go under this prim.
+    // The path prefix: unpathed primitives and relative path values go under this prim.
     PXR_NS::SdfPath rootPath { "/geo" };
+    // The string attributes naming each primitive's prim, in order; the first non-empty one wins.
+    std::vector<std::string> pathAttributes { "path", "name" };
+    // When set, absolute path values go under rootPath too.
+    bool prefixAbsolutePaths = false;
     GeoUsdPackedModeEnum packedMode = eGeoUsdPackedPointInstancer;
+    GeoUsdOtherPrimitivesEnum otherPrimitives = eGeoUsdOtherDefine;
+    // When set, the intermediate prims a conversion creates are overs, so that its leaf prims
+    // only show where the input already holds their ancestors.
+    bool defineOnlyLeafPrimitives = false;
+    GeoUsdPackedUsdEnum packedUsdPrimitives = eGeoUsdPackedUsdOverlayTransforms;
+    // The type of the intermediate prims a conversion defines that the input does not hold;
+    // empty for typeless prims.
+    PXR_NS::TfToken parentPrimitiveType { "Xform" };
+    GeoUsdKindAuthoringEnum kindAuthoring = eGeoUsdKindNone;
+    // When set, values in the detail's space (world-space points, packed transforms) are written
+    // relative to the input's prims above them, so the composed result lands where the detail
+    // puts it; otherwise they are written as they are.
+    bool adjustTransformsForInputHierarchy = true;
     // The width authored on UsdGeomPoints that carry no pscale; USD's own fallback is 1.0.
     double defaultPointWidth = 0.01;
-    // When set, prims the input already holds are authored as overs and transforms are written
-    // relative to the input's parents, so that the composed result lands where the detail puts it.
+    // The stage the conversion is composed over, read for placement and transforms.
     GeoUsdInputSceneConstPtr inputScene;
 };
 
@@ -130,16 +180,13 @@ enum GeoUsdPlacementEnum {
     eGeoUsdPlacedAsRequested = 0,
     // Geometry read from USD whose prim the input scene no longer holds.
     eGeoUsdPlacedSourceGone,
-    // Geometry not read from USD on a path the input scene already holds.
-    eGeoUsdPlacedCollision,
 };
 
 /**
- * @brief Where a partition that asks for @p requested is authored: @p requested itself, unless
- * @p scene is given and @p requested lies outside @p root; then the same path under @p root when
- * geometry read from USD (@p fromUsd) finds its prim gone, so that it does not reappear where it
- * was, or when other geometry finds the path taken, since only geometry read from a prim
- * overrides it.
+ * @brief Where a defined partition that asks for @p requested is authored: @p requested itself,
+ * unless @p scene is given, @p requested lies outside @p root and the geometry was read from USD
+ * (@p fromUsd) but its prim is gone; then the same path under @p root, so that the geometry does
+ * not bring back a prim a node upstream removed. Overlaid partitions stay where they ask to be.
  **/
 PXR_NS::SdfPath geoUsdPlacedPath(const PXR_NS::SdfPath& requested,
                                  const PXR_NS::SdfPath& root,
@@ -159,27 +206,34 @@ GeoUsdInputSceneConstPtr geoUsdCaptureInputScene(const PXR_NS::UsdStageRefPtr& s
 /**
  * @brief The translation between a GeoDetail and USD scene description.
  *
- * The detail is partitioned into USD prims by the `path` primitive attribute, or `name` when
- * there is no `path`; a relative value goes under the root path, an empty one or none puts
- * the primitive in one prim per type under the root (mesh_0, curves_0, points_0, instancer_0).
- * Primitives of different types sharing a path become per-type child prims of that path, with
- * a warning. Polygons become a UsdGeomMesh, polylines a linear UsdGeomBasisCurves (one USD point
- * per vertex, since curves cannot share points), unconnected points a UsdGeomPoints, placed by
- * their own `path` point attribute when they have one. Packed USD primitives become an over on
- * their source path carrying xformOp:transform; packed geometry becomes a
- * UsdGeomPointInstancer, native instances or unpacked geometry, by mode. A point instancer
- * cannot hold shear, so packed geometry whose transform shears becomes native instances
- * instead, with a warning. Packed transforms are in the detail's space, which is world space:
- * each one is written relative to the world transform of the prim it lands under. Points are in
- * the space of their prim, or in world space when the detail says so (kGeoUsdWorldSpaceAttr);
- * normal and vector attributes then follow the points back into prim space.
+ * The detail is partitioned into USD prims by the path attributes (options.pathAttributes,
+ * `path` then `name`): each primitive takes the first one with a non-empty value. Components are
+ * made valid identifiers (invalid characters become `_`); a relative value goes under the root
+ * path, and an absolute one too with options.prefixAbsolutePaths. Primitives with no value go in
+ * one prim per type under the root (mesh_0, curves_0, points_0, instancer_0). Primitives of
+ * incompatible types sharing a path become siblings suffixed _0, _1 in first-use order, with a
+ * warning; primitives of one type sharing a path are one prim. Polygons become a UsdGeomMesh,
+ * polylines a linear UsdGeomBasisCurves (one USD point per vertex, since curves cannot share
+ * points), unconnected points a UsdGeomPoints, placed by their own path attributes when they have
+ * them. Packed USD primitives become an over on their source path carrying xformOp:transform, or
+ * nothing (options.packedUsdPrimitives); packed geometry becomes a UsdGeomPointInstancer, native
+ * instances, an Xform per primitive or unpacked geometry, by mode. A point instancer cannot hold
+ * shear, so packed geometry whose transform shears becomes native instances instead, with a
+ * warning. Packed transforms are in the detail's space, which is world space. Points are in the
+ * space of their prim when read from USD, or in world space when the detail says so
+ * (kGeoUsdWorldSpaceAttr) or the geometry was not read from USD; normal and vector attributes
+ * follow world-space points into prim space. With options.adjustTransformsForInputHierarchy,
+ * world-space values are written relative to the world transform the input gives the prim they
+ * land under, so the composed result keeps the detail's positions.
  *
- * With an input scene, a partition read from USD (kGeoUsdSourceAttr) whose prim the input holds
- * becomes an over of it. Meshes, curves and points of the input's type then carry points, plus
- * the values that differ from the input's; topology only when it differs, in full. A partition
- * on an absolute path outside the root goes under the root path, with a warning, when it was read
- * from a prim the input no longer holds or was not read from USD and the input holds its path
- * (geoUsdPlacedPath()).
+ * Meshes, curves and points are defs, or overs by options.otherPrimitives; intermediate prims
+ * are defs of options.parentPrimitiveType where the input lacks them, typeless defs where it holds
+ * them, and overs above overs or with options.defineOnlyLeafPrimitives. options.kindAuthoring
+ * sets kinds on the intermediate prims defined where the input lacks them. A partition of the
+ * input's type at a prim the input holds carries points plus the values that differ from the
+ * input's; topology only when it differs, in full. A defined partition read from a prim the
+ * input no longer holds goes under the root path, with a warning (geoUsdPlacedPath()); an
+ * overlaid partition on a prim the input lacks is listed by overlaysWithoutPrim().
  *
  * Attribute classes map detail -> constant, primitive -> uniform, point -> vertex and
  * vertex -> faceVarying, and names map P -> points, N -> normals, uv -> primvars:st,
@@ -218,6 +272,12 @@ public:
         return _warnings;
     }
 
+    /** @brief The overlaid partitions on paths the input scene does not hold: they compose to nothing. */
+    const std::vector<PXR_NS::SdfPath>& overlaysWithoutPrim() const
+    {
+        return _overlaysWithoutPrim;
+    }
+
     /** @brief The prims holding packed geometry written as native instances for its shear. */
     const std::vector<PXR_NS::SdfPath>& shearedInstances() const
     {
@@ -227,6 +287,9 @@ public:
     std::size_t partitionCount() const;
     const PXR_NS::SdfPath& partitionPath(std::size_t partition) const;
     GeoUsdPrimKindEnum partitionKind(std::size_t partition) const;
+
+    /** @brief Whether the partition's prim is an over rather than a def. */
+    bool isPartitionOverlay(std::size_t partition) const;
 
     /** @brief The offsets of the primitives the partition's prim is made of, in prim order. */
     const std::vector<std::size_t>& partitionPrimitives(std::size_t partition) const;
@@ -304,6 +367,11 @@ private:
     const GeoUsdInputPrim* inputPrim(const PXR_NS::SdfPath& path) const;
     PXR_NS::GfMatrix4d frameOf(const PXR_NS::SdfPath& path) const;
     PXR_NS::GfMatrix4d overrideParent(const Partition& partition) const;
+    PXR_NS::GfMatrix4d adjustedFrame(const PXR_NS::SdfPath& path) const;
+    PXR_NS::GfMatrix4d localParent(const Partition& partition) const;
+    PXR_NS::GfMatrix4d transformOnlyValue(const Partition& partition) const;
+    PXR_NS::SdfSpecifier parentSpecifier(PXR_NS::SdfSpecifier childSpecifier) const;
+    void authorKinds();
     void finishSpecs();
     const SpecEntry* findEntry(const PXR_NS::SdfPath& path) const;
     const GeoUsdConvert* delegateFor(const SpecEntry& entry) const;
@@ -319,6 +387,7 @@ private:
     GeoUsdConvertOptions _options;
     std::vector<std::string> _warnings;
     std::vector<PXR_NS::SdfPath> _shearedInstances;
+    std::vector<PXR_NS::SdfPath> _overlaysWithoutPrim;
     std::vector<std::unique_ptr<Partition>> _partitions;
     std::unordered_map<PXR_NS::SdfPath, SpecEntry, PXR_NS::SdfPath::Hash> _specs;
     PXR_NS::SdfPath _topPath;

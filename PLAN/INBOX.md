@@ -35,8 +35,6 @@
 
 - **An expression reading another dimension of its own knob never updates** (PM, 2026-11-25, from F16 - User Knob Editor's gate): `size.h = thisNode.size.getValue(0)` keeps its first result when `size.w` changes, because self-reads register no listener (`Engine/PyParameter.cpp:1026` `_addAsDependencyOf`, `Engine/Knob.cpp:3310` `registerExpressionReads`). Pre-existing on main. A fix would register cross-dimension self-reads and keep refusing a dimension reading itself; check cycle handling in `refreshListenersAfterValueChange`.
 
-- **MoonRay super-repo branches diverged** (PM, 2026-11-26, from M496 - MoonRay Test Stability): `charlesangus/openmoonray` `natron/v2026.29.1` has c4edab6 (moonray deep-output bump, not yet pinned anywhere), while M496 pins f57c136d3e on `natron/v2026.29.1-m496` (arras orphaned-process fix, hdMoonray "Waiting for engine"). Whoever pins c4edab6's line next must first merge `natron/v2026.29.1-m496` into it (no force-push), or the arras crash fix is lost.
-
 - **SplitOnGapsTest stalls at startup** (PM, 2026-11-26): timed out at 300 s on f18-gate1 (passed on the serial rerun), and the watchdog dumped it "still running 225 s after the process started, phase 'start'" in m496-rep8's ctest leg. The stall is before the test body, so look at the watchdog stacks from rep8's log for what process start waits on (likely shared with other startup-phase stalls under -j4).
 - **CyclesDelegate.DrawFilterHidesPrimsAndLights flaked once** (PM, 2026-11-26, m199-gate14): saw `/World/a` still visible after the draw filter hid it; passed on rerun. Watch whether it repeats on main or only on M199's branch (scheduler timing).
 

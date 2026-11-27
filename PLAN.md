@@ -76,6 +76,8 @@ future core work has solid ground to build on.
 
 - **USD nodes pick a toolbar submenu (2026-11-22):** from M520 - USD Toolbar Category And Submenus on, `PLUGIN_GROUP_3D_USD` is gone; a new USD node registers one of the `PLUGIN_GROUP_USD_*` submenus (Prims, Lights, Cameras, Materials, Composition, Edit, Render, I/O), adding a submenu only when none fits. See `DECISIONS/2026-11-22-usd-toolbar-submenus.md`.
 
+- **MoonRay super-repo branches diverged (PM, 2026-11-26, from M496 - MoonRay Test Stability):** `charlesangus/openmoonray` `natron/v2026.29.1` carries c4edab6 (MoonRay deep-output bump, not pinned anywhere yet), while M496 pins f57c136d3e on `natron/v2026.29.1-m496` (arras orphaned-process fix, hdMoonray "Waiting for engine"). Whoever next pins c4edab6's line first merges `natron/v2026.29.1-m496` into it, with no force-push, or the arras crash fix is lost.
+
 - **History:** the sequencing notes, shipped-milestone summaries and backlog-reordering log that used to sit here moved verbatim to `PLAN/ARCHIVE/board-context-history.md` (off the startup path).
 
 # Board

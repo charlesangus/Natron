@@ -166,6 +166,32 @@ private:
     KnobLayersWPtr _knob;
 };
 
+class KnobGuiRowTable
+    : public KnobGuiTable {
+    GCC_DIAG_SUGGEST_OVERRIDE_OFF
+    Q_OBJECT
+    GCC_DIAG_SUGGEST_OVERRIDE_ON
+
+public:
+    static KnobGui* BuildKnobGui(KnobIPtr knob,
+                                 KnobGuiContainerI* container)
+    {
+        return new KnobGuiRowTable(knob, container);
+    }
+
+    KnobGuiRowTable(KnobIPtr knob,
+                    KnobGuiContainerI* container);
+
+    virtual ~KnobGuiRowTable() OVERRIDE;
+
+    virtual KnobIPtr getKnob() const OVERRIDE FINAL;
+
+private:
+    virtual bool addNewUserEntry(QStringList& row) OVERRIDE FINAL;
+
+    KnobRowTableWPtr _knob;
+};
+
 NATRON_NAMESPACE_EXIT
 
 #endif // Gui_KnobGuiLayer_h

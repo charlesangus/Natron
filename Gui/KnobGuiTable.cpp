@@ -791,6 +791,37 @@ KnobGuiLayers::getKnob() const
     return _knob.lock();
 }
 
+KnobGuiRowTable::KnobGuiRowTable(KnobIPtr knob,
+                                 KnobGuiContainerI* container)
+    : KnobGuiTable(knob, container)
+{
+    _knob = std::dynamic_pointer_cast<KnobRowTable>(knob);
+}
+
+KnobGuiRowTable::~KnobGuiRowTable()
+{
+}
+
+KnobIPtr
+KnobGuiRowTable::getKnob() const
+{
+    return _knob.lock();
+}
+
+bool
+KnobGuiRowTable::addNewUserEntry(QStringList& row)
+{
+    KnobRowTablePtr knob = _knob.lock();
+    if (!knob) {
+        return false;
+    }
+    for (const KnobRowTable::Column& column : knob->getColumns()) {
+        row.push_back(QString::fromUtf8(column.defaultValue.c_str()));
+    }
+
+    return true;
+}
+
 NATRON_NAMESPACE_EXIT
 
 NATRON_NAMESPACE_USING

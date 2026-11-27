@@ -88,6 +88,12 @@
 #define kViewerParamRenderEverything "renderEverything"
 #define kViewerParamRefinementPaused "refinementPaused"
 #define kViewerParamMapSiblingOverlays "mapSiblingOverlays"
+#define kViewerParamPointMarkers "pointMarkers"
+#define kViewerParamPointNumbers "pointNumbers"
+#define kViewerParamPrimitiveNumbers "primitiveNumbers"
+#define kViewerParamNormals "normals"
+#define kViewerParamNormalScale "normalScale"
+#define kViewerParamHighlightGroup "highlightGroup"
 
 NATRON_NAMESPACE_ENTER
 
@@ -267,6 +273,9 @@ public:
     // The input is a scene: renderViewer_internal() evaluates it through the scene action and
     // renders no texture for it.
     bool sceneUpstream = false;
+    // The input is geometry, which the 3D view shows through the viewer's own geometry layer;
+    // sceneUpstream is set along with it.
+    bool geometryUpstream = false;
     std::optional<RawDisplay::Normalisation> rawNormalisation;
     bool forceRender;
     int activeInputIndex;
@@ -837,6 +846,27 @@ public:
                                  std::string* error);
 
     /**
+     * @brief Shows in the 3D view the geometry the given texture's input evaluated at @p frame, as
+     * evaluated. Playback evaluates frames ahead of the timeline, so each waits until the timeline
+     * reaches it. True when the geometry shown changed; false when the input is not geometry or
+     * nothing was evaluated at @p frame since it was last shown. MT-safe.
+     **/
+    bool showGeometryFrame(int textureIndex, int frame);
+
+    /**
+     * @brief The geometry the viewer's copy for the given texture's input is served from, so element
+     * numbers match what the 3D view picks, in *frame the frame the 3D view last read it at, and in
+     * *sourceNode and *sourceHash the node it was evaluated from and that node's hash before the
+     * evaluation. False when that input shows no geometry or the 3D view has not read any yet. Any
+     * pointer may be null. MT-safe.
+     **/
+    bool getShownGeometry(int textureIndex,
+                          GeoDetailConstPtr* detail,
+                          int* frame,
+                          NodePtr* sourceNode = nullptr,
+                          U64* sourceHash = nullptr) const;
+
+    /**
      * @brief Every node upstream of the A and B inputs that has a persistent message, nearest
      * first (see Node::getNodesWithPersistentMessageUpstream()).
      **/
@@ -1039,18 +1069,29 @@ private:
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL;
 
-    // The Viewer is the one place a deep, raw or scene edge may land on an image input: it
-    // flattens deep, shows raw values as they are (RawDisplay), and shows a scene in its 3D view.
+    // The Viewer is the one place a deep, raw, scene or geometry edge may land on an image input:
+    // it flattens deep, shows raw values as they are (RawDisplay), and shows a scene or geometry
+    // in its 3D view.
     // Listing the kinds rather than declaring eDataKindPolymorphic keeps a kind the Viewer cannot
     // show (a future one) an error instead of a silent connection.
     virtual bool inputAcceptsDataKindViaAdapter(int /*inputNb*/,
                                                 DataKindEnum kind) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        return (kind == eDataKindDeep) || (kind == eDataKindRaw) || (kind == eDataKindScene);
+        return (kind == eDataKindDeep) || (kind == eDataKindRaw) || (kind == eDataKindScene) || (kind == eDataKindGeometry);
     }
     /*******************************************/
 
     ViewerRenderRetCode evaluateSceneInput(ViewerArgs& inArgs) WARN_UNUSED_RETURN;
+
+    bool evaluateGeometryInput(ViewerArgs& inArgs,
+                               ScenePayload* scene,
+                               std::string* error,
+                               bool* aborted,
+                               std::unique_lock<std::mutex>& publish,
+                               bool* superseded);
+
+    bool claimScenePublish(const ViewerArgs& inArgs,
+                           std::unique_lock<std::mutex>& publish);
 
     ViewerRenderRetCode prepareViewerRender(ViewIdx view,
                                             bool singleThreaded,

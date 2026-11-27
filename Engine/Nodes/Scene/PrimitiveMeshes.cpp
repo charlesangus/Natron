@@ -35,18 +35,21 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
+typedef std::array<double, 3> Vec3d;
+typedef std::array<float, 3> Vec3f;
+
 struct Corner {
     int point;
     int st;
-    PXR_NS::GfVec3f normal;
+    Vec3f normal;
 };
 
 // Builds Y-up; finish() turns the mesh for a Z-up scene.
 class MeshBuilder {
 public:
-    int addPoint(const PXR_NS::GfVec3d& p)
+    int addPoint(const Vec3d& p)
     {
-        _mesh.points.push_back(PXR_NS::GfVec3f((float)p[0], (float)p[1], (float)p[2]));
+        _mesh.points.push_back(Vec3f { (float)p[0], (float)p[1], (float)p[2] });
 
         return (int)_mesh.points.size() - 1;
     }
@@ -54,7 +57,7 @@ public:
     int addSt(double s,
               double t)
     {
-        _mesh.st.push_back(PXR_NS::GfVec2f((float)s, (float)t));
+        _mesh.st.push_back({ (float)s, (float)t });
 
         return (int)_mesh.st.size() - 1;
     }
@@ -69,16 +72,16 @@ public:
         }
     }
 
-    PrimitiveMesh finish(SceneMetadata::UpAxisEnum upAxis)
+    PrimitiveMeshData finish(SceneMetadata::UpAxisEnum upAxis)
     {
         if (upAxis == SceneMetadata::eUpAxisZ) {
             // A quarter turn about X, (x, y, z) -> (x, -z, y): +Y goes to +Z, and the forward
             // axis +Z to -Y, which a Z-up viewport's default view looks from.
-            for (PXR_NS::GfVec3f& p : _mesh.points) {
-                p = PXR_NS::GfVec3f(p[0], -p[2], p[1]);
+            for (Vec3f& p : _mesh.points) {
+                p = Vec3f { p[0], -p[2], p[1] };
             }
-            for (PXR_NS::GfVec3f& n : _mesh.normals) {
-                n = PXR_NS::GfVec3f(n[0], -n[2], n[1]);
+            for (Vec3f& n : _mesh.normals) {
+                n = Vec3f { n[0], -n[2], n[1] };
             }
         }
 
@@ -86,34 +89,70 @@ public:
     }
 
 private:
-    PrimitiveMesh _mesh;
+    PrimitiveMeshData _mesh;
 };
 
 // The unit direction around the up axis at column of columns: 0 at the back (-Z), a quarter turn
 // at the left (-X), so u increases left to right seen from the front.
-PXR_NS::GfVec3d
+Vec3d
 around(int column,
        int columns)
 {
     const double phi = 2. * M_PI * (double)column / (double)columns;
 
-    return PXR_NS::GfVec3d(-std::sin(phi), 0., -std::cos(phi));
+    return { -std::sin(phi), 0., -std::cos(phi) };
 }
 
-PXR_NS::GfVec3f
-toFloat(const PXR_NS::GfVec3d& v)
+Vec3d
+scaled(const Vec3d& v,
+       double s)
 {
-    return PXR_NS::GfVec3f((float)v[0], (float)v[1], (float)v[2]);
+    return { v[0] * s, v[1] * s, v[2] * s };
+}
+
+Vec3f
+toFloat(const Vec3d& v)
+{
+    return { (float)v[0], (float)v[1], (float)v[2] };
+}
+
+PXR_NS::VtIntArray
+toIntArray(const std::vector<int>& v)
+{
+    return PXR_NS::VtIntArray(v.begin(), v.end());
+}
+
+PrimitiveMesh
+toUsd(const PrimitiveMeshData& d)
+{
+    PrimitiveMesh mesh;
+    mesh.points.reserve(d.points.size());
+    for (const Vec3f& p : d.points) {
+        mesh.points.push_back(PXR_NS::GfVec3f(p[0], p[1], p[2]));
+    }
+    mesh.faceVertexCounts = toIntArray(d.faceVertexCounts);
+    mesh.faceVertexIndices = toIntArray(d.faceVertexIndices);
+    mesh.normals.reserve(d.normals.size());
+    for (const Vec3f& n : d.normals) {
+        mesh.normals.push_back(PXR_NS::GfVec3f(n[0], n[1], n[2]));
+    }
+    mesh.st.reserve(d.st.size());
+    for (const std::array<float, 2>& s : d.st) {
+        mesh.st.push_back(PXR_NS::GfVec2f(s[0], s[1]));
+    }
+    mesh.stIndices = toIntArray(d.stIndices);
+
+    return mesh;
 }
 } // anonymous namespace
 
 namespace PrimitiveMeshes {
-PrimitiveMesh
-buildCard(double aspect,
-          double height,
-          int rows,
-          int columns,
-          SceneMetadata::UpAxisEnum upAxis)
+PrimitiveMeshData
+buildCardData(double aspect,
+              double height,
+              int rows,
+              int columns,
+              SceneMetadata::UpAxisEnum upAxis)
 {
     rows = std::max(rows, kCardMinSegments);
     columns = std::max(columns, kCardMinSegments);
@@ -123,11 +162,11 @@ buildCard(double aspect,
         const double t = (double)i / (double)rows;
         for (int j = 0; j <= columns; ++j) {
             const double s = (double)j / (double)columns;
-            b.addPoint(PXR_NS::GfVec3d((s - 0.5) * width, (t - 0.5) * height, 0.));
+            b.addPoint({ (s - 0.5) * width, (t - 0.5) * height, 0. });
             b.addSt(s, t);
         }
     }
-    const PXR_NS::GfVec3f normal(0.f, 0.f, 1.f);
+    const Vec3f normal { 0.f, 0.f, 1.f };
     const auto at = [columns, &normal](int i, int j) {
         const int index = i * (columns + 1) + j;
 
@@ -142,11 +181,11 @@ buildCard(double aspect,
     return b.finish(upAxis);
 }
 
-PrimitiveMesh
-buildSphere(double radius,
-            int rows,
-            int columns,
-            SceneMetadata::UpAxisEnum upAxis)
+PrimitiveMeshData
+buildSphereData(double radius,
+                int rows,
+                int columns,
+                SceneMetadata::UpAxisEnum upAxis)
 {
     rows = std::max(rows, kSphereMinRows);
     columns = std::max(columns, kSphereMinColumns);
@@ -154,19 +193,19 @@ buildSphere(double radius,
     // Ring r (1 to rows - 1, from the top) at polar angle pi * r / rows.
     const auto direction = [rows, columns](int r, int j) {
         const double theta = M_PI * (double)r / (double)rows;
-        PXR_NS::GfVec3d d = around(j, columns) * std::sin(theta);
+        Vec3d d = scaled(around(j, columns), std::sin(theta));
         d[1] = std::cos(theta);
 
         return d;
     };
-    const int top = b.addPoint(PXR_NS::GfVec3d(0., radius, 0.));
+    const int top = b.addPoint({ 0., radius, 0. });
     const int firstRingPoint = top + 1;
     for (int r = 1; r < rows; ++r) {
         for (int j = 0; j < columns; ++j) {
-            b.addPoint(direction(r, j) * radius);
+            b.addPoint(scaled(direction(r, j), radius));
         }
     }
-    const int bottom = b.addPoint(PXR_NS::GfVec3d(0., -radius, 0.));
+    const int bottom = b.addPoint({ 0., -radius, 0. });
 
     // columns + 1 st per ring: the seam's points carry u = 0 on one side and u = 1 on the other.
     int firstRingSt = -1;
@@ -190,7 +229,8 @@ buildSphere(double radius,
                         firstRingSt + (r - 1) * (columns + 1) + j,
                         toFloat(direction(r, j)) };
     };
-    const PXR_NS::GfVec3f up(0.f, 1.f, 0.f);
+    const Vec3f up { 0.f, 1.f, 0.f };
+    const Vec3f down { 0.f, -1.f, 0.f };
     for (int j = 0; j < columns; ++j) {
         b.addFace({ ring(1, j), ring(1, j + 1), Corner { top, topSt[j], up } });
     }
@@ -200,20 +240,20 @@ buildSphere(double radius,
         }
     }
     for (int j = 0; j < columns; ++j) {
-        b.addFace({ Corner { bottom, bottomSt[j], -up }, ring(rows - 1, j + 1), ring(rows - 1, j) });
+        b.addFace({ Corner { bottom, bottomSt[j], down }, ring(rows - 1, j + 1), ring(rows - 1, j) });
     }
 
     return b.finish(upAxis);
-} // buildSphere
+} // buildSphereData
 
-PrimitiveMesh
-buildCube(const PXR_NS::GfVec3d& size,
-          const int segments[3],
-          SceneMetadata::UpAxisEnum upAxis)
+PrimitiveMeshData
+buildCubeData(const std::array<double, 3>& size,
+              const int segments[3],
+              SceneMetadata::UpAxisEnum upAxis)
 {
     // Built Y-up, so a Z-up scene's Y and Z sizes swap before finish() turns them back.
     const bool zUp = (upAxis == SceneMetadata::eUpAxisZ);
-    const PXR_NS::GfVec3d extent = zUp ? PXR_NS::GfVec3d(size[0], size[2], size[1]) : size;
+    const Vec3d extent = zUp ? Vec3d { size[0], size[2], size[1] } : size;
     std::array<int, 3> n = { segments[0], segments[1], segments[2] };
     if (zUp) {
         std::swap(n[1], n[2]);
@@ -231,7 +271,7 @@ buildCube(const PXR_NS::GfVec3d& size,
         if (found != lattice.end()) {
             return found->second;
         }
-        PXR_NS::GfVec3d p;
+        Vec3d p;
         for (int a = 0; a < 3; ++a) {
             p[a] = extent[a] * ((double)l[a] / (double)n[a] - 0.5);
         }
@@ -257,7 +297,7 @@ buildCube(const PXR_NS::GfVec3d& size,
     for (const Face& f : faces) {
         const int nRight = n[f.rightAxis];
         const int nUp = n[f.upAxis];
-        PXR_NS::GfVec3f normal(0.f);
+        Vec3f normal { 0.f, 0.f, 0.f };
         normal[f.axis] = (float)f.sign;
         const auto latticeAt = [&](int s, int t) {
             std::array<int, 3> l;
@@ -286,16 +326,16 @@ buildCube(const PXR_NS::GfVec3d& size,
     }
 
     return b.finish(upAxis);
-} // buildCube
+} // buildCubeData
 
-PrimitiveMesh
-buildCylinder(double radius,
-              double height,
-              int rows,
-              int columns,
-              bool topCap,
-              bool bottomCap,
-              SceneMetadata::UpAxisEnum upAxis)
+PrimitiveMeshData
+buildCylinderData(double radius,
+                  double height,
+                  int rows,
+                  int columns,
+                  bool topCap,
+                  bool bottomCap,
+                  SceneMetadata::UpAxisEnum upAxis)
 {
     rows = std::max(rows, kCylinderMinRows);
     columns = std::max(columns, kCylinderMinColumns);
@@ -304,7 +344,7 @@ buildCylinder(double radius,
     for (int r = 0; r <= rows; ++r) {
         const double y = height * (0.5 - (double)r / (double)rows);
         for (int j = 0; j < columns; ++j) {
-            PXR_NS::GfVec3d p = around(j, columns) * radius;
+            Vec3d p = scaled(around(j, columns), radius);
             p[1] = y;
             b.addPoint(p);
         }
@@ -331,11 +371,11 @@ buildCylinder(double radius,
     const auto addCap = [&](bool isTop) {
         const int r = isTop ? 0 : rows;
         const double y = isTop ? 0.5 * height : -0.5 * height;
-        const PXR_NS::GfVec3f normal(0.f, isTop ? 1.f : -1.f, 0.f);
-        const Corner centre { b.addPoint(PXR_NS::GfVec3d(0., y, 0.)), b.addSt(0.5, 0.5), normal };
+        const Vec3f normal { 0.f, isTop ? 1.f : -1.f, 0.f };
+        const Corner centre { b.addPoint({ 0., y, 0. }), b.addSt(0.5, 0.5), normal };
         std::vector<int> st(columns);
         for (int j = 0; j < columns; ++j) {
-            const PXR_NS::GfVec3d d = around(j, columns);
+            const Vec3d d = around(j, columns);
             st[j] = b.addSt(0.5 + 0.5 * d[0], isTop ? 0.5 - 0.5 * d[2] : 0.5 + 0.5 * d[2]);
         }
         const auto rim = [&](int j) {
@@ -357,7 +397,46 @@ buildCylinder(double radius,
     }
 
     return b.finish(upAxis);
-} // buildCylinder
+} // buildCylinderData
+
+PrimitiveMesh
+buildCard(double aspect,
+          double height,
+          int rows,
+          int columns,
+          SceneMetadata::UpAxisEnum upAxis)
+{
+    return toUsd(buildCardData(aspect, height, rows, columns, upAxis));
+}
+
+PrimitiveMesh
+buildSphere(double radius,
+            int rows,
+            int columns,
+            SceneMetadata::UpAxisEnum upAxis)
+{
+    return toUsd(buildSphereData(radius, rows, columns, upAxis));
+}
+
+PrimitiveMesh
+buildCube(const PXR_NS::GfVec3d& size,
+          const int segments[3],
+          SceneMetadata::UpAxisEnum upAxis)
+{
+    return toUsd(buildCubeData({ size[0], size[1], size[2] }, segments, upAxis));
+}
+
+PrimitiveMesh
+buildCylinder(double radius,
+              double height,
+              int rows,
+              int columns,
+              bool topCap,
+              bool bottomCap,
+              SceneMetadata::UpAxisEnum upAxis)
+{
+    return toUsd(buildCylinderData(radius, height, rows, columns, topCap, bottomCap, upAxis));
+}
 } // namespace PrimitiveMeshes
 
 NATRON_NAMESPACE_EXIT

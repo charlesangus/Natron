@@ -852,7 +852,7 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
 
     // For a page, create it if needed and recursively describe its children
     if (isPage) {
-        if ( isPage->getChildren().empty() ) {
+        if (isPage->getChildren().empty() && !(isPage->isUserKnob() && showsEmptyUserPages())) {
             return KnobGuiPtr();
         }
         getOrCreatePage(isPage);
@@ -1255,7 +1255,7 @@ KnobGuiContainerHelper::refreshPagesOrder(const KnobPageGuiPtr& curTabName,
     for (std::list<KnobPagePtr>::iterator it = internalPages.begin(); it != internalPages.end(); ++it) {
         PagesMap::const_iterator foundPage = _imp->pages.find(*it);
         if ( foundPage != _imp->pages.end() ) {
-            if ( (*it)->getChildren().size() > 0 ) {
+            if (((*it)->getChildren().size() > 0) || ((*it)->isUserKnob() && showsEmptyUserPages())) {
                 foundPage->second->tab->show();
                 orderedPages.push_back(foundPage->second);
             } else {

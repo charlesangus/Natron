@@ -125,13 +125,14 @@ Timer::printAsTime(const double timeInSeconds,
     return ret;
 } // Timer::printAsTime
 
-Timer::Timer ()
-    : playState (ePlayStateRunning),
-    _spf (1 / 24.0),
-    _timingError (0),
-    _framesSinceLastFpsFrame (0),
-    _actualFrameRate (0),
-    _mutex()
+Timer::Timer()
+    : playState(ePlayStateRunning)
+    , _spf(1 / 24.0)
+    , _timingError(0)
+    , _startPending(false)
+    , _framesSinceLastFpsFrame(0)
+    , _actualFrameRate(0)
+    , _mutex()
 {
     gettimeofday (&_lastFrameTime, 0);
     _lastFpsFrameTime = _lastFrameTime;
@@ -139,6 +140,22 @@ Timer::Timer ()
 
 Timer::~Timer()
 {
+}
+
+void
+Timer::startPlaying()
+{
+    _startPending = true;
+    playState = ePlayStateRunning;
+}
+
+void
+Timer::resetTiming()
+{
+    gettimeofday(&_lastFrameTime, 0);
+    _timingError = 0;
+    _lastFpsFrameTime = _lastFrameTime;
+    _framesSinceLastFpsFrame = 0;
 }
 
 void
@@ -150,14 +167,10 @@ Timer::waitUntilNextFrameIsDue ()
         // variables and return without waiting.
         //
 
-        gettimeofday (&_lastFrameTime, 0);
-        _timingError = 0;
-        _lastFpsFrameTime = _lastFrameTime;
-        _framesSinceLastFpsFrame = 0;
+        resetTiming();
 
         return;
     }
-
 
     double spf;
     {
@@ -175,6 +188,14 @@ Timer::waitUntilNextFrameIsDue ()
                                 (now.tv_usec - _lastFrameTime.tv_usec) * 1e-6f;
     if (timeSinceLastFrame < 0) {
         timeSinceLastFrame = 0;
+    }
+    if (_startPending) {
+        _startPending = false;
+        if (timeSinceLastFrame >= spf) {
+            resetTiming();
+
+            return;
+        }
     }
     double timeToSleep = spf - timeSinceLastFrame - _timingError;
 
@@ -269,6 +290,9 @@ Timer::getSecondsUntilNextFrameIsDue() const
     double timeSinceLastFrame = now.tv_sec - _lastFrameTime.tv_sec + (now.tv_usec - _lastFrameTime.tv_usec) * 1e-6f;
     if (timeSinceLastFrame < 0) {
         timeSinceLastFrame = 0;
+    }
+    if (_startPending && (timeSinceLastFrame >= spf)) {
+        return 0.;
     }
 
     return spf - timeSinceLastFrame - _timingError;

@@ -7255,6 +7255,11 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
         return false;
     }
 
+    KnobButton* isButton = dynamic_cast<KnobButton*>(k);
+    if (isButton && isButton->isUserKnob() && ((reason == eValueChangedReasonUserEdited) || (reason == eValueChangedReasonNatronGuiEdited)) && (QThread::currentThread() == qApp->thread()) && !(getApp() && getApp()->isReplayingUndo())) {
+        isButton->runScript();
+    }
+
     /// If there's a knobChanged Python callback, run it
     // Undoing or redoing recorded edits replays what the callback did, so it must not run again.
     std::string pythonCB = getNode()->getKnobChangedCallback();

@@ -77,6 +77,7 @@
 
 #include "Gui/BackdropGui.h"
 #include "Gui/ForegroundTaskDialog.h"
+#include "Gui/GeoSpreadsheetPanel.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/KnobGuiFile.h"
@@ -1034,6 +1035,9 @@ GuiAppInstance::aboutToDestroyProjectNodes()
         const std::list<SceneGraphPanel*> panels = _imp->_gui->getSceneGraphPanels();
         for (SceneGraphPanel* panel : panels) {
             panel->releaseNodeStages();
+        }
+        if (GeoSpreadsheetPanel* geoPanel = _imp->_gui->getGeoSpreadsheetPanel()) {
+            geoPanel->releaseNodes();
         }
     }
     SceneNodeStageSource::stopAll();

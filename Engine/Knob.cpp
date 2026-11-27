@@ -940,8 +940,13 @@ KnobHelper::deleteKnob()
         for (int i = 0; i < knob->getDimension(); ++i) {
             if (isHelper) {
                 // Restoring the nodes it was missing would not bring this parameter back.
-                QMutexLocker k(&isHelper->_imp->expressionMutex);
-                isHelper->_imp->expressions[i].missingNodes.clear();
+                {
+                    QMutexLocker k(&isHelper->_imp->expressionMutex);
+                    isHelper->_imp->expressions[i].missingNodes.clear();
+                }
+                // While this knob still has its holder: unregistering reaches the listener's
+                // holder with this knob as the master.
+                isHelper->removeExpressionDependencies(i, this);
             }
             knob->setExpressionInvalid( i, false, tr("%1: parameter does not exist").arg( QString::fromUtf8( getName().c_str() ) ).toStdString() );
             knob->unSlave(i, false);
@@ -959,16 +964,6 @@ KnobHelper::deleteKnob()
     }
 
     KnobHolder* holder = getHolder();
-    if ( holder && holder->getApp() ) {
-        std::set<std::string> names;
-        names.insert(getName());
-        EffectInstance* effect = dynamic_cast<EffectInstance*>(holder);
-        NodePtr node = effect ? effect->getNode() : NodePtr();
-        if (node) {
-            names.insert(node->getScriptName_mt_safe());
-        }
-        holder->getApp()->recheckInvalidExpressionsReferencing(names);
-    }
 
     for (int i = 0; i < getDimension(); ++i) {
         clearExpression(i, true);
@@ -1134,45 +1129,23 @@ KnobHelper::populate()
             _imp->curves[i] = std::make_shared<Curve>(this, i);
         }
         _imp->animationLevel[i] = eAnimationLevelNone;
-
-
-        if (!isColor) {
-            switch (i) {
-            case 0:
-                _imp->dimensionNames[i] = "x";
-                break;
-            case 1:
-                _imp->dimensionNames[i] = "y";
-                break;
-            case 2:
-                _imp->dimensionNames[i] = "z";
-                break;
-            case 3:
-                _imp->dimensionNames[i] = "w";
-                break;
-            default:
-                break;
-            }
-        } else {
-            switch (i) {
-            case 0:
-                _imp->dimensionNames[i] = "r";
-                break;
-            case 1:
-                _imp->dimensionNames[i] = "g";
-                break;
-            case 2:
-                _imp->dimensionNames[i] = "b";
-                break;
-            case 3:
-                _imp->dimensionNames[i] = "a";
-                break;
-            default:
-                break;
-            }
-        }
+        _imp->dimensionNames[i] = defaultKnobDimensionName(isColor != NULL, i);
     }
 } // KnobHelper::populate
+
+std::string
+defaultKnobDimensionName(bool isColor,
+                         int dimension)
+{
+    static const char* const kXYZW[] = { "x", "y", "z", "w" };
+    static const char* const kRGBA[] = { "r", "g", "b", "a" };
+
+    if ((dimension < 0) || (dimension > 3)) {
+        return std::string();
+    }
+
+    return isColor ? kRGBA[dimension] : kXYZW[dimension];
+}
 
 std::string
 KnobHelper::getDimensionName(int dimension) const
@@ -4264,6 +4237,62 @@ KnobHelper::replaceNodeNameInExpressionCode(int dimension,
     } catch (...) {
     }
     isEffect->endChanges(true);
+}
+
+std::string
+renameKnobInExpressionCode(const std::string& expression,
+                           const std::string& oldKnobName,
+                           const std::string& newKnobName,
+                           const std::set<std::string>& ownerNames)
+{
+    if (expression.empty() || oldKnobName.empty() || (oldKnobName == newKnobName) || ownerNames.empty()) {
+        return expression;
+    }
+    const std::vector<bool> code = pythonCodeMask(expression);
+    // The identifier ending just before position end, which must be code.
+    const auto identifierBefore = [&](std::size_t end) {
+        std::size_t begin = end;
+        while ((begin > 0) && code[begin - 1] && isIdentifierCharacter(expression[begin - 1])) {
+            --begin;
+        }
+
+        return expression.substr(begin, end - begin);
+    };
+    const auto isOwnerAttribute = [&](std::size_t dot) {
+        return (dot > 0) && code[dot] && (expression[dot] == '.') && (ownerNames.count(identifierBefore(dot)) > 0);
+    };
+    static const std::string kGetParam("getParam(");
+
+    std::string renamed;
+    std::size_t copiedUpTo = 0;
+    std::size_t pos = expression.find(oldKnobName);
+    while (pos != std::string::npos) {
+        const std::size_t after = pos + oldKnobName.size();
+        bool rename = false;
+        if (code[pos]) {
+            // owner.oldKnobName as an attribute.
+            rename = (pos > 0) && !((after < expression.size()) && isIdentifierCharacter(expression[after])) && isOwnerAttribute(pos - 1);
+        } else if ((pos > 0) && (after < expression.size())) {
+            // owner.getParam("oldKnobName"), the name being the whole literal.
+            const char quote = expression[pos - 1];
+            const std::size_t open = pos - 1;
+            rename = ((quote == '"') || (quote == '\'')) && (expression[after] == quote) && (open >= kGetParam.size() + 1) && code[open - 1] && (expression.compare(open - kGetParam.size(), kGetParam.size(), kGetParam) == 0) && isOwnerAttribute(open - kGetParam.size() - 1);
+        }
+        if (!rename) {
+            pos = expression.find(oldKnobName, pos + 1);
+            continue;
+        }
+        renamed.append(expression, copiedUpTo, pos - copiedUpTo);
+        renamed.append(newKnobName);
+        copiedUpTo = after;
+        pos = expression.find(oldKnobName, after);
+    }
+    if (copiedUpTo == 0) {
+        return expression;
+    }
+    renamed.append(expression, copiedUpTo, std::string::npos);
+
+    return renamed;
 }
 
 bool
@@ -9510,8 +9539,17 @@ KnobHolder::deleteKnob(KnobI* knob,
         knobs = _imp->knobs;
     }
     KnobIPtr sharedKnob;
+    std::set<std::string> recheckNames;
     for (KnobsVec::iterator it = knobs.begin(); it != knobs.end(); ++it) {
         if (it->get() == knob) {
+            if (getApp()) {
+                recheckNames.insert(knob->getName());
+                EffectInstance* effect = dynamic_cast<EffectInstance*>(this);
+                NodePtr node = effect ? effect->getNode() : NodePtr();
+                if (node) {
+                    recheckNames.insert(node->getScriptName_mt_safe());
+                }
+            }
             (*it)->deleteKnob();
             sharedKnob = *it;
             break;
@@ -9544,6 +9582,12 @@ KnobHolder::deleteKnob(KnobI* knob,
     if (helper) {
         KnobHolder* expected = this;
         helper->_imp->holder.compare_exchange_strong(expected, 0, std::memory_order_acq_rel);
+    }
+
+    // Only once the knob has left the list and its Python attribute is gone, or the recheck would
+    // bind the listeners straight back to it.
+    if (!recheckNames.empty() && getApp()) {
+        getApp()->recheckInvalidExpressionsReferencing(recheckNames);
     }
 }
 

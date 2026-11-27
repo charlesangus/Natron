@@ -192,7 +192,25 @@ public:
 
     virtual void setPyPlugUIEnabled(bool enabled);
 
+    /**
+     * @brief The in-panel user knob editor, or null when the holder has no user knobs to edit here
+     **/
+    KnobEditMode* getKnobEditMode() const;
+
+    /**
+     * @brief The column holding the pages, where the knob editor adds its palette and property section
+     **/
+    QVBoxLayout* getPagesColumnLayout() const;
+
+    QTabWidget* getTabWidget() const;
+
+    /**
+     * @brief Whether the user knobs of the holder may be edited now
+     **/
+    bool canEditUserKnobs() const;
+
 private:
+    virtual bool showsEmptyUserPages() const OVERRIDE FINAL;
 
     virtual void refreshUndoRedoButtonsEnabledNess(bool canUndo, bool canRedo) OVERRIDE FINAL;
     virtual QWidget* createKnobHorizontalFieldContainer(QWidget* parent) const OVERRIDE FINAL;
@@ -253,7 +271,11 @@ public Q_SLOTS:
 
     void onHideUnmodifiedButtonClicked(bool checked);
 
-    void onManageUserParametersActionTriggered();
+    void onEditParametersActionTriggered();
+
+    void onEditButtonClicked(bool checked);
+
+    void refreshEditButton();
 
     void onNodeScriptChanged(const QString& label);
 

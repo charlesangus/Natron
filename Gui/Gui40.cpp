@@ -546,6 +546,12 @@ Gui::getSceneGraphPanel() const
     return _imp->_sceneGraphPanel;
 }
 
+GeoSpreadsheetPanel*
+Gui::getGeoSpreadsheetPanel() const
+{
+    return _imp->_geoSpreadsheetPanel;
+}
+
 PropertiesBinWrapper*
 Gui::getPropertiesBin() const
 {

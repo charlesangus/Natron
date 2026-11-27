@@ -28,7 +28,7 @@ Today (origin/main): the model is lazy (`canFetchMore`/`fetchMore`, `Gui/SceneGr
 
 ## Phase 558.1: Expander
 
-- [ ] M558.P1.T1 — A chunked, non-loading branch expander
+- [x] M558.P1.T1 — A chunked, non-loading branch expander
   - files: `Gui/SceneGraphPanel.cpp` (near `onExpanded` ~:2680 and the `expanded` set ~:309); a new `Gui/SceneGraphExpander.{h,cpp}` if it reads cleaner (register in Gui's CMake)
   - approach: a breadth-first queue of model indexes processed in slices on a zero-interval `QTimer` (slice sized by a time budget, as the model's batch fetch is), `fetchMore` before descending, `setExpanded` with a guard flag that makes `onExpanded` skip its auto-load, unloaded/failed rows (`ePayloadStateRole`) not expanded and counted. Modes: all below, to kind (stop predicate from `sceneKindLevel` on the row's kind), collapse below (collapse descendants deepest-first from the `expanded` set, then the roots). Cancellation per Edge cases. Updates `expanded` and writes a summary to the status label.
   - verify: a gtest (or the P2.T2 GUI test) on a fixture with ~10k prims expands all below without loading any payload, and the event loop keeps processing events between slices (a timer posted during the expansion fires before it ends)
@@ -36,7 +36,7 @@ Today (origin/main): the model is lazy (`canFetchMore`/`fetchMore`, `Gui/SceneGr
 
 ## Phase 558.2: Commands
 
-- [ ] M558.P2.T1 — Expand/collapse triggers: menu, Shift-click, `*`, toolbar, shortcuts
+- [x] M558.P2.T1 — Expand/collapse triggers: menu, Shift-click, `*`, toolbar, shortcuts
   - files: `Gui/SceneGraphPanel.cpp` (`showRowMenu` ~:2305, the tree's event filter / mouse handling, M556's toolbar row), `Gui/ActionShortcuts.{h,cpp}` (Viewer3D group)
   - approach: row menu entries Expand All Below, Expand To Assembly / Component / Subcomponent / each custom kind, Collapse All Below (objectNames `sceneGraphExpandBelow`, `sceneGraphExpandTo_<kind>`, `sceneGraphCollapseBelow`); Shift+click on the branch indicator (hit-test with `visualRect` and the indentation) runs expand all below, or collapse all below when expanded; intercept `*` in the tree's key handling and run expand all below on the current row; add Expand and Collapse buttons to M556's toolbar row reading its scope combo (Selected acts like Below for these); register unbound editable shortcuts for each command.
   - verify: the P2.T2 GUI test drives each trigger
@@ -53,3 +53,4 @@ Today (origin/main): the model is lazy (`canFetchMore`/`fetchMore`, `Gui/SceneGr
 - 2026-11-23 — Bulk expansion stops at unloaded payloads and never loads (user).
 - 2026-11-23 — Expand To <kind> leaves the kind's rows visible and collapsed (user), matching Houdini's Expand To Components.
 - 2026-11-23 — Triggers: row menu, Shift-click arrow, `*`, toolbar buttons on M556's scope combo, editable shortcuts (user).
+- 2026-11-26 — Round 1's 10 findings were fixed in a73c685ea4 (replies posted). Gate9 on it failed two tests, both test bugs: CollapseAllBelow started before the root's rows were fetched, and scene_graph_expand's Esc walk rescanned every widget per row and hit the 900 s timeout. Fixed in a47c30469c.

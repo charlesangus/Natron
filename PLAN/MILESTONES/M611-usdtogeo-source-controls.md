@@ -94,6 +94,7 @@ Ships on its own under E9 - USD And 3D.
   - Translate ST primvar to UV — In, `translateStToUv`, default on.
   - Import Relationships — Out: no string-array relationship attributes in the geometry model; material bindings are covered by `importMaterialPath`.
   - usdxform / Apply Inverse USD Transform / usdmaterialpath (SOP Modify and SOP Import side) — In on the import side as `writeUsdXform` (default on; Float64 x16, typeInfo None, local-to-world, a point attribute on points prims), `applyInverseUsdTransform` (default off) and `importMaterialPath` (default on; subset bindings per face, written only when a material is bound). GeoToUSD skips `usdxform` and `usdmaterialpath` when planning primvars.
-  - Apply Inverse USD Transform is redundant with Flatten Transforms off: its result is the local points. Implemented literally (it overrides flatten, and `usdWorldSpace` is then not written). Open question for the user whether to drop it or keep it for M612.
+  - Apply Inverse USD Transform is redundant with Flatten Transforms off: its result is the local points. Implemented literally (it overrides flatten, and `usdWorldSpace` is then not written). Kept (user, 2026-11-26).
   - The remaining SOP Modify (export) controls — Out of this milestone: M609, M610 and M612.
   - Tests live in `Tests/Scene/` (globbed by CMake), not the nonexistent `Tests/Geometry/`, so `Tests/CMakeLists.txt` is unchanged.
+- 2026-11-26 — **Apply Inverse USD Transform kept (user):** a port carries every control, and M612's round trip uses it explicitly. Test fixes for the inactive-prim predicate and invisible point instances in 35fee8ed66.

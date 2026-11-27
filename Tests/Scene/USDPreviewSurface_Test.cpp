@@ -229,6 +229,73 @@ TEST_F(USDPreviewSurfaceTest, TheMaterialIsASourceAtItsOwnPath)
     EXPECT_FALSE(material->hasPersistentMessage());
 }
 
+TEST_F(USDPreviewSurfaceTest, EveryOtherSurfaceInputHasAKnobAtTheSpecDefault)
+{
+    NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");
+    ASSERT_TRUE(bool(material));
+
+    const struct {
+        const char* name;
+        const char* label;
+        float value;
+    } scalars[] = {
+        { kUSDPreviewSurfaceParamClearcoat, "Clearcoat", 0.f },
+        { kUSDPreviewSurfaceParamClearcoatRoughness, "Clearcoat Roughness", 0.01f },
+        { kUSDPreviewSurfaceParamOpacity, "Opacity", 1.f },
+        { kUSDPreviewSurfaceParamOpacityThreshold, "Opacity Threshold", 0.f },
+        { kUSDPreviewSurfaceParamIor, "IOR", 1.5f },
+        { kUSDPreviewSurfaceParamOcclusion, "Occlusion", 1.f },
+        { kUSDPreviewSurfaceParamDisplacement, "Displacement", 0.f },
+    };
+    PXR_NS::UsdStageRefPtr stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1"))).ComputeSurfaceSource();
+    ASSERT_TRUE(bool(surface));
+    for (const auto& scalar : scalars) {
+        KnobDouble* knob = dynamic_cast<KnobDouble*>(material->getKnobByName(scalar.name).get());
+        ASSERT_TRUE(knob != NULL) << scalar.name;
+        EXPECT_EQ(std::string(scalar.label), knob->getLabel());
+        float value = -1.f;
+        ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken(scalar.name)).Get(&value)) << scalar.name;
+        EXPECT_FLOAT_EQ(scalar.value, value) << scalar.name;
+    }
+    PXR_NS::GfVec3f color;
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("specularColor")).Get(&color));
+    EXPECT_EQ(PXR_NS::GfVec3f(0.f), color);
+    int workflow = -1;
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("useSpecularWorkflow")).Get(&workflow));
+    EXPECT_EQ(0, workflow);
+    PXR_NS::TfToken mode;
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("opacityMode")).Get(&mode));
+    EXPECT_EQ(PXR_NS::TfToken("transparent"), mode);
+
+    // Glass: half opacity, a lower ior, and the presence mode authored when picked.
+    KnobDouble* opacity = dynamic_cast<KnobDouble*>(material->getKnobByName(kUSDPreviewSurfaceParamOpacity).get());
+    KnobDouble* ior = dynamic_cast<KnobDouble*>(material->getKnobByName(kUSDPreviewSurfaceParamIor).get());
+    KnobChoice* opacityMode = dynamic_cast<KnobChoice*>(material->getKnobByName(kUSDPreviewSurfaceParamOpacityMode).get());
+    KnobBool* useSpecularWorkflow = dynamic_cast<KnobBool*>(material->getKnobByName(kUSDPreviewSurfaceParamUseSpecularWorkflow).get());
+    ASSERT_TRUE(opacity && ior && opacityMode && useSpecularWorkflow);
+    EXPECT_EQ(std::string("Opacity Mode"), opacityMode->getLabel());
+    EXPECT_EQ(std::string("Use Specular Workflow"), useSpecularWorkflow->getLabel());
+    opacity->setValue(0.5);
+    ior->setValue(1.33);
+    opacityMode->setValue(1);
+    useSpecularWorkflow->setValue(true);
+    stage = compose(material);
+    ASSERT_TRUE(bool(stage));
+    surface = PXR_NS::UsdShadeMaterial(stage->GetPrimAtPath(PXR_NS::SdfPath("/Material1"))).ComputeSurfaceSource();
+    ASSERT_TRUE(bool(surface));
+    float value = -1.f;
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("opacity")).Get(&value));
+    EXPECT_FLOAT_EQ(0.5f, value);
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("ior")).Get(&value));
+    EXPECT_FLOAT_EQ(1.33f, value);
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("opacityMode")).Get(&mode));
+    EXPECT_EQ(PXR_NS::TfToken("presence"), mode);
+    ASSERT_TRUE(surface.GetInput(PXR_NS::TfToken("useSpecularWorkflow")).Get(&workflow));
+    EXPECT_EQ(1, workflow);
+}
+
 TEST_F(USDPreviewSurfaceTest, AGeometryBindsTheMaterialGraftedUnderIt)
 {
     NodePtr material = node(PLUGINID_NATRON_USDPREVIEWSURFACE, "Material1");

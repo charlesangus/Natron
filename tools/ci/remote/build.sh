@@ -23,7 +23,7 @@
 #                        USDRenderCyclesProjectionTest, USDRenderMoonRayProjectionTest,
 #                        USDRenderStormTest)
 #                        remotely and downloads them, STAMP included, into
-#                        Tests/fixtures/native-golden/ of this checkout. The
+#                        Tests/fixtures/native-golden/ of this checkout, with NatronUtilityGoldenTest's. The
 #                        references bind bit for bit only under the preset that
 #                        recorded them (see STAMP). Also records the resampling
 #                        parity references of NativeTransformTest (CubicMinifyingAndRotated,

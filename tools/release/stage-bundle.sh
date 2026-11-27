@@ -720,6 +720,11 @@ closure_start=$SECONDS
 walk_closure
 echo "==> ldd closure walk took $((SECONDS - closure_start))s"
 
+if [[ ! -f "$STAGE_DIR/lib/libembree4.so.4" ]]; then
+    echo "error: libembree4.so.4 was not staged; the Natron Utility render delegate could not load" >&2
+    exit 1
+fi
+
 # A plugin's private Libraries and the shared lib/ can offer the same soname:
 # the app and Arena's ImageMagick both link lcms2. Shipping both copies means
 # two of one library in one process, free to drift apart as the host libraries

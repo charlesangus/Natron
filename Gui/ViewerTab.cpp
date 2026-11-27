@@ -935,7 +935,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->sceneRenderRowLayout->addWidget(_imp->refineSamplesLabel);
     _imp->sceneRenderRowLayout->addStretch();
     _imp->sceneRenderRow->hide();
-    // The first switch to a progressive renderer shows the row: its style sheet polish is done
+    // The first switch to the 3D view shows the row: its style sheet polish is done
     // now rather than on that switch.
     _imp->sceneRenderRow->ensurePolished();
     QObject::connect(_imp->maxSamplesBox, SIGNAL(valueChanged(double)), this, SLOT(onMaxSamplesBoxChanged(double)));
@@ -2066,13 +2066,18 @@ ViewerTab::refreshSceneRenderRow()
         QMutexLocker l(&_imp->visibleToolbarsMutex);
         topVisible = _imp->topToolbarVisible;
     }
-    const bool progressive = isShowingScene() && (_imp->sceneViewport->getRenderer().getActiveRendererId() != kRenderDelegateStormId);
+    const bool scene = isShowingScene();
+    const bool progressive = scene && (_imp->sceneViewport->getRenderer().getActiveRendererId() != kRenderDelegateStormId);
 
-    const bool show = topVisible && progressive;
-    const bool geometry = isShowingScene() && _imp->viewerNode && (_imp->viewerNode->getActiveInputDataKind() == eDataKindGeometry);
+    // The row stays for every renderer so switching renderers never resizes the 3D view, which would
+    // rescale its fitted framing.
+    const bool show = topVisible && scene;
+    const bool geometry = scene && _imp->viewerNode && (_imp->viewerNode->getActiveInputDataKind() == eDataKindGeometry);
     const bool showGeometry = topVisible && geometry;
     const bool toggled = (_imp->sceneRenderRow->isVisibleTo(this) != show) || (_imp->geoDisplayRow->isVisibleTo(this) != showGeometry);
     _imp->sceneRenderRow->setVisible(show);
+    _imp->maxSamplesBox->setEnabled(progressive);
+    _imp->refinementPausedButton->setEnabled(progressive);
     _imp->geoDisplayRow->setVisible(showGeometry);
     // Without geometry, as downstream of a conversion to a scene, only prims are picked.
     if (_imp->sceneViewport) {
@@ -2080,7 +2085,7 @@ ViewerTab::refreshSceneRenderRow()
     }
     // Geometry is shown as prims named after its pieces, not a scene to walk through by path.
     if (_imp->sceneBreadcrumbBar) {
-        _imp->sceneBreadcrumbBar->setVisible(isShowingScene() && !geometry);
+        _imp->sceneBreadcrumbBar->setVisible(scene && !geometry);
     }
     refreshRefineSamplesLabel();
     if (toggled) {
@@ -2094,6 +2099,11 @@ void
 ViewerTab::refreshRefineSamplesLabel()
 {
     if (!_imp->sceneViewport || !_imp->sceneRenderRow->isVisible()) {
+        return;
+    }
+    if (_imp->sceneViewport->getRenderer().getActiveRendererId() == kRenderDelegateStormId) {
+        _imp->refineSamplesLabel->clear();
+
         return;
     }
     const SceneViewportRenderer::RefineStatus refine = _imp->sceneViewport->getRenderer().getRefineStatus();

@@ -665,7 +665,7 @@ future core work has solid ground to build on.
 | M618 | ~~Native Geometry Viewer Flash Measurement~~ | cancelled | M617 |  | E9 | | | [M618-native-geometry-viewer-flash-measurement.md](PLAN/MILESTONES/M618-native-geometry-viewer-flash-measurement.md) |
 | M619 | ~~Native Geometry Viewer Flash Fixes~~ | cancelled | M618 |  | E9 | | | [M619-native-geometry-viewer-flash-fixes.md](PLAN/MILESTONES/M619-native-geometry-viewer-flash-fixes.md) |
 | M620 | ~~Native Geometry Points Scene Index Prototype~~ | cancelled | M619 |  | E9 | | | [M620-native-geometry-points-scene-index-prototype.md](PLAN/MILESTONES/M620-native-geometry-points-scene-index-prototype.md) |
-| M622 | Native Geometry Scene Index Core | doing | M600 | bosley-executor | E9 | F41 | | [M622-native-geometry-scene-index-core.md](PLAN/MILESTONES/M622-native-geometry-scene-index-core.md) |
+| M622 | Native Geometry Scene Index Core | done | M600 | bosley-executor | E9 | F41 | | [M622-native-geometry-scene-index-core.md](PLAN/MILESTONES/M622-native-geometry-scene-index-core.md) |
 | M623 | Native Geometry Scene Index Instancing | todo | M622 |  | E9 | F41 | | [M623-native-geometry-scene-index-instancing.md](PLAN/MILESTONES/M623-native-geometry-scene-index-instancing.md) |
 | M624 | Native Geometry Viewer Cutover | todo | M622, M623 |  | E9 | F41 | | [M624-native-geometry-viewer-cutover.md](PLAN/MILESTONES/M624-native-geometry-viewer-cutover.md) |
 | M625 | Native Geometry Viewer Stage Readers | todo | M622 |  | E9 | F41 | | [M625-native-geometry-viewer-stage-readers.md](PLAN/MILESTONES/M625-native-geometry-viewer-stage-readers.md) |

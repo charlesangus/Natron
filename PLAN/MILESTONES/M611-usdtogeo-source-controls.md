@@ -68,3 +68,32 @@ Ships on its own under E9 - USD And 3D.
 
 ## Decisions
 - 2026-11-25 — Full LOP Import + Unpack USD audit, following the user's full-audit choice for M609 - GeoToUSD Path And Placement (planner, from the grill).
+- 2026-11-26 — P1.T1 control audit (implementer). Reference: sop/lopimport.md, sop/unpackusd.md, lop/sopmodify.md. Every control is In, Folded or Out:
+  - LOP Path — Out: the node's scene input is the source; a path to another network node is a side channel.
+  - Primitives — In as the existing `primPattern` ("Prim Pattern").
+  - Exclude Inactive Primitives — In, `excludeInactivePrimitives`, default on. Off reads inactive prims through an additive `SceneOps::selectPrimsWithPredicate` (loaded, defined, non-abstract) and writes `usdactive` (1/0) on their elements, only when an inactive prim was read.
+  - Import Point Instances — In, `importPointInstances`, default off, packed only. One packed USD primitive per instance on its prototype; ids/velocities/angularVelocities/accelerations become point `id`/`v`/`w`/`accel`; per-instance primvars follow `importPrimvars`; `invisibleIds` give `usdvisibility=invisible`; masked instances are dropped unless inactive prims are read (then `usdactive=0`). Per-instance intrinsics (source instancer path, instance index) are Out: no packed-intrinsic store for them yet, and the instancer path is not needed to place an instance.
+  - Purpose — In, `purpose`, a space-separated token string (no multi-select knob exists). Default `default render proxy` (unconfirmed: the reference default is not stated in the docs). Unknown tokens are an error. A non-default purpose that is not read prunes its subtree; the purpose list also drives the bounds cache.
+  - Traversal (No Traversal / Components / Gprims / Groups) — In, `traversal`, default No Traversal. Outermost match below each matched prim; Gprims also stops at point instancers; Groups means kind group (assembly IsA group).
+  - Strip Layers Above Layer Breaks — Out: belongs to F27 - USD Layer Authoring (layer-break authoring does not exist yet).
+  - Time Sample — In, `timeSample` (Animated / Static), default Animated.
+  - Import Frame (animated) — Folded into Animated: it reads the frame being rendered; retiming is a TimeOffset node's job, not a per-node expression.
+  - Static Import Frame — In as `importFrame` ("Import Frame"), default 1, enabled only for Static. Static evaluates the input and the time code at that frame and reports the output as not frame varying (cache key ignores time).
+  - Path Attribute / Name Attribute — In, `pathAttribute` (default `path`) and `nameAttribute` (default blank, not written) as attribute-name strings; blank writes none. Points prims carry them on points.
+  - Display As (viewport LOD) — Out: viewer drawing of packed USD primitives is not a geometry property here; packed primitives draw from their bounds.
+  - Pivot Location (Centroid / Origin) — In, `pivotLocation`, default Centroid (reference default), packed only. Empty bounds fall back to the origin.
+  - Unpack USD Group — Folded into `primPattern` + `traversal` (the node reads prims, not packed primitives).
+  - Delete Original Prims, Output, Iterations, Transfer Attributes, Transfer Groups — Out: those describe unpacking existing packed primitives in place; here each read is fresh, and attributes of the source packed primitives do not exist.
+  - File Path Attribute / Instance Level Attribute — Out: no file-backed packed primitives or nested-instance levels in the fork's packed USD primitive.
+  - Detail Attributes promotion (Promote to Primitive if Different / Primitive / Point / Vertex) — Out for now: constant primvars stay detail attributes, as before. Possible gap; a follow-up could add it to GeoUsdReadOptions.
+  - Import Primvars — In, `importPrimvars`, default `*`, globs over USD names with `^` removal (geoNameMatchesPattern).
+  - Import Inherited Primvars — In, `importInheritedPrimvars`, default off (FindPrimvarsWithInheritance; constant ones only, own primvar wins).
+  - Import Computed Visibility — Out: visibility is left on the scene (GeoToUSD trims unchanged values), and `usdvisibility` is only written for instancer invisibleIds.
+  - Import Attributes — In, `importAttributes`, default blank; custom non-primvar, non-xformOp attributes only; class guessed from the array size (point, vertex, primitive, else detail).
+  - Non-transforming Primvars — In, `nonTransformingPrimvars`, default `rest`. Recorded with the existing attribute metadata: typeInfo None, which GeoTransform and family already go by, so no new metadata.
+  - Translate ST primvar to UV — In, `translateStToUv`, default on.
+  - Import Relationships — Out: no string-array relationship attributes in the geometry model; material bindings are covered by `importMaterialPath`.
+  - usdxform / Apply Inverse USD Transform / usdmaterialpath (SOP Modify and SOP Import side) — In on the import side as `writeUsdXform` (default on; Float64 x16, typeInfo None, local-to-world, a point attribute on points prims), `applyInverseUsdTransform` (default off) and `importMaterialPath` (default on; subset bindings per face, written only when a material is bound). GeoToUSD skips `usdxform` and `usdmaterialpath` when planning primvars.
+  - Apply Inverse USD Transform is redundant with Flatten Transforms off: its result is the local points. Implemented literally (it overrides flatten, and `usdWorldSpace` is then not written). Open question for the user whether to drop it or keep it for M612.
+  - The remaining SOP Modify (export) controls — Out of this milestone: M609, M610 and M612.
+  - Tests live in `Tests/Scene/` (globbed by CMake), not the nonexistent `Tests/Geometry/`, so `Tests/CMakeLists.txt` is unchanged.

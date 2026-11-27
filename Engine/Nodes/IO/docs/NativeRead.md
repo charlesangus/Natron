@@ -15,7 +15,8 @@ script-name prefix so the Write can share it.
 
 - **Formats.** `OiioReadSupport::readableExtensions()` is OIIO's
   `extension_list` attribute minus the formats named in `kExcludedOiioFormats`
-  (`raw`, `null`, `term`, `ffmpeg`, `psd`), lower case and sorted. There is no
+  (`raw`, `null`, `term`, `ffmpeg`, and `psd`, whose extensions the in-tree
+  `natron_psd` reader claims), lower case and sorted. There is no
   hand-written list, so a build with more OIIO plug-ins reads more. A path with
   any other extension gets an "Unsupported format" error from
   `NativeRead::rejectUnsupportedFormat()`. A camera raw extension
@@ -114,6 +115,94 @@ script-name prefix so the Write can share it.
   mixes the colours of its photosites. A camera the linked rawspeed rejects or
   does not support gives a persistent error naming the make, model and
   rawspeed version. Frame sequences and the time domain work as for images.
-- **Not read.** Layered documents such as PSD (`psd` is excluded; deferred to
-  "M79 - Layered Document Readers"). OIIO's `raw` plug-in is excluded too:
-  camera raw files go to rawspeed.
+- **Layered documents.** `Engine/Nodes/IO/LayeredDocs/` registers four
+  in-tree OIIO `ImageInput`s, ahead of `readableExtensions()`, so they win over
+  any OIIO plug-in on the same extension: OpenRaster (`ora`), Photoshop (`psd`,
+  `psb`, `pdd`; a PDD is read as a PSD), Krita (`kra`) and GIMP (`xcf`). Each
+  reader builds a `LayeredDocument` (canvas, composite, layers) that
+  `LayeredImageInput` exposes as subimages: subimage 0 is the composite and
+  subimage N the Nth layer, bottom to top. The full window of every subimage
+  is the canvas. RGB and Grayscale documents only, at each format's stored
+  depth: PSD 8, 16 and 32 bit; Krita 8 and 16 bit integer, half and float;
+  OpenRaster PNG 8 and 16 bit; XCF 8, 16 and 32 bit integer, half and float. A
+  Grayscale document fills R, G and B as any greyscale file does.
+  - **Layer model.** The composite is the colour plane. The stored composite is
+    used when the file has one (PSD merged image, Krita `mergedimage.png`,
+    OpenRaster `mergedimage.png`). When it is missing or empty (a PSD saved
+    without "maximize compatibility", an OpenRaster file without a merged
+    image) and always for XCF, which stores none, the composite is flattened
+    from the layers: visible layers, in order, with Normal "over" at the layer
+    and group opacity, whatever the blend mode (other blend modes are not
+    re-composited; they are listed in the metadata). Clipping is not applied
+    either: a clipped layer (PSD clipping, Krita inherit-alpha) is composited
+    as an unclipped one, and the flag is only in `layered/<id>/clipping`. Every layer that has
+    pixels becomes a Natron layer, so a layer's pixels appear in the layer
+    menu next to the colour plane. A layer is a picture in the composite's
+    encoding, so its colour is converted from the `colorspace` input space to
+    the working space like the composite's, alpha untouched; each layer
+    subimage carries the `natron:colourLayer` attribute that tells
+    `OiioReadSupport::fileLayers()` so (`FileLayer::colour`). The layers of
+    other formats, such as EXR depth or motion, are data and are read as
+    stored. A layer mask (PSD user mask, XCF layer
+    mask, Krita transparency mask) is folded into the layer's alpha. A layer
+    outside the canvas is cropped to it. A group is not a layer of its own: its
+    path becomes part of each member's name.
+  - **Layer names.** The name is the group path and the layer name joined by
+    `_`, with every character outside `A-Z a-z 0-9 _` (including spaces,
+    dots and non-ASCII) replaced by `_`, leading and trailing `_` trimmed
+    (`layer` if nothing is left). A name that is already taken, or that
+    `LayerRegistry` or `OiioReadSupport` reserve (`rgba`, `rgb`, `alpha`,
+    `depth` and the like, compared without case), gets `_2`, `_3` and so on.
+    This name is the `<id>` in the metadata keys.
+  - **Metadata.** Every key is under `layered/` and is published through
+    `OiioReadSupport::attributeMetadata()` like any file attribute:
+    `layered/layers` (the layer ids, bottom to top), `layered/skipped` (see
+    below), `layered/composite` (`stored` or `flattened`), and per layer
+    `layered/<id>/name` (the original name), `layered/<id>/blendMode` (the
+    format's own mode name: a PSD four-character key such as `norm`, an
+    OpenRaster `svg:` or `krita:` composite-op, a Krita `compositeop`, an XCF
+    mode name; `normal` or `svg:src-over` when the file gives none),
+    `layered/<id>/opacity` (0 to 1), `layered/<id>/visible` (0 or 1),
+    `layered/<id>/clipping` (0 or 1: PSD clipping, Krita inherit-alpha) and
+    `layered/<id>/group` (the enclosing group names joined by `/`, empty at
+    the top level).
+  - **Skipped, and listed.** Layers that are not raster pixels are not read as
+    layers. Each is an entry of `layered/skipped`, `<group path>/<name> (<why>)`:
+    an empty layer, a layer outside the canvas, PSD text, adjustment, fill and
+    vector layers, Krita filter, fill, clone, vector, file and reference
+    layers and its filter, transform, selection and colorize masks, a hidden
+    transparency mask or one on a group or without pixels, an animated Krita
+    layer, an OpenRaster element that is not a layer or stack, an XCF floating
+    selection, a disabled layer mask or a layer mask on a group. An empty
+    layer or group divider keeps its place in the group structure.
+  - **Refused.** The file fails to open, with an error naming the cause, for
+    any colour mode other than RGB and Grayscale (CMYK, Lab, indexed, duotone,
+    multichannel; in XCF a layer in Indexed mode too), an unsupported depth, a
+    PSD or PSB canvas side over 300 000 px, a truncated or malformed file, a
+    Krita tile format other than version 2 or tiles not compressed with LZF, an
+    XCF written by CinePaint, or by a development GIMP at more than 8 bits
+    (byte order unknown), or an unknown tile compression. A document with an
+    empty canvas is refused too, as are a PSD ZIP channel too short to hold the
+    rows it claims (deflate expands at most 1032 times), a Krita or OpenRaster
+    PNG member over 300 000 px on a side or too short for its dimensions,
+    Krita groups nested over 256 deep, and a number attribute (offset, size,
+    opacity) that is NaN or infinite.
+  - **Decode per window.** Headers parse without reading pixels, so a PSB of up
+    to 300 000 px opens at once. A region of a layer or of the composite
+    decodes only the rows or tiles it covers (PSD and PSB through the RLE row
+    offsets or raw row strides, Krita and XCF per tile); a ZIP-compressed PSD
+    channel decodes whole, once, and is cached. An OpenRaster PNG cannot be
+    windowed and decodes whole, once per plane. A Krita or XCF layer is read
+    as OIIO tiles of its stored tile size when its cropped data window starts
+    on its stored tile grid, and as scanlines otherwise; a flattened composite
+    is read as 64 by 64 tiles. Parsed documents are cached on the path and file
+    identity: at most 8, and beyond the most recently used one at most 512 MiB
+    of decoded planes and reader buffers, the least recently used dropped
+    first.
+  - **Colour space.** XCF records its precision's transfer, so every XCF
+    subimage carries `oiio:ColorSpace`: `lin_rec709_scene` for a linear
+    precision, `srgb_rec709_scene` for a non-linear or perceptual one (and for
+    files from before GIMP 2.10). The other formats set none, so their
+    `colorspace` default comes from the file rules or the project default.
+- **Not read.** Writing layered documents; re-compositing blend modes. OIIO's
+  `raw` plug-in is excluded: camera raw files go to rawspeed.

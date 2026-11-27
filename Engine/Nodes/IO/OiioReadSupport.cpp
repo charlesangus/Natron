@@ -38,22 +38,51 @@
 #include "Global/FloatingPointExceptions.h"
 
 #include "Engine/LayerRegistry.h"
+#include "Engine/Nodes/IO/LayeredDocs/LayeredImageInput.h"
 #include "Engine/Nodes/IO/RawExtensions.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace OiioReadSupport {
 namespace {
-    OIIO::ImageInput::unique_ptr openInput(const std::string& path)
+    std::string
+    extensionOf(const std::string& path)
+    {
+        const std::size_t dot = path.find_last_of('.');
+        const std::size_t slash = path.find_last_of("/\\");
+        if (dot == std::string::npos || (slash != std::string::npos && dot < slash)) {
+            return std::string();
+        }
+        std::string ext = path.substr(dot + 1);
+        std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+
+        return ext;
+    }
+
+    OIIO::ImageInput::unique_ptr openInput(const std::string& path,
+                                           std::string* error)
     {
         const FpTrapGuard guard;
+
+        // OIIO picks a reader by extension and keeps its own reader of an extension that an
+        // in-tree format also claims, so those are opened by format name.
+        const std::string layered = LayeredDocs::formatForExtension(extensionOf(path));
+        if (!layered.empty()) {
+            return LayeredDocs::open(path, layered, error);
+        }
 
         // PFM stores rows bottom-up and OIIO only flips them to top-down when the open carries a
         // config; other formats ignore the attribute.
         OIIO::ImageSpec config;
         config["pnm:pfmflip"] = 1;
 
-        return OIIO::ImageInput::open(path, &config);
+        OIIO::ImageInput::unique_ptr input = OIIO::ImageInput::open(path, &config);
+        if (!input) {
+            const std::string detail = OIIO::geterror();
+            *error = detail.empty() ? "Could not open " + path : detail;
+        }
+
+        return input;
     }
 
     struct CacheEntry {
@@ -85,14 +114,6 @@ namespace {
         }
 
         return false;
-    }
-
-    std::string
-    openError(const std::string& path)
-    {
-        const std::string detail = OIIO::geterror();
-
-        return detail.empty() ? "Could not open " + path : detail;
     }
 
     // A block of decoded rows of the file and where the part inside the window lands.
@@ -167,9 +188,10 @@ namespace {
             evictions = g_evictions;
         }
 
-        OIIO::ImageInput::unique_ptr input = openInput(path);
+        std::string openError;
+        OIIO::ImageInput::unique_ptr input = openInput(path, &openError);
         if (!input) {
-            fail(error, openError(path));
+            fail(error, openError);
 
             return std::shared_ptr<const Header>();
         }
@@ -510,6 +532,7 @@ fileLayers(const Header& header,
     std::set<std::string> seen;
     for (std::size_t s = 0; s < viewSubimages.size(); ++s) {
         const std::string part = isColourPartName(viewSubimages[s].part) ? std::string() : viewSubimages[s].part;
+        const bool colour = header.subimages[(std::size_t)viewSubimages[s].subimage].get_int_attribute(kLayeredColourLayerAttribute, 0) != 0;
 
         std::vector<std::string> flat;
         std::vector<int> fileIndex;
@@ -535,6 +558,7 @@ fileLayers(const Header& header,
             FileLayer layer;
             layer.desc = desc;
             layer.subimage = viewSubimages[s].subimage;
+            layer.colour = colour;
             const std::vector<std::string>& channels = desc.getChannels();
             for (std::size_t c = 0; c < channels.size(); ++c) {
                 for (std::size_t f = 0; f < flat.size(); ++f) {
@@ -615,9 +639,10 @@ decode(const std::string& path,
     if (FileStampRegistry::statNow(path) != identity) {
         return fail(error, changedError());
     }
-    OIIO::ImageInput::unique_ptr input = openInput(path);
+    std::string openError;
+    OIIO::ImageInput::unique_ptr input = openInput(path, &openError);
     if (!input) {
-        return fail(error, openError(path));
+        return fail(error, openError);
     }
 
     const int64_t dataX1 = spec.x;
@@ -679,7 +704,7 @@ namespace {
     };
 
     const char* const kMetadataNamespaces[] = {
-        "natron/", "exr/", "exif/", "tiff/", "dpx/", "cin/", "oiio/", "quicktime/"
+        "natron/", "exr/", "exif/", "tiff/", "dpx/", "cin/", "oiio/", "quicktime/", kLayeredMetadataPrefix
     };
 
     bool
@@ -880,6 +905,7 @@ namespace {
 
         ExtensionTable()
         {
+            formatOf = LayeredDocs::extensionClaims();
             const std::string list = OIIO::get_string_attribute("extension_list");
             std::set<std::string> excluded;
             for (const char* name : kExcludedOiioFormats) {
@@ -899,7 +925,7 @@ namespace {
                     continue;
                 }
                 const std::string format = lowerCase(entry.substr(0, colon));
-                if (excluded.count(format)) {
+                if (excluded.count(format) || LayeredDocs::isFormatName(format)) {
                     continue;
                 }
                 std::size_t extPos = colon + 1;
@@ -930,12 +956,23 @@ namespace {
         }
     };
 
+    // A table stays alive once made, since readableExtensions hands out references into it; a new
+    // one is only made when an in-tree format is registered or dropped.
     const ExtensionTable&
     extensionTable()
     {
-        static const ExtensionTable table;
+        static std::mutex mutex;
+        static std::vector<std::unique_ptr<const ExtensionTable>> tables;
+        static std::uint64_t generation = 0;
 
-        return table;
+        const std::uint64_t current = LayeredDocs::registryGeneration();
+        std::lock_guard<std::mutex> lock(mutex);
+        if (tables.empty() || generation != current) {
+            tables.push_back(std::make_unique<const ExtensionTable>());
+            generation = current;
+        }
+
+        return *tables.back();
     }
 } // namespace
 

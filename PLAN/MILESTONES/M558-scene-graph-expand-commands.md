@@ -41,7 +41,7 @@ Today (origin/main): the model is lazy (`canFetchMore`/`fetchMore`, `Gui/SceneGr
   - approach: row menu entries Expand All Below, Expand To Assembly / Component / Subcomponent / each custom kind, Collapse All Below (objectNames `sceneGraphExpandBelow`, `sceneGraphExpandTo_<kind>`, `sceneGraphCollapseBelow`); Shift+click on the branch indicator (hit-test with `visualRect` and the indentation) runs expand all below, or collapse all below when expanded; intercept `*` in the tree's key handling and run expand all below on the current row; add Expand and Collapse buttons to M556's toolbar row reading its scope combo (Selected acts like Below for these); register unbound editable shortcuts for each command.
   - verify: the P2.T2 GUI test drives each trigger
   - size: M
-- [ ] M558.P2.T2 — GUI test for expand commands
+- [x] M558.P2.T2 — GUI test for expand commands
   - files: new `Tests/gui/scene_graph_expand.py`, fixtures under `Tests/fixtures/` (reuse M556's kind fixture plus a wide one)
   - approach: Expand To Component on an assembly row shows every component row collapsed and expands no component; Expand All Below leaves unloaded payload rows collapsed and the stage's load set unchanged; `*` and Shift-click do the same and never load; Collapse All Below closes everything under the row; Esc during a long expansion stops it. Follow the PySide lifetime rules (never `parentItem()`; keep the window active).
   - verify: passes under Xvfb locally and in the remote `--gui` gate

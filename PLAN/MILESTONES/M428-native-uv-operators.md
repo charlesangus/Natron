@@ -98,7 +98,7 @@ Algorithms:
   - size: L
 
 ## Phase 428.3: Flatten and Layout nodes
-- [ ] M428.P3.T1 — SCP and ABF++ solvers with pins, alignment and straightening
+- [x] M428.P3.T1 — SCP and ABF++ solvers with pins, alignment and straightening
   - files: `Engine/Geo/GeoUVFlattenSolver.{h,cpp}` (new), `Tests/GeoUVFlattenSolver_Test.cpp`
   - approach:
     - One solve per island, in parallel.
@@ -116,7 +116,7 @@ Algorithms:
     - Aligned groups share an axis.
     - Straightened loops are collinear.
   - size: L
-- [ ] M428.P3.T2 — GeoUVFlatten node, every UV Flatten control
+- [x] M428.P3.T2 — GeoUVFlatten node, every UV Flatten control
   - files: `Engine/Nodes/Geometry/GeoUVFlatten.{h,cpp,reg.inc}`, `Engine/Nodes/Geometry/docs/GeoUVFlatten.md`, `Tests/GeoUVFlatten_Test.cpp`
   - approach:
     - Controls: Group, UV Attribute, Flattening Method, Existing UVs options, both seam fields with Enable Manual Layout semantics, constraint tables, output groups, Packing area Center/Size (via GeoUVPack).
@@ -127,7 +127,7 @@ Algorithms:
     - The output groups are present.
     - Other attributes and groups survive.
   - size: M
-- [ ] M428.P3.T3 — GeoUVLayout node, every UV Layout control
+- [x] M428.P3.T3 — GeoUVLayout node, every UV Layout control
   - files: `Engine/Nodes/Geometry/GeoUVLayout.{h,cpp,reg.inc}`, `Engine/Nodes/Geometry/docs/GeoUVLayout.md`, `Tests/GeoUVLayout_Test.cpp`
   - approach:
     - Two inputs.

@@ -57,3 +57,8 @@
 - from: bosley-executor (cat-pm)
 - refs: M418
 - body: `USDToGeo.cpp` (~:426) posts its info through an info-type persistent message, which is never stored on the node: on a render thread it only reaches the error log, on the main thread it opens a modal dialog that can block a re-render. M418 - VDB Conversion Ops fixed the same problem in VDBFromPolygons/VDBFromParticles by using the node's quiet info message. Small fix: do the same in USDToGeo (and audit other nodes for info-type persistent messages).
+
+### 2026-11-27 — change-request — Delegate render tests flake under ctest load
+- from: bosley-executor (cat-pm)
+- refs: M602
+- body: On M602 - 3D Viewer Toolbars gate10 (run 46043776540, fast preset), `USDRenderCyclesMaterialTest` segfaulted on the first attempt and `USDRenderMoonRaySubdivisionTest` timed out on the rerun; neither touches M602's code, and the F36/M609 runs earlier saw `ProgressiveRenderTest` segfault the same way. Proposed milestone "Delegate Test Flakes": reproduce under parallel ctest (shuffle seeds), find the shared cause (delegate teardown, GPU/engine reuse across tests, or timeouts sized for an idle runner) and make them deterministic.

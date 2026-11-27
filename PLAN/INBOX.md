@@ -44,10 +44,6 @@
 
 - **Pausing at a playback loop wrap leaves the view a frame behind** (PM, 2026-11-26, from M600 - Native Geometry UAT Round 2): when playback is paused just after the scheduler moves the timeline from the last frame back to the first, the first frame's evaluation is aborted, so the timeline shows frame 1 while the 3D view still shows the last frame; seeking to 1 is then a no-op (`TimeLineGui::seek` returns early when the time is unchanged). A pause should leave the view on the timeline's frame (re-render the current frame after an abort).
 
-### 2026-11-26T00:00:00Z — info
-- refs: M600
-- Research on the native geometry viewer flash, for M600 - Native Geometry UAT Round 2's grey-flash item (code reading on 11e3a1b115, nothing measured): `PLAN/DESIGN/2026-11-26-m617-research/flash-root-cause.md`. The user sees grey while dragging GeoScatter pscale on Storm. §6 finds no pipeline path for that: only `widths` changes and there is no resync. The likely cause is overlapping large grey points (pscale used as the full diameter, slider up to 1). The user filed the confirmed small bugs (stale older cooks replacing newer ones, a failed cook clearing the view, packed instancers refilling, extent ignoring widths, the pscale range) as M627 - Native Geometry Viewer Cook Fixes, after F15 lands, and the long-term fix as F41 - Native Geometry Scene Index. No change to M600's scope is requested.
-
 ### 2026-11-27 — change-request — USDToGeo detail-attribute promotion
 - from: bosley-executor (cat-pm)
 - refs: M611

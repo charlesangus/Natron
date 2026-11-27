@@ -149,14 +149,20 @@ public:
      * There the first row holds the step count in x as a uint32: 0 for an instance that holds still, followed
      * by the four rows of its row-vector object-to-world matrix, or two or more, followed by that many steps
      * as UtilityTypes.slang's stepAtTime() reads them. commands holds one VkDrawIndexedIndirectCommand per
-     * geometry, drawing its triangles for its instances. All three are read through device addresses or as an
-     * indirect buffer, and live as long as the scene the shared pointer holds.
+     * geometry, drawing its triangles for its instances. hitTables holds what rebuilds a hit from a drawn
+     * placement and triangle, in rows of four uint32: a header holding the device address of transforms, low word
+     * first; then one row per placement of the snapshot, holding the dense geometry index a hit reports, the first
+     * row of the placement's transform and the row of its geometry's record, all kNoHit for a placement that is
+     * not drawn; then two rows per drawn geometry, the device addresses of its points and of its indices, then its
+     * point count and point steps. All four are read through device addresses or as an indirect buffer, and live
+     * as long as the scene the shared pointer holds.
      **/
     struct RasterScene {
         std::vector<RasterGeometry> geometries;
         const gpu::GpuBuffer* instances = nullptr;
         const gpu::GpuBuffer* transforms = nullptr;
         const gpu::GpuBuffer* commands = nullptr;
+        const gpu::GpuBuffer* hitTables = nullptr;
     };
 
     /**

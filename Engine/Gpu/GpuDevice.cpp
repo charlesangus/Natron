@@ -644,6 +644,7 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
         dev->info_.maxStorageBufferRange = range;
         dev->info_.minStorageBufferOffsetAlignment = std::max<uint64_t>(p2.properties.limits.minStorageBufferOffsetAlignment, 1);
         dev->info_.maxDrawIndirectCount = std::max<uint32_t>(p2.properties.limits.maxDrawIndirectCount, 1);
+        dev->info_.maxImageDimension2D = std::max<uint32_t>(p2.properties.limits.maxImageDimension2D, 1);
         dev->info_.copyChunkSize = std::max<uint64_t>(options.copyChunkSize, 1);
         dev->info_.maxMemoryAllocationSize = p11.maxMemoryAllocationSize;
         if (options.maxMemoryAllocationSize != 0) {

@@ -72,6 +72,7 @@
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
 #include "Engine/Nodes/Scene/USDWrite.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
@@ -367,6 +368,56 @@ TEST_F(USDRenderSettingsTest, NatronUtilityDeviceIsAMenuOfAutoGpuAndCpu)
     EXPECT_EQ(std::string("cpu"), entries[2].id);
     EXPECT_EQ(std::string("CPU"), entries[2].label);
     EXPECT_EQ(std::string("auto"), device->getActiveEntry().id);
+}
+
+TEST_F(USDRenderSettingsTest, NatronUtilityRenderModeChangesTheHashAndShowsRasterSamplesOnlyInRaster)
+{
+    NodePtr node = settings(camera("/Cam"));
+    ASSERT_TRUE(bool(node));
+    NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(bool(render));
+    ASSERT_TRUE(render->connectInput(node, 0));
+    USDRenderSettings* effect = dynamic_cast<USDRenderSettings*>(node->getEffectInstance().get());
+    ASSERT_TRUE(effect != nullptr);
+    const RenderSettingsKnobs* knobs = effect->renderSettings();
+    ASSERT_TRUE(knobs != nullptr);
+    KnobChoice* renderer = knob<KnobChoice>(node, kUSDRenderSettingsParamDefaultRenderer);
+    ASSERT_TRUE(renderer != nullptr);
+    (void)renderer->setValueFromID(kRenderDelegateUtilityId, 0);
+    ASSERT_EQ(std::string(kRenderDelegateUtilityId), renderer->getActiveEntry().id);
+
+    KnobIPtr modeKnob = knobs->knob(kRenderDelegateUtilityId, kUtilitySettingRenderMode);
+    KnobIPtr samples = knobs->knob(kRenderDelegateUtilityId, kUtilitySettingRasterSamples);
+    ASSERT_TRUE(bool(modeKnob));
+    ASSERT_TRUE(bool(samples));
+    KnobChoice* mode = dynamic_cast<KnobChoice*>(modeKnob.get());
+    ASSERT_TRUE(mode != nullptr);
+    EXPECT_EQ(std::string("Render Mode"), modeKnob->getLabel());
+    EXPECT_EQ(std::string("Raster Samples"), samples->getLabel());
+    const std::vector<ChoiceOption> entries = mode->getEntries_mt_safe();
+    ASSERT_EQ(2u, entries.size());
+    EXPECT_EQ(std::string("Ray"), entries[0].label);
+    EXPECT_EQ(std::string("Raster"), entries[1].label);
+    EXPECT_EQ(std::string("ray"), mode->getActiveEntry().id);
+    KnobInt* samplesInt = dynamic_cast<KnobInt*>(samples.get());
+    ASSERT_TRUE(samplesInt != nullptr);
+    EXPECT_EQ(32, samplesInt->getValue());
+    EXPECT_TRUE(samples->getIsSecret());
+
+    U64 hash = render->getHashValue();
+    (void)mode->setValueFromID("raster", 0);
+    ASSERT_EQ(std::string("raster"), mode->getActiveEntry().id);
+    EXPECT_NE(hash, render->getHashValue()) << "switching to Raster left the hash";
+    EXPECT_FALSE(samples->getIsSecret());
+
+    hash = render->getHashValue();
+    samplesInt->setValue(33);
+    EXPECT_NE(hash, render->getHashValue()) << "Raster Samples left the hash";
+
+    hash = render->getHashValue();
+    (void)mode->setValueFromID("ray", 0);
+    EXPECT_NE(hash, render->getHashValue()) << "switching to Ray left the hash";
+    EXPECT_TRUE(samples->getIsSecret());
 }
 
 // Storm declares few settings, each placed by its name: volumes, lights and performance, all open.

@@ -73,6 +73,14 @@
 #define kUtilityDeviceGpu "gpu"
 #define kUtilityDeviceCpu "cpu"
 
+// How camera rays find what they see: a TfToken, one of the two values below. Raster draws Raster Samples, an
+// int, passes, each rasterizing the frame at one sub-pixel offset and one time; it needs the GPU and the camera
+// projection, and renders as Ray, with a warning, without them.
+#define kUtilitySettingRenderMode "renderMode"
+#define kUtilityRenderModeRay "ray"
+#define kUtilityRenderModeRaster "raster"
+#define kUtilitySettingRasterSamples "rasterSamples"
+
 // The most cutout or projection-discard surfaces a ray goes through before it is a miss: an int.
 #define kUtilitySettingMaxCutouts "maxCutouts"
 // The most bounces a path from the camera takes after its first hit, in all, by reflection and by

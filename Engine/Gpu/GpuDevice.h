@@ -158,6 +158,8 @@ struct GpuDeviceInfo {
     // Without it an indirect draw of several commands is recorded as one draw per command.
     bool multiDrawIndirect = false;
     uint32_t maxDrawIndirectCount = 1;
+    // The widest and tallest 2D image, attachments included; the Vulkan minimum until the device reports its own.
+    uint32_t maxImageDimension2D = 4096;
 
     // Effective values: the device limit, or the GpuDeviceOptions override when that is smaller.
     uint64_t maxStorageBufferRange = 0;

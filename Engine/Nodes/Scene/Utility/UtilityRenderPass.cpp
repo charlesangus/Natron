@@ -387,6 +387,46 @@ mappingSetting(const VtValue& value)
     throw std::runtime_error("The Utility renderer's projection must be " kUtilityProjectionCamera ", " kUtilityProjectionSpherical ", " kUtilityProjectionCylindrical " or " kUtilityProjectionUvUnwrap ", not \"" + projection + "\"");
 }
 
+bool
+rasterSetting(const VtValue& value)
+{
+    const std::string mode = value.IsEmpty() ? std::string(kUtilityRenderModeRay) : deviceSettingText(value);
+
+    if (mode == kUtilityRenderModeRay) {
+        return false;
+    }
+    if (mode == kUtilityRenderModeRaster) {
+        return true;
+    }
+    throw std::runtime_error("The Utility renderer's render mode must be " kUtilityRenderModeRay " or " kUtilityRenderModeRaster ", not \"" + mode + "\"");
+}
+
+const char*
+projectionName(WavefrontMapping mapping)
+{
+    switch (mapping) {
+    case WavefrontMapping::Spherical:
+        return "Spherical";
+    case WavefrontMapping::Cylindrical:
+        return "Cylindrical";
+    case WavefrontMapping::UvUnwrap:
+        return "UV Unwrap";
+    default:
+        return "Camera";
+    }
+}
+
+std::string
+joinedWarnings(const std::string& first,
+               const std::string& second)
+{
+    if (first.empty() || second.empty()) {
+        return first + second;
+    }
+
+    return first + "\n" + second;
+}
+
 WavefrontMotion
 motionSettings(const HdRenderDelegate& delegate)
 {
@@ -466,7 +506,8 @@ UtilityRenderPass::FrameKey::operator==(const FrameKey& other) const
 {
     return device == other.device && maxCutouts == other.maxCutouts && maxRayDepth == other.maxRayDepth && reflectionDepth == other.reflectionDepth
         && refractionDepth == other.refractionDepth && version == other.version && worldToView == other.worldToView && projection == other.projection
-        && sameWindow(window, other.window) && sameWindow(display, other.display) && mapping == other.mapping && unwrap == other.unwrap
+        && sameWindow(window, other.window) && sameWindow(display, other.display) && mapping == other.mapping && raster == other.raster
+        && rasterSamples == other.rasterSamples && unwrap == other.unwrap
         && sameSampling(sampling, other.sampling) && motion == other.motion && bindings == other.bindings;
 }
 
@@ -562,6 +603,8 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     frame.display = displayWindow(*renderPassState, frame.window);
     frame.mapping = mappingSetting(GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kUtilitySettingProjection)));
     frame.sampling = samplingSettings(*GetRenderIndex()->GetRenderDelegate());
+    frame.raster = rasterSetting(GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kUtilitySettingRenderMode)));
+    frame.rasterSamples = std::max(1, intSetting(GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kUtilitySettingRasterSamples)), kWavefrontDefaultRasterSamples));
 
     const UtilityUnwrapTarget unwrap = utilityUnwrapTarget(*GetRenderIndex()->GetRenderDelegate());
 
@@ -589,6 +632,8 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     key.window = frame.window;
     key.display = frame.display;
     key.mapping = frame.mapping;
+    key.raster = frame.raster;
+    key.rasterSamples = frame.rasterSamples;
     key.unwrap = unwrap;
     key.maxCutouts = frame.maxCutouts;
     key.maxRayDepth = frame.maxRayDepth;
@@ -628,7 +673,7 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     }
     clearBuffers(bindings);
 
-    const std::size_t samplesWanted = static_cast<std::size_t>(frame.sampling.samplesPerPixel());
+    const std::size_t samplesWanted = static_cast<std::size_t>(frame.raster ? frame.rasterSamples : frame.sampling.samplesPerPixel());
 
     _renderParam->setSampleProgress(0, samplesWanted);
 
@@ -656,21 +701,38 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     const int threads = std::max(1, appPTR->getNCPUsAvailableForEffect());
     const HdRenderPassAovBindingVector frameBindings = bindings;
 
-    (void)_renderParam->startFrame([this, snapshot, frame, motion, frameBindings, threads, device, samplesWanted]() {
+    (void)_renderParam->startFrame([this, snapshot, frame, motion, frameBindings, threads, device]() {
         const std::atomic<bool>& cancel = _renderParam->cancelFlag();
         bool finished = false;
         std::string failure;
 
         try {
             AovFilm film(frameBindings);
+            WavefrontFrame drawn = frame;
+            std::string rasterWarning;
+            // Raster mode runs only on the GPU executor; every other way the frame renders as Ray mode does.
+            const auto drawInRay = [&](const std::string& reason) {
+                if (drawn.raster) {
+                    drawn.raster = false;
+                    rasterWarning = "Render Mode is Raster, but the frame was rendered in Ray mode: " + reason + ".";
+                }
+            };
             const auto drawSamples = [&](WavefrontExecutor& executor) {
-                _renderParam->setSampleProgress(0, samplesWanted);
+                const std::size_t wanted = static_cast<std::size_t>(drawn.raster ? drawn.rasterSamples : drawn.sampling.samplesPerPixel());
 
-                return wavefrontDrawSamples(executor, *snapshot, frame, motion, film, cancel, threads, [this, samplesWanted](std::size_t done) { _renderParam->setSampleProgress(done, samplesWanted); });
+                _renderParam->setSampleProgress(0, wanted);
+
+                return wavefrontDrawSamples(executor, *snapshot, drawn, motion, film, cancel, threads, [this, wanted](std::size_t done) { _renderParam->setSampleProgress(done, wanted); });
             };
             std::string renderedOn = "CPU";
             std::string warning;
             bool onCpu = device == Device::Cpu;
+
+            if (drawn.mapping != WavefrontMapping::Camera) {
+                drawInRay(std::string("the ") + projectionName(drawn.mapping) + " projection renders only in Ray mode");
+            } else if (onCpu) {
+                drawInRay("Device is CPU");
+            }
 
 #ifdef NATRON_HAVE_GPU
             const std::uint64_t budget = (device == Device::Auto) ? utilityGpuBudget() : 0;
@@ -698,6 +760,13 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
                 }
 #ifdef NATRON_HAVE_GPU
                 else {
+                    if (drawn.raster) {
+                        const std::string missing = gpu->missingRasterSupport();
+
+                        if (!missing.empty()) {
+                            drawInRay(missing);
+                        }
+                    }
                     renderedOn = "GPU (" + gpu->deviceName() + ")";
                     finished = drawSamples(*gpu);
 
@@ -734,9 +803,10 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
 #endif
             }
             if (onCpu) {
+                drawInRay("the frame was rendered on the CPU");
                 finished = drawSamples(*_renderParam->executor());
             }
-            _renderParam->setFrameReport(renderedOn, warning);
+            _renderParam->setFrameReport(renderedOn, joinedWarnings(warning, rasterWarning));
         } catch (const std::exception& e) {
             failure = e.what();
             if (failure.empty()) {

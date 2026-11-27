@@ -50,6 +50,28 @@ make()
     device.choices = { { "auto", "Auto", VtValue(TfToken(kUtilityDeviceAuto)) }, { "gpu", "GPU", VtValue(TfToken(kUtilityDeviceGpu)) }, { "cpu", "CPU", VtValue(TfToken(kUtilityDeviceCpu)) } };
     c.settings.push_back(device);
 
+    RenderSettingsKnobs::CuratedSetting renderMode;
+
+    renderMode.key = kUtilitySettingRenderMode;
+    renderMode.name = "renderMode";
+    renderMode.tooltip = "How the camera finds what each pixel sees. Ray traces a ray through every sample. Raster draws the frame Raster Samples times on the GPU, each pass at one sub-pixel offset and one moment of the shutter, and traces only the shading, shadows, reflections and refractions from there; it is faster on simple scenes, most of all with motion blur. Raster needs the GPU and the Camera projection: on the CPU, on a GPU that cannot draw it, or with another projection the frame renders as Ray, with a warning.";
+    renderMode.defaultValue = VtValue(TfToken(kUtilityRenderModeRay));
+    renderMode.choices = { { "ray", "Ray", VtValue(TfToken(kUtilityRenderModeRay)) }, { "raster", "Raster", VtValue(TfToken(kUtilityRenderModeRaster)) } };
+    c.settings.push_back(renderMode);
+
+    RenderSettingsKnobs::CuratedSetting rasterSamples;
+
+    rasterSamples.key = kUtilitySettingRasterSamples;
+    rasterSamples.name = "rasterSamples";
+    rasterSamples.tooltip = "How many passes Raster mode draws a frame in. Each pass is one sample of every pixel at one sub-pixel offset and one moment of the shutter, so edges smooth and motion blurs over the passes. A low value steps visibly: a moving object shows as that many separate copies rather than a smooth smear, and edges show few levels.";
+    rasterSamples.defaultValue = VtValue(int(kWavefrontDefaultRasterSamples));
+    rasterSamples.hasRange = true;
+    rasterSamples.minimum = 1;
+    rasterSamples.displayMaximum = 256;
+    rasterSamples.enabledBy = { { kUtilitySettingRenderMode, false, VtValue(TfToken(kUtilityRenderModeRaster)) } };
+    rasterSamples.hiddenWhenDisabled = true;
+    c.settings.push_back(rasterSamples);
+
     RenderSettingsKnobs::CuratedSetting samples;
 
     samples.key = kUtilitySettingPixelSamples;

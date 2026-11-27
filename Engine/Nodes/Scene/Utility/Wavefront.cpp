@@ -1199,6 +1199,134 @@ cameraAt(const WavefrontMotion& motion,
 }
 } // anon namespace
 
+namespace {
+std::uint32_t
+pcgHash(std::uint32_t value)
+{
+    const std::uint32_t state = value * 747796405u + 2891336453u;
+    const std::uint32_t word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+
+    return (word >> 22u) ^ word;
+}
+
+float
+unitFloat(std::uint32_t bits)
+{
+    return static_cast<float>(bits >> 8u) * (1.f / 16777216.f);
+}
+
+// PixelSampling.slang's permute(): index's place in a shuffle of [0, length) that pattern chooses.
+std::uint32_t
+permute(std::uint32_t index,
+        std::uint32_t length,
+        std::uint32_t pattern)
+{
+    std::uint32_t mask = length - 1u;
+
+    mask |= mask >> 1u;
+    mask |= mask >> 2u;
+    mask |= mask >> 4u;
+    mask |= mask >> 8u;
+    mask |= mask >> 16u;
+
+    std::uint32_t i = index;
+
+    do {
+        i ^= pattern;
+        i *= 0xe170893du;
+        i ^= pattern >> 16u;
+        i ^= (i & mask) >> 4u;
+        i ^= pattern >> 8u;
+        i *= 0x0929eb3fu;
+        i ^= pattern >> 23u;
+        i ^= (i & mask) >> 1u;
+        i *= 1u | pattern >> 27u;
+        i *= 0x6935fa69u;
+        i ^= (i & mask) >> 11u;
+        i *= 0x74dcb303u;
+        i ^= (i & mask) >> 2u;
+        i *= 0x9e501cc3u;
+        i ^= (i & mask) >> 2u;
+        i *= 0xc860a3dfu;
+        i &= mask;
+        i ^= i >> 5u;
+    } while (i >= length);
+
+    return (i + pattern) % length;
+}
+
+// PixelSampling.slang's filterWeight().
+float
+filterWeight(float t,
+             KernelPixelFilter filter)
+{
+    const float x = 2.f * t - 1.f;
+    const float pi = static_cast<float>(M_PI);
+
+    switch (filter) {
+    case eKernelPixelFilterTriangle:
+        return std::max(0.f, 1.f - std::fabs(x));
+    case eKernelPixelFilterGaussian:
+        return std::exp(-4.5f * x * x);
+    case eKernelPixelFilterBlackmanHarris:
+        return std::max(0.f, 0.35875f - 0.48829f * std::cos(2.f * pi * t) + 0.14128f * std::cos(4.f * pi * t) - 0.01168f * std::cos(6.f * pi * t));
+    default:
+        return 1.f;
+    }
+}
+
+float
+radicalInverse(std::uint32_t index,
+               std::uint32_t base)
+{
+    const double inverseBase = 1. / base;
+    double factor = inverseBase;
+    double value = 0.;
+
+    while (index > 0) {
+        value += (index % base) * factor;
+        index /= base;
+        factor *= inverseBase;
+    }
+
+    return static_cast<float>(value);
+}
+
+float
+rotated(float value,
+        float by)
+{
+    const float sum = value + by;
+
+    return sum >= 1.f ? sum - 1.f : sum;
+}
+} // anon namespace
+
+WavefrontRasterPass
+wavefrontRasterPass(const WavefrontSampling& sampling,
+                    int index,
+                    int passes)
+{
+    WavefrontRasterPass pass;
+    const std::uint32_t n = static_cast<std::uint32_t>(std::max(1, passes));
+    const std::uint32_t i = static_cast<std::uint32_t>(std::clamp(index, 0, static_cast<int>(n) - 1));
+    const std::uint32_t seedHash = pcgHash(sampling.seed);
+
+    pass.time = (static_cast<float>(permute(i, n, pcgHash(seedHash ^ 0x2c1b3c6du))) + 0.5f) / static_cast<float>(n);
+    if (n == 1) {
+        return pass;
+    }
+
+    const float tx = rotated(radicalInverse(i, 2), unitFloat(pcgHash(seedHash ^ 0x68e31da4u)));
+    const float ty = rotated(radicalInverse(i, 3), unitFloat(pcgHash(seedHash ^ 0xb5297a4du)));
+
+    pass.jitter[0] = (tx - 0.5f) * sampling.filterWidth;
+    pass.jitter[1] = (ty - 0.5f) * sampling.filterWidth;
+    pass.weight = filterWeight(tx, sampling.filter) * filterWeight(ty, sampling.filter);
+
+    return pass;
+}
+
 WavefrontFrame
 wavefrontFrameAt(const WavefrontFrame& frame,
                  const WavefrontMotion& motion,
@@ -1553,6 +1681,30 @@ wavefrontDrawSamples(WavefrontExecutor& executor,
             return false;
         }
         drawn.unwrap = unwrap;
+    } else if (frame.raster) {
+        const int passes = std::max(1, frame.rasterSamples);
+
+        for (int i = 0; i < passes; ++i) {
+            WavefrontRasterPass pass = wavefrontRasterPass(frame.sampling, i, passes);
+
+            if (!motion.isOpen()) {
+                pass.time = 0.5f;
+            }
+
+            WavefrontFrame atPass = motion.isOpen() ? wavefrontFrameAt(frame, motion, motion.open + pass.time * (motion.close - motion.open)) : frame;
+
+            atPass.rasterPass = pass;
+            atPass.cameraSteps.clear();
+            if (!executor.render(scene, atPass, film, stop, threads)) {
+                return false;
+            }
+            film.passDrawn();
+            if (progress) {
+                progress(static_cast<std::size_t>(i) + 1);
+            }
+        }
+
+        return true;
     } else {
         drawn.cameraSteps = wavefrontCameraSteps(frame, motion);
     }

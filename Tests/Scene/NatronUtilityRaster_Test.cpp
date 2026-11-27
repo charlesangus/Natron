@@ -25,32 +25,63 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
+#include <map>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <pxr/base/gf/frustum.h>
 #include <pxr/base/gf/matrix4d.h>
+#include <pxr/base/gf/rect2i.h>
 #include <pxr/base/gf/rotation.h>
+#include <pxr/base/gf/vec2i.h>
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/base/gf/vec3i.h>
+#include <pxr/base/gf/vec4f.h>
+#include <pxr/base/tf/token.h>
+#include <pxr/base/vt/dictionary.h>
+#include <pxr/base/vt/value.h>
+#include <pxr/imaging/cameraUtil/framing.h>
+#include <pxr/imaging/hd/aov.h>
+#include <pxr/imaging/hd/renderBuffer.h>
+#include <pxr/imaging/hd/tokens.h>
+#include <pxr/imaging/hdx/tokens.h>
+#include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/sdf/path.h>
+#include <pxr/usd/usd/stage.h>
+#include <pxr/usdImaging/usdImagingGL/engine.h>
+#include <pxr/usdImaging/usdImagingGL/renderParams.h>
 
+#include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/Utility/Tracer.h"
+#include "Engine/Nodes/Scene/Utility/UtilityKernels.h"
+#include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
+#include "Engine/Nodes/Scene/Utility/Wavefront.h"
 
 #ifdef NATRON_HAVE_GPU
 #include "Engine/Gpu/GpuBuffer.h"
 #include "Engine/Gpu/GpuBufferPool.h"
+#include "Engine/Gpu/GpuDevice.h"
 #include "Engine/Gpu/GpuKernelRegistry.h"
 #include "Engine/Gpu/GpuRecord.h"
 #include "Engine/Gpu/GpuTexture.h"
 #include "Engine/Nodes/Scene/Utility/GpuTracer.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
 #include "Gpu/GpuTestDevice.h"
 #endif
 
@@ -188,6 +219,199 @@ orthographic(float time)
     return pass;
 }
 
+// The frames the executor draws: kFrameSize by kFrameSize pixels.
+const int kFrameSize = 48;
+
+// A camera at z = 12 looking down -z at the origin, its view 30 degrees wide.
+WavefrontFrame
+perspectiveFrame()
+{
+    GfFrustum camera;
+
+    camera.SetPerspective(30., 1., 1., 100.);
+    camera.SetPosition(GfVec3d(0., 0., 12.));
+
+    WavefrontFrame frame;
+
+    frame.worldToView = camera.ComputeViewMatrix();
+    frame.projection = camera.ComputeProjectionMatrix();
+    frame.window.width = kFrameSize;
+    frame.window.height = kFrameSize;
+    frame.sampling.samplesPerSide = 1;
+    frame.sampling.filter = eKernelPixelFilterBox;
+    frame.sampling.filterWidth = 1.f;
+    frame.sampling.seed = 7;
+    frame.maxRayDepth = 0;
+
+    return frame;
+}
+
+// An orthographic camera over kFrameSize world units, one per pixel: pixel p spans x from p - kFrameSize / 2.
+WavefrontFrame
+pixelFrame()
+{
+    const double half = kFrameSize / 2.;
+    GfFrustum camera;
+
+    camera.SetOrthographic(-half, half, -half, half, 1., 100.);
+    camera.SetPosition(GfVec3d(0., 0., 30.));
+
+    WavefrontFrame frame = perspectiveFrame();
+
+    frame.worldToView = camera.ComputeViewMatrix();
+    frame.projection = camera.ComputeProjectionMatrix();
+
+    return frame;
+}
+
+// With no lights in the scene, surfaces emit their displayColor, so that the colour is the interpolated primvar.
+void
+emitDisplayColor(UtilityScene& scene,
+                 UtilityScene::GeometryId id)
+{
+    UtilityMaterialDesc emissive;
+
+    emissive.diffuseColor = GfVec3f(0.f);
+    emissive.emissiveFromDisplayColor = true;
+    scene.setMaterial(SdfPath("/Emissive"), std::make_shared<const UtilityMaterialDesc>(emissive));
+    scene.setMaterialId(id, SdfPath("/Emissive"));
+}
+
+// A card two units wide at z = 1, turned about y, its colour a gradient over its corners as a texture's lookup
+// through the barycentrics would give, and a cube behind it.
+void
+cardAndCube(UtilityScene& scene)
+{
+    const UtilityScene::GeometryId card = scene.addGeometry(SdfPath("/card"), 1);
+    const UtilityScene::GeometryId cube = scene.addGeometry(SdfPath("/cube"), 2);
+
+    scene.setTopology(card, VtVec3fArray { GfVec3f(-1.f, -1.f, 0.f), GfVec3f(1.f, -1.f, 0.f), GfVec3f(1.f, 1.f, 0.f), GfVec3f(-1.f, 1.f, 0.f) }, quadTriangles());
+    scene.setColors(card, UtilityScene::eColorBindingVertex, VtVec4fArray { GfVec4f(1.f, 0.f, 0.f, 1.f), GfVec4f(0.f, 1.f, 0.f, 1.f), GfVec4f(0.f, 0.f, 1.f, 1.f), GfVec4f(1.f, 1.f, 1.f, 1.f) });
+    scene.setInstances(card, { placed(GfVec3d(0., 1., 0.), 30., GfVec3d(-0.6, 0.2, 1.)) });
+    emitDisplayColor(scene, card);
+    addCube(scene, cube);
+    scene.setColors(cube, UtilityScene::eColorBindingTriangle, VtVec4fArray(12, GfVec4f(0.25f, 0.5f, 0.75f, 1.f)));
+    scene.setInstances(cube, { placed(GfVec3d(1., 1., 0.), 35., GfVec3d(0.8, -0.4, -1.5)) });
+    emitDisplayColor(scene, cube);
+}
+
+// A white stripe one pixel wide over [from, from + 1) along x and the whole frame along y, moving by
+// distance along x from the shutter's opening to its closing.
+void
+movingStripe(UtilityScene& scene,
+             double from,
+             double distance)
+{
+    const UtilityScene::GeometryId id = scene.addGeometry(SdfPath("/stripe"), 1);
+    const float a = static_cast<float>(from);
+    const float b = static_cast<float>(from + 1.);
+    const float tall = static_cast<float>(kFrameSize);
+
+    scene.setTopology(id, VtVec3fArray { GfVec3f(a, -tall, 0.f), GfVec3f(b, -tall, 0.f), GfVec3f(b, tall, 0.f), GfVec3f(a, tall, 0.f) }, quadTriangles());
+    scene.setColors(id, UtilityScene::eColorBindingConstant, VtVec4fArray { GfVec4f(1.f, 1.f, 1.f, 1.f) });
+    scene.setInstances(id, { GfMatrix4d(1.) });
+    emitDisplayColor(scene, id);
+    if (distance != 0.) {
+        moveInstance(scene, id, translation(0., 0., 0.), translation(distance, 0., 0.));
+    }
+}
+
+WavefrontMotion
+openShutter()
+{
+    WavefrontMotion motion;
+
+    motion.open = 0.;
+    motion.close = 1.;
+
+    return motion;
+}
+
+// Every AOV of each pixel: the colour filtered over the samples, the rest the heaviest sample's.
+class AovFilm : public WavefrontFilm {
+public:
+    AovFilm()
+        : color(kFrameSize * kFrameSize, GfVec4f(0.f))
+        , weight(kFrameSize * kFrameSize, 0.f)
+        , heaviest(kFrameSize * kFrameSize, -1.f)
+        , depth(kFrameSize * kFrameSize, 0.f)
+        , primId(kFrameSize * kFrameSize, -1)
+        , instanceId(kFrameSize * kFrameSize, -1)
+        , geometry(kFrameSize * kFrameSize, Tracer::kNoHit)
+    {
+    }
+
+    virtual void writeTile(const WavefrontTile& tile) override
+    {
+        std::size_t index = 0;
+
+        for (int row = 0; row < tile.rect.height; ++row) {
+            for (int column = 0; column < tile.rect.width; ++column, ++index) {
+                const std::size_t pixel = static_cast<std::size_t>(tile.rect.y + row) * kFrameSize + tile.rect.x + column;
+                const bool hit = tile.hitGeometry[index] != Tracer::kNoHit;
+                const float w = tile.weight ? tile.weight[index] : 1.f;
+
+                if (hit && tile.color) {
+                    color[pixel] += w * GfVec4f(tile.color[4 * index], tile.color[4 * index + 1], tile.color[4 * index + 2], tile.color[4 * index + 3]);
+                }
+                weight[pixel] += w;
+                if (w > heaviest[pixel]) {
+                    heaviest[pixel] = w;
+                    geometry[pixel] = tile.hitGeometry[index];
+                    depth[pixel] = hit && tile.depth ? tile.depth[index] : 0.f;
+                    primId[pixel] = hit && tile.primId ? tile.primId[index] : -1;
+                    instanceId[pixel] = hit && tile.instanceId ? tile.instanceId[index] : -1;
+                }
+            }
+        }
+    }
+
+    virtual void passDrawn() override
+    {
+        ++passes;
+    }
+
+    GfVec4f filtered(std::size_t pixel) const
+    {
+        return weight[pixel] > 0.f ? color[pixel] / weight[pixel] : GfVec4f(0.f);
+    }
+
+    std::vector<GfVec4f> color;
+    std::vector<float> weight;
+    std::vector<float> heaviest;
+    std::vector<float> depth;
+    std::vector<std::int32_t> primId;
+    std::vector<std::int32_t> instanceId;
+    std::vector<std::uint32_t> geometry;
+    int passes = 0;
+};
+
+// Whether a pixel and its eight neighbours all see the same surface, so that a sub-texel difference in where
+// raster and rays put an edge cannot change it.
+bool
+awayFromEdges(const AovFilm& film,
+              int x,
+              int y)
+{
+    if (x == 0 || y == 0 || x == kFrameSize - 1 || y == kFrameSize - 1) {
+        return false;
+    }
+
+    const std::size_t pixel = static_cast<std::size_t>(y) * kFrameSize + x;
+
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            const std::size_t other = static_cast<std::size_t>(y + dy) * kFrameSize + x + dx;
+
+            if (film.geometry[other] != film.geometry[pixel] || film.primId[other] != film.primId[pixel] || film.instanceId[other] != film.instanceId[pixel]) {
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
+
 class NatronUtilityRaster : public gputest::SkippableTest {
 protected:
     void SetUp() override
@@ -211,6 +435,9 @@ protected:
 
     void TearDown() override
     {
+        if (_device) {
+            EXPECT_TRUE(WavefrontGpu::waitForWarmUps(*_device, std::chrono::milliseconds(60000)));
+        }
         if (_tracer) {
             const GpuTracer::Outcome outcome = _tracer->status();
 
@@ -380,6 +607,36 @@ protected:
         EXPECT_GE(covered, minCompared);
     }
 
+    // Draws one sample of every pixel.
+    bool renderFrame(WavefrontGpu& executor,
+                     const UtilityScene& scene,
+                     const WavefrontFrame& frame,
+                     AovFilm& film)
+    {
+        const std::atomic<bool> stop(false);
+        const bool ok = executor.render(scene.snapshot(), frame, film, stop, 2);
+
+        EXPECT_TRUE(ok) << executor.status().message;
+
+        return ok;
+    }
+
+    // Draws every pass of a frame in Raster mode, as the render pass does.
+    bool drawPasses(WavefrontGpu& executor,
+                    const UtilityScene& scene,
+                    const WavefrontFrame& frame,
+                    const WavefrontMotion& motion,
+                    AovFilm& film)
+    {
+        const std::atomic<bool> stop(false);
+        const bool ok = wavefrontDrawSamples(executor, scene.snapshot(), frame, motion, film, stop, 2, std::function<void(std::size_t)>());
+
+        EXPECT_TRUE(ok) << executor.status().message;
+        EXPECT_EQ(frame.rasterSamples, film.passes);
+
+        return ok;
+    }
+
     gputest::ValidationCheck _check;
     std::unique_ptr<gpu::GpuDevice> _device;
     std::unique_ptr<gpu::GpuKernelRegistry> _registry;
@@ -472,4 +729,314 @@ GPU_TEST_F(NatronUtilityRaster, ASpinningQuadMatchesTheRaysAtItsTime)
     }
 }
 
+// One pass at the pixel centres and mid-shutter rebuilds the hits a ray query finds: away from the edges the
+// colour, through the barycentrics, and the depth agree, and every id is the same.
+GPU_TEST_F(NatronUtilityRaster, OnePassMatchesRayModeOnACardAndACube)
+{
+    UtilityScene scene;
+
+    cardAndCube(scene);
+
+    WavefrontGpu executor(*_registry, *_pool, std::make_shared<int>(0));
+    WavefrontFrame frame = perspectiveFrame();
+    AovFilm rays;
+    AovFilm raster;
+
+    ASSERT_TRUE(renderFrame(executor, scene, frame, rays));
+    frame.raster = true;
+    frame.rasterPass = WavefrontRasterPass();
+    ASSERT_TRUE(renderFrame(executor, scene, frame, raster));
+
+    int compared = 0;
+    int idMismatches = 0;
+    std::map<std::uint32_t, int> seen;
+
+    for (int y = 0; y < kFrameSize; ++y) {
+        for (int x = 0; x < kFrameSize; ++x) {
+            const std::size_t pixel = static_cast<std::size_t>(y) * kFrameSize + x;
+
+            if (!awayFromEdges(rays, x, y)) {
+                continue;
+            }
+            ++compared;
+            if (raster.geometry[pixel] != rays.geometry[pixel] || raster.primId[pixel] != rays.primId[pixel] || raster.instanceId[pixel] != rays.instanceId[pixel]) {
+                if (++idMismatches <= 8) {
+                    ADD_FAILURE() << "pixel (" << x << ", " << y << "): raster ids " << raster.geometry[pixel] << "/" << raster.primId[pixel] << "/" << raster.instanceId[pixel]
+                                  << ", ray ids " << rays.geometry[pixel] << "/" << rays.primId[pixel] << "/" << rays.instanceId[pixel];
+                }
+                continue;
+            }
+            if (rays.geometry[pixel] == Tracer::kNoHit) {
+                continue;
+            }
+            ++seen[rays.geometry[pixel]];
+
+            const GfVec4f a = raster.filtered(pixel);
+            const GfVec4f b = rays.filtered(pixel);
+
+            for (int c = 0; c < 4; ++c) {
+                EXPECT_NEAR(b[c], a[c], 1e-4f) << "colour " << c << " of pixel (" << x << ", " << y << ")";
+            }
+            EXPECT_NEAR(rays.depth[pixel], raster.depth[pixel], 1e-4f * std::max(1.f, std::fabs(rays.depth[pixel]))) << "depth of pixel (" << x << ", " << y << ")";
+        }
+    }
+    EXPECT_EQ(0, idMismatches) << "of " << compared << " pixels away from edges";
+    ASSERT_EQ(2u, seen.size());
+    for (const auto& [geometry, pixels] : seen) {
+        EXPECT_GE(pixels, 20) << "pixels of geometry " << geometry;
+    }
+}
+
+// A stripe that moves one pixel over the shutter smears into a box: with the pixel filter narrowed to its
+// centre, each pixel is white for the part of the shutter the stripe covers its centre, which N passes at
+// the centres of N equal spans of the shutter find to within one span.
+GPU_TEST_F(NatronUtilityRaster, AStripeMovingOnePixelSmearsIntoABox)
+{
+    const int passes = 16;
+    const double from = -0.25;
+    UtilityScene scene;
+
+    movingStripe(scene, from, 1.);
+
+    WavefrontGpu executor(*_registry, *_pool, std::make_shared<int>(0));
+    WavefrontFrame frame = pixelFrame();
+    AovFilm film;
+
+    frame.raster = true;
+    frame.rasterSamples = passes;
+    frame.sampling.filterWidth = 1e-3f;
+    ASSERT_TRUE(drawPasses(executor, scene, frame, openShutter(), film));
+
+    const int row = kFrameSize / 2;
+    double total = 0.;
+
+    for (int x = 0; x < kFrameSize; ++x) {
+        const double centre = x - kFrameSize / 2. + 0.5;
+        const double expected = std::max(0., std::min(1., centre - from) - std::max(0., centre - from - 1.));
+        const float got = film.filtered(static_cast<std::size_t>(row) * kFrameSize + x)[0];
+
+        EXPECT_NEAR(expected, got, 1. / passes + 1e-3) << "pixel " << x;
+        total += got;
+    }
+    EXPECT_NEAR(1., total, 1. / passes);
+}
+
+// A closed shutter draws every pass at the frame's own time, which is the scene without its motion.
+GPU_TEST_F(NatronUtilityRaster, AClosedShutterEqualsTheStaticRender)
+{
+    UtilityScene moving;
+    UtilityScene still;
+
+    movingStripe(moving, -0.25, 3.);
+    movingStripe(still, -0.25, 0.);
+
+    WavefrontGpu executor(*_registry, *_pool, std::make_shared<int>(0));
+    WavefrontFrame frame = pixelFrame();
+    AovFilm closed;
+    AovFilm reference;
+
+    frame.raster = true;
+    frame.rasterSamples = 4;
+    ASSERT_TRUE(drawPasses(executor, moving, frame, WavefrontMotion(), closed));
+    ASSERT_TRUE(drawPasses(executor, still, frame, WavefrontMotion(), reference));
+    for (std::size_t pixel = 0; pixel < closed.color.size(); ++pixel) {
+        for (int c = 0; c < 4; ++c) {
+            ASSERT_NEAR(reference.filtered(pixel)[c], closed.filtered(pixel)[c], 1e-6f) << "pixel " << pixel;
+        }
+    }
+}
+
+// Tiles of a few pixels draw the same frame as one tile does.
+GPU_TEST_F(NatronUtilityRaster, SmallTilesEqualOneTile)
+{
+    UtilityScene scene;
+
+    cardAndCube(scene);
+
+    WavefrontGpu executor(*_registry, *_pool, std::make_shared<int>(0));
+    WavefrontFrame frame = perspectiveFrame();
+    AovFilm whole;
+    AovFilm tiled;
+
+    frame.raster = true;
+    frame.rasterSamples = 4;
+    ASSERT_TRUE(drawPasses(executor, scene, frame, openShutter(), whole));
+    executor.limitRasterTile(7);
+    ASSERT_TRUE(drawPasses(executor, scene, frame, openShutter(), tiled));
+    for (std::size_t pixel = 0; pixel < whole.color.size(); ++pixel) {
+        ASSERT_EQ(whole.geometry[pixel], tiled.geometry[pixel]) << "pixel " << pixel;
+        ASSERT_EQ(whole.primId[pixel], tiled.primId[pixel]) << "pixel " << pixel;
+        for (int c = 0; c < 4; ++c) {
+            ASSERT_NEAR(whole.filtered(pixel)[c], tiled.filtered(pixel)[c], 1e-5f) << "pixel " << pixel;
+        }
+    }
+}
+
 #endif // NATRON_HAVE_GPU
+
+#ifdef NATRON_HAVE_GPU
+TEST(NatronUtilityRasterSupport, NamesWhatTheGpuLacks)
+{
+    gpu::GpuDeviceInfo info;
+
+    info.rasterVisibility = true;
+    info.rasterFloatBlend = true;
+    EXPECT_EQ(std::string(), WavefrontGpu::missingRasterSupport(info));
+
+    info.rasterFloatBlend = false;
+    EXPECT_NE(std::string::npos, WavefrontGpu::missingRasterSupport(info).find("blend float attachments"));
+
+    info.rasterVisibility = false;
+    EXPECT_NE(std::string::npos, WavefrontGpu::missingRasterSupport(info).find("visibility buffers"));
+}
+#endif // NATRON_HAVE_GPU
+
+namespace {
+
+const int kModeSize = 16;
+
+// Renders a lit card through the engine the node drives the delegate with, in one render mode.
+class ModeRender {
+public:
+    ModeRender(const char* device,
+               const char* mode,
+               const char* projection)
+    {
+        RenderDelegates::list();
+        _layer = SdfLayer::CreateAnonymous(".usda");
+        EXPECT_TRUE(_layer->ImportFromString("#usda 1.0\n"
+                                             "def Mesh \"Card\" {\n"
+                                             "    int[] faceVertexCounts = [4]\n"
+                                             "    int[] faceVertexIndices = [0, 1, 2, 3]\n"
+                                             "    point3f[] points = [(-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0)]\n"
+                                             "    color3f[] primvars:displayColor = [(1, 0.5, 0.25)] (interpolation = \"constant\")\n"
+                                             "}\n"
+                                             "def DistantLight \"Light\" {\n"
+                                             "    float inputs:intensity = 1\n"
+                                             "}\n"));
+        _stage = UsdStage::Open(_layer);
+
+        UsdImagingGLEngine::Parameters parameters;
+
+        parameters.rendererPluginId = TfToken(kRenderDelegateUtilityId);
+        parameters.gpuEnabled = false;
+        _engine.reset(new UsdImagingGLEngine(parameters));
+        _engine->SetEnablePresentation(false);
+        EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color }));
+        _engine->SetRendererSetting(TfToken(kUtilitySettingDevice), VtValue(TfToken(device)));
+        _engine->SetRendererSetting(TfToken(kUtilitySettingRenderMode), VtValue(TfToken(mode)));
+        _engine->SetRendererSetting(TfToken(kUtilitySettingRasterSamples), VtValue(4));
+        _engine->SetRendererSetting(TfToken(kUtilitySettingProjection), VtValue(TfToken(projection)));
+        _engine->SetRendererSetting(TfToken(kUtilitySettingPixelSamples), VtValue(1));
+        _engine->SetRendererSetting(TfToken(kUtilitySettingSubdivLevel), VtValue(0));
+        _engine->SetRendererSetting(TfToken(kUtilitySettingMaxRayDepth), VtValue(0));
+    }
+
+    void render()
+    {
+        const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + std::chrono::seconds(180);
+
+        renderOnce();
+        while (!_engine->IsConverged() && std::chrono::steady_clock::now() < end) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            renderOnce();
+        }
+        EXPECT_TRUE(_engine->IsConverged());
+    }
+
+    std::vector<GfVec4f> pixels() const
+    {
+        HdRenderBuffer* buffer = _engine->GetAovRenderBuffer(HdAovTokens->color);
+
+        if (!buffer) {
+            ADD_FAILURE() << "no colour buffer";
+
+            return {};
+        }
+
+        const GfVec4f* mapped = static_cast<const GfVec4f*>(buffer->Map());
+        std::vector<GfVec4f> copy(mapped, mapped + kModeSize * kModeSize);
+
+        buffer->Unmap();
+
+        return copy;
+    }
+
+    std::string warning() const
+    {
+        return VtDictionaryGet<std::string>(_engine->GetRenderStats(), kUtilityStatWarning, VtDefault = std::string());
+    }
+
+private:
+    void renderOnce()
+    {
+        GfFrustum camera;
+
+        camera.SetPerspective(45., 1., 0.1, 100.);
+        camera.SetPosition(GfVec3d(0., 0., 4.));
+        _engine->SetRenderBufferSize(GfVec2i(kModeSize, kModeSize));
+        _engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), kModeSize, kModeSize)));
+        _engine->SetCameraState(camera.ComputeViewMatrix(), camera.ComputeProjectionMatrix());
+
+        UsdImagingGLRenderParams params;
+
+        params.drawMode = UsdImagingGLDrawMode::DRAW_SHADED_SMOOTH;
+        params.clearColor = GfVec4f(0.f, 0.f, 0.f, 0.f);
+        params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
+        params.highlight = false;
+        _engine->Render(_stage->GetPseudoRoot(), params);
+    }
+
+    SdfLayerRefPtr _layer;
+    UsdStageRefPtr _stage;
+    std::unique_ptr<UsdImagingGLEngine> _engine;
+};
+
+// A Raster frame that cannot rasterize is the Ray frame, warned about with the reason.
+void
+expectRayWithWarning(const char* device,
+                     const char* projection,
+                     const char* reason)
+{
+    ModeRender ray(device, kUtilityRenderModeRay, projection);
+    ModeRender raster(device, kUtilityRenderModeRaster, projection);
+
+    ray.render();
+    raster.render();
+
+    const std::vector<GfVec4f> rayPixels = ray.pixels();
+    const std::vector<GfVec4f> rasterPixels = raster.pixels();
+    float coverage = 0.f;
+
+    ASSERT_EQ(rayPixels.size(), rasterPixels.size());
+    for (std::size_t i = 0; i < rayPixels.size(); ++i) {
+        coverage += rayPixels[i][3];
+        for (int c = 0; c < 4; ++c) {
+            EXPECT_NEAR(rayPixels[i][c], rasterPixels[i][c], 1e-6f) << "pixel " << i % kModeSize << ", " << i / kModeSize;
+        }
+    }
+    EXPECT_GT(coverage, 0.f);
+    EXPECT_EQ(std::string::npos, ray.warning().find("Raster")) << ray.warning();
+
+    const std::string warning = raster.warning();
+
+    EXPECT_NE(std::string::npos, warning.find("rendered in Ray mode")) << warning;
+    EXPECT_NE(std::string::npos, warning.find(reason)) << warning;
+}
+
+} // namespace
+
+TEST(NatronUtilityRasterFallback, OnTheCpuRendersAsRayAndWarns)
+{
+    expectRayWithWarning(kUtilityDeviceCpu, kUtilityProjectionCamera, "Device is CPU");
+}
+
+TEST(NatronUtilityRasterFallback, ASphericalProjectionRendersAsRayAndWarns)
+{
+    expectRayWithWarning(kUtilityDeviceCpu, kUtilityProjectionSpherical, "Spherical projection");
+}
+
+TEST(NatronUtilityRasterFallback, ACylindricalProjectionOnAutoRendersAsRayAndWarns)
+{
+    expectRayWithWarning(kUtilityDeviceAuto, kUtilityProjectionCylindrical, "Cylindrical projection");
+}

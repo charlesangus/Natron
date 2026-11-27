@@ -906,6 +906,7 @@ struct RenderSettingsKnobs::Impl {
         std::vector<Choice> choices;
         std::string follows;
         std::vector<EnabledBy> enabledBy;
+        bool hiddenWhenDisabled = false;
         bool inverted = false;
         KnobIWPtr knob;
     };
@@ -1368,6 +1369,7 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
         setting.inverted = inverted;
         if (range && disabledReason.empty()) {
             setting.enabledBy = range->enabledBy;
+            setting.hiddenWhenDisabled = range->hiddenWhenDisabled;
         }
         setting.knob = k;
         _imp->byKnob[k.get()] = _imp->settings.size();
@@ -1568,7 +1570,11 @@ RenderSettingsKnobs::refreshEnabled()
                 break;
             }
         }
-        k->setAllDimensionsEnabled(enabled);
+        if (s.hiddenWhenDisabled) {
+            k->setSecret(!enabled);
+        } else {
+            k->setAllDimensionsEnabled(enabled);
+        }
     }
 }
 

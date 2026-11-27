@@ -82,6 +82,17 @@ struct WavefrontSampling {
     }
 };
 
+// The one sample of every pixel that a pass of Raster mode draws: its offset from the pixel's centre in pixels,
+// its filter weight, and its time, from 0 at the shutter's opening to 1 at its closing, as a ray's.
+struct WavefrontRasterPass {
+    float jitter[2] = { 0.f, 0.f };
+    float weight = 1.f;
+    float time = 0.5f;
+};
+
+// The default for WavefrontFrame::rasterSamples.
+const int kWavefrontDefaultRasterSamples = 32;
+
 // How pixels map to rays. Camera is the USD camera's frustum. Spherical is a 360 by 180 degree
 // lat-long and Cylindrical a 360 degree band of the camera's vertical view, both about the camera's
 // position in its orientation, the display window's centre looking along the camera. UvUnwrap gives
@@ -156,6 +167,14 @@ struct WavefrontFrame {
     // A camera that moves over the shutter, as RayGen.slang's cameraSteps binding takes it; empty for one
     // that does not. wavefrontDrawSamples() fills it in from the motion it draws with.
     std::vector<float> cameraSteps;
+    // Raster mode, for the Camera mapping on a device that draws visibility buffers: each pass rasterizes which
+    // surface every pixel's sample sees, with one jitter and one time for the whole frame, and rebuilds the
+    // camera rays' hits from it; the rest of the path traces as Ray mode does. rasterSamples passes draw a frame.
+    // wavefrontDrawSamples() fills in rasterPass, and moves the camera to its time rather than filling in
+    // cameraSteps.
+    bool raster = false;
+    int rasterSamples = kWavefrontDefaultRasterSamples;
+    WavefrontRasterPass rasterPass;
 };
 
 // The outputs a film takes in tiles. An executor may leave the arrays of the others null.
@@ -286,6 +305,17 @@ struct WavefrontMotion {
             && cameraViews == other.cameraViews && cameraProjections == other.cameraProjections;
     }
 };
+
+/**
+ * @brief Pass index of passes in Raster mode. Its jitter comes from the Halton sequence in bases 2 and 3, turned
+ * by the seed, offset over the pixel filter's width and weighted by its filter, as Ray mode's samples are; one
+ * pass alone sits at the pixel centre. Its time is the centre of one of passes equal spans of the shutter, a
+ * permutation under the seed choosing which, so that no jitter goes with the same time from frame to frame and
+ * the spans, together, cover the shutter once.
+ **/
+WavefrontRasterPass wavefrontRasterPass(const WavefrontSampling& sampling,
+                                        int index,
+                                        int passes);
 
 // The frame's camera moved by how the motion's camera at time differs from its camera at the frame.
 WavefrontFrame wavefrontFrameAt(const WavefrontFrame& frame,

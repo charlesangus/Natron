@@ -67,6 +67,33 @@ struct KernelVisibilityParams {
 
 static_assert(sizeof(KernelVisibilityParams) == 112, "KernelVisibilityParams must match VisibilityParams");
 
+// Mirrors RasterHitsParams in Kernels/RasterHits.slang, whose comments say what each field holds. Each position
+// is a float3 with the scalar after it in the same 16 bytes.
+struct KernelRasterHitsParams {
+    float nearAtCentre[3];
+    float time;
+    float nearPerX[3];
+    float weight;
+    float nearPerY[3];
+    float jitterX;
+    float farAtCentre[3];
+    float jitterY;
+    float farPerX[3];
+    std::uint32_t count;
+    float farPerY[3];
+    std::int32_t batchRow;
+    std::int32_t windowWidth;
+    std::int32_t windowHeight;
+    std::int32_t tileX;
+    std::int32_t tileY;
+    std::int32_t tileWidth;
+    std::int32_t tileHeight;
+    std::uint32_t tablesLow;
+    std::uint32_t tablesHigh;
+};
+
+static_assert(sizeof(KernelRasterHitsParams) == 128, "KernelRasterHitsParams must match RasterHitsParams");
+
 // Mirrors RayGenParams in Kernels/RayGen.slang, where each position is a float3 with the scalar after
 // it in the same 16 bytes.
 struct KernelRayGenParams {

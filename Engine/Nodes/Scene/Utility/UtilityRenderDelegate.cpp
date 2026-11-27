@@ -184,7 +184,7 @@ UtilityRenderParam::gpuExecutor(std::string* unavailable)
                 std::string failure;
 
                 try {
-                    executor.reset(new WavefrontGpu(runtime->registry(), runtime->pool(), pending->hold));
+                    executor.reset(new WavefrontGpu(runtime->registry(), runtime->pool(), pending->hold, &runtime->pipelines()));
                 } catch (const std::exception& e) {
                     failure = e.what();
                 }
@@ -750,6 +750,8 @@ UtilityRenderDelegate::GetRenderSettingDescriptors() const
 {
     return {
         HdRenderSettingDescriptor { "Device", TfToken(kUtilitySettingDevice), VtValue(TfToken(kUtilityDeviceAuto)) },
+        HdRenderSettingDescriptor { "Render Mode", TfToken(kUtilitySettingRenderMode), VtValue(TfToken(kUtilityRenderModeRay)) },
+        HdRenderSettingDescriptor { "Raster Samples", TfToken(kUtilitySettingRasterSamples), VtValue(int(kWavefrontDefaultRasterSamples)) },
         HdRenderSettingDescriptor { "Pixel Samples", TfToken(kUtilitySettingPixelSamples), VtValue(int(kUtilityDefaultPixelSamples)) },
         HdRenderSettingDescriptor { "Pixel Filter", TfToken(kUtilitySettingPixelFilter), VtValue(TfToken(kUtilityFilterBlackmanHarris)) },
         HdRenderSettingDescriptor { "Filter Width", TfToken(kUtilitySettingFilterWidth), VtValue(kUtilityDefaultFilterWidth) },

@@ -286,6 +286,7 @@ struct RasterTables : GpuTracer::RasterScene {
     gpu::GpuBuffer instanceTable;
     gpu::GpuBuffer transformTable;
     gpu::GpuBuffer commandTable;
+    gpu::GpuBuffer hitTable;
     std::vector<GeometryEntryPtr> drawn;
 };
 
@@ -1994,6 +1995,50 @@ GpuTracer::Implementation::buildRasterTables(std::shared_ptr<const RasterTables>
         tables->instances = &tables->instanceTable;
         tables->transforms = &tables->transformTable;
         tables->commands = &tables->commandTable;
+
+        const std::size_t geometryRow = 1 + placements.size();
+        const std::size_t hitRows = geometryRow + 2 * tables->geometries.size();
+
+        if (hitRows > std::numeric_limits<std::uint32_t>::max() / 4) {
+            return { VK_ERROR_OUT_OF_DEVICE_MEMORY, "GpuTracer: the hit tables of " + std::to_string(placements.size()) + " instances are past what a raster pass addresses" };
+        }
+
+        std::vector<std::uint32_t> hits(4 * hitRows, 0u);
+        const VkDeviceAddress transforms = tables->transformTable.deviceAddress(device);
+        const std::uint32_t* denseGeometry = static_cast<const std::uint32_t*>(scene->instanceGeometry.mapped());
+
+        hits[0] = static_cast<std::uint32_t>(transforms & 0xffffffffull);
+        hits[1] = static_cast<std::uint32_t>(transforms >> 32);
+        for (std::size_t i = 0; i < placements.size(); ++i) {
+            std::fill_n(hits.begin() + 4 * (1 + i), 3, kNoHit);
+        }
+        for (std::size_t g = 0; g < tables->geometries.size(); ++g) {
+            const GpuTracer::RasterGeometry& geometry = tables->geometries[g];
+            const std::size_t record = geometryRow + 2 * g;
+            const VkDeviceAddress points = geometry.points->deviceAddress(device);
+            const VkDeviceAddress indices = geometry.indices->deviceAddress(device);
+
+            hits[4 * record] = static_cast<std::uint32_t>(points & 0xffffffffull);
+            hits[4 * record + 1] = static_cast<std::uint32_t>(points >> 32);
+            hits[4 * record + 2] = static_cast<std::uint32_t>(indices & 0xffffffffull);
+            hits[4 * record + 3] = static_cast<std::uint32_t>(indices >> 32);
+            hits[4 * record + 4] = geometry.pointCount;
+            hits[4 * record + 5] = geometry.pointSteps;
+            for (std::uint32_t k = 0; k < geometry.instanceCount; ++k) {
+                const std::uint32_t slot = geometry.firstInstance + k;
+                const std::uint32_t placement = instances[2 * slot];
+                std::uint32_t* row = &hits[4 * (1 + placement)];
+
+                row[0] = denseGeometry[placement];
+                row[1] = instances[2 * slot + 1];
+                row[2] = static_cast<std::uint32_t>(record);
+                row[3] = 0u;
+            }
+        }
+        if (gpu::GpuStatus s = stageWith(device, hits.data(), hits.size() * sizeof(std::uint32_t), kAddressedUsage, tables->hitTable); !s) {
+            return { s.result, "GpuTracer could not hold the hit tables of its raster scene: " + s.message };
+        }
+        tables->hitTables = &tables->hitTable;
     }
     out = std::move(tables);
 

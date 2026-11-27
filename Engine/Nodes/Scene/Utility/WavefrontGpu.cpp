@@ -53,13 +53,16 @@
 #include "Engine/Gpu/GpuBufferPool.h"
 #include "Engine/Gpu/GpuKernel.h"
 #include "Engine/Gpu/GpuKernelRegistry.h"
+#include "Engine/Gpu/GpuPipelineCache.h"
 #include "Engine/Gpu/GpuRecord.h"
 #include "Engine/Gpu/GpuRuntime.h"
+#include "Engine/Gpu/GpuTexture.h"
 #include "Engine/Nodes/Scene/Utility/GpuTracer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityGpuLimits.h"
 #include "Engine/Nodes/Scene/Utility/UtilityKernels.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 
+#include "utility_raster_hits_spirv.h"
 #include "utility_raygen_spirv.h"
 #include "utility_raygen_uv_spirv.h"
 #include "utility_resolve_hits_spirv.h"
@@ -146,6 +149,7 @@ static_assert(sizeof(KernelShadeLightsParams) == utility_shade_lights_push_bytes
 static_assert(sizeof(KernelResolveParams) == utility_resolve_hits_push_bytes);
 static_assert(utility_raygen_storage_buffers == 3 && utility_shade_surface_storage_buffers == 20 && utility_shade_lights_storage_buffers == 3);
 static_assert(utility_resolve_hits_storage_buffers == 15);
+static_assert(sizeof(KernelRasterHitsParams) == utility_raster_hits_push_bytes && utility_raster_hits_storage_buffers == 5);
 static_assert(sizeof(KernelPathState) == 32);
 static_assert(sizeof(KernelLightRecord) == 144);
 static_assert(sizeof(KernelGeometryRecord) == 56);
@@ -164,6 +168,8 @@ const std::uint32_t kLightBatch = 4;
 // lights nor many cutout layers make a submission whose stop waits longer than that, or that runs into
 // submitAndWait()'s time limit. A full batch with one light batch and no holes still takes one submission.
 const std::uint64_t kMaxSubmitWork = 8 * kMaxBatchRays;
+// As long as the compute submissions may take: a visibility pass draws the whole scene once per tile.
+const std::uint64_t kRasterSubmitTimeoutNs = 30'000'000'000ull;
 
 // Vulkan has no zero-sized buffer, and a scene without colours or triangles still binds all of them.
 const VkDeviceSize kMinTableBytes = 16;
@@ -208,6 +214,45 @@ shadeLightsDesc()
     return gpu::GpuKernelDesc {
         utility_shade_lights_spirv, utility_shade_lights_spirv_words, utility_shade_lights_entry, utility_shade_lights_storage_buffers, utility_shade_lights_push_bytes, { utility_shade_lights_group_size[0], utility_shade_lights_group_size[1], utility_shade_lights_group_size[2] }
     };
+}
+
+gpu::GpuKernelDesc
+rasterHitsDesc()
+{
+    return gpu::GpuKernelDesc {
+        utility_raster_hits_spirv, utility_raster_hits_spirv_words, utility_raster_hits_entry, utility_raster_hits_storage_buffers, utility_raster_hits_push_bytes, { utility_raster_hits_group_size[0], utility_raster_hits_group_size[1], utility_raster_hits_group_size[2] }
+    };
+}
+
+// The rows of the row-vector matrix that takes OpenGL's clip space, which the frame's projection maps into, to
+// Vulkan's over one tile of the window: depth from 0 to w rather than from -w to w, and x and y stretched so that
+// the tile's pixels fill the attachment. Vulkan puts -1 in y at the attachment's first row, which is then the
+// tile's bottom row, as the batch's arrays are ordered.
+PXR_NS::GfMatrix4d
+tileClip(const WavefrontRect& window,
+         int tileX,
+         int tileY,
+         int tileWidth,
+         int tileHeight)
+{
+    const double scaleX = static_cast<double>(window.width) / tileWidth;
+    const double scaleY = static_cast<double>(window.height) / tileHeight;
+    const double centreX = (2. * tileX + tileWidth) / window.width - 1.;
+    const double centreY = (2. * tileY + tileHeight) / window.height - 1.;
+
+    return PXR_NS::GfMatrix4d(scaleX, 0., 0., 0.,
+                              0., scaleY, 0., 0.,
+                              0., 0., 0.5, 0.,
+                              -centreX * scaleX, -centreY * scaleY, 0.5, 1.);
+}
+
+void
+storeAddress(VkDeviceAddress address,
+             std::uint32_t& low,
+             std::uint32_t& high)
+{
+    low = static_cast<std::uint32_t>(address & 0xffffffffull);
+    high = static_cast<std::uint32_t>(address >> 32);
 }
 
 gpu::GpuKernelDesc
@@ -412,10 +457,12 @@ startWarmUp(gpu::GpuKernelRegistry& registry,
 struct WavefrontGpu::Implementation {
     Implementation(gpu::GpuKernelRegistry& registry,
                    gpu::GpuBufferPool& pool,
-                   const std::shared_ptr<void>& runtimeHold)
+                   const std::shared_ptr<void>& runtimeHold,
+                   gpu::GpuPipelineCache* pipelines)
         : registry(registry)
         , pool(pool)
         , device(registry.device())
+        , pipelines(pipelines)
         , tracer(registry, pool)
         , runtimeHold(runtimeHold)
     {
@@ -517,6 +564,7 @@ struct WavefrontGpu::Implementation {
         // recording. False when the frame was stopped or the submission failed.
         bool sync() { return next(); }
         bool finish(const std::string& what);
+        const std::atomic<bool>& stop() const { return _stop; }
 
     private:
         bool next();
@@ -570,6 +618,13 @@ struct WavefrontGpu::Implementation {
                        const gpu::GpuBuffer& blocked,
                        const gpu::GpuBuffer& rayLights,
                        const gpu::GpuBuffer& shadowContributions);
+    bool rasterHits(const WavefrontFrame& frame,
+                    const WavefrontRect& rect,
+                    Recorder& rec,
+                    gpu::GpuBuffer& rays,
+                    gpu::GpuBuffer& weights,
+                    gpu::GpuBuffer& hitValues,
+                    gpu::GpuBuffer& hitIds);
     bool renderBatch(const WavefrontFrame& frame,
                      const WavefrontRect& rect,
                      Recorder& rec,
@@ -584,12 +639,19 @@ struct WavefrontGpu::Implementation {
     gpu::GpuKernelRegistry& registry;
     gpu::GpuBufferPool& pool;
     gpu::GpuDevice& device;
+    gpu::GpuPipelineCache* pipelines;
     GpuTracer tracer;
     std::shared_ptr<gpu::GpuKernel> rayGenKernel;
     std::shared_ptr<gpu::GpuKernel> rayGenUvKernel;
     std::shared_ptr<gpu::GpuKernel> shadeKernel;
     std::shared_ptr<gpu::GpuKernel> shadeLightsKernel;
     std::shared_ptr<gpu::GpuKernel> resolveKernel;
+    // Null when the device cannot draw visibility buffers.
+    std::shared_ptr<gpu::GpuKernel> rasterHitsKernel;
+    // The visibility buffer's attachments, kept while the tiles keep their size.
+    std::unique_ptr<gpu::GpuTexture> visibilityColour;
+    std::unique_ptr<gpu::GpuTexture> visibilityDepth;
+    std::uint32_t rasterTileLimit = 0;
     const std::shared_ptr<void> runtimeHold;
     std::shared_ptr<const UtilityFilmKernels> filmKernels;
     bool filmKernelsTried = false;
@@ -632,6 +694,9 @@ WavefrontGpu::Implementation::warm(const std::atomic<bool>& stop)
         std::vector<std::shared_ptr<gpu::GpuKernel>> kernels = tracer.kernels();
 
         kernels.insert(kernels.end(), { rayGenKernel, rayGenUvKernel, shadeKernel, shadeLightsKernel, resolveKernel });
+        if (rasterHitsKernel) {
+            kernels.push_back(rasterHitsKernel);
+        }
         if (filmKernels) {
             const std::vector<std::shared_ptr<gpu::GpuKernel>> film = utilityFilmKernelList(*filmKernels);
 
@@ -1168,6 +1233,159 @@ WavefrontGpu::Implementation::recordResolve(Recorder& rec,
     return true;
 }
 
+/**
+ * @brief Fills the batch's camera rays and their hits as RayGen and recordIntersect() would for one sample of
+ * every pixel, at the pass's jitter and time: each tile of the batch, at most the device's image limit on a side,
+ * is drawn into a visibility buffer and its hits rebuilt from it, in a raster context of its own submitted
+ * before the batch's compute context, which then takes the buffers back.
+ **/
+bool
+WavefrontGpu::Implementation::rasterHits(const WavefrontFrame& frame,
+                                         const WavefrontRect& rect,
+                                         Recorder& rec,
+                                         gpu::GpuBuffer& rays,
+                                         gpu::GpuBuffer& weights,
+                                         gpu::GpuBuffer& hitValues,
+                                         gpu::GpuBuffer& hitIds)
+{
+    std::shared_ptr<const GpuTracer::RasterScene> scene;
+
+    if (gpu::GpuStatus s = tracer.rasterScene(scene); !s) {
+        return fail("WavefrontGpu could not hold the scene for drawing", s);
+    }
+
+    const WavefrontRect& window = frame.window;
+    const std::size_t count = static_cast<std::size_t>(rect.width) * rect.height;
+    const WavefrontRasterPass& pass = frame.rasterPass;
+    const KernelRayGenParams rayGen = makeRayGenParams(frame, rect);
+    KernelRasterHitsParams params {};
+
+    std::copy(std::begin(rayGen.nearAtCentre), std::end(rayGen.nearAtCentre), params.nearAtCentre);
+    std::copy(std::begin(rayGen.nearPerX), std::end(rayGen.nearPerX), params.nearPerX);
+    std::copy(std::begin(rayGen.nearPerY), std::end(rayGen.nearPerY), params.nearPerY);
+    std::copy(std::begin(rayGen.farAtCentre), std::end(rayGen.farAtCentre), params.farAtCentre);
+    std::copy(std::begin(rayGen.farPerX), std::end(rayGen.farPerX), params.farPerX);
+    std::copy(std::begin(rayGen.farPerY), std::end(rayGen.farPerY), params.farPerY);
+    params.time = pass.time;
+    params.weight = pass.weight;
+    params.jitterX = pass.jitter[0];
+    params.jitterY = pass.jitter[1];
+    params.count = static_cast<std::uint32_t>(count);
+    params.batchRow = rect.y - window.y;
+    params.windowWidth = window.width;
+    params.windowHeight = window.height;
+    storeAddress(scene->hitTables ? scene->hitTables->deviceAddress(device) : 0, params.tablesLow, params.tablesHigh);
+
+    const PXR_NS::GfMatrix4d viewProjection = frame.worldToView * frame.projection;
+    std::uint32_t side = std::max<std::uint32_t>(device.info().maxImageDimension2D, 1);
+
+    if (rasterTileLimit > 0) {
+        side = std::min(side, rasterTileLimit);
+    }
+
+    const int step = static_cast<int>(std::min<std::uint32_t>(side, static_cast<std::uint32_t>(std::numeric_limits<int>::max())));
+    const std::array<std::pair<gpu::GpuBuffer*, VkDeviceSize>, 4> handed = {
+        std::make_pair(&rays, static_cast<VkDeviceSize>(kRayArrays * count * sizeof(float))),
+        std::make_pair(&weights, static_cast<VkDeviceSize>(count * sizeof(float))),
+        std::make_pair(&hitValues, static_cast<VkDeviceSize>(kHitArrays * count * sizeof(float))),
+        std::make_pair(&hitIds, static_cast<VkDeviceSize>(kHitArrays * count * sizeof(std::uint32_t))),
+    };
+    const std::atomic<bool>& stop = rec.stop();
+
+    for (int tileY = 0; tileY < rect.height; tileY += step) {
+        for (int tileX = 0; tileX < rect.width; tileX += step) {
+            const int tileWidth = std::min(step, rect.width - tileX);
+            const int tileHeight = std::min(step, rect.height - tileY);
+            const bool last = tileX + tileWidth >= rect.width && tileY + tileHeight >= rect.height;
+            const std::size_t texels = static_cast<std::size_t>(tileWidth) * tileHeight;
+            std::unique_ptr<gpu::GpuRecordContext> ctx;
+
+            if (stop.load(std::memory_order_relaxed)) {
+                return stopped();
+            }
+            if (gpu::GpuStatus s = gpu::GpuRecordContext::createRaster(registry, ctx, &pool, pipelines); !s) {
+                return fail("WavefrontGpu could not create a raster context", s);
+            }
+            ctx->setAbortCheck([&stop]() {
+                return stop.load(std::memory_order_relaxed);
+            });
+            if (!visibilityColour || visibilityColour->desc().width != static_cast<std::uint32_t>(tileWidth) || visibilityColour->desc().height != static_cast<std::uint32_t>(tileHeight)) {
+                visibilityColour.reset();
+                visibilityDepth.reset();
+                if (gpu::GpuStatus s = gpu::GpuTexture::createAttachment(device, tileWidth, tileHeight, VK_FORMAT_R32G32_UINT, visibilityColour); !s) {
+                    return fail("WavefrontGpu could not hold a visibility buffer", s);
+                }
+                if (gpu::GpuStatus s = gpu::GpuTexture::createDepthAttachment(device, tileWidth, tileHeight, visibilityDepth); !s) {
+                    visibilityColour.reset();
+
+                    return fail("WavefrontGpu could not hold the depth of a visibility buffer", s);
+                }
+            }
+
+            gpu::GpuBuffer* visibility = nullptr;
+
+            if (gpu::GpuStatus s = ctx->scratch(texels * 2 * sizeof(std::uint32_t), visibility); !s) {
+                return fail("WavefrontGpu could not hold the visibility of " + std::to_string(texels) + " pixels", s);
+            }
+
+            GpuTracer::VisibilityPass visibilityPass;
+            const PXR_NS::GfMatrix4d tileViewProjection = viewProjection * tileClip(window, tileX, rect.y - window.y + tileY, tileWidth, tileHeight);
+
+            for (int r = 0; r < 4; ++r) {
+                for (int c = 0; c < 4; ++c) {
+                    visibilityPass.viewProjection[r][c] = static_cast<float>(tileViewProjection[r][c]);
+                }
+            }
+            visibilityPass.jitter[0] = pass.jitter[0];
+            visibilityPass.jitter[1] = pass.jitter[1];
+            visibilityPass.time = pass.time;
+            if (gpu::GpuStatus s = ctx->beginRasterUint(*visibilityColour, { Tracer::kNoHit, Tracer::kNoHit, 0u, 0u }, visibilityDepth.get(), 1.0f); !s) {
+                return fail("WavefrontGpu could not begin a visibility pass", s);
+            }
+            if (gpu::GpuStatus s = tracer.recordVisibility(*ctx, visibilityPass); !s) {
+                return s.aborted ? stopped() : fail("WavefrontGpu could not draw a visibility pass", s);
+            }
+            if (gpu::GpuStatus s = ctx->endRaster(); !s) {
+                return fail("WavefrontGpu could not end a visibility pass", s);
+            }
+            if (gpu::GpuStatus s = ctx->copyToImage(*visibility); !s) {
+                return fail("WavefrontGpu could not read a visibility buffer", s);
+            }
+
+            params.tileX = tileX;
+            params.tileY = tileY;
+            params.tileWidth = tileWidth;
+            params.tileHeight = tileHeight;
+
+            const std::array<gpu::GpuBinding, 5> bindings = {
+                gpu::GpuBinding::storage(0, rays), gpu::GpuBinding::storage(1, weights), gpu::GpuBinding::storage(2, hitValues),
+                gpu::GpuBinding::storage(3, hitIds), gpu::GpuBinding::storage(4, *visibility)
+            };
+
+            if (gpu::GpuStatus s = ctx->dispatchBindings(rasterHitsKernel, bindings, std::as_bytes(std::span(&params, 1)), { static_cast<std::uint32_t>(texels), 1, 1 }); !s) {
+                return fail("WavefrontGpu could not rebuild the hits of a visibility pass", s);
+            }
+            if (last) {
+                for (const auto& [buffer, bytes] : handed) {
+                    if (gpu::GpuStatus s = ctx->releaseToOtherQueue(*buffer, 0, bytes); !s) {
+                        return fail("WavefrontGpu could not hand a visibility pass's hits to its compute queue", s);
+                    }
+                }
+            }
+            if (gpu::GpuStatus s = ctx->submitAndWait(kRasterSubmitTimeoutNs, [&stop]() { return stop.load(std::memory_order_relaxed); }); !s) {
+                return (s.aborted || stop.load(std::memory_order_relaxed)) ? stopped() : fail("WavefrontGpu could not draw a visibility pass", s);
+            }
+        }
+    }
+    for (const auto& [buffer, bytes] : handed) {
+        if (gpu::GpuStatus s = rec.ctx().acquireFromOtherQueue(*buffer, 0, bytes); !s) {
+            return fail("WavefrontGpu could not take a visibility pass's hits on its compute queue", s);
+        }
+    }
+
+    return true;
+}
+
 bool
 WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
                                           const WavefrontRect& rect,
@@ -1235,6 +1453,10 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
 
         if (gpu::GpuStatus s = rec.ctx().dispatchBindings(rayGenUvKernel, bindings, std::as_bytes(std::span(&rayGenParams, 1)), threads); !s) {
             return fail("WavefrontGpu could not generate rays", s);
+        }
+    } else if (frame.raster) {
+        if (!rasterHits(frame, rect, rec, *rays, *weights, *hitValues, *hitIds)) {
+            return false;
         }
     } else {
         const std::array<gpu::GpuBinding, 3> bindings = { gpu::GpuBinding::storage(0, *rays), gpu::GpuBinding::storage(1, *weights), gpu::GpuBinding::storage(2, cameraStepsBuffer.buffer()) };
@@ -1550,8 +1772,9 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
 
 WavefrontGpu::WavefrontGpu(gpu::GpuKernelRegistry& registry,
                            gpu::GpuBufferPool& pool,
-                           const std::shared_ptr<void>& runtimeHold)
-    : _imp(new Implementation(registry, pool, runtimeHold))
+                           const std::shared_ptr<void>& runtimeHold,
+                           gpu::GpuPipelineCache* pipelines)
+    : _imp(new Implementation(registry, pool, runtimeHold, pipelines))
 {
     Implementation& imp = *_imp;
     const Tracer::Outcome tracerStatus = imp.tracer.status();
@@ -1594,6 +1817,10 @@ WavefrontGpu::WavefrontGpu(gpu::GpuKernelRegistry& registry,
         return;
     }
     imp.resolveKernel = std::move(kernel);
+    // Without it the executor still renders in Ray mode, and a frame in Raster mode fails.
+    if (missingRasterSupport(imp.device.info()).empty() && gpu::GpuKernel::create(imp.device, rasterHitsDesc(), kernel)) {
+        imp.rasterHitsKernel = std::move(kernel);
+    }
     // Made with the executor rather than with the first film on the device, so that warm() compiles them too.
     imp.filmKernelsTried = true;
 
@@ -1625,6 +1852,37 @@ std::string
 WavefrontGpu::missingSupport(const gpu::GpuRuntime& runtime)
 {
     return GpuTracer::missingRayQuerySupport(runtime.device());
+}
+
+std::string
+WavefrontGpu::missingRasterSupport(const gpu::GpuDeviceInfo& info)
+{
+    if (!info.rasterVisibility) {
+        return "the GPU cannot draw visibility buffers";
+    }
+    if (!info.rasterFloatBlend) {
+        return "the GPU cannot blend float attachments";
+    }
+
+    return std::string();
+}
+
+std::string
+WavefrontGpu::missingRasterSupport() const
+{
+    const std::string missing = missingRasterSupport(_imp->device.info());
+
+    if (!missing.empty() || _imp->rasterHitsKernel) {
+        return missing;
+    }
+
+    return "the GPU could not make the Raster mode kernel";
+}
+
+void
+WavefrontGpu::limitRasterTile(std::uint32_t texels)
+{
+    _imp->rasterTileLimit = texels;
 }
 
 bool
@@ -1671,6 +1929,16 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
             return false;
         }
     } else if (!imp.uploadCameraSteps(frame.cameraSteps)) {
+        return false;
+    }
+    if (frame.raster && frame.mapping != WavefrontMapping::Camera) {
+        imp.outcome = Tracer::Outcome { Tracer::Status::Unsupported, "WavefrontGpu draws only the Camera projection in Raster mode" };
+
+        return false;
+    }
+    if (frame.raster && !imp.rasterHitsKernel) {
+        imp.outcome = Tracer::Outcome { Tracer::Status::Unsupported, "WavefrontGpu cannot draw in Raster mode: " + missingRasterSupport() };
+
         return false;
     }
 

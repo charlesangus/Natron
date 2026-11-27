@@ -100,6 +100,8 @@ public:
         // The knob is enabled only while every condition holds. Ignored with disabledReason, which
         // keeps the knob disabled.
         std::vector<EnabledBy> enabledBy;
+        // The knob is hidden, rather than disabled, while an enabledBy condition fails.
+        bool hiddenWhenDisabled = false;
         double minimum = 0.;
         double displayMaximum = 0.;
         bool hasRange = false;

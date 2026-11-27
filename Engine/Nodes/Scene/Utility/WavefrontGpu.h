@@ -42,7 +42,9 @@
 namespace gpu {
 class GpuBufferPool;
 class GpuDevice;
+struct GpuDeviceInfo;
 class GpuKernelRegistry;
+class GpuPipelineCache;
 class GpuRuntime;
 }
 
@@ -89,9 +91,12 @@ class WavefrontGpu : public WavefrontExecutor {
 public:
     // runtimeHold, when given, is kept by the device films the executor leaves in the render buffers. Creates every
     // pipeline, which the driver compiles in the call, so it can take seconds and has no stop of its own.
+    // pipelines, when given, keeps Raster mode's graphics pipelines from frame to frame; without it each pass
+    // builds its own. It must outlive the executor.
     WavefrontGpu(gpu::GpuKernelRegistry& registry,
                  gpu::GpuBufferPool& pool,
-                 const std::shared_ptr<void>& runtimeHold = std::shared_ptr<void>());
+                 const std::shared_ptr<void>& runtimeHold = std::shared_ptr<void>(),
+                 gpu::GpuPipelineCache* pipelines = nullptr);
     virtual ~WavefrontGpu();
 
     // Waits up to timeout for the warm-ups of executors gone before them to end on device; false if some still run.
@@ -118,6 +123,16 @@ public:
     bool deviceLost() const;
 
     std::string deviceName() const;
+
+    // Empty when the device can draw frames in Raster mode, else what it lacks.
+    static std::string missingRasterSupport(const gpu::GpuDeviceInfo& info);
+
+    // The same for this executor's device, or why its Raster mode kernel could not be made.
+    std::string missingRasterSupport() const;
+
+    // Lowers the widest and tallest tile a raster pass draws in one visibility buffer, so that tests split small
+    // frames. Never raises it past the device's image limit; 0 removes the limit.
+    void limitRasterTile(std::uint32_t texels);
 
 private:
     struct Implementation;

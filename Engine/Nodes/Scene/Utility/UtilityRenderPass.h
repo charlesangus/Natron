@@ -83,6 +83,8 @@ private:
         WavefrontRect window;
         WavefrontRect display;
         WavefrontMapping mapping = WavefrontMapping::Camera;
+        bool raster = false;
+        int rasterSamples = 0;
         UtilityUnwrapTarget unwrap;
         WavefrontSampling sampling;
         WavefrontMotion motion;

@@ -2938,6 +2938,15 @@ USDTexturePaint::ensureTiles(double time,
     if (!getTileDirectory(&directory, error)) {
         return false;
     }
+    // A scene file reader's hash holds the stamps of the files it brings in only once its scene
+    // has been evaluated; before that it is a digest unique to the session. Keyed by that, the
+    // tiles composed on a first render would never be found again.
+    const EffectInstancePtr input = getInput(0);
+    if (input) {
+        ScenePayload scene;
+        std::string ignored;
+        (void)input->evaluateScene(EffectInstance::EvaluateSceneArgs(time, view), &scene, &ignored);
+    }
     bool narrowed = false;
     const U64 key = getTileCacheKey(time, view, only, &narrowed);
 

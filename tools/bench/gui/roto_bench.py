@@ -17,6 +17,15 @@ Ops, each with GUI_BENCH_REPS repetitions:
     add_shape      (topology roto-shapes, n = shapes) a new single-key shape among the n, timed
                    from its creation until the viewer shows it filled (read from the screen);
                    each rep removes it again
+    overlay_draw   (topology roto-overlay, n = shapes, for each ROTO_BENCH_OVERLAY_SHAPES count,
+                   and topology tracker-tracks, n = ROTO_BENCH_OVERLAY_TRACKS tracks on a Tracker
+                   over a CheckerBoard) a hover pass across the viewer, then a drag of the
+                   selected shape's top point or the middle track's centre; every shape has its
+                   feather and one stays selected; the headline is the overlay pass alone, read
+                   from NATRON_OVERLAY_DRAW_LOG, and the record also splits it into hover and drag
+    overlay_draw_all  (topology roto-overlay-all, n = shapes, for each ROTO_BENCH_OVERLAY_ALL_SHAPES
+                   count) overlay_draw with every shape and every point selected, so the hover
+                   lights feather bars on any shape and the drag moves all of them
 
 Configured by the environment:
     GUI_BENCH_REPS, GUI_BENCH_OPS, GUI_BENCH_OP_TIMEOUT_S, GUI_BENCH_SEED, GUI_BENCH_OUT
@@ -32,6 +41,11 @@ Configured by the environment:
     ROTO_BENCH_PEN_INTERVAL_MS  pause between pen moves, as a tablet's report rate (default 8)
     ROTO_BENCH_DRAG_EVENTS  mouse moves per drag or hover pass (default 20)
     ROTO_BENCH_ADD_SHAPE_TIMEOUT_S  how long add_shape waits for the new shape (default 10)
+    ROTO_BENCH_OVERLAY_SHAPES  shape counts for overlay_draw (default 1,30,100)
+    ROTO_BENCH_OVERLAY_ALL_SHAPES  shape counts for overlay_draw_all (default 30)
+    ROTO_BENCH_OVERLAY_KEYS    keyframes per overlay_draw shape (default 1)
+    ROTO_BENCH_OVERLAY_TRACKS  tracks for overlay_draw's Tracker (default 50)
+    NATRON_OVERLAY_DRAW_LOG the overlay draw probe's log; overlay_draw needs it
     NATRON_ROTO_LATENCY_LOG the latency probe's log; without it no latency is reported
     NATRON_STALL_LOG        the stall monitor's log; stalls are attributed as in gui_bench.py
 
@@ -77,13 +91,17 @@ def env_list(name, default):
     return [v.strip() for v in os.environ.get(name, default).split(",") if v.strip()]
 
 
-REPS = int(os.environ.get("GUI_BENCH_REPS", "5"))
+# run.sh passes "auto" when no --reps is given; an exception here, before the try below, would leave
+# Natron open and idle until the run's cap with nothing recorded, so "auto" means the default.
+_reps_env = os.environ.get("GUI_BENCH_REPS", "")
+REPS = int(_reps_env) if _reps_env.isdigit() else 5
 ONLY_OPS = set(env_list("GUI_BENCH_OPS", ""))
 OP_TIMEOUT_S = float(os.environ.get("GUI_BENCH_OP_TIMEOUT_S", "120"))
 SEED = int(os.environ.get("GUI_BENCH_SEED", "1"))
 WATCHDOG_S = int(os.environ.get("GUI_BENCH_WATCHDOG_S", str(6 * 3600)))
 STALL_LOG = os.environ.get("NATRON_STALL_LOG", "")
 LATENCY_LOG = os.environ.get("NATRON_ROTO_LATENCY_LOG", "")
+OVERLAY_DRAW_LOG = os.environ.get("NATRON_OVERLAY_DRAW_LOG", "")
 BRUSHES = [int(v) for v in env_list("ROTO_BENCH_BRUSHES", "5,50,300")]
 FORMAT_KEYS = env_list("ROTO_BENCH_FORMATS", "2k,4k")
 UPSTREAM = [int(v) for v in env_list("ROTO_BENCH_UPSTREAM", "0,300")]
@@ -94,6 +112,10 @@ STROKE_EVENTS = int(os.environ.get("ROTO_BENCH_STROKE_EVENTS", "60"))
 PEN_INTERVAL_MS = int(os.environ.get("ROTO_BENCH_PEN_INTERVAL_MS", "8"))
 DRAG_EVENTS = int(os.environ.get("ROTO_BENCH_DRAG_EVENTS", "20"))
 ADD_SHAPE_TIMEOUT_S = float(os.environ.get("ROTO_BENCH_ADD_SHAPE_TIMEOUT_S", "10"))
+OVERLAY_SHAPE_COUNTS = sorted(int(v) for v in env_list("ROTO_BENCH_OVERLAY_SHAPES", "1,30,100"))
+OVERLAY_ALL_SHAPE_COUNTS = sorted(int(v) for v in env_list("ROTO_BENCH_OVERLAY_ALL_SHAPES", "30"))
+OVERLAY_KEYS = int(os.environ.get("ROTO_BENCH_OVERLAY_KEYS", "1"))
+OVERLAY_TRACKS = int(os.environ.get("ROTO_BENCH_OVERLAY_TRACKS", "50"))
 
 try:
     import NatronEngine
@@ -150,6 +172,7 @@ try:
             "natron_version": NatronEngine.natron.getNatronVersionString(),
             "stall_log": bool(STALL_LOG),
             "latency_log": bool(LATENCY_LOG),
+            "overlay_draw_log": bool(OVERLAY_DRAW_LOG),
             "reps": REPS,
             "seed": SEED,
             "op_timeout_s": OP_TIMEOUT_S,
@@ -317,6 +340,26 @@ try:
     def click(widget, pos, button=Qt.LeftButton, modifiers=Qt.NoModifier):
         press(widget, pos, button, modifiers)
         release(widget, pos, button, modifiers)
+
+    def held_drag(gl, start, delta, into):
+        """A press, DRAG_EVENTS moves and a release, each repainted, one event per step."""
+        press(gl, start)
+        pos = start
+        try:
+            timed_repaint(gl, into)
+            yield None
+            for i in range(1, DRAG_EVENTS + 1):
+                pos = start + delta * (i / float(DRAG_EVENTS))
+                move(gl, pos, Qt.LeftButton)
+                timed_repaint(gl, into)
+                yield None
+        finally:
+            # run_op closes a rep cut by the op timeout mid-drag; the release still has to come,
+            # since the overlay edit's undo step stays open, and the Edit menu's Undo disabled,
+            # until it does.
+            release(gl, pos)
+        timed_repaint(gl, into)
+        yield None
 
     def send_key(widget, key, modifiers=Qt.NoModifier):
         QApplication.sendEvent(widget, QKeyEvent(QEvent.KeyPress, key, modifiers))
@@ -513,8 +556,14 @@ try:
                 windows.append((t0, t1))
                 events_per_rep = count
                 if "after" in op:
-                    for cmd in steps_of(op["after"](st, rep)):
-                        yield cmd
+                    # A rep the timeout cut still restores what it moved, though its checks may fail.
+                    try:
+                        for cmd in steps_of(op["after"](st, rep)):
+                            yield cmd
+                    except Exception:
+                        if status == "ok":
+                            raise
+                        error = "after the cut rep: " + short_error()
                 if status != "ok":
                     break
         except Exception:
@@ -670,7 +719,7 @@ try:
             pts.append((x, y, x - tx * tangent, y - ty * tangent, x + tx * tangent, y + ty * tangent))
         return pts
 
-    def add_shape(roto, pts, t_first, wobble):
+    def add_shape(roto, pts, t_first, wobble, keys=None):
         bez = roto.createBezier(pts[0][0], pts[0][1], t_first)
         if bez is None:
             raise RuntimeError("createBezier failed")
@@ -678,7 +727,7 @@ try:
             bez.addControlPoint(p[0], p[1])
         bez.setCurveFinished(True)
         # Time-major, so the first point set at a frame keys the whole shape there once.
-        for k in range(KEYS):
+        for k in range(KEYS if keys is None else keys):
             t = t_first + k
             d = wobble * math.sin(0.1 * k)
             for i, p in enumerate(pts):
@@ -688,8 +737,10 @@ try:
         return bez
 
     class ShapeCtx(object):
-        def __init__(self, node, gl, vmap, t):
+        def __init__(self, node, gl, vmap, t, grid=(16, 12), keys=None):
             self.node = node
+            self.grid = grid
+            self.keys = keys
             self.roto = node.getRotoContext()
             self.gl = gl
             self.vmap = vmap
@@ -709,7 +760,7 @@ try:
 
         def _cells(self, w, h):
             """Grid cell centres and radius for the other shapes, clear of the target."""
-            cols, rows = 16, 12
+            cols, rows = self.grid
             cw, ch = w / cols, h / rows
             r_px = 0.35 * min(cw, ch)
             keep_out = self.radius_px + self.tangent_px + 30.0
@@ -725,7 +776,7 @@ try:
         def grow(self, count):
             ps = self.vmap.pixel_scale()
             if self.target is None:
-                self.target = add_shape(self.roto, self.target_pts, self.t, 2.0 * ps)
+                self.target = add_shape(self.roto, self.target_pts, self.t, 2.0 * ps, self.keys)
                 self.shapes.append(self.target)
                 yield ("sleep", 0)
             cells, r_px = self.cells
@@ -735,7 +786,7 @@ try:
                     raise RuntimeError("the viewer has room for %d shapes only" % (len(cells) + 1))
                 cx, cy = self.vmap.to_canonical(cells[k])
                 pts = shape_points(cx, cy, r_px * ps, 0.25 * r_px * ps)
-                self.shapes.append(add_shape(self.roto, pts, self.t, 2.0 * ps))
+                self.shapes.append(add_shape(self.roto, pts, self.t, 2.0 * ps, self.keys))
                 yield ("sleep", 0)
 
         def snapshot(self):
@@ -786,18 +837,7 @@ try:
             st["start"], st["delta"] = start, delta
 
         def events(st, rep):
-            gl = sc.gl
-            start, delta = st["start"], st["delta"]
-            press(gl, start)
-            timed_repaint(gl, st["overlay"])
-            yield None
-            for i in range(1, DRAG_EVENTS + 1):
-                move(gl, start + delta * (i / float(DRAG_EVENTS)), Qt.LeftButton)
-                timed_repaint(gl, st["overlay"])
-                yield None
-            release(gl, start + delta)
-            timed_repaint(gl, st["overlay"])
-            yield None
+            yield from held_drag(sc.gl, st["start"], st["delta"], st["overlay"])
 
         def after(st, rep):
             yield ("sleep", SETTLE_MS)
@@ -892,6 +932,233 @@ try:
 
         return {"before": before, "events": events, "after": after}
 
+    def overlay_draws(t0, t1):
+        """Durations of the overlay passes the draw probe logged between t0 and t1."""
+        out = []
+        for r in read_jsonl(OVERLAY_DRAW_LOG):
+            start, duration = r.get("start_ms"), r.get("duration_ms")
+            if start is not None and duration is not None and t0 <= start <= t1:
+                out.append(float(duration))
+        return out
+
+    def overlay_draw_op(gl, select, drag, restore):
+        """A hover pass across the viewer, then a drag from drag()'s (start, delta), with every
+        event forced through a synchronous repaint; the headline is the overlay pass itself, as
+        the draw probe times it, over both. select() runs before each rep and restore() after."""
+        def setup(st):
+            if not OVERLAY_DRAW_LOG:
+                raise RuntimeError("NATRON_OVERLAY_DRAW_LOG is not set")
+            st["hover_draws"], st["drag_draws"] = [], []
+            yield ("sleep", 0)
+
+        def before(st, rep):
+            for cmd in steps_of(select(st)):
+                yield cmd
+            yield ("sleep", SETTLE_MS)
+            st["start"], st["delta"] = drag(st)
+
+        def events(st, rep):
+            w, h = float(gl.width()), float(gl.height())
+            n = max(1, DRAG_EVENTS)
+            h0 = mono_ms()
+            for i in range(n + 1):
+                f = i / float(n)
+                move(gl, QPointF(0.05 * w + 0.9 * w * f, 0.5 * h + 0.4 * h * math.sin(2 * math.pi * f)))
+                timed_repaint(gl, st["overlay"])
+                yield None
+            st["hover_window"] = (h0, mono_ms())
+            start, delta = st["start"], st["delta"]
+            move(gl, start)
+            d0 = mono_ms()
+            st["drag_window"] = (d0, d0)
+            yield from held_drag(gl, start, delta, st["overlay"])
+            st["drag_window"] = (d0, mono_ms())
+
+        def after(st, rep):
+            hover = overlay_draws(*st["hover_window"])
+            dragged = overlay_draws(*st["drag_window"])
+            if not hover or not dragged:
+                raise RuntimeError("the draw probe logged %d hover and %d drag passes" % (len(hover), len(dragged)))
+            st["hover_draws"].extend(hover)
+            st["drag_draws"].extend(dragged)
+            st["headline"].extend(hover + dragged)
+            yield ("sleep", SETTLE_MS)
+            for cmd in steps_of(restore(st)):
+                yield cmd
+
+        def teardown(st):
+            rec = {}
+            for key in ("hover", "drag"):
+                values = st.get(key + "_draws") or []
+                rec["overlay_draw_%s_passes" % key] = len(values)
+                if values:
+                    rec["overlay_draw_%s_p50_ms" % key] = round(statistics.median(values), 4)
+                    rec["overlay_draw_%s_p95_ms" % key] = round(p95(values), 4)
+            st["record"] = rec
+            yield ("sleep", 0)
+
+        return {"setup": setup, "before": before, "events": events, "after": after,
+                "teardown": teardown, "headline": "values"}
+
+    def roto_overlay_draw_op(sc, every=False):
+        """overlay_draw on the Roto shapes: the target shape stays selected and its top point is
+        dragged; each rep is undone and checked. With every, all shapes and all their points are
+        selected instead, and the drag moves them all."""
+        def select(st):
+            st["original"] = sc.snapshot()
+            click(sc.gl, sc.empty_spot())
+            if every:
+                # The first Ctrl+A selects every shape, the second every point of them.
+                select_all_points(sc.gl)
+                select_all_points(sc.gl)
+            else:
+                top = sc.target_pts[0]
+                click(sc.gl, sc.widget_of(top[0], top[1]))
+            yield ("sleep", 0)
+
+        def drag(st):
+            top = sc.target_pts[0]
+            return sc.widget_of(top[0], top[1]), QPointF(40.0, 0)
+
+        def restore(st):
+            def undo_enabled():
+                a = edit_action("undo")
+                return a is not None and a.isEnabled()
+            # The result of a nested "until" does not reach this generator, so the check is redone.
+            yield ("until", undo_enabled, 5.0)
+            if not undo_enabled():
+                raise RuntimeError("the overlay_draw drag left no undo step in the Edit menu")
+            if same_snapshot(sc.snapshot(), st["original"]):
+                raise RuntimeError("the overlay_draw drag did not move the shape")
+            for _ in range(DRAG_EVENTS + 3):
+                if same_snapshot(sc.snapshot(), st["original"]):
+                    break
+                trigger("undo")
+                QApplication.processEvents()
+            if not same_snapshot(sc.snapshot(), st["original"]):
+                raise RuntimeError("undo did not restore the shape after the overlay_draw drag")
+            yield ("sleep", SETTLE_MS)
+
+        return overlay_draw_op(sc.gl, select, drag, restore)
+
+    def overlay_shape_phase():
+        set_format(SHAPE_FORMAT)
+        gt.close_all_panels()
+        node = create("Roto", 0, 400)
+        gt.require(node.getRotoContext() is not None, "the Roto node has a roto context")
+        view(node)
+        yield ("sleep", RENDER_MS)
+        gl = viewer_gl()
+        gt.require(gl is not None, "the viewer is visible")
+        fit_viewer(gl)
+        yield ("sleep", RENDER_MS)
+        vmap = ViewerMap(gl)
+        gt.require(vmap.ok, "calibrated the viewer for the overlay shapes")
+        send_key(gl, Qt.Key_Q)
+        # A finer grid than shape_phase's, so the largest count fits beside the target.
+        sc = ShapeCtx(node, gl, vmap, app.timelineGetTime(), grid=(32, 24), keys=OVERLAY_KEYS)
+        counts = OVERLAY_SHAPE_COUNTS if selected("overlay_draw") else []
+        all_counts = OVERLAY_ALL_SHAPE_COUNTS if selected("overlay_draw_all") else []
+        for count in sorted(set(counts) | set(all_counts)):
+            gt.section("overlay-shapes-%d" % count)
+            view(None)
+            t0 = mono_ms()
+            for cmd in sc.grow(count):
+                yield cmd
+            emit({"type": "setup", "what": "overlay-shapes", "n": count, "points": POINTS,
+                  "keys": OVERLAY_KEYS, "build_ms": round(mono_ms() - t0, 3)})
+            view(node)
+            yield ("sleep", RENDER_MS)
+            extra = {"format": FORMATS[SHAPE_FORMAT], "shapes": count, "points": POINTS, "keys": OVERLAY_KEYS}
+            if count in counts:
+                for cmd in run_op("overlay_draw", roto_overlay_draw_op(sc), "roto-overlay", count, extra):
+                    yield cmd
+            if count in all_counts:
+                for cmd in run_op("overlay_draw_all", roto_overlay_draw_op(sc, every=True), "roto-overlay-all",
+                                  count, extra):
+                    yield cmd
+        view(None)
+        node.destroy(False)
+        yield ("sleep", SETTLE_MS)
+
+    def xy(value):
+        if hasattr(value, "x") and hasattr(value, "y"):
+            return float(value.x), float(value.y)
+        return float(value[0]), float(value[1])
+
+    def overlay_track_phase():
+        set_format(SHAPE_FORMAT)
+        gt.close_all_panels()
+        source = app.createNode("CheckerBoard")
+        gt.require(source is not None, "create CheckerBoard", gt.plugin_problem("CheckerBoard"))
+        source.setPosition(0, 200)
+        node = create("Tracker", 0, 400)
+        gt.require(node.connectInput(0, source), "the CheckerBoard feeds the Tracker")
+        tracker = node.getTrackerContext()
+        gt.require(tracker is not None, "the Tracker has a tracker context")
+        view(node)
+        yield ("sleep", RENDER_MS)
+        gl = viewer_gl()
+        gt.require(gl is not None, "the viewer is visible")
+        fit_viewer(gl)
+        yield ("sleep", RENDER_MS)
+        vmap = ViewerMap(gl)
+        gt.require(vmap.ok, "calibrated the viewer for the tracks")
+        w, h = float(gl.width()), float(gl.height())
+        cols = max(1, int(math.ceil(math.sqrt(OVERLAY_TRACKS * w / h))))
+        rows = int(math.ceil(OVERLAY_TRACKS / float(cols)))
+        t = app.timelineGetTime()
+        tracks, centres, spots = [], [], []
+        view(None)
+        t0 = mono_ms()
+        for k in range(OVERLAY_TRACKS):
+            spot = QPointF((0.1 + 0.8 * ((k % cols) + 0.5) / cols) * w, (0.1 + 0.8 * ((k // cols) + 0.5) / rows) * h)
+            track = tracker.createTrack()
+            gt.require(track is not None, "created track %d" % k)
+            centre = track.getParam("centerPoint")
+            gt.require(centre is not None, "track %d has a centre parameter" % k)
+            centre.set(*vmap.to_canonical(spot))
+            tracks.append(track)
+            centres.append(centre)
+            spots.append(spot)
+            yield ("sleep", 0)
+        emit({"type": "setup", "what": "overlay-tracks", "n": OVERLAY_TRACKS, "build_ms": round(mono_ms() - t0, 3)})
+        view(node)
+        yield ("sleep", RENDER_MS)
+        target = OVERLAY_TRACKS // 2
+        empty = QPointF(0.05 * w, 0.05 * h)
+
+        def select(st):
+            st["original"] = xy(centres[target].get(float(t)))
+            click(gl, empty)
+            click(gl, spots[target])
+            yield ("sleep", 0)
+
+        def drag(st):
+            return spots[target], QPointF(25.0, 0)
+
+        def restore(st):
+            moved = xy(centres[target].get(float(t)))
+            ox, oy = st["original"]
+            if abs(moved[0] - ox) < 1e-6 and abs(moved[1] - oy) < 1e-6:
+                raise RuntimeError("the overlay_draw drag did not move the track")
+            centres[target].set(ox, oy)
+            QApplication.processEvents()
+            back = xy(centres[target].get(float(t)))
+            if abs(back[0] - ox) > 1e-6 or abs(back[1] - oy) > 1e-6:
+                raise RuntimeError("the track centre was not restored after the overlay_draw drag")
+            yield ("sleep", SETTLE_MS)
+
+        extra = {"format": FORMATS[SHAPE_FORMAT], "tracks": OVERLAY_TRACKS}
+        for cmd in run_op("overlay_draw", overlay_draw_op(gl, select, drag, restore), "tracker-tracks",
+                          OVERLAY_TRACKS, extra):
+            yield cmd
+        del tracks[:], centres[:]
+        view(None)
+        node.destroy(False)
+        source.destroy(False)
+        yield ("sleep", SETTLE_MS)
+
     def shape_phase():
         set_format(SHAPE_FORMAT)
         gt.close_all_panels()
@@ -937,8 +1204,8 @@ try:
         # Written before any wait, so a run that never gets going still leaves a record of having started.
         emit(host_record())
         report("NOTE roto bench started; results in %s" % OUT_PATH)
-        ok = yield ("until", lambda: main_window() is not None and viewer_gl() is not None, STARTUP_TIMEOUT_S)
-        gt.require(ok, "the main window and viewer are up")
+        ok = yield ("until", lambda: main_window() is not None, STARTUP_TIMEOUT_S)
+        gt.require(ok, "the main window is up")
         gt.close_all_panels()
         activate()
         if not STALL_LOG:
@@ -950,6 +1217,9 @@ try:
             viewer = app.createNode("Viewer")
         gt.require(viewer is not None, "a Viewer node exists")
         _state["viewer"] = viewer
+        # A fresh project has no viewer: its widget exists only once the node does.
+        ok = yield ("until", lambda: viewer_gl() is not None, STARTUP_TIMEOUT_S)
+        gt.require(ok, "the viewer widget is up")
         if any(selected("stroke_%dpx" % b) for b in BRUSHES) or selected("pen_up"):
             for cmd in stroke_phase():
                 yield cmd
@@ -961,6 +1231,14 @@ try:
             _state["viewer"] = viewer
         if any(selected(k) for k in ("drag_point", "drag_tangent", "drag_feather", "transform_box", "hover")):
             for cmd in shape_phase():
+                yield cmd
+        if selected("overlay_draw") or selected("overlay_draw_all"):
+            if not OVERLAY_DRAW_LOG:
+                report("NOTE NATRON_OVERLAY_DRAW_LOG is not set; overlay_draw has nothing to measure")
+            for cmd in overlay_shape_phase():
+                yield cmd
+        if selected("overlay_draw"):
+            for cmd in overlay_track_phase():
                 yield cmd
         _out.close()
 

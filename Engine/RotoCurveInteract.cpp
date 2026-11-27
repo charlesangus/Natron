@@ -28,6 +28,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <initializer_list>
 #include <limits>
 #include <map>
 
@@ -37,10 +39,12 @@
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/OutputSchedulerThread.h"
+#include "Engine/OverlayDrawListPen.h"
 #include "Engine/OverlaySupport.h"
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/Project.h"
@@ -55,7 +59,6 @@
 #include "Engine/TrackerContext.h"
 #include "Engine/Transform.h"
 #include "Engine/ViewerInstance.h"
-#include "Global/GLIncludes.h"
 
 NATRON_NAMESPACE_ENTER
 RotoCurveInteract::RotoCurveInteract(EffectInstance* host)
@@ -93,6 +96,13 @@ RotoCurveInteract::RotoCurveInteract(EffectInstance* host)
     , cloneOffset(0., 0.)
     , mouseCenterOnSizeChange()
     , _host(host)
+    , _curvesOverlay()
+    , _curvesOverlayHolds()
+    , _curvesExtrasOverlay()
+    , _curvesOverlayRebuilds(0)
+    , _toolsOverlay()
+    , _toolsViewportOverlay()
+    , _cloneSourceOverlay()
     , _dragRender()
     , _dragRenderWatch()
     , _dragRenderGesture(0)
@@ -415,11 +425,12 @@ RotoCurveInteract::isBboxClickAnywhereEnabled() const
 }
 
 void
-RotoCurveInteract::drawSelectedCp(double time,
-                                  const BezierCPPtr& cp,
-                                  double x,
-                                  double y,
-                                  const Transform::Matrix3x3& transform)
+RotoCurveInteract::buildSelectedCp(OverlayDrawListPen& pen,
+                                   double time,
+                                   const BezierCPPtr& cp,
+                                   double x,
+                                   double y,
+                                   const Transform::Matrix3x3& transform)
 {
     /// if the tangent is being dragged, color it
     bool colorLeftTangent = false;
@@ -439,66 +450,54 @@ RotoCurveInteract::drawSelectedCp(double time,
 
     bool drawLeftHandle = leftDeriv.x != x || leftDeriv.y != y;
     bool drawRightHandle = rightDeriv.x != x || rightDeriv.y != y;
-    glBegin(GL_POINTS);
+    pen.begin(OverlayDrawListPen::eModePoints);
     if (drawLeftHandle) {
         if (colorLeftTangent) {
-            glColor3f(0.2, 1., 0.);
+            pen.color(0.2, 1., 0.);
         }
-        glVertex2d(leftDeriv.x, leftDeriv.y);
+        pen.vertex(leftDeriv.x, leftDeriv.y);
         if (colorLeftTangent) {
-            glColor3d(0.85, 0.67, 0.);
+            pen.color(0.85, 0.67, 0.);
         }
     }
     if (drawRightHandle) {
         if (colorRightTangent) {
-            glColor3f(0.2, 1., 0.);
+            pen.color(0.2, 1., 0.);
         }
-        glVertex2d(rightDeriv.x, rightDeriv.y);
+        pen.vertex(rightDeriv.x, rightDeriv.y);
         if (colorRightTangent) {
-            glColor3d(0.85, 0.67, 0.);
+            pen.color(0.85, 0.67, 0.);
         }
     }
-    glEnd();
+    pen.end();
 
-    glBegin(GL_LINE_STRIP);
+    pen.begin(OverlayDrawListPen::eModeLineStrip);
     if (drawLeftHandle) {
-        glVertex2d(leftDeriv.x, leftDeriv.y);
+        pen.vertex(leftDeriv.x, leftDeriv.y);
     }
-    glVertex2d(x, y);
+    pen.vertex(x, y);
     if (drawRightHandle) {
-        glVertex2d(rightDeriv.x, rightDeriv.y);
+        pen.vertex(rightDeriv.x, rightDeriv.y);
     }
-    glEnd();
-} // drawSelectedCp
+    pen.end();
+} // buildSelectedCp
 
 void
-RotoCurveInteract::drawEllipse(double x,
-                               double y,
-                               double radiusX,
-                               double radiusY,
-                               int l,
-                               double r,
-                               double g,
-                               double b,
-                               double a)
+RotoCurveInteract::buildEllipse(OverlayDrawListPen& pen,
+                                double x,
+                                double y,
+                                double radiusX,
+                                double radiusY)
 {
-    glColor3f(r * l * a, g * l * a, b * l * a);
-
-    glPushMatrix();
-    //  center the oval at x_center, y_center
-    glTranslatef((float)x, (float)y, 0.f);
-    //  draw the oval using line segments
-    glBegin(GL_LINE_LOOP);
     // we don't need to be pixel-perfect here, it's just an interact!
     // 40 segments is enough.
+    pen.begin(OverlayDrawListPen::eModeLineLoop);
     double m = 2 * 3.14159265358979323846264338327950288419717 / 40.;
     for (int i = 0; i < 40; ++i) {
         double theta = i * m;
-        glVertex2d(radiusX * std::cos(theta), radiusY * std::sin(theta));
+        pen.vertex(x + radiusX * std::cos(theta), y + radiusY * std::sin(theta));
     }
-    glEnd();
-
-    glPopMatrix();
+    pen.end();
 }
 
 KnobButtonPtr
@@ -578,42 +577,59 @@ RotoCurveInteract::dragBrushSize(const KnobDoublePtr& size,
 }
 
 void
+RotoCurveInteract::buildCloneSource(OverlayDrawListPen& pen,
+                                    const QPointF& centre,
+                                    const std::pair<double, double>& offset,
+                                    double radius,
+                                    double opacity)
+{
+    const double sourceX = centre.x() + offset.first;
+    const double sourceY = centre.y() + offset.second;
+    const bool shadow = pen.shadow();
+
+    pen.setShadow(true);
+    pen.color(.5 * opacity, .5 * opacity, .5 * opacity);
+    pen.lineWidth(1.5);
+    pen.begin(OverlayDrawListPen::eModeLines);
+    if (state == eEventStateDraggingCloneOffset) {
+        pen.vertex(centre.x(), centre.y());
+        pen.vertex(sourceX, sourceY);
+    }
+    pen.vertex(sourceX, sourceY - radius);
+    pen.vertex(sourceX, sourceY + radius);
+    pen.vertex(sourceX - radius, sourceY);
+    pen.vertex(sourceX + radius, sourceY);
+    pen.end();
+
+    pen.color(opacity / 2., opacity / 2., opacity / 2.);
+    buildEllipse(pen, sourceX, sourceY, radius, radius);
+    pen.setShadow(shadow);
+}
+
+void
 RotoCurveInteract::drawCloneSource(const QPointF& centre,
                                    const std::pair<double, double>& offset,
                                    double radius,
-                                   double opacity,
-                                   double screenPixelRatio,
-                                   const std::pair<double, double>& viewportSize)
+                                   double opacity)
 {
-    GLdouble projection[16];
-    glGetDoublev(GL_PROJECTION_MATRIX, projection);
-    // How much to translate GL_PROJECTION by to move exactly one pixel on screen.
-    const double shadowX = 2. / (projection[0] * viewportSize.first);
-    const double shadowY = 2. / (projection[5] * viewportSize.second);
-    const double sourceX = centre.x() + offset.first;
-    const double sourceY = centre.y() + offset.second;
-
-    for (int l = 0; l < 2; ++l) {
-        glMatrixMode(GL_PROJECTION);
-        const int direction = (l == 0) ? 1 : -1;
-        glTranslated(direction * shadowX, -direction * shadowY, 0);
-        glMatrixMode(GL_MODELVIEW);
-
-        glColor3f(.5f * l * opacity, .5f * l * opacity, .5f * l * opacity);
-        glLineWidth(1.5 * screenPixelRatio);
-        glBegin(GL_LINES);
-        if (state == eEventStateDraggingCloneOffset) {
-            glVertex2d(centre.x(), centre.y());
-            glVertex2d(sourceX, sourceY);
-        }
-        glVertex2d(sourceX, sourceY - radius);
-        glVertex2d(sourceX, sourceY + radius);
-        glVertex2d(sourceX - radius, sourceY);
-        glVertex2d(sourceX + radius, sourceY);
-        glEnd();
-
-        drawEllipse(sourceX, sourceY, radius, radius, l, 1.f, 1.f, 1.f, opacity / 2.);
+    OverlaySupport* overlay = _host->getCurrentViewportForOverlays();
+    if (!overlay) {
+        return;
     }
+    ContentHasher signature;
+    signature.appendDouble(centre.x());
+    signature.appendDouble(centre.y());
+    signature.appendDouble(offset.first);
+    signature.appendDouble(offset.second);
+    signature.appendDouble(radius);
+    signature.appendDouble(opacity);
+    signature.appendBool(state == eEventStateDraggingCloneOffset);
+    if (OverlayDrawList* list = _cloneSourceOverlay.rebuildFor(signature.finalize())) {
+        OverlayDrawListPen pen(list);
+        pen.setDeformable(false);
+        buildCloneSource(pen, centre, offset, radius, opacity);
+    }
+    overlay->drawOverlayDrawList(_cloneSourceOverlay.list(), OverlayDrawState());
 }
 
 void
@@ -626,126 +642,112 @@ RotoCurveInteract::startLifeTimeAtCurrentFrame(const RotoDrawableItemPtr& item)
     }
 }
 
-void
-RotoCurveInteract::drawArrow(double centerX,
-                             double centerY,
-                             double rotate,
-                             bool hovered,
-                             const std::pair<double, double>& pixelScale)
-{
-    GLProtectMatrix pm(GL_MODELVIEW);
+namespace {
 
+// Adds a glyph about (centerX, centerY) from vertices in canonical units at that centre, turned by
+// rotate degrees the way glRotatef turns the canonical frame.
+void
+addRotatedGlyph(OverlayDrawListPen& pen,
+                OverlayDrawListPen::ModeEnum mode,
+                double centerX,
+                double centerY,
+                double rotate,
+                const std::pair<double, double>& pixelScale,
+                std::initializer_list<QPointF> points)
+{
+    const double a = rotate * 3.14159265358979323846 / 180.;
+    const double c = std::cos(a);
+    const double s = std::sin(a);
+
+    pen.beginGlyph(mode, centerX, centerY);
+    for (const QPointF& p : points) {
+        pen.vertex((c * p.x() - s * p.y()) / pixelScale.first, (s * p.x() + c * p.y()) / pixelScale.second);
+    }
+    pen.end();
+}
+
+} // anonymous namespace
+
+void
+RotoCurveInteract::buildArrow(OverlayDrawListPen& pen,
+                              double centerX,
+                              double centerY,
+                              double rotate,
+                              bool hovered,
+                              const std::pair<double, double>& pixelScale)
+{
     if (hovered) {
-        glColor3f(0., 1., 0.);
+        pen.color(0., 1., 0.);
     } else {
-        glColor3f(1., 1., 1.);
+        pen.color(1., 1., 1.);
     }
 
     double arrowLenght = kTransformArrowLenght * pixelScale.second;
     double arrowWidth = kTransformArrowWidth * pixelScale.second;
     double arrowHeadHeight = 4 * pixelScale.second;
 
-    glTranslatef(centerX, centerY, 0.);
-    glRotatef(rotate, 0., 0., 1.);
     QPointF bottom(0., -arrowLenght);
     QPointF top(0, arrowLenght);
     /// the arrow head is 4 pixels long and kTransformArrowWidth * 2 large
-    double screenPixelRatio = _host->getCurrentViewportForOverlays()->getScreenPixelRatio();
-    glLineWidth(1 * screenPixelRatio);
-    glBegin(GL_LINES);
-    glVertex2f(top.x(), top.y());
-    glVertex2f(bottom.x(), bottom.y());
-    glEnd();
-
-    glBegin(GL_POLYGON);
-    glVertex2f(bottom.x(), bottom.y());
-    glVertex2f(bottom.x() + arrowWidth, bottom.y() + arrowHeadHeight);
-    glVertex2f(bottom.x() - arrowWidth, bottom.y() + arrowHeadHeight);
-    glEnd();
-
-    glBegin(GL_POLYGON);
-    glVertex2f(top.x(), top.y());
-    glVertex2f(top.x() - arrowWidth, top.y() - arrowHeadHeight);
-    glVertex2f(top.x() + arrowWidth, top.y() - arrowHeadHeight);
-    glEnd();
+    pen.lineWidth(1.);
+    addRotatedGlyph(pen, OverlayDrawListPen::eModeLines, centerX, centerY, rotate, pixelScale, { top, bottom });
+    addRotatedGlyph(pen, OverlayDrawListPen::eModePolygon, centerX, centerY, rotate, pixelScale,
+                    { bottom, QPointF(bottom.x() + arrowWidth, bottom.y() + arrowHeadHeight), QPointF(bottom.x() - arrowWidth, bottom.y() + arrowHeadHeight) });
+    addRotatedGlyph(pen, OverlayDrawListPen::eModePolygon, centerX, centerY, rotate, pixelScale,
+                    { top, QPointF(top.x() - arrowWidth, top.y() - arrowHeadHeight), QPointF(top.x() + arrowWidth, top.y() - arrowHeadHeight) });
 }
 
 void
-RotoCurveInteract::drawBendedArrow(double centerX,
-                                   double centerY,
-                                   double rotate,
-                                   bool hovered,
-                                   const std::pair<double, double>& pixelScale)
+RotoCurveInteract::buildBendedArrow(OverlayDrawListPen& pen,
+                                    double centerX,
+                                    double centerY,
+                                    double rotate,
+                                    bool hovered,
+                                    const std::pair<double, double>& pixelScale)
 {
-    GLProtectMatrix p(GL_MODELVIEW);
-
     if (hovered) {
-        glColor3f(0., 1., 0.);
+        pen.color(0., 1., 0.);
     } else {
-        glColor3f(1., 1., 1.);
+        pen.color(1., 1., 1.);
     }
 
     double arrowLenght = kTransformArrowLenght * pixelScale.second;
     double arrowWidth = kTransformArrowWidth * pixelScale.second;
     double arrowHeadHeight = 4 * pixelScale.second;
-
-    glTranslatef(centerX, centerY, 0.);
-    glRotatef(rotate, 0., 0., 1.);
 
     /// by default we draw the top left
     QPointF bottom(0., -arrowLenght / 2.);
     QPointF right(arrowLenght / 2., 0.);
-    glBegin(GL_LINE_STRIP);
-    glVertex2f(bottom.x(), bottom.y());
-    glVertex2f(0., 0.);
-    glVertex2f(right.x(), right.y());
-    glEnd();
-
-    glBegin(GL_POLYGON);
-    glVertex2f(bottom.x(), bottom.y() - arrowHeadHeight);
-    glVertex2f(bottom.x() - arrowWidth, bottom.y());
-    glVertex2f(bottom.x() + arrowWidth, bottom.y());
-    glEnd();
-
-    glBegin(GL_POLYGON);
-    glVertex2f(right.x() + arrowHeadHeight, right.y());
-    glVertex2f(right.x(), right.y() - arrowWidth);
-    glVertex2f(right.x(), right.y() + arrowWidth);
-    glEnd();
+    addRotatedGlyph(pen, OverlayDrawListPen::eModeLineStrip, centerX, centerY, rotate, pixelScale, { bottom, QPointF(0., 0.), right });
+    addRotatedGlyph(pen, OverlayDrawListPen::eModePolygon, centerX, centerY, rotate, pixelScale,
+                    { QPointF(bottom.x(), bottom.y() - arrowHeadHeight), QPointF(bottom.x() - arrowWidth, bottom.y()), QPointF(bottom.x() + arrowWidth, bottom.y()) });
+    addRotatedGlyph(pen, OverlayDrawListPen::eModePolygon, centerX, centerY, rotate, pixelScale,
+                    { QPointF(right.x() + arrowHeadHeight, right.y()), QPointF(right.x(), right.y() - arrowWidth), QPointF(right.x(), right.y() + arrowWidth) });
 }
 
 void
-RotoCurveInteract::drawSelectedCpsBBOX()
+RotoCurveInteract::buildSelectedCpsBBOX(OverlayDrawListPen& pen,
+                                        const std::pair<double, double>& pixelScale)
 {
-    std::pair<double, double> pixelScale;
-
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
-
     {
-        GLProtectAttrib a(GL_HINT_BIT | GL_ENABLE_BIT | GL_LINE_BIT | GL_POINT_BIT | GL_COLOR_BUFFER_BIT | GL_CURRENT_BIT | GL_TRANSFORM_BIT);
-
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glEnable(GL_LINE_SMOOTH);
-        glHint(GL_LINE_SMOOTH_HINT, GL_DONT_CARE);
+        pen.setSmoothLines(true);
+        pen.setSmoothPoints(false);
 
         QPointF topLeft = selectedCpsBbox.topLeft();
         QPointF btmRight = selectedCpsBbox.bottomRight();
 
-        double screenPixelRatio = _host->getCurrentViewportForOverlays()->getScreenPixelRatio();
-
         if (hoverState == eHoverStateBbox) {
-            glColor4f(0.9, 0.5, 0, 1.);
+            pen.color(0.9, 0.5, 0, 1.);
         } else {
-            glColor4f(0.8, 0.8, 0.8, 1.);
+            pen.color(0.8, 0.8, 0.8, 1.);
         }
-        glLineWidth(1.5 * screenPixelRatio);
-        glBegin(GL_LINE_LOOP);
-        glVertex2f(topLeft.x(), btmRight.y());
-        glVertex2f(topLeft.x(), topLeft.y());
-        glVertex2f(btmRight.x(), topLeft.y());
-        glVertex2f(btmRight.x(), btmRight.y());
-        glEnd();
+        pen.lineWidth(1.5);
+        pen.begin(OverlayDrawListPen::eModeLineLoop);
+        pen.vertex(topLeft.x(), btmRight.y());
+        pen.vertex(topLeft.x(), topLeft.y());
+        pen.vertex(btmRight.x(), topLeft.y());
+        pen.vertex(btmRight.x(), btmRight.y());
+        pen.end();
 
         const QPointF pivot = getSelectedCpsPivot();
         const bool pivotMoved = pivot != selectedCpsBbox.center();
@@ -759,32 +761,30 @@ RotoCurveInteract::drawSelectedCpsBBOX()
         selectedCpsCrossVertLine.setLine(midX, midY - xHairMidSizeY, midX, midY + xHairMidSizeY);
 
         if (pivotMoved) {
-            glColor4f(0.9, 0.5, 0, 1.);
+            pen.color(0.9, 0.5, 0, 1.);
         }
-        glLineWidth(1.5 * screenPixelRatio);
-        glBegin(GL_LINES);
+        pen.lineWidth(1.5);
+        pen.begin(OverlayDrawListPen::eModeLines);
         if (pivotMoved) {
             // A placed pivot may sit outside the box, so its cross is not clipped to it.
-            glVertex2f(selectedCpsCrossHorizLine.p1().x(), selectedCpsCrossHorizLine.p1().y());
-            glVertex2f(selectedCpsCrossHorizLine.p2().x(), selectedCpsCrossHorizLine.p2().y());
-            glVertex2f(selectedCpsCrossVertLine.p1().x(), selectedCpsCrossVertLine.p1().y());
-            glVertex2f(selectedCpsCrossVertLine.p2().x(), selectedCpsCrossVertLine.p2().y());
+            pen.vertex(selectedCpsCrossHorizLine.p1().x(), selectedCpsCrossHorizLine.p1().y());
+            pen.vertex(selectedCpsCrossHorizLine.p2().x(), selectedCpsCrossHorizLine.p2().y());
+            pen.vertex(selectedCpsCrossVertLine.p1().x(), selectedCpsCrossVertLine.p1().y());
+            pen.vertex(selectedCpsCrossVertLine.p2().x(), selectedCpsCrossVertLine.p2().y());
         } else {
-            glVertex2f(std::max(selectedCpsCrossHorizLine.p1().x(), topLeft.x()), selectedCpsCrossHorizLine.p1().y());
-            glVertex2f(std::min(selectedCpsCrossHorizLine.p2().x(), btmRight.x()), selectedCpsCrossHorizLine.p2().y());
-            glVertex2f(selectedCpsCrossVertLine.p1().x(), std::max(selectedCpsCrossVertLine.p1().y(), btmRight.y()));
-            glVertex2f(selectedCpsCrossVertLine.p2().x(), std::min(selectedCpsCrossVertLine.p2().y(), topLeft.y()));
+            pen.vertex(std::max(selectedCpsCrossHorizLine.p1().x(), topLeft.x()), selectedCpsCrossHorizLine.p1().y());
+            pen.vertex(std::min(selectedCpsCrossHorizLine.p2().x(), btmRight.x()), selectedCpsCrossHorizLine.p2().y());
+            pen.vertex(selectedCpsCrossVertLine.p1().x(), std::max(selectedCpsCrossVertLine.p1().y(), btmRight.y()));
+            pen.vertex(selectedCpsCrossVertLine.p2().x(), std::min(selectedCpsCrossVertLine.p2().y(), topLeft.y()));
         }
-        glEnd();
+        pen.end();
         if (pivotMoved) {
             if (hoverState == eHoverStateBbox) {
-                glColor4f(0.9, 0.5, 0, 1.);
+                pen.color(0.9, 0.5, 0, 1.);
             } else {
-                glColor4f(0.8, 0.8, 0.8, 1.);
+                pen.color(0.8, 0.8, 0.8, 1.);
             }
         }
-
-        glCheckError();
 
         QPointF midTop((topLeft.x() + btmRight.x()) / 2., topLeft.y());
         QPointF midRight(btmRight.x(), (topLeft.y() + btmRight.y()) / 2.);
@@ -792,18 +792,18 @@ RotoCurveInteract::drawSelectedCpsBBOX()
         QPointF midLeft(topLeft.x(), (topLeft.y() + btmRight.y()) / 2.);
 
         /// draw the 4 corners points and the 4 mid points
-        glPointSize(5.f * screenPixelRatio);
-        glBegin(GL_POINTS);
-        glVertex2f(topLeft.x(), topLeft.y());
-        glVertex2f(btmRight.x(), topLeft.y());
-        glVertex2f(btmRight.x(), btmRight.y());
-        glVertex2f(topLeft.x(), btmRight.y());
+        pen.pointSize(5.);
+        pen.begin(OverlayDrawListPen::eModePoints);
+        pen.vertex(topLeft.x(), topLeft.y());
+        pen.vertex(btmRight.x(), topLeft.y());
+        pen.vertex(btmRight.x(), btmRight.y());
+        pen.vertex(topLeft.x(), btmRight.y());
 
-        glVertex2f(midTop.x(), midTop.y());
-        glVertex2f(midRight.x(), midRight.y());
-        glVertex2f(midBtm.x(), midBtm.y());
-        glVertex2f(midLeft.x(), midLeft.y());
-        glEnd();
+        pen.vertex(midTop.x(), midTop.y());
+        pen.vertex(midRight.x(), midRight.y());
+        pen.vertex(midBtm.x(), midBtm.y());
+        pen.vertex(midLeft.x(), midLeft.y());
+        pen.end();
 
         /// now draw the handles to indicate the user he/she can transform the selection rectangle
         /// draw it only if it is not dragged
@@ -815,42 +815,42 @@ RotoCurveInteract::drawSelectedCpsBBOX()
             double halfOffset = offset / 2.;
             if (transformMode == eSelectedCpsTransformModeTranslateAndScale) {
                 /// draw mid top arrow vertical
-                drawArrow(midTop.x(), midTop.y() + offset, 0., hoverState == eHoverStateBboxMidTop, pixelScale);
+                buildArrow(pen, midTop.x(), midTop.y() + offset, 0., hoverState == eHoverStateBboxMidTop, pixelScale);
                 /// draw mid right arrow horizontal
-                drawArrow(midRight.x() + offset, midRight.y(), 90., hoverState == eHoverStateBboxMidRight, pixelScale);
+                buildArrow(pen, midRight.x() + offset, midRight.y(), 90., hoverState == eHoverStateBboxMidRight, pixelScale);
                 /// draw mid btm arrow vertical
-                drawArrow(midBtm.x(), midBtm.y() - offset, 0., hoverState == eHoverStateBboxMidBtm, pixelScale);
+                buildArrow(pen, midBtm.x(), midBtm.y() - offset, 0., hoverState == eHoverStateBboxMidBtm, pixelScale);
                 /// draw mid left arrow horizontal
-                drawArrow(midLeft.x() - offset, midLeft.y(), 90., hoverState == eHoverStateBboxMidLeft, pixelScale);
+                buildArrow(pen, midLeft.x() - offset, midLeft.y(), 90., hoverState == eHoverStateBboxMidLeft, pixelScale);
                 /// draw top left arrow rotated
-                drawArrow(topLeft.x() - offset, topLeft.y() + offset, 45., hoverState == eHoverStateBboxTopLeft, pixelScale);
+                buildArrow(pen, topLeft.x() - offset, topLeft.y() + offset, 45., hoverState == eHoverStateBboxTopLeft, pixelScale);
                 /// draw top right arrow rotated
-                drawArrow(btmRight.x() + offset, topLeft.y() + offset, -45., hoverState == eHoverStateBboxTopRight, pixelScale);
+                buildArrow(pen, btmRight.x() + offset, topLeft.y() + offset, -45., hoverState == eHoverStateBboxTopRight, pixelScale);
                 /// draw btm right arrow rotated
-                drawArrow(btmRight.x() + offset, btmRight.y() - offset, 45., hoverState == eHoverStateBboxBtmRight, pixelScale);
+                buildArrow(pen, btmRight.x() + offset, btmRight.y() - offset, 45., hoverState == eHoverStateBboxBtmRight, pixelScale);
                 /// draw btm left arrow rotated
-                drawArrow(topLeft.x() - offset, btmRight.y() - offset, -45., hoverState == eHoverStateBboxBtmLeft, pixelScale);
+                buildArrow(pen, topLeft.x() - offset, btmRight.y() - offset, -45., hoverState == eHoverStateBboxBtmLeft, pixelScale);
             } else {
                 /// draw mid top arrow horizontal
-                drawArrow(midTop.x(), midTop.y() + offset, 90., hoverState == eHoverStateBboxMidTop, pixelScale);
+                buildArrow(pen, midTop.x(), midTop.y() + offset, 90., hoverState == eHoverStateBboxMidTop, pixelScale);
                 /// draw mid right arrow vertical
-                drawArrow(midRight.x() + offset, midRight.y(), 0., hoverState == eHoverStateBboxMidRight, pixelScale);
+                buildArrow(pen, midRight.x() + offset, midRight.y(), 0., hoverState == eHoverStateBboxMidRight, pixelScale);
                 /// draw mid btm arrow horizontal
-                drawArrow(midBtm.x(), midBtm.y() - offset, 90., hoverState == eHoverStateBboxMidBtm, pixelScale);
+                buildArrow(pen, midBtm.x(), midBtm.y() - offset, 90., hoverState == eHoverStateBboxMidBtm, pixelScale);
                 /// draw mid left arrow vertical
-                drawArrow(midLeft.x() - offset, midLeft.y(), 0., hoverState == eHoverStateBboxMidLeft, pixelScale);
+                buildArrow(pen, midLeft.x() - offset, midLeft.y(), 0., hoverState == eHoverStateBboxMidLeft, pixelScale);
                 /// draw the top left bended
-                drawBendedArrow(topLeft.x() - halfOffset, topLeft.y() + halfOffset, 0., hoverState == eHoverStateBboxTopLeft, pixelScale);
+                buildBendedArrow(pen, topLeft.x() - halfOffset, topLeft.y() + halfOffset, 0., hoverState == eHoverStateBboxTopLeft, pixelScale);
                 /// draw the top right bended
-                drawBendedArrow(btmRight.x() + halfOffset, topLeft.y() + halfOffset, -90, hoverState == eHoverStateBboxTopRight, pixelScale);
+                buildBendedArrow(pen, btmRight.x() + halfOffset, topLeft.y() + halfOffset, -90, hoverState == eHoverStateBboxTopRight, pixelScale);
                 /// draw the btm right bended
-                drawBendedArrow(btmRight.x() + halfOffset, btmRight.y() - halfOffset, -180, hoverState == eHoverStateBboxBtmRight, pixelScale);
+                buildBendedArrow(pen, btmRight.x() + halfOffset, btmRight.y() - halfOffset, -180, hoverState == eHoverStateBboxBtmRight, pixelScale);
                 /// draw the btm left bended
-                drawBendedArrow(topLeft.x() - halfOffset, btmRight.y() - halfOffset, 90, hoverState == eHoverStateBboxBtmLeft, pixelScale);
+                buildBendedArrow(pen, topLeft.x() - halfOffset, btmRight.y() - halfOffset, 90, hoverState == eHoverStateBboxBtmLeft, pixelScale);
             }
         }
-    } // GLProtectAttrib a(GL_HINT_BIT | GL_ENABLE_BIT | GL_LINE_BIT | GL_POINT_BIT | GL_COLOR_BUFFER_BIT | GL_CURRENT_BIT);
-} // drawSelectedCpsBBOX
+    }
+} // buildSelectedCpsBBOX
 
 void
 RotoCurveInteract::clearSelection()
@@ -3176,520 +3176,709 @@ RotoCurveInteract::removeCurve(const RotoDrawableItemPtr& curve)
 
 namespace {
 
-// Whether rect, in the overlay's coordinates, falls wholly outside the view: all its corners lie
-// beyond the same clip plane once through the current model view and projection, so it holds
-// whatever transform the viewer draws this overlay under.
-bool
-isOutsideView(const RectD& rect,
-              const GLdouble* modelView,
-              const GLdouble* projection)
-{
-    if (!(rect.x1 <= rect.x2) || !(rect.y1 <= rect.y2)) {
-        return true;
-    }
-    const double corners[4][2] = { { rect.x1, rect.y1 }, { rect.x2, rect.y1 }, { rect.x2, rect.y2 }, { rect.x1, rect.y2 } };
-    int outside = 0xF;
-    for (int c = 0; c < 4; ++c) {
-        double eye[4], clip[4];
-        for (int j = 0; j < 4; ++j) {
-            eye[j] = modelView[j] * corners[c][0] + modelView[4 + j] * corners[c][1] + modelView[12 + j];
-        }
-        for (int j = 0; j < 4; ++j) {
-            clip[j] = projection[j] * eye[0] + projection[4 + j] * eye[1] + projection[8 + j] * eye[2] + projection[12 + j] * eye[3];
-        }
-        if (clip[3] <= 0.) {
-            return false;
-        }
-        int code = 0;
-        if (clip[0] < -clip[3]) {
-            code |= 0x1;
-        }
-        if (clip[0] > clip[3]) {
-            code |= 0x2;
-        }
-        if (clip[1] < -clip[3]) {
-            code |= 0x4;
-        }
-        if (clip[1] > clip[3]) {
-            code |= 0x8;
-        }
-        outside &= code;
-    }
-
-    return outside != 0;
-}
-
-// Leaves the client vertex array state, and any bound vertex array or array buffer, as the viewer
-// had them, so that the overlay can draw from client-side arrays.
-class OverlayVertexArrayScope {
-public:
-    OverlayVertexArrayScope()
-        : _vertexArray(0)
-        , _arrayBuffer(0)
-    {
-        glPushClientAttrib(GL_CLIENT_VERTEX_ARRAY_BIT);
-        glGetIntegerv(GL_VERTEX_ARRAY_BINDING, &_vertexArray);
-        glGetIntegerv(GL_ARRAY_BUFFER_BINDING, &_arrayBuffer);
-        if (_vertexArray) {
-            glBindVertexArray(0);
-        }
-        if (_arrayBuffer) {
-            glBindBuffer(GL_ARRAY_BUFFER, 0);
-        }
-    }
-
-    ~OverlayVertexArrayScope()
-    {
-        if (_arrayBuffer) {
-            glBindBuffer(GL_ARRAY_BUFFER, _arrayBuffer);
-        }
-        if (_vertexArray) {
-            glBindVertexArray(_vertexArray);
-        }
-        glPopClientAttrib();
-    }
-
-private:
-    GLint _vertexArray;
-    GLint _arrayBuffer;
-};
-
 void
-drawLineVertices(const std::vector<float>& vertices,
-                 GLenum mode)
+addCurveVertices(OverlayDrawListPen& pen,
+                 const std::vector<float>& vertices,
+                 bool loop)
 {
     if (vertices.empty()) {
         return;
     }
-    glEnableClientState(GL_VERTEX_ARRAY);
-    glVertexPointer(2, GL_FLOAT, 0, &vertices[0]);
-    glDrawArrays(mode, 0, (GLsizei)(vertices.size() / 2));
-    glDisableClientState(GL_VERTEX_ARRAY);
+    pen.begin(loop ? OverlayDrawListPen::eModeLineLoop : OverlayDrawListPen::eModeLineStrip);
+    for (std::size_t i = 0; i + 1 < vertices.size(); i += 2) {
+        pen.vertex(vertices[i], vertices[i + 1]);
+    }
+    pen.end();
+}
+
+const Bezier*
+bezierOf(const SelectedCP& points)
+{
+    const BezierCPPtr& point = points.first ? points.first : points.second;
+
+    return point ? point->getBezier().get() : nullptr;
+}
+
+void
+appendPointer(ContentHasher& hasher,
+              const void* p)
+{
+    hasher.appendU64((U64) reinterpret_cast<std::uintptr_t>(p));
 }
 
 } // anonymous namespace
 
 void
-RotoCurveInteract::drawOverlay(double time)
+RotoCurveInteract::getCurvesOverlaySelection(CurvesOverlaySelection* selection) const
 {
-    std::list<RotoDrawableItemPtr> drawables = getCurveContext()->getCurvesByRenderOrder();
-    std::pair<double, double> pixelScale;
-    std::pair<double, double> viewportSize;
-    double screenPixelRatio = _host->getCurrentViewportForOverlays()->getScreenPixelRatio();
+    for (SelectedItems::const_iterator it = selectedItems.begin(); it != selectedItems.end(); ++it) {
+        selection->items.insert(it->get());
+    }
+    for (SelectedCPs::const_iterator it = selectedCps.begin(); it != selectedCps.end(); ++it) {
+        const Bezier* first = it->first ? it->first->getBezier().get() : nullptr;
+        const Bezier* second = it->second ? it->second->getBezier().get() : nullptr;
+        if (first) {
+            selection->cps[first].push_back(&*it);
+        }
+        if (second && (second != first)) {
+            selection->cps[second].push_back(&*it);
+        }
+    }
+    selection->hoveredFeatherBar = bezierOf(featherBarBeingHovered);
+    selection->draggedFeatherBar = bezierOf(featherBarBeingDragged);
+    selection->draggedTangent = tangentBeingDragged ? tangentBeingDragged->getBezier().get() : nullptr;
+}
 
-    _host->getCurrentViewportForOverlays()->getPixelScale(pixelScale.first, pixelScale.second);
-    _host->getCurrentViewportForOverlays()->getViewportSize(viewportSize.first, viewportSize.second);
+void
+RotoCurveInteract::appendCurveItemSignature(double time,
+                                            bool featherVisible,
+                                            const RotoDrawableItemPtr& item,
+                                            const CurvesOverlaySelection& selection,
+                                            const std::pair<double, double>& pixelScale,
+                                            std::vector<BezierOverlayPolygonsConstPtr>* polygons,
+                                            ContentHasher* hasherOut) const
+{
+    ContentHasher& hasher = *hasherOut;
 
-    bool featherVisible = isFeatherVisible();
+    appendPointer(hasher, item.get());
+    const bool active = item->isGloballyActivated();
+    hasher.appendBool(active);
+    if (!active) {
+        return;
+    }
+    const bool locked = item->isLockedRecursive();
+    hasher.appendBool(locked);
+    double curveColor[4];
+    getCurveOverlayColor(item, curveColor);
+    for (int c = 0; c < 4; ++c) {
+        hasher.appendDouble(curveColor[c]);
+    }
+    const bool selected = selection.isSelected(item.get());
+    hasher.appendBool(selected);
 
-    {
-        GLProtectAttrib a(GL_HINT_BIT | GL_ENABLE_BIT | GL_LINE_BIT | GL_COLOR_BUFFER_BIT | GL_POINT_BIT | GL_CURRENT_BIT);
-
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glEnable(GL_LINE_SMOOTH);
-        glHint(GL_LINE_SMOOTH_HINT, GL_DONT_CARE);
-
-        OverlayVertexArrayScope vertexArrays;
-        GLdouble modelView[16], projection[16];
-        glGetDoublev(GL_MODELVIEW_MATRIX, modelView);
-        glGetDoublev(GL_PROJECTION_MATRIX, projection);
-        // Lines are drawn wider than the polygon they come from.
-        const double cullMargin = 4. * screenPixelRatio * std::max(pixelScale.first, pixelScale.second);
-
-        double cpWidth = kControlPointMidSize * 2;
-        for (std::list<RotoDrawableItemPtr>::const_iterator it = drawables.begin(); it != drawables.end(); ++it) {
-            if (!(*it)->isGloballyActivated()) {
-                continue;
-            }
-
-            Bezier* isBezier = dynamic_cast<Bezier*>(it->get());
-            RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>(it->get());
-            if (isStroke) {
-                if (selectedTool != eRotoToolSelectAll) {
-                    continue;
-                }
-
-                bool selected = false;
-                for (SelectedItems::const_iterator it2 = selectedItems.begin(); it2 != selectedItems.end(); ++it2) {
-                    if (it2->get() == isStroke) {
-                        selected = true;
-                        break;
-                    }
-                }
-                if (!selected) {
-                    continue;
-                }
-
-                std::list<std::list<std::pair<Point, double>>> strokes;
-                isStroke->evaluateStroke(0, time, &strokes);
-                bool locked = (*it)->isLockedRecursive();
-                double curveColor[4];
-                if (!locked) {
-                    getCurveOverlayColor(*it, curveColor);
-                } else {
-                    curveColor[0] = 0.8;
-                    curveColor[1] = 0.8;
-                    curveColor[2] = 0.8;
-                    curveColor[3] = 1.;
-                }
-                glColor4dv(curveColor);
-
-                for (std::list<std::list<std::pair<Point, double>>>::iterator itStroke = strokes.begin(); itStroke != strokes.end(); ++itStroke) {
-                    glLineWidth(1.5 * screenPixelRatio);
-                    glBegin(GL_LINE_STRIP);
-                    for (std::list<std::pair<Point, double>>::const_iterator it2 = itStroke->begin(); it2 != itStroke->end(); ++it2) {
-                        glVertex2f(it2->first.x, it2->first.y);
-                    }
-                    glEnd();
-                }
-            } else if (isBezier) {
-                if (!isCurveShown(std::static_pointer_cast<Bezier>(*it))) {
-                    continue;
-                }
-                // Is the Bezier a closed curve? Only if not an open Bezier, and it's finished.
-                const bool isLoop = !isBezier->isOpenBezier() && isBezier->isCurveFinished();
-
-                /// draw the control points if the bezier is selected
-                bool selected = false;
-                for (SelectedItems::const_iterator it2 = selectedItems.begin(); it2 != selectedItems.end(); ++it2) {
-                    if (it2->get() == isBezier) {
-                        selected = true;
-                        break;
-                    }
-                }
-
-                BezierOverlayPolygonsConstPtr polygons = isBezier->getOverlayPolygons(time, featherVisible);
-
-                // A selected shape is always drawn: its tangent handles can reach past its polygons.
-                if (!selected) {
-                    RectD bbox = polygons->curveBBox;
-                    if (featherVisible && !polygons->feather.empty()) {
-                        bbox.x1 = std::min(bbox.x1, polygons->featherBBox.x1);
-                        bbox.y1 = std::min(bbox.y1, polygons->featherBBox.y1);
-                        bbox.x2 = std::max(bbox.x2, polygons->featherBBox.x2);
-                        bbox.y2 = std::max(bbox.y2, polygons->featherBBox.y2);
-                    }
-                    bbox.x1 -= cullMargin;
-                    bbox.y1 -= cullMargin;
-                    bbox.x2 += cullMargin;
-                    bbox.y2 += cullMargin;
-                    if (isOutsideView(bbox, modelView, projection)) {
-                        continue;
-                    }
-                }
-
-                bool locked = (*it)->isLockedRecursive();
-                double curveColor[4];
-                if (!locked) {
-                    getCurveOverlayColor(*it, curveColor);
-                } else {
-                    curveColor[0] = 0.8;
-                    curveColor[1] = 0.8;
-                    curveColor[2] = 0.8;
-                    curveColor[3] = 1.;
-                }
-                glColor4dv(curveColor);
-                glLineWidth(1.5 * screenPixelRatio);
-                drawLineVertices(polygons->curve, isLoop ? GL_LINE_LOOP : GL_LINE_STRIP);
-
-                /// draw the feather points
-                bool clockWise = isBezier->isFeatherPolygonClockwiseOriented(true, time);
-
-                if (featherVisible && !polygons->feather.empty()) {
-                    /// Draw feather only if visible (button is toggled in the user interface)
-                    glLineStipple(2, 0xAAAA);
-                    glEnable(GL_LINE_STIPPLE);
-                    glLineWidth(1.5 * screenPixelRatio);
-                    drawLineVertices(polygons->feather, isLoop ? GL_LINE_LOOP : GL_LINE_STRIP);
-                    glDisable(GL_LINE_STIPPLE);
-                }
-
-                if (selected && !locked) {
-                    Transform::Matrix3x3 transform;
-                    isBezier->getTransformAtTime(time, &transform);
-
-                    const std::list<BezierCPPtr>& cps = isBezier->getControlPoints();
-                    const std::list<BezierCPPtr>& featherPts = isBezier->getFeatherPoints();
-                    assert(cps.size() == featherPts.size());
-
-                    if (cps.empty()) {
-                        continue;
-                    }
-
-                    glColor3d(0.85, 0.67, 0.);
-
-                    std::list<BezierCPPtr>::const_iterator itF = featherPts.begin();
-                    int index = 0;
-                    std::list<BezierCPPtr>::const_iterator prevCp = cps.end();
-                    if (prevCp != cps.begin()) {
-                        --prevCp;
-                    }
-                    std::list<BezierCPPtr>::const_iterator nextCp = cps.begin();
-                    if (nextCp != cps.end()) {
-                        ++nextCp;
-                    }
-                    for (std::list<BezierCPPtr>::const_iterator it2 = cps.begin(); it2 != cps.end();
-                         ++it2) {
-                        if (nextCp == cps.end()) {
-                            nextCp = cps.begin();
-                        }
-                        if (prevCp == cps.end()) {
-                            prevCp = cps.begin();
-                        }
-                        assert(itF != featherPts.end()); // because cps.size() == featherPts.size()
-                        if (itF == featherPts.end()) {
-                            break;
-                        }
-                        double x, y;
-                        Transform::Point3D p, pF;
-                        (*it2)->getPositionAtTime(true, time, ViewIdx(0), &p.x, &p.y);
-                        p.z = 1.;
-
-                        double xF, yF;
-                        (*itF)->getPositionAtTime(true, time, ViewIdx(0), &pF.x, &pF.y);
-                        pF.z = 1.;
-
-                        p = Transform::matApplyProjected(transform, p);
-                        pF = Transform::matApplyProjected(transform, pF);
-
-                        x = p.x;
-                        y = p.y;
-                        xF = pF.x;
-                        yF = pF.y;
-
-                        /// draw the feather point only if it is distinct from the associated point
-                        bool drawFeather = featherVisible;
-                        if (featherVisible) {
-                            drawFeather = !(*it2)->equalsAtTime(true, time, ViewIdx(0), **itF);
-                        }
-
-                        /// if the control point is the only control point being dragged, color it to identify it to the user
-                        bool colorChanged = false;
-                        SelectedCPs::const_iterator firstSelectedCP = selectedCps.begin();
-                        if ((firstSelectedCP != selectedCps.end()) && ((firstSelectedCP->first == *it2) || (firstSelectedCP->second == *it2)) && (selectedCps.size() == 1) && ((state == eEventStateDraggingSelectedControlPoints) || (state == eEventStateDraggingControlPoint))) {
-                            glColor3f(0., 1., 1.);
-                            colorChanged = true;
-                        }
-
-                        glEnable(GL_POINT_SMOOTH);
-                        glPointSize(cpWidth * screenPixelRatio);
-                        // code below draws GL_POINTS
-                        for (SelectedCPs::const_iterator cpIt = selectedCps.begin();
-                             cpIt != selectedCps.end();
-                             ++cpIt) {
-                            /// if the control point is selected, draw its tangent handles
-                            if (cpIt->first == *it2) {
-                                drawSelectedCp(time, cpIt->first, x, y, transform);
-                                if (drawFeather) {
-                                    drawSelectedCp(time, cpIt->second, xF, yF, transform);
-                                }
-                                glColor3f(0.2, 1., 0.);
-                                colorChanged = true;
-                                break;
-                            } else if (cpIt->second == *it2) {
-                                drawSelectedCp(time, cpIt->second, x, y, transform);
-                                if (drawFeather) {
-                                    drawSelectedCp(time, cpIt->first, xF, yF, transform);
-                                }
-                                glColor3f(0.2, 1., 0.);
-                                colorChanged = true;
-                                break;
-                            }
-                        } // for(cpIt)
-
-                        glBegin(GL_POINTS);
-                        glVertex2f(x, y);
-                        glEnd();
-
-                        // A point following a track gets a square around it: magenta while the
-                        // track resolves, red when it is lost.
-                        if ((*it2)->isLinkedToTrack()) {
-                            const double halfX = cpWidth * 1.5 * pixelScale.first;
-                            const double halfY = cpWidth * 1.5 * pixelScale.second;
-                            if ((*it2)->getResolvedTrack()) {
-                                glColor3f(1., 0.3, 1.);
-                            } else {
-                                glColor3f(1., 0.15, 0.15);
-                            }
-                            glLineWidth(1.5 * screenPixelRatio);
-                            glBegin(GL_LINE_LOOP);
-                            glVertex2f(x - halfX, y - halfY);
-                            glVertex2f(x + halfX, y - halfY);
-                            glVertex2f(x + halfX, y + halfY);
-                            glVertex2f(x - halfX, y + halfY);
-                            glEnd();
-                            colorChanged = true;
-                        }
-
-                        if (colorChanged) {
-                            glColor3d(0.85, 0.67, 0.);
-                        }
-
-                        if ((firstSelectedCP->first == *itF)
-                            && (selectedCps.size() == 1) && ((state == eEventStateDraggingSelectedControlPoints) || (state == eEventStateDraggingControlPoint))
-                            && !colorChanged) {
-                            glColor3f(0.2, 1., 0.);
-                            colorChanged = true;
-                        }
-
-                        double distFeatherX = 20. * pixelScale.first;
-                        double distFeatherY = 20. * pixelScale.second;
-                        bool isHovered = false;
-                        if (featherBarBeingHovered.first) {
-                            assert(featherBarBeingHovered.second);
-                            if (featherBarBeingHovered.first->isFeatherPoint()) {
-                                isHovered = featherBarBeingHovered.first == *itF;
-                            } else if (featherBarBeingHovered.second->isFeatherPoint()) {
-                                isHovered = featherBarBeingHovered.second == *itF;
-                            }
-                        }
-
-                        if (drawFeather) {
-                            glEnable(GL_POINT_SMOOTH);
-                            glPointSize(cpWidth * screenPixelRatio);
-                            glBegin(GL_POINTS);
-                            glVertex2f(xF, yF);
-                            glEnd();
-
-                            if (((state == eEventStateDraggingFeatherBar) && ((*itF == featherBarBeingDragged.first) || (*itF == featherBarBeingDragged.second))) || isHovered) {
-                                glColor3f(0.2, 1., 0.);
-                                colorChanged = true;
-                            } else {
-                                glColor4dv(curveColor);
-                            }
-
-                            double beyondX, beyondY;
-                            double dx = (xF - x);
-                            double dy = (yF - y);
-                            double dist = sqrt(dx * dx + dy * dy);
-                            beyondX = (dx * (dist + distFeatherX)) / dist + x;
-                            beyondY = (dy * (dist + distFeatherY)) / dist + y;
-
-                            /// draw a link between the feather point and the control point.
-                            /// Also extend that link of 20 pixels beyond the feather point.
-
-                            glLineWidth(1.5 * screenPixelRatio);
-                            glBegin(GL_LINE_STRIP);
-                            glVertex2f(x, y);
-                            glVertex2f(xF, yF);
-                            glVertex2f(beyondX, beyondY);
-                            glEnd();
-
-                            glColor3d(0.85, 0.67, 0.);
-                        } else if (featherVisible) {
-                            /// if the feather point is identical to the control point
-                            /// draw a small hint line that the user can drag to move the feather point
-                            if (!isBezier->isOpenBezier() && ((selectedTool == eRotoToolSelectAll) || (selectedTool == eRotoToolSelectFeatherPoints))) {
-                                int cpCount = (*it2)->getBezier()->getControlPointsCount();
-                                if (cpCount > 1) {
-                                    Point controlPoint;
-                                    controlPoint.x = x;
-                                    controlPoint.y = y;
-                                    Point featherPoint;
-                                    featherPoint.x = xF;
-                                    featherPoint.y = yF;
-
-                                    Bezier::expandToFeatherDistance(true, controlPoint, &featherPoint, distFeatherX, time, clockWise, transform, prevCp, it2, nextCp);
-
-                                    if (((state == eEventStateDraggingFeatherBar) && ((*itF == featherBarBeingDragged.first) || (*itF == featherBarBeingDragged.second))) || isHovered) {
-                                        glColor3f(0.2, 1., 0.);
-                                        colorChanged = true;
-                                    } else {
-                                        glColor4dv(curveColor);
-                                    }
-
-                                    glLineWidth(1.5 * screenPixelRatio);
-                                    glBegin(GL_LINES);
-                                    glVertex2f(x, y);
-                                    glVertex2f(featherPoint.x, featherPoint.y);
-                                    glEnd();
-
-                                    glColor3d(0.85, 0.67, 0.);
-                                }
-                            }
-                        } // isFeatherVisible()
-
-                        if (colorChanged) {
-                            glColor3d(0.85, 0.67, 0.);
-                        }
-
-                        // increment for next iteration
-                        if (itF != featherPts.end()) {
-                            ++itF;
-                        }
-                        if (nextCp != cps.end()) {
-                            ++nextCp;
-                        }
-                        if (prevCp != cps.end()) {
-                            ++prevCp;
-                        }
-                        ++index;
-                    } // for(it2)
-                } // if ( ( selected != selectedBeziers.end() ) && !locked ) {
-            } // if (isBezier)
-            glCheckError();
-        } // for (std::list<RotoDrawableItemPtr>::const_iterator it = drawables.begin(); it != drawables.end(); ++it) {
-
-        drawOverlayExtras(time, screenPixelRatio, pixelScale);
-
-        if (!_host->isDrawingPassiveOverlay()) {
-            drawPaintToolOverlay(screenPixelRatio, viewportSize);
-            if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
-                objectSelect->draw(time);
+    Bezier* isBezier = dynamic_cast<Bezier*>(item.get());
+    RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>(item.get());
+    if (isStroke) {
+        const bool drawn = (selectedTool == eRotoToolSelectAll) && selected;
+        hasher.appendBool(drawn);
+        if (drawn) {
+            // The stroke's points move only with its geometry generation; its knobs move them
+            // only through the transform.
+            hasher.appendU64(isStroke->getGeometryGeneration());
+            Transform::Matrix3x3 transform;
+            isStroke->getTransformAtTime(time, &transform);
+            const double m[9] = { transform.a, transform.b, transform.c, transform.d, transform.e, transform.f, transform.g, transform.h, transform.i };
+            for (int i = 0; i < 9; ++i) {
+                hasher.appendDouble(m[i]);
             }
         }
-    } // GLProtectAttrib a(GL_HINT_BIT | GL_ENABLE_BIT | GL_LINE_BIT | GL_COLOR_BUFFER_BIT | GL_POINT_BIT | GL_CURRENT_BIT);
+    } else if (isBezier) {
+        const bool shown = isCurveShown(std::static_pointer_cast<Bezier>(item));
+        hasher.appendBool(shown);
+        if (!shown) {
+            return;
+        }
+        hasher.appendBool(isBezier->isOpenBezier());
+        hasher.appendBool(isBezier->isCurveFinished());
+        BezierOverlayPolygonsConstPtr p = isBezier->getOverlayPolygons(time, featherVisible);
+        appendPointer(hasher, p.get());
+        polygons->push_back(p);
+        if (!locked && selected) {
+            // The interact state only shows on the selected shapes' points, tangents and feather bars.
+            // The feather hint lines are as long on screen as the canonical direction they follow.
+            hasher.appendI64(std::llround(1e6 * pixelScale.first / pixelScale.second));
+            hasher.appendI64((int)selectedTool);
+            const std::vector<const SelectedCP*>* ownCps = selection.cpsOf(isBezier);
+            hasher.appendU64(ownCps ? ownCps->size() : 0);
+            if (ownCps) {
+                for (std::vector<const SelectedCP*>::const_iterator it = ownCps->begin(); it != ownCps->end(); ++it) {
+                    appendPointer(hasher, (*it)->first.get());
+                    appendPointer(hasher, (*it)->second.get());
+                }
+            }
+            hasher.appendBool(ownCps && isDraggingOnePoint());
+            const bool tangentDragged = (selection.draggedTangent == isBezier) && ((state == eEventStateDraggingLeftTangent) || (state == eEventStateDraggingRightTangent));
+            hasher.appendBool(tangentDragged);
+            if (tangentDragged) {
+                hasher.appendI64((int)state);
+                appendPointer(hasher, tangentBeingDragged.get());
+            }
+            const bool hovered = (selection.hoveredFeatherBar == isBezier);
+            hasher.appendBool(hovered);
+            if (hovered) {
+                appendPointer(hasher, featherBarBeingHovered.first.get());
+                appendPointer(hasher, featherBarBeingHovered.second.get());
+            }
+            const bool featherBarDragged = (state == eEventStateDraggingFeatherBar) && (selection.draggedFeatherBar == isBezier);
+            hasher.appendBool(featherBarDragged);
+            if (featherBarDragged) {
+                appendPointer(hasher, featherBarBeingDragged.first.get());
+                appendPointer(hasher, featherBarBeingDragged.second.get());
+            }
+            const std::list<BezierCPPtr>& cps = isBezier->getControlPoints();
+            hasher.appendU64(cps.size());
+            for (std::list<BezierCPPtr>::const_iterator itCp = cps.begin(); itCp != cps.end(); ++itCp) {
+                appendPointer(hasher, itCp->get());
+                const bool linked = (*itCp)->isLinkedToTrack();
+                hasher.appendBool(linked);
+                if (linked) {
+                    hasher.appendBool((bool)(*itCp)->getResolvedTrack());
+                }
+            }
+        }
+    }
+} // RotoCurveInteract::appendCurveItemSignature
+
+void
+RotoCurveInteract::buildCurveItemOverlay(double time,
+                                         bool featherVisible,
+                                         const RotoDrawableItemPtr& item,
+                                         const CurvesOverlaySelection& selection,
+                                         const std::pair<double, double>& pixelScale,
+                                         OverlayDrawListPen& pen)
+{
+    double cpWidth = kControlPointMidSize * 2;
+    if (!item->isGloballyActivated()) {
+        return;
+    }
+
+    Bezier* isBezier = dynamic_cast<Bezier*>(item.get());
+    RotoStrokeItem* isStroke = dynamic_cast<RotoStrokeItem*>(item.get());
+    if (isStroke) {
+        if (selectedTool != eRotoToolSelectAll) {
+            return;
+        }
+        if (!selection.isSelected(isStroke)) {
+            return;
+        }
+
+        std::list<std::list<std::pair<Point, double>>> strokes;
+        isStroke->evaluateStroke(0, time, &strokes);
+        bool locked = item->isLockedRecursive();
+        double curveColor[4];
+        if (!locked) {
+            getCurveOverlayColor(item, curveColor);
+        } else {
+            curveColor[0] = 0.8;
+            curveColor[1] = 0.8;
+            curveColor[2] = 0.8;
+            curveColor[3] = 1.;
+        }
+        pen.color(curveColor[0], curveColor[1], curveColor[2], curveColor[3]);
+
+        for (std::list<std::list<std::pair<Point, double>>>::iterator itStroke = strokes.begin(); itStroke != strokes.end(); ++itStroke) {
+            pen.lineWidth(1.5);
+            pen.begin(OverlayDrawListPen::eModeLineStrip);
+            for (std::list<std::pair<Point, double>>::const_iterator it2 = itStroke->begin(); it2 != itStroke->end(); ++it2) {
+                pen.vertex(it2->first.x, it2->first.y);
+            }
+            pen.end();
+        }
+    } else if (isBezier) {
+        if (!isCurveShown(std::static_pointer_cast<Bezier>(item))) {
+            return;
+        }
+        // Is the Bezier a closed curve? Only if not an open Bezier, and it's finished.
+        const bool isLoop = !isBezier->isOpenBezier() && isBezier->isCurveFinished();
+
+        /// draw the control points if the bezier is selected
+        const bool selected = selection.isSelected(isBezier);
+
+        BezierOverlayPolygonsConstPtr polygons = isBezier->getOverlayPolygons(time, featherVisible);
+
+        bool locked = item->isLockedRecursive();
+        double curveColor[4];
+        if (!locked) {
+            getCurveOverlayColor(item, curveColor);
+        } else {
+            curveColor[0] = 0.8;
+            curveColor[1] = 0.8;
+            curveColor[2] = 0.8;
+            curveColor[3] = 1.;
+        }
+        const OverlayColor curveOverlayColor = OverlayColor::fromRGBA((float)curveColor[0], (float)curveColor[1], (float)curveColor[2], (float)curveColor[3]);
+        pen.color(curveOverlayColor);
+        pen.lineWidth(1.5);
+        addCurveVertices(pen, polygons->curve, isLoop);
+
+        /// draw the feather points
+        bool clockWise = isBezier->isFeatherPolygonClockwiseOriented(true, time);
+
+        if (featherVisible && !polygons->feather.empty()) {
+            /// Draw feather only if visible (button is toggled in the user interface)
+            pen.setDash(2., 2.);
+            pen.lineWidth(1.5);
+            addCurveVertices(pen, polygons->feather, isLoop);
+            pen.setDash(0., 0.);
+        }
+
+        if (selected && !locked) {
+            Transform::Matrix3x3 transform;
+            isBezier->getTransformAtTime(time, &transform);
+
+            const std::list<BezierCPPtr>& cps = isBezier->getControlPoints();
+            const std::list<BezierCPPtr>& featherPts = isBezier->getFeatherPoints();
+            assert(cps.size() == featherPts.size());
+
+            if (cps.empty()) {
+                return;
+            }
+
+            pen.color(0.85, 0.67, 0.);
+
+            std::list<BezierCPPtr>::const_iterator itF = featherPts.begin();
+            std::list<BezierCPPtr>::const_iterator prevCp = cps.end();
+            if (prevCp != cps.begin()) {
+                --prevCp;
+            }
+            std::list<BezierCPPtr>::const_iterator nextCp = cps.begin();
+            if (nextCp != cps.end()) {
+                ++nextCp;
+            }
+            const bool draggingOnePoint = isDraggingOnePoint();
+            static const std::vector<const SelectedCP*> noCps;
+            const std::vector<const SelectedCP*>* ownCps = selection.cpsOf(isBezier);
+            const std::vector<const SelectedCP*>& shapeCps = ownCps ? *ownCps : noCps;
+            for (std::list<BezierCPPtr>::const_iterator it2 = cps.begin(); it2 != cps.end();
+                 ++it2) {
+                if (nextCp == cps.end()) {
+                    nextCp = cps.begin();
+                }
+                if (prevCp == cps.end()) {
+                    prevCp = cps.begin();
+                }
+                assert(itF != featherPts.end()); // because cps.size() == featherPts.size()
+                if (itF == featherPts.end()) {
+                    break;
+                }
+                double x, y;
+                Transform::Point3D p, pF;
+                (*it2)->getPositionAtTime(true, time, ViewIdx(0), &p.x, &p.y);
+                p.z = 1.;
+
+                double xF, yF;
+                (*itF)->getPositionAtTime(true, time, ViewIdx(0), &pF.x, &pF.y);
+                pF.z = 1.;
+
+                p = Transform::matApplyProjected(transform, p);
+                pF = Transform::matApplyProjected(transform, pF);
+
+                x = p.x;
+                y = p.y;
+                xF = pF.x;
+                yF = pF.y;
+
+                /// draw the feather point only if it is distinct from the associated point
+                bool drawFeather = featherVisible;
+                if (featherVisible) {
+                    drawFeather = !(*it2)->equalsAtTime(true, time, ViewIdx(0), **itF);
+                }
+
+                /// if the control point is the only control point being dragged, color it to identify it to the user
+                bool colorChanged = false;
+                SelectedCPs::const_iterator firstSelectedCP = selectedCps.begin();
+                if (draggingOnePoint && ((firstSelectedCP->first == *it2) || (firstSelectedCP->second == *it2))) {
+                    pen.color(0., 1., 1.);
+                    colorChanged = true;
+                }
+
+                pen.setSmoothPoints(true);
+                pen.pointSize(cpWidth);
+                for (std::vector<const SelectedCP*>::const_iterator itSel = shapeCps.begin(); itSel != shapeCps.end(); ++itSel) {
+                    const SelectedCP* cpIt = *itSel;
+                    /// if the control point is selected, draw its tangent handles
+                    if (cpIt->first == *it2) {
+                        buildSelectedCp(pen, time, cpIt->first, x, y, transform);
+                        if (drawFeather) {
+                            buildSelectedCp(pen, time, cpIt->second, xF, yF, transform);
+                        }
+                        pen.color(0.2, 1., 0.);
+                        colorChanged = true;
+                        break;
+                    } else if (cpIt->second == *it2) {
+                        buildSelectedCp(pen, time, cpIt->second, x, y, transform);
+                        if (drawFeather) {
+                            buildSelectedCp(pen, time, cpIt->first, xF, yF, transform);
+                        }
+                        pen.color(0.2, 1., 0.);
+                        colorChanged = true;
+                        break;
+                    }
+                } // for(cpIt)
+
+                pen.point(x, y);
+
+                // A point following a track gets a square around it: magenta while the
+                // track resolves, red when it is lost.
+                if ((*it2)->isLinkedToTrack()) {
+                    if ((*it2)->getResolvedTrack()) {
+                        pen.color(1., 0.3, 1.);
+                    } else {
+                        pen.color(1., 0.15, 0.15);
+                    }
+                    pen.lineWidth(1.5);
+                    pen.anchoredShape(x, y, OverlayDrawList::AnchoredShape::box(cpWidth * 1.5, cpWidth * 1.5));
+                    colorChanged = true;
+                }
+
+                if (colorChanged) {
+                    pen.color(0.85, 0.67, 0.);
+                }
+
+                if (draggingOnePoint && (firstSelectedCP->first == *itF) && !colorChanged) {
+                    pen.color(0.2, 1., 0.);
+                    colorChanged = true;
+                }
+
+                const double distFeather = 20.;
+                bool isHovered = false;
+                if (featherBarBeingHovered.first) {
+                    assert(featherBarBeingHovered.second);
+                    if (featherBarBeingHovered.first->isFeatherPoint()) {
+                        isHovered = featherBarBeingHovered.first == *itF;
+                    } else if (featherBarBeingHovered.second->isFeatherPoint()) {
+                        isHovered = featherBarBeingHovered.second == *itF;
+                    }
+                }
+
+                if (drawFeather) {
+                    pen.setSmoothPoints(true);
+                    pen.pointSize(cpWidth);
+                    pen.point(xF, yF);
+
+                    if (((state == eEventStateDraggingFeatherBar) && ((*itF == featherBarBeingDragged.first) || (*itF == featherBarBeingDragged.second))) || isHovered) {
+                        pen.color(0.2, 1., 0.);
+                        colorChanged = true;
+                    } else {
+                        pen.color(curveOverlayColor);
+                    }
+
+                    double dx = (xF - x);
+                    double dy = (yF - y);
+                    double dist = sqrt(dx * dx + dy * dy);
+
+                    /// draw a link between the feather point and the control point.
+                    /// Also extend that link of 20 pixels beyond the feather point.
+                    pen.lineWidth(1.5);
+                    pen.begin(OverlayDrawListPen::eModeLineStrip);
+                    pen.vertex(x, y);
+                    pen.vertex(xF, yF);
+                    pen.end();
+                    pen.beginGlyph(OverlayDrawListPen::eModeLines, xF, yF);
+                    pen.vertex(0., 0.);
+                    pen.vertex(dx * distFeather / dist, dy * distFeather / dist);
+                    pen.end();
+
+                    pen.color(0.85, 0.67, 0.);
+                } else if (featherVisible) {
+                    /// if the feather point is identical to the control point
+                    /// draw a small hint line that the user can drag to move the feather point
+                    if (!isBezier->isOpenBezier() && ((selectedTool == eRotoToolSelectAll) || (selectedTool == eRotoToolSelectFeatherPoints))) {
+                        int cpCount = (*it2)->getBezier()->getControlPointsCount();
+                        if (cpCount > 1) {
+                            Point controlPoint;
+                            controlPoint.x = x;
+                            controlPoint.y = y;
+                            Point featherPoint;
+                            featherPoint.x = xF;
+                            featherPoint.y = yF;
+
+                            // A unit direction, so that the hint keeps its length on screen
+                            // at any zoom: distFeather pixels, measured along x.
+                            Bezier::expandToFeatherDistance(true, controlPoint, &featherPoint, 1., time, clockWise, transform, prevCp, it2, nextCp);
+
+                            if (((state == eEventStateDraggingFeatherBar) && ((*itF == featherBarBeingDragged.first) || (*itF == featherBarBeingDragged.second))) || isHovered) {
+                                pen.color(0.2, 1., 0.);
+                                colorChanged = true;
+                            } else {
+                                pen.color(curveOverlayColor);
+                            }
+
+                            pen.lineWidth(1.5);
+                            pen.beginGlyph(OverlayDrawListPen::eModeLines, x, y);
+                            pen.vertex(0., 0.);
+                            pen.vertex(distFeather * (featherPoint.x - x), distFeather * (featherPoint.y - y) * pixelScale.first / pixelScale.second);
+                            pen.end();
+
+                            pen.color(0.85, 0.67, 0.);
+                        }
+                    }
+                } // isFeatherVisible()
+
+                if (colorChanged) {
+                    pen.color(0.85, 0.67, 0.);
+                }
+
+                // increment for next iteration
+                if (itF != featherPts.end()) {
+                    ++itF;
+                }
+                if (nextCp != cps.end()) {
+                    ++nextCp;
+                }
+                if (prevCp != cps.end()) {
+                    ++prevCp;
+                }
+            } // for(it2)
+        } // if ( ( selected != selectedBeziers.end() ) && !locked ) {
+    } // if (isBezier)
+} // RotoCurveInteract::buildCurveItemOverlay
+
+void
+RotoCurveInteract::buildToolsOverlay(const std::pair<double, double>& pixelScale,
+                                     OverlayDrawList* list,
+                                     OverlayDrawList* viewportList)
+{
+    OverlayDrawListPen pen(list);
+    OverlayDrawListPen viewportPen(viewportList);
+
+    pen.lineWidth(1.5);
+    pen.setDeformable(false);
+    viewportPen.setDeformable(false);
+    if (!_host->isDrawingPassiveOverlay()) {
+        buildPaintToolOverlay(pen, pixelScale);
+        if (objectSelect && (selectedTool == eRotoToolObjectSelect)) {
+            objectSelect->buildOverlay(pen, viewportPen);
+            pen.setDeformable(false);
+        }
+    }
+
+    if (showCpsBbox) {
+        buildSelectedCpsBBOX(pen, pixelScale);
+    }
+    if ((state == eEventStateSketchingBezier) && !sketchSamples.empty()) {
+        pen.setSmoothLines(true);
+        pen.lineWidth(1.5);
+        pen.color(0.9, 0.5, 0.);
+        pen.setDeformable(true);
+        pen.begin(OverlayDrawListPen::eModeLineStrip);
+        for (std::list<std::pair<double, double>>::const_iterator it = sketchSamples.begin(); it != sketchSamples.end(); ++it) {
+            pen.vertex(it->first, it->second);
+        }
+        pen.vertex(lastMousePos.x(), lastMousePos.y());
+        pen.end();
+        pen.setDeformable(false);
+    }
+    buildRippleEditBorder(viewportPen, pixelScale);
+} // RotoCurveInteract::buildToolsOverlay
+
+void
+RotoCurveInteract::appendToolsOverlaySignature(const std::pair<double, double>& pixelScale,
+                                               ContentHasher* hasher) const
+{
+    OverlaySupport* overlay = _host->getCurrentViewportForOverlays();
+    const bool passive = _host->isDrawingPassiveOverlay();
+    hasher->appendBool(passive);
+    hasher->appendDouble(pixelScale.first);
+    hasher->appendDouble(pixelScale.second);
+    hasher->appendI64((int)selectedRole);
+    hasher->appendI64((int)selectedTool);
+    hasher->appendI64((int)state);
+    if (!passive) {
+        appendPaintToolOverlaySignature(hasher);
+        const bool objectSelectShown = objectSelect && (selectedTool == eRotoToolObjectSelect);
+        hasher->appendBool(objectSelectShown);
+        if (objectSelectShown) {
+            objectSelect->appendOverlaySignature(hasher);
+        }
+    }
+
+    hasher->appendBool(showCpsBbox);
+    if (showCpsBbox) {
+        hasher->appendDouble(selectedCpsBbox.left());
+        hasher->appendDouble(selectedCpsBbox.top());
+        hasher->appendDouble(selectedCpsBbox.right());
+        hasher->appendDouble(selectedCpsBbox.bottom());
+        const QPointF pivot = getSelectedCpsPivot();
+        hasher->appendDouble(pivot.x());
+        hasher->appendDouble(pivot.y());
+        hasher->appendI64((int)hoverState);
+        hasher->appendI64((int)transformMode);
+    }
+
+    // Samples are only ever appended to, or all cleared.
+    const bool sketching = (state == eEventStateSketchingBezier) && !sketchSamples.empty();
+    hasher->appendBool(sketching);
+    if (sketching) {
+        hasher->appendU64(sketchSamples.size());
+        hasher->appendDouble(sketchSamples.front().first);
+        hasher->appendDouble(sketchSamples.front().second);
+        hasher->appendDouble(sketchSamples.back().first);
+        hasher->appendDouble(sketchSamples.back().second);
+        hasher->appendDouble(lastMousePos.x());
+        hasher->appendDouble(lastMousePos.y());
+    }
+
+    const bool rippleBorder = !passive && overlay && getCurveContext()->isRippleEditEnabled();
+    hasher->appendBool(rippleBorder);
+    if (rippleBorder) {
+        const RectD view = overlay->getViewportRect();
+        hasher->appendDouble(view.x1);
+        hasher->appendDouble(view.y1);
+        hasher->appendDouble(view.x2);
+        hasher->appendDouble(view.y2);
+        hasher->appendDouble(overlay->getScreenPixelRatio());
+    }
+} // RotoCurveInteract::appendToolsOverlaySignature
+
+void
+RotoCurveInteract::drawCurvesOverlayRun(double time,
+                                        bool featherVisible,
+                                        const CurvesOverlaySelection& selection,
+                                        const std::pair<double, double>& pixelScale,
+                                        std::list<RotoDrawableItemPtr>::const_iterator first,
+                                        std::list<RotoDrawableItemPtr>::const_iterator last,
+                                        OverlaySupport* overlay,
+                                        const OverlayDrawState& drawState)
+{
+    ContentHasher hasher;
+    std::vector<BezierOverlayPolygonsConstPtr> polygons;
+
+    hasher.appendDouble(time);
+    hasher.appendBool(featherVisible);
+    for (std::list<RotoDrawableItemPtr>::const_iterator it = first; it != last; ++it) {
+        appendCurveItemSignature(time, featherVisible, *it, selection, pixelScale, &polygons, &hasher);
+    }
+
+    std::size_t index;
+    OverlayDrawListCache& cache = _curvesOverlay.next(&index);
+    if (index == _curvesOverlayHolds.size()) {
+        _curvesOverlayHolds.push_back(CurvesOverlayRunHold());
+    }
+    CurvesOverlayRunHold& hold = _curvesOverlayHolds[index];
+    for (std::vector<RotoDrawableItemWPtr>::const_iterator it = hold.items.begin(); it != hold.items.end(); ++it) {
+        if (it->expired()) {
+            cache.invalidate();
+            break;
+        }
+    }
+    if (OverlayDrawList* list = cache.rebuildFor(hasher.finalize())) {
+        ++_curvesOverlayRebuilds;
+        OverlayDrawListPen pen(list);
+        pen.setSmoothLines(true);
+        pen.setSmoothPoints(false);
+        hold.items.clear();
+        for (std::list<RotoDrawableItemPtr>::const_iterator it = first; it != last; ++it) {
+            hold.items.push_back(*it);
+            buildCurveItemOverlay(time, featherVisible, *it, selection, pixelScale, pen);
+        }
+        hold.polygons.swap(polygons);
+    }
+    if (!cache.list().empty()) {
+        overlay->drawOverlayDrawList(cache.list(), drawState);
+    }
+} // RotoCurveInteract::drawCurvesOverlayRun
+
+void
+RotoCurveInteract::drawCurvesOverlay(double time)
+{
+    OverlaySupport* overlay = _host->getCurrentViewportForOverlays();
+    if (!overlay) {
+        return;
+    }
+    std::pair<double, double> pixelScale(1., 1.);
+    overlay->getPixelScale(pixelScale.first, pixelScale.second);
+    const bool featherVisible = isFeatherVisible();
+    const std::list<RotoDrawableItemPtr> drawables = getCurveContext()->getCurvesByRenderOrder();
+
+    const OverlayDrawState drawState = _host->getOverlayDrawState();
+    CurvesOverlaySelection selection;
+    getCurvesOverlaySelection(&selection);
+    _curvesOverlay.restart();
+    std::list<RotoDrawableItemPtr>::const_iterator first = drawables.begin();
+    while (first != drawables.end()) {
+        std::list<RotoDrawableItemPtr>::const_iterator last = first;
+        ++last;
+        if (!selection.isSelected(first->get())) {
+            while ((last != drawables.end()) && !selection.isSelected(last->get())) {
+                ++last;
+            }
+        }
+        drawCurvesOverlayRun(time, featherVisible, selection, pixelScale, first, last, overlay, drawState);
+        first = last;
+    }
+    _curvesOverlay.trim();
+    _curvesOverlayHolds.resize(_curvesOverlay.size());
+
+    ContentHasher extrasHasher;
+    extrasHasher.appendDouble(time);
+    appendOverlayExtrasSignature(time, &extrasHasher);
+    if (OverlayDrawList* list = _curvesExtrasOverlay.rebuildFor(extrasHasher.finalize())) {
+        OverlayDrawListPen pen(list);
+        pen.setSmoothLines(true);
+        pen.setSmoothPoints(false);
+        buildOverlayExtras(time, pen);
+    }
+    if (!_curvesExtrasOverlay.list().empty()) {
+        overlay->drawOverlayDrawList(_curvesExtrasOverlay.list(), drawState);
+    }
+} // RotoCurveInteract::drawCurvesOverlay
+
+void
+RotoCurveInteract::drawOverlay(double /*time*/)
+{
+    OverlaySupport* overlay = _host->getCurrentViewportForOverlays();
+    if (!overlay) {
+        return;
+    }
+    std::pair<double, double> pixelScale;
+
+    overlay->getPixelScale(pixelScale.first, pixelScale.second);
+
+    if (!_host->isDrawingPassiveOverlay()) {
+        drawPaintToolPreview();
+    }
 
     // A follow, a transform knob or an expression moves the points without passing through the
-    // interact, so the box is taken from where they are drawn now.
+    // interact, so the box is taken from where they are drawn now, before the signature reads it.
     if (!selectedCps.empty()) {
         computeSelectedCpsBBOX();
     }
-    if (showCpsBbox) {
-        drawSelectedCpsBBOX();
+
+    ContentHasher signature;
+    appendToolsOverlaySignature(pixelScale, &signature);
+    const U64 toolsSignature = signature.finalize();
+    // Both lists are built from the one signature, so they are rebuilt together.
+    OverlayDrawList* list = _toolsOverlay.rebuildFor(toolsSignature);
+    OverlayDrawList* viewportList = _toolsViewportOverlay.rebuildFor(toolsSignature);
+    if (list && viewportList) {
+        buildToolsOverlay(pixelScale, list, viewportList);
     }
-    if ((state == eEventStateSketchingBezier) && !sketchSamples.empty()) {
-        GLProtectAttrib a(GL_ENABLE_BIT | GL_LINE_BIT | GL_CURRENT_BIT);
-        glLineWidth(1.5 * screenPixelRatio);
-        glColor3d(0.9, 0.5, 0.);
-        glBegin(GL_LINE_STRIP);
-        for (std::list<std::pair<double, double>>::const_iterator it = sketchSamples.begin(); it != sketchSamples.end(); ++it) {
-            glVertex2d(it->first, it->second);
-        }
-        glVertex2d(lastMousePos.x(), lastMousePos.y());
-        glEnd();
+    if (!_toolsOverlay.list().empty()) {
+        overlay->drawOverlayDrawList(_toolsOverlay.list(), OverlayDrawState());
     }
-    drawRippleEditBorder(screenPixelRatio, pixelScale);
-    glCheckError();
+    if (!_toolsViewportOverlay.list().empty()) {
+        overlay->drawInViewportSpace([&]() {
+            overlay->drawOverlayDrawList(_toolsViewportOverlay.list(), OverlayDrawState());
+        });
+    }
 } // drawOverlay
 
 void
-RotoCurveInteract::drawRippleEditBorder(double screenPixelRatio,
-                                        const std::pair<double, double>& pixelScale)
+RotoCurveInteract::buildRippleEditBorder(OverlayDrawListPen& pen,
+                                         const std::pair<double, double>& pixelScale)
 {
     bool isPaintRole = (selectedRole == eRotoRolePaintBrush) || (selectedRole == eRotoRoleCloneBrush) || (selectedRole == eRotoRoleMergeBrush) || (selectedRole == eRotoRoleEffectBrush);
     if (isPaintRole || _host->isDrawingPassiveOverlay() || !getCurveContext()->isRippleEditEnabled()) {
         return;
     }
     RectD view = _host->getCurrentViewportForOverlays()->getViewportRect();
+    double screenPixelRatio = _host->getCurrentViewportForOverlays()->getScreenPixelRatio();
     // Inset by half the line width so the whole line stays inside the viewport.
-    const double lineWidth = 3. * screenPixelRatio;
-    double insetX = 0.5 * lineWidth * pixelScale.first;
-    double insetY = 0.5 * lineWidth * pixelScale.second;
+    const double lineWidth = 3.;
+    double insetX = 0.5 * lineWidth * screenPixelRatio * pixelScale.first;
+    double insetY = 0.5 * lineWidth * screenPixelRatio * pixelScale.second;
 
-    _host->getCurrentViewportForOverlays()->drawInViewportSpace([&]() {
-        GLProtectAttrib a(GL_ENABLE_BIT | GL_LINE_BIT | GL_CURRENT_BIT);
-        glDisable(GL_LINE_SMOOTH);
-        glLineWidth(lineWidth);
-        glColor3d(0.9, 0.1, 0.1);
-        glBegin(GL_LINE_LOOP);
-        glVertex2d(view.x1 + insetX, view.y1 + insetY);
-        glVertex2d(view.x2 - insetX, view.y1 + insetY);
-        glVertex2d(view.x2 - insetX, view.y2 - insetY);
-        glVertex2d(view.x1 + insetX, view.y2 - insetY);
-        glEnd();
-    });
+    pen.setSmoothLines(false);
+    pen.lineWidth(lineWidth);
+    pen.color(0.9, 0.1, 0.1);
+    pen.begin(OverlayDrawListPen::eModeLineLoop);
+    pen.vertex(view.x1 + insetX, view.y1 + insetY);
+    pen.vertex(view.x2 - insetX, view.y1 + insetY);
+    pen.vertex(view.x2 - insetX, view.y2 - insetY);
+    pen.vertex(view.x1 + insetX, view.y2 - insetY);
+    pen.end();
+    pen.setSmoothLines(true);
 }
 
 void

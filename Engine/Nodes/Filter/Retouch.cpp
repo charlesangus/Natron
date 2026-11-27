@@ -1433,6 +1433,7 @@ Retouch::drawOverlay(double time,
                      const RenderScale& /*renderScale*/,
                      ViewIdx /*view*/)
 {
+    _ui->drawCurvesOverlay(time);
     _ui->drawOverlay(time);
 
     RotoCurveContextPtr context = getNode()->getCurveContext();
@@ -1536,9 +1537,7 @@ Retouch::drawOverlay(double time,
                 viewport->getPixelScale(psx, psy);
                 radius = kSourceMarkRadiusPixels * psx;
             }
-            std::pair<double, double> viewportSize;
-            viewport->getViewportSize(viewportSize.first, viewportSize.second);
-            _ui->drawCloneSource(centre, offset, radius, 1., screenPixelRatio, viewportSize);
+            _ui->drawCloneSource(centre, offset, radius, 1.);
         }
     }
 } // Retouch::drawOverlay

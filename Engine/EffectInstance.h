@@ -90,6 +90,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+class ContentHasher;
+
 /**
  * @brief Which layer/channel knob, if any, the host creates on a node's main page, and
  * where that knob's layer list comes from.
@@ -3321,12 +3323,41 @@ public:
     bool onOverlayFocusLost_public(double time, const RenderScale & renderScale, ViewIdx view) WARN_UNUSED_RETURN;
 
     /**
-     * @brief Rebuilds the overlay draw list with buildOverlay() and returns it. The list is kept
-     * for the pen's handle hit-tests until the next rebuild. Main thread only.
+     * @brief Returns the overlay draw list, rebuilding it with buildOverlay() unless the node caches
+     * its list (isOverlayDrawListCached()) and the content version, time, view, render scale,
+     * viewer, passive state, zoom bucket and appendOverlayDrawListSignature() are those of the last
+     * build. The list is kept for the pen's handle hit-tests
+     * until the next rebuild. Main thread only.
      **/
     const OverlayDrawList& buildOverlay_public(double time, const RenderScale& renderScale, ViewIdx view);
 
     const OverlayDrawList& getOverlayDrawList() const;
+
+    /**
+     * @brief Rebuilds and returns the hover list, drawn over the main list and never cached, with
+     * buildOverlayHover(). Main thread only.
+     **/
+    const OverlayDrawList& buildOverlayHover_public(double time, const RenderScale& renderScale, ViewIdx view);
+
+    /**
+     * @brief Marks the cached overlay draw list out of date. Knob changes do this on their own;
+     * nodes call it when anything else they draw changes (selection, hover, tool, drag state).
+     * Any thread.
+     **/
+    void invalidateOverlayDrawList();
+
+    unsigned long long getOverlayContentVersion() const;
+
+    /**
+     * @brief How many times buildOverlay() has been called, for tests.
+     **/
+    unsigned long long getOverlayBuildCount() const;
+
+    /**
+     * @brief The zoom bucket of a pixel scale: lists cached in one bucket are reused for zooms that
+     * differ by less than an eighth of an octave.
+     **/
+    static int overlayZoomBucket(double pixelScale);
 
     /**
      * @brief The hovered and pressed handles and the node's overlay colour, as the viewer draws
@@ -3479,6 +3510,17 @@ public:
      * @brief Return true to have the viewer draw the list buildOverlay() fills.
      **/
     virtual bool hasOverlayDrawList() const
+    {
+        return false;
+    }
+
+    /**
+     * @brief Return true when buildOverlay() draws only from the knobs, the time, the view, the
+     * render scale, what appendOverlayDrawListSignature() digests and state the node reports
+     * through invalidateOverlayDrawList(), so that the list can be reused until one of them changes. Sizes in screen pixels belong in the list's
+     * screen-sized primitives, since the list is reused across zooms within a bucket.
+     **/
+    virtual bool isOverlayDrawListCached() const
     {
         return false;
     }
@@ -4064,12 +4106,37 @@ protected:
     /**
      * @brief Fills list, which arrives empty, with what to draw over the viewer. Called on the
      * main thread for each viewer redraw while the overlay shows; it must not render or change
-     * knobs. Only called when hasOverlayDrawList() returns true.
+     * knobs. Only called when hasOverlayDrawList() returns true. The list is drawn before
+     * drawOverlay(), so that raw OpenGL drawing there lands over it.
      **/
     virtual void buildOverlay(double /*time*/,
                               const RenderScale& /*renderScale*/,
                               ViewIdx /*view*/,
                               OverlayDrawList* /*list*/)
+    {
+    }
+
+    /**
+     * @brief Appends to hasher what a cached buildOverlay() reads that neither a knob of this
+     * node nor invalidateOverlayDrawList() reports, such as items owned outside the knobs or
+     * the interact's own state. Called right before each buildOverlay(), on every redraw of a
+     * cached list, so it must cost far less than the build.
+     **/
+    virtual void appendOverlayDrawListSignature(double /*time*/,
+                                                ViewIdx /*view*/,
+                                                ContentHasher* /*hasher*/)
+    {
+    }
+
+    /**
+     * @brief Fills list, which arrives empty, with drawing that follows the pen's hover, rebuilt
+     * on every redraw so that hovering does not invalidate the main list. Only called when
+     * hasOverlayDrawList() returns true.
+     **/
+    virtual void buildOverlayHover(double /*time*/,
+                                   const RenderScale& /*renderScale*/,
+                                   ViewIdx /*view*/,
+                                   OverlayDrawList* /*list*/)
     {
     }
 

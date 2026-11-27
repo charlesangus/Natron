@@ -1050,6 +1050,7 @@ SplineWarp::drawOverlay(double time,
                         const RenderScale& /*renderScale*/,
                         ViewIdx /*view*/)
 {
+    _ui->drawCurvesOverlay(time);
     _ui->drawOverlay(time);
 }
 

@@ -26,9 +26,11 @@
 #include "RetouchInteract.h"
 
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Filter/Retouch.h"
+#include "Engine/OverlayDrawListPen.h"
 #include "Engine/OverlaySupport.h"
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/RotoCurveContext.h"
@@ -36,7 +38,6 @@
 #include "Engine/RotoPoint.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/UndoCommand.h"
-#include "Global/GLIncludes.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -175,8 +176,43 @@ RetouchInteract::removeCurve(const RotoDrawableItemPtr& curve)
 }
 
 void
-RetouchInteract::drawPaintToolOverlay(double screenPixelRatio,
-                                      const std::pair<double, double>& viewportSize)
+RetouchInteract::appendPaintToolOverlaySignature(ContentHasher* hasher) const
+{
+    OverlaySupport* viewport = getHost()->getCurrentViewportForOverlays();
+    KnobDoublePtr size = brushSizeKnob.lock();
+    const bool shown = (selectedTool == eRotoToolSolidBrush) && viewport && size;
+    hasher->appendBool(shown);
+    if (!shown) {
+        return;
+    }
+    hasher->appendDouble(size->getValue());
+    double x, y;
+    viewport->getCursorPosition(x, y);
+    hasher->appendDouble(x);
+    hasher->appendDouble(y);
+    hasher->appendBool(viewport->getViewportRect().contains(x, y));
+    hasher->appendDouble(mouseCenterOnSizeChange.x());
+    hasher->appendDouble(mouseCenterOnSizeChange.y());
+    hasher->appendDouble(lastMousePos.x());
+    hasher->appendDouble(lastMousePos.y());
+    const bool building = (state == eEventStateBuildingStroke) && _stroke;
+    hasher->appendBool(building);
+    if (building) {
+        const double time = getCurveContext()->getTimelineCurrentTime();
+        hasher->appendDouble(time);
+        hasher->appendU64(_stroke->getGeometryGeneration());
+        Transform::Matrix3x3 transform;
+        _stroke->getTransformAtTime(time, &transform);
+        const double m[9] = { transform.a, transform.b, transform.c, transform.d, transform.e, transform.f, transform.g, transform.h, transform.i };
+        for (int i = 0; i < 9; ++i) {
+            hasher->appendDouble(m[i]);
+        }
+    }
+}
+
+void
+RetouchInteract::buildPaintToolOverlay(OverlayDrawListPen& pen,
+                                       const std::pair<double, double>& /*pixelScale*/)
 {
     if (selectedTool != eRotoToolSolidBrush) {
         return;
@@ -203,36 +239,25 @@ RetouchInteract::drawPaintToolOverlay(double screenPixelRatio,
         viewport->getCursorPositionInOverlay(x, y);
         centre = QPointF(x, y);
     }
-    GLdouble projection[16];
-    glGetDoublev(GL_PROJECTION_MATRIX, projection);
-    // One screen pixel, for the shadow.
-    const double shadowX = 2. / (projection[0] * viewportSize.first);
-    const double shadowY = 2. / (projection[5] * viewportSize.second);
     const double radius = size->getValue() / 2.;
     std::list<std::list<std::pair<Point, double>>> strokes;
     if (building) {
         _stroke->evaluateStroke(0, getCurveContext()->getTimelineCurrentTime(), &strokes);
     }
-    GLProtectAttrib a(GL_ENABLE_BIT | GL_LINE_BIT | GL_COLOR_BUFFER_BIT | GL_CURRENT_BIT);
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glEnable(GL_LINE_SMOOTH);
-    for (int l = 0; l < 2; ++l) {
-        glMatrixMode(GL_PROJECTION);
-        const int direction = (l == 0) ? 1 : -1;
-        glTranslated(direction * shadowX, -direction * shadowY, 0);
-        glMatrixMode(GL_MODELVIEW);
-        drawEllipse(centre.x(), centre.y(), radius, radius, l, 1.f, 1.f, 1.f, 1.f);
-        glLineWidth(1.5 * screenPixelRatio);
-        glColor4d(.5 * l, .5 * l, .5 * l, 1.);
-        for (std::list<std::list<std::pair<Point, double>>>::const_iterator it = strokes.begin(); it != strokes.end(); ++it) {
-            glBegin(GL_LINE_STRIP);
-            for (std::list<std::pair<Point, double>>::const_iterator p = it->begin(); p != it->end(); ++p) {
-                glVertex2d(p->first.x, p->first.y);
-            }
-            glEnd();
+    pen.setSmoothLines(true);
+    pen.setShadow(true);
+    pen.lineWidth(1.5);
+    pen.color(1., 1., 1., 1.);
+    buildEllipse(pen, centre.x(), centre.y(), radius, radius);
+    pen.color(.5, .5, .5, 1.);
+    for (std::list<std::list<std::pair<Point, double>>>::const_iterator it = strokes.begin(); it != strokes.end(); ++it) {
+        pen.begin(OverlayDrawListPen::eModeLineStrip);
+        for (std::list<std::pair<Point, double>>::const_iterator p = it->begin(); p != it->end(); ++p) {
+            pen.vertex(p->first.x, p->first.y);
         }
+        pen.end();
     }
+    pen.setShadow(false);
 }
 
 bool

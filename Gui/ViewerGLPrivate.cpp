@@ -111,8 +111,9 @@ releaseViewerGLResources(ViewerGLImpl& imp)
         imp.iboTriangleStripId = 0;
         glDeleteTextures(1, &imp.checkerboardTextureID);
         imp.checkerboardTextureID = 0;
-        if (imp.overlayRenderer) {
-            imp.overlayRenderer->releaseGLResources();
+        for (auto& entry : imp.overlayRenderers) {
+            imp.overlayUploadsReleased += entry.second->uploadCount();
+            entry.second->releaseGLResources();
         }
         imp.overlayImageRenderer.releaseGLResources();
         glCheckError();
@@ -120,7 +121,8 @@ releaseViewerGLResources(ViewerGLImpl& imp)
 
     // The glyph atlases are textures of this context: delete them here, and let the next context
     // build its own instead of binding these names.
-    imp.overlayRenderer.reset();
+    imp.overlayRenderers.clear();
+    imp.overlayRenderersDrawn.clear();
     std::destroy_at(&imp.textRenderer);
     std::construct_at(&imp.textRenderer);
 }
@@ -162,6 +164,9 @@ ViewerGL::Implementation::Implementation(ViewerGL* this_,
     , persistentMessageType(0)
     , displayPersistentMessage(false)
     , textRenderer()
+    , overlayRenderers()
+    , overlayRenderersDrawn()
+    , overlayUploadsReleased(0)
     , lastMousePosition()
     , lastDragStartPos()
     , hasMovedSincePress(false)

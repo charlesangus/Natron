@@ -26,14 +26,14 @@
 #include "HostOverlay.h"
 
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <list>
 #include <stdexcept>
 
-#include "Gui/NodeGui.h"
-#include "Gui/TextRenderer.h"
-#include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiAppInstance.h"
+#include "Gui/GuiApplicationManager.h"
+#include "Gui/NodeGui.h"
 
 #include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
@@ -41,6 +41,8 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/OverlayDrawListPen.h"
+#include "Engine/OverlaySupport.h"
 #include "Engine/Project.h"
 #include "Engine/PythonUndoCommands.h"
 #include "Engine/Settings.h"
@@ -121,27 +123,43 @@ setOverlayKnobValues(const KnobDoublePtr& knob,
 
 }  // namespace
 
-
 DefaultInteractI::DefaultInteractI(HostOverlay* overlay)
     : _overlay(overlay)
 {
 }
 
-DefaultInteractI::~DefaultInteractI()
+ContentHasher
+DefaultInteractI::beginOverlaySignature(const OfxPointD& pscale,
+                                        const OfxRGBColourD& color) const
 {
+    ContentHasher h;
+    h.appendU64((U64)(std::uintptr_t)_overlay->getLastCallingViewport());
+    h.appendDouble(pscale.x);
+    h.appendDouble(pscale.y);
+    h.appendDouble(color.r);
+    h.appendDouble(color.g);
+    h.appendDouble(color.b);
+
+    return h;
+}
+
+OverlayDrawList*
+DefaultInteractI::beginOverlayList(const ContentHasher& signature)
+{
+    return _overlayCache.rebuildFor(signature.finalize());
 }
 
 void
-DefaultInteractI::renderText(float x,
-                             float y,
-                             float scalex,
-                             float scaley,
-                             const QString &text,
-                             const QColor &color,
-                             const QFont &font,
-                             int flags) const
+DefaultInteractI::showOverlayList()
 {
-    _overlay->renderText(x, y, scalex, scaley, text, color, font, flags);
+    OverlaySupport* viewport = _overlay->getLastCallingViewport();
+    if (viewport && !_overlayCache.list().empty()) {
+        viewport->drawOverlayDrawList(_overlayCache.list(), OverlayDrawState());
+    }
+}
+
+DefaultInteractI::~DefaultInteractI()
+{
 }
 
 void
@@ -172,8 +190,6 @@ DefaultInteractI::draw(double /*time*/,
                        const OfxPointD& /*pscale*/,
                        const QPointF& /*lastPenPos*/,
                        const OfxRGBColourD& /*color*/,
-                       const OfxPointD& /*shadow*/,
-                       const QFont& /*font*/,
                        const QFontMetrics& /*fm*/)
 {
 }
@@ -343,8 +359,6 @@ public:
                       const OfxPointD& pscale,
                       const QPointF& lastPenPos,
                       const OfxRGBColourD& color,
-                      const OfxPointD& shadow,
-                      const QFont& font,
                       const QFontMetrics& fm) OVERRIDE FINAL;
     virtual bool penMotion(double time,
                            const RenderScale& renderScale,
@@ -473,8 +487,6 @@ public:
                       const OfxPointD& pscale,
                       const QPointF& lastPenPos,
                       const OfxRGBColourD& color,
-                      const OfxPointD& shadow,
-                      const QFont& font,
                       const QFontMetrics& fm) OVERRIDE FINAL;
     virtual bool penMotion(double time,
                            const RenderScale& renderScale,
@@ -755,8 +767,6 @@ public:
                       const OfxPointD& pscale,
                       const QPointF& lastPenPos,
                       const OfxRGBColourD& color,
-                      const OfxPointD& shadow,
-                      const QFont& font,
                       const QFontMetrics& fm) OVERRIDE FINAL;
     virtual bool penMotion(double time,
                            const RenderScale& renderScale,
@@ -952,8 +962,6 @@ public:
                       const OfxPointD& pscale,
                       const QPointF& lastPenPos,
                       const OfxRGBColourD& color,
-                      const OfxPointD& shadow,
-                      const QFont& font,
                       const QFontMetrics& fm) OVERRIDE FINAL;
     virtual bool penMotion(double time,
                            const RenderScale& renderScale,
@@ -1102,14 +1110,11 @@ public:
                       const OfxPointD& pscale,
                       const QPointF& /*lastPenPos*/,
                       const OfxRGBColourD& color,
-                      const OfxPointD& shadow,
-                      const QFont& font,
                       const QFontMetrics& /*fm*/) OVERRIDE FINAL
     {
         if (!isActive()) {
             return;
         }
-        const double screenPixelRatio = getScreenPixelRatio();
         OfxPointD p[2];
         getPoints(time, p);
 
@@ -1126,55 +1131,57 @@ public:
             hasLine[i] = clipLineToRect(p[i], ortho, rod, &lineStart[i], &lineEnd[i]);
         }
 
-        glEnable(GL_LINE_SMOOTH);
-        glEnable(GL_BLEND);
-        glHint(GL_LINE_SMOOTH_HINT, GL_DONT_CARE);
-        glLineWidth(1.5f * screenPixelRatio);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glLineStipple(2, 0xAAAA);
-        glPointSize(pointSize() * screenPixelRatio);
-
-        for (int l = 0; l < 2; ++l) {
-            glMatrixMode(GL_PROJECTION);
-            int direction = (l == 0) ? 1 : -1;
-            glTranslated(direction * shadow.x, -direction * shadow.y, 0);
-            glMatrixMode(GL_MODELVIEW);
-
-            for (int i = 0; i < 2; ++i) {
-                glDisable(GL_LINE_STIPPLE);
-                glDisable(GL_POINT_SMOOTH);
-                const bool dragging = _state == (i == 0 ? eStateDraggingPoint0 : eStateDraggingPoint1);
-                float r = (float)color.r;
-                float g = (float)color.g;
-                float b = (float)color.b;
-                if (dragging) {
-                    r = 0.f;
-                    g = 1.f;
-                    b = 0.f;
-                }
-                glColor3f(r * l, g * l, b * l);
-                glBegin(GL_POINTS);
-                glVertex2d(p[i].x, p[i].y);
-                glEnd();
-
-                if (hasLine[i]) {
-                    glEnable(GL_LINE_STIPPLE);
-                    glColor3f((float)color.r * l, (float)color.g * l, (float)color.b * l);
-                    glBegin(GL_LINES);
-                    glVertex2d(lineStart[i].x, lineStart[i].y);
-                    glVertex2d(lineEnd[i].x, lineEnd[i].y);
-                    glEnd();
-                    glDisable(GL_LINE_STIPPLE);
-                }
-
-                QColor c;
-                c.setRgbF(r * l, g * l, b * l);
-                KnobDoublePtr knob = _point[i].lock();
-                renderText(p[i].x, p[i].y + pointSize() * pscale.y,
-                           pscale.x, pscale.y, QString::fromUtf8(knob->getLabel().c_str()), c, font);
+        ContentHasher signature = beginOverlaySignature(pscale, color);
+        signature.appendI64(_state);
+        for (int i = 0; i < 2; ++i) {
+            signature.appendDouble(p[i].x);
+            signature.appendDouble(p[i].y);
+            signature.appendBool(hasLine[i]);
+            if (hasLine[i]) {
+                signature.appendDouble(lineStart[i].x);
+                signature.appendDouble(lineStart[i].y);
+                signature.appendDouble(lineEnd[i].x);
+                signature.appendDouble(lineEnd[i].y);
             }
+            signature.appendString(_point[i].lock()->getLabel());
         }
-        glPointSize(1);
+        OverlayDrawList* list = beginOverlayList(signature);
+        if (!list) {
+            showOverlayList();
+
+            return;
+        }
+        OverlayDrawListPen pen(list);
+        pen.setShadow(true);
+        pen.setSmoothLines(true);
+        pen.setSmoothPoints(false);
+        pen.lineWidth(1.5);
+        pen.pointSize(pointSize());
+        for (int i = 0; i < 2; ++i) {
+            const bool dragging = _state == (i == 0 ? eStateDraggingPoint0 : eStateDraggingPoint1);
+            float r = (float)color.r;
+            float g = (float)color.g;
+            float b = (float)color.b;
+            if (dragging) {
+                r = 0.f;
+                g = 1.f;
+                b = 0.f;
+            }
+            pen.color(r, g, b);
+            pen.point(p[i].x, p[i].y);
+
+            if (hasLine[i]) {
+                pen.setDash(2., 2.);
+                pen.color(color.r, color.g, color.b);
+                pen.line(lineStart[i].x, lineStart[i].y, lineEnd[i].x, lineEnd[i].y);
+                pen.setDash(0., 0.);
+            }
+
+            pen.color(r, g, b);
+            KnobDoublePtr knob = _point[i].lock();
+            pen.text(p[i].x, p[i].y, knob->getLabel(), 0., pointSize());
+        }
+        showOverlayList();
     }
 
     virtual bool penMotion(double time,
@@ -1376,7 +1383,6 @@ struct HostOverlayPrivate
     DefaultInteractIPtrList interacts;
     NodeGuiWPtr node;
     QPointF lastPenPos;
-    TextRenderer textRenderer;
     bool interactiveDrag;
 
     HostOverlayPrivate(HostOverlay* publicInterface,
@@ -1385,7 +1391,6 @@ struct HostOverlayPrivate
         , interacts()
         , node(node)
         , lastPenPos()
-        , textRenderer()
         , interactiveDrag(false)
     {
     }
@@ -1395,19 +1400,6 @@ struct HostOverlayPrivate
         node.lock()->getNode()->getApp()->queueRedrawForAllViewers();
     }
 };
-
-void
-HostOverlay::renderText(float x,
-                        float y,
-                        float scalex,
-                        float scaley,
-                        const QString &text,
-                        const QColor &color,
-                        const QFont &font,
-                        int flags) const
-{
-    _imp->textRenderer.renderText(x, y, scalex, scaley, text, color, font, flags);
-}
 
 void
 HostOverlay::requestRedraw()
@@ -1484,8 +1476,6 @@ PositionInteract::draw(double time,
                        const OfxPointD& pscale,
                        const QPointF& lastPenPos,
                        const OfxRGBColourD& color,
-                       const OfxPointD& shadow,
-                       const QFont& font,
                        const QFontMetrics& fm)
 {
     KnobDoublePtr knob = _param.lock();
@@ -1507,7 +1497,6 @@ PositionInteract::draw(double time,
     case ePositionInteractStatePicked:
         pR = 0.f; pG = 1.0f; pB = 0.0f; break;
     }
-    double screenPixelRatio = getScreenPixelRatio();
 
     QPointF pos;
     if (_state == ePositionInteractStatePicked) {
@@ -1523,29 +1512,26 @@ PositionInteract::draw(double time,
         pos.setX(p[0]);
         pos.setY(p[1]);
     }
-    //glPushAttrib(GL_ALL_ATTRIB_BITS); // caller is responsible for protecting attribs
-    // Draw everything twice
-    // l = 0: shadow
-    // l = 1: drawing
-    for (int l = 0; l < 2; ++l) {
-        // shadow (uses GL_PROJECTION)
-        glMatrixMode(GL_PROJECTION);
-        int direction = (l == 0) ? 1 : -1;
-        // translate (1,-1) pixels
-        glTranslated(direction * shadow.x, -direction * shadow.y, 0);
-        glMatrixMode(GL_MODELVIEW); // Modelview should be used on Nuke
+    ContentHasher signature = beginOverlaySignature(pscale, color);
+    signature.appendI64(_state);
+    signature.appendDouble(pos.x());
+    signature.appendDouble(pos.y());
+    signature.appendString(knob->getOriginalName());
+    signature.appendI64(fm.height());
+    signature.appendDouble(pointSize());
+    OverlayDrawList* list = beginOverlayList(signature);
+    if (!list) {
+        showOverlayList();
 
-        glColor3f(pR * l, pG * l, pB * l);
-        glPointSize(pointSize() * screenPixelRatio);
-        glBegin(GL_POINTS);
-        glVertex2d( pos.x(), pos.y() );
-        glEnd();
-        QColor c;
-        c.setRgbF(pR * l, pG * l, pB * l);
-
-        renderText(pos.x(), pos.y() - ( fm.height() + pointSize() ) * pscale.y,
-                   pscale.x, pscale.y, QString::fromUtf8( knob->getOriginalName().c_str() ), c, font);
+        return;
     }
+    OverlayDrawListPen pen(list);
+    pen.setShadow(true);
+    pen.color(pR, pG, pB);
+    pen.pointSize(pointSize());
+    pen.point(pos.x(), pos.y());
+    pen.text(pos.x(), pos.y(), knob->getOriginalName(), 0., -(fm.height() + pointSize()));
+    showOverlayList();
 } // PositionInteract::draw
 
 bool
@@ -1611,24 +1597,24 @@ rectangleHandleIsNearby(const OfxPointD& p,
 }
 
 static void
-drawRectangleHandle(const OfxRGBColourD& color,
+drawRectangleHandle(OverlayDrawListPen& pen,
+                    const OfxRGBColourD& color,
                     double x,
                     double y,
                     RectangleInteract::DrawStateEnum id,
                     RectangleInteract::DrawStateEnum ds,
-                    bool keepAR,
-                    int l)
+                    bool keepAR)
 {
     if (ds == id) {
         if (keepAR) {
-            glColor3f(1.f * l, 0.f * l, 0.f * l);
+            pen.color(1., 0., 0.);
         } else {
-            glColor3f(0.f * l, 1.f * l, 0.f * l);
+            pen.color(0., 1., 0.);
         }
     } else {
-        glColor3f((float)color.r * l, (float)color.g * l, (float)color.b * l);
+        pen.color(color.r, color.g, color.b);
     }
-    glVertex2d(x, y);
+    pen.vertex(x, y);
 }
 
 void
@@ -1638,15 +1624,12 @@ RectangleInteract::draw(double time,
                         const OfxPointD& pscale,
                         const QPointF& /*lastPenPos*/,
                         const OfxRGBColourD& color,
-                        const OfxPointD& shadow,
-                        const QFont& /*font*/,
                         const QFontMetrics& /*fm*/)
 {
     if (!isActive(time)) {
         return;
     }
 
-    double screenPixelRatio = getScreenPixelRatio();
     double x1, y1, w, h;
     getRectangle(time, &x1, &y1, &w, &h);
     double x2 = x1 + w;
@@ -1656,60 +1639,56 @@ RectangleInteract::draw(double time,
     const bool keepAR = _modifierStateShift > 0;
     const bool centered = _modifierStateCtrl > 0;
 
-    glDisable(GL_LINE_STIPPLE);
-    glEnable(GL_LINE_SMOOTH);
-    glDisable(GL_POINT_SMOOTH);
-    glEnable(GL_BLEND);
-    glHint(GL_LINE_SMOOTH_HINT, GL_DONT_CARE);
-    glLineWidth(1.5f * screenPixelRatio);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    ContentHasher signature = beginOverlaySignature(pscale, color);
+    signature.appendDouble(x1);
+    signature.appendDouble(y1);
+    signature.appendDouble(w);
+    signature.appendDouble(h);
+    signature.appendBool(keepAR);
+    signature.appendBool(centered);
+    signature.appendI64(_drawState);
+    signature.appendDouble(pointSize());
+    signature.appendDouble(crossSize());
+    OverlayDrawList* list = beginOverlayList(signature);
+    if (!list) {
+        showOverlayList();
 
-    // Draw everything twice
-    // l = 0: shadow
-    // l = 1: drawing
-    for (int l = 0; l < 2; ++l) {
-        // shadow (uses GL_PROJECTION)
-        glMatrixMode(GL_PROJECTION);
-        int direction = (l == 0) ? 1 : -1;
-        // translate (1,-1) pixels
-        glTranslated(direction * shadow.x, -direction * shadow.y, 0);
-        glMatrixMode(GL_MODELVIEW);
-
-        glColor3f((float)color.r * l, (float)color.g * l, (float)color.b * l);
-
-        glBegin(GL_LINE_LOOP);
-        glVertex2d(x1, y1);
-        glVertex2d(x1, y2);
-        glVertex2d(x2, y2);
-        glVertex2d(x2, y1);
-        glEnd();
-
-        glPointSize(pointSize() * screenPixelRatio);
-        glBegin(GL_POINTS);
-        drawRectangleHandle(color, x1, y1, eDrawStateHoveringBtmLeft, _drawState, keepAR, l);
-        drawRectangleHandle(color, x1, yc, eDrawStateHoveringMidLeft, _drawState, false, l);
-        drawRectangleHandle(color, x1, y2, eDrawStateHoveringTopLeft, _drawState, keepAR, l);
-        drawRectangleHandle(color, xc, y1, eDrawStateHoveringBtmMid, _drawState, false, l);
-        drawRectangleHandle(color, xc, yc, eDrawStateHoveringCenter, _drawState, false, l);
-        drawRectangleHandle(color, xc, y2, eDrawStateHoveringTopMid, _drawState, false, l);
-        drawRectangleHandle(color, x2, y1, eDrawStateHoveringBtmRight, _drawState, keepAR, l);
-        drawRectangleHandle(color, x2, yc, eDrawStateHoveringMidRight, _drawState, false, l);
-        drawRectangleHandle(color, x2, y2, eDrawStateHoveringTopRight, _drawState, keepAR, l);
-        glEnd();
-        glPointSize(1);
-
-        glBegin(GL_LINES);
-        if ((_drawState == eDrawStateHoveringCenter) || (centered && (_drawState != eDrawStateInactive))) {
-            glColor3f(0.f * l, 1.f * l, 0.f * l);
-        } else {
-            glColor3f((float)color.r * l, (float)color.g * l, (float)color.b * l);
-        }
-        glVertex2d(xc - crossSize() * pscale.x, yc);
-        glVertex2d(xc + crossSize() * pscale.x, yc);
-        glVertex2d(xc, yc - crossSize() * pscale.y);
-        glVertex2d(xc, yc + crossSize() * pscale.y);
-        glEnd();
+        return;
     }
+    OverlayDrawListPen pen(list);
+    pen.setShadow(true);
+    pen.setSmoothLines(true);
+    pen.setSmoothPoints(false);
+    pen.lineWidth(1.5);
+    pen.color(color.r, color.g, color.b);
+
+    pen.begin(OverlayDrawListPen::eModeLineLoop);
+    pen.vertex(x1, y1);
+    pen.vertex(x1, y2);
+    pen.vertex(x2, y2);
+    pen.vertex(x2, y1);
+    pen.end();
+
+    pen.pointSize(pointSize());
+    pen.begin(OverlayDrawListPen::eModePoints);
+    drawRectangleHandle(pen, color, x1, y1, eDrawStateHoveringBtmLeft, _drawState, keepAR);
+    drawRectangleHandle(pen, color, x1, yc, eDrawStateHoveringMidLeft, _drawState, false);
+    drawRectangleHandle(pen, color, x1, y2, eDrawStateHoveringTopLeft, _drawState, keepAR);
+    drawRectangleHandle(pen, color, xc, y1, eDrawStateHoveringBtmMid, _drawState, false);
+    drawRectangleHandle(pen, color, xc, yc, eDrawStateHoveringCenter, _drawState, false);
+    drawRectangleHandle(pen, color, xc, y2, eDrawStateHoveringTopMid, _drawState, false);
+    drawRectangleHandle(pen, color, x2, y1, eDrawStateHoveringBtmRight, _drawState, keepAR);
+    drawRectangleHandle(pen, color, x2, yc, eDrawStateHoveringMidRight, _drawState, false);
+    drawRectangleHandle(pen, color, x2, y2, eDrawStateHoveringTopRight, _drawState, keepAR);
+    pen.end();
+
+    if ((_drawState == eDrawStateHoveringCenter) || (centered && (_drawState != eDrawStateInactive))) {
+        pen.color(0., 1., 0.);
+    } else {
+        pen.color(color.r, color.g, color.b);
+    }
+    pen.anchoredShape(xc, yc, OverlayDrawList::AnchoredShape::cross(crossSize()));
+    showOverlayList();
 } // RectangleInteract::draw
 
 bool
@@ -2264,94 +2243,198 @@ ofxsTransformGetScale(const OfxPointD &scaleParam,
     }
 }
 
-static void
-drawSquare(const OfxRGBColourD& color,
+namespace {
+
+// The canonical frame of a GL modelview stack, for glyphs built about a fixed canonical anchor:
+// a vertex maps through the frame, then to screen pixels from the anchor.
+class GlyphFrame {
+public:
+    GlyphFrame(const OfxPointD& anchor,
+               const OfxPointD& pixelScale)
+        : _anchor(anchor)
+        , _pixelScale(pixelScale)
+        , _a(1.)
+        , _b(0.)
+        , _c(0.)
+        , _d(1.)
+        , _tx(0.)
+        , _ty(0.)
+    {
+    }
+
+    void translate(double x,
+                   double y)
+    {
+        multiply(1., 0., 0., 1., x, y);
+    }
+
+    void rotate(double degrees)
+    {
+        const double r = degrees * M_PI / 180.;
+        const double c = std::cos(r);
+        const double s = std::sin(r);
+        multiply(c, s, -s, c, 0., 0.);
+    }
+
+    // Right-multiplies by the matrix with columns (a, b), (c, d) and (tx, ty), as glMultMatrix does.
+    void multiply(double a,
+                  double b,
+                  double c,
+                  double d,
+                  double tx,
+                  double ty)
+    {
+        const double na = _a * a + _c * b;
+        const double nb = _b * a + _d * b;
+        const double nc = _a * c + _c * d;
+        const double nd = _b * c + _d * d;
+        const double ntx = _a * tx + _c * ty + _tx;
+        const double nty = _b * tx + _d * ty + _ty;
+        _a = na;
+        _b = nb;
+        _c = nc;
+        _d = nd;
+        _tx = ntx;
+        _ty = nty;
+    }
+
+    void begin(OverlayDrawListPen& pen,
+               OverlayDrawListPen::ModeEnum mode) const
+    {
+        pen.beginGlyph(mode, _anchor.x, _anchor.y);
+    }
+
+    void vertex(OverlayDrawListPen& pen,
+                double x,
+                double y) const
+    {
+        const double cx = _a * x + _c * y + _tx;
+        const double cy = _b * x + _d * y + _ty;
+        pen.vertex((cx - _anchor.x) / _pixelScale.x, (cy - _anchor.y) / _pixelScale.y);
+    }
+
+private:
+    OfxPointD _anchor;
+    OfxPointD _pixelScale;
+    double _a;
+    double _b;
+    double _c;
+    double _d;
+    double _tx;
+    double _ty;
+};
+
+void
+setHoverColor(OverlayDrawListPen& pen,
+              const OfxRGBColourD& color,
+              bool hovered)
+{
+    if (hovered) {
+        pen.color(1., 0., 0.);
+    } else {
+        pen.color(color.r, color.g, color.b);
+    }
+}
+
+void
+drawSquare(OverlayDrawListPen& pen,
+           GlyphFrame frame,
+           const OfxRGBColourD& color,
            const OfxPointD& center,
            const OfxPointD& pixelScale,
            bool hovered,
-           bool althovered,
-           int l)
+           bool althovered)
 {
     // we are not axis-aligned
     double meanPixelScale = (pixelScale.x + pixelScale.y) / 2.;
 
     if (hovered) {
         if (althovered) {
-            glColor3f(0.f * l, 1.f * l, 0.f * l);
+            pen.color(0., 1., 0.);
         } else {
-            glColor3f(1.f * l, 0.f * l, 0.f * l);
+            pen.color(1., 0., 0.);
         }
     } else {
-        glColor3f( (float)color.r * l, (float)color.g * l, (float)color.b * l );
+        pen.color(color.r, color.g, color.b);
     }
     double halfWidth = (TransformInteract::pointSize() / 2.) * meanPixelScale;
     double halfHeight = (TransformInteract::pointSize() / 2.) * meanPixelScale;
-    glPushMatrix();
-    glTranslated(center.x, center.y, 0.);
-    glBegin(GL_POLYGON);
-    glVertex2d(-halfWidth, -halfHeight);   // bottom left
-    glVertex2d(-halfWidth, +halfHeight);   // top left
-    glVertex2d(+halfWidth, +halfHeight);   // bottom right
-    glVertex2d(+halfWidth, -halfHeight);   // top right
-    glEnd();
-    glPopMatrix();
+    frame.translate(center.x, center.y);
+    frame.begin(pen, OverlayDrawListPen::eModePolygon);
+    frame.vertex(pen, -halfWidth, -halfHeight); // bottom left
+    frame.vertex(pen, -halfWidth, +halfHeight); // top left
+    frame.vertex(pen, +halfWidth, +halfHeight); // bottom right
+    frame.vertex(pen, +halfWidth, -halfHeight); // top right
+    pen.end();
 }
 
-static void
-drawEllipse(const OfxRGBColourD& color,
+void
+drawEllipse(OverlayDrawListPen& pen,
+            GlyphFrame frame,
+            const OfxRGBColourD& color,
             const OfxPointD& center,
             const OfxPointD& targetRadius,
-            bool hovered,
-            int l)
+            bool hovered)
 {
-    if (hovered) {
-        glColor3f(1.f * l, 0.f * l, 0.f * l);
-    } else {
-        glColor3f( (float)color.r * l, (float)color.g * l, (float)color.b * l );
-    }
-
-    glPushMatrix();
-    //  center the oval at x_center, y_center
-    glTranslatef( (float)center.x, (float)center.y, 0.f );
-    //  draw the oval using line segments
-    glBegin(GL_LINE_LOOP);
+    setHoverColor(pen, color, hovered);
+    frame.translate(center.x, center.y);
+    frame.begin(pen, OverlayDrawListPen::eModeLineLoop);
     // we don't need to be pixel-perfect here, it's just an interact!
     // 40 segments is enough.
     for (int i = 0; i < 40; ++i) {
         double theta = i * 2 * M_PI / 40.;
-        glVertex2d( targetRadius.x * std::cos(theta), targetRadius.y * std::sin(theta) );
+        frame.vertex(pen, targetRadius.x * std::cos(theta), targetRadius.y * std::sin(theta));
     }
-    glEnd();
-
-    glPopMatrix();
+    pen.end();
 }
 
-static void
-drawSkewBar(const OfxRGBColourD& color,
-            const OfxPointD &center,
+// A bar from -halfSize to +halfSize along x with arrowheads at both ends, about the frame origin.
+void
+drawDoubleArrow(OverlayDrawListPen& pen,
+                const GlyphFrame& frame,
+                double y,
+                double halfSize,
+                double headOffsetX,
+                double headOffsetY)
+{
+    frame.vertex(pen, -halfSize, y);
+    frame.vertex(pen, +halfSize, y);
+
+    frame.vertex(pen, -halfSize, y);
+    frame.vertex(pen, -halfSize + headOffsetX, y + headOffsetY);
+
+    frame.vertex(pen, -halfSize, y);
+    frame.vertex(pen, -halfSize + headOffsetX, y - headOffsetY);
+
+    frame.vertex(pen, +halfSize, y);
+    frame.vertex(pen, +halfSize - headOffsetX, y + headOffsetY);
+
+    frame.vertex(pen, +halfSize, y);
+    frame.vertex(pen, +halfSize - headOffsetX, y - headOffsetY);
+}
+
+void
+drawSkewBar(OverlayDrawListPen& pen,
+            GlyphFrame frame,
+            const OfxRGBColourD& color,
+            const OfxPointD& center,
             const OfxPointD& pixelScale,
             double targetRadiusY,
             bool hovered,
-            double angle,
-            int l)
+            double angle)
 {
-    if (hovered) {
-        glColor3f(1.f * l, 0.f * l, 0.f * l);
-    } else {
-        glColor3f( (float)color.r * l, (float)color.g * l, (float)color.b * l );
-    }
+    setHoverColor(pen, color, hovered);
 
     // we are not axis-aligned: use the mean pixel scale
     double meanPixelScale = (pixelScale.x + pixelScale.y) / 2.;
     double barHalfSize = targetRadiusY + 20. * meanPixelScale;
 
-    glPushMatrix();
-    glTranslatef( (float)center.x, (float)center.y, 0.f );
-    glRotated(angle, 0, 0, 1);
+    frame.translate(center.x, center.y);
+    frame.rotate(angle);
 
-    glBegin(GL_LINES);
-    glVertex2d(0., -barHalfSize);
-    glVertex2d(0., +barHalfSize);
+    frame.begin(pen, OverlayDrawListPen::eModeLines);
+    frame.vertex(pen, 0., -barHalfSize);
+    frame.vertex(pen, 0., +barHalfSize);
 
     if (hovered) {
         double arrowYPosition = targetRadiusY + 10. * meanPixelScale;
@@ -2359,50 +2442,30 @@ drawSkewBar(const OfxRGBColourD& color,
         double arrowHeadOffsetX = 3 * meanPixelScale;
         double arrowHeadOffsetY = 3 * meanPixelScale;
 
-        ///draw the central bar
-        glVertex2d(-arrowXHalfSize, -arrowYPosition);
-        glVertex2d(+arrowXHalfSize, -arrowYPosition);
-
-        ///left triangle
-        glVertex2d(-arrowXHalfSize, -arrowYPosition);
-        glVertex2d(-arrowXHalfSize + arrowHeadOffsetX, -arrowYPosition + arrowHeadOffsetY);
-
-        glVertex2d(-arrowXHalfSize, -arrowYPosition);
-        glVertex2d(-arrowXHalfSize + arrowHeadOffsetX, -arrowYPosition - arrowHeadOffsetY);
-
-        ///right triangle
-        glVertex2d(+arrowXHalfSize, -arrowYPosition);
-        glVertex2d(+arrowXHalfSize - arrowHeadOffsetX, -arrowYPosition + arrowHeadOffsetY);
-
-        glVertex2d(+arrowXHalfSize, -arrowYPosition);
-        glVertex2d(+arrowXHalfSize - arrowHeadOffsetX, -arrowYPosition - arrowHeadOffsetY);
+        drawDoubleArrow(pen, frame, -arrowYPosition, arrowXHalfSize, arrowHeadOffsetX, arrowHeadOffsetY);
     }
-    glEnd();
-    glPopMatrix();
+    pen.end();
 }
 
-static void
-drawRotationBar(const OfxRGBColourD& color,
+void
+drawRotationBar(OverlayDrawListPen& pen,
+                const GlyphFrame& frame,
+                const OfxRGBColourD& color,
                 const OfxPointD& pixelScale,
                 double targetRadiusX,
                 bool hovered,
-                bool inverted,
-                int l)
+                bool inverted)
 {
     // we are not axis-aligned
     double meanPixelScale = (pixelScale.x + pixelScale.y) / 2.;
 
-    if (hovered) {
-        glColor3f(1.f * l, 0.f * l, 0.f * l);
-    } else {
-        glColor3f(color.r * l, color.g * l, color.b * l);
-    }
+    setHoverColor(pen, color, hovered);
 
     double barExtra = 30. * meanPixelScale;
-    glBegin(GL_LINES);
-    glVertex2d(0., 0.);
-    glVertex2d(0. + targetRadiusX + barExtra, 0.);
-    glEnd();
+    frame.begin(pen, OverlayDrawListPen::eModeLines);
+    frame.vertex(pen, 0., 0.);
+    frame.vertex(pen, 0. + targetRadiusX + barExtra, 0.);
+    pen.end();
 
     if (hovered) {
         double arrowCenterX = targetRadiusX + barExtra / 2.;
@@ -2412,35 +2475,29 @@ drawRotationBar(const OfxRGBColourD& color,
         arrowRadius.x = 5. * meanPixelScale;
         arrowRadius.y = 10. * meanPixelScale;
 
-        glPushMatrix();
-        //  center the oval at x_center, y_center
-        glTranslatef( (float)arrowCenterX, 0.f, 0 );
-        //  draw the oval using line segments
-        glBegin(GL_LINE_STRIP);
-        glVertex2d(0, arrowRadius.y);
-        glVertex2d(arrowRadius.x, 0.);
-        glVertex2d(0, -arrowRadius.y);
-        glEnd();
+        GlyphFrame arrow = frame;
+        arrow.translate(arrowCenterX, 0.);
+        arrow.begin(pen, OverlayDrawListPen::eModeLineStrip);
+        arrow.vertex(pen, 0, arrowRadius.y);
+        arrow.vertex(pen, arrowRadius.x, 0.);
+        arrow.vertex(pen, 0, -arrowRadius.y);
+        pen.end();
 
-
-        glBegin(GL_LINES);
+        arrow.begin(pen, OverlayDrawListPen::eModeLines);
         ///draw the top head
-        glVertex2d(0., arrowRadius.y);
-        glVertex2d(0., arrowRadius.y - 5. * meanPixelScale);
+        arrow.vertex(pen, 0., arrowRadius.y);
+        arrow.vertex(pen, 0., arrowRadius.y - 5. * meanPixelScale);
 
-        glVertex2d(0., arrowRadius.y);
-        glVertex2d(4. * meanPixelScale, arrowRadius.y - 3. * meanPixelScale); // 5^2 = 3^2+4^2
+        arrow.vertex(pen, 0., arrowRadius.y);
+        arrow.vertex(pen, 4. * meanPixelScale, arrowRadius.y - 3. * meanPixelScale); // 5^2 = 3^2+4^2
 
         ///draw the bottom head
-        glVertex2d(0., -arrowRadius.y);
-        glVertex2d(0., -arrowRadius.y + 5. * meanPixelScale);
+        arrow.vertex(pen, 0., -arrowRadius.y);
+        arrow.vertex(pen, 0., -arrowRadius.y + 5. * meanPixelScale);
 
-        glVertex2d(0., -arrowRadius.y);
-        glVertex2d(4. * meanPixelScale, -arrowRadius.y + 3. * meanPixelScale); // 5^2 = 3^2+4^2
-
-        glEnd();
-
-        glPopMatrix();
+        arrow.vertex(pen, 0., -arrowRadius.y);
+        arrow.vertex(pen, 4. * meanPixelScale, -arrowRadius.y + 3. * meanPixelScale); // 5^2 = 3^2+4^2
+        pen.end();
     }
     if (inverted) {
         double arrowXPosition = targetRadiusX + barExtra * 1.5;
@@ -2448,54 +2505,20 @@ drawRotationBar(const OfxRGBColourD& color,
         double arrowHeadOffsetX = 3 * meanPixelScale;
         double arrowHeadOffsetY = 3 * meanPixelScale;
 
-        glPushMatrix();
-        glTranslatef( (float)arrowXPosition, 0, 0 );
+        GlyphFrame arrows = frame;
+        arrows.translate(arrowXPosition, 0.);
+        arrows.begin(pen, OverlayDrawListPen::eModeLines);
+        drawDoubleArrow(pen, arrows, 0., arrowXHalfSize, arrowHeadOffsetX, arrowHeadOffsetY);
+        pen.end();
 
-        glBegin(GL_LINES);
-        ///draw the central bar
-        glVertex2d(-arrowXHalfSize, 0.);
-        glVertex2d(+arrowXHalfSize, 0.);
-
-        ///left triangle
-        glVertex2d(-arrowXHalfSize, 0.);
-        glVertex2d(-arrowXHalfSize + arrowHeadOffsetX, arrowHeadOffsetY);
-
-        glVertex2d(-arrowXHalfSize, 0.);
-        glVertex2d(-arrowXHalfSize + arrowHeadOffsetX, -arrowHeadOffsetY);
-
-        ///right triangle
-        glVertex2d(+arrowXHalfSize, 0.);
-        glVertex2d(+arrowXHalfSize - arrowHeadOffsetX, arrowHeadOffsetY);
-
-        glVertex2d(+arrowXHalfSize, 0.);
-        glVertex2d(+arrowXHalfSize - arrowHeadOffsetX, -arrowHeadOffsetY);
-        glEnd();
-
-        glRotated(90., 0., 0., 1.);
-
-        glBegin(GL_LINES);
-        ///draw the central bar
-        glVertex2d(-arrowXHalfSize, 0.);
-        glVertex2d(+arrowXHalfSize, 0.);
-
-        ///left triangle
-        glVertex2d(-arrowXHalfSize, 0.);
-        glVertex2d(-arrowXHalfSize + arrowHeadOffsetX, arrowHeadOffsetY);
-
-        glVertex2d(-arrowXHalfSize, 0.);
-        glVertex2d(-arrowXHalfSize + arrowHeadOffsetX, -arrowHeadOffsetY);
-
-        ///right triangle
-        glVertex2d(+arrowXHalfSize, 0.);
-        glVertex2d(+arrowXHalfSize - arrowHeadOffsetX, arrowHeadOffsetY);
-
-        glVertex2d(+arrowXHalfSize, 0.);
-        glVertex2d(+arrowXHalfSize - arrowHeadOffsetX, -arrowHeadOffsetY);
-        glEnd();
-
-        glPopMatrix();
+        arrows.rotate(90.);
+        arrows.begin(pen, OverlayDrawListPen::eModeLines);
+        drawDoubleArrow(pen, arrows, 0., arrowXHalfSize, arrowHeadOffsetX, arrowHeadOffsetY);
+        pen.end();
     }
 } // drawRotationBar
+
+} // anon namespace
 
 void
 TransformInteract::draw(double time,
@@ -2504,8 +2527,6 @@ TransformInteract::draw(double time,
                         const OfxPointD& pscale,
                         const QPointF& lastPenPos,
                         const OfxRGBColourD& color,
-                        const OfxPointD& shadow,
-                        const QFont& /*font*/,
                         const QFontMetrics& /*fm*/)
 {
     // do not show interact if knob is secret or not enabled
@@ -2524,7 +2545,6 @@ TransformInteract::draw(double time,
     double skewX, skewY;
     int skewOrder;
     bool inverted = false;
-    double screenPixelRatio = getScreenPixelRatio();
 
     if (_mouseState == TransformInteract::eReleased) {
         getCenter(time, &center.x, &center.y);
@@ -2560,81 +2580,73 @@ TransformInteract::draw(double time,
     OfxPointD left, right, bottom, top;
     getTargetPoints(targetCenter, targetRadius, &left, &bottom, &top, &right);
 
+    // add 180 to the angle to draw the arrows on the other side. unfortunately, this requires knowing
+    // the mouse position in the ellipse frame
+    double flip = 0.;
+    if ((_drawState == TransformInteract::eSkewXBarHoverered) || (_drawState == TransformInteract::eSkewYBarHoverered)) {
+        double rot = Transform::toRadians(rotate);
+        Transform::Matrix3x3 transformscale;
+        transformscale = Transform::matInverseTransformCanonical(0., 0., scale.x, scale.y, skewX, skewY, (bool)skewOrder, rot, targetCenter.x, targetCenter.y);
 
-    GLdouble skewMatrix[16];
-    skewMatrix[0] = ( skewOrder ? 1. : (1. + skewX * skewY) ); skewMatrix[1] = skewY; skewMatrix[2] = 0.; skewMatrix[3] = 0;
-    skewMatrix[4] = skewX; skewMatrix[5] = (skewOrder ? (1. + skewX * skewY) : 1.); skewMatrix[6] = 0.; skewMatrix[7] = 0;
-    skewMatrix[8] = 0.; skewMatrix[9] = 0.; skewMatrix[10] = 1.; skewMatrix[11] = 0;
-    skewMatrix[12] = 0.; skewMatrix[13] = 0.; skewMatrix[14] = 0.; skewMatrix[15] = 1.;
-
-    //glPushAttrib(GL_ALL_ATTRIB_BITS); // caller is responsible for protecting attribs
-
-    glDisable(GL_LINE_STIPPLE);
-    glEnable(GL_LINE_SMOOTH);
-    glDisable(GL_POINT_SMOOTH);
-    glEnable(GL_BLEND);
-    glHint(GL_LINE_SMOOTH_HINT, GL_DONT_CARE);
-    glLineWidth(1.5f * screenPixelRatio);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-    // Draw everything twice
-    // l = 0: shadow
-    // l = 1: drawing
-    for (int l = 0; l < 2; ++l) {
-        // shadow (uses GL_PROJECTION)
-        glMatrixMode(GL_PROJECTION);
-        int direction = (l == 0) ? 1 : -1;
-        // translate (1,-1) pixels
-        glTranslated(direction * shadow.x, -direction * shadow.y, 0);
-        glMatrixMode(GL_MODELVIEW); // Modelview should be used on Nuke
-
-        glColor3f(color.r * l, color.g * l, color.b * l);
-
-        glPushMatrix();
-        glTranslated(targetCenter.x, targetCenter.y, 0.);
-
-        glRotated(rotate, 0, 0., 1.);
-        drawRotationBar(color, pscale, targetRadius.x, _mouseState == TransformInteract::eDraggingRotationBar || _drawState == TransformInteract::eRotationBarHovered, inverted, l);
-        glMultMatrixd(skewMatrix);
-        glTranslated(-targetCenter.x, -targetCenter.y, 0.);
-
-        drawEllipse(color, targetCenter, targetRadius, _mouseState == TransformInteract::eDraggingCircle || _drawState == TransformInteract::eCircleHovered, l);
-
-        // add 180 to the angle to draw the arrows on the other side. unfortunately, this requires knowing
-        // the mouse position in the ellipse frame
-        double flip = 0.;
-        if ( (_drawState == TransformInteract::eSkewXBarHoverered) || (_drawState == TransformInteract::eSkewYBarHoverered) ) {
-            double rot = Transform::toRadians(rotate);
-            Transform::Matrix3x3 transformscale;
-            transformscale = Transform::matInverseTransformCanonical(0., 0., scale.x, scale.y, skewX, skewY, (bool)skewOrder, rot, targetCenter.x, targetCenter.y);
-
-            Transform::Point3D previousPos;
-            previousPos.x = lastPenPos.x();
-            previousPos.y = lastPenPos.y();
-            previousPos.z = 1.;
-            previousPos = Transform::matApply(transformscale, previousPos);
-            if (previousPos.z != 0) {
-                previousPos.x /= previousPos.z;
-                previousPos.y /= previousPos.z;
-            }
-            if ( ( (_drawState == TransformInteract::eSkewXBarHoverered) && (previousPos.y > targetCenter.y) ) ||
-                 ( ( _drawState == TransformInteract::eSkewYBarHoverered) && ( previousPos.x > targetCenter.x) ) ) {
-                flip = 180.;
-            }
+        Transform::Point3D previousPos;
+        previousPos.x = lastPenPos.x();
+        previousPos.y = lastPenPos.y();
+        previousPos.z = 1.;
+        previousPos = Transform::matApply(transformscale, previousPos);
+        if (previousPos.z != 0) {
+            previousPos.x /= previousPos.z;
+            previousPos.y /= previousPos.z;
         }
-        drawSkewBar(color, targetCenter, pscale, targetRadius.y, _mouseState == TransformInteract::eDraggingSkewXBar || _drawState == TransformInteract::eSkewXBarHoverered, flip, l);
-        drawSkewBar(color, targetCenter, pscale, targetRadius.x, _mouseState == TransformInteract::eDraggingSkewYBar || _drawState == TransformInteract::eSkewYBarHoverered, flip - 90., l);
-
-
-        drawSquare(color, targetCenter, pscale, _mouseState == TransformInteract::eDraggingTranslation || _mouseState == TransformInteract::eDraggingCenter || _drawState == TransformInteract::eCenterPointHovered, _modifierStateCtrl, l);
-        drawSquare(color, left, pscale, _mouseState == TransformInteract::eDraggingLeftPoint || _drawState == TransformInteract::eLeftPointHovered, false, l);
-        drawSquare(color, right, pscale, _mouseState == TransformInteract::eDraggingRightPoint || _drawState == TransformInteract::eRightPointHovered, false, l);
-        drawSquare(color, top, pscale, _mouseState == TransformInteract::eDraggingTopPoint || _drawState == TransformInteract::eTopPointHovered, false, l);
-        drawSquare(color, bottom, pscale, _mouseState == TransformInteract::eDraggingBottomPoint || _drawState == TransformInteract::eBottomPointHovered, false, l);
-
-        glPopMatrix();
+        if (((_drawState == TransformInteract::eSkewXBarHoverered) && (previousPos.y > targetCenter.y)) || ((_drawState == TransformInteract::eSkewYBarHoverered) && (previousPos.x > targetCenter.x))) {
+            flip = 180.;
+        }
     }
-    //glPopAttrib();
+    ContentHasher signature = beginOverlaySignature(pscale, color);
+    signature.appendDouble(center.x);
+    signature.appendDouble(center.y);
+    signature.appendDouble(translate.x);
+    signature.appendDouble(translate.y);
+    signature.appendDouble(scale.x);
+    signature.appendDouble(scale.y);
+    signature.appendDouble(rotate);
+    signature.appendDouble(skewX);
+    signature.appendDouble(skewY);
+    signature.appendI64(skewOrder);
+    signature.appendBool(inverted);
+    signature.appendI64(_mouseState);
+    signature.appendI64(_drawState);
+    signature.appendI64(_modifierStateCtrl);
+    signature.appendDouble(flip);
+    OverlayDrawList* list = beginOverlayList(signature);
+    if (!list) {
+        showOverlayList();
+
+        return;
+    }
+    OverlayDrawListPen pen(list);
+    pen.setShadow(true);
+    pen.setSmoothLines(true);
+    pen.lineWidth(1.5);
+
+    GlyphFrame frame(targetCenter, pscale);
+    frame.translate(targetCenter.x, targetCenter.y);
+    frame.rotate(rotate);
+    drawRotationBar(pen, frame, color, pscale, targetRadius.x, _mouseState == TransformInteract::eDraggingRotationBar || _drawState == TransformInteract::eRotationBarHovered, inverted);
+    frame.multiply(skewOrder ? 1. : (1. + skewX * skewY), skewY, skewX, skewOrder ? (1. + skewX * skewY) : 1., 0., 0.);
+    frame.translate(-targetCenter.x, -targetCenter.y);
+
+    drawEllipse(pen, frame, color, targetCenter, targetRadius, _mouseState == TransformInteract::eDraggingCircle || _drawState == TransformInteract::eCircleHovered);
+
+    drawSkewBar(pen, frame, color, targetCenter, pscale, targetRadius.y, _mouseState == TransformInteract::eDraggingSkewXBar || _drawState == TransformInteract::eSkewXBarHoverered, flip);
+    drawSkewBar(pen, frame, color, targetCenter, pscale, targetRadius.x, _mouseState == TransformInteract::eDraggingSkewYBar || _drawState == TransformInteract::eSkewYBarHoverered, flip - 90.);
+
+    drawSquare(pen, frame, color, targetCenter, pscale, _mouseState == TransformInteract::eDraggingTranslation || _mouseState == TransformInteract::eDraggingCenter || _drawState == TransformInteract::eCenterPointHovered, _modifierStateCtrl);
+    drawSquare(pen, frame, color, left, pscale, _mouseState == TransformInteract::eDraggingLeftPoint || _drawState == TransformInteract::eLeftPointHovered, false);
+    drawSquare(pen, frame, color, right, pscale, _mouseState == TransformInteract::eDraggingRightPoint || _drawState == TransformInteract::eRightPointHovered, false);
+    drawSquare(pen, frame, color, top, pscale, _mouseState == TransformInteract::eDraggingTopPoint || _drawState == TransformInteract::eTopPointHovered, false);
+    drawSquare(pen, frame, color, bottom, pscale, _mouseState == TransformInteract::eDraggingBottomPoint || _drawState == TransformInteract::eBottomPointHovered, false);
+
+    showOverlayList();
 } // TransformInteract::draw
 
 void
@@ -2644,8 +2656,6 @@ CornerPinInteract::draw(double time,
                         const OfxPointD& pscale,
                         const QPointF& /*lastPenPos*/,
                         const OfxRGBColourD& color,
-                        const OfxPointD& shadow,
-                        const QFont& font,
                         const QFontMetrics& /*fm*/)
 {
     // do not show interact if knob is secret or not enabled
@@ -2656,17 +2666,10 @@ CornerPinInteract::draw(double time,
         return;
     }
 
-    GLdouble projection[16];
-    glGetDoublev( GL_PROJECTION_MATRIX, projection);
-    GLint viewport[4];
-    glGetIntegerv(GL_VIEWPORT, viewport);
-
-
     OfxPointD to[4];
     OfxPointD from[4];
     bool enable[4];
     bool useFrom;
-    double screenPixelRatio = getScreenPixelRatio();
 
     if (_dragging == -1) {
         for (int i = 0; i < 4; ++i) {
@@ -2706,69 +2709,68 @@ CornerPinInteract::draw(double time,
         }
     }
 
-    //glPushAttrib(GL_ALL_ATTRIB_BITS); // caller is responsible for protecting attribs
+    ContentHasher signature = beginOverlaySignature(pscale, color);
+    signature.appendBool(useFrom);
+    signature.appendI64(_hovering);
+    signature.appendI64(_dragging);
+    for (int i = 0; i < 4; ++i) {
+        signature.appendBool(enable[i]);
+        signature.appendDouble(from[i].x);
+        signature.appendDouble(from[i].y);
+        signature.appendDouble(to[i].x);
+        signature.appendDouble(to[i].y);
+        signature.appendString(useFrom ? _from[i].lock()->getName() : _to[i].lock()->getName());
+    }
+    OverlayDrawList* list = beginOverlayList(signature);
+    if (!list) {
+        showOverlayList();
 
-    //glDisable(GL_LINE_STIPPLE);
-    glEnable(GL_LINE_SMOOTH);
-    //glEnable(GL_POINT_SMOOTH);
-    glEnable(GL_BLEND);
-    glHint(GL_LINE_SMOOTH_HINT, GL_DONT_CARE);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        return;
+    }
+    OverlayDrawListPen pen(list);
+    pen.setShadow(true);
+    pen.setSmoothLines(true);
+    pen.setSmoothPoints(false);
+    pen.lineWidth(1.5);
 
-    // Draw everything twice
-    // l = 0: shadow
-    // l = 1: drawing
-    for (int l = 0; l < 2; ++l) {
-        // shadow (uses GL_PROJECTION)
-        glMatrixMode(GL_PROJECTION);
-        int direction = (l == 0) ? 1 : -1;
-        // translate (1,-1) pixels
-        glTranslated(direction * shadow.x, -direction * shadow.y, 0);
-        glMatrixMode(GL_MODELVIEW); // Modelview should be used on Nuke
-
-        glColor3f( (float)(color.r / 2) * l, (float)(color.g / 2) * l, (float)(color.b / 2) * l );
-        glLineWidth(1.5f * screenPixelRatio);
-        glBegin(GL_LINES);
-        for (int i = enableBegin; i < enableEnd; ++i) {
-            if (enable[i]) {
-                glVertex2d(p[i].x, p[i].y);
-                glVertex2d(q[i].x, q[i].y);
-            }
-        }
-        glEnd();
-        glColor3f( (float)color.r * l, (float)color.g * l, (float)color.b * l );
-        glLineWidth(1.5f * screenPixelRatio);
-        glBegin(GL_LINE_LOOP);
-        for (int i = enableBegin; i < enableEnd; ++i) {
-            if (enable[i]) {
-                glVertex2d(p[i].x, p[i].y);
-            }
-        }
-        glEnd();
-
-        glPointSize(CornerPinInteract::pointSize() * screenPixelRatio);
-        glBegin(GL_POINTS);
-        for (int i = enableBegin; i < enableEnd; ++i) {
-            if (enable[i]) {
-                if ( (_hovering == i) || (_dragging == i) ) {
-                    glColor3f(0.f * l, 1.f * l, 0.f * l);
-                } else {
-                    glColor3f( (float)color.r * l, (float)color.g * l, (float)color.b * l );
-                }
-                glVertex2d(p[i].x, p[i].y);
-            }
-        }
-        glEnd();
-        QColor c;
-        c.setRgbF(color.r * l, color.g * l, color.b * l);
-        for (int i = enableBegin; i < enableEnd; ++i) {
-            if (enable[i]) {
-                renderText(p[i].x, p[i].y, pscale.x, pscale.y, useFrom ? QString::fromUtf8( _from[i].lock()->getName().c_str() ) : QString::fromUtf8( _to[i].lock()->getName().c_str() ), c, font);
-            }
+    pen.color(color.r / 2, color.g / 2, color.b / 2);
+    pen.begin(OverlayDrawListPen::eModeLines);
+    for (int i = enableBegin; i < enableEnd; ++i) {
+        if (enable[i]) {
+            pen.vertex(p[i].x, p[i].y);
+            pen.vertex(q[i].x, q[i].y);
         }
     }
+    pen.end();
+    pen.color(color.r, color.g, color.b);
+    pen.begin(OverlayDrawListPen::eModeLineLoop);
+    for (int i = enableBegin; i < enableEnd; ++i) {
+        if (enable[i]) {
+            pen.vertex(p[i].x, p[i].y);
+        }
+    }
+    pen.end();
 
-    //glPopAttrib();
+    pen.pointSize(CornerPinInteract::pointSize());
+    pen.begin(OverlayDrawListPen::eModePoints);
+    for (int i = enableBegin; i < enableEnd; ++i) {
+        if (enable[i]) {
+            if ((_hovering == i) || (_dragging == i)) {
+                pen.color(0., 1., 0.);
+            } else {
+                pen.color(color.r, color.g, color.b);
+            }
+            pen.vertex(p[i].x, p[i].y);
+        }
+    }
+    pen.end();
+    pen.color(color.r, color.g, color.b);
+    for (int i = enableBegin; i < enableEnd; ++i) {
+        if (enable[i]) {
+            pen.text(p[i].x, p[i].y, useFrom ? _from[i].lock()->getName() : _to[i].lock()->getName());
+        }
+    }
+    showOverlayList();
 } // CornerPinInteract::draw
 
 void
@@ -2783,21 +2785,10 @@ HostOverlay::draw(double time,
     }
     OfxPointD pscale;
     n_getPixelScale(pscale.x, pscale.y);
-    double w, h;
-    n_getViewportSize(w, h);
-
-
-    GLdouble projection[16];
-    glGetDoublev( GL_PROJECTION_MATRIX, projection);
-    OfxPointD shadow; // how much to translate GL_PROJECTION to get exactly one pixel on screen
-    shadow.x = 2. / (projection[0] * w);
-    shadow.y = 2. / (projection[5] * h);
-
-    QFont font(appFont, appFontSize);
-    QFontMetrics fm(font);
+    QFontMetrics fm(QFont(appFont, appFontSize));
     // draw in reverse order
     for (DefaultInteractIPtrList::reverse_iterator it = _imp->interacts.rbegin(); it != _imp->interacts.rend(); ++it) {
-        (*it)->draw(time, renderScale, view, pscale, _imp->lastPenPos, color, shadow, font, fm);
+        (*it)->draw(time, renderScale, view, pscale, _imp->lastPenPos, color, fm);
     }
 }
 

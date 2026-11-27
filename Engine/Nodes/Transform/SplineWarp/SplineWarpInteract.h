@@ -248,7 +248,8 @@ protected:
     virtual bool onPaintStatePenUp() OVERRIDE FINAL;
     virtual bool isCurveShown(const BezierPtr& curve) const OVERRIDE FINAL;
     virtual void getCurveOverlayColor(const RotoDrawableItemPtr& item, double color[4]) const OVERRIDE FINAL;
-    virtual void drawOverlayExtras(double time, double screenPixelRatio, const std::pair<double, double>& pixelScale) OVERRIDE FINAL;
+    virtual void buildOverlayExtras(double time, OverlayDrawListPen& pen) OVERRIDE FINAL;
+    virtual void appendOverlayExtrasSignature(double time, ContentHasher* hasher) const OVERRIDE FINAL;
     virtual void appendCurveMenuActions(std::vector<KnobButtonPtr>* menuKnobs) OVERRIDE FINAL;
 
 private:
@@ -270,6 +271,7 @@ private:
     std::vector<std::pair<std::string, KnobButtonWPtr>> _curveMenuButtons;
     std::weak_ptr<SplineWarpLink> _selectedLink;
     int _selectedIndex;
+    mutable std::vector<BezierOverlayPolygonsConstPtr> _overlayPolygonsHeld;
     bool _dragOnSource;
     bool _gestureOpen;
     bool _gestureCreated;

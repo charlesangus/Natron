@@ -126,6 +126,7 @@ set(Tests_SOURCES
     RippleEditModes_Test.cpp
     RotoUndoGesture_Test.cpp
     RotoDragUndo_Test.cpp
+    RotoCurvesOverlayCache_Test.cpp
     RotoOverlayHomography_Test.cpp
     RotoDragRenderThrottle_Test.cpp
     RotoKeyDuringRender_Test.cpp
@@ -381,6 +382,7 @@ set(GuiTests_SOURCES
     NodeGraphShake_Test.cpp
     NodeGraphSplice_Test.cpp
     NodeGraphStacking_Test.cpp
+    NodeOverlayRenderer_Test.cpp
     OverlayImageRenderer_Test.cpp
     PythonUndoStep_Test.cpp
     RenderDialogRange_Test.cpp

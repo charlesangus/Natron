@@ -52,6 +52,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/BlockingBackgroundRender.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/DiskCacheNode.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/GPUContextPool.h"
@@ -4968,13 +4969,18 @@ EffectInstance::drawOverlay_public(double time,
 
     _imp->setDuringInteractAction(true);
     bool drawHostOverlay = shouldDrawHostOverlay();
-    drawOverlay(time, actualScale, view);
     if (hasOverlayDrawList() && _imp->overlaysViewport) {
         const OverlayDrawList& list = buildOverlay_public(time, actualScale, view);
+        const OverlayDrawState state = getOverlayDrawState();
         if (!list.empty()) {
-            _imp->overlaysViewport->drawOverlayDrawList(list, getOverlayDrawState());
+            _imp->overlaysViewport->drawOverlayDrawList(list, state);
+        }
+        const OverlayDrawList& hover = buildOverlayHover_public(time, actualScale, view);
+        if (!hover.empty()) {
+            _imp->overlaysViewport->drawOverlayDrawList(hover, state);
         }
     }
+    drawOverlay(time, actualScale, view);
     if (drawHostOverlay) {
         getNode()->drawHostOverlay(time, actualScale, view);
     }
@@ -4987,9 +4993,38 @@ EffectInstance::buildOverlay_public(double time,
                                     ViewIdx view)
 {
     assert(QThread::currentThread() == qApp->thread());
-    _imp->overlayDrawList.clear();
-    if (hasOverlayDrawList()) {
-        buildOverlay(time, renderScale, view, &_imp->overlayDrawList);
+    double pixelScaleX = 1., pixelScaleY = 1.;
+    if (_imp->overlaysViewport) {
+        _imp->overlaysViewport->getPixelScale(pixelScaleX, pixelScaleY);
+    }
+    const unsigned long long version = _imp->overlayContentVersion.load();
+    const int zoomX = overlayZoomBucket(pixelScaleX);
+    const int zoomY = overlayZoomBucket(pixelScaleY);
+    const bool cached = hasOverlayDrawList() && isOverlayDrawListCached();
+    U64 signature = 0;
+    if (cached) {
+        ContentHasher hasher;
+        appendOverlayDrawListSignature(time, view, &hasher);
+        signature = hasher.finalize();
+    }
+    const bool passive = _imp->drawingPassiveOverlay;
+    const bool reuse = cached && _imp->overlayCacheValid && (_imp->overlayCachedVersion == version) && (_imp->overlayCachedTime == time) && (_imp->overlayCachedView == (int)view) && (_imp->overlayCachedMipmapLevel == renderScale.toMipmapLevel()) && (_imp->overlayCachedZoomX == zoomX) && (_imp->overlayCachedZoomY == zoomY) && (_imp->overlayCachedViewport == _imp->overlaysViewport) && (_imp->overlayCachedPassive == passive) && (_imp->overlayCachedSignature == signature);
+    if (!reuse) {
+        _imp->overlayDrawList.clear();
+        if (hasOverlayDrawList()) {
+            ++_imp->overlayBuildCount;
+            buildOverlay(time, renderScale, view, &_imp->overlayDrawList);
+        }
+        _imp->overlayCacheValid = cached;
+        _imp->overlayCachedVersion = version;
+        _imp->overlayCachedTime = time;
+        _imp->overlayCachedView = (int)view;
+        _imp->overlayCachedMipmapLevel = renderScale.toMipmapLevel();
+        _imp->overlayCachedZoomX = zoomX;
+        _imp->overlayCachedZoomY = zoomY;
+        _imp->overlayCachedViewport = _imp->overlaysViewport;
+        _imp->overlayCachedPassive = passive;
+        _imp->overlayCachedSignature = signature;
     }
     double x, y;
     if ((_imp->overlayHoveredHandle != OverlayDrawList::kNoHandle) && !_imp->overlayDrawList.getHandlePosition(_imp->overlayHoveredHandle, &x, &y)) {
@@ -5003,6 +5038,44 @@ const OverlayDrawList&
 EffectInstance::getOverlayDrawList() const
 {
     return _imp->overlayDrawList;
+}
+
+const OverlayDrawList&
+EffectInstance::buildOverlayHover_public(double time,
+                                         const RenderScale& renderScale,
+                                         ViewIdx view)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    _imp->overlayHoverDrawList.clear();
+    if (hasOverlayDrawList()) {
+        buildOverlayHover(time, renderScale, view, &_imp->overlayHoverDrawList);
+    }
+
+    return _imp->overlayHoverDrawList;
+}
+
+void
+EffectInstance::invalidateOverlayDrawList()
+{
+    ++_imp->overlayContentVersion;
+}
+
+unsigned long long
+EffectInstance::getOverlayContentVersion() const
+{
+    return _imp->overlayContentVersion.load();
+}
+
+unsigned long long
+EffectInstance::getOverlayBuildCount() const
+{
+    return _imp->overlayBuildCount;
+}
+
+int
+EffectInstance::overlayZoomBucket(double pixelScale)
+{
+    return OverlayDrawList::zoomBucket(pixelScale);
 }
 
 OverlayDrawState
@@ -7502,6 +7575,10 @@ EffectInstance::onKnobValueChanged_public(KnobI* k,
     ///trigger an analysis
     if ( (reason == eValueChangedReasonUserEdited) && dynamic_cast<KnobButton*>(k) && node->isNodeDisabled() ) {
         return false;
+    }
+
+    if (reason != eValueChangedReasonTimeChanged) {
+        invalidateOverlayDrawList();
     }
 
     // for image readers, image writers, and video writers, frame range must be updated before kOfxActionInstanceChanged is called on kOfxImageEffectFileParamName

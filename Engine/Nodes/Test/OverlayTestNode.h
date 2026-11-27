@@ -33,6 +33,7 @@
 
 #define kTestPluginIDOverlay "test.natron.built-in.Overlay"
 #define kOverlayTestParamCenter "center"
+#define kOverlayTestParamInteractPrimitives "interactPrimitives"
 #define kNatronGuiTestNodesEnvVar "NATRON_GUI_TEST_NODES"
 
 NATRON_NAMESPACE_ENTER
@@ -60,14 +61,21 @@ public:
     virtual ~OverlayTestNode();
 
     KnobDoublePtr getCenterKnob() const;
+    KnobBoolPtr getInteractPrimitivesKnob() const;
 
     virtual bool hasOverlayDrawList() const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return true;
     }
 
+    virtual bool isOverlayDrawListCached() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return true;
+    }
+
 protected:
     virtual void buildOverlay(double time, const RenderScale& renderScale, ViewIdx view, OverlayDrawList* list) OVERRIDE FINAL;
+    virtual void buildOverlayHover(double time, const RenderScale& renderScale, ViewIdx view, OverlayDrawList* list) OVERRIDE FINAL;
     virtual bool onOverlayHandlePressed(int id, double time, ViewIdx view, const QPointF& pos) OVERRIDE FINAL;
     virtual void onOverlayHandleDragged(int id, double time, ViewIdx view, const QPointF& pos, const QPointF& delta) OVERRIDE FINAL;
 
@@ -92,7 +100,10 @@ private:
     virtual Route route(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void initializeKnobs() OVERRIDE FINAL;
 
+    void buildInteractPrimitives(double cx, double cy, OverlayDrawList* list) const;
+
     KnobDoubleWPtr _center;
+    KnobBoolWPtr _interactPrimitives;
 };
 
 NATRON_NAMESPACE_EXIT

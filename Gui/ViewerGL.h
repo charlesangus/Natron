@@ -67,6 +67,9 @@ GCC_DIAG_SUGGEST_OVERRIDE_ON
 // GUI test scripts map canonical coordinates to widget pixels with this: widget origin of the
 // canonical origin, then widget pixels per canonical unit in x and y (negative y: y points up).
 Q_PROPERTY(QVariantList natronCanonicalToWidget READ canonicalToWidget)
+// How many times this viewer has uploaded overlay draw-list geometry, so that GUI tests can check a
+// redraw of an unchanged overlay uploads nothing.
+Q_PROPERTY(qulonglong natronOverlayUploads READ overlayUploadCount)
 // GUI test scripts read whether the stale cue is drawn, and whether the image it marks is out of
 // date, from these rather than from pixels.
 Q_PROPERTY(bool natronStaleCueVisible READ isStaleCueVisible)
@@ -75,6 +78,7 @@ Q_PROPERTY(int natronViewerStaleTransitions READ staleTransitionCount)
 
 public:
     QVariantList canonicalToWidget() const;
+    qulonglong overlayUploadCount() const;
 
     /*3 different constructors, that all take a different parameter related to OpenGL or Qt widget parenting.
        When constructing a viewer for the 1st time in the app, you must pass a NULL shareWidget. Otherwise,you
@@ -389,6 +393,10 @@ public:
 
     virtual void drawOverlayDrawList(const OverlayDrawList& list, const OverlayDrawState& state) OVERRIDE FINAL;
 
+private:
+    void releaseUndrawnOverlayRenderers();
+
+public:
     /**
      * @brief Returns the colour of the background (i.e: clear color) of the viewport.
      **/

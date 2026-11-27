@@ -30,6 +30,8 @@
 
 #include <list>
 #include <memory>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -42,6 +44,8 @@
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
 #include "Engine/EngineFwd.h"
+#include "Engine/OverlayDrawList.h"
+#include "Engine/OverlayDrawListPen.h"
 #include "Engine/RectD.h"
 #include "Engine/RenderEndWatch.h"
 #include "Engine/RotoDragRenderThrottle.h"
@@ -53,6 +57,8 @@
 NATRON_NAMESPACE_ENTER
 
 class RotoObjectSelect;
+class OverlayDrawListPen;
+class ContentHasher;
 struct PluginActionShortcut;
 class RotoDragUndoCommand;
 
@@ -524,6 +530,30 @@ public:
 private:
     EffectInstance* _host;
 
+    // What one of the curves lists was built from. The polygons are held so that a set freed and
+    // reallocated at the same address cannot look unchanged; an item that died invalidates the
+    // list, since another may since have taken its address.
+    struct CurvesOverlayRunHold {
+        std::vector<RotoDrawableItemWPtr> items;
+        std::vector<BezierOverlayPolygonsConstPtr> polygons;
+    };
+
+    // The curves in render order: a list per selected item, the only items a pen edit or a hover
+    // changes, and one per run of unselected items between them, so that dragging one shape
+    // neither rebuilds nor re-uploads the others.
+    OverlayDrawListSequence _curvesOverlay;
+    // Parallel to _curvesOverlay.
+    std::vector<CurvesOverlayRunHold> _curvesOverlayHolds;
+    // What the host draws over all the curves.
+    OverlayDrawListCache _curvesExtrasOverlay;
+    unsigned long long _curvesOverlayRebuilds;
+    // What follows the pen and the viewport (tools, cursor, selection box).
+    OverlayDrawListCache _toolsOverlay;
+    // The tools' parts pinned to the viewport rather than to the image (the ripple border, the
+    // object select message), drawn without the overlay's path transform.
+    OverlayDrawListCache _toolsViewportOverlay;
+    OverlayDrawListCache _cloneSourceOverlay;
+
     // Renders requested from pen down to pen up, while a shape is dragged.
     RotoDragRenderThrottle _dragRender;
     RenderEndWatchPtr _dragRenderWatch;
@@ -613,7 +643,7 @@ public:
     /**
      * @brief Outlines the viewer in red while ripple edit is on, so an edit's reach is never a surprise.
      **/
-    void drawRippleEditBorder(double screenPixelRatio, const std::pair<double, double>& pixelScale);
+    void buildRippleEditBorder(OverlayDrawListPen& pen, const std::pair<double, double>& pixelScale);
 
     /**
      * @brief Creates the right-click menu choice and its actions on page.
@@ -673,23 +703,19 @@ public:
 
     QPointF getSelectedCpsBBOXCenter();
 
-    void drawSelectedCpsBBOX();
+    void buildSelectedCpsBBOX(OverlayDrawListPen& pen, const std::pair<double, double>& pixelScale);
 
-    void drawEllipse(double x,
-                     double y,
-                     double radiusX,
-                     double radiusY,
-                     int l,
-                     double r,
-                     double g,
-                     double b,
-                     double a);
+    /**
+     * @brief Adds an ellipse of canonical radii about (x, y), as 40 segments, in the pen's colour
+     * and line width. It follows the pen, so it never deforms with the image.
+     **/
+    static void buildEllipse(OverlayDrawListPen& pen, double x, double y, double radiusX, double radiusY);
 
     /// by default draws a vertical arrow, which can be rotated by rotate amount.
-    void drawArrow(double centerX, double centerY, double rotate, bool hovered, const std::pair<double, double>& pixelScale);
+    static void buildArrow(OverlayDrawListPen& pen, double centerX, double centerY, double rotate, bool hovered, const std::pair<double, double>& pixelScale);
 
-    /// same as drawArrow but the two ends will make an angle of 90 degrees
-    void drawBendedArrow(double centerX, double centerY, double rotate, bool hovered, const std::pair<double, double>& pixelScale);
+    /// same as buildArrow but the two ends will make an angle of 90 degrees
+    static void buildBendedArrow(OverlayDrawListPen& pen, double centerX, double centerY, double rotate, bool hovered, const std::pair<double, double>& pixelScale);
 
     /// Creates the Reset Clone Offset button, which sets cloneOffset back to 0, on page.
     KnobButtonPtr createResetCloneOffsetKnob(const KnobPagePtr& page);
@@ -719,16 +745,23 @@ public:
     bool dragBrushSize(const KnobDoublePtr& size, double dx, double dy);
 
     /**
-     * @brief Draws where a stroke painted from centre takes its source: a cross and a circle of
+     * @brief Adds where a stroke painted from centre takes its source: a cross and a circle of
      * radius around centre moved by offset, shadowed, and while cloneOffset is dragged a line
      * between the two.
+     **/
+    void buildCloneSource(OverlayDrawListPen& pen,
+                          const QPointF& centre,
+                          const std::pair<double, double>& offset,
+                          double radius,
+                          double opacity);
+
+    /**
+     * @brief Draws buildCloneSource() at once, for hosts that draw it beside their own overlay.
      **/
     void drawCloneSource(const QPointF& centre,
                          const std::pair<double, double>& offset,
                          double radius,
-                         double opacity,
-                         double screenPixelRatio,
-                         const std::pair<double, double>& viewportSize);
+                         double opacity);
 
     /// Starts item's life time on the timeline's current frame, as a new paint stroke's.
     void startLifeTimeAtCurrentFrame(const RotoDrawableItemPtr& item);
@@ -740,10 +773,73 @@ public:
 
     void handleControlPointSelection(const std::pair<BezierCPPtr, BezierCPPtr>& p);
 
-    void drawSelectedCp(double time,
-                        const BezierCPPtr& cp,
-                        double x, double y,
-                        const Transform::Matrix3x3& transform);
+    void buildSelectedCp(OverlayDrawListPen& pen,
+                         double time,
+                         const BezierCPPtr& cp,
+                         double x, double y,
+                         const Transform::Matrix3x3& transform);
+
+    // The selection split by the shape it shows on, so that a shape's list hashes only the
+    // interact state drawn on it: with every shape selected, a hover or a point click on one shape
+    // then rebuilds that shape's list alone.
+    struct CurvesOverlaySelection {
+        std::unordered_set<const RotoDrawableItem*> items;
+        std::unordered_map<const Bezier*, std::vector<const SelectedCP*>> cps;
+        const Bezier* hoveredFeatherBar = nullptr;
+        const Bezier* draggedFeatherBar = nullptr;
+        const Bezier* draggedTangent = nullptr;
+
+        bool isSelected(const RotoDrawableItem* item) const
+        {
+            return items.find(item) != items.end();
+        }
+
+        const std::vector<const SelectedCP*>* cpsOf(const Bezier* bezier) const
+        {
+            std::unordered_map<const Bezier*, std::vector<const SelectedCP*>>::const_iterator found = cps.find(bezier);
+
+            return (found == cps.end()) ? nullptr : &found->second;
+        }
+    };
+
+    void getCurvesOverlaySelection(CurvesOverlaySelection* selection) const;
+
+    bool isDraggingOnePoint() const
+    {
+        return (selectedCps.size() == 1) && ((state == eEventStateDraggingSelectedControlPoints) || (state == eEventStateDraggingControlPoint));
+    }
+
+    // Everything buildCurveItemOverlay() draws item from, appending the polygons it reads.
+    void appendCurveItemSignature(double time,
+                                  bool featherVisible,
+                                  const RotoDrawableItemPtr& item,
+                                  const CurvesOverlaySelection& selection,
+                                  const std::pair<double, double>& pixelScale,
+                                  std::vector<BezierOverlayPolygonsConstPtr>* polygons,
+                                  ContentHasher* hasher) const;
+
+    void buildCurveItemOverlay(double time,
+                               bool featherVisible,
+                               const RotoDrawableItemPtr& item,
+                               const CurvesOverlaySelection& selection,
+                               const std::pair<double, double>& pixelScale,
+                               OverlayDrawListPen& pen);
+
+    // Draws the items [first, last) as the next list of _curvesOverlay, rebuilding it only when
+    // their signature changed.
+    void drawCurvesOverlayRun(double time,
+                              bool featherVisible,
+                              const CurvesOverlaySelection& selection,
+                              const std::pair<double, double>& pixelScale,
+                              std::list<RotoDrawableItemPtr>::const_iterator first,
+                              std::list<RotoDrawableItemPtr>::const_iterator last,
+                              OverlaySupport* overlay,
+                              const OverlayDrawState& drawState);
+
+    // Everything buildToolsOverlay() draws from, cheap enough to digest on every redraw.
+    void appendToolsOverlaySignature(const std::pair<double, double>& pixelScale, ContentHasher* hasher) const;
+
+    void buildToolsOverlay(const std::pair<double, double>& pixelScale, OverlayDrawList* list, OverlayDrawList* viewportList);
 
     std::pair<BezierCPPtr, BezierCPPtr> isNearbyFeatherBar(double time, const std::pair<double, double>& pixelScale, const QPointF& pos) const;
 
@@ -838,7 +934,22 @@ public:
      **/
     virtual void removeCurve(const RotoDrawableItemPtr& curve);
 
-    // The host effect's overlay actions forward to these.
+    /**
+     * @brief Draws the curves and the host's buildOverlayExtras(), in the passive overlay too, from
+     * cached lists. The host calls it from its drawOverlay(), before drawOverlay().
+     **/
+    void drawCurvesOverlay(double time);
+
+    /**
+     * @brief How many of the curves lists drawCurvesOverlay() has rebuilt, for tests.
+     **/
+    unsigned long long curvesOverlayRebuildCount() const
+    {
+        return _curvesOverlayRebuilds;
+    }
+
+    // The host effect's overlay actions forward to these. drawOverlay() draws what goes over
+    // the curves: the paint previews and the tools.
     void drawOverlay(double time);
     bool onOverlayPenDown(double time, const QPointF& pos, double pressure, double timestamp, PenType pen);
     /**
@@ -871,8 +982,14 @@ protected:
     // Called by onToolChangedInternal() once tool is the selected tool.
     virtual void onToolSelected(const KnobButtonPtr& /*actionButton*/, RotoToolEnum /*tool*/) { }
 
-    // Draws the paint tool cursor, after the curves.
-    virtual void drawPaintToolOverlay(double /*screenPixelRatio*/, const std::pair<double, double>& /*viewportSize*/) { }
+    // Draws the paint tool's own OpenGL drawing (the stroke previews), after the curves and before the cursor.
+    virtual void drawPaintToolPreview() { }
+
+    // Adds the paint tool cursor, after the curves. Not called for the passive overlay.
+    virtual void buildPaintToolOverlay(OverlayDrawListPen& /*pen*/, const std::pair<double, double>& /*pixelScale*/) { }
+
+    // Appends to hasher everything buildPaintToolOverlay() draws from.
+    virtual void appendPaintToolOverlaySignature(ContentHasher* /*hasher*/) const { }
 
     // Whether the overlay draws curve and lets the pointer pick it.
     virtual bool isCurveShown(const BezierPtr& /*curve*/) const
@@ -883,8 +1000,12 @@ protected:
     // The colour the overlay draws an unlocked curve in.
     virtual void getCurveOverlayColor(const RotoDrawableItemPtr& item, double color[4]) const;
 
-    // Draws what the host adds over the curves, in the passive overlay too.
-    virtual void drawOverlayExtras(double /*time*/, double /*screenPixelRatio*/, const std::pair<double, double>& /*pixelScale*/) { }
+    // Adds what the host draws over the curves, in the passive overlay too, to its cached list.
+    virtual void buildOverlayExtras(double /*time*/, OverlayDrawListPen& /*pen*/) { }
+
+    // Appends to hasher everything buildOverlayExtras() draws from, so that the cached list is
+    // rebuilt when it changes.
+    virtual void appendOverlayExtrasSignature(double /*time*/, ContentHasher* /*hasher*/) const { }
 
     // The nearest shown curve within tolerance of pos, as RotoCurveContext::isNearbyBezier() finds it.
     BezierPtr nearbyShownBezier(const QPointF& pos, double tolerance, int* index, double* t, bool* feather) const;

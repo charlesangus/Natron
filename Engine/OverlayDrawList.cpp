@@ -26,19 +26,111 @@
 #include "OverlayDrawList.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
+#include <numeric>
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+
+std::atomic<unsigned long long> nextBuildId { 1 };
+
+} // anon namespace
 
 void
 OverlayDrawList::clear()
 {
     _primitives.clear();
     _points.clear();
+    _glyphPoints.clear();
+    _layer = 0;
+    markRebuilt();
 }
 
-OverlayDrawList::Primitive&
+void
+OverlayDrawList::markRebuilt()
+{
+    _buildId = nextBuildId.fetch_add(1);
+}
+
+OverlayDrawList::AnchoredShape
+OverlayDrawList::AnchoredShape::cross(double halfSize)
+{
+    AnchoredShape s;
+    s.shape = eAnchoredShapeCross;
+    s.sizeX = halfSize;
+    s.sizeY = halfSize;
+
+    return s;
+}
+
+OverlayDrawList::AnchoredShape
+OverlayDrawList::AnchoredShape::circle(double radius)
+{
+    AnchoredShape s;
+    s.shape = eAnchoredShapeCircle;
+    s.sizeX = radius;
+    s.sizeY = radius;
+
+    return s;
+}
+
+OverlayDrawList::AnchoredShape
+OverlayDrawList::AnchoredShape::arc(double radius,
+                                    double start,
+                                    double span)
+{
+    AnchoredShape s;
+    s.shape = eAnchoredShapeArc;
+    s.sizeX = radius;
+    s.sizeY = radius;
+    s.arcStart = start;
+    s.arcSpan = span;
+
+    return s;
+}
+
+OverlayDrawList::AnchoredShape
+OverlayDrawList::AnchoredShape::box(double halfWidth,
+                                    double halfHeight)
+{
+    AnchoredShape s;
+    s.shape = eAnchoredShapeBox;
+    s.sizeX = halfWidth;
+    s.sizeY = halfHeight;
+
+    return s;
+}
+
+OverlayDrawList::AnchoredShape
+OverlayDrawList::AnchoredShape::filledBox(double halfWidth,
+                                          double halfHeight)
+{
+    AnchoredShape s;
+    s.shape = eAnchoredShapeFilledBox;
+    s.sizeX = halfWidth;
+    s.sizeY = halfHeight;
+
+    return s;
+}
+
+OverlayDrawList::AnchoredShape
+OverlayDrawList::AnchoredShape::glyphOf(const std::vector<Point>& points,
+                                        GlyphModeEnum mode)
+{
+    AnchoredShape s;
+    s.shape = eAnchoredShapeGlyph;
+    s.sizeX = 0.;
+    s.sizeY = 0.;
+    s.glyphMode = mode;
+    s.glyph = points;
+
+    return s;
+}
+
+OverlayDrawList::PrimitiveRef
 OverlayDrawList::append(PrimitiveTypeEnum type,
                         const OverlayColor& color,
                         float width)
@@ -50,35 +142,44 @@ OverlayDrawList::append(PrimitiveTypeEnum type,
     p.width = width;
     p.first = _points.size();
     p.count = 0;
+    p.layer = _layer;
+    p.deformable = (type == ePrimitiveTypeLines) || (type == ePrimitiveTypePolyline) || (type == ePrimitiveTypePolygon) || (type == ePrimitiveTypeStroke);
+    // Filled polygons draw without the shadow pass, which would show as a dark fringe on two sides.
+    p.shadow = (type != ePrimitiveTypePolygon);
+    p.glyphFirst = _glyphPoints.size();
 
-    return p;
+    return PrimitiveRef(this, _primitives.size() - 1);
 }
 
-void
+OverlayDrawList::PrimitiveRef
 OverlayDrawList::addPoint(double x,
                           double y,
                           const OverlayColor& color,
                           float size)
 {
-    Primitive& p = append(ePrimitiveTypePoints, color, size);
+    PrimitiveRef p = append(ePrimitiveTypePoints, color, size);
     _points.push_back(Point { x, y });
-    p.count = 1;
+    p->count = 1;
+
+    return p;
 }
 
-void
+OverlayDrawList::PrimitiveRef
 OverlayDrawList::addPoints(const std::vector<Point>& points,
                            const OverlayColor& color,
                            float size)
 {
     if (points.empty()) {
-        return;
+        return PrimitiveRef();
     }
-    Primitive& p = append(ePrimitiveTypePoints, color, size);
+    PrimitiveRef p = append(ePrimitiveTypePoints, color, size);
     _points.insert(_points.end(), points.begin(), points.end());
-    p.count = points.size();
+    p->count = points.size();
+
+    return p;
 }
 
-void
+OverlayDrawList::PrimitiveRef
 OverlayDrawList::addLine(double x0,
                          double y0,
                          double x1,
@@ -86,68 +187,78 @@ OverlayDrawList::addLine(double x0,
                          const OverlayColor& color,
                          float width)
 {
-    Primitive& p = append(ePrimitiveTypeLines, color, width);
+    PrimitiveRef p = append(ePrimitiveTypeLines, color, width);
     _points.push_back(Point { x0, y0 });
     _points.push_back(Point { x1, y1 });
-    p.count = 2;
+    p->count = 2;
+
+    return p;
 }
 
-void
+OverlayDrawList::PrimitiveRef
 OverlayDrawList::addLines(const std::vector<Point>& endpoints,
                           const OverlayColor& color,
                           float width)
 {
     const std::size_t n = endpoints.size() & ~std::size_t(1);
     if (n == 0) {
-        return;
+        return PrimitiveRef();
     }
-    Primitive& p = append(ePrimitiveTypeLines, color, width);
+    PrimitiveRef p = append(ePrimitiveTypeLines, color, width);
     _points.insert(_points.end(), endpoints.begin(), endpoints.begin() + n);
-    p.count = n;
+    p->count = n;
+
+    return p;
 }
 
-void
+OverlayDrawList::PrimitiveRef
 OverlayDrawList::addPolyline(const std::vector<Point>& points,
                              bool closed,
                              const OverlayColor& color,
                              float width)
 {
     if (points.size() < 2) {
-        return;
+        return PrimitiveRef();
     }
-    Primitive& p = append(ePrimitiveTypePolyline, color, width);
-    p.closed = closed;
+    PrimitiveRef p = append(ePrimitiveTypePolyline, color, width);
+    p->closed = closed;
     _points.insert(_points.end(), points.begin(), points.end());
-    p.count = points.size();
+    p->count = points.size();
+
+    return p;
 }
 
-void
+OverlayDrawList::PrimitiveRef
 OverlayDrawList::addPolygon(const std::vector<Point>& points,
                             const OverlayColor& color)
 {
     if (points.size() < 3) {
-        return;
+        return PrimitiveRef();
     }
-    Primitive& p = append(ePrimitiveTypePolygon, color, 0.f);
-    p.closed = true;
+    PrimitiveRef p = append(ePrimitiveTypePolygon, color, 0.f);
+    p->closed = true;
     _points.insert(_points.end(), points.begin(), points.end());
-    p.count = points.size();
+    p->count = points.size();
+
+    return p;
 }
 
-void
+OverlayDrawList::PrimitiveRef
 OverlayDrawList::addStroke(const std::vector<Point>& points,
                            const OverlayColor& color,
                            float width)
 {
     if (points.empty()) {
-        return;
+        return PrimitiveRef();
     }
-    Primitive& p = append(ePrimitiveTypeStroke, color, width);
+    PrimitiveRef p = append(ePrimitiveTypeStroke, color, width);
     _points.insert(_points.end(), points.begin(), points.end());
-    p.count = points.size();
+    p->count = points.size();
+
+    return p;
 }
 
-void
+OverlayDrawList::PrimitiveRef
 OverlayDrawList::addHandle(int id,
                            double x,
                            double y,
@@ -156,16 +267,18 @@ OverlayDrawList::addHandle(int id,
                            HandleShapeEnum shape)
 {
     if (id < 0) {
-        return;
+        return PrimitiveRef();
     }
-    Primitive& p = append(ePrimitiveTypeHandle, color, size);
-    p.handleId = id;
-    p.handleShape = shape;
+    PrimitiveRef p = append(ePrimitiveTypeHandle, color, size);
+    p->handleId = id;
+    p->handleShape = shape;
     _points.push_back(Point { x, y });
-    p.count = 1;
+    p->count = 1;
+
+    return p;
 }
 
-void
+OverlayDrawList::PrimitiveRef
 OverlayDrawList::addText(double x,
                          double y,
                          const std::string& text,
@@ -174,14 +287,449 @@ OverlayDrawList::addText(double x,
                          double offsetY)
 {
     if (text.empty()) {
+        return PrimitiveRef();
+    }
+    PrimitiveRef p = append(ePrimitiveTypeText, color, 0.f);
+    p->text = text;
+    p->textOffsetX = offsetX;
+    p->textOffsetY = offsetY;
+    _points.push_back(Point { x, y });
+    p->count = 1;
+
+    return p;
+}
+
+OverlayDrawList::PrimitiveRef
+OverlayDrawList::addAnchoredShape(double x,
+                                  double y,
+                                  const AnchoredShape& shape,
+                                  const OverlayColor& color,
+                                  float width)
+{
+    return addAnchoredShape(x, y, 0., 0., shape, color, width);
+}
+
+OverlayDrawList::PrimitiveRef
+OverlayDrawList::addAnchoredShape(double x,
+                                  double y,
+                                  double directionX,
+                                  double directionY,
+                                  const AnchoredShape& shape,
+                                  const OverlayColor& color,
+                                  float width)
+{
+    if (shape.shape == eAnchoredShapeGlyph) {
+        const std::size_t minimum = (shape.glyphMode == eGlyphModePolygon) ? 3 : 2;
+        if (shape.glyph.size() < minimum) {
+            return PrimitiveRef();
+        }
+    }
+    PrimitiveRef p = append(ePrimitiveTypeAnchoredShape, color, width);
+    p->anchoredShape = shape.shape;
+    p->glyphMode = shape.glyphMode;
+    p->sizeX = shape.sizeX;
+    p->sizeY = shape.sizeY;
+    p->arcStart = shape.arcStart;
+    p->arcSpan = shape.arcSpan;
+    p->directionX = directionX;
+    p->directionY = directionY;
+    _points.push_back(Point { x, y });
+    p->count = 1;
+    if (shape.shape == eAnchoredShapeGlyph) {
+        _glyphPoints.insert(_glyphPoints.end(), shape.glyph.begin(), shape.glyph.end());
+        p->glyphCount = shape.glyph.size();
+    }
+
+    return p;
+}
+
+std::vector<std::size_t>
+OverlayDrawList::drawOrder() const
+{
+    std::vector<std::size_t> order(_primitives.size());
+    std::iota(order.begin(), order.end(), std::size_t(0));
+    std::stable_sort(order.begin(), order.end(), [this](std::size_t a, std::size_t b) {
+        return _primitives[a].layer < _primitives[b].layer;
+    });
+
+    return order;
+}
+
+namespace {
+
+constexpr double kPi = 3.14159265358979323846;
+constexpr int kCircleSegments = 40;
+
+typedef OverlayDrawList::Point Point;
+
+// Maps screen-pixel offsets about a canonical anchor, turned by a screen angle, to canonical points.
+class PixelFrame {
+public:
+    PixelFrame(const Point& anchor,
+               double angle,
+               double pixelScaleX,
+               double pixelScaleY)
+        : _anchor(anchor)
+        , _cos(std::cos(angle))
+        , _sin(std::sin(angle))
+        , _psx(pixelScaleX)
+        , _psy(pixelScaleY)
+    {
+    }
+
+    Point map(double x,
+              double y) const
+    {
+        const double rx = x * _cos - y * _sin;
+        const double ry = x * _sin + y * _cos;
+
+        return Point { _anchor.x + rx * _psx, _anchor.y + ry * _psy };
+    }
+
+private:
+    Point _anchor;
+    double _cos, _sin, _psx, _psy;
+};
+
+void
+appendSegment(std::vector<Point>* segments,
+              const Point& a,
+              const Point& b)
+{
+    segments->push_back(a);
+    segments->push_back(b);
+}
+
+// Cuts a segment into dashes measured in screen pixels. phase carries the distance already
+// covered within the current on+off period from one segment to the next.
+void
+dashSegment(const Point& a,
+            const Point& b,
+            double on,
+            double off,
+            double psx,
+            double psy,
+            double* phase,
+            std::vector<Point>* segments)
+{
+    const double dx = (b.x - a.x) / psx;
+    const double dy = (b.y - a.y) / psy;
+    const double length = std::sqrt(dx * dx + dy * dy);
+    if (!(length > 0.)) {
         return;
     }
-    Primitive& p = append(ePrimitiveTypeText, color, 0.f);
-    p.text = text;
-    p.textOffsetX = offsetX;
-    p.textOffsetY = offsetY;
-    _points.push_back(Point { x, y });
-    p.count = 1;
+    const double period = on + off;
+    double t = 0.;
+    while (t < length) {
+        const double inPeriod = std::fmod(*phase, period);
+        const bool drawing = inPeriod < on;
+        const double left = drawing ? (on - inPeriod) : (period - inPeriod);
+        const double step = std::min(left, length - t);
+        if (drawing) {
+            const double t0 = t / length;
+            const double t1 = (t + step) / length;
+            appendSegment(segments,
+                          Point { a.x + (b.x - a.x) * t0, a.y + (b.y - a.y) * t0 },
+                          Point { a.x + (b.x - a.x) * t1, a.y + (b.y - a.y) * t1 });
+        }
+        t += step;
+        *phase += step;
+    }
+}
+
+double
+screenLength(const Point& a,
+             const Point& b,
+             double psx,
+             double psy)
+{
+    const double dx = (b.x - a.x) / psx;
+    const double dy = (b.y - a.y) / psy;
+
+    return std::sqrt(dx * dx + dy * dy);
+}
+
+bool
+isDashed(const OverlayDrawList::Primitive& p)
+{
+    return (p.dashOn > 0.) && (p.dashOff > 0.);
+}
+
+// Whether the dashed primitive p, whose points are [first, end), stays within kMaxDashes periods
+// on screen and so draws dashed.
+bool
+dashesFit(const OverlayDrawList::Primitive& p,
+          const std::vector<Point>& points,
+          std::size_t first,
+          std::size_t end,
+          double psx,
+          double psy)
+{
+    const double maxLength = OverlayDrawList::kMaxDashes * (p.dashOn + p.dashOff);
+    double length = 0.;
+    if (p.type == OverlayDrawList::ePrimitiveTypeLines) {
+        for (std::size_t i = first; i + 1 < end; i += 2) {
+            length += screenLength(points[i], points[i + 1], psx, psy);
+        }
+    } else {
+        for (std::size_t i = first; i + 1 < end; ++i) {
+            length += screenLength(points[i], points[i + 1], psx, psy);
+        }
+        if (p.closed && (end - first > 2)) {
+            length += screenLength(points[end - 1], points[first], psx, psy);
+        }
+    }
+
+    return length <= maxLength;
+}
+
+void
+lineSegments(const Point& a,
+             const Point& b,
+             const OverlayDrawList::Primitive& p,
+             bool dashed,
+             double psx,
+             double psy,
+             double* phase,
+             std::vector<Point>* segments)
+{
+    if (dashed) {
+        dashSegment(a, b, p.dashOn, p.dashOff, psx, psy, phase, segments);
+    } else {
+        appendSegment(segments, a, b);
+    }
+}
+
+// An arrowhead with its tip at tip, pointing away from from.
+void
+arrowhead(const Point& tip,
+          const Point& from,
+          const OverlayDrawList::Primitive& p,
+          double psx,
+          double psy,
+          std::vector<Point>* segments,
+          std::vector<Point>* triangles)
+{
+    const double dx = (tip.x - from.x) / psx;
+    const double dy = (tip.y - from.y) / psy;
+    if ((dx == 0.) && (dy == 0.)) {
+        return;
+    }
+    const PixelFrame frame(tip, std::atan2(dy, dx), psx, psy);
+    const Point left = frame.map(-p.arrowLength, p.arrowWidth / 2.);
+    const Point right = frame.map(-p.arrowLength, -p.arrowWidth / 2.);
+    if (p.arrowFilled) {
+        triangles->push_back(tip);
+        triangles->push_back(left);
+        triangles->push_back(right);
+    } else {
+        appendSegment(segments, left, tip);
+        appendSegment(segments, tip, right);
+    }
+}
+
+void
+arrowheads(const Point& start,
+           const Point& afterStart,
+           const Point& end,
+           const Point& beforeEnd,
+           const OverlayDrawList::Primitive& p,
+           double psx,
+           double psy,
+           std::vector<Point>* segments,
+           std::vector<Point>* triangles)
+{
+    if ((p.arrow == OverlayDrawList::eArrowEnd) || (p.arrow == OverlayDrawList::eArrowBoth)) {
+        arrowhead(end, beforeEnd, p, psx, psy, segments, triangles);
+    }
+    if ((p.arrow == OverlayDrawList::eArrowStart) || (p.arrow == OverlayDrawList::eArrowBoth)) {
+        arrowhead(start, afterStart, p, psx, psy, segments, triangles);
+    }
+}
+
+void
+outline(const std::vector<Point>& ring,
+        bool closed,
+        std::vector<Point>* segments)
+{
+    for (std::size_t i = 0; i + 1 < ring.size(); ++i) {
+        appendSegment(segments, ring[i], ring[i + 1]);
+    }
+    if (closed && (ring.size() > 2)) {
+        appendSegment(segments, ring.back(), ring.front());
+    }
+}
+
+void
+fillRing(const std::vector<Point>& ring,
+         std::vector<Point>* triangles)
+{
+    std::vector<std::size_t> indices;
+    if (OverlayDrawList::triangulate(ring, 0, ring.size(), &indices)) {
+        for (std::size_t i : indices) {
+            triangles->push_back(ring[i]);
+        }
+    }
+}
+
+void
+anchoredShape(const OverlayDrawList::Primitive& p,
+              const std::vector<Point>& points,
+              const std::vector<Point>& glyphPoints,
+              double psx,
+              double psy,
+              std::vector<Point>* segments,
+              std::vector<Point>* triangles)
+{
+    const Point& anchor = points[p.first];
+    double angle = 0.;
+    if ((p.directionX != 0.) || (p.directionY != 0.)) {
+        angle = std::atan2(p.directionY / psy, p.directionX / psx);
+    }
+    const PixelFrame frame(anchor, angle, psx, psy);
+    std::vector<Point> ring;
+    switch (p.anchoredShape) {
+    case OverlayDrawList::eAnchoredShapeCross:
+        appendSegment(segments, frame.map(-p.sizeX, 0.), frame.map(p.sizeX, 0.));
+        appendSegment(segments, frame.map(0., -p.sizeY), frame.map(0., p.sizeY));
+        break;
+    case OverlayDrawList::eAnchoredShapeCircle:
+        for (int i = 0; i < kCircleSegments; ++i) {
+            const double a = 2. * kPi * i / kCircleSegments;
+            ring.push_back(frame.map(p.sizeX * std::cos(a), p.sizeX * std::sin(a)));
+        }
+        outline(ring, true, segments);
+        break;
+    case OverlayDrawList::eAnchoredShapeArc: {
+        const int n = std::max(1, (int)std::ceil(kCircleSegments * std::fabs(p.arcSpan) / (2. * kPi)));
+        for (int i = 0; i <= n; ++i) {
+            const double a = p.arcStart + p.arcSpan * i / n;
+            ring.push_back(frame.map(p.sizeX * std::cos(a), p.sizeX * std::sin(a)));
+        }
+        outline(ring, false, segments);
+        break;
+    }
+    case OverlayDrawList::eAnchoredShapeBox:
+    case OverlayDrawList::eAnchoredShapeFilledBox:
+        ring.push_back(frame.map(-p.sizeX, -p.sizeY));
+        ring.push_back(frame.map(p.sizeX, -p.sizeY));
+        ring.push_back(frame.map(p.sizeX, p.sizeY));
+        ring.push_back(frame.map(-p.sizeX, p.sizeY));
+        if (p.anchoredShape == OverlayDrawList::eAnchoredShapeBox) {
+            outline(ring, true, segments);
+        } else {
+            triangles->push_back(ring[0]);
+            triangles->push_back(ring[1]);
+            triangles->push_back(ring[2]);
+            triangles->push_back(ring[0]);
+            triangles->push_back(ring[2]);
+            triangles->push_back(ring[3]);
+        }
+        break;
+    case OverlayDrawList::eAnchoredShapeGlyph:
+        for (std::size_t i = p.glyphFirst; (i < p.glyphFirst + p.glyphCount) && (i < glyphPoints.size()); ++i) {
+            ring.push_back(frame.map(glyphPoints[i].x, glyphPoints[i].y));
+        }
+        switch (p.glyphMode) {
+        case OverlayDrawList::eGlyphModeLines:
+            for (std::size_t i = 0; i + 1 < ring.size(); i += 2) {
+                appendSegment(segments, ring[i], ring[i + 1]);
+            }
+            break;
+        case OverlayDrawList::eGlyphModeLineStrip:
+            outline(ring, false, segments);
+            break;
+        case OverlayDrawList::eGlyphModeLineLoop:
+            outline(ring, true, segments);
+            break;
+        case OverlayDrawList::eGlyphModePolygon:
+            fillRing(ring, triangles);
+            break;
+        }
+        break;
+    }
+} // anchoredShape
+
+} // anon namespace
+
+void
+OverlayDrawList::expandGeometry(const Primitive& p,
+                                const OverlayDrawList& list,
+                                double pixelScaleX,
+                                double pixelScaleY,
+                                std::vector<Point>* segments,
+                                std::vector<Point>* triangles)
+{
+    const std::vector<Point>& points = list.points();
+    if (!(pixelScaleX > 0.) || !(pixelScaleY > 0.) || (p.count == 0) || (p.first + p.count > points.size())) {
+        return;
+    }
+    const std::size_t end = p.first + p.count;
+    const bool dashed = isDashed(p) && dashesFit(p, points, p.first, end, pixelScaleX, pixelScaleY);
+    switch (p.type) {
+    case ePrimitiveTypeLines:
+        for (std::size_t i = p.first; i + 1 < end; i += 2) {
+            double phase = 0.;
+            lineSegments(points[i], points[i + 1], p, dashed, pixelScaleX, pixelScaleY, &phase, segments);
+            arrowheads(points[i], points[i + 1], points[i + 1], points[i], p, pixelScaleX, pixelScaleY, segments, triangles);
+        }
+        break;
+    case ePrimitiveTypePolyline:
+    case ePrimitiveTypeStroke: {
+        if (p.count < 2) {
+            break;
+        }
+        double phase = 0.;
+        for (std::size_t i = p.first; i + 1 < end; ++i) {
+            lineSegments(points[i], points[i + 1], p, dashed, pixelScaleX, pixelScaleY, &phase, segments);
+        }
+        const bool closed = p.closed && (p.count > 2);
+        if (closed) {
+            lineSegments(points[end - 1], points[p.first], p, dashed, pixelScaleX, pixelScaleY, &phase, segments);
+        } else {
+            arrowheads(points[p.first], points[p.first + 1], points[end - 1], points[end - 2], p, pixelScaleX, pixelScaleY, segments, triangles);
+        }
+        break;
+    }
+    case ePrimitiveTypeAnchoredShape:
+        anchoredShape(p, points, list.glyphPoints(), pixelScaleX, pixelScaleY, segments, triangles);
+        break;
+    case ePrimitiveTypePoints:
+    case ePrimitiveTypePolygon:
+    case ePrimitiveTypeHandle:
+    case ePrimitiveTypeText:
+        break;
+    }
+} // OverlayDrawList::expandGeometry
+
+bool
+OverlayDrawList::dependsOnPixelScale(const Primitive& p)
+{
+    switch (p.type) {
+    case ePrimitiveTypeLines:
+    case ePrimitiveTypePolyline:
+    case ePrimitiveTypeStroke:
+        return isDashed(p) || (p.arrow != eArrowNone);
+    case ePrimitiveTypeAnchoredShape:
+        return true;
+    case ePrimitiveTypePoints:
+    case ePrimitiveTypePolygon:
+    case ePrimitiveTypeHandle:
+    case ePrimitiveTypeText:
+        break;
+    }
+
+    return false;
+}
+
+int
+OverlayDrawList::zoomBucket(double pixelScale)
+{
+    if (!(pixelScale > 0.) || !std::isfinite(pixelScale)) {
+        return 0;
+    }
+
+    return (int)std::floor(std::log2(pixelScale) * 8.);
 }
 
 int

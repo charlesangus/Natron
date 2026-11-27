@@ -30,6 +30,9 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <map>
+#include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -241,7 +244,11 @@ struct ViewerGL::Implementation
     int persistentMessageType;
     bool displayPersistentMessage;
     TextRenderer textRenderer;
-    std::unique_ptr<NodeOverlayRenderer> overlayRenderer;
+    // One renderer per draw list, so that each keeps its uploaded geometry while its list is
+    // unchanged. Renderers whose list was not drawn in the last overlay pass are dropped.
+    std::map<const OverlayDrawList*, std::unique_ptr<NodeOverlayRenderer>> overlayRenderers;
+    std::set<const OverlayDrawList*> overlayRenderersDrawn;
+    unsigned long long overlayUploadsReleased;
     OverlayImageRenderer overlayImageRenderer;
     QPoint lastMousePosition; //< in widget coordinates
     QPointF lastDragStartPos; //< in zoom coordinates

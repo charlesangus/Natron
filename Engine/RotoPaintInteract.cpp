@@ -34,9 +34,11 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
+#include "Engine/OverlayDrawListPen.h"
 #include "Engine/OverlaySupport.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLatencyProbe.h"
@@ -842,11 +844,40 @@ RotoPaintInteract::drawStrokePreviews()
 } // RotoPaintInteract::drawStrokePreviews
 
 void
-RotoPaintInteract::drawPaintToolOverlay(double screenPixelRatio,
-                                        const std::pair<double, double>& viewportSize)
+RotoPaintInteract::drawPaintToolPreview()
 {
     drawStrokePreviews();
+}
 
+void
+RotoPaintInteract::appendPaintToolOverlaySignature(ContentHasher* hasher) const
+{
+    const bool brushCursor = p->isPaintByDefault && ((selectedRole == eRotoRoleMergeBrush) || (selectedRole == eRotoRolePaintBrush) || (selectedRole == eRotoRoleEffectBrush) || (selectedRole == eRotoRoleCloneBrush)) && (selectedTool != eRotoToolOpenBezier);
+    hasher->appendBool(brushCursor);
+    if (!brushCursor) {
+        return;
+    }
+    OverlaySupport* overlay = getHost()->getCurrentViewportForOverlays();
+    Point cursorPos;
+    overlay->getCursorPosition(cursorPos.x, cursorPos.y);
+    const bool inside = overlay->getViewportRect().contains(cursorPos.x, cursorPos.y);
+    hasher->appendBool(inside);
+    if (!inside) {
+        return;
+    }
+    hasher->appendDouble(sizeSpinbox.lock()->getValue());
+    hasher->appendDouble(opacitySpinbox.lock()->getValue());
+    const QPointF& ellipsePos = ((state == eEventStateDraggingBrushSize) || (state == eEventStateDraggingBrushOpacity)) ? mouseCenterOnSizeChange : lastMousePos;
+    hasher->appendDouble(ellipsePos.x());
+    hasher->appendDouble(ellipsePos.y());
+    hasher->appendDouble(cloneOffset.first);
+    hasher->appendDouble(cloneOffset.second);
+}
+
+void
+RotoPaintInteract::buildPaintToolOverlay(OverlayDrawListPen& pen,
+                                         const std::pair<double, double>& /*pixelScale*/)
+{
     if (p->isPaintByDefault && ((selectedRole == eRotoRoleMergeBrush) || (selectedRole == eRotoRolePaintBrush) || (selectedRole == eRotoRoleEffectBrush) || (selectedRole == eRotoRoleCloneBrush)) && (selectedTool != eRotoToolOpenBezier)) {
         Point cursorPos;
         getHost()->getCurrentViewportForOverlays()->getCursorPosition(cursorPos.x, cursorPos.y);
@@ -855,11 +886,6 @@ RotoPaintInteract::drawPaintToolOverlay(double screenPixelRatio,
         if (viewportRect.contains(cursorPos.x, cursorPos.y)) {
             // Draw a circle  around the cursor
             double brushSize = sizeSpinbox.lock()->getValue();
-            GLdouble projection[16];
-            glGetDoublev(GL_PROJECTION_MATRIX, projection);
-            Point shadow; // how much to translate GL_PROJECTION to get exactly one pixel on screen
-            shadow.x = 2. / (projection[0] * viewportSize.first);
-            shadow.y = 2. / (projection[5] * viewportSize.second);
 
             double halfBrush = brushSize / 2.;
             QPointF ellipsePos;
@@ -870,20 +896,16 @@ RotoPaintInteract::drawPaintToolOverlay(double screenPixelRatio,
             }
             double opacity = opacitySpinbox.lock()->getValue();
 
-            for (int l = 0; l < 2; ++l) {
-                glMatrixMode(GL_PROJECTION);
-                int direction = (l == 0) ? 1 : -1;
-                // translate (1,-1) pixels
-                glTranslated(direction * shadow.x, -direction * shadow.y, 0);
-                glMatrixMode(GL_MODELVIEW);
-                drawEllipse(ellipsePos.x(), ellipsePos.y(), halfBrush, halfBrush, l, 1.f, 1.f, 1.f, opacity);
-            }
+            pen.setShadow(true);
+            pen.color(opacity, opacity, opacity);
+            buildEllipse(pen, ellipsePos.x(), ellipsePos.y(), halfBrush, halfBrush);
+            pen.setShadow(false);
             if (((selectedTool == eRotoToolClone) || (selectedTool == eRotoToolReveal)) && ((cloneOffset.first != 0) || (cloneOffset.second != 0))) {
-                drawCloneSource(ellipsePos, cloneOffset, halfBrush, opacity, screenPixelRatio, viewportSize);
+                buildCloneSource(pen, ellipsePos, cloneOffset, halfBrush, opacity);
             }
         }
     }
-} // RotoPaintInteract::drawPaintToolOverlay
+} // RotoPaintInteract::buildPaintToolOverlay
 
 void
 RotoPaintInteract::onPenDownStarted(PenType pen)

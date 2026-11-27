@@ -30,7 +30,10 @@
 
 #include "Global/GlobalDefines.h"
 
+#include "Engine/ContentHasher.h"
 #include "Engine/OfxOverlayInteract.h"
+#include "Engine/OverlayDrawList.h"
+#include "Engine/OverlayDrawListPen.h"
 #include "Gui/GuiFwd.h"
 
 NATRON_NAMESPACE_ENTER
@@ -43,6 +46,19 @@ class DefaultInteractI
 protected:
 
     HostOverlay* _overlay;
+
+    // A hasher seeded with what every interact's list depends on: the viewer, its pixel scale and
+    // the overlay colour. draw() adds the rest of what it reads.
+    ContentHasher beginOverlaySignature(const OfxPointD& pscale, const OfxRGBColourD& color) const;
+
+    // The cleared list for draw() to fill when signature differs from the one the shown list was
+    // built from, else nullptr: the shown list still holds and the viewer keeps its uploaded
+    // geometry. showOverlayList() then draws the shown list.
+    OverlayDrawList* beginOverlayList(const ContentHasher& signature);
+    void showOverlayList();
+
+private:
+    OverlayDrawListCache _overlayCache;
 
 public:
 
@@ -57,8 +73,6 @@ public:
                       const OfxPointD& pscale,
                       const QPointF& lastPenPos,
                       const OfxRGBColourD& color,
-                      const OfxPointD& shadow,
-                      const QFont& font,
                       const QFontMetrics& fm);
     virtual bool penMotion(double time,
                            const RenderScale& renderScale,
@@ -114,16 +128,6 @@ public:
                            ViewIdx view);
 
 protected:
-
-    void renderText(float x,
-                    float y,
-                    float scalex,
-                    float scaley,
-                    const QString &text,
-                    const QColor &color,
-                    const QFont &font,
-                    int flags = 0) const; //!< see http://doc.qt.io/qt-4.8/qpainter.html#drawText-10
-
     void requestRedraw();
 
     void getPixelScale(double& scaleX, double& scaleY) const;
@@ -225,17 +229,7 @@ public:
     bool isEmpty() const;
 
 private:
-
     friend class DefaultInteractI;
-    void renderText(float x,
-                    float y,
-                    float scalex,
-                    float scaley,
-                    const QString &text,
-                    const QColor &color,
-                    const QFont &font,
-                    int flags = 0) const; //!< see http://doc.qt.io/qt-4.8/qpainter.html#drawText-10
-
     void requestRedraw();
 
     std::unique_ptr<HostOverlayPrivate> _imp;

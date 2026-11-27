@@ -51,6 +51,12 @@ OverlayTestNode::getCenterKnob() const
     return _center.lock();
 }
 
+KnobBoolPtr
+OverlayTestNode::getInteractPrimitivesKnob() const
+{
+    return _interactPrimitives.lock();
+}
+
 void
 OverlayTestNode::initializeKnobs()
 {
@@ -67,6 +73,14 @@ OverlayTestNode::initializeKnobs()
     }
     page->addKnob(center);
     _center = center;
+
+    KnobBoolPtr interactPrimitives = createKnob<KnobBool>(tr("Interact Primitives"));
+    interactPrimitives->setName(kOverlayTestParamInteractPrimitives);
+    interactPrimitives->setHintToolTip(tr("Also draws one of each primitive the interacts use (dashes, arrowheads, anchored shapes, layers) to the right of the centre, and a ring about the hovered handle."));
+    interactPrimitives->setDefaultValue(false);
+    interactPrimitives->setAnimationEnabled(false);
+    page->addKnob(interactPrimitives);
+    _interactPrimitives = interactPrimitives;
 }
 
 Route
@@ -106,6 +120,73 @@ OverlayTestNode::buildOverlay(double time,
     list->addHandle(eHandleMarker, cx + 60., cy + 90., OverlayColor(), 10.f, OverlayDrawList::eHandleShapeCircle);
     list->addHandle(eHandleCenter, cx, cy);
     list->addText(cx, cy, "center", OverlayColor(), 8., 8.);
+
+    KnobBoolPtr interactPrimitives = _interactPrimitives.lock();
+    if (interactPrimitives && interactPrimitives->getValue()) {
+        buildInteractPrimitives(cx, cy, list);
+    }
+}
+
+void
+OverlayTestNode::buildInteractPrimitives(double cx,
+                                         double cy,
+                                         OverlayDrawList* list) const
+{
+    typedef OverlayDrawList::Point P;
+    typedef OverlayDrawList::AnchoredShape S;
+    const OverlayColor yellow = OverlayColor::fromRGBA(1.f, 0.9f, 0.2f, 1.f);
+    const OverlayColor cyan = OverlayColor::fromRGBA(0.2f, 0.9f, 1.f, 1.f);
+    const OverlayColor red = OverlayColor::fromRGBA(1.f, 0.2f, 0.2f, 1.f);
+    const double x0 = cx + 120.;
+
+    OverlayDrawList::PrimitiveRef dashed = list->addPolyline({ P { x0, cy - 60. }, P { x0 + 100., cy - 60. }, P { x0 + 100., cy + 60. }, P { x0, cy + 60. } }, true, yellow);
+    dashed->dashOn = 6.;
+    dashed->dashOff = 4.;
+
+    OverlayDrawList::PrimitiveRef openArrow = list->addLine(x0 + 10., cy - 40., x0 + 60., cy - 40., cyan);
+    openArrow->arrow = OverlayDrawList::eArrowEnd;
+    OverlayDrawList::PrimitiveRef filledArrows = list->addLine(x0 + 10., cy - 20., x0 + 60., cy - 20., cyan, 1.f);
+    filledArrows->arrow = OverlayDrawList::eArrowBoth;
+    filledArrows->arrowFilled = true;
+    OverlayDrawList::PrimitiveRef bent = list->addPolyline({ P { x0 + 70., cy - 50. }, P { x0 + 90., cy - 40. }, P { x0 + 90., cy - 20. } }, false, cyan);
+    bent->arrow = OverlayDrawList::eArrowEnd;
+
+    list->addAnchoredShape(x0 + 20., cy + 10., S::cross(6.), OverlayColor());
+    list->addAnchoredShape(x0 + 50., cy + 10., S::circle(10.), OverlayColor());
+    list->addAnchoredShape(x0 + 80., cy + 10., S::arc(10., 0., 1.5 * M_PI), OverlayColor());
+    list->addAnchoredShape(x0 + 20., cy + 40., 1., 1., S::box(10., 5.), OverlayColor());
+    list->addAnchoredShape(x0 + 50., cy + 40., S::filledBox(4., 4.), OverlayColor());
+    list->addAnchoredShape(x0 + 80., cy + 40., 0., 1., S::glyphOf({ P { 8., 0. }, P { -5., 5. }, P { -5., -5. } }, OverlayDrawList::eGlyphModePolygon), red);
+
+    list->setLayer(1);
+    list->addLine(x0 + 110., cy - 30., x0 + 150., cy + 30., red, 3.f);
+    list->setLayer(0);
+    list->addPolygon({ P { x0 + 115., cy - 20. }, P { x0 + 145., cy - 20. }, P { x0 + 145., cy + 20. }, P { x0 + 115., cy + 20. } }, OverlayColor::fromRGBA(0.6f, 0.6f, 0.6f, 1.f));
+
+    OverlayDrawList::PrimitiveRef square = list->addPoint(x0 + 130., cy + 45., OverlayColor(), 7.f);
+    square->smooth = false;
+    OverlayDrawList::PrimitiveRef flat = list->addLine(x0 + 110., cy + 55., x0 + 150., cy + 55., OverlayColor(), 1.f);
+    flat->shadow = false;
+    flat->smooth = false;
+}
+
+void
+OverlayTestNode::buildOverlayHover(double /*time*/,
+                                   const RenderScale& /*renderScale*/,
+                                   ViewIdx /*view*/,
+                                   OverlayDrawList* list)
+{
+    KnobBoolPtr interactPrimitives = _interactPrimitives.lock();
+    KnobDoublePtr center = _center.lock();
+    if (!interactPrimitives || !center || !interactPrimitives->getValue()) {
+        return;
+    }
+    const OverlayDrawState state = getOverlayDrawState();
+    double x, y;
+    if ((state.hoveredHandle == OverlayDrawList::kNoHandle) || !getOverlayDrawList().getHandlePosition(state.hoveredHandle, &x, &y)) {
+        return;
+    }
+    list->addAnchoredShape(x, y, OverlayDrawList::AnchoredShape::circle(9.), OverlayColor::fromRGBA(0.f, 1.f, 0.f, 1.f), 1.f);
 }
 
 bool

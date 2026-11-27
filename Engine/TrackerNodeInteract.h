@@ -37,6 +37,8 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/OverlayDrawList.h"
+#include "Engine/OverlayDrawListPen.h"
 #include "Engine/RectI.h"
 #include "Engine/Texture.h"
 #include "Engine/TrackerUndoCommand.h"
@@ -378,7 +380,7 @@ public:
     double selectedMarkerScale;
     ImageWPtr selectedMarkerImg;
     bool isTracking;
-
+    OverlayDrawListCache addTrackOverlay;
 
     TrackerNodeInteract(TrackerNodePrivate* p);
 

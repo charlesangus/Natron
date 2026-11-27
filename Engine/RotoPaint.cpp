@@ -1084,6 +1084,7 @@ RotoPaint::drawOverlay(double time,
                        const RenderScale & /*renderScale*/,
                        ViewIdx /*view*/)
 {
+    _imp->ui->drawCurvesOverlay(time);
     _imp->ui->drawOverlay(time);
 }
 

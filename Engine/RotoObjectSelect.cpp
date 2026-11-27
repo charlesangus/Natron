@@ -39,6 +39,7 @@
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -46,6 +47,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeColorSampler.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/OverlayDrawListPen.h"
 #include "Engine/OverlaySupport.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectColorManagement.h"
@@ -53,7 +55,6 @@
 #include "Engine/RotoUndoCommand.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
-#include "Global/GLIncludes.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -744,6 +745,7 @@ void
 RotoObjectSelect::retrace()
 {
     _contours.clear();
+    ++_contoursGeneration;
     if (_mask.empty() || (_mask.size() != (std::size_t)_frame.width * _frame.height)) {
         redraw();
 
@@ -761,6 +763,7 @@ RotoObjectSelect::retrace()
         contour.area *= sx * sy;
     }
     _contours.swap(traced);
+    ++_contoursGeneration;
     if (_contours.empty()) {
         setMessage("The selection is empty: click on the object, or lower Object Min Area.");
     } else if (!_message.empty()) {
@@ -1012,6 +1015,7 @@ RotoObjectSelect::clearMask()
     std::vector<float>().swap(_inferenceMask);
     std::vector<float>().swap(_mask);
     _contours.clear();
+    ++_contoursGeneration;
 }
 
 void
@@ -1197,7 +1201,43 @@ RotoObjectSelect::endSession()
 }
 
 void
-RotoObjectSelect::draw(double /*time*/)
+RotoObjectSelect::appendOverlaySignature(ContentHasher* hasher) const
+{
+    OverlaySupport* overlay = _roto->getHost()->getCurrentViewportForOverlays();
+    hasher->appendBool(overlay != nullptr);
+    if (!overlay) {
+        return;
+    }
+    double psx = 1., psy = 1.;
+    overlay->getPixelScale(psx, psy);
+    hasher->appendDouble(psx);
+    hasher->appendDouble(psy);
+    const RectD viewport = overlay->getViewportRect();
+    hasher->appendDouble(viewport.x1);
+    hasher->appendDouble(viewport.y2);
+    hasher->appendU64(_contoursGeneration);
+    hasher->appendU64(_prompts.size());
+    for (const Prompt& prompt : _prompts) {
+        hasher->appendI64((int)prompt.kind);
+        hasher->appendDouble(prompt.a.x());
+        hasher->appendDouble(prompt.a.y());
+        hasher->appendDouble(prompt.b.x());
+        hasher->appendDouble(prompt.b.y());
+    }
+    const bool rubberBand = _pressed && _dragging;
+    hasher->appendBool(rubberBand);
+    if (rubberBand) {
+        hasher->appendDouble(_pressPos.x());
+        hasher->appendDouble(_pressPos.y());
+        hasher->appendDouble(_dragPos.x());
+        hasher->appendDouble(_dragPos.y());
+    }
+    hasher->appendString(_message);
+}
+
+void
+RotoObjectSelect::buildOverlay(OverlayDrawListPen& pen,
+                               OverlayDrawListPen& viewportPen)
 {
     OverlaySupport* overlay = _roto->getHost()->getCurrentViewportForOverlays();
 
@@ -1206,97 +1246,95 @@ RotoObjectSelect::draw(double /*time*/)
     }
     double psx = 1., psy = 1.;
     overlay->getPixelScale(psx, psy);
-    const double ratio = overlay->getScreenPixelRatio();
 
-    {
-        GLProtectAttrib a(GL_HINT_BIT | GL_ENABLE_BIT | GL_LINE_BIT | GL_COLOR_BUFFER_BIT | GL_POINT_BIT | GL_CURRENT_BIT);
+    pen.setSmoothLines(true);
+    pen.setSmoothPoints(true);
+    pen.setShadow(false);
+    pen.setDeformable(true);
 
-        glEnable(GL_BLEND);
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glEnable(GL_LINE_SMOOTH);
-        glHint(GL_LINE_SMOOTH_HINT, GL_DONT_CARE);
-        glEnable(GL_POINT_SMOOTH);
+    pen.lineWidth(2.);
+    for (const MaskTrace::Contour& contour : _contours) {
+        if (contour.isHole) {
+            pen.color(1., 0.35, 0.9, 1.);
+        } else {
+            pen.color(1., 0.7, 0.1, 1.);
+        }
+        const std::size_t n = contour.points.size();
+        pen.begin(OverlayDrawListPen::eModeLineLoop);
+        for (std::size_t k = 0; k < n; ++k) {
+            for (int s = 0; s < kCurveSamplesPerSegment; ++s) {
+                const MaskTrace::Point p = cubicAt(contour.points[k], contour.points[(k + 1) % n], (double)s / kCurveSamplesPerSegment);
+                pen.vertex(p.x, p.y);
+            }
+        }
+        pen.end();
+    }
 
-        glLineWidth(2. * ratio);
+    // The control points the commit will make, so that the density can be judged before it.
+    for (int pass = 0; pass < 2; ++pass) {
+        pen.pointSize(pass == 0 ? 6. : 4.);
+        pen.begin(OverlayDrawListPen::eModePoints);
         for (const MaskTrace::Contour& contour : _contours) {
-            if (contour.isHole) {
-                glColor4f(1.f, 0.35f, 0.9f, 1.f);
+            if (pass == 0) {
+                pen.color(0., 0., 0., 0.8);
+            } else if (contour.isHole) {
+                pen.color(1., 0.35, 0.9, 1.);
             } else {
-                glColor4f(1.f, 0.7f, 0.1f, 1.f);
+                pen.color(1., 0.7, 0.1, 1.);
             }
-            const std::size_t n = contour.points.size();
-            glBegin(GL_LINE_LOOP);
-            for (std::size_t k = 0; k < n; ++k) {
-                for (int s = 0; s < kCurveSamplesPerSegment; ++s) {
-                    const MaskTrace::Point p = cubicAt(contour.points[k], contour.points[(k + 1) % n], (double)s / kCurveSamplesPerSegment);
-                    glVertex2d(p.x, p.y);
-                }
+            for (const MaskTrace::CurvePoint& p : contour.points) {
+                pen.vertex(p.position.x, p.position.y);
             }
-            glEnd();
         }
+        pen.end();
+    }
 
-        // The control points the commit will make, so that the density can be judged before it.
-        for (int pass = 0; pass < 2; ++pass) {
-            glPointSize((pass == 0 ? 6. : 4.) * ratio);
-            glBegin(GL_POINTS);
-            for (const MaskTrace::Contour& contour : _contours) {
-                if (pass == 0) {
-                    glColor4f(0.f, 0.f, 0.f, 0.8f);
-                } else if (contour.isHole) {
-                    glColor4f(1.f, 0.35f, 0.9f, 1.f);
-                } else {
-                    glColor4f(1.f, 0.7f, 0.1f, 1.f);
-                }
-                for (const MaskTrace::CurvePoint& p : contour.points) {
-                    glVertex2d(p.position.x, p.position.y);
-                }
-            }
-            glEnd();
+    pen.lineWidth(1.5);
+    for (const Prompt& prompt : _prompts) {
+        if (prompt.kind != Prompt::eBox) {
+            continue;
         }
+        pen.color(0.2, 1., 0.3, 1.);
+        pen.begin(OverlayDrawListPen::eModeLineLoop);
+        pen.vertex(prompt.a.x(), prompt.a.y());
+        pen.vertex(prompt.b.x(), prompt.a.y());
+        pen.vertex(prompt.b.x(), prompt.b.y());
+        pen.vertex(prompt.a.x(), prompt.b.y());
+        pen.end();
+    }
+    if (_pressed && _dragging) {
+        // The rubber band follows the pen on screen, unlike the prompts already placed.
+        pen.setDeformable(false);
+        pen.color(1., 1., 1., 0.8);
+        pen.begin(OverlayDrawListPen::eModeLineLoop);
+        pen.vertex(_pressPos.x(), _pressPos.y());
+        pen.vertex(_dragPos.x(), _pressPos.y());
+        pen.vertex(_dragPos.x(), _dragPos.y());
+        pen.vertex(_pressPos.x(), _dragPos.y());
+        pen.end();
+    }
+    pen.setDeformable(true);
 
-        glLineWidth(1.5 * ratio);
+    // Click handles: a dark rim, then green for positive and red for negative.
+    for (int pass = 0; pass < 2; ++pass) {
+        pen.pointSize(pass == 0 ? 10. : 7.);
+        pen.begin(OverlayDrawListPen::eModePoints);
         for (const Prompt& prompt : _prompts) {
-            if (prompt.kind != Prompt::eBox) {
+            if (prompt.kind == Prompt::eBox) {
                 continue;
             }
-            glColor4f(0.2f, 1.f, 0.3f, 1.f);
-            glBegin(GL_LINE_LOOP);
-            glVertex2d(prompt.a.x(), prompt.a.y());
-            glVertex2d(prompt.b.x(), prompt.a.y());
-            glVertex2d(prompt.b.x(), prompt.b.y());
-            glVertex2d(prompt.a.x(), prompt.b.y());
-            glEnd();
-        }
-        if (_pressed && _dragging) {
-            glColor4f(1.f, 1.f, 1.f, 0.8f);
-            glBegin(GL_LINE_LOOP);
-            glVertex2d(_pressPos.x(), _pressPos.y());
-            glVertex2d(_dragPos.x(), _pressPos.y());
-            glVertex2d(_dragPos.x(), _dragPos.y());
-            glVertex2d(_pressPos.x(), _dragPos.y());
-            glEnd();
-        }
-
-        // Click handles: a dark rim, then green for positive and red for negative.
-        for (int pass = 0; pass < 2; ++pass) {
-            glPointSize((pass == 0 ? 10. : 7.) * ratio);
-            glBegin(GL_POINTS);
-            for (const Prompt& prompt : _prompts) {
-                if (prompt.kind == Prompt::eBox) {
-                    continue;
-                }
-                if (pass == 0) {
-                    glColor4f(0.f, 0.f, 0.f, 0.8f);
-                } else if (prompt.kind == Prompt::ePositive) {
-                    glColor4f(0.2f, 1.f, 0.3f, 1.f);
-                } else {
-                    glColor4f(1.f, 0.2f, 0.2f, 1.f);
-                }
-                glVertex2d(prompt.a.x(), prompt.a.y());
+            if (pass == 0) {
+                pen.color(0., 0., 0., 0.8);
+            } else if (prompt.kind == Prompt::ePositive) {
+                pen.color(0.2, 1., 0.3, 1.);
+            } else {
+                pen.color(1., 0.2, 0.2, 1.);
             }
-            glEnd();
+            pen.vertex(prompt.a.x(), prompt.a.y());
         }
+        pen.end();
     }
+    pen.setSmoothPoints(false);
 
     std::string text = _message;
     if (text.empty() && !_contours.empty()) {
@@ -1308,9 +1346,10 @@ RotoObjectSelect::draw(double /*time*/)
     }
     if (!text.empty()) {
         const RectD viewport = overlay->getViewportRect();
-        overlay->renderViewportText(viewport.x1 + 12. * psx, viewport.y2 - 40. * psy, text, 1., 0.8, 0.3);
+        viewportPen.setShadow(false);
+        viewportPen.color(1., 0.8, 0.3, 1.);
+        viewportPen.text(viewport.x1 + 12. * psx, viewport.y2 - 40. * psy, text);
     }
-    glCheckError();
-} // RotoObjectSelect::draw
+} // RotoObjectSelect::buildOverlay
 
 NATRON_NAMESPACE_EXIT

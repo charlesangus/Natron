@@ -402,6 +402,20 @@ public:
     bool drawingPassiveOverlay; // only used on main thread
     // The draw list and the pen's hold on its handles; main thread only, never copied to clones.
     OverlayDrawList overlayDrawList;
+    OverlayDrawList overlayHoverDrawList;
+    std::atomic<unsigned long long> overlayContentVersion { 0 };
+    unsigned long long overlayBuildCount = 0;
+    bool overlayCacheValid = false;
+    unsigned long long overlayCachedVersion = 0;
+    double overlayCachedTime = 0.;
+    int overlayCachedView = 0;
+    unsigned int overlayCachedMipmapLevel = 0;
+    int overlayCachedZoomX = 0;
+    int overlayCachedZoomY = 0;
+    bool overlayCachedPassive = false;
+    U64 overlayCachedSignature = 0;
+    // The list holds anchored geometry placed for one viewer's pixel scale and viewport.
+    const OverlaySupport* overlayCachedViewport = nullptr;
     int overlayHoveredHandle = OverlayDrawList::kNoHandle;
     int overlayPressedHandle = OverlayDrawList::kNoHandle;
     QPointF overlayLastPenPos;

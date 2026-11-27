@@ -28,16 +28,24 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <vector>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/OverlayDrawList.h"
 
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief Draws nodes' overlay draw lists in a viewer's OpenGL context. Each list is uploaded in one
- * vertex buffer and drawn twice, a one-pixel shadow pass then the colour pass, as the host
- * interacts are. One renderer belongs to one context.
+ * @brief Draws one node's overlay draw list in a viewer's OpenGL context. The list is uploaded in
+ * one vertex buffer and drawn twice, a one-pixel shadow pass then the colour pass, as the host
+ * interacts are. The buffer is kept between draws: while the list and the pen state are unchanged,
+ * a draw reuses it without converting or uploading anything. A list with no pixel-sized geometry
+ * (dashes, arrowheads, anchored shapes) is reused across every zoom and pan. One with some is
+ * re-tessellated whenever the exact pixel scale changes, so those parts keep their size in
+ * screen pixels at every zoom and match the hit-testing, which uses the live pixel scale;
+ * panning leaves the scale alone and so reuses the buffer. One renderer belongs to one context
+ * and one list.
  **/
 class NodeOverlayRenderer {
 public:
@@ -55,6 +63,14 @@ public:
      **/
     void releaseGLResources();
 
+    /**
+     * @brief How many times draw() has uploaded vertices, for tests.
+     **/
+    unsigned long long uploadCount() const
+    {
+        return _uploads;
+    }
+
     struct Batch {
         unsigned int mode;
         int first;
@@ -66,18 +82,33 @@ public:
 
     /**
      * @brief Turns list into vertices and the draw calls over them, merging neighbouring
-     * primitives drawn with the same state into one call. Positions are xy pairs, colours rgba;
+     * primitives drawn with the same state into one call, for a view where one screen pixel is
+     * pixelScaleX by pixelScaleY canonical units. Positions are xy pairs, colours rgba;
      * shadowColors are the colours black with the same alphas.
      **/
     static void tessellate(const OverlayDrawList& list,
                            const OverlayDrawState& state,
+                           double pixelScaleX,
+                           double pixelScaleY,
                            std::vector<float>* positions,
                            std::vector<float>* colors,
                            std::vector<float>* shadowColors,
                            std::vector<Batch>* batches);
 
 private:
+    bool isUploaded(const OverlayDrawList& list, const OverlayDrawState& state, double pixelScaleX, double pixelScaleY) const;
+
     unsigned int _vbo;
+    unsigned long long _uploads;
+    bool _uploaded;
+    unsigned long long _uploadedBuildId;
+    OverlayDrawState _uploadedState;
+    bool _uploadedScaleDependent;
+    bool _uploadedHasText;
+    double _uploadedPixelScaleX;
+    double _uploadedPixelScaleY;
+    std::size_t _uploadedPositionBytes;
+    std::size_t _uploadedColorBytes;
     std::vector<float> _positions;
     std::vector<float> _colors;
     std::vector<float> _shadowColors;

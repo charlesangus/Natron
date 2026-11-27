@@ -64,6 +64,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/NodeGuiI.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/OfxOverlayInteract.h"
+#include "Engine/OverlayDrawProbe.h"
 #include "Engine/Project.h"
 #include "Engine/RotoLatencyProbe.h"
 #include "Engine/Settings.h"
@@ -858,7 +859,21 @@ ViewerGL::drawOverlay(unsigned int mipmapLevel)
            Draw the overlays corresponding to the image displayed on the viewer, not the current timeline's time
          */
         double time = getCurrentlyDisplayedTime();
+        _imp->overlayRenderersDrawn.clear();
+        OverlayDrawProbe* drawProbe = OverlayDrawProbe::instance();
+        double drawStartMs = 0.;
+        if (drawProbe) {
+            // Finishing the GL queue on both sides charges the pass with the GPU work it queued,
+            // not just the time to issue it.
+            glFinish();
+            drawStartMs = OverlayDrawProbe::nowMs();
+        }
         _imp->viewerTab->drawOverlays( time, RenderScale::fromMipmapLevel(mipmapLevel) );
+        releaseUndrawnOverlayRenderers();
+        if (drawProbe) {
+            glFinish();
+            drawProbe->notePass(drawStartMs, OverlayDrawProbe::nowMs());
+        }
 
         glCheckErrorIgnoreOSXBug();
 
@@ -4307,10 +4322,38 @@ ViewerGL::drawOverlayDrawList(const OverlayDrawList& list,
     assert(qApp && qApp->thread() == QThread::currentThread());
     assert(QOpenGLContext::currentContext() == context());
 
-    if (!_imp->overlayRenderer) {
-        _imp->overlayRenderer.reset(new NodeOverlayRenderer());
+    std::unique_ptr<NodeOverlayRenderer>& renderer = _imp->overlayRenderers[&list];
+    if (!renderer) {
+        renderer.reset(new NodeOverlayRenderer());
     }
-    _imp->overlayRenderer->draw(list, state, this);
+    _imp->overlayRenderersDrawn.insert(&list);
+    renderer->draw(list, state, this);
+}
+
+void
+ViewerGL::releaseUndrawnOverlayRenderers()
+{
+    for (auto it = _imp->overlayRenderers.begin(); it != _imp->overlayRenderers.end();) {
+        if (_imp->overlayRenderersDrawn.count(it->first)) {
+            ++it;
+            continue;
+        }
+        _imp->overlayUploadsReleased += it->second->uploadCount();
+        it->second->releaseGLResources();
+        it = _imp->overlayRenderers.erase(it);
+    }
+    _imp->overlayRenderersDrawn.clear();
+}
+
+qulonglong
+ViewerGL::overlayUploadCount() const
+{
+    unsigned long long count = _imp->overlayUploadsReleased;
+    for (const auto& entry : _imp->overlayRenderers) {
+        count += entry.second->uploadCount();
+    }
+
+    return count;
 }
 
 /**

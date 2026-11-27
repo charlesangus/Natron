@@ -27,18 +27,34 @@
 
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <string>
 #include <vector>
 
 #include <gtest/gtest.h>
 
+#include <QString>
+
+#include "BaseTest.h"
+#include "CacheMemoryPressureGuard.h"
+
 #include "Engine/Geo/GeoOpenVDBTools.h"
 
+#include "Engine/AbortableRenderInfo.h"
+#include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Geo/GeoVDB.h"
 #include "Engine/GeoDetail.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/Nodes/Geometry/GeoNodeKnobUtils.h"
 #include "Engine/Nodes/Geometry/GeoPrimitive.h"
 #include "Engine/Nodes/Geometry/VDBFromParticles.h"
 #include "Engine/Nodes/Geometry/VDBFromPolygons.h"
+#include "Engine/ParallelRenderArgs.h"
+#include "Engine/TimeLine.h"
+#include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
 
@@ -286,4 +302,158 @@ TEST(VDBFromParticlesTest, SpheresMergeIntoTheReferenceSdf)
     ASSERT_NE(alone, nullptr);
     EXPECT_NEAR(alone->voxelSize()[0], kVoxel, 1e-9);
     EXPECT_GT(sdfAt(*alone, 3., 0., 0.), 0.);
+}
+
+TEST(VDBFromPolygonsTest, TheEstimateComesBeforeTheReferenceNote)
+{
+    const GeoDetail reference = colouredSphere();
+    VDBFromPolygonsParams params;
+    params.convert.voxelSize = kVoxel;
+    GeoDetailBuilder out;
+    std::vector<std::string> notes;
+    std::vector<std::string> posted;
+    std::string error;
+    ASSERT_TRUE(VDBFromPolygons::build(colouredSphere(), &reference, params, out, &notes, &error,
+                                       [&posted](const std::string& estimate) { posted.push_back(estimate); }))
+        << error;
+    ASSERT_GE(notes.size(), 2u);
+    ASSERT_EQ(posted.size(), 1u);
+    EXPECT_EQ(notes[0], posted[0]);
+    EXPECT_EQ(notes[0].rfind("Estimated before building", 0), 0u);
+    EXPECT_EQ(notes[1], "No VDB on the Reference input matches Reference VDB, so Voxel Size is used.");
+
+    params.useVoxelCount = true;
+    params.voxelCount = 20;
+    GeoDetailBuilder counted;
+    notes.clear();
+    ASSERT_TRUE(VDBFromPolygons::build(colouredSphere(), &reference, params, counted, &notes, &error)) << error;
+    ASSERT_GE(notes.size(), 2u);
+    EXPECT_EQ(notes[1], "No VDB on the Reference input matches Reference VDB, so Voxel Count is used.");
+}
+
+TEST(VDBFromParticlesTest, TheEstimateComesBeforeTheReferenceNote)
+{
+    const GeoDetail reference = colouredSphere();
+    GeoPointsToSdfParams params;
+    params.voxelSize = kVoxel;
+    GeoDetailBuilder out;
+    std::vector<std::string> notes;
+    std::vector<std::string> posted;
+    std::string error;
+    ASSERT_TRUE(VDBFromParticles::build(oneParticle({ 0., 0., 0. }), &reference, "*", false, params, out, &notes, &error,
+                                        [&posted](const std::string& estimate) { posted.push_back(estimate); }))
+        << error;
+    ASSERT_GE(notes.size(), 2u);
+    ASSERT_EQ(posted.size(), 1u);
+    EXPECT_EQ(notes[0], posted[0]);
+    EXPECT_EQ(notes[0].rfind("Estimated before building", 0), 0u);
+    EXPECT_EQ(notes[1], "No VDB on the Reference input matches Reference VDB, so Voxel Size is used.");
+}
+
+TEST(VDBFromPolygonsTest, AnEstimateAlreadyShownIsNotNews)
+{
+    const std::string estimate = "Estimated before building: about 10 active voxels, 0.0 MB per grid";
+    EXPECT_TRUE(geoEstimateIsNews("", estimate));
+    EXPECT_FALSE(geoEstimateIsNews(estimate, estimate));
+    EXPECT_FALSE(geoEstimateIsNews(estimate + "\nsurface: 12 active voxels", estimate));
+    EXPECT_TRUE(geoEstimateIsNews(estimate + "0 more", estimate));
+    EXPECT_TRUE(geoEstimateIsNews("Estimated before building: about 20 active voxels, 0.0 MB per grid", estimate));
+}
+
+class VDBFromPolygonsNodeTest
+    : public BaseTest {
+protected:
+    DisableUnreachableRAMPurging _noPurging;
+
+    virtual void TearDown() OVERRIDE
+    {
+        for (auto it = _nodes.rbegin(); it != _nodes.rend(); ++it) {
+            appPTR->removeAllCacheEntriesForHolder(it->get(), true);
+            (*it)->destroyNode(false, false);
+        }
+        _nodes.clear();
+        BaseTest::TearDown();
+    }
+
+    NodePtr add(const char* pluginID)
+    {
+        NodePtr node = createNode(QString::fromUtf8(pluginID));
+        if (node) {
+            _nodes.push_back(node);
+        }
+
+        return node;
+    }
+
+    EffectInstance::RenderRoIRetCode pull(const NodePtr& node,
+                                          GeoDetailConstPtr* detail,
+                                          std::string* error)
+    {
+        AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+        ParallelRenderArgsSetter frameRenderArgs(1.,
+                                                 ViewIdx(0),
+                                                 true /*isRenderUserInteraction*/,
+                                                 false /*isSequential*/,
+                                                 abortInfo,
+                                                 node,
+                                                 0 /*textureIndex*/,
+                                                 getApp()->getTimeLine().get(),
+                                                 NodePtr(),
+                                                 false /*isAnalysis*/,
+                                                 false /*draftMode*/,
+                                                 RenderStatsPtr());
+
+        return node->getEffectInstance()->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(1., ViewIdx(0)), detail, error);
+    }
+
+    static std::size_t estimateLines(const std::string& output)
+    {
+        const std::string line = "Persistent message: Estimated before building";
+        std::size_t count = 0;
+        for (std::size_t at = output.find(line); at != std::string::npos; at = output.find(line, at + line.size())) {
+            ++count;
+        }
+
+        return count;
+    }
+
+    std::vector<NodePtr> _nodes;
+};
+
+TEST_F(VDBFromPolygonsNodeTest, ARenderLogsItsInfoOnceAndARepeatNotAtAll)
+{
+    NodePtr cube = add(PLUGINID_NATRON_GEOPRIMITIVE);
+    ASSERT_TRUE(cube != NULL);
+    KnobChoicePtr type = std::dynamic_pointer_cast<KnobChoice>(cube->getKnobByName(kGeoPrimitiveParamType));
+    ASSERT_TRUE(type != NULL);
+    type->setValue((int)eGeoShapeCube);
+    NodePtr node = add(PLUGINID_NATRON_VDBFROMPOLYGONS);
+    ASSERT_TRUE(node != NULL);
+    connectNodes(cube, node, 0, true);
+    KnobDoublePtr voxelSize = std::dynamic_pointer_cast<KnobDouble>(node->getKnobByName(kVDBFromPolygonsParamVoxelSize));
+    ASSERT_TRUE(voxelSize != NULL);
+    voxelSize->setValue(0.1);
+
+    GeoDetailConstPtr detail;
+    std::string error;
+    testing::internal::CaptureStdout();
+    const EffectInstance::RenderRoIRetCode first = pull(node, &detail, &error);
+    const std::string firstOutput = testing::internal::GetCapturedStdout();
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, first) << error;
+    EXPECT_EQ(estimateLines(firstOutput), 1u) << firstOutput;
+    QString info;
+    int messageType = -1;
+    node->getPersistentMessage(&info, &messageType, false);
+    EXPECT_EQ(messageType, int(eMessageTypeInfo));
+    EXPECT_EQ(info.toStdString().rfind("Estimated before building", 0), 0u) << info.toStdString();
+
+    // The fog name is unused with Fog VDB off, so this renders again to the same info.
+    KnobStringPtr fogName = std::dynamic_pointer_cast<KnobString>(node->getKnobByName(kVDBFromPolygonsParamFogName));
+    ASSERT_TRUE(fogName != NULL);
+    fogName->setValue("unused");
+    testing::internal::CaptureStdout();
+    const EffectInstance::RenderRoIRetCode second = pull(node, &detail, &error);
+    const std::string secondOutput = testing::internal::GetCapturedStdout();
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, second) << error;
+    EXPECT_EQ(estimateLines(secondOutput), 0u) << secondOutput;
 }

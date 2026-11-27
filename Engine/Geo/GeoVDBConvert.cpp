@@ -576,7 +576,11 @@ struct ReferenceMesh {
         return uvw;
     }
 
-    /** Voxels where the closest triangles of two face neighbours turn sharper than @p tolerance. */
+    /**
+     * Voxels where the closest triangles of two face neighbours turn sharper than @p tolerance,
+     * grown by two voxels: which side of an edge claims a voxel near it is arbitrary, so the
+     * voxels holding the edge itself may otherwise be missed.
+     **/
     openvdb::BoolTree::Ptr edgeMask(double tolerance) const
     {
         openvdb::BoolTree::Ptr mask(new openvdb::BoolTree(false));
@@ -600,6 +604,7 @@ struct ReferenceMesh {
                 }
             }
         }
+        openvdb::tools::dilateActiveValues(*mask, 2, openvdb::tools::NN_FACE, openvdb::tools::IGNORE_TILES);
 
         return mask;
     }
@@ -643,59 +648,74 @@ isFloatStorage(const GeoAttribute& a)
     return !a.isArray() && ((a.storage() == eGeoStorageFloat32) || (a.storage() == eGeoStorageFloat64));
 }
 
-/** Moves the seam points of the new mesh onto the reference's edges crossing their voxels. */
+/**
+ * Moves the points flagged in @p sharpen whose voxel is on in @p edges to the point that best fits
+ * the planes of the reference triangles crossing that voxel's edges, kept inside the voxel.
+ **/
 void
-sharpenSeamPoints(const ReferenceMesh& reference,
-                  const openvdb::math::Transform& xform,
-                  const std::vector<std::uint8_t>& flags,
-                  std::vector<openvdb::Vec3d>& points)
+sharpenFeaturePoints(const ReferenceMesh& reference,
+                     const openvdb::math::Transform& xform,
+                     const openvdb::BoolTree& edges,
+                     const std::vector<bool>& sharpen,
+                     std::vector<openvdb::Vec3d>& points)
 {
     std::vector<openvdb::Vec3s> indexPoints(reference.mesh.points.size());
     for (std::size_t i = 0; i < indexPoints.size(); ++i) {
         indexPoints[i] = openvdb::Vec3s(reference.mesh.points[i]);
     }
     std::vector<openvdb::Vec4I> polygons;
+    std::vector<openvdb::Vec3d> planeNormals;
     polygons.reserve(reference.mesh.triangles.size());
+    planeNormals.reserve(reference.mesh.triangles.size());
     for (const Triangle& t : reference.mesh.triangles) {
         polygons.emplace_back(openvdb::Index32(t.points[0]), openvdb::Index32(t.points[1]), openvdb::Index32(t.points[2]),
                               openvdb::util::INVALID_IDX);
+        const openvdb::Vec3d a = reference.mesh.points[std::size_t(t.points[0])];
+        openvdb::Vec3d n = (reference.mesh.points[std::size_t(t.points[1])] - a).cross(reference.mesh.points[std::size_t(t.points[2])] - a);
+        const double length = n.length();
+        planeNormals.push_back(length > 0. ? n / length : openvdb::Vec3d(0.));
     }
-    openvdb::tools::MeshToVoxelEdgeData edges;
-    edges.convert(indexPoints, polygons);
-    openvdb::tools::MeshToVoxelEdgeData::Accessor acc = edges.getAccessor();
+    openvdb::tools::MeshToVoxelEdgeData edgeData;
+    edgeData.convert(indexPoints, polygons);
+    openvdb::tools::MeshToVoxelEdgeData::Accessor acc = edgeData.getAccessor();
+    const openvdb::BoolTree::ConstAccessor mask(edges);
     std::vector<openvdb::Vec3d> crossings;
-    std::vector<openvdb::Vec3d> found;
     std::vector<openvdb::Index32> primitives;
-    for (std::size_t i = 0; i < points.size() && i < flags.size(); ++i) {
-        if (flags[i] == 0) {
+    std::vector<openvdb::Vec3d> normals;
+    for (std::size_t i = 0; i < points.size() && i < sharpen.size(); ++i) {
+        if (!sharpen[i]) {
             continue;
         }
         const openvdb::Vec3d p = xform.worldToIndex(points[i]);
-        const openvdb::Coord base = openvdb::Coord::floor(p);
+        const openvdb::Coord ijk = openvdb::Coord::floor(p);
+        if (!mask.isValueOn(ijk)) {
+            continue;
+        }
         crossings.clear();
-        for (int dx = 0; dx <= 1; ++dx) {
-            for (int dy = 0; dy <= 1; ++dy) {
-                for (int dz = 0; dz <= 1; ++dz) {
-                    found.clear();
-                    primitives.clear();
-                    edges.getEdgeData(acc, base.offsetBy(dx, dy, dz), found, primitives);
-                    crossings.insert(crossings.end(), found.begin(), found.end());
-                }
-            }
+        primitives.clear();
+        edgeData.getEdgeData(acc, ijk, crossings, primitives);
+        if (crossings.size() < 2) {
+            continue;
         }
-        openvdb::Vec3d sum(0.);
-        int count = 0;
+        openvdb::Vec3d centre(0.);
         for (const openvdb::Vec3d& q : crossings) {
-            if ((q - p).lengthSqr() <= 1.) {
-                sum += q;
-                ++count;
-            }
+            centre += q;
         }
-        if (count > 0) {
-            points[i] = xform.indexToWorld(sum / double(count));
+        centre /= double(crossings.size());
+        normals.clear();
+        for (std::size_t k = 0; k < crossings.size(); ++k) {
+            crossings[k] -= centre;
+            normals.push_back(std::size_t(primitives[k]) < planeNormals.size() ? planeNormals[std::size_t(primitives[k])] : openvdb::Vec3d(0.));
         }
+        // Solved about the crossings' centre, the fit stays well conditioned far from the origin.
+        openvdb::Vec3d feature = centre + openvdb::tools::findFeaturePoint(crossings, normals);
+        const openvdb::Vec3d low = ijk.asVec3d();
+        for (int c = 0; c < 3; ++c) {
+            feature[c] = std::clamp(feature[c], low[c], low[c] + 1.);
+        }
+        points[i] = xform.indexToWorld(feature);
     }
-}
+} // sharpenFeaturePoints
 
 template <typename GridT>
 bool
@@ -710,13 +730,15 @@ meshGrid(const GridT& grid,
 
     ReferenceMesh reference;
     const bool withReference = referenceDetail && reference.build(*referenceDetail, xform);
+    openvdb::BoolTree::Ptr edges;
     if (withReference) {
         if constexpr (std::is_same_v<GridT, openvdb::FloatGrid>) {
             mesher.setRefGrid(reference.sdf, std::clamp(params.internalAdaptivity, 0., 1.));
         } else {
             mesher.setRefGrid(convertGrid<GridT>(*reference.sdf), std::clamp(params.internalAdaptivity, 0., 1.));
         }
-        mesher.setAdaptivityMask(reference.edgeMask(params.edgeTolerance));
+        edges = reference.edgeMask(params.edgeTolerance);
+        mesher.setAdaptivityMask(edges);
     }
     if (params.surfaceMask) {
         mesher.setSurfaceMask(interiorMask(*params.surfaceMask, params.maskOffset), params.invertSurfaceMask);
@@ -736,44 +758,50 @@ meshGrid(const GridT& grid,
     if (pointCount == 0) {
         return true;
     }
+    // volumeToMesh winds its polygons clockwise seen from outside, and it already reverses its
+    // own inside test for grids that are not SDFs, so every grid class needs the opposite order.
+    std::vector<std::int32_t> counts;
+    std::vector<std::size_t> localPoints;
+    std::vector<char> polygonFlags;
+    std::vector<bool> onSurface(pointCount, false);
+    const auto addPolygon = [&](const auto& polygon, int size, char flags) {
+        counts.push_back(size);
+        polygonFlags.push_back(flags);
+        for (int k = 0; k < size; ++k) {
+            const std::size_t point = std::size_t(polygon[(size - k) % size]);
+            localPoints.push_back(point);
+            if ((flags & openvdb::tools::POLYFLAG_EXTERIOR) && (point < pointCount)) {
+                onSurface[point] = true;
+            }
+        }
+    };
+    for (std::size_t p = 0; p < mesher.polygonPoolListSize(); ++p) {
+        const openvdb::tools::PolygonPool& pool = mesher.polygonPoolList()[p];
+        for (std::size_t n = 0; n < pool.numQuads(); ++n) {
+            addPolygon(pool.quad(n), 4, char(pool.quadFlags(n)));
+        }
+        for (std::size_t n = 0; n < pool.numTriangles(); ++n) {
+            addPolygon(pool.triangle(n), 3, char(pool.triangleFlags(n)));
+        }
+    }
+    if (counts.empty()) {
+        return true;
+    }
+
     std::vector<openvdb::Vec3d> points(pointCount);
     for (std::size_t i = 0; i < pointCount; ++i) {
         points[i] = openvdb::Vec3d(mesher.pointList()[i]);
     }
     if (withReference && params.sharpenFeatures) {
-        sharpenSeamPoints(reference, xform, mesher.pointFlags(), points);
+        sharpenFeaturePoints(reference, xform, *edges, onSurface, points);
     }
     const GeoOffset first = out.appendPoints(GeoIndex(pointCount));
     for (std::size_t i = 0; i < pointCount; ++i) {
         out.setPointPosition(first + GeoOffset(i), points[i].x(), points[i].y(), points[i].z());
     }
-
-    // volumeToMesh winds its polygons clockwise seen from outside, and it already reverses its
-    // own inside test for grids that are not SDFs, so every grid class needs the opposite order.
-    std::vector<std::int32_t> counts;
-    std::vector<GeoOffset> vertexPoints;
-    std::vector<char> polygonFlags;
-    for (std::size_t p = 0; p < mesher.polygonPoolListSize(); ++p) {
-        const openvdb::tools::PolygonPool& pool = mesher.polygonPoolList()[p];
-        for (std::size_t n = 0; n < pool.numQuads(); ++n) {
-            const openvdb::Vec4I& q = pool.quad(n);
-            counts.push_back(4);
-            polygonFlags.push_back(char(pool.quadFlags(n)));
-            for (int k = 0; k < 4; ++k) {
-                vertexPoints.push_back(first + GeoOffset(q[(4 - k) % 4]));
-            }
-        }
-        for (std::size_t n = 0; n < pool.numTriangles(); ++n) {
-            const openvdb::Vec3I& t = pool.triangle(n);
-            counts.push_back(3);
-            polygonFlags.push_back(char(pool.triangleFlags(n)));
-            for (int k = 0; k < 3; ++k) {
-                vertexPoints.push_back(first + GeoOffset(t[(3 - k) % 3]));
-            }
-        }
-    }
-    if (counts.empty()) {
-        return true;
+    std::vector<GeoOffset> vertexPoints(localPoints.size());
+    for (std::size_t i = 0; i < localPoints.size(); ++i) {
+        vertexPoints[i] = first + GeoOffset(localPoints[i]);
     }
     const GeoOffset firstPrimitive = out.appendPrimitives(eGeoPrimitivePolygon, counts, vertexPoints);
     const std::size_t primitiveCount = counts.size();
@@ -998,7 +1026,7 @@ resampled(const GridT& grid,
         levelSet = grid.getGridClass() == openvdb::GRID_LEVEL_SET;
         // The level set rebuild takes its band from the output background, which is in world units.
         const double from = grid.voxelSize()[0];
-        if (levelSet && (from > 0.)) {
+        if (levelSet && params.rebuildSdf && (from > 0.)) {
             background = ValueT(double(background) * target.voxelSize()[0] / from);
         }
     }
@@ -1052,7 +1080,17 @@ transformed(const GridT& grid,
     }
     if constexpr (openvdb::VecTraits<ValueT>::IsVec) {
         if (xform.transformVectors) {
-            openvdb::tools::transformVectors(*out, transformer.getTransform());
+            // The transformer's matrix maps index space to index space; the vectors are in world
+            // units, so they need it seen from world space.
+            openvdb::Mat4d matrix = transformer.getTransform();
+            const openvdb::math::Transform& space = grid.transform();
+            if (space.isLinear()) {
+                const openvdb::Mat4d toWorld = space.baseMap()->getAffineMap()->getMat4();
+                matrix = toWorld.inverse() * matrix * toWorld;
+            } else {
+                matrix.setTranslation(openvdb::Vec3d(0.));
+            }
+            openvdb::tools::transformVectors(*out, matrix);
         }
     }
     pruneGrid(*out, params.pruneTolerance);
@@ -1142,8 +1180,6 @@ namespace {
 struct PolygonBands {
     float exterior = 1.f;
     float interior = 1.f;
-    // The interior band in voxels before Fill Interior widens it: the fog's ramp keeps this width.
-    float ramp = 1.f;
 };
 
 bool
@@ -1159,7 +1195,6 @@ polygonBands(const GeoPolygonsToSdfParams& params,
     }
     // OpenVDB needs a band of at least one voxel on each side to find the surface's sign.
     bands->exterior = float(std::max(exterior, 1.));
-    bands->ramp = float(std::max(interior, 1.));
     bands->interior = params.fillInterior ? std::numeric_limits<float>::max() : float(std::max(interior, 1.));
 
     return true;
@@ -1213,20 +1248,13 @@ particlesOf(const GeoDetail& source,
     return particles;
 }
 
-} // anonymous namespace
-
 double
-geoPolygonsToSdfVoxelEstimate(const GeoDetail& source,
-                              const GeoPolygonsToSdfParams& params)
+polygonsVoxelEstimate(const std::vector<Triangle>& triangles,
+                      const std::vector<std::array<double, 3>>& world,
+                      const PolygonBands& bands,
+                      const GeoPolygonsToSdfParams& params,
+                      double voxelSize)
 {
-    const double voxelSize = transformVoxelSize(params.transform, params.voxelSize);
-    PolygonBands bands;
-    if (!(voxelSize > 0.) || !polygonBands(params, voxelSize, &bands, nullptr)) {
-        return 0.;
-    }
-    bool closed = true;
-    const std::vector<Triangle> triangles = triangulate(source, &closed);
-    const std::vector<std::array<double, 3>> world = geoPointPositions(source);
     double area = 0.;
     double volume = 0.;
     for (const Triangle& t : triangles) {
@@ -1246,16 +1274,11 @@ geoPolygonsToSdfVoxelEstimate(const GeoDetail& source,
 }
 
 double
-geoPointsToSdfVoxelEstimate(const GeoDetail& source,
-                            const GeoPointsToSdfParams& params)
+pointsVoxelEstimate(const ParticleList& particles,
+                    const GeoPointsToSdfParams& params,
+                    double voxelSize)
 {
-    const double voxelSize = transformVoxelSize(params.transform, params.voxelSize);
-    if (!(voxelSize > 0.)) {
-        return 0.;
-    }
     const double band = pointsBandVoxels(params, voxelSize) * voxelSize;
-    const bool trails = params.footprint == eGeoParticleFootprintVelocityTrail;
-    const ParticleList particles = particlesOf(source, params, trails, nullptr);
     const double invDx = 1. / voxelSize;
     const double pi = openvdb::math::pi<double>();
     double volume = 0.;
@@ -1275,6 +1298,48 @@ geoPointsToSdfVoxelEstimate(const GeoDetail& source,
     return volume * invDx * invDx * invDx;
 }
 
+/** Hands the estimate to @p estimated and makes it the first note. */
+void
+reportEstimate(double voxels,
+               const GeoVDBEstimateCallback& estimated,
+               GeoVDBConvertResult* result)
+{
+    const std::string note = geoVDBEstimateNote(voxels);
+    if (estimated) {
+        estimated(note);
+    }
+    result->notes.insert(result->notes.begin(), note);
+}
+
+} // anonymous namespace
+
+double
+geoPolygonsToSdfVoxelEstimate(const GeoDetail& source,
+                              const GeoPolygonsToSdfParams& params)
+{
+    const double voxelSize = transformVoxelSize(params.transform, params.voxelSize);
+    PolygonBands bands;
+    if (!(voxelSize > 0.) || !polygonBands(params, voxelSize, &bands, nullptr)) {
+        return 0.;
+    }
+    bool closed = true;
+
+    return polygonsVoxelEstimate(triangulate(source, &closed), geoPointPositions(source), bands, params, voxelSize);
+}
+
+double
+geoPointsToSdfVoxelEstimate(const GeoDetail& source,
+                            const GeoPointsToSdfParams& params)
+{
+    const double voxelSize = transformVoxelSize(params.transform, params.voxelSize);
+    if (!(voxelSize > 0.)) {
+        return 0.;
+    }
+    const bool trails = params.footprint == eGeoParticleFootprintVelocityTrail;
+
+    return pointsVoxelEstimate(particlesOf(source, params, trails, nullptr), params, voxelSize);
+}
+
 std::string
 geoVDBEstimateNote(double voxels)
 {
@@ -1289,7 +1354,8 @@ bool
 geoPolygonsToSdf(const GeoDetail& source,
                  const GeoPolygonsToSdfParams& params,
                  GeoVDBConvertResult* result,
-                 std::string* error)
+                 std::string* error,
+                 const GeoVDBEstimateCallback& estimated)
 {
     geoInitializeOpenVDB();
     const double voxelSize = transformVoxelSize(params.transform, params.voxelSize);
@@ -1301,12 +1367,13 @@ geoPolygonsToSdf(const GeoDetail& source,
         return false;
     }
     const openvdb::math::Transform::Ptr xform = gridTransform(params.transform, params.voxelSize);
-    result->notes.push_back(geoVDBEstimateNote(geoPolygonsToSdfVoxelEstimate(source, params)));
     const bool unsignedDistance = params.buildDistance && params.unsignedDistanceField;
 
     bool closed = true;
     TriangleMesh mesh;
     mesh.triangles = triangulate(source, &closed);
+    const std::vector<std::array<double, 3>> world = geoPointPositions(source);
+    reportEstimate(polygonsVoxelEstimate(mesh.triangles, world, bands, params, voxelSize), estimated, result);
     if (mesh.triangles.empty()) {
         if (params.buildDistance) {
             openvdb::FloatGrid::Ptr empty = openvdb::FloatGrid::create(float(bands.exterior * voxelSize));
@@ -1323,7 +1390,6 @@ geoPolygonsToSdf(const GeoDetail& source,
 
         return true;
     }
-    const std::vector<std::array<double, 3>> world = geoPointPositions(source);
     mesh.points.resize(world.size());
     for (std::size_t i = 0; i < world.size(); ++i) {
         mesh.points[i] = xform->worldToIndex(toVec(world[i]));
@@ -1333,7 +1399,7 @@ geoPolygonsToSdf(const GeoDetail& source,
     const std::vector<std::pair<std::string, AttributeSource>> attributes = matchAttributes(source, { eGeoAttribClassVertex, eGeoAttribClassPoint, eGeoAttribClassPrimitive },
                                                                                             params.attributes, &attributeNotes);
     const bool needSigned = params.buildFog || (params.buildDistance && !params.unsignedDistanceField) || (!unsignedDistance && !attributes.empty());
-    if (needSigned && !closed) {
+    if (!closed && (params.buildFog || (params.buildDistance && !params.unsignedDistanceField))) {
         result->notes.push_back("The mesh is not closed, so its inside is guessed: the sign of the distances and the "
                                 "fog may leak through its holes. Turn Unsigned Distance Field on for distances that "
                                 "need no inside, or close the mesh.");
@@ -1362,18 +1428,29 @@ geoPolygonsToSdf(const GeoDetail& source,
         }
         if (params.buildFog) {
             openvdb::FloatGrid::Ptr fog = signedDistance ? grid->deepCopy() : grid;
-            openvdb::tools::sdfToFogVolume(*fog, float(bands.ramp * voxelSize));
+            float cutoff = float(bands.interior * voxelSize);
             if (params.fillInterior) {
-                // sdfToFogVolume scales every interior voxel by 1/cutoff without clamping, so voxels of a
-                // filled interior deeper than the ramp would read above one.
-                openvdb::tree::LeafManager<openvdb::FloatTree> leaves(fog->tree());
-                leaves.foreach ([](openvdb::FloatTree::LeafNodeType& leaf, std::size_t /*leafIndex*/) {
-                    for (auto it = leaf.beginValueOn(); it; ++it) {
-                        if (*it > 1.f) {
-                            it.setValue(1.f);
-                        }
+                float deepest = 0.f;
+                for (auto it = fog->tree().cbeginValueAll(); it; ++it) {
+                    deepest = std::min(deepest, *it);
+                }
+                cutoff = std::max(-deepest, float(voxelSize));
+            }
+            openvdb::tools::sdfToFogVolume(*fog, cutoff);
+            // sdfToFogVolume scales interior values by 1/cutoff without clamping, and it may lower
+            // the cutoff it is given, so values deeper than the cutoff would read above one.
+            openvdb::tree::LeafManager<openvdb::FloatTree> leaves(fog->tree());
+            leaves.foreach ([](openvdb::FloatTree::LeafNodeType& leaf, std::size_t /*leafIndex*/) {
+                for (auto it = leaf.beginValueOn(); it; ++it) {
+                    if (*it > 1.f) {
+                        it.setValue(1.f);
                     }
-                });
+                }
+            });
+            for (auto it = fog->tree().beginValueOn(); it; ++it) {
+                if (!it.isVoxelValue() && (*it > 1.f)) {
+                    it.setValue(1.f);
+                }
             }
             addGrid(result, params.fogName, fog);
         }
@@ -1450,7 +1527,8 @@ bool
 geoPointsToSdf(const GeoDetail& source,
                const GeoPointsToSdfParams& params,
                GeoVDBConvertResult* result,
-               std::string* error)
+               std::string* error,
+               const GeoVDBEstimateCallback& estimated)
 {
     geoInitializeOpenVDB();
     const double voxelSize = transformVoxelSize(params.transform, params.voxelSize);
@@ -1473,10 +1551,10 @@ geoPointsToSdf(const GeoDetail& source,
     }
     const openvdb::math::Transform::Ptr xform = gridTransform(params.transform, params.voxelSize);
     const float background = float(band * voxelSize);
-    result->notes.push_back(geoVDBEstimateNote(geoPointsToSdfVoxelEstimate(source, params)));
 
     std::vector<GeoOffset> offsets;
     const ParticleList particles = particlesOf(source, params, trailFootprint, &offsets);
+    reportEstimate(pointsVoxelEstimate(particles, params, voxelSize), estimated, result);
     const bool trails = trailFootprint && !particles.velocities.empty();
     if (trailFootprint && !trails && !particles.positions.empty()) {
         result->notes.push_back("The points have no three-component v attribute, so there are no trails.");
@@ -1502,12 +1580,12 @@ geoPointsToSdf(const GeoDetail& source,
 
         return grid;
     };
-    const auto rasterize = [&](openvdb::FloatGrid& grid, const ParticleList& list, ParticleIndexGrid::Ptr* index) {
+    const auto rasterize = [&](openvdb::FloatGrid& grid, const ParticleList& list, double rmin, ParticleIndexGrid::Ptr* index) {
         if (list.positions.empty()) {
             return;
         }
         const auto run = [&](auto& raster) {
-            raster.setRmin(params.minRadius);
+            raster.setRmin(rmin);
             raster.setRmax(std::numeric_limits<openvdb::Real>::max());
             if (trails) {
                 raster.rasterizeTrails(list, params.trailSpacing);
@@ -1543,7 +1621,7 @@ geoPointsToSdf(const GeoDetail& source,
                 result->notes.push_back("The reference VDB " + params.mergeInto->getName() + " is not a float SDF, so the spheres were not merged into it.");
             }
         }
-        rasterize(*distance, particles, attributes.empty() ? nullptr : &index);
+        rasterize(*distance, particles, params.minRadius, attributes.empty() ? nullptr : &index);
     }
     if (skipped > 0) {
         std::ostringstream os;
@@ -1560,19 +1638,34 @@ geoPointsToSdf(const GeoDetail& source,
         addGrid(result, params.fogName, fog);
     }
     if (params.buildMask) {
-        const auto scaled = [&particles](double scale) {
-            ParticleList list = particles;
+        // Only the spheres the distance grid draws get a shell, and the minimum radius scales with
+        // them so a sphere near it keeps both walls of its shell rather than losing the inner one.
+        ParticleList drawn;
+        for (std::size_t i = 0; i < particles.size(); ++i) {
+            if (particles.radii[i] * invDx < params.minRadius) {
+                continue;
+            }
+            drawn.positions.push_back(particles.positions[i]);
+            drawn.radii.push_back(particles.radii[i]);
+            if (!particles.velocities.empty()) {
+                drawn.velocities.push_back(particles.velocities[i]);
+            }
+        }
+        const auto scaled = [&drawn](double scale) {
+            ParticleList list = drawn;
             for (openvdb::Real& r : list.radii) {
                 r *= scale;
             }
 
             return list;
         };
+        const double outerScale = 1. + 0.5 * params.maskWidth;
+        const double innerScale = 1. - 0.5 * params.maskWidth;
         openvdb::FloatGrid::Ptr mask = emptyLevelSet();
-        rasterize(*mask, scaled(1. + 0.5 * params.maskWidth), nullptr);
+        rasterize(*mask, scaled(outerScale), params.minRadius * outerScale, nullptr);
         if (params.maskWidth < 2.) {
             openvdb::FloatGrid::Ptr inner = emptyLevelSet();
-            rasterize(*inner, scaled(1. - 0.5 * params.maskWidth), nullptr);
+            rasterize(*inner, scaled(innerScale), params.minRadius * innerScale, nullptr);
             openvdb::tools::csgDifference(*mask, *inner);
         }
         openvdb::tools::sdfToFogVolume(*mask);
@@ -1747,10 +1840,10 @@ geoCleanupVDB(const openvdb::GridBase& grid,
             if (copy->getGridClass() == openvdb::GRID_LEVEL_SET) {
                 if (params.signedFloodFill) {
                     openvdb::tools::signedFloodFill(copy->tree());
-                }
-                if (params.activateInsideVoxels) {
-                    const openvdb::BoolGrid::Ptr inside = openvdb::tools::sdfInteriorMask(*copy);
-                    copy->tree().topologyUnion(inside->tree());
+                    if (params.activateInsideVoxels) {
+                        const openvdb::BoolGrid::Ptr inside = openvdb::tools::sdfInteriorMask(*copy);
+                        copy->tree().topologyUnion(inside->tree());
+                    }
                 }
             }
         }

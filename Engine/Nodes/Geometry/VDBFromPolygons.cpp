@@ -25,6 +25,8 @@
 
 #include "VDBFromPolygons.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <exception>
 #include <memory>
 #include <string>
@@ -55,7 +57,8 @@ resolveConvert(const GeoDetail& source,
 
             return true;
         }
-        notes->push_back("No VDB on the Reference input matches Reference VDB, so Voxel Size is used.");
+        notes->push_back(std::string("No VDB on the Reference input matches Reference VDB, so ")
+                         + (params.useVoxelCount ? "Voxel Count" : "Voxel Size") + " is used.");
     }
     if (params.useVoxelCount) {
         const double counted = geoVoxelSizeForCount(source, params.voxelCount, params.voxelCountAxis);
@@ -79,24 +82,29 @@ VDBFromPolygons::build(const GeoDetail& source,
                        const VDBFromPolygonsParams& params,
                        GeoDetailBuilder& out,
                        std::vector<std::string>* notes,
-                       std::string* error)
+                       std::string* error,
+                       const GeoVDBEstimateCallback& estimated)
 {
     std::vector<std::string> resolveNotes;
     GeoPolygonsToSdfParams convert;
-    const bool resolved = resolveConvert(source, reference, params, &convert, &resolveNotes);
-    if (notes) {
-        notes->insert(notes->end(), resolveNotes.begin(), resolveNotes.end());
-    }
-    if (!resolved) {
+    if (!resolveConvert(source, reference, params, &convert, &resolveNotes)) {
+        if (notes) {
+            notes->insert(notes->end(), resolveNotes.begin(), resolveNotes.end());
+        }
+
         return true;
     }
     GeoVDBConvertResult result;
-    if (!geoPolygonsToSdf(source, convert, &result, error)) {
+    if (!geoPolygonsToSdf(source, convert, &result, error, estimated)) {
         return false;
     }
     geoAppendVDBGrids(out, result);
     if (notes) {
-        notes->insert(notes->end(), result.notes.begin(), result.notes.end());
+        // The estimate stays first, where the info showed it during the build.
+        const auto rest = result.notes.begin() + std::min<std::ptrdiff_t>(1, std::ptrdiff_t(result.notes.size()));
+        notes->insert(notes->end(), result.notes.begin(), rest);
+        notes->insert(notes->end(), resolveNotes.begin(), resolveNotes.end());
+        notes->insert(notes->end(), rest, result.notes.end());
     }
 
     return true;
@@ -139,8 +147,8 @@ VDBFromPolygons::initializeKnobs()
     _distanceName = geoAddStringKnob(this, page, tr("Distance Name").toStdString(), kVDBFromPolygonsParamDistanceName,
                                      tr("The name of the distance grid.").toStdString(), defaults.convert.distanceName);
     _fogVDB = geoAddBoolKnob(this, page, tr("Fog VDB").toStdString(), kVDBFromPolygonsParamFogVDB,
-                             tr("Output a density of 0 outside and 1 inside, ramping across the interior band "
-                                "whether or not Fill Interior is on.")
+                             tr("Output a density of 0 outside rising to 1 inside: across the interior band, "
+                                "or with Fill Interior to the deepest point inside.")
                                  .toStdString(),
                              defaults.convert.buildFog);
     _fogName = geoAddStringKnob(this, page, tr("Fog Name").toStdString(), kVDBFromPolygonsParamFogName,
@@ -191,7 +199,7 @@ VDBFromPolygons::initializeKnobs()
                                      defaults.convert.exteriorBand, 1., 10.);
     _interiorBand = geoAddDoubleKnob(this, page, tr("Interior Band").toStdString(), kVDBFromPolygonsParamInteriorBand,
                                      tr("How far inside the surface distances are stored, in voxels. At least 1. "
-                                        "For a fog volume this is the width of the density ramp.")
+                                        "Without Fill Interior, a fog volume's density ramps across it.")
                                          .toStdString(),
                                      defaults.convert.interiorBand, 1., 10.);
     _exteriorBandWorld = geoAddDoubleKnob(this, page, tr("Exterior Band World").toStdString(),
@@ -203,13 +211,14 @@ VDBFromPolygons::initializeKnobs()
     _interiorBandWorld = geoAddDoubleKnob(this, page, tr("Interior Band World").toStdString(),
                                           kVDBFromPolygonsParamInteriorBandWorld,
                                           tr("How far inside the surface distances are stored, in world units. At "
-                                             "least one voxel is kept. For a fog volume this is the width of the "
-                                             "density ramp.")
+                                             "least one voxel is kept. Without Fill Interior, a fog volume's "
+                                             "density ramps across it.")
                                               .toStdString(),
                                           defaults.convert.interiorBandWorld, 0., 1.);
     _fillInterior = geoAddBoolKnob(this, page, tr("Fill Interior").toStdString(), kVDBFromPolygonsParamFillInterior,
                                    tr("Store distances through the whole inside instead of stopping at the interior "
-                                      "band. Needs a closed mesh.")
+                                      "band, and ramp the fog volume's density to 1 at the deepest point inside. "
+                                      "Needs a closed mesh.")
                                        .toStdString(),
                                    defaults.convert.fillInterior);
     _unsignedDistanceField = geoAddBoolKnob(this, page, tr("Unsigned Distance Field").toStdString(),
@@ -325,18 +334,12 @@ VDBFromPolygons::renderGeometry(const GeoRenderActionArgs& args,
     const GeoDetail empty;
     const GeoDetail& source = input ? *input : empty;
     const NodePtr node = getNode();
-    if (node) {
-        // A tiny voxel size can take long or run out of memory, so the estimate shows first.
-        std::vector<std::string> ignored;
-        GeoPolygonsToSdfParams convert;
-        if (resolveConvert(source, reference.get(), params, &convert, &ignored)) {
-            node->setQuietInfoMessage(geoVDBEstimateNote(geoPolygonsToSdfVoxelEstimate(source, convert)));
-        }
-    }
+    // A tiny voxel size can take long or run out of memory, so the estimate shows during the build.
+    const GeoVDBEstimateCallback estimated = geoEstimatePoster(node);
     std::vector<std::string> notes;
     const StatusEnum status = renderGeometryGenerator([&](GeoDetailBuilder& detail, std::string* error) {
         try {
-            return build(source, reference.get(), params, detail, &notes, error) ? eStatusOK : eStatusFailed;
+            return build(source, reference.get(), params, detail, &notes, error, estimated) ? eStatusOK : eStatusFailed;
         } catch (const std::exception& e) {
             if (error) {
                 *error = e.what();

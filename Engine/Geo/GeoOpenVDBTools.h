@@ -36,6 +36,7 @@
 #include <openvdb/tools/LevelSetRebuild.h>
 #include <openvdb/tools/LevelSetUtil.h>
 #include <openvdb/tools/MeshToVolume.h>
+#include <openvdb/tools/Morphology.h>
 #include <openvdb/tools/ParticlesToLevelSet.h>
 #include <openvdb/tools/Prune.h>
 #include <openvdb/tools/SignedFloodFill.h>

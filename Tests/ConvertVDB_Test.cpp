@@ -147,6 +147,50 @@ meshed(const GeoDetail& source,
     return b.finish();
 }
 
+/** The bounds of the points the polygons of @p d use, leaving out VDB primitives' points. */
+Box
+polygonPointBounds(const GeoDetail& d)
+{
+    Box b;
+    d.primitiveMap().forEachLive([&](GeoIndex /*index*/, GeoOffset prim) {
+        if (d.primitiveType(prim) != eGeoPrimitivePolygon) {
+            return;
+        }
+        const GeoVertexRange range = d.primitiveVertices(prim);
+        for (GeoOffset k = 0; k < range.count; ++k) {
+            const std::array<double, 3> p = d.pointPosition(d.vertexPoint(range.start + k));
+            for (int c = 0; c < 3; ++c) {
+                b.min[c] = std::min(b.min[c], p[c]);
+                b.max[c] = std::max(b.max[c], p[c]);
+            }
+        }
+    });
+
+    return b;
+}
+
+GeoDetail
+maskSphere()
+{
+    geoInitializeOpenVDB();
+    GeoDetailBuilder b;
+    geoAppendVDB(b, openvdb::tools::createLevelSetSphere<openvdb::FloatGrid>(1.f, openvdb::Vec3f(1.f, 0.f, 0.f), float(kVoxel)), "mask");
+
+    return b.finish();
+}
+
+GeoDetail
+maskedMesh(const ConvertVDBParams& params,
+           const GeoDetail* mask,
+           std::vector<std::string>* notes = nullptr)
+{
+    GeoDetailBuilder b(sphereVolume(false));
+    std::string error;
+    EXPECT_TRUE(ConvertVDB::apply(b, params, nullptr, mask, notes, &error)) << error;
+
+    return b.finish();
+}
+
 openvdb::Coord
 activeDim(const openvdb::GridBase& grid)
 {
@@ -408,4 +452,116 @@ TEST(VDBResampleTest, ExplicitModeTranslatesInVoxels)
     params.transform.scale = { 1., 0., 1. };
     GeoDetailBuilder c(sphereVolume(false));
     EXPECT_FALSE(VDBResample::apply(c, params, nullptr, nullptr, &error));
+}
+
+TEST(ConvertVDBTest, GlobbedSkipsAreInfoAndExactNamesWarn)
+{
+    geoInitializeOpenVDB();
+    GeoDetailBuilder b;
+    geoAppendVDB(b, openvdb::Vec3SGrid::create(), "vel");
+    const GeoDetail vectors = b.finish();
+    std::vector<std::string> notes;
+    std::vector<std::string> info;
+    std::string error;
+    GeoDetailBuilder globbed(vectors);
+    ASSERT_TRUE(ConvertVDB::apply(globbed, ConvertVDBParams(), nullptr, nullptr, &notes, &error, &info)) << error;
+    EXPECT_EQ(notes.size(), 0u);
+    EXPECT_EQ(info.size(), 1u);
+
+    ConvertVDBParams named;
+    named.group = "vel";
+    notes.clear();
+    info.clear();
+    GeoDetailBuilder exact(vectors);
+    ASSERT_TRUE(ConvertVDB::apply(exact, named, nullptr, nullptr, &notes, &error, &info)) << error;
+    EXPECT_EQ(notes.size(), 1u);
+    EXPECT_EQ(info.size(), 0u);
+
+    GeoDetailBuilder withAttribute(sphereVolume(false));
+    openvdb::FloatGrid::Ptr attribute = openvdb::FloatGrid::create(0.f);
+    attribute->tree().setValue(openvdb::Coord(0), -1.f);
+    geoAppendVDB(withAttribute, attribute, "temperature");
+    const GeoDetail source = withAttribute.finish();
+    notes.clear();
+    info.clear();
+    GeoDetailBuilder meshedBeside(source);
+    ASSERT_TRUE(ConvertVDB::apply(meshedBeside, ConvertVDBParams(), nullptr, nullptr, &notes, &error, &info)) << error;
+    EXPECT_EQ(notes.size(), 0u);
+    EXPECT_EQ(info.size(), 1u);
+
+    ConvertVDBParams toFog;
+    toFog.target = eConvertVDBTargetVDB;
+    toFog.vdbClass = eConvertVDBClassSDFToFog;
+    notes.clear();
+    info.clear();
+    GeoDetailBuilder fogged(source);
+    ASSERT_TRUE(ConvertVDB::apply(fogged, toFog, nullptr, nullptr, &notes, &error, &info)) << error;
+    EXPECT_EQ(notes.size(), 0u);
+    EXPECT_EQ(info.size(), 1u);
+}
+
+TEST(ConvertVDBTest, TheSurfaceMaskLimitsThePolygons)
+{
+    const GeoDetail mask = maskSphere();
+    ConvertVDBParams params;
+    params.useSurfaceMask = true;
+    params.surfaceMask = "mask";
+    std::vector<std::string> notes;
+    const Box inside = polygonPointBounds(maskedMesh(params, &mask, &notes));
+    EXPECT_TRUE(notes.empty());
+    EXPECT_NEAR(inside.min[0], 0.5, 2. * kVoxel);
+    EXPECT_NEAR(inside.max[0], 1., kVoxel);
+
+    params.mesh.maskOffset = 0.1;
+    const Box grown = polygonPointBounds(maskedMesh(params, &mask));
+    EXPECT_NEAR(grown.min[0], 0.395, 2. * kVoxel);
+    EXPECT_LT(grown.min[0], inside.min[0]);
+
+    params.mesh.maskOffset = 0.;
+    params.mesh.invertSurfaceMask = true;
+    const Box outside = polygonPointBounds(maskedMesh(params, &mask));
+    EXPECT_NEAR(outside.max[0], 0.5, 2. * kVoxel);
+    EXPECT_NEAR(outside.min[0], -1., kVoxel);
+}
+
+TEST(ConvertVDBTest, AMissingMaskVDBWarnsAndMeshesEverything)
+{
+    ConvertVDBParams params;
+    params.useSurfaceMask = true;
+    params.surfaceMask = "mask";
+    std::vector<std::string> notes;
+    std::vector<std::string> info;
+    GeoDetailBuilder b(sphereVolume(false));
+    std::string error;
+    ASSERT_TRUE(ConvertVDB::apply(b, params, nullptr, nullptr, &notes, &error, &info)) << error;
+    ASSERT_EQ(notes.size(), 1u);
+    EXPECT_NE(notes[0].find("Surface Mask"), std::string::npos);
+    const Box all = polygonPointBounds(b.finish());
+    EXPECT_NEAR(all.min[0], -1., kVoxel);
+    EXPECT_NEAR(all.max[0], 1., kVoxel);
+}
+
+TEST(ConvertVDBTest, TheAdaptivityFieldScalesTheAdaptivity)
+{
+    geoInitializeOpenVDB();
+    GeoDetailBuilder m;
+    geoAppendVDB(m, openvdb::FloatGrid::create(0.f), "adapt");
+    const GeoDetail mask = m.finish();
+    const GeoDetail source = cubeVolumeAndCard();
+    const auto polygons = [&](double adaptivity, bool useField) {
+        ConvertVDBParams params;
+        params.mesh.adaptivity = adaptivity;
+        params.useAdaptivityField = useField;
+        params.adaptivityField = "adapt";
+        GeoDetailBuilder b(source);
+        std::vector<std::string> notes;
+        std::string error;
+        EXPECT_TRUE(ConvertVDB::apply(b, params, nullptr, &mask, &notes, &error)) << error;
+        EXPECT_TRUE(notes.empty());
+
+        return countPrimitives(b.finish(), eGeoPrimitivePolygon);
+    };
+    const GeoIndex none = polygons(0., false);
+    EXPECT_EQ(polygons(1., true), none);
+    EXPECT_GT(none, polygons(1., false));
 }

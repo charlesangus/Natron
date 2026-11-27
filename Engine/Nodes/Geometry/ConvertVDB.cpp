@@ -83,7 +83,8 @@ ConvertVDB::apply(GeoDetailBuilder& builder,
                   const GeoDetail* reference,
                   const GeoDetail* mask,
                   std::vector<std::string>* notes,
-                  std::string* error)
+                  std::string* error,
+                  std::vector<std::string>* info)
 {
     struct Selected {
         GeoOffset primitive;
@@ -108,6 +109,15 @@ ConvertVDB::apply(GeoDetailBuilder& builder,
             notes->push_back(text);
         }
     };
+    // A grid a glob picked up that this conversion does not take is routine, as with the
+    // attribute grids beside an SDF; one named exactly in Group was meant to convert.
+    const auto skipped = [&](const Selected& s, const std::string& text) {
+        if (info && !namedExactly(params.group, s.name)) {
+            info->push_back(text);
+        } else {
+            note(text);
+        }
+    };
 
     GeoSdfToPolygonsParams mesh = params.mesh;
     if (params.target == eConvertVDBTargetPolygons) {
@@ -127,14 +137,14 @@ ConvertVDB::apply(GeoDetailBuilder& builder,
         const bool levelSet = gridClass == openvdb::GRID_LEVEL_SET;
         if (params.target == eConvertVDBTargetPolygons) {
             if (!scalar) {
-                note(s.name + " holds " + s.grid->valueType() + " values, not float or double ones, so it was left as it is.");
+                skipped(s, s.name + " holds " + s.grid->valueType() + " values, not float or double ones, so it was left as it is.");
                 continue;
             }
             // Attribute and unsigned distance grids sit beside SDFs under the same group, and
             // their isosurface is rarely wanted.
             if (!fog && !levelSet && !namedExactly(params.group, s.name)) {
-                note(s.name + " is neither an SDF nor a fog volume, so it was left as it is; name it in Group to "
-                              "make polygons of it.");
+                skipped(s, s.name + " is neither an SDF nor a fog volume, so it was left as it is; name it in Group to "
+                                    "make polygons of it.");
                 continue;
             }
             mesh.isovalue = fog ? params.fogIsovalue : params.isovalue;
@@ -160,7 +170,7 @@ ConvertVDB::apply(GeoDetailBuilder& builder,
                     return false;
                 }
             } else if (!levelSet) {
-                note(s.name + " is not a float or double fog volume, so it was not converted to an SDF.");
+                skipped(s, s.name + " is not a float or double fog volume, so it was not converted to an SDF.");
             }
             break;
         case eConvertVDBClassSDFToFog:
@@ -170,7 +180,7 @@ ConvertVDB::apply(GeoDetailBuilder& builder,
                     return false;
                 }
             } else if (!fog) {
-                note(s.name + " is not a float or double SDF, so it was not converted to fog.");
+                skipped(s, s.name + " is not a float or double SDF, so it was not converted to fog.");
             }
             break;
         }
@@ -296,7 +306,8 @@ ConvertVDB::initializeKnobs()
     _activateInsideVoxels = geoAddBoolKnob(this, page, tr("Activate Inside Voxels").toStdString(),
                                            kConvertVDBParamActivateInsideVoxels,
                                            tr("Make every voxel inside an SDF active, not only the interior band, "
-                                              "for operations that visit only active voxels.")
+                                              "for operations that visit only active voxels. Needs Signed Flood "
+                                              "Fill: without it nothing is activated.")
                                                .toStdString(),
                                            defaults.cleanup.activateInsideVoxels);
 
@@ -337,14 +348,16 @@ ConvertVDB::initializeKnobs()
                                                 .toStdString(),
                                             defaults.mesh.referenceAttributes);
     _sharpenFeatures = geoAddBoolKnob(this, page, tr("Sharpen Features").toStdString(), kConvertVDBParamSharpenFeatures,
-                                      tr("With a reference, move the points along the seams onto its edges and "
-                                         "corners.")
+                                      tr("With a reference, move the points of the surface polygons near its sharp "
+                                         "edges and corners onto them, as far as each point's voxel allows. Edge "
+                                         "Tolerance sets which edges count as sharp.")
                                           .toStdString(),
                                       defaults.mesh.sharpenFeatures);
     KnobDoublePtr edgeTolerance = geoAddDoubleKnob(this, page, tr("Edge Tolerance").toStdString(), kConvertVDBParamEdgeTolerance,
-                                                   tr("With a reference, voxels where its surface turns sharper than "
-                                                      "this, as a dot product of normals, keep full resolution "
-                                                      "whatever the adaptivity.")
+                                                   tr("With a reference, voxels near where its surface turns sharper "
+                                                      "than this, as a dot product of normals, keep full resolution "
+                                                      "whatever the adaptivity, and are where Sharpen Features "
+                                                      "works.")
                                                        .toStdString(),
                                                    defaults.mesh.edgeTolerance, 0., 1.);
     edgeTolerance->setMaximum(1.);
@@ -528,10 +541,11 @@ ConvertVDB::renderGeometry(const GeoRenderActionArgs& args,
     const ConvertVDBParams params = readParams(args.time, args.view);
     const GeoDetailConstPtr reference = args.getInputDetail(1);
     const GeoDetailConstPtr mask = args.getInputDetail(2);
-    std::vector<std::string> notes;
+    std::vector<std::string> warnings;
+    std::vector<std::string> info;
     const StatusEnum status = renderGeometryFromInput(args, 0, [&](GeoDetailBuilder& detail, std::string* error) {
         try {
-            return apply(detail, params, reference.get(), mask.get(), &notes, error) ? eStatusOK : eStatusFailed;
+            return apply(detail, params, reference.get(), mask.get(), &warnings, error, &info) ? eStatusOK : eStatusFailed;
         } catch (const std::exception& e) {
             if (error) {
                 *error = e.what();
@@ -540,10 +554,14 @@ ConvertVDB::renderGeometry(const GeoRenderActionArgs& args,
             return eStatusFailed;
         } }, outputDetail, errorMessage);
     if (status == eStatusOK) {
-        if (notes.empty()) {
-            clearPersistentMessage(false);
+        const NodePtr node = getNode();
+        if (!warnings.empty()) {
+            warnings.insert(warnings.end(), info.begin(), info.end());
+            setPersistentMessage(eMessageTypeWarning, geoJoinNotes(warnings));
+        } else if (!info.empty() && node) {
+            node->setQuietInfoMessage(geoJoinNotes(info));
         } else {
-            setPersistentMessage(eMessageTypeWarning, geoJoinNotes(notes));
+            clearPersistentMessage(false);
         }
     }
 

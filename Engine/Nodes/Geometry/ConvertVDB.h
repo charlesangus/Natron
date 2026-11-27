@@ -143,15 +143,17 @@ public:
      * their primitive and its point; they come from SDFs and fog volumes, and from other float
      * and double grids only when a name in params.group is exactly theirs. VDB conversions
      * replace the grid and keep the name: SDF to fog takes SDFs only, fog to SDF fog volumes
-     * only. Grids that cannot convert are left with a note in @p notes. @p reference and @p mask
-     * may be null. False with @p error set when OpenVDB fails.
+     * only. Grids that cannot convert are left with a note in @p notes, or in @p info when it is
+     * set and no name in params.group is exactly theirs, as a glob picking them up is routine.
+     * @p reference and @p mask may be null. False with @p error set when OpenVDB fails.
      **/
     static bool apply(GeoDetailBuilder& builder,
                       const ConvertVDBParams& params,
                       const GeoDetail* reference,
                       const GeoDetail* mask,
                       std::vector<std::string>* notes,
-                      std::string* error);
+                      std::string* error,
+                      std::vector<std::string>* info = nullptr);
 
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;

@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -115,8 +116,8 @@ struct GeoPolygonsToSdfParams {
     double interiorBand = 3.;
     double exteriorBandWorld = 0.3;
     double interiorBandWorld = 0.3;
-    // Distances fill the whole inside instead of stopping at the interior band; a fog volume then
-    // ramps from 0 at the surface to 1 at the deepest point.
+    // Distances fill the whole inside instead of stopping at the interior band; the fog volume then
+    // ramps from 0 at the surface to 1 at the deepest point instead of across the interior band.
     bool fillInterior = false;
     // The distance grid holds unsigned distances, which need no inside; the fog grid stays signed.
     bool unsignedDistanceField = false;
@@ -131,6 +132,9 @@ struct GeoPolygonsToSdfParams {
     std::string attributes;
 };
 
+/** @brief Called with geoVDBEstimateNote() once the input is read, before the grids are built. */
+typedef std::function<void(const std::string& estimate)> GeoVDBEstimateCallback;
+
 /**
  * @brief Active voxels one grid of geoPolygonsToSdf() takes at least: the band around the
  * polygons' area plus, with Fill Interior, the volume they enclose. Cheap; read before building.
@@ -144,7 +148,8 @@ double geoPolygonsToSdfVoxelEstimate(const GeoDetail& source,
  * attribute grids. A mesh with boundary edges is not closed: its inside is guessed, with a note
  * that the sign and the fog may leak through the holes. Polylines, packed and VDB primitives are
  * ignored. A source without polygons gives empty grids. False with @p error set for a voxel size
- * that is not positive and finite or a negative band.
+ * that is not positive and finite or a negative band. The first note is the voxel estimate, which
+ * @p estimated, when set, also receives before the build.
  *
  * Numeric attributes of one or three components convert: float to a float or vector grid, int32
  * and int64 to grids of the same type taking the value of the closest corner. Others are skipped
@@ -153,7 +158,8 @@ double geoPolygonsToSdfVoxelEstimate(const GeoDetail& source,
 bool geoPolygonsToSdf(const GeoDetail& source,
                       const GeoPolygonsToSdfParams& params,
                       GeoVDBConvertResult* result,
-                      std::string* error);
+                      std::string* error,
+                      const GeoVDBEstimateCallback& estimated = GeoVDBEstimateCallback());
 
 enum GeoParticleFootprintEnum {
     eGeoParticleFootprintSpherical = 0,
@@ -185,7 +191,8 @@ struct GeoPointsToSdfParams {
     std::string distanceName = "surface";
     bool buildFog = false;
     std::string fogName = "density";
-    // A fog volume of the shell between the spheres shrunk and grown by half maskWidth radii.
+    // A fog volume of the shell between the spheres shrunk and grown by half maskWidth radii, for
+    // the spheres the distance grid draws.
     bool buildMask = false;
     std::string maskName = "boundingvolume";
     double maskWidth = 1.;
@@ -202,12 +209,13 @@ double geoPointsToSdfVoxelEstimate(const GeoDetail& source,
  * @brief Unions spheres on the live points of @p source into the distance, fog and mask grids
  * asked for, plus the attribute grids. A source without points gives empty grids. False with
  * @p error set for a voxel size that is not positive and finite, or a band, minimum radius, trail
- * spacing or mask width that is not positive.
+ * spacing or mask width that is not positive. The notes and @p estimated as geoPolygonsToSdf().
  **/
 bool geoPointsToSdf(const GeoDetail& source,
                     const GeoPointsToSdfParams& params,
                     GeoVDBConvertResult* result,
-                    std::string* error);
+                    std::string* error,
+                    const GeoVDBEstimateCallback& estimated = GeoVDBEstimateCallback());
 
 /** @brief The note giving a voxel estimate and the memory a float grid of that many voxels takes. */
 std::string geoVDBEstimateNote(double voxels);
@@ -229,10 +237,12 @@ struct GeoSdfToPolygonsParams {
     // values interpolated across it.
     bool transferSurfaceAttributes = true;
     std::string referenceAttributes = "*";
-    // The seam points move onto the reference's edges and corners.
+    // The points of the surface polygons in the voxels edgeTolerance marks move onto the
+    // reference's edges and corners there: to the point that best fits the planes of the
+    // reference triangles crossing the voxel's edges, kept inside the voxel.
     bool sharpenFeatures = true;
     // Voxels where the reference surface turns sharper than this normal dot product keep their
-    // full resolution whatever the adaptivity.
+    // full resolution whatever the adaptivity, and are those Sharpen Features moves points in.
     double edgeTolerance = 0.5;
     // Groups for the polygons on the reference surface, those inside it, those along the seams
     // between the two, and the seams' points. Empty for none.
@@ -308,7 +318,8 @@ struct GeoVDBCleanupParams {
     double pruneTolerance = 0.;
     // SDFs only: the inactive values take the sign of the side they are on.
     bool signedFloodFill = true;
-    // SDFs only: every voxel inside the surface is made active.
+    // SDFs only, with signedFloodFill: every voxel inside the surface is made active. Without the
+    // flood fill, inactive values inside may still read as outside.
     bool activateInsideVoxels = false;
 };
 

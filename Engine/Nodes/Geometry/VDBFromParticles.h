@@ -98,7 +98,8 @@ public:
     /**
      * @brief Appends the VDB primitives converted from @p source to @p out and the info notes to
      * @p notes. @p reference, which may be null, gives the transform and the grid merged into
-     * through the VDB @p referenceVDB names. False with @p error set for invalid parameters.
+     * through the VDB @p referenceVDB names. False with @p error set for invalid parameters. The
+     * voxel estimate is the first note, and goes to @p estimated before the build.
      **/
     static bool build(const GeoDetail& source,
                       const GeoDetail* reference,
@@ -107,7 +108,8 @@ public:
                       GeoPointsToSdfParams params,
                       GeoDetailBuilder& out,
                       std::vector<std::string>* notes,
-                      std::string* error);
+                      std::string* error,
+                      const GeoVDBEstimateCallback& estimated = GeoVDBEstimateCallback());
 
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;

@@ -28,13 +28,17 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include <QtCore/QString>
+
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -160,6 +164,40 @@ geoJoinNotes(const std::vector<std::string>& notes)
     }
 
     return text;
+}
+
+/** @brief Whether the node info @p current does not already open with the line @p estimate. */
+inline bool
+geoEstimateIsNews(const std::string& current,
+                  const std::string& estimate)
+{
+    if (current.compare(0, estimate.size(), estimate) != 0) {
+        return true;
+    }
+
+    return (current.size() != estimate.size()) && (current[estimate.size()] != '\n');
+}
+
+/**
+ * @brief A callback showing a pre-build estimate as @p node's info, or none in background mode,
+ * where nobody sees the info before the build ends. An info already opening with the same
+ * estimate is left alone, so a render whose results do not change posts nothing new.
+ **/
+inline std::function<void(const std::string&)>
+geoEstimatePoster(const NodePtr& node)
+{
+    if (!node || appPTR->isBackground()) {
+        return std::function<void(const std::string&)>();
+    }
+
+    return [node](const std::string& estimate) {
+        QString current;
+        int type = eMessageTypeInfo;
+        node->getPersistentMessage(&current, &type, false);
+        if ((type != eMessageTypeInfo) || geoEstimateIsNews(current.toStdString(), estimate)) {
+            node->setQuietInfoMessage(estimate);
+        }
+    };
 }
 
 NATRON_NAMESPACE_EXIT

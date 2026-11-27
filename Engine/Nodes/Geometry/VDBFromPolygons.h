@@ -106,14 +106,15 @@ public:
      * @p notes. A VDB of @p reference, which may be null, matching params.referenceVDB gives the
      * transform, over the voxel size or count. False with @p error set for invalid parameters. A
      * voxel count over a source whose points have no extent along the axis gives empty geometry
-     * and a note.
+     * and a note. The voxel estimate is the first note, and goes to @p estimated before the build.
      **/
     static bool build(const GeoDetail& source,
                       const GeoDetail* reference,
                       const VDBFromPolygonsParams& params,
                       GeoDetailBuilder& out,
                       std::vector<std::string>* notes,
-                      std::string* error);
+                      std::string* error,
+                      const GeoVDBEstimateCallback& estimated = GeoVDBEstimateCallback());
 
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;

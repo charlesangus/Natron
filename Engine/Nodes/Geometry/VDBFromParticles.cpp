@@ -25,6 +25,8 @@
 
 #include "VDBFromParticles.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <exception>
 #include <memory>
 #include <string>
@@ -45,7 +47,8 @@ VDBFromParticles::build(const GeoDetail& source,
                         GeoPointsToSdfParams params,
                         GeoDetailBuilder& out,
                         std::vector<std::string>* notes,
-                        std::string* error)
+                        std::string* error,
+                        const GeoVDBEstimateCallback& estimated)
 {
     std::vector<std::string> referenceNotes;
     if (reference) {
@@ -60,13 +63,16 @@ VDBFromParticles::build(const GeoDetail& source,
         }
     }
     GeoVDBConvertResult result;
-    if (!geoPointsToSdf(source, params, &result, error)) {
+    if (!geoPointsToSdf(source, params, &result, error, estimated)) {
         return false;
     }
     geoAppendVDBGrids(out, result);
     if (notes) {
+        // The estimate stays first, where the info showed it during the build.
+        const auto rest = result.notes.begin() + std::min<std::ptrdiff_t>(1, std::ptrdiff_t(result.notes.size()));
+        notes->insert(notes->end(), result.notes.begin(), rest);
         notes->insert(notes->end(), referenceNotes.begin(), referenceNotes.end());
-        notes->insert(notes->end(), result.notes.begin(), result.notes.end());
+        notes->insert(notes->end(), rest, result.notes.end());
     }
 
     return true;
@@ -296,20 +302,12 @@ VDBFromParticles::renderGeometry(const GeoRenderActionArgs& args,
     const GeoDetail empty;
     const GeoDetail& source = input ? *input : empty;
     const NodePtr node = getNode();
-    if (node) {
-        // A tiny voxel size can take long or run out of memory, so the estimate shows first.
-        GeoPointsToSdfParams estimated = params;
-        if (reference) {
-            if (const GeoVDBGridBaseConstPtr grid = geoFindVDB(*reference, referenceVDB)) {
-                estimated.transform = grid->transformPtr();
-            }
-        }
-        node->setQuietInfoMessage(geoVDBEstimateNote(geoPointsToSdfVoxelEstimate(source, estimated)));
-    }
+    // A tiny voxel size can take long or run out of memory, so the estimate shows during the build.
+    const GeoVDBEstimateCallback estimated = geoEstimatePoster(node);
     std::vector<std::string> notes;
     const StatusEnum status = renderGeometryGenerator([&](GeoDetailBuilder& detail, std::string* error) {
         try {
-            return build(source, reference.get(), referenceVDB, merge, params, detail, &notes, error) ? eStatusOK : eStatusFailed;
+            return build(source, reference.get(), referenceVDB, merge, params, detail, &notes, error, estimated) ? eStatusOK : eStatusFailed;
         } catch (const std::exception& e) {
             if (error) {
                 *error = e.what();

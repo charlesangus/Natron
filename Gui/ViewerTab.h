@@ -495,6 +495,9 @@ public Q_SLOTS:
     void onSetDownPlaybackButtonsTimeout();
 
     void onViewerStaleChanged(bool stale);
+    void onSceneOutOfDateChanged(bool outOfDate);
+    // Feeds the timing the viewer's staleness, or'ed with the 3D view's while it is shown.
+    void applyStaleCueInput();
     void onStaleCueTimeout();
     // Pushes the timing's visibility to the selected style and re-arms the timer at its next deadline.
     void refreshStaleCue();

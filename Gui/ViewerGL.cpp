@@ -89,6 +89,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/Shaders.h"
+#include "Gui/StaleCueLook.h"
 #include "Gui/TabWidget.h"
 #include "Gui/ViewerTab.h"
 #include "Gui/ViewerZoomLadder.h"
@@ -322,16 +323,16 @@ drawStaleCue(StaleCueStyleEnum style,
     const double py = pixel.y();
     switch (style) {
     case eStaleCueStyleSubtleOutline:
-        glColor4d(1., 0.7, 0., 0.4);
-        fillStaleCueFrame(left, right, bottom, top, px, py);
+        glColor4d(StaleCueLook::kRed, StaleCueLook::kGreen, StaleCueLook::kBlue, StaleCueLook::kOutlineAlpha);
+        fillStaleCueFrame(left, right, bottom, top, StaleCueLook::kOutlineWidth * px, StaleCueLook::kOutlineWidth * py);
         break;
     case eStaleCueStyleCornerDot: {
-        const double radius = 4.;
-        const double inset = 10.;
+        const double radius = StaleCueLook::kDotRadius;
+        const double inset = StaleCueLook::kDotInset;
         const double cx = right - (inset + radius) * px;
         const double cy = top - (inset + radius) * py;
         const int segments = 32;
-        glColor4d(1., 0.7, 0., 1.);
+        glColor4d(StaleCueLook::kRed, StaleCueLook::kGreen, StaleCueLook::kBlue, StaleCueLook::kDotAlpha);
         glBegin(GL_TRIANGLE_FAN);
         glVertex2d(cx, cy);
         for (int i = 0; i <= segments; ++i) {

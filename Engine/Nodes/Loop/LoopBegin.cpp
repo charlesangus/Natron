@@ -68,7 +68,7 @@ plannedAt(const EffectInstance* effect,
           double time,
           ViewIdx view)
 {
-    const ParallelRenderArgsPtr args = effect->getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr args = effect->getFrameArgs();
 
     return args && args->request && args->request->getFrameViewRequest(time, view);
 }
@@ -457,9 +457,6 @@ LoopBegin::render(const RenderActionArgs& args)
 bool
 LoopBegin::canRenderOnGpu(const GpuQuery& query) const
 {
-    if (appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph) {
-        return false;
-    }
     if ((query.bitDepth != eImageBitDepthFloat) || query.hasMask || (query.mix != 1.) || query.hasConcatenatedInput) {
         return false;
     }

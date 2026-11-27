@@ -106,31 +106,6 @@ collectGeometryFramesForInput(const FramesNeededMap& framesNeeded,
     }
 }
 
-// Pops the fallback frame args evaluateGeometry() pushes when it is called outside of a render
-// set up by the scheduler, so a later direct call does not key its cache lookup with this call's
-// hash and time.
-class ScopedGeometryFallbackFrameArgs {
-public:
-    ScopedGeometryFallbackFrameArgs(const EffectInstance::EffectTLSDataPtr& tls,
-                                    const AbortableRenderInfoPtr& ownedAbortInfo)
-        : _tls(tls)
-        , _ownedAbortInfo(ownedAbortInfo)
-    {
-    }
-
-    ~ScopedGeometryFallbackFrameArgs()
-    {
-        if (_tls && !_tls->frameArgs.empty()) {
-            _tls->frameArgs.pop_back();
-        }
-    }
-
-private:
-    EffectInstance::EffectTLSDataPtr _tls;
-    // The frame args hold their abort info weakly.
-    AbortableRenderInfoPtr _ownedAbortInfo;
-};
-
 void
 setGeometryError(std::string* errorMessage,
                  const std::string& message)
@@ -161,19 +136,10 @@ installGeometryInputContext(InputContextArgs* inputContext,
     inputContext->install();
 }
 
-// The hash of the frame args of tls that render under no context: the one a context's key is
-// mixed into.
-U64
-contextFreeRenderHash(const EffectInstance::EffectTLSDataPtr& tls,
-                      U64 fallback)
+bool
+hasNoContextKey(const ParallelRenderArgsPtr& args)
 {
-    for (std::list<ParallelRenderArgsPtr>::const_reverse_iterator it = tls->frameArgs.rbegin(); it != tls->frameArgs.rend(); ++it) {
-        if (*it && ((*it)->contextKey == 0)) {
-            return (*it)->request ? (*it)->request->nodeHash : (*it)->nodeHash;
-        }
-    }
-
-    return fallback;
+    return args->contextKey == 0;
 }
 
 struct GeometryCacheRequest {
@@ -279,9 +245,13 @@ fetchGeometryThroughCache(const GeometryCacheRequest& request,
 U64
 EffectInstance::getContextFreeRenderHash() const
 {
-    const EffectTLSDataPtr tls = _imp->tlsData->getTLSData();
+    const ParallelRenderArgsPtr contextFree = FrameArgsOverlay::lookup(getTLSHolder(), hasNoContextKey);
 
-    return tls ? contextFreeRenderHash(tls, getHash()) : getHash();
+    if (!contextFree) {
+        return getHash();
+    }
+
+    return contextFree->request ? contextFree->request->nodeHash : contextFree->nodeHash;
 }
 
 bool
@@ -316,11 +286,14 @@ EffectInstance::evaluateGeometry(const EvaluateGeometryArgs& args,
 
     ActionContextScope requestedContext(bool(args.context), args.context);
 
-    EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
-    assert(tls);
-    ParallelRenderArgsPtr frameArgs;
-    std::unique_ptr<ScopedGeometryFallbackFrameArgs> fallbackFrameArgs;
-    if (tls->frameArgs.empty()) {
+    ParallelRenderArgsPtr frameArgs = getFrameArgs();
+    // The frame args hold their abort info weakly; declared before the token so it outlives the
+    // args the token installs.
+    AbortableRenderInfoPtr ownedAbortInfo;
+    // Popped when the call returns, so a later direct call does not key its cache lookup with this
+    // call's hash and time.
+    FrameArgsToken fallbackFrameArgs;
+    if (!frameArgs) {
         // A direct call (a test, a script): give the cache key a hash and the abort flag
         // somewhere to live, as renderDeepRoI() does.
         frameArgs = std::make_shared<ParallelRenderArgs>();
@@ -342,15 +315,11 @@ EffectInstance::evaluateGeometry(const EvaluateGeometryArgs& args,
             adoptInheritedAbortState(frameArgs.get());
         }
         // Only when no render is known: an info of its own would hide the lent one from aborted().
-        AbortableRenderInfoPtr ownedAbortInfo;
         if (!frameArgs->abortInfo.lock()) {
             ownedAbortInfo = AbortableRenderInfo::create(true, 0);
             frameArgs->abortInfo = ownedAbortInfo;
         }
-        tls->frameArgs.push_back(frameArgs);
-        fallbackFrameArgs.reset(new ScopedGeometryFallbackFrameArgs(tls, ownedAbortInfo));
-    } else {
-        frameArgs = tls->frameArgs.back();
+        fallbackFrameArgs = FrameArgsToken(this, frameArgs);
     }
 
     // Knobs read the context getCurrentRenderContext() gives, which an open actions scope decides
@@ -363,7 +332,7 @@ EffectInstance::evaluateGeometry(const EvaluateGeometryArgs& args,
             ParallelRenderArgsPtr derived = std::make_shared<ParallelRenderArgs>(*frameArgs);
             derived->context = restricted;
             derived->contextKey = contextKey;
-            derived->nodeHash = mixRenderContextKey(contextFreeRenderHash(tls, getHash()), contextKey);
+            derived->nodeHash = mixRenderContextKey(getContextFreeRenderHash(), contextKey);
             derived->request.reset();
             // The snapshot is the one of the context the args were set up under.
             derived->metadata.reset();

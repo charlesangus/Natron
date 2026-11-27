@@ -643,7 +643,6 @@ Node::setLastPaintStrokeDataNoRotopaint()
         _imp->strokeBitmapCleared = false;
         _imp->duringPaintStrokeCreation = true;
     }
-    _imp->effect->setDuringPaintStrokeCreationThreadLocal(true);
 }
 
 void
@@ -9903,7 +9902,8 @@ Node::setNodeIsRenderingInternal(std::list<NodeWPtr>& markedNodes)
         QMutexLocker k(&_imp->nodeIsDequeuingMutex);
         if (QThread::currentThread() != qApp->thread()) {
             while ((_imp->nodeIsDequeuing || (_imp->renderStartsHeldByEdits > 0)) && !aborted()) {
-                _imp->nodeIsDequeuingCond.wait(k.mutex());
+                // Nothing wakes this condition on an abort, so the wait must time out to notice one.
+                _imp->nodeIsDequeuingCond.wait(k.mutex(), 10);
             }
         }
         QMutexLocker nrLocker(&_imp->nodeIsRenderingMutex);
@@ -10151,7 +10151,7 @@ addIdentityNodesRecursively(const Node* caller,
 
 
     if (caller != node) {
-        ParallelRenderArgsPtr inputFrameArgs = node->getEffectInstance()->getParallelRenderArgsTLS();
+        ParallelRenderArgsPtr inputFrameArgs = node->getEffectInstance()->getFrameArgs();
         const FrameViewRequest* request = 0;
         bool isIdentity = false;
         if (inputFrameArgs && inputFrameArgs->request) {

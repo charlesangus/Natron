@@ -29,6 +29,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
+#include <memory>
 #include <set>
 #include <string>
 #include <utility>
@@ -72,6 +74,8 @@
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
 #include "Engine/TimeLine.h"
+#include "Engine/UndoCommand.h"
+#include "Engine/UndoRecorder.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -126,6 +130,53 @@ const char* const kOtherScene = "#usda 1.0\n"
                                 "}\n";
 
 constexpr double kTolerance = 1e-4;
+
+// Keeps what is recorded inside an open step.
+class StepRecorder
+    : public UndoRecorderI {
+public:
+    StepRecorder()
+        : UndoRecorderI()
+        , depth(0)
+        , serial(0)
+        , commands()
+    {
+    }
+
+    virtual void openStep(const std::string& /*text*/) OVERRIDE FINAL
+    {
+        if (depth++ == 0) {
+            ++serial;
+        }
+    }
+
+    virtual void closeStep() OVERRIDE FINAL
+    {
+        if (depth > 0) {
+            --depth;
+        }
+    }
+
+    virtual bool isCapturing() const OVERRIDE FINAL
+    {
+        return depth > 0;
+    }
+
+    virtual std::uint64_t getCaptureSerial() const OVERRIDE FINAL
+    {
+        return serial;
+    }
+
+    virtual void record(const UndoCommandPtr& command,
+                        const UndoTouched& /*touched*/) OVERRIDE FINAL
+    {
+        commands.push_back(command);
+    }
+
+    int depth;
+    std::uint64_t serial;
+    std::vector<UndoCommandPtr> commands;
+};
 
 struct MeshCounts {
     std::size_t points = 0;
@@ -758,4 +809,121 @@ TEST_F(GeoPipelineTest, TheSpreadsheetListsGeoUVProjectPointUVsOnThePoints)
     EXPECT_EQ(1u, pointNames.count("uv[1]"));
     EXPECT_EQ(0u, vertexNames.count("uv[0]"));
     EXPECT_EQ((std::int64_t)detail->pointCount(), source.rowCount(eGeoAttribClassPoint));
+}
+
+// GeoScatter makes points with no primitives; GeoUVProject on Point still gives each one a uv,
+// which GeoDisplace samples its Image input at.
+TEST_F(GeoPipelineTest, GeoUVProjectWritesPointUVsOnScatteredPointsForGeoDisplace)
+{
+    const NodePtr source = grid(2, 2);
+    const NodePtr scatter = source ? after(source, PLUGINID_NATRON_GEOSCATTER) : NodePtr();
+    const NodePtr project = scatter ? after(scatter, PLUGINID_NATRON_GEOUVPROJECT) : NodePtr();
+    const NodePtr displace = project ? after(project, PLUGINID_NATRON_GEODISPLACE) : NodePtr();
+    const NodePtr constant = make(PLUGINID_NATRON_CONSTANT);
+    ASSERT_TRUE(displace != nullptr);
+    ASSERT_TRUE(constant != nullptr);
+    setInt(scatter, kGeoScatterParamCount, 50);
+    setBool(scatter, kGeoScatterParamTransferN, true);
+    setChoice(project, kGeoUVProjectParamAttributeClass, "point");
+    wire(constant, displace, 1);
+
+    const GeoDetailConstPtr points = pull(project);
+    ASSERT_TRUE(points != nullptr);
+    EXPECT_EQ(50, points->pointCount());
+    EXPECT_EQ(0, points->primitiveCount());
+    EXPECT_TRUE(points->findAttribute(eGeoAttribClassPoint, "uv") != nullptr);
+
+    GeoDetailConstPtr displaced;
+    std::string error;
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, evaluate(displace, &displaced, &error)) << error;
+}
+
+// Connecting the Camera input switches the projection to Camera and connecting the Image input
+// switches GeoDisplace to Image; disconnecting leaves them as they are.
+TEST_F(GeoPipelineTest, ConnectingTheModeInputSwitchesTheMode)
+{
+    const NodePtr scene = reader(writeScene("mesh.usda", kMeshScene));
+    const NodePtr card = make(PLUGINID_NATRON_GEOPRIMITIVE);
+    const NodePtr project = card ? after(card, PLUGINID_NATRON_GEOUVPROJECT) : NodePtr();
+    const NodePtr displace = card ? after(card, PLUGINID_NATRON_GEODISPLACE) : NodePtr();
+    const NodePtr constant = make(PLUGINID_NATRON_CONSTANT);
+    ASSERT_TRUE(scene && project && displace && constant);
+    KnobChoice* projection = knob<KnobChoice>(project, kGeoUVProjectParamProjection);
+    KnobChoice* displaceBy = knob<KnobChoice>(displace, kGeoDisplaceParamDisplaceBy);
+    ASSERT_TRUE(projection != NULL);
+    ASSERT_TRUE(displaceBy != NULL);
+    ASSERT_EQ((int)eGeoUVProjectionPlanar, projection->getValue());
+    ASSERT_EQ((int)eGeoDisplaceByNoise, displaceBy->getValue());
+
+    wire(scene, project, 1);
+    EXPECT_EQ((int)eGeoUVProjectionCamera, projection->getValue());
+    wire(constant, displace, 1);
+    EXPECT_EQ((int)eGeoDisplaceByImage, displaceBy->getValue());
+
+    project->disconnectInput(1);
+    displace->disconnectInput(1);
+    EXPECT_EQ((int)eGeoUVProjectionCamera, projection->getValue());
+    EXPECT_EQ((int)eGeoDisplaceByImage, displaceBy->getValue());
+
+    projection->setValue((int)eGeoUVProjectionPlanar);
+    wire(scene, project, 1);
+    EXPECT_EQ((int)eGeoUVProjectionCamera, projection->getValue());
+}
+
+// The switch is recorded into the step the connection is made in, so undoing it restores the mode.
+TEST_F(GeoPipelineTest, TheModeSwitchOnConnectUndoes)
+{
+    const NodePtr card = make(PLUGINID_NATRON_GEOPRIMITIVE);
+    const NodePtr displace = card ? after(card, PLUGINID_NATRON_GEODISPLACE) : NodePtr();
+    const NodePtr constant = make(PLUGINID_NATRON_CONSTANT);
+    ASSERT_TRUE(displace && constant);
+    KnobChoice* displaceBy = knob<KnobChoice>(displace, kGeoDisplaceParamDisplaceBy);
+    ASSERT_TRUE(displaceBy != NULL);
+
+    std::shared_ptr<StepRecorder> recorder = std::make_shared<StepRecorder>();
+    getApp()->setUndoRecorder(recorder);
+    {
+        UndoStepGuard step(getApp(), "connect");
+        wire(constant, displace, 1);
+    }
+    EXPECT_EQ((int)eGeoDisplaceByImage, displaceBy->getValue());
+    ASSERT_EQ(1u, recorder->commands.size());
+    {
+        UndoReplayGuard replaying(getApp());
+        recorder->commands.back()->undo();
+    }
+    EXPECT_EQ((int)eGeoDisplaceByNoise, displaceBy->getValue());
+    {
+        UndoReplayGuard replaying(getApp());
+        recorder->commands.back()->redo();
+    }
+    EXPECT_EQ((int)eGeoDisplaceByImage, displaceBy->getValue());
+
+    displaceBy->setValue((int)eGeoDisplaceByNoise);
+    displace->disconnectInput(1);
+    {
+        UndoReplayGuard replaying(getApp());
+        wire(constant, displace, 1);
+    }
+    EXPECT_EQ((int)eGeoDisplaceByNoise, displaceBy->getValue());
+
+    recorder->commands.clear();
+    getApp()->setUndoRecorder(UndoRecorderPtr());
+}
+
+// A connection made while a node tree is created, as when a project loads or nodes are pasted,
+// keeps the saved mode.
+TEST_F(GeoPipelineTest, AConnectionMadeWhileCreatingANodeTreeKeepsTheMode)
+{
+    const NodePtr card = make(PLUGINID_NATRON_GEOPRIMITIVE);
+    const NodePtr displace = card ? after(card, PLUGINID_NATRON_GEODISPLACE) : NodePtr();
+    const NodePtr constant = make(PLUGINID_NATRON_CONSTANT);
+    ASSERT_TRUE(displace && constant);
+    KnobChoice* displaceBy = knob<KnobChoice>(displace, kGeoDisplaceParamDisplaceBy);
+    ASSERT_TRUE(displaceBy != NULL);
+    {
+        CreatingNodeTreeFlag_RAII creating(getApp());
+        wire(constant, displace, 1);
+    }
+    EXPECT_EQ((int)eGeoDisplaceByNoise, displaceBy->getValue());
 }

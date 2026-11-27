@@ -1,0 +1,832 @@
+/* ***** BEGIN LICENSE BLOCK *****
+ * This file is part of Natron <https://natrongithub.github.io/>,
+ * (C) 2018-2023 The Natron developers
+ * (C) 2013-2018 INRIA and Alexandre Gauthier-Foichat
+ *
+ * Natron is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * Natron is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
+ * ***** END LICENSE BLOCK ***** */
+
+// ***** BEGIN PYTHON BLOCK *****
+// from <https://docs.python.org/3/c-api/intro.html#include-files>:
+// "Since Python may define some pre-processor definitions which affect the standard headers on some systems, you must include Python.h before any standard headers are included."
+#include <Python.h>
+// ***** END PYTHON BLOCK *****
+
+#include "UtilityRenderDelegate.h"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <stdexcept>
+#include <system_error>
+#include <thread>
+
+#include <pxr/base/gf/vec4f.h>
+#include <pxr/base/tf/stringUtils.h>
+#include <pxr/imaging/hd/aov.h>
+#include <pxr/imaging/hd/bprim.h>
+#include <pxr/imaging/hd/camera.h>
+#include <pxr/imaging/hd/extComputation.h>
+#include <pxr/imaging/hd/resourceRegistry.h>
+#include <pxr/imaging/hd/tokens.h>
+
+#include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/Utility/UtilityInstancer.h"
+#include "Engine/Nodes/Scene/Utility/UtilityLight.h"
+#include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
+#include "Engine/Nodes/Scene/Utility/UtilityMesh.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderPass.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontCpu.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRuntime.h"
+#endif
+
+PXR_NAMESPACE_USING_DIRECTIVE
+
+NATRON_NAMESPACE_ENTER
+
+namespace {
+std::atomic<int> gLiveDelegates { 0 };
+
+// How often a frame waiting for the GPU executor to compile its kernels looks at its cancel flag.
+const std::chrono::milliseconds kGpuExecutorPoll(20);
+
+std::string
+settingText(const VtValue& value)
+{
+    if (value.IsHolding<TfToken>()) {
+        return value.UncheckedGet<TfToken>().GetString();
+    }
+    if (value.IsHolding<std::string>()) {
+        return value.UncheckedGet<std::string>();
+    }
+
+    return std::string();
+}
+} // anon namespace
+
+UtilityUnwrapTarget
+utilityUnwrapTarget(const HdRenderDelegate& delegate)
+{
+    UtilityUnwrapTarget target;
+
+    if (settingText(delegate.GetRenderSetting(TfToken(kUtilitySettingProjection))) != kUtilityProjectionUvUnwrap) {
+        return target;
+    }
+
+    const std::string prim = settingText(delegate.GetRenderSetting(TfToken(kUtilitySettingUvPrim)));
+    const VtValue primvar = delegate.GetRenderSetting(TfToken(kUtilitySettingUvPrimvar));
+    const VtValue tile = VtValue::Cast<int>(delegate.GetRenderSetting(TfToken(kUtilitySettingUdimTile)));
+    const VtValue bounces = VtValue::Cast<bool>(delegate.GetRenderSetting(TfToken(kUtilitySettingUvBakeBounces)));
+    std::string error;
+
+    if (SdfPath::IsValidPathString(prim, &error)) {
+        target.prim = SdfPath(prim);
+    }
+    target.primvar = primvar.IsEmpty() ? std::string(kUtilityDefaultUvPrimvar) : settingText(primvar);
+    target.udimTile = tile.IsEmpty() ? kUtilityDefaultUdimTile : tile.UncheckedGet<int>();
+    target.bounces = !bounces.IsEmpty() && bounces.UncheckedGet<bool>();
+
+    return target;
+}
+
+UtilityRenderParam::UtilityRenderParam(UtilityScene* scene,
+                                       WavefrontExecutor* executor)
+    : _scene(scene)
+    , _executor(executor)
+{
+}
+
+UtilityRenderParam::~UtilityRenderParam()
+{
+    cancelFrameAndWait();
+    dropGpuExecutor();
+}
+
+UtilityScene*
+UtilityRenderParam::scene() const
+{
+    return _scene;
+}
+
+WavefrontExecutor*
+UtilityRenderParam::executor() const
+{
+    return _executor;
+}
+
+#ifdef NATRON_HAVE_GPU
+/**
+ * @brief An executor being made on a thread of its own: the driver compiles every kernel as the executor creates
+ * it, which on a software device takes seconds, and a frame stopped meanwhile must not wait for that.
+ **/
+struct UtilityRenderParam::PendingGpu {
+    std::mutex mutex;
+    std::condition_variable cond;
+    bool finished = false;
+    std::unique_ptr<WavefrontGpu> executor;
+    std::shared_ptr<void> hold;
+    // What the executor threw while being made, when it was not.
+    std::string failure;
+    std::thread thread;
+};
+#endif
+
+WavefrontGpu*
+UtilityRenderParam::gpuExecutor(std::string* unavailable)
+{
+#ifdef NATRON_HAVE_GPU
+    if (_gpu) {
+        if (!_gpu->deviceLost()) {
+            return _gpu.get();
+        }
+        dropGpuExecutor();
+    }
+    if (!_gpuPending) {
+        UtilityGpu gpu = acquireUtilityGpu(&_cancel);
+
+        if (!gpu.runtime) {
+            *unavailable = gpu.unavailable;
+
+            return nullptr;
+        }
+
+        const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime);
+
+        if (!missing.empty()) {
+            *unavailable = missing;
+
+            return nullptr;
+        }
+
+        std::shared_ptr<PendingGpu> pending = std::make_shared<PendingGpu>();
+        auto* const runtime = gpu.runtime;
+
+        pending->hold = gpu.hold;
+        try {
+            pending->thread = std::thread([pending, runtime]() {
+                std::unique_ptr<WavefrontGpu> executor;
+                std::string failure;
+
+                try {
+                    executor.reset(new WavefrontGpu(runtime->registry(), runtime->pool(), pending->hold));
+                } catch (const std::exception& e) {
+                    failure = e.what();
+                }
+                {
+                    const std::lock_guard<std::mutex> l(pending->mutex);
+
+                    pending->executor = std::move(executor);
+                    pending->failure = failure;
+                    pending->finished = true;
+                }
+                pending->cond.notify_all();
+            });
+        } catch (const std::system_error& e) {
+            *unavailable = std::string("the GPU executor could not start: ") + e.what();
+
+            return nullptr;
+        }
+        _gpuPending = std::move(pending);
+    }
+    {
+        std::unique_lock<std::mutex> l(_gpuPending->mutex);
+
+        while (!_gpuPending->finished) {
+            if (_cancel.load()) {
+                *unavailable = "the frame was stopped while the GPU executor was compiling its kernels";
+
+                return nullptr;
+            }
+            _gpuPending->cond.wait_for(l, kGpuExecutorPoll);
+        }
+    }
+    _gpuPending->thread.join();
+
+    const std::shared_ptr<PendingGpu> pending = std::move(_gpuPending);
+
+    if (!pending->executor) {
+        throw std::runtime_error("The Utility renderer could not make its GPU executor: " + pending->failure);
+    }
+
+    const Tracer::Outcome outcome = pending->executor->status();
+
+    if (outcome.status != Tracer::Status::Ok) {
+        *unavailable = outcome.message;
+
+        return nullptr;
+    }
+    _gpuHold = pending->hold;
+    _gpu = std::move(pending->executor);
+
+    return _gpu.get();
+#else
+    *unavailable = acquireUtilityGpu().unavailable;
+
+    return nullptr;
+#endif
+}
+
+void
+UtilityRenderParam::dropGpuExecutor()
+{
+#ifdef NATRON_HAVE_GPU
+    if (_gpuPending) {
+        _gpuPending->thread.join();
+        _gpuPending.reset();
+    }
+    _gpu.reset();
+#endif
+    _gpuHold.reset();
+}
+
+void
+UtilityRenderParam::rememberGpuFallback(std::uint64_t version,
+                                        std::uint64_t budget,
+                                        std::uint64_t generation,
+                                        const std::string& warning)
+{
+    _gpuFallback = true;
+    _gpuFallbackVersion = version;
+    _gpuFallbackBudget = budget;
+    _gpuFallbackGeneration = generation;
+    _gpuFallbackWarning = warning;
+}
+
+bool
+UtilityRenderParam::gpuFallback(std::uint64_t version,
+                                std::uint64_t budget,
+                                std::uint64_t generation,
+                                std::string* warning) const
+{
+    if (!_gpuFallback || (version != _gpuFallbackVersion) || (budget != _gpuFallbackBudget) || (generation != _gpuFallbackGeneration)) {
+        return false;
+    }
+    *warning = _gpuFallbackWarning;
+
+    return true;
+}
+
+void
+UtilityRenderParam::releaseGpu()
+{
+    cancelFrameAndWait();
+    dropGpuExecutor();
+    // Memory given back may be what the remembered scene lacked.
+    _gpuFallback = false;
+
+    std::set<UtilityRenderBuffer*> buffers;
+    {
+        const std::lock_guard<std::mutex> l(_buffersMutex);
+        buffers = _buffers;
+    }
+    for (UtilityRenderBuffer* buffer : buffers) {
+        buffer->releaseDevice();
+    }
+}
+
+void
+UtilityRenderParam::releaseGpuIfLost()
+{
+    if (frameRunning()) {
+        return;
+    }
+#ifdef NATRON_HAVE_GPU
+    if (_gpu && _gpu->deviceLost()) {
+        dropGpuExecutor();
+    }
+#endif
+}
+
+void
+UtilityRenderParam::addBuffer(UtilityRenderBuffer* buffer)
+{
+    const std::lock_guard<std::mutex> l(_buffersMutex);
+
+    _buffers.insert(buffer);
+}
+
+void
+UtilityRenderParam::removeBuffer(UtilityRenderBuffer* buffer)
+{
+    const std::lock_guard<std::mutex> l(_buffersMutex);
+
+    _buffers.erase(buffer);
+}
+
+void
+UtilityRenderParam::setFrameReport(const std::string& device,
+                                   const std::string& warning)
+{
+    const std::lock_guard<std::mutex> l(_reportMutex);
+
+    _reportDevice = device;
+    _reportWarning = warning;
+}
+
+void
+UtilityRenderParam::frameReport(std::string* device,
+                                std::string* warning) const
+{
+    const std::lock_guard<std::mutex> l(_reportMutex);
+
+    *device = _reportDevice;
+    *warning = _reportWarning;
+}
+
+void
+UtilityRenderParam::setSampleProgress(std::size_t done,
+                                      std::size_t wanted)
+{
+    const std::lock_guard<std::mutex> l(_reportMutex);
+
+    _samplesDone = done;
+    _samplesWanted = wanted;
+}
+
+void
+UtilityRenderParam::sampleProgress(std::size_t* done,
+                                   std::size_t* wanted) const
+{
+    const std::lock_guard<std::mutex> l(_reportMutex);
+
+    *done = _samplesDone;
+    *wanted = _samplesWanted;
+}
+
+const std::atomic<bool>&
+UtilityRenderParam::cancelFlag() const
+{
+    return _cancel;
+}
+
+bool
+UtilityRenderParam::isStopped() const
+{
+    return _stop.load();
+}
+
+void
+UtilityRenderParam::stop(bool blocking)
+{
+    _stop.store(true);
+    _cancel.store(true);
+    if (blocking) {
+        waitForFrame();
+    }
+}
+
+void
+UtilityRenderParam::restart()
+{
+    waitForFrame();
+    _stop.store(false);
+    _cancel.store(false);
+}
+
+void
+UtilityRenderParam::syncAgain(const SdfPath& id,
+                              HdDirtyBits dirtyBits)
+{
+    const std::lock_guard<std::mutex> l(_syncAgainMutex);
+
+    _syncAgain.emplace_back(id, dirtyBits);
+}
+
+std::vector<std::pair<SdfPath, HdDirtyBits>>
+UtilityRenderParam::takeSyncsAgain()
+{
+    std::vector<std::pair<SdfPath, HdDirtyBits>> taken;
+    const std::lock_guard<std::mutex> l(_syncAgainMutex);
+
+    taken.swap(_syncAgain);
+
+    return taken;
+}
+
+bool
+UtilityRenderParam::startFrame(const std::function<void()>& body)
+{
+    const std::lock_guard<std::mutex> l(_threadMutex);
+
+    if (_thread.joinable()) {
+        _thread.join();
+    }
+    // In this order, or a stop landing between the two could be wiped out.
+    _cancel.store(false);
+    if (_stop.load()) {
+        _cancel.store(true);
+
+        return false;
+    }
+    _frameRunning.store(true);
+    try {
+        _thread = std::thread([this, body]() {
+            body();
+            _frameRunning.store(false);
+        });
+    } catch (...) {
+        _frameRunning.store(false);
+        throw;
+    }
+
+    return true;
+}
+
+bool
+UtilityRenderParam::frameRunning() const
+{
+    return _frameRunning.load();
+}
+
+void
+UtilityRenderParam::cancelFrame()
+{
+    _cancel.store(true);
+}
+
+void
+UtilityRenderParam::cancelFrameAndWait()
+{
+    _cancel.store(true);
+    waitForFrame();
+}
+
+void
+UtilityRenderParam::waitForFrame()
+{
+    const std::lock_guard<std::mutex> l(_threadMutex);
+
+    if (_thread.joinable()) {
+        _thread.join();
+    }
+}
+
+UtilityRenderDelegate::UtilityRenderDelegate()
+{
+    construct();
+}
+
+UtilityRenderDelegate::UtilityRenderDelegate(const HdRenderSettingsMap& settings)
+    : HdRenderDelegate(settings)
+{
+    construct();
+}
+
+void
+UtilityRenderDelegate::construct()
+{
+    _resourceRegistry = std::make_shared<HdResourceRegistry>();
+    _scene.reset(new UtilityScene());
+    _executor.reset(new WavefrontCpu());
+    _renderParam.reset(new UtilityRenderParam(_scene.get(), _executor.get()));
+    _PopulateDefaultSettings(GetRenderSettingDescriptors());
+    ++gLiveDelegates;
+}
+
+UtilityRenderDelegate::~UtilityRenderDelegate()
+{
+    --gLiveDelegates;
+}
+
+int
+UtilityRenderDelegate::liveCount()
+{
+    return gLiveDelegates.load();
+}
+
+HdRenderParam*
+UtilityRenderDelegate::GetRenderParam() const
+{
+    return _renderParam.get();
+}
+
+const TfTokenVector&
+UtilityRenderDelegate::GetSupportedRprimTypes() const
+{
+    static const TfTokenVector types = { HdPrimTypeTokens->mesh };
+
+    return types;
+}
+
+const TfTokenVector&
+UtilityRenderDelegate::GetSupportedSprimTypes() const
+{
+    static const TfTokenVector types = [] {
+        TfTokenVector all = { HdPrimTypeTokens->camera, HdPrimTypeTokens->extComputation, HdPrimTypeTokens->material };
+
+        all.insert(all.end(), UtilityLight::supportedTypes().begin(), UtilityLight::supportedTypes().end());
+
+        return all;
+    }();
+
+    return types;
+}
+
+const TfTokenVector&
+UtilityRenderDelegate::GetSupportedBprimTypes() const
+{
+    static const TfTokenVector types = { HdPrimTypeTokens->renderBuffer };
+
+    return types;
+}
+
+HdResourceRegistrySharedPtr
+UtilityRenderDelegate::GetResourceRegistry() const
+{
+    return _resourceRegistry;
+}
+
+HdRenderPassSharedPtr
+UtilityRenderDelegate::CreateRenderPass(HdRenderIndex* index,
+                                        const HdRprimCollection& collection)
+{
+    return std::make_shared<UtilityRenderPass>(index, collection, _renderParam.get());
+}
+
+HdInstancer*
+UtilityRenderDelegate::CreateInstancer(HdSceneDelegate* delegate,
+                                       const SdfPath& id)
+{
+    return new UtilityInstancer(delegate, id);
+}
+
+void
+UtilityRenderDelegate::DestroyInstancer(HdInstancer* instancer)
+{
+    delete instancer;
+}
+
+HdRprim*
+UtilityRenderDelegate::CreateRprim(const TfToken& typeId,
+                                   const SdfPath& rprimId)
+{
+    if (typeId == HdPrimTypeTokens->mesh) {
+        return new UtilityMesh(rprimId);
+    }
+    TF_CODING_ERROR("Unknown Rprim type %s", typeId.GetText());
+
+    return nullptr;
+}
+
+void
+UtilityRenderDelegate::DestroyRprim(HdRprim* rprim)
+{
+    delete rprim;
+}
+
+HdSprim*
+UtilityRenderDelegate::CreateSprim(const TfToken& typeId,
+                                   const SdfPath& sprimId)
+{
+    if (typeId == HdPrimTypeTokens->camera) {
+        return new HdCamera(sprimId);
+    }
+    if (typeId == HdPrimTypeTokens->extComputation) {
+        return new HdExtComputation(sprimId);
+    }
+    if (typeId == HdPrimTypeTokens->material) {
+        return new UtilityMaterial(sprimId);
+    }
+    const TfTokenVector& lights = UtilityLight::supportedTypes();
+
+    if (std::find(lights.begin(), lights.end(), typeId) != lights.end()) {
+        return new UtilityLight(sprimId, typeId);
+    }
+    TF_CODING_ERROR("Unknown Sprim type %s", typeId.GetText());
+
+    return nullptr;
+}
+
+HdSprim*
+UtilityRenderDelegate::CreateFallbackSprim(const TfToken& typeId)
+{
+    return CreateSprim(typeId, SdfPath::EmptyPath());
+}
+
+void
+UtilityRenderDelegate::DestroySprim(HdSprim* sprim)
+{
+    delete sprim;
+}
+
+HdBprim*
+UtilityRenderDelegate::CreateBprim(const TfToken& typeId,
+                                   const SdfPath& bprimId)
+{
+    if (typeId == HdPrimTypeTokens->renderBuffer) {
+        UtilityRenderBuffer* buffer = new UtilityRenderBuffer(bprimId);
+
+        _renderParam->addBuffer(buffer);
+
+        return buffer;
+    }
+    TF_CODING_ERROR("Unknown Bprim type %s", typeId.GetText());
+
+    return nullptr;
+}
+
+HdBprim*
+UtilityRenderDelegate::CreateFallbackBprim(const TfToken& typeId)
+{
+    return CreateBprim(typeId, SdfPath::EmptyPath());
+}
+
+void
+UtilityRenderDelegate::DestroyBprim(HdBprim* bprim)
+{
+    // Every Bprim this delegate makes is a render buffer.
+    _renderParam->removeBuffer(static_cast<UtilityRenderBuffer*>(bprim));
+    delete bprim;
+}
+
+void
+UtilityRenderDelegate::CommitResources(HdChangeTracker* /*tracker*/)
+{
+}
+
+HdAovDescriptor
+UtilityRenderDelegate::GetDefaultAovDescriptor(const TfToken& name) const
+{
+    if (name == HdAovTokens->color) {
+        return HdAovDescriptor(HdFormatFloat32Vec4, false, VtValue(GfVec4f(0.f)));
+    }
+    if (name == HdAovTokens->depth) {
+        return HdAovDescriptor(HdFormatFloat32, false, VtValue(1.f));
+    }
+    if (name == HdAovTokens->primId || name == HdAovTokens->instanceId) {
+        return HdAovDescriptor(HdFormatInt32, false, VtValue(-1));
+    }
+
+    return HdAovDescriptor();
+}
+
+bool
+UtilityRenderDelegate::IsStopSupported() const
+{
+    return true;
+}
+
+bool
+UtilityRenderDelegate::IsStopped() const
+{
+    return _renderParam->isStopped();
+}
+
+bool
+UtilityRenderDelegate::Stop(bool blocking)
+{
+    _renderParam->stop(blocking);
+
+    return true;
+}
+
+bool
+UtilityRenderDelegate::Restart()
+{
+    _renderParam->restart();
+
+    return true;
+}
+
+HdCommandDescriptors
+UtilityRenderDelegate::GetCommandDescriptors() const
+{
+    return {
+        HdCommandDescriptor(TfToken(kUtilityCommandReleaseGpu), "Give back the GPU memory the renderer keeps between frames"),
+        HdCommandDescriptor(TfToken(kUtilityCommandReleaseLostGpu), "Let go of a lost GPU, so that it can be recreated"),
+    };
+}
+
+bool
+UtilityRenderDelegate::InvokeCommand(const TfToken& command,
+                                     const HdCommandArgs& /*args*/)
+{
+    if (command == TfToken(kUtilityCommandReleaseGpu)) {
+        _renderParam->releaseGpu();
+
+        return true;
+    }
+    if (command == TfToken(kUtilityCommandReleaseLostGpu)) {
+        _renderParam->releaseGpuIfLost();
+
+        return true;
+    }
+
+    return false;
+}
+
+GfVec2d
+utilityMotionShutter(const HdRenderDelegate& delegate,
+                     const char* toggleKey)
+{
+    const VtValue shutter = delegate.GetRenderSetting(TfToken(kRenderDelegateUtilityShutterSetting));
+
+    if (!shutter.IsHolding<GfVec2d>() || !delegate.GetRenderSetting<bool>(TfToken(toggleKey), true)) {
+        return GfVec2d(0.);
+    }
+    const GfVec2d interval = shutter.UncheckedGet<GfVec2d>();
+
+    return (interval[1] > interval[0]) ? interval : GfVec2d(0.);
+}
+
+HdRenderSettingDescriptorList
+UtilityRenderDelegate::GetRenderSettingDescriptors() const
+{
+    return {
+        HdRenderSettingDescriptor { "Device", TfToken(kUtilitySettingDevice), VtValue(TfToken(kUtilityDeviceAuto)) },
+        HdRenderSettingDescriptor { "Pixel Samples", TfToken(kUtilitySettingPixelSamples), VtValue(int(kUtilityDefaultPixelSamples)) },
+        HdRenderSettingDescriptor { "Pixel Filter", TfToken(kUtilitySettingPixelFilter), VtValue(TfToken(kUtilityFilterBlackmanHarris)) },
+        HdRenderSettingDescriptor { "Filter Width", TfToken(kUtilitySettingFilterWidth), VtValue(kUtilityDefaultFilterWidth) },
+        HdRenderSettingDescriptor { "Seed", TfToken(kUtilitySettingSeed), VtValue(int(0)) },
+        HdRenderSettingDescriptor { "Max Cutouts", TfToken(kUtilitySettingMaxCutouts), VtValue(static_cast<int>(kWavefrontDefaultMaxCutouts)) },
+        HdRenderSettingDescriptor { "Max Ray Depth", TfToken(kUtilitySettingMaxRayDepth), VtValue(static_cast<int>(kWavefrontDefaultMaxRayDepth)) },
+        HdRenderSettingDescriptor { "Reflection Depth", TfToken(kUtilitySettingReflectionDepth), VtValue(static_cast<int>(kWavefrontDefaultReflectionDepth)) },
+        HdRenderSettingDescriptor { "Refraction Depth", TfToken(kUtilitySettingRefractionDepth), VtValue(static_cast<int>(kWavefrontDefaultRefractionDepth)) },
+        HdRenderSettingDescriptor { "Override Shutter", TfToken(kUtilitySettingOverrideShutter), VtValue(false) },
+        HdRenderSettingDescriptor { "Shutter", TfToken(kUtilitySettingShutter), VtValue(kUtilityDefaultShutter) },
+        HdRenderSettingDescriptor { "Shutter Offset", TfToken(kUtilitySettingShutterOffset), VtValue(TfToken(kUtilityShutterCentred)) },
+        HdRenderSettingDescriptor { "Shutter Custom Offset", TfToken(kUtilitySettingShutterCustomOffset), VtValue(0.f) },
+        HdRenderSettingDescriptor { "Shutter Segments", TfToken(kUtilitySettingShutterSegments), VtValue(int(kUtilityDefaultShutterSegments)) },
+        HdRenderSettingDescriptor { "Camera Motion Blur", TfToken(kUtilitySettingCameraMotionBlur), VtValue(true) },
+        HdRenderSettingDescriptor { "Transform Motion Blur", TfToken(kUtilitySettingTransformMotionBlur), VtValue(true) },
+        HdRenderSettingDescriptor { "Deformation Motion Blur", TfToken(kUtilitySettingDeformationMotionBlur), VtValue(true) },
+        HdRenderSettingDescriptor { "Subdivision Level", TfToken(kUtilitySettingSubdivLevel), VtValue(UtilitySubdivRefinement::kDefaultLevel) },
+        HdRenderSettingDescriptor { "Max Subdivided Triangles", TfToken(kUtilitySettingMaxSubdivTriangles), VtValue(static_cast<int>(UtilitySubdivRefinement::kDefaultMaxTriangles)) },
+        HdRenderSettingDescriptor { "Projection", TfToken(kUtilitySettingProjection), VtValue(TfToken(kUtilityProjectionCamera)) },
+        HdRenderSettingDescriptor { "Overscan", TfToken(kUtilitySettingOverscan), VtValue(int(0)) },
+        HdRenderSettingDescriptor { "UV Prim", TfToken(kUtilitySettingUvPrim), VtValue(std::string()) },
+        HdRenderSettingDescriptor { "UV Primvar", TfToken(kUtilitySettingUvPrimvar), VtValue(std::string(kUtilityDefaultUvPrimvar)) },
+        HdRenderSettingDescriptor { "UDIM Tile", TfToken(kUtilitySettingUdimTile), VtValue(int(kUtilityDefaultUdimTile)) },
+        HdRenderSettingDescriptor { "UV Bake Bounces", TfToken(kUtilitySettingUvBakeBounces), VtValue(false) },
+    };
+}
+
+VtDictionary
+UtilityRenderDelegate::GetRenderStats() const
+{
+    const UtilityScene::Stats stats = _scene->stats();
+    VtDictionary dictionary;
+
+    dictionary[kUtilityStatGeometryCount] = VtValue(stats.geometryCount);
+    dictionary[kUtilityStatInstanceCount] = VtValue(stats.instanceCount);
+    dictionary[kUtilityStatTriangleCount] = VtValue(stats.triangleCount);
+    dictionary[kUtilityStatTopologyBuilds] = VtValue(stats.topologyBuilds);
+    dictionary[kUtilityStatPointUpdates] = VtValue(stats.pointUpdates);
+    dictionary[kUtilityStatColorUpdates] = VtValue(stats.colorUpdates);
+    dictionary[kUtilityStatSceneVersion] = VtValue(stats.version);
+
+    std::string device;
+    std::string warning;
+
+    _renderParam->frameReport(&device, &warning);
+    for (const std::string& line : stats.warnings) {
+        warning += (warning.empty() ? "" : "\n") + line;
+    }
+    dictionary[kUtilityStatDevice] = VtValue(device);
+    dictionary[kUtilityStatWarning] = VtValue(warning);
+    dictionary[kUtilityStatSceneWarning] = VtValue(TfStringJoin(_scene->warnings(), "\n"));
+
+    std::size_t samples = 0;
+    std::size_t samplesWanted = 0;
+
+    _renderParam->sampleProgress(&samples, &samplesWanted);
+    dictionary[kUtilityStatSamples] = VtValue(samples);
+    dictionary[kUtilityStatSamplesWanted] = VtValue(samplesWanted);
+
+    std::string motionWarning;
+
+    for (const SdfPath& path : stats.topologyVaryingPaths) {
+        motionWarning += (motionWarning.empty() ? "" : ", ") + path.GetString();
+    }
+    if (!motionWarning.empty()) {
+        motionWarning = "The topology of " + motionWarning + " changes within the shutter, so they do not deform there.";
+    }
+    dictionary[kUtilityStatMotionWarning] = VtValue(motionWarning);
+
+    return dictionary;
+}
+
+// Sdr finds natronProject3D.glslfx's node only for a delegate that takes glslfx sources.
+TfTokenVector
+UtilityRenderDelegate::GetShaderSourceTypes() const
+{
+    return { TfToken("glslfx") };
+}
+
+NATRON_NAMESPACE_EXIT

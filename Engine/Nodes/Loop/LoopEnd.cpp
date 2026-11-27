@@ -288,13 +288,6 @@ withFoldStep(const RenderContextPtr& context,
     return RenderContext::Builder(context).set(foldStepName(), (std::int64_t)step).build();
 }
 
-// Only the task-graph scheduler runs the steps as tasks; elsewhere one render folds them all.
-bool
-foldsAsTasks()
-{
-    return appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph;
-}
-
 // image as getImage() maps an input to a float plane of layer for the fold, over roi.
 ImagePtr
 asFoldInput(const ImagePtr& image,
@@ -1560,7 +1553,7 @@ LoopEnd::crossFrameImageWith(const EffectInstance* consumer,
         }
     }
 
-    const ParallelRenderArgsPtr frameArgs = consumer->getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr frameArgs = consumer->getFrameArgs();
     const AbortableRenderInfoPtr render = frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
     QThread* const self = QThread::currentThread();
     std::shared_ptr<CrossFrameChain> chain;
@@ -1917,7 +1910,7 @@ LoopEnd::feedbackImage(const EffectInstance* consumer,
     };
     double time0 = 0.;
     const U64 contextKey = restrictContextToNode(iterationAt(0, &time0), step.tail, 0);
-    const ParallelRenderArgsPtr frameArgs = consumer ? consumer->getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
+    const ParallelRenderArgsPtr frameArgs = consumer ? consumer->getFrameArgs() : ParallelRenderArgsPtr();
     const AbortableRenderInfoPtr render = frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
     QThread* const self = QThread::currentThread();
 
@@ -2937,7 +2930,7 @@ LoopEnd::evaluateStop(const Resolved& resolved,
     KnobStringPtr stopCondition = _stopCondition.lock();
     // The request pass, the render and every action of one frame agree on where the loop stops,
     // under each context the render asks under: rfv reads the context of the render that asks.
-    const ParallelRenderArgsPtr frameArgs = isRenderingTLS() ? getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
+    const ParallelRenderArgsPtr frameArgs = isRenderingTLS() ? getFrameArgs() : ParallelRenderArgsPtr();
     const AbortableRenderInfoPtr render = frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
     // Enclosing loops' variables reach the expression as loops.<name>.*, so where the loop stops
     // can change with the iteration of an enclosing loop: they key the result along with what the
@@ -3458,14 +3451,8 @@ LoopEnd::getFramesNeeded(double time,
     const RenderContextPtr context = getCurrentRenderContext();
     const std::vector<Iteration> iterations = foldedIterations(resolved, context, time);
     std::vector<RangeD> ranges;
-    if (foldsAsTasks()) {
-        const double frame = iterations[iterationOfStep(foldStepOf(context, resolved.folded), resolved)].time;
-        ranges.push_back(RangeD { frame, frame });
-    } else {
-        for (const Iteration& iteration : iterations) {
-            ranges.push_back(RangeD { iteration.time, iteration.time });
-        }
-    }
+    const double frame = iterations[iterationOfStep(foldStepOf(context, resolved.folded), resolved)].time;
+    ranges.push_back(RangeD { frame, frame });
     FrameRangesMap views;
     views.insert(std::make_pair(view, ranges));
     FramesNeededMap frames;
@@ -3490,15 +3477,8 @@ LoopEnd::getInputContexts(int inputNb,
     }
     const std::vector<Iteration> iterations = foldedIterations(resolved, context, time);
     contexts->clear();
-    if (foldsAsTasks()) {
-        // A fold step needs only the iteration it folds in.
-        contexts->push_back(iterations[iterationOfStep(foldStepOf(context, resolved.folded), resolved)].context);
-    } else {
-        // In the order render() pulls them: the last is the one a fold step with none set needs.
-        for (int k = 0; k < resolved.folded; ++k) {
-            contexts->push_back(iterations[iterationOfStep(k, resolved)].context);
-        }
-    }
+    // A fold step needs only the iteration it folds in.
+    contexts->push_back(iterations[iterationOfStep(foldStepOf(context, resolved.folded), resolved)].context);
 
     return true;
 }
@@ -3510,7 +3490,7 @@ LoopEnd::getContextNodeRequests(double time,
                                 const RectD& roi,
                                 std::vector<ContextNodeRequest>* requests) const
 {
-    if (!foldsAsTasks() || crossFrameDriven(time)) {
+    if (crossFrameDriven(time)) {
         return;
     }
     const Resolved resolved = resolveAt(time);
@@ -3630,7 +3610,7 @@ public:
     explicit RunningRenderScope(LoopEnd* end)
         : _end(end)
     {
-        const ParallelRenderArgsPtr frameArgs = end->getParallelRenderArgsTLS();
+        const ParallelRenderArgsPtr frameArgs = end->getFrameArgs();
         if (!frameArgs || !frameArgs->isRenderResponseToUserInteraction) {
             return;
         }
@@ -3682,7 +3662,7 @@ LoopEnd::abortCooksStaleAfterEdit()
 bool
 LoopEnd::abortIfEditedSinceFrameStart() const
 {
-    const ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr frameArgs = getFrameArgs();
     if (!frameArgs || !frameArgs->isRenderResponseToUserInteraction) {
         return false;
     }
@@ -3715,7 +3695,7 @@ LoopEnd::abortIfEditedSinceFrameStart() const
 bool
 LoopEnd::feedbackUsesFrameStore()
 {
-    return foldsAsTasks() && (AppTLS::currentFrameContext() != 0);
+    return AppTLS::isRunningScheduledTask();
 }
 
 bool
@@ -3744,10 +3724,6 @@ LoopEnd::pullsInputInRender(int inputNb,
 bool
 LoopEnd::canRenderOnGpu(const GpuQuery& query) const
 {
-    // Elsewhere one render folds every iteration, which no single dispatch reads.
-    if (!foldsAsTasks()) {
-        return false;
-    }
     if ((query.bitDepth != eImageBitDepthFloat) || query.hasMask || (query.mix != 1.) || query.hasConcatenatedInput) {
         return false;
     }
@@ -3838,7 +3814,7 @@ LoopEnd::render(const RenderActionArgs& args)
     const int count = resolved.folded;
     const int step = foldStepOf(context, count);
     // Outside a scheduler task there is no store to find the previous step in.
-    const bool chained = foldsAsTasks() && (AppTLS::currentFrameContext() != 0);
+    const bool chained = AppTLS::isRunningScheduledTask();
 
     // Feedback without a frame store outputs the chain's last iteration, driven once per render
     // whatever the number of rectangles rendered: the host does not pre-render the input.

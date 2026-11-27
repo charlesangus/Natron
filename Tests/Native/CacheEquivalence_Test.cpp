@@ -125,10 +125,36 @@ const int kSweepShardCount = 16;
 // stride over the editable ones, which keeps each shard well inside the per-case timeout.
 const std::size_t kMaxEditsPerPlugin = 12;
 
+enum RenderPull { eRenderPullDirect,
+                  eRenderPullScheduled };
+
 std::string
-modeName(RenderSchedulerModeEnum mode)
+pullName(RenderPull pull)
 {
-    return mode == eRenderSchedulerModeTaskGraph ? "Task graph" : "Legacy";
+    return pull == eRenderPullScheduled ? "Scheduled" : "Direct";
+}
+
+// An empty `layers` renders RGBA.
+bool
+renderWithPull(RenderPull pull,
+               const NodePtr& node,
+               double time,
+               unsigned mipmapLevel,
+               const RectI& roi,
+               const std::list<ImageLayerDesc>& layers,
+               bool byPassCache,
+               std::vector<RenderedPlane>* planes,
+               std::string* error)
+{
+    if (pull == eRenderPullScheduled) {
+        return renderNodePlanesScheduled(node, time, ViewIdx(0), mipmapLevel, roi, byPassCache, planes, error);
+    }
+    std::list<ImageLayerDesc> direct = layers;
+    if (direct.empty()) {
+        direct.push_back(ImageLayerDesc::getRGBAComponents());
+    }
+
+    return renderNodePlanesDirect(node, time, ViewIdx(0), mipmapLevel, roi, direct, planes, error, byPassCache);
 }
 
 std::string
@@ -426,25 +452,6 @@ compareStates(const OutputState& warm,
     return std::string();
 }
 
-class SchedulerModeRestorer {
-public:
-    SchedulerModeRestorer()
-        : _saved(appPTR->getRenderSchedulerMode())
-    {
-    }
-
-    ~SchedulerModeRestorer()
-    {
-        appPTR->setRenderSchedulerMode(_saved);
-    }
-
-    SchedulerModeRestorer(const SchedulerModeRestorer&) = delete;
-    SchedulerModeRestorer& operator=(const SchedulerModeRestorer&) = delete;
-
-private:
-    RenderSchedulerModeEnum _saved;
-};
-
 void
 setMTime(const std::string& path,
          time_t seconds)
@@ -519,7 +526,6 @@ protected:
     {
         SyntheticProjectGraphTest::SetUp();
         _baselineInstances = appPTR->getNumInstances();
-        _mode = appPTR->getRenderSchedulerMode();
         resetProject();
         _cpuOnly.reset(new GpuPlacementOffGuard);
     }
@@ -578,8 +584,6 @@ protected:
                     const RectI& roi,
                     OutputState* state)
     {
-        SchedulerModeRestorer restore;
-        appPTR->setRenderSchedulerMode(_mode);
         AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
         ParallelRenderArgsSetter frameRenderArgs(time,
                                                  ViewIdx(0),
@@ -628,7 +632,7 @@ protected:
         if (s.deep) {
             renderDeep(s.output, s.time, s.roi, &state);
         } else {
-            state.rendered = renderNodePlanesInMode(s.output, s.time, ViewIdx(0), s.mipmapLevel, s.roi, legacyLayers, _mode, cold, &state.planes, &state.error);
+            state.rendered = renderWithPull(_pull, s.output, s.time, s.mipmapLevel, s.roi, legacyLayers, cold, &state.planes, &state.error);
         }
         captureMetadata(s.output, s.time, ViewIdx(0), &state);
 
@@ -710,14 +714,14 @@ protected:
             + diff;
     }
 
-    // Renders `node` through the caches in the mode under test, for steps that warm a node other
+    // Renders `node` through the caches by the pull under test, for steps that warm a node other
     // than the one compared.
     void warm(const NodePtr& node,
               double time = 1.)
     {
         std::vector<RenderedPlane> planes;
         std::string error;
-        ignore_result(renderNodePlanesInMode(node, time, ViewIdx(0), 0, RectI(0, 0, kSize, kSize), std::list<ImageLayerDesc>(), _mode, false, &planes, &error));
+        ignore_result(renderWithPull(_pull, node, time, 0, RectI(0, 0, kSize, kSize), std::list<ImageLayerDesc>(), false, &planes, &error));
     }
 
     // Builds the scenario afresh for every prefix of its steps, so that every intermediate state,
@@ -725,24 +729,24 @@ protected:
     void runScenario(const std::string& name,
                      const Builder& build)
     {
-        runScenario(name, build, { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph });
+        runScenario(name, build, { eRenderPullDirect, eRenderPullScheduled });
     }
 
     void runScenario(const std::string& name,
                      const Builder& build,
-                     const std::vector<RenderSchedulerModeEnum>& modes)
+                     const std::vector<RenderPull>& pulls)
     {
-        const RenderSchedulerModeEnum ambient = _mode;
+        const RenderPull ambient = _pull;
 
-        for (std::size_t m = 0; m < modes.size(); ++m) {
-            _mode = modes[m];
+        for (std::size_t m = 0; m < pulls.size(); ++m) {
+            _pull = pulls[m];
             ColdRenders coldRenders;
             for (std::size_t prefix = 0;; ++prefix) {
                 resetProject();
                 Scenario s;
                 if (!build(&s) || !s.output) {
                     ADD_FAILURE() << name << ": the scenario could not be built";
-                    _mode = ambient;
+                    _pull = ambient;
 
                     return;
                 }
@@ -759,7 +763,7 @@ protected:
                     ignore_result(render(s, legacyLayersFor(s), false));
                 }
                 const std::list<ImageLayerDesc> layers = legacyLayersFor(s);
-                const std::string where = name + " [" + modeName(_mode) + "] after " + path;
+                const std::string where = name + " [" + pullName(_pull) + "] after " + path;
                 const Verdict verdict = judgeCachedRender(s, layers, &coldRenders);
                 EXPECT_TRUE(verdict.nondeterminism.empty()) << nondeterminismMessage(where, verdict.nondeterminism);
                 EXPECT_TRUE(verdict.hashGap.empty()) << where << ": the cached render differs from a cold one, a hash gap: " << verdict.hashGap;
@@ -768,7 +772,7 @@ protected:
                 }
             }
         }
-        _mode = ambient;
+        _pull = ambient;
         resetProject();
     }
 
@@ -781,7 +785,7 @@ protected:
     // one history, so each state's renders also reuse whatever every earlier state left cached.
     void runScenarioInOneWalk(const std::string& name,
                               const Builder& build,
-                              RenderSchedulerModeEnum mode)
+                              RenderPull pull)
     {
         struct WarmState {
             std::string path;
@@ -790,15 +794,15 @@ protected:
             OutputState cached;
         };
 
-        const RenderSchedulerModeEnum ambient = _mode;
-        _mode = mode;
+        const RenderPull ambient = _pull;
+        _pull = pull;
         std::vector<WarmState> warmStates;
         {
             resetProject();
             Scenario s;
             if (!build(&s) || !s.output) {
                 ADD_FAILURE() << name << ": the scenario could not be built";
-                _mode = ambient;
+                _pull = ambient;
 
                 return;
             }
@@ -822,7 +826,7 @@ protected:
             Scenario s;
             if (!build(&s) || !s.output || (s.steps.size() + 1 != warmStates.size())) {
                 ADD_FAILURE() << name << ": the scenario could not be built the same way twice";
-                _mode = ambient;
+                _pull = ambient;
 
                 return;
             }
@@ -832,7 +836,7 @@ protected:
                     s.steps[i - 1].edit();
                 }
                 const WarmState& state = warmStates[i];
-                const std::string where = name + " [" + modeName(_mode) + "] after " + state.path;
+                const std::string where = name + " [" + pullName(_pull) + "] after " + state.path;
                 const Verdict verdict = judgeAgainstCold(s, state.layers, { &state.afterEdit, &state.cached }, &coldRenders);
                 EXPECT_TRUE(verdict.nondeterminism.empty()) << nondeterminismMessage(where, verdict.nondeterminism);
                 EXPECT_TRUE(verdict.hashGap.empty()) << where << ": the cached render differs from a cold one, a hash gap: " << verdict.hashGap;
@@ -841,7 +845,7 @@ protected:
                 }
             }
         }
-        _mode = ambient;
+        _pull = ambient;
         resetProject();
     }
 
@@ -1016,7 +1020,7 @@ protected:
         return false;
     }
 
-    RenderSchedulerModeEnum _mode = eRenderSchedulerModeLegacy;
+    RenderPull _pull = eRenderPullDirect;
     int _baselineInstances = 0;
     DisableUnreachableRAMPurging _noPurging;
     std::unique_ptr<GpuPlacementOffGuard> _cpuOnly;
@@ -1526,7 +1530,7 @@ TEST_F(CacheEquivalenceTest, SyntheticRotoPaintGraph)
 }
 
 // The bench comps are UHD, so a window at the centre of the format stands for the frame. Each comp
-// and scheduler mode is its own case, and each walks its edits once rather than once per prefix.
+// and pull is its own case, and each walks its edits once rather than once per prefix.
 // keying_grade renders at full scale, so the full-resolution paths stay covered. cg_multipass
 // feeds eight passes through 90 px and 60 px blurs, so it renders at 1/4 scale, where the upstream
 // area those blurs pull for the window is several times smaller. defocus_retime pulls dozens of
@@ -1534,7 +1538,7 @@ TEST_F(CacheEquivalenceTest, SyntheticRotoPaintGraph)
 // that upstream area is over an order of magnitude smaller and still spans many frames.
 struct BenchComp {
     const char* file;
-    RenderSchedulerModeEnum mode;
+    RenderPull pull;
     unsigned mipmapLevel;
 };
 
@@ -1542,7 +1546,7 @@ static void
 PrintTo(const BenchComp& comp,
         std::ostream* os)
 {
-    *os << comp.file << " [" << modeName(comp.mode) << "]";
+    *os << comp.file << " [" << pullName(comp.pull) << "]";
 }
 
 class CacheEquivalenceBenchCompTest
@@ -1592,23 +1596,22 @@ TEST_P(CacheEquivalenceBenchCompTest, EditsAndDisables)
 
         return true;
     };
-    runScenarioInOneWalk(GetParam().file, build, GetParam().mode);
+    runScenarioInOneWalk(GetParam().file, build, GetParam().pull);
 }
 
 INSTANTIATE_TEST_CASE_P(Comps,
                         CacheEquivalenceBenchCompTest,
-                        ::testing::Values(BenchComp { "keying_grade.ntpz", eRenderSchedulerModeLegacy, 0 },
-                                          BenchComp { "keying_grade.ntpz", eRenderSchedulerModeTaskGraph, 0 },
-                                          BenchComp { "cg_multipass.ntpz", eRenderSchedulerModeLegacy, 2 },
-                                          BenchComp { "cg_multipass.ntpz", eRenderSchedulerModeTaskGraph, 2 },
-                                          BenchComp { "defocus_retime.ntpz", eRenderSchedulerModeLegacy, 4 },
-                                          BenchComp { "defocus_retime.ntpz", eRenderSchedulerModeTaskGraph, 4 }));
+                        ::testing::Values(BenchComp { "keying_grade.ntpz", eRenderPullDirect, 0 },
+                                          BenchComp { "keying_grade.ntpz", eRenderPullScheduled, 0 },
+                                          BenchComp { "cg_multipass.ntpz", eRenderPullDirect, 2 },
+                                          BenchComp { "cg_multipass.ntpz", eRenderPullScheduled, 2 },
+                                          BenchComp { "defocus_retime.ntpz", eRenderPullDirect, 4 },
+                                          BenchComp { "defocus_retime.ntpz", eRenderPullScheduled, 4 }));
 
 // Each bundled plugin is rendered on a checkerboard feeding every input, and each sampled knob
 // dimension is perturbed, rendered, reverted and rendered again through the caches before that
-// last render is compared with a cold one, and with a second cold one when they differ. It runs
-// in the scheduler mode the process was started in, so the gate's run in each mode covers that
-// mode.
+// last render is compared with a cold one, and with a second cold one when they differ. It renders
+// with a direct pull.
 class CacheEquivalenceSweepBase
     : public CacheEquivalenceTest {
 protected:
@@ -1684,7 +1687,7 @@ protected:
                      Findings* findings,
                      int* editsMade)
     {
-        const std::string where = plugin.describe() + " [" + modeName(_mode) + "]";
+        const std::string where = plugin.describe() + " [" + pullName(_pull) + "]";
         NodePtr node = createPluginNode(plugin);
 
         if (!node) {
@@ -1785,7 +1788,7 @@ TEST_P(CacheEquivalenceSweepTest, CachedRenderAfterAPerturbedAndRevertedKnobEqua
                   << (findings.hashGaps.size() - gapsBefore) << " mismatches, "
                   << (findings.nondeterministic.size() - nondeterministicBefore) << " non-deterministic, " << ms << " ms" << std::endl;
     }
-    std::cout << "[cache equivalence sweep] shard " << GetParam() << "/" << kSweepShardCount << " [" << modeName(_mode) << "]: "
+    std::cout << "[cache equivalence sweep] shard " << GetParam() << "/" << kSweepShardCount << " [" << pullName(_pull) << "]: "
               << pluginsSwept << " plugins, " << editsMade << " edits" << std::endl;
 
     std::ostringstream gaps;

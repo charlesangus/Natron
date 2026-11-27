@@ -432,7 +432,7 @@ TEST_F(NativeChromaKeyerTest, ApOneWeightsUnderAces)
     setWorkingSpace(original);
 }
 
-TEST_F(NativeChromaKeyerTest, BothSchedulerModesAgreeWithNoUnplannedPull)
+TEST_F(NativeChromaKeyerTest, DirectAndScheduledAgreeWithNoUnplannedPull)
 {
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDParitySource));
     NodePtr bg = createNode(QString::fromUtf8(kTestPluginIDParitySource));

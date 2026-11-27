@@ -174,6 +174,15 @@ public:
         _holdSorts.store(hold);
     }
 
+    /**
+     * @brief Whether the create key makes a node from the rows selected: when they are rows of the
+     * geometry a 3D viewer shows, whose selection they are.
+     **/
+    bool canCreateFromSelection() const;
+
+    // Creates a node from the selection, as the create key in the viewer does.
+    void createFromSelection();
+
 protected:
     bool eventFilter(QObject* watched, QEvent* e) override;
 

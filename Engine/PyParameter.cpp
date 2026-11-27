@@ -53,6 +53,7 @@
 #include "Engine/Project.h"
 #include "Engine/PythonUndoCommands.h"
 #include "Engine/TimeLine.h"
+#include "Engine/UserKnobEdit.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
@@ -4200,6 +4201,49 @@ ButtonParam::trigger()
     PythonGILUnlocker pgl;
 
     knob->trigger();
+}
+
+void
+ButtonParam::setScript(const QString& script)
+{
+    KnobButtonPtr knob = _buttonKnob.lock();
+    if (!knob) {
+        PyErr_SetString(PyExc_ValueError, "The parameter no longer exists.");
+
+        return;
+    }
+    if (!knob->isUserKnob()) {
+        PyErr_SetString(PyExc_ValueError, "Only a user button runs a script.");
+
+        return;
+    }
+    KnobHolder* holder = knob->getHolder();
+    if (!holder) {
+        knob->setScript(script.toStdString());
+
+        return;
+    }
+    UserKnobSpec spec = specFromKnob(knob);
+    Serialization::KnobButtonExtraSerialization extra;
+    extra.script = script.toStdString();
+    spec.extra = extra;
+    std::string error;
+    if (!applySpec(holder, knob, spec, &error)) {
+        PyErr_SetString(PyExc_ValueError, error.c_str());
+    }
+}
+
+QString
+ButtonParam::getScript() const
+{
+    KnobButtonPtr knob = _buttonKnob.lock();
+    if (!knob) {
+        PyErr_SetString(PyExc_ValueError, "The parameter no longer exists.");
+
+        return QString();
+    }
+
+    return QString::fromUtf8(knob->getScript().c_str());
 }
 
 ////////////////////SeparatorParam

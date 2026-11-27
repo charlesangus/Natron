@@ -10,15 +10,11 @@
 # test" steps).
 #
 # Usage:
-#   [NATRON_RENDER_SCHEDULER=legacy|taskgraph] tools/ci/local/test.sh <ctest|smoke|startup> [debug|release|fast] [--gdb]
+#   tools/ci/local/test.sh <ctest|smoke|startup> [debug|release|fast] [--gdb]
 #   [NATRON_REPEAT_TIMEOUT=<s>] tools/ci/local/test.sh repeat <ctest-name-or-regex> <N> [--parallel P] [--timeout S] [--gdb] [debug|release|fast]
 #   [NATRON_CTEST_JOBS=<n>] tools/ci/local/test.sh ctest ...
 #   [GTEST_SHUFFLE=1] [GTEST_RANDOM_SEED=<n>] [GTEST_REPEAT=<n>] tools/ci/local/test.sh ctest ...
-#   [NATRON_SMOKE_OUTPUT_DIR=<dir>|NATRON_SMOKE_REFERENCE_DIR=<dir>] tools/ci/local/test.sh smoke ...
 #
-#   NATRON_RENDER_SCHEDULER -> selects the render scheduler for ctest and the
-#                              smoke test; unset leaves Natron's default.
-#                              Forwarded into the container when set.
 #   NATRON_CTEST_JOBS       -> ctest only: how many cases run at once, all as
 #                              clients of the one Xvfb server. Unset or 1 is
 #                              the serial `ctest -V` run. Above 1, `ctest -V`
@@ -44,12 +40,6 @@
 #                              Each ctest entry is one suite, so the shuffle
 #                              never crosses suites. Forwarded into the
 #                              container when set.
-#   NATRON_SMOKE_OUTPUT_DIR -> smoke only: the graded PNG is copied here.
-#   NATRON_SMOKE_REFERENCE_DIR -> smoke only: the graded PNG must be
-#                              byte-identical to the same-named file there
-#                              (a previous run's NATRON_SMOKE_OUTPUT_DIR).
-#                              Both smoke dirs must be paths the container
-#                              sees, i.e. under the repo.
 #
 #   ctest                  -> `ctest -V` (or `ctest -j`, see NATRON_CTEST_JOBS)
 #                              in the build dir, exactly as ci.yml.
@@ -224,7 +214,7 @@ if ! in_container; then
     # long-lived container, so variables that steer the run are re-applied
     # through env(1) on the container side.
     forwarded_env=()
-    for var in NATRON_RENDER_SCHEDULER NATRON_CTEST_JOBS GTEST_SHUFFLE GTEST_RANDOM_SEED GTEST_REPEAT NATRON_SMOKE_OUTPUT_DIR NATRON_SMOKE_REFERENCE_DIR; do
+    for var in NATRON_CTEST_JOBS GTEST_SHUFFLE GTEST_RANDOM_SEED GTEST_REPEAT; do
         if [[ -n "${!var:-}" ]]; then
             forwarded_env+=("${var}=${!var}")
         fi

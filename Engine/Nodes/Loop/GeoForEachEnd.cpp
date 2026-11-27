@@ -99,8 +99,9 @@ public:
     HelperIterationScope(const FrameRenderContext* frameContext,
                          const IsolatedJob* job,
                          int runnablePriority,
+                         bool scheduledTask,
                          const LoopAbortState& abort)
-        : _frame(frameContext, 1, runnablePriority)
+        : _frame(frameContext, 1, runnablePriority, scheduledTask)
         , _previousJob(IsolatedJob::exchangeCurrent(job))
         , _abort(abort.isRenderResponseToUserInteraction, abort.abortInfo, abort.treeRoot)
     {
@@ -1052,6 +1053,7 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
         const FrameRenderContext* const frameContext = AppTLS::currentFrameContext();
         const IsolatedJob* const job = IsolatedJob::current();
         const int runnablePriority = AppTLS::currentRunnablePriority();
+        const bool scheduledTask = AppTLS::isRunningScheduledTask();
         LoopAbortState abort;
         if (!getAbortState(&abort.isRenderResponseToUserInteraction, &abort.abortInfo, &abort.treeRoot)) {
             abort = LoopAbortState();
@@ -1060,7 +1062,7 @@ GeoForEachEnd::renderGeometry(const GeoRenderActionArgs& args,
         parallelForCancellable((int)run.size() - 1, appPTR->getNCPUsAvailableForEffect(), cancel, [&](int i) {
             std::optional<HelperIterationScope> helperScope;
             if (QThread::currentThread() != callingThread) {
-                helperScope.emplace(frameContext, job, runnablePriority, abort);
+                helperScope.emplace(frameContext, job, runnablePriority, scheduledTask, abort);
             }
             const std::size_t j = (std::size_t)i + 1;
             // On a helper, cancel.check() only sees the abort once the calling thread has polled

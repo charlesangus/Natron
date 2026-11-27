@@ -201,6 +201,7 @@ set(Tests_SOURCES
     NodeColorSampler_Test.cpp
     OSGLContext_Test.cpp
     PersistentMessage_Test.cpp
+    PlaybackTimer_Test.cpp
     PluginIdentity_Test.cpp
     ImagePasteBands_Test.cpp
     PoolParallelFor_Test.cpp
@@ -249,7 +250,6 @@ set(Tests_SOURCES
     RenderRange_Test.cpp
     RenderScheduler_Test.cpp
     RenderSchedulerAbort_Test.cpp
-    RenderSchedulerMode_Test.cpp
     RotoFeatherBanding_Test.cpp
     RotoFeatherDrag_Test.cpp
     RotoLayer_Test.cpp
@@ -264,6 +264,7 @@ set(Tests_SOURCES
     Tracker_Test.cpp
     TwoPlaneRender_Test.cpp
     TypedPassthrough_Test.cpp
+    UserKnobEdit_Test.cpp
     WeightedInterpolation_Test.cpp
     WriteAllLayers_Test.cpp
     ImageConvert_Test.cpp

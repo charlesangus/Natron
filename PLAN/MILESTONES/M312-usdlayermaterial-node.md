@@ -62,7 +62,7 @@ What exists today:
   - size: L
 
 ## Phase 312.2: Node
-- [ ] M312.P2.T1 — USDLayerMaterial authoring for the UsdPreviewSurface and USDProject3D backends
+- [x] M312.P2.T1 — USDLayerMaterial authoring for the UsdPreviewSurface and USDProject3D backends
   - files: `Engine/Nodes/Scene/USDLayerMaterial.{h,cpp,reg.inc}`, `docs/USDLayerMaterial.md`, `Tests/Scene/USDLayerMaterial_Test.cpp`, `Tests/CMakeLists.txt`
   - approach:
     - Knobs: `primPattern`, `materialPurpose`, `mix` (0-1), and one `<input>Layer` choice per mixable input (From Metadata | None | each Paint plane). Labels match script names.
@@ -76,12 +76,12 @@ What exists today:
     - the MaterialX and no-material warnings;
     - the knobs save and load.
   - size: L
-- [ ] M312.P2.T2 — MaterialBake evaluates layered materials
+- [x] M312.P2.T2 — MaterialBake evaluates layered materials
   - files: `Engine/Nodes/Scene/MaterialBake.{h,cpp}`, `Tests/Scene/USDLayerMaterial_Test.cpp`
   - approach: a `MaterialBake::Backend` for the layered terminals. It evaluates the base backend, then the per-texel mix from the live paint tiles.
   - verify: gtest. Bake Inputs of a downstream USDTexturePaint over a layered quad reproduces the T1 render's texels within ulps.
   - size: M
-- [ ] M312.P2.T3 — Xvfb GUI script
+- [x] M312.P2.T3 — Xvfb GUI script
   - files: `Tests/gui/m312_usd_layer_material.py`, fixture under `Tests/fixtures/`
   - approach: USDPreviewSurface → USDTexturePaint (Paint Only) → USDLayerMaterial. Paint, wait for `usdTexturePaintBaked`, and screenshot the 3D view.
   - verify: the script passes remotely; screenshots shared.
@@ -102,3 +102,4 @@ What exists today:
 - 2026-11-27 (PM) — P1: the mode switch after a Bake Output is locked (Output Mode greyed while a bake is in effect; undo frees it). A Paint Only bake writes the paint set and the over-base set rebuilt over the Bake Inputs base. normalPaint holds the painted normal premultiplied (0–1, no scale/bias; the shader decodes 2*rgb - alpha), so Phase 2 authoring must not scale or bias it. The layered shader's opacityMode is an int, so the node converts the token. Storm uses outputs:glslfx:surface before the universal surface (hdSt/renderDelegate.cpp:702, usdShade/material.cpp:486-533, OpenUSD v26.08). Open: paint that lowers opacity doesn't make an opaque material translucent; MaterialBake and the Slang projection kernels don't mirror projection paint yet.
 - 2026-11-27 (PM) — P1 verified on m312-gate3 (ctest green apart from the SplitOnGaps startup flake, which passed on rerun) after merging F11's tile-key fix (8c2a3c8252). Two P1 test fixes: the layered Storm tests pin gpuTextureBudget (the automatic budget is 0 on software GL — filed to the inbox), and the Paint Only bake test pushes its command like the other bake tests.
 - 2026-11-27 (PM) — P2 design calls after the implementer found two gaps in LiveTextureStore (shared with F11): (1) live textures unpremultiply and bleed colour into alpha-0 texels, but the layered shaders take premultiplied paint — LiveTextureStore gains a premultiplied delivery (a source/URI flag that skips the unpremultiply and the colour fill), used for Paint Only paint, so the shaders and the premultiplied-paint decision stay; (2) live textures only rendered the RGBA plane — renderSource renders the source's named plane, so per-input layers (roughness, normal, metallic, From Metadata) work. (3) Stacked layered materials: MaterialBake evaluates the whole stack; Storm's glslfx path reads only texture/primvar/transform2d upstream nodes, so where two layers paint one input Storm shows the later one and the node warns.
+- 2026-11-27 (PM) — P2 deviations: no usdTexturePaintBaked signal exists, the GUI check waits on bakeGeneration like m53; From Metadata has no colour-plane fallback (an input with no matching purpose gets no paint); layers store as Layer<k>_<input> with natron:layerDepth; MaterialBake has no normal purpose, so normal paint isn't baked; Cycles and MoonRay don't show paint (milestone Out).

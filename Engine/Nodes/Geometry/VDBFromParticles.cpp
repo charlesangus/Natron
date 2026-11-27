@@ -32,6 +32,7 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -294,7 +295,11 @@ VDBFromParticles::renderGeometry(const GeoRenderActionArgs& args,
         if (notes.empty()) {
             clearPersistentMessage(false);
         } else {
-            setPersistentMessage(eMessageTypeInfo, joinNotes(notes));
+            // An info-type persistent message is only logged or shown as a dialog, never kept on
+            // the node; the quiet one is kept and shown on the node.
+            if (const NodePtr node = getNode()) {
+                node->setQuietInfoMessage(joinNotes(notes));
+            }
         }
     }
 

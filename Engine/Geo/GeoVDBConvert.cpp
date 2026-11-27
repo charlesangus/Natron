@@ -467,9 +467,8 @@ meshGrid(const GridT& grid,
     if (points.empty()) {
         return true;
     }
-    // volumeToMesh treats values below the isovalue as inside and winds its polygons clockwise
-    // seen from outside; a fog volume is inside above it, so only a fog volume keeps the order.
-    const bool flip = grid.getGridClass() != openvdb::GRID_FOG_VOLUME;
+    // volumeToMesh winds its polygons clockwise seen from outside, and it already reverses its
+    // own inside test for fog volumes, so every grid class needs the opposite order.
 
     const GeoOffset first = out.appendPoints(GeoIndex(points.size()));
     for (std::size_t i = 0; i < points.size(); ++i) {
@@ -482,13 +481,13 @@ meshGrid(const GridT& grid,
     for (const openvdb::Vec4I& q : quads) {
         counts.push_back(4);
         for (int k = 0; k < 4; ++k) {
-            vertexPoints.push_back(first + GeoOffset(q[flip ? (4 - k) % 4 : k]));
+            vertexPoints.push_back(first + GeoOffset(q[(4 - k) % 4]));
         }
     }
     for (const openvdb::Vec3I& t : triangles) {
         counts.push_back(3);
         for (int k = 0; k < 3; ++k) {
-            vertexPoints.push_back(first + GeoOffset(t[flip ? (3 - k) % 3 : k]));
+            vertexPoints.push_back(first + GeoOffset(t[(3 - k) % 3]));
         }
     }
     if (!counts.empty()) {
@@ -789,30 +788,37 @@ geoPointsToSdf(const GeoDetail& source,
     std::vector<std::string> attributeNotes;
     const std::vector<std::pair<std::string, AttributeSource>> attributes = matchAttributes(source, { eGeoAttribClassPoint }, params.attributes, &attributeNotes);
 
+    // ParticlesToLevelSet::getMinCount() keeps only one thread's count, so count the skipped
+    // spheres here with the same voxel-unit test it applies.
     std::size_t skipped = 0;
+    for (const openvdb::Real radius : particles.radii) {
+        if (radius / params.voxelSize < params.minRadius) {
+            ++skipped;
+        }
+    }
     ParticleIndexGrid::Ptr index;
     if (!particles.positions.empty()) {
         const bool trails = params.trails && v;
         if (attributes.empty()) {
             openvdb::tools::ParticlesToLevelSet<openvdb::FloatGrid> raster(*grid);
             raster.setRmin(params.minRadius);
+            raster.setRmax(std::numeric_limits<openvdb::Real>::max());
             if (trails) {
                 raster.rasterizeTrails(particles, params.trailSpacing);
             } else {
                 raster.rasterizeSpheres(particles);
             }
             raster.finalize(true);
-            skipped = raster.getMinCount();
         } else {
             openvdb::tools::ParticlesToLevelSet<openvdb::FloatGrid, openvdb::Index32> raster(*grid);
             raster.setRmin(params.minRadius);
+            raster.setRmax(std::numeric_limits<openvdb::Real>::max());
             if (trails) {
                 raster.rasterizeTrails(particles, params.trailSpacing);
             } else {
                 raster.rasterizeSpheres(particles);
             }
             raster.finalize(true);
-            skipped = raster.getMinCount();
             index = raster.attributeGrid();
         }
     }

@@ -171,6 +171,8 @@ try:
         check(ok, "selecting every grid again turns it back into polygons")
 
         section("particles to SDF to polygons")
+        # connectInput refuses an input that is already connected.
+        to_usd.disconnectInput(0)
         require(to_usd.connectInput(0, particles_convert), "connect the particle branch into the GeoToUSD")
         ok = yield ("until", lambda: "active voxels" in message(from_particles), POLL_TIMEOUT_S)
         report("NOTE VDBFromParticles info %r" % (message(from_particles),))

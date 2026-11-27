@@ -249,8 +249,10 @@ TEST(VDBResampleTest, DoubleVoxelSizeHalvesTheActiveDimensions)
         EXPECT_NEAR(grid->voxelSize()[0], 2. * kVoxel, 1e-9);
         EXPECT_EQ(grid->getGridClass(), fog ? openvdb::GRID_FOG_VOLUME : openvdb::GRID_LEVEL_SET);
         const openvdb::Coord after = activeDim(*grid);
+        // A level set keeps its narrow band's width in voxels, so only the span inside the band halves.
+        const double band = fog ? 0. : 2. * double(openvdb::LEVEL_SET_HALF_WIDTH);
         for (int c = 0; c < 3; ++c) {
-            EXPECT_NEAR(double(after[c]), 0.5 * double(before[c]), 2.) << (fog ? "fog" : "sdf") << " axis " << c;
+            EXPECT_NEAR(double(after[c]), 0.5 * (double(before[c]) - band) + band, 2.) << (fog ? "fog" : "sdf") << " axis " << c;
         }
     }
 }
@@ -260,13 +262,15 @@ TEST(VDBResampleTest, LevelSetsKeepTheirBandInVoxels)
     VDBResampleParams params;
     params.mode = eVDBResampleModeVoxelScale;
     params.voxelScale = 2.;
-    GeoDetailBuilder b(sphereVolume(false));
+    const GeoDetail source = sphereVolume(false);
+    const double sourceVoxel = firstVDB(source)->voxelSize()[0];
+    GeoDetailBuilder b(source);
     std::string error;
     ASSERT_TRUE(VDBResample::apply(b, params, nullptr, nullptr, &error)) << error;
     const openvdb::FloatGrid::ConstPtr grid = openvdb::gridConstPtrCast<openvdb::FloatGrid>(firstVDB(b.finish()));
     ASSERT_NE(grid, nullptr);
-    EXPECT_NEAR(grid->voxelSize()[0], 2. * kVoxel, 1e-9);
-    EXPECT_NEAR(grid->background(), 3. * 2. * kVoxel, 1e-5);
+    EXPECT_NEAR(grid->voxelSize()[0], 2. * sourceVoxel, 1e-9);
+    EXPECT_NEAR(grid->background(), 3. * 2. * sourceVoxel, 1e-5);
 }
 
 TEST(VDBResampleTest, ReferenceModeTakesTheReferenceVoxels)

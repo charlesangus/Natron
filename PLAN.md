@@ -697,7 +697,7 @@ future core work has solid ground to build on.
 | M636 | For-Each Loop Thread Scaling | todo | - |  | E22 |  | | [M636-for-each-loop-thread-scaling.md](PLAN/MILESTONES/M636-for-each-loop-thread-scaling.md) |
 | M637 | User Knob Property Persistence | todo | - |  | E10 |  | | [M637-user-knob-property-persistence.md](PLAN/MILESTONES/M637-user-knob-property-persistence.md) |
 | M638 | Self-Dimension Expression Listeners | todo | - |  | E14 |  | | [M638-self-dimension-expression-listeners.md](PLAN/MILESTONES/M638-self-dimension-expression-listeners.md) |
-| M639 | Ctest Load Flakes | todo | - |  | E2 | M639-ctest-load-flakes.md | | [Delegate render tests flake|SplitOnGapsTest stalls|CyclesDelegate.DrawFilterHidesPrimsAndLights flaked](PLAN/MILESTONES/Delegate render tests flake|SplitOnGapsTest stalls|CyclesDelegate.DrawFilterHidesPrimsAndLights flaked) |
+| M639 | Ctest Load Flakes | todo | - |  | E2 |  | | [M639-ctest-load-flakes.md](PLAN/MILESTONES/M639-ctest-load-flakes.md) |
 | M640 | USDToGeo Primvar Promotion | todo | M611 |  | E9 | F42 | | [M640-usdtogeo-primvar-promotion.md](PLAN/MILESTONES/M640-usdtogeo-primvar-promotion.md) |
 | M641 | Quiet Info Messages | todo | M418 |  | E14 | M641-quiet-info-messages.md | | [USDToGeo info message opens a dialog](PLAN/MILESTONES/USDToGeo info message opens a dialog) |
 | M642 | Pause At Loop Wrap | todo | - |  | E10 | M642-pause-at-loop-wrap.md | | [Pausing at a playback loop wrap](PLAN/MILESTONES/Pausing at a playback loop wrap) |

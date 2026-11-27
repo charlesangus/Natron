@@ -24,8 +24,8 @@ prims still come through.
 
 A layer that reaches the node through more than one input, as when one source
 feeds two branches that meet at the merge, is used once under both orders. It
-keeps its weakest position, under every layer authored over it in any branch, so each branch's
-edits of the source still apply.
+keeps its weakest position, under every layer authored over it in any branch, so
+each branch's edits of the source still apply.
 
 Unconnected inputs are skipped. With one input connected, or the same scene on
 every input, the output is that input's scene unchanged; with none, the output is

@@ -47,9 +47,10 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief Unites the layer stacks of its scene inputs into one, authoring nothing itself. By
  * default inputs stack in input order, so a later input's layers are stronger than an earlier
- * one's and win where both author the same opinion; the Opinion Order knob reverses that. A layer that arrives through more than one input (one
- * source reaching the node along two branches) is kept once, at its weakest position, so that it
- * stays under every layer authored downstream of it.
+ * one's and win where both author the same opinion; the Opinion Order knob reverses that. A
+ * layer that arrives through more than one input (one source reaching the node along two
+ * branches) is kept once, at its weakest position, so that it stays under every layer authored
+ * downstream of it.
  **/
 class USDMerge
     : public NativeEffectBase {

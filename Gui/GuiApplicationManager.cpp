@@ -1917,7 +1917,8 @@ GuiApplicationManagerPrivate::populateNodesMenuGroup(QMenu* parent,
         makePluginGroupIcons(group, &menuIcon, &toolButtonIcon);
         menu = new Menu(parent);
         // "/" would nest a submenu in a grouping string, so the I/O segment is spelled IO and only its title shows the slash.
-        menu->setTitle(escapedMenuText(group.getLabel() == QString::fromUtf8("IO") ? QString::fromUtf8("I/O") : group.getLabel()));
+        const bool isUsdIo = group.getLabel() == QString::fromUtf8("IO") && group.hasParent() && !group.getParent()->hasParent() && group.getParent()->getLabel() == QString::fromUtf8(PLUGIN_GROUP_USD);
+        menu->setTitle(escapedMenuText(isUsdIo ? QString::fromUtf8("I/O") : group.getLabel()));
         menu->setIcon(menuIcon);
         QAction* menuAction = menu->menuAction();
         menuAction->setProperty(kNodesMenuPropPluginOwned, true);

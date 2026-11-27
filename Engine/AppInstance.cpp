@@ -1834,6 +1834,7 @@ AppInstance::exportDocs(const QString path)
         QStringList groups;
         // Group ordering is set at every place in the code where GROUP_ORDER appears in the comments
         groups << QString::fromUtf8(PLUGIN_GROUP_IMAGE);
+        groups << QString::fromUtf8(PLUGIN_GROUP_RAW);
         groups << QString::fromUtf8(PLUGIN_GROUP_PAINT);
         groups << QString::fromUtf8(PLUGIN_GROUP_TIME);
         groups << QString::fromUtf8(PLUGIN_GROUP_CHANNEL);
@@ -1842,6 +1843,10 @@ AppInstance::exportDocs(const QString path)
         groups << QString::fromUtf8(PLUGIN_GROUP_KEYER);
         groups << QString::fromUtf8(PLUGIN_GROUP_MERGE);
         groups << QString::fromUtf8(PLUGIN_GROUP_TRANSFORM);
+        groups << QString::fromUtf8(PLUGIN_GROUP_3D);
+        groups << QString::fromUtf8(PLUGIN_GROUP_USD);
+        groups << QString::fromUtf8(PLUGIN_GROUP_GEOMETRY);
+        groups << QString::fromUtf8(PLUGIN_GROUP_DEEP);
         groups << QString::fromUtf8(PLUGIN_GROUP_METADATA);
         groups << QString::fromUtf8(PLUGIN_GROUP_LOOP);
         groups << QString::fromUtf8(PLUGIN_GROUP_RFV);

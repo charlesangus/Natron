@@ -113,7 +113,6 @@ public:
         eViewer3DLightingHeadlight
     };
 
-    // How the output of a node that feeds nothing is drawn below it.
     enum OutputStyleEnum {
         eOutputStyleArrow = 0,
         eOutputStyleNub

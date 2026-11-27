@@ -1567,7 +1567,7 @@ Settings::initializeKnobsNodeGraph()
     _outputStubLength->setName("outputStubLength");
     _outputStubLength->setHintToolTip(tr("How far in pixels the output pipe of a node that feeds nothing reaches below the node."));
     _outputStubLength->disableSlider();
-    _outputStubLength->setMinimum(0);
+    _outputStubLength->setMinimum(1);
     _nodegraphTab->addKnob(_outputStubLength);
 
     _outputStyle = AppManager::createKnob<KnobChoice>(this, tr("Output Style"));

@@ -55,6 +55,7 @@ DocumentationManager::DocumentationManager(QObject *parent)
     // list of translatable group names
     // Group ordering is set at every place in the code where GROUP_ORDER appears in the comments
     (void)QT_TR_NOOP(PLUGIN_GROUP_IMAGE);
+    (void)QT_TR_NOOP(PLUGIN_GROUP_RAW);
     (void)QT_TR_NOOP(PLUGIN_GROUP_IMAGE_READERS);
     (void)QT_TR_NOOP(PLUGIN_GROUP_IMAGE_WRITERS);
     (void)QT_TR_NOOP(PLUGIN_GROUP_PAINT);
@@ -70,6 +71,15 @@ DocumentationManager::DocumentationManager(QObject *parent)
     (void)QT_TR_NOOP(PLUGIN_GROUP_MERGE);
     (void)QT_TR_NOOP(PLUGIN_GROUP_TRANSFORM);
     (void)QT_TR_NOOP(PLUGIN_GROUP_3D);
+    (void)QT_TR_NOOP(PLUGIN_GROUP_USD);
+    (void)QT_TR_NOOP(PLUGIN_GROUP_USD_PRIMS);
+    (void)QT_TR_NOOP(PLUGIN_GROUP_USD_LIGHTS);
+    (void)QT_TR_NOOP(PLUGIN_GROUP_USD_CAMERAS);
+    (void)QT_TR_NOOP(PLUGIN_GROUP_USD_MATERIALS);
+    (void)QT_TR_NOOP(PLUGIN_GROUP_USD_COMPOSITION);
+    (void)QT_TR_NOOP(PLUGIN_GROUP_USD_EDIT);
+    (void)QT_TR_NOOP(PLUGIN_GROUP_USD_RENDER);
+    (void)QT_TR_NOOP(PLUGIN_GROUP_USD_IO);
     (void)QT_TR_NOOP(PLUGIN_GROUP_GEOMETRY);
     (void)QT_TR_NOOP(PLUGIN_GROUP_DEEP);
     (void)QT_TR_NOOP(PLUGIN_GROUP_METADATA);
@@ -391,6 +401,7 @@ DocumentationManager::handler(QHttpRequest *req,
             QStringList groups;
             // Group ordering is set at every place in the code where GROUP_ORDER appears in the comments
             groups << QString::fromUtf8(PLUGIN_GROUP_IMAGE);
+            groups << QString::fromUtf8(PLUGIN_GROUP_RAW);
             groups << QString::fromUtf8(PLUGIN_GROUP_PAINT);
             groups << QString::fromUtf8(PLUGIN_GROUP_TIME);
             groups << QString::fromUtf8(PLUGIN_GROUP_CHANNEL);
@@ -399,6 +410,10 @@ DocumentationManager::handler(QHttpRequest *req,
             groups << QString::fromUtf8(PLUGIN_GROUP_KEYER);
             groups << QString::fromUtf8(PLUGIN_GROUP_MERGE);
             groups << QString::fromUtf8(PLUGIN_GROUP_TRANSFORM);
+            groups << QString::fromUtf8(PLUGIN_GROUP_3D);
+            groups << QString::fromUtf8(PLUGIN_GROUP_USD);
+            groups << QString::fromUtf8(PLUGIN_GROUP_GEOMETRY);
+            groups << QString::fromUtf8(PLUGIN_GROUP_DEEP);
             groups << QString::fromUtf8(PLUGIN_GROUP_METADATA);
             groups << QString::fromUtf8(PLUGIN_GROUP_LOOP);
             groups << QString::fromUtf8(PLUGIN_GROUP_RFV);

@@ -114,8 +114,6 @@ protected:
     {
         BaseTest::SetUp();
         RotoRenderProfile::stop();
-        _savedMode = appPTR->getRenderSchedulerMode();
-        appPTR->setRenderSchedulerMode(eRenderSchedulerModeLegacy);
         getApp()->getProject()->reset(false, true);
         appPTR->clearAllCaches();
     }
@@ -123,7 +121,6 @@ protected:
     void TearDown() override
     {
         RotoRenderProfile::stop();
-        appPTR->setRenderSchedulerMode(_savedMode);
         appPTR->clearAllCaches();
         BaseTest::TearDown();
     }
@@ -235,12 +232,12 @@ protected:
         std::vector<RenderedPlane> warm(kFrames);
         std::string error;
         for (int f = 1; f <= kFrames; ++f) {
-            ASSERT_TRUE(renderProbe(_roto, f, 0, kWindow, eRenderSchedulerModeLegacy, false, &warm[f - 1], &error)) << error;
+            ASSERT_TRUE(renderProbeDirect(_roto, f, 0, kWindow, false, &warm[f - 1], &error)) << error;
         }
         for (int f = 1; f <= kFrames; ++f) {
             clearEverything(getApp());
             RenderedPlane cold;
-            ASSERT_TRUE(renderProbe(_roto, f, 0, kWindow, eRenderSchedulerModeLegacy, false, &cold, &error)) << error;
+            ASSERT_TRUE(renderProbeDirect(_roto, f, 0, kWindow, false, &cold, &error)) << error;
             EXPECT_EQ(std::string(), compareExact(cold, warm[f - 1])) << "frame " << f;
         }
     }
@@ -251,9 +248,6 @@ protected:
     RotoContextPtr _context;
     BezierPtr _first;
     BezierPtr _second;
-
-private:
-    RenderSchedulerModeEnum _savedMode = eRenderSchedulerModeLegacy;
 };
 
 } // namespace

@@ -138,8 +138,6 @@ protected:
     {
         BaseTest::SetUp();
         RotoRenderProfile::stop();
-        _savedMode = appPTR->getRenderSchedulerMode();
-        appPTR->setRenderSchedulerMode(eRenderSchedulerModeLegacy);
         getApp()->getProject()->reset(false, true);
         appPTR->clearAllCaches();
         RotoPaint::setDirectCompositeEnabled(true);
@@ -148,7 +146,6 @@ protected:
     void TearDown() override
     {
         RotoPaint::setDirectCompositeEnabled(true);
-        appPTR->setRenderSchedulerMode(_savedMode);
         appPTR->clearAllCaches();
         BaseTest::TearDown();
     }
@@ -276,9 +273,6 @@ protected:
     NodePtr _roto;
     NodePtr _source;
     RotoContextPtr _context;
-
-private:
-    RenderSchedulerModeEnum _savedMode = eRenderSchedulerModeLegacy;
 };
 
 TEST_P(RotoPaintDirectCompositeTest, ThirtyItemsMatchTheNodePath)

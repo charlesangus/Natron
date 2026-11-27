@@ -112,15 +112,12 @@ protected:
     {
         BaseTest::SetUp();
         RotoRenderProfile::stop();
-        _savedMode = appPTR->getRenderSchedulerMode();
-        appPTR->setRenderSchedulerMode(eRenderSchedulerModeLegacy);
         appPTR->clearAllCaches();
     }
 
     void TearDown() override
     {
         RotoRenderProfile::stop();
-        appPTR->setRenderSchedulerMode(_savedMode);
         appPTR->clearAllCaches();
         BaseTest::TearDown();
     }
@@ -177,9 +174,6 @@ protected:
 
         return !layers.empty() && bool(layers.begin()->second);
     }
-
-private:
-    RenderSchedulerModeEnum _savedMode = eRenderSchedulerModeLegacy;
 };
 
 } // namespace

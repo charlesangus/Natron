@@ -146,6 +146,12 @@ InfoViewerWidget::InfoViewerWidget(const QString& description,
         _fpsLabel->hide();
     }
 
+    _simulationLabel = new Label(this);
+    _simulationLabel->setObjectName(QString::fromUtf8("keptSimulationFrame"));
+    _simulationLabel->setText(tr("cached sim frame"));
+    _simulationLabel->setToolTip(tr("The frame shown is one a solver kept: it was solved earlier and is not being solved again."));
+    _simulationLabel->hide();
+
     coordMouse = new Label(this);
     {
         QFontMetrics fm = coordMouse->fontMetrics();
@@ -190,6 +196,7 @@ InfoViewerWidget::InfoViewerWidget(const QString& description,
     layout->addWidget(resolution);
     layout->addWidget(coordDispWindow);
     layout->addWidget(_fpsLabel);
+    layout->addWidget(_simulationLabel);
     layout->addWidget(coordMouse);
     layout->addWidget(colorSource);
     layout->addWidget(rgbaValues);
@@ -230,6 +237,14 @@ InfoViewerWidget::setFps(double actualFps,
     _fpsLabel->setText(str);
     if ( !_fpsLabel->isVisible() ) {
         _fpsLabel->show();
+    }
+}
+
+void
+InfoViewerWidget::setShowingKeptSimulationFrame(bool kept)
+{
+    if (_simulationLabel->isVisible() != kept) {
+        _simulationLabel->setVisible(kept);
     }
 }
 

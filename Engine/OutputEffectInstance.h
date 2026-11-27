@@ -155,11 +155,41 @@ public:
     }
 
     /**
+     * @brief For a writer whose output kind is eDataKindGeometry: writes @p detail, the node's own
+     * output evaluated at @p time and @p view and never null, for one frame of its render. Called
+     * from a render thread, frames possibly in parallel unless rendersFramesInOrder(). On failure,
+     * sets @p error to the cause and returns eStatusFailed, which fails the render with it.
+     **/
+    virtual StatusEnum writeGeometryFrame(double /*time*/,
+                                          ViewIdx /*view*/,
+                                          const GeoDetailConstPtr& /*detail*/,
+                                          std::string* /*error*/)
+    {
+        return eStatusOK;
+    }
+
+    /**
+     * @brief Whether a render of this node must run its frames one at a time and in order, as when
+     * each frame depends on the previous one's result. Read when the render opens a render thread.
+     **/
+    virtual bool rendersFramesInOrder() const
+    {
+        return false;
+    }
+
+    /**
      * @brief The frame range the running render of this node was asked for. Returns false when
      * no render of it is running.
      **/
     bool getRunningRenderRequestedRange(int* firstFrame,
                                         int* lastFrame) const;
+
+    /**
+     * @brief The pattern of the files a render of this node writes, the value of its
+     * kOfxImageEffectFileParamName knob by default. Missing directories of it are created and its
+     * frame and view tokens checked before a render starts.
+     **/
+    virtual std::string outputFilePattern();
 
     virtual void initializeData() OVERRIDE FINAL;
     virtual void reportStats(int time, ViewIdx view, double wallTime, const std::map<NodePtr, NodeRenderStats>& stats, const RenderStatsPtr& renderStats);

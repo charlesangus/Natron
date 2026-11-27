@@ -46,6 +46,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Loop/GeoSolverEnd.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneReparentNode.h"
@@ -1747,6 +1748,10 @@ ViewerTab::showEvaluatedScene(int frame,
                               bool onlyNewGeometry)
 {
     if (!_imp->viewerNode || !isShowingScene()) {
+        if (_imp->infoWidget[0]) {
+            _imp->infoWidget[0]->setShowingKeptSimulationFrame(false);
+        }
+
         return;
     }
     const NodePtr viewedNode = getSceneViewedNode();
@@ -1762,6 +1767,16 @@ ViewerTab::showEvaluatedScene(int frame,
     if (!ok && error.empty()) {
         // Not evaluated yet: the evaluation the kind change started reports back here.
         return;
+    }
+    bool keptFrame = false;
+    if (ok) {
+        const std::vector<std::shared_ptr<GeoSolverEnd>> solvers = GeoSolverEnd::upstreamOf(viewedNode);
+        for (const std::shared_ptr<GeoSolverEnd>& solver : solvers) {
+            keptFrame = keptFrame || solver->outputKeptFrame(frame);
+        }
+    }
+    if (_imp->infoWidget[0]) {
+        _imp->infoWidget[0]->setShowingKeptSimulationFrame(keptFrame);
     }
     if (!ok) {
         _imp->sceneViewport->setError(QString::fromStdString(error));

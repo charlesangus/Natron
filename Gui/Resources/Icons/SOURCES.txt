@@ -148,6 +148,7 @@ natron/lighting-scene.svg | Natron custom ("lighting-scene", light bulb) | GPL-2
 natron/link-cursor.svg | Natron custom ("link-cursor", arrow tip at the hotspot with a black halo) | GPL-2.0-or-later
 natron/link-mult-cursor.svg | Natron custom ("link-mult-cursor", link-cursor plus a small x) | GPL-2.0-or-later
 natron/look-through.svg | Natron custom ("look-through", eye at the top left over a movie camera at the bottom right) | GPL-2.0-or-later
+natron/loop.svg | Natron custom ("loop", begin and end blocks joined by a link, with a return arrow from end to begin) | GPL-2.0-or-later
 natron/marker-break.svg | Natron custom ("marker-break", four-point star key marker) | GPL-2.0-or-later
 natron/marker-c.svg | Natron custom ("marker-c", ring with a C inside) | GPL-2.0-or-later
 natron/marker-constant.svg | Natron custom ("marker-constant", square key marker) | GPL-2.0-or-later

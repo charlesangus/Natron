@@ -672,7 +672,7 @@ future core work has solid ground to build on.
 | M626 | Native Geometry Viewer Bench And Checks | todo | M624, M625 |  | E9 | F41 | | [M626-native-geometry-viewer-bench-and-checks.md](PLAN/MILESTONES/M626-native-geometry-viewer-bench-and-checks.md) |
 | M627 | Native Geometry Viewer Cook Fixes | todo | M600 |  | E9 | | | [M627-native-geometry-viewer-cook-fixes.md](PLAN/MILESTONES/M627-native-geometry-viewer-cook-fixes.md) |
 | M601 | Every Render A Scheduler Task | todo | M199 |  | E14 | | | [M601-every-render-a-scheduler-task.md](PLAN/MILESTONES/M601-every-render-a-scheduler-task.md) |
-| M602 | 3D Viewer Toolbars | doing | M376, M361 | bosley-executor | E28 | F40 | response | [M602-3d-viewer-toolbars.md](PLAN/MILESTONES/M602-3d-viewer-toolbars.md) |
+| M602 | 3D Viewer Toolbars | doing | M376, M361 | bosley-executor | E28 | F40 | | [M602-3d-viewer-toolbars.md](PLAN/MILESTONES/M602-3d-viewer-toolbars.md) |
 | M603 | Combined Transform Handle | todo | M602 |  | E28 | F40 | | [M603-combined-transform-handle.md](PLAN/MILESTONES/M603-combined-transform-handle.md) |
 | M604 | GeoTransform Viewer Handles | todo | M603 |  | E28 | F40 | | [M604-geotransform-viewer-handles.md](PLAN/MILESTONES/M604-geotransform-viewer-handles.md) |
 | M605 | GeoEdit Component Transforms | todo | M603 |  | E28 | F40 | | [M605-geoedit-component-transforms.md](PLAN/MILESTONES/M605-geoedit-component-transforms.md) |

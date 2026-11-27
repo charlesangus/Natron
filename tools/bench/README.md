@@ -273,16 +273,22 @@ python3 tools/bench/cache_probe_bench.py --tests build/release/Tests/Tests --dir
 
 ## Utility raster bench
 
-`utility_raster_bench.sh` needs a built `Tests` and a Vulkan device with ray queries and the raster visibility
-capability; it runs by hand, not in ctest. It times Natron Utility's Ray and Raster modes on the same HD
-projected-card shot with transform motion blur, at 36 samples a pixel each, and prints one line with both times
-and the speed-up.
+`utility_raster_bench.sh` runs a Natron AppImage on a Vulkan device with ray queries and the raster visibility
+capability; it runs by hand, not in ctest. It renders frame 1 of a projected-card shot with motion blur (the
+camera pans past a static projector while the card slides and turns) through a one-frame Write, in Ray and Raster
+mode alternately, at 9 and 36 samples a pixel, and writes the median and p95 frame times, the Ray over Raster
+ratios and each mode's measured blur to `<out-dir>/results.jsonl`. It exits 3 when Raster falls back to Ray, a
+render fails, either mode's last image has no motion blur (plate edges and card silhouette both smeared wider than
+W / 240 pixels), or the two modes' images are identical.
 
 ```
-tools/bench/utility_raster_bench.sh --tests build/release/Tests/Tests [--device <NATRON_GPU_DEVICE name>]
+tools/bench/utility_raster_bench.sh <Natron.AppImage> [out-dir]
+BENCH_SIDES=2 BENCH_REPS=1 BENCH_WARMUPS=0 BENCH_SIZE="480 270" tools/bench/utility_raster_bench.sh <Natron.AppImage> [out-dir]
+BENCH_BLUR_CHECK="a.png b.png" python3 -I tools/bench/utility_raster_bench.py
 ```
 
-Without the script: `NATRON_UTILITY_RASTER_BENCH=1 build/release/Tests/Tests --gtest_filter='NatronUtilityRaster.Bench*'`.
+The last line runs only the blur gate on existing PNGs. The gtest version of the bench, which times the executor
+without the node graph: `NATRON_UTILITY_RASTER_BENCH=1 build/release/Tests/Tests --gtest_filter='NatronUtilityRaster.Bench*'`.
 On llvmpipe the numbers say nothing about hardware; run it on the GPU host.
 
 ## Page-fault bench

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Natron Utility, Ray mode against Raster mode, from a Natron AppImage: a card carrying a projected plate, sliding and
-# turning over an open shutter, rendered through a Write on the GPU at each sample count in both modes, with the
-# frame times of each (median, p95) and the Ray over Raster ratios written to <out-dir>/results.jsonl.
+# turning under a panning camera over an open shutter, rendered one frame at a time through a Write on the GPU at
+# each sample count in both modes, with the frame times of each (median, p95), the Ray over Raster ratios and the
+# motion blur measured on each mode's last PNG written to <out-dir>/results.jsonl.
 #
 #   tools/bench/utility_raster_bench.sh <Natron.AppImage> [out-dir]
 #
 # Environment (see utility_raster_bench.py for the bench's own):
-#   BENCH_SIDES, BENCH_REPS, BENCH_WARMUPS, BENCH_SIZE   passed through
+#   BENCH_SIDES, BENCH_REPS, BENCH_WARMUPS, BENCH_SIZE, BENCH_DEVICE, BENCH_PIXEL_FILTER   passed through
 #   NATRON_GPU_DEVICE    the GPU to use (default: the first hardware device)
 #   BENCH_APP_ARGS       arguments placed before the script (default "-b")
 #   BENCH_APPIMAGE_ARGS  arguments for the AppImage runtime (default "--appimage-extract-and-run", the host has no FUSE)
@@ -14,7 +15,9 @@
 #
 # The AppImage runs with LD_LIBRARY_PATH removed: a host Qt on that path shadows the one inside. The node cache's disk
 # tier is off, so no render is served from an earlier one. The default run is two sample counts of 12 timed renders
-# per mode, about 5 minutes on one GPU. Exit status 3 means a Raster render fell back to Ray or a render failed.
+# per mode, about 5 minutes on one GPU. Exit status 3 means a Raster render fell back to Ray, a render failed, a
+# mode's image shows no motion blur, or the two modes' images are identical; 1 is an error in the bench script.
+# For a quick check: BENCH_SIDES=2 BENCH_REPS=1 BENCH_WARMUPS=0 BENCH_SIZE="480 270".
 # Results land in <out-dir>/results.jsonl, <out-dir>/bench.log and the PNG of each mode's last render.
 set -uo pipefail
 

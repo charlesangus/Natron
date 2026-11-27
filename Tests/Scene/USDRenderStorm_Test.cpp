@@ -82,6 +82,7 @@
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDAssignMaterial.h"
@@ -3104,4 +3105,235 @@ TEST_F(USDRenderStormTest, AnExceptionFromHydraFailsTheRenderAndTheNextRenderSuc
     ASSERT_TRUE(renderOffMainThread(node, 1., &planes, &error)) << error;
     ASSERT_EQ(3u, planes.size());
     checkAgainstReference(planes[0], kGoldenCase);
+}
+
+namespace {
+const char* const kLayeredShaderFile = "natronLayeredPreviewSurface.glslfx";
+
+// The installed layered surface, absolute; empty, failing the test, when it is not installed.
+std::string
+layeredShaderPath()
+{
+    SceneCaches::registerLiveTextures(nullptr);
+    const PXR_NS::PlugPluginPtr plugin = PXR_NS::PlugRegistry::GetInstance().GetPluginWithName("natronLiveTexture");
+    const std::string path = plugin ? plugin->FindPluginResource(kLayeredShaderFile, true) : std::string();
+    EXPECT_FALSE(path.empty()) << kLayeredShaderFile << " is not installed beside the natronLiveTexture plug-in";
+
+    return path;
+}
+
+// A 64 texel square RGBA float texture at path, left on its left half and right on its right.
+void
+writeHalvesTexture(const std::string& path,
+                   const float left[4],
+                   const float right[4])
+{
+    const int size = 64;
+    OIIO::ImageSpec spec(size, size, 4, OIIO::TypeDesc::FLOAT);
+    std::vector<float> pixels;
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            const float* color = (x < size / 2) ? left : right;
+            pixels.insert(pixels.end(), color, color + 4);
+        }
+    }
+    OIIO::ImageOutput::unique_ptr out = OIIO::ImageOutput::create(path);
+    ASSERT_TRUE(out != nullptr);
+    ASSERT_TRUE(out->open(path, spec)) << out->geterror();
+    ASSERT_TRUE(out->write_image(OIIO::TypeDesc::FLOAT, pixels.data())) << out->geterror();
+    ASSERT_TRUE(out->close()) << out->geterror();
+}
+
+/**
+ * A quad half the card's size facing the camera, its st running 0 to 1 with x, bound to a material
+ * whose universal surface is a red UsdPreviewSurface and whose glslfx surface is the layered one,
+ * red too, with the texture at texture connected to its input layer.
+ **/
+void
+writeLayeredQuad(const std::string& path,
+                 const std::string& shaderPath,
+                 const std::string& texture,
+                 const char* layer)
+{
+    const std::string usda = std::string(R"usda(#usda 1.0
+(
+    upAxis = "Y"
+)
+
+def Mesh "Quad" (
+    prepend apiSchemas = ["MaterialBindingAPI"]
+)
+{
+    int[] faceVertexCounts = [4]
+    int[] faceVertexIndices = [0, 1, 2, 3]
+    point3f[] points = [(-4, -2, 0), (4, -2, 0), (4, 2, 0), (-4, 2, 0)]
+    texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+        interpolation = "vertex"
+    )
+    rel material:binding = </Looks/Layered>
+}
+
+def Scope "Looks"
+{
+    def Material "Layered"
+    {
+        token outputs:surface.connect = </Looks/Layered/Preview.outputs:surface>
+        token outputs:glslfx:surface.connect = </Looks/Layered/Surface.outputs:surface>
+
+        def Shader "Preview"
+        {
+            uniform token info:id = "UsdPreviewSurface"
+            color3f inputs:diffuseColor = (1, 0, 0)
+            token outputs:surface
+        }
+
+        def Shader "Surface"
+        {
+            uniform token info:implementationSource = "sourceAsset"
+            uniform asset info:glslfx:sourceAsset = @)usda")
+        + shaderPath + R"usda(@
+            color3f inputs:diffuseColor = (1, 0, 0)
+            float4 inputs:)usda"
+        + layer + R"usda(.connect = </Looks/Layered/Texture.outputs:rgba>
+            token outputs:surface
+        }
+
+        def Shader "Texture"
+        {
+            uniform token info:id = "UsdUVTexture"
+            asset inputs:file = @)usda"
+        + texture + R"usda(@
+            token inputs:sourceColorSpace = "raw"
+            float2 inputs:st.connect = </Looks/Layered/Reader.outputs:result>
+            float4 outputs:rgba
+        }
+
+        def Shader "Reader"
+        {
+            uniform token info:id = "UsdPrimvarReader_float2"
+            string inputs:varname = "st"
+            float2 outputs:result
+        }
+    }
+}
+)usda";
+    QFile file(QString::fromStdString(path));
+    ASSERT_TRUE(file.open(QIODevice::WriteOnly));
+    ASSERT_GT(file.write(usda.c_str(), (qint64)usda.size()), 0);
+}
+
+// The mean colour and alpha of the 5 by 5 pixels of rgba around (x, y).
+void
+meanAround(const std::vector<float>& rgba,
+           int x,
+           int y,
+           double out[4])
+{
+    for (int k = 0; k < 4; ++k) {
+        out[k] = 0.;
+    }
+    for (int j = y - 2; j <= y + 2; ++j) {
+        for (int i = x - 2; i <= x + 2; ++i) {
+            const std::size_t p = (std::size_t)j * (std::size_t)kWidth + (std::size_t)i;
+            for (int k = 0; k < 4; ++k) {
+                out[k] += rgba[p * 4 + k] / 25.;
+            }
+        }
+    }
+}
+} // anonymous namespace
+
+class USDRenderStormLayeredTest
+    : public USDRenderStormTest {
+protected:
+    // The colour plane of writeLayeredQuad's scene under the headlight, empty after a gtest failure.
+    std::vector<float> renderLayered(const QTemporaryDir& dir,
+                                     const char* layer,
+                                     const float left[4],
+                                     const float right[4])
+    {
+        std::vector<float> rgba;
+        const std::string shader = layeredShaderPath();
+        if (shader.empty()) {
+            return rgba;
+        }
+        const std::string texture = (dir.path() + QString::fromUtf8("/layer.exr")).toStdString();
+        const std::string scene = (dir.path() + QString::fromUtf8("/layered.usda")).toStdString();
+        writeHalvesTexture(texture, left, right);
+        writeLayeredQuad(scene, shader, texture, layer);
+        if (::testing::Test::HasFatalFailure()) {
+            return rgba;
+        }
+
+        NodePtr constant;
+        NodePtr render = createLiveTextureGraph(&constant, false);
+        NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+        KnobFile* file = reader ? knob<KnobFile>(reader, kUSDReadParamFile) : NULL;
+        KnobBool* headlight = render ? knob<KnobBool>(render, kUSDRenderParamHeadlight) : NULL;
+        if (!render || !file || !headlight) {
+            ADD_FAILURE() << "could not set up the layered graph";
+
+            return rgba;
+        }
+        file->setValue(scene);
+        headlight->setValue(true);
+        NodePtr merge = render->getInput(0)->getInput(0);
+        merge->disconnectInput(0);
+        connectNodes(reader, merge, 0, true);
+        renderColour(render, layer, &rgba);
+
+        return rgba;
+    }
+};
+
+// The universal surface is plain red: green on the left proves Storm renders the glslfx surface,
+// and the layer's mix over its red diffuseColor.
+TEST_F(USDRenderStormLayeredTest, StormLayeredSurfaceMixesItsPaintBeforeLighting)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const float green[4] = { 0.f, 1.f, 0.f, 1.f };
+    const float none[4] = { 0.f, 0.f, 0.f, 0.f };
+    const std::vector<float> rgba = renderLayered(dir, "diffuseColorPaint", green, none);
+    ASSERT_EQ((std::size_t)kWidth * kHeight * 4, rgba.size());
+
+    double left[4], right[4];
+    meanAround(rgba, kWidth / 2 - kWidth / 10, kHeight / 2, left);
+    meanAround(rgba, kWidth / 2 + kWidth / 10, kHeight / 2, right);
+    EXPECT_NEAR(1., left[3], 0.01) << "the quad covers the left sample";
+    EXPECT_NEAR(1., right[3], 0.01) << "the quad covers the right sample";
+    EXPECT_GT(left[1], 0.1) << "left " << left[0] << ", " << left[1] << ", " << left[2];
+    EXPECT_GT(left[1], 5. * left[0]);
+    EXPECT_GT(left[1], 5. * left[2]);
+    EXPECT_GT(right[0], 0.1) << "right " << right[0] << ", " << right[1] << ", " << right[2];
+    EXPECT_GT(right[0], 5. * right[1]);
+    EXPECT_GT(right[0], 5. * right[2]);
+}
+
+// The left half's layer is the tangent +x normal at half coverage, as painted: 0.5 + 0.5 * n, then
+// premultiplied. Over the flat (0, 0, 1) it mixes to (0.5, 0, 0.5), which normalized tilts the
+// surface 45 degrees from the headlight, so its diffuse is cos 45 of the flat right half's. The
+// specular is white, so red less green leaves the diffuse alone.
+TEST_F(USDRenderStormLayeredTest, StormLayeredSurfaceNormalMixIsUnitLength)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const float tilted[4] = { 0.5f, 0.25f, 0.25f, 0.5f };
+    const float none[4] = { 0.f, 0.f, 0.f, 0.f };
+    const std::vector<float> rgba = renderLayered(dir, "normalPaint", tilted, none);
+    ASSERT_EQ((std::size_t)kWidth * kHeight * 4, rgba.size());
+
+    double left[4], right[4];
+    meanAround(rgba, kWidth / 2 - kWidth / 10, kHeight / 2, left);
+    meanAround(rgba, kWidth / 2 + kWidth / 10, kHeight / 2, right);
+    const double flat = right[0] - right[1];
+    const double mixed = left[0] - left[1];
+    ASSERT_GT(flat, 0.05) << "right " << right[0] << ", " << right[1] << ", " << right[2];
+    EXPECT_NEAR(std::sqrt(0.5), mixed / flat, 0.08) << "left " << left[0] << ", " << left[1] << ", " << left[2];
 }

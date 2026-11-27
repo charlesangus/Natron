@@ -217,7 +217,7 @@ composeTile(const TileArgs& args,
         return true;
     }
 
-    const bool paintMeshes = colour && !hasBase;
+    const bool paintMeshes = colour && !hasBase && !args.paintOnly;
     if (paintMeshes || overlaps) {
         // The index of the last mesh covering each texel, plus one; 0 for none.
         std::vector<std::uint16_t> owner16;

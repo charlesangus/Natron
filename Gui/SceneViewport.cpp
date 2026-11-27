@@ -13794,7 +13794,10 @@ overlayImage(const USDTexturePaint::SessionBuffer& buffer)
             // A plane without alpha reads 0 there.
             const float a = (p[3] > 0.f) ? std::min(1.f, p[3]) : 1.f;
             const int alpha = (int)std::lround(a * 255.f);
-            out[x] = qPremultiply(qRgba(encodeDisplay(p[0]), encodeDisplay(p[1]), encodeDisplay(p[2]), alpha));
+            // The strokes are premultiplied, which qPremultiply() would do again after the display
+            // encoding: soft edges over a transparent view, as in Paint Only, would darken.
+            const float unpremultiply = (p[3] > 0.f) ? 1.f / a : 1.f;
+            out[x] = qPremultiply(qRgba(encodeDisplay(p[0] * unpremultiply), encodeDisplay(p[1] * unpremultiply), encodeDisplay(p[2] * unpremultiply), alpha));
         }
     }
 

@@ -295,21 +295,33 @@ sessionKnob(const RotoLayerPtr& layer,
     return layer ? std::dynamic_pointer_cast<K>(layer->getHostKnobByName(scriptName)) : std::shared_ptr<K>();
 }
 
-// The purposes, UDIM tiles and first and last frames a bake record ("count;purposes;tiles;first,last") names.
+const char* const kBakeRecordPaintOnly = "paint";
+
+/**
+ * The purposes, UDIM tiles and first and last frames a bake record names, and whether it was
+ * baked in Paint Only: "count;purposes;tiles;first,last", followed by ";paint" for Paint Only.
+ **/
 void
 parseBakeRecord(const std::string& record,
                 std::vector<std::string>* purposes,
                 std::vector<int>* tiles,
-                std::pair<int, int>* frames = 0)
+                std::pair<int, int>* frames = 0,
+                bool* paintOnly = 0)
 {
     purposes->clear();
     tiles->clear();
     if (frames) {
         *frames = std::make_pair(1, 1);
     }
+    if (paintOnly) {
+        *paintOnly = false;
+    }
     const QStringList fields = QString::fromStdString(record).split(QLatin1Char(';'));
-    if (fields.size() != 4) {
+    if ((fields.size() != 4) && ((fields.size() != 5) || (fields[4] != QLatin1String(kBakeRecordPaintOnly)))) {
         return;
+    }
+    if (paintOnly) {
+        *paintOnly = fields.size() == 5;
     }
     if (frames) {
         const QStringList range = fields[3].split(QLatin1Char(','));
@@ -339,12 +351,17 @@ nextBakeRecord(const std::string& previous,
                const QStringList& purposes,
                const QStringList& tiles,
                int firstFrame,
-               int lastFrame)
+               int lastFrame,
+               bool paintOnly = false)
 {
     const QStringList fields = QString::fromStdString(previous).split(QLatin1Char(';'));
     const int count = fields.isEmpty() ? 0 : fields.front().toInt();
+    QString record = QString::fromUtf8("%1;%2;%3;%4,%5").arg(count + 1).arg(purposes.join(QLatin1Char(','))).arg(tiles.join(QLatin1Char(','))).arg(firstFrame).arg(lastFrame);
+    if (paintOnly) {
+        record += QLatin1Char(';') + QLatin1String(kBakeRecordPaintOnly);
+    }
 
-    return QString::fromUtf8("%1;%2;%3;%4,%5").arg(count + 1).arg(purposes.join(QLatin1Char(','))).arg(tiles.join(QLatin1Char(','))).arg(firstFrame).arg(lastFrame).toStdString();
+    return record.toStdString();
 }
 
 // Changes whenever the file at path is written, replaced or deleted.
@@ -489,6 +506,32 @@ USDTexturePaint::initializeKnobs()
     textureMode->setAnimationEnabled(false);
     page->addKnob(textureMode);
     _textureMode = textureMode;
+
+    KnobChoicePtr outputMode = createKnob<KnobChoice>(tr("Output Mode"));
+    outputMode->setName(kUSDTexturePaintParamOutputMode);
+    outputMode->setHintToolTip(tr("What the strokes are laid over. Locked while a Bake Output is in effect: undo the bake to "
+                                  "change it.")
+                                   .toStdString());
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("overBase", tr("Over Base").toStdString(),
+                                       tr("The strokes are painted over the look of the meshes, the Bake Inputs files or "
+                                          "their constant colour, and the output is the painted texture.")
+                                           .toStdString()));
+        options.push_back(ChoiceOption("paintOnly", tr("Paint Only").toStdString(),
+                                       tr("The strokes are painted over transparent black, so the output's alpha is their "
+                                          "coverage and its colour is premultiplied by it, for layering over a material. "
+                                          "Brushes that read the texture under them, such as Blur, Smear, Clone, Dodge and "
+                                          "Burn, see nothing there. Bake Output writes the paint alone beside the Bake "
+                                          "Output Path files, as in tex.paint.<UDIM>.exr, and the Bake Output Path files as "
+                                          "the paint over the Bake Inputs base.")
+                                           .toStdString()));
+        outputMode->populateChoices(options);
+    }
+    outputMode->setDefaultValue((int)eOutputModeOverBase);
+    outputMode->setAnimationEnabled(false);
+    page->addKnob(outputMode);
+    _outputMode = outputMode;
 
     KnobOutputFilePtr bakeInputsPath = createKnob<KnobOutputFile>(tr("Bake Inputs Path"));
     bakeInputsPath->setName(kUSDTexturePaintParamBakeInputsPath);
@@ -736,6 +779,14 @@ USDTexturePaint::onEffectCreated(bool /*mayCreateFileDialog*/,
             context->refreshRotoPaintTree();
         }
     }
+    refreshOutputModeLock();
+}
+
+void
+USDTexturePaint::onKnobsLoaded()
+{
+    refreshOutputModeLock();
+    syncSessionViews();
 }
 
 Route
@@ -950,6 +1001,7 @@ USDTexturePaint::getTileCacheKey(double time,
         _tileResolution.lock(),
         _bufferResolution.lock(),
         _textureMode.lock(),
+        _outputMode.lock(),
         getNode()->getLayerKnob(),
     };
     for (const KnobIPtr& knob : knobs) {
@@ -1096,24 +1148,70 @@ USDTexturePaint::hasBakedOutput() const
     return !purposes.empty() && !tiles.empty();
 }
 
+bool
+USDTexturePaint::isBakedOutputPaintOnly() const
+{
+    KnobStringPtr knob = _bakedOutput.lock();
+    std::vector<std::string> purposes;
+    std::vector<int> tiles;
+    bool paintOnly = false;
+
+    parseBakeRecord(knob ? knob->getValue() : std::string(), &purposes, &tiles, 0, &paintOnly);
+
+    return paintOnly && !purposes.empty() && !tiles.empty();
+}
+
+bool
+USDTexturePaint::checkOutputModeMatchesBake(std::string* error) const
+{
+    if (!hasBakedOutput() || (isBakedOutputPaintOnly() == (getOutputMode() == eOutputModePaintOnly))) {
+        return true;
+    }
+    *error = tr("Output Mode is %1 but the Bake Output in effect was baked in %2, whose files are the only record of its "
+                "frozen sessions: set Output Mode back, or undo the bake.")
+                 .arg(getOutputMode() == eOutputModePaintOnly ? tr("Paint Only") : tr("Over Base"))
+                 .arg(isBakedOutputPaintOnly() ? tr("Paint Only") : tr("Over Base"))
+                 .toStdString();
+
+    return false;
+}
+
+void
+USDTexturePaint::refreshOutputModeLock()
+{
+    KnobChoicePtr knob = _outputMode.lock();
+
+    if (knob) {
+        knob->setAllDimensionsEnabled(!hasBakedOutput());
+    }
+}
+
 std::string
 USDTexturePaint::getBakedOutputPath(const std::string& purpose,
                                     int tile,
-                                    double time) const
+                                    double time,
+                                    bool overBase) const
 {
     KnobStringPtr knob = _bakedOutput.lock();
     std::vector<std::string> purposes;
     std::vector<int> tiles;
     std::pair<int, int> frames;
+    bool paintOnly = false;
 
-    parseBakeRecord(knob ? knob->getValue() : std::string(), &purposes, &tiles, &frames);
+    parseBakeRecord(knob ? knob->getValue() : std::string(), &purposes, &tiles, &frames, &paintOnly);
     if ((std::find(purposes.begin(), purposes.end(), purpose) == purposes.end()) || (std::find(tiles.begin(), tiles.end(), tile) == tiles.end())) {
         return std::string();
     }
     std::string pattern;
     std::string error;
     std::string path;
-    if (!getBakeOutputPattern(&pattern, &error) || !bakedFilePath(pattern, purpose, tile, recordFrame(time, frames.first, frames.second), &path, &error)) {
+    if (!getBakeOutputPattern(&pattern, &error)) {
+        return std::string();
+    }
+    if (paintOnly && !overBase) {
+        pattern = paintOnlyPattern(pattern);
+    }
+    if (!bakedFilePath(pattern, purpose, tile, recordFrame(time, frames.first, frames.second), &path, &error)) {
         return std::string();
     }
 
@@ -1129,11 +1227,19 @@ USDTexturePaint::getBakedOutputFiles() const
     std::pair<int, int> frames;
     std::vector<std::string> files;
 
-    parseBakeRecord(knob ? knob->getValue() : std::string(), &purposes, &tiles, &frames);
+    bool paintOnly = false;
+
+    parseBakeRecord(knob ? knob->getValue() : std::string(), &purposes, &tiles, &frames, &paintOnly);
     for (int frame = frames.first; frame <= frames.second; ++frame) {
         for (int tile : tiles) {
             for (const std::string& purpose : purposes) {
-                const std::string path = getBakedOutputPath(purpose, tile, frame);
+                if (paintOnly) {
+                    const std::string paint = getBakedOutputPath(purpose, tile, frame);
+                    if (!paint.empty()) {
+                        files.push_back(paint);
+                    }
+                }
+                const std::string path = getBakedOutputPath(purpose, tile, frame, true);
                 if (!path.empty()) {
                     files.push_back(path);
                 }
@@ -1149,7 +1255,7 @@ USDTexturePaint::getBasePath(const std::string& purpose,
                              int tile,
                              double time) const
 {
-    const std::string output = getBakedOutputPath(purpose, tile, time);
+    const std::string output = getBakedOutputPath(purpose, tile, time, true);
 
     return output.empty() ? getBakedInputPath(purpose, tile, time) : output;
 }
@@ -1303,6 +1409,8 @@ struct USDTexturePaint::BakeOutputRun {
     // Taken on the main thread as the bake begins: the sessions with strokes not frozen then, each
     // with its content hash then. They are all the bake renders and all it freezes.
     std::vector<std::pair<RotoLayerPtr, U64>> sessions;
+    // The Output Mode as the bake was prepared, which the tiles it reads were composed in.
+    bool paintOnly = false;
     // The same sessions, which the bake's tiles lay over the base.
     std::vector<RotoLayerPtr> rendered;
     std::vector<std::string> files;
@@ -1456,9 +1564,10 @@ USDTexturePaint::prepareBakeOutput(double time,
                                    BakeOutputRun* run,
                                    std::string* error)
 {
-    if (!getBakeOutputPattern(&run->pattern, error)) {
+    if (!getBakeOutputPattern(&run->pattern, error) || !checkOutputModeMatchesBake(error)) {
         return false;
     }
+    run->paintOnly = getOutputMode() == eOutputModePaintOnly;
     KnobStringPtr uvPrimvar = _uvPrimvar.lock();
     run->time = getTextureTime(time);
     run->view = view;
@@ -1515,6 +1624,9 @@ USDTexturePaint::snapshotBakeOutput(BakeOutputRun* run,
 bool
 USDTexturePaint::isBakeOutputSnapshotCurrent(const BakeOutputRun& run) const
 {
+    if (run.paintOnly != (getOutputMode() == eOutputModePaintOnly)) {
+        return false;
+    }
     const std::list<RotoLayerPtr> sessions = getSessions();
 
     for (const std::pair<RotoLayerPtr, U64>& entry : run.sessions) {
@@ -1577,6 +1689,9 @@ USDTexturePaint::runBakeOutput(BakeOutputRun& run,
     const double steps = (double)tiles.size() * (double)(run.lastFrame - run.firstFrame + 1);
     double stepsDone = 0.;
     std::set<std::string> swept;
+    // The scene of the frame an Animated Paint Only bake composes the Bake Inputs base over.
+    std::unique_ptr<InputScene> frameScene;
+    double frameSceneTime = 0.;
     for (int frame = run.firstFrame; frame <= run.lastFrame; ++frame) {
         const double frameTime = animated ? (double)frame : run.time;
         const std::string framePattern = expandFrame(run.pattern, run.viewNames, frame);
@@ -1595,9 +1710,14 @@ USDTexturePaint::runBakeOutput(BakeOutputRun& run,
             }
             bool rebuilt = false;
             std::size_t index = 0;
+            std::list<ImageLayerDesc>::const_iterator plane = run.planes.begin();
             for (const QString& purpose : run.purposes) {
                 if (control.cancelled && control.cancelled()) {
                     return false;
+                }
+                const bool colour = (plane != run.planes.end()) && plane->isColorLayer();
+                if (plane != run.planes.end()) {
+                    ++plane;
                 }
                 std::vector<float> rgba;
                 const std::size_t planeIndex = index++;
@@ -1615,18 +1735,69 @@ USDTexturePaint::runBakeOutput(BakeOutputRun& run,
                         return false;
                     }
                 }
-                std::string path;
-                if (!MaterialBake::purposePath(framePattern, purpose.toStdString(), tile, &path, error)) {
-                    return false;
+                std::vector<std::pair<std::string, std::shared_ptr<std::vector<float>>>> targets;
+                if (run.paintOnly) {
+                    std::string paintPath;
+                    if (!MaterialBake::purposePath(paintOnlyPattern(framePattern), purpose.toStdString(), tile, &paintPath, error)) {
+                        return false;
+                    }
+                    if (animated && (!frameScene || (frameSceneTime != frameTime))) {
+                        frameScene.reset(new InputScene);
+                        if (!openInputScene(run.input, frameTime, run.view, run.fps, frameScene.get(), error)) {
+                            return false;
+                        }
+                        if (!frameScene->stage) {
+                            *error = tr("There is no input scene to bake the painted texture of.").toStdString();
+
+                            return false;
+                        }
+                        frameSceneTime = frameTime;
+                    }
+                    const InputScene& baseScene = animated ? *frameScene : scene;
+                    USDTexturePaintCache::TileArgs baseArgs;
+                    baseArgs.stage = baseScene.stage;
+                    baseArgs.meshes = meshes;
+                    baseArgs.stName = stName;
+                    baseArgs.time = baseScene.time;
+                    baseArgs.udimTile = tile;
+                    baseArgs.size = run.size;
+                    baseArgs.basePath = getBakedInputPath(purpose.toStdString(), tile, frameTime);
+                    baseArgs.cancelled = control.cancelled;
+                    std::shared_ptr<std::vector<float>> overBase = std::make_shared<std::vector<float>>();
+                    if (!USDTexturePaintCache::composeTile(baseArgs, colour, std::vector<USDTexturePaintCache::PaintSession>(), overBase.get(), 0, error)) {
+                        return false;
+                    }
+                    if (overBase->size() != rgba.size()) {
+                        *error = tr("The base of tile %1 was composed at the wrong size.").arg(tile).toStdString();
+
+                        return false;
+                    }
+                    // The paint is premultiplied by its coverage, so it lays over the base as is.
+                    for (std::size_t i = 0; i < rgba.size(); i += 4) {
+                        const float keep = 1.f - rgba[i + 3];
+                        for (std::size_t c = 0; c < 4; ++c) {
+                            (*overBase)[i + c] = rgba[i + c] + (*overBase)[i + c] * keep;
+                        }
+                    }
+                    targets.push_back(std::make_pair(paintPath, std::make_shared<std::vector<float>>(std::move(rgba))));
+                    targets.push_back(std::make_pair(std::string(), overBase));
+                } else {
+                    targets.push_back(std::make_pair(std::string(), std::make_shared<std::vector<float>>(std::move(rgba))));
                 }
-                const std::string directory = std::filesystem::path(path).parent_path().string();
-                if (swept.insert(directory).second) {
-                    removeStaleBakeTemps(directory);
+                for (std::pair<std::string, std::shared_ptr<std::vector<float>>>& target : targets) {
+                    std::string path = target.first;
+                    if (path.empty() && !MaterialBake::purposePath(framePattern, purpose.toStdString(), tile, &path, error)) {
+                        return false;
+                    }
+                    const std::string directory = std::filesystem::path(path).parent_path().string();
+                    if (swept.insert(directory).second) {
+                        removeStaleBakeTemps(directory);
+                    }
+                    if (!writeBakeTarget(run, path, target.second, control, error)) {
+                        return false;
+                    }
+                    run.files.push_back(path);
                 }
-                if (!writeBakeTarget(run, path, std::make_shared<std::vector<float>>(std::move(rgba)), control, error)) {
-                    return false;
-                }
-                run.files.push_back(path);
             }
             if (frame == run.firstFrame) {
                 run.tileNames.push_back(QString::number(tile));
@@ -1884,9 +2055,10 @@ USDTexturePaint::applyBakeOutput(BakeOutputRun& run,
         state->frozen.push_back(entry.first);
     }
     if (record) {
-        state->bakedRecord = nextBakeRecord(state->record, run.purposes, run.tileNames, run.firstFrame, run.lastFrame);
+        state->bakedRecord = nextBakeRecord(state->record, run.purposes, run.tileNames, run.firstFrame, run.lastFrame, run.paintOnly);
         record->setValue(state->bakedRecord);
     }
+    refreshOutputModeLock();
     syncSessionViews();
 }
 
@@ -1950,6 +2122,7 @@ USDTexturePaint::restoreBakeOutputState(const BakeOutputState& state)
     // Tiles composed over the undone bake's files must not be used again, whatever their key;
     // the next tile built deletes them.
     ++*_tileEpoch;
+    refreshOutputModeLock();
     syncSessionViews();
 }
 
@@ -1967,6 +2140,7 @@ USDTexturePaint::reapplyBakeOutputState(const BakeOutputState& state)
         record->setValue(state.bakedRecord);
     }
     ++*_tileEpoch;
+    refreshOutputModeLock();
     syncSessionViews();
 }
 
@@ -2881,6 +3055,10 @@ USDTexturePaint::buildTiles(double time,
     AppInstancePtr app = getApp();
 
     note->clear();
+    if (!checkOutputModeMatchesBake(error)) {
+        return false;
+    }
+    const bool paintOnly = getOutputMode() == eOutputModePaintOnly;
 
     // A base file deleted or unreadable since the bake is an error rather than the constant
     // colour, which would paint over a look other than the one painted against.
@@ -2889,7 +3067,7 @@ USDTexturePaint::buildTiles(double time,
     for (const ImageLayerDesc& plane : planes) {
         const std::string purpose = planePurpose(plane);
         const std::string output = getBakedOutputPath(purpose, tile, time);
-        const std::string basePath = output.empty() ? getBakedInputPath(purpose, tile, time) : output;
+        const std::string basePath = (output.empty() && !paintOnly) ? getBakedInputPath(purpose, tile, time) : output;
         basePaths.push_back(basePath);
         if (basePath.empty()) {
             continue;
@@ -2925,6 +3103,7 @@ USDTexturePaint::buildTiles(double time,
     USDTexturePaintCache::TileArgs args;
     args.udimTile = tile;
     args.size = size;
+    args.paintOnly = paintOnly;
     args.cancelled = cancelled;
     if (scene.stage) {
         args.stage = scene.stage;
@@ -3227,6 +3406,33 @@ USDTexturePaint::recordFrame(double time,
     return std::clamp((int)std::floor(time + 0.5), firstFrame, std::max(firstFrame, lastFrame));
 }
 
+USDTexturePaint::OutputModeEnum
+USDTexturePaint::getOutputMode() const
+{
+    KnobChoicePtr knob = _outputMode.lock();
+
+    return (knob && (knob->getValue() == (int)eOutputModePaintOnly)) ? eOutputModePaintOnly : eOutputModeOverBase;
+}
+
+std::string
+USDTexturePaint::paintOnlyPattern(const std::string& pattern)
+{
+    const std::string token("<UDIM>");
+    const std::size_t at = pattern.find(token);
+
+    if (at == std::string::npos) {
+        return pattern;
+    }
+    std::string result = pattern;
+    if ((at > 0) && ((pattern[at - 1] == '.') || (pattern[at - 1] == '_'))) {
+        result.insert(at, std::string("paint") + pattern[at - 1]);
+    } else {
+        result.insert(at, ".paint.");
+    }
+
+    return result;
+}
+
 USDTexturePaint::TextureModeEnum
 USDTexturePaint::getTextureMode() const
 {
@@ -3315,6 +3521,7 @@ USDTexturePaint::syncSessionView(const RotoLayerPtr& session,
     const AppInstancePtr app = getApp();
     const double now = (app && app->getTimeLine()) ? (double)app->getTimeLine()->currentFrame() : 1.;
     view->setBase(getViewBaseFiles(getTextureTime(now)), getTileResolution());
+    view->setPaintOnly(getOutputMode() == eOutputModePaintOnly);
     view->endChanges();
 
     const NodePtr scene = getNode()->getInput(0);
@@ -3457,6 +3664,14 @@ USDTexturePaint::knobChanged(KnobI* k,
               })
               != std::end(viewKnobs))) {
         syncSessionViews();
+    }
+    KnobChoicePtr outputMode = _outputMode.lock();
+    if (outputMode && (k == outputMode.get())) {
+        syncSessionViews();
+    }
+    KnobStringPtr bakedOutput = _bakedOutput.lock();
+    if (bakedOutput && (k == bakedOutput.get())) {
+        refreshOutputModeLock();
     }
     KnobChoicePtr textureMode = _textureMode.lock();
     if (textureMode && (k == textureMode.get())) {
@@ -3751,7 +3966,8 @@ USDTexturePaint::enqueueBakeOutput(double time,
         // Frozen, a session changed since it was rendered would show what the files lack; live,
         // what they hold twice. Unadopted, the files go back.
         if (!self->isBakeOutputSnapshotCurrent(*run)) {
-            self->setPersistentMessage(eMessageTypeError, tr("A session this Bake Output baked was changed while it baked, so its files were put back: bake the output again.").toStdString());
+            const bool modeChanged = run->paintOnly != (self->getOutputMode() == eOutputModePaintOnly);
+            self->setPersistentMessage(eMessageTypeError, modeChanged ? tr("Output Mode was changed while this Bake Output baked, so its files were put back: bake the output again.").toStdString() : tr("A session this Bake Output baked was changed while it baked, so its files were put back: bake the output again.").toStdString());
             self->landBake(false);
 
             return;

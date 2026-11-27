@@ -52,7 +52,7 @@ NATRON_NAMESPACE_ENTER
  * material's look baked by MaterialBake), else, on the texels a matched mesh's UV layout covers,
  * the colour plane holds the constant diffuseColor of the mesh's UsdPreviewSurface
  * (meshBaseColor(), the colour the session views show) with alpha 1, and any other plane holds
- * zero. Each session,
+ * zero; in Paint Only (TileArgs::paintOnly) every plane holds zero. Each session,
  * oldest first, is projected into the tile through its camera with occlusion, back faces culled,
  * and laid over what is below with the projected touched mask as its alpha, so that a texel the
  * strokes did not change keeps the value below it.
@@ -90,6 +90,8 @@ struct TileArgs {
     // When set, the base of the plane is this file's texels, resampled to size when it is of
     // another size, in place of the constant base.
     std::string basePath;
+    // With no basePath, the base is transparent black on every plane rather than the constant one.
+    bool paintOnly = false;
     // When it returns true the composition stops and fails, between meshes and projections.
     std::function<bool()> cancelled;
 };

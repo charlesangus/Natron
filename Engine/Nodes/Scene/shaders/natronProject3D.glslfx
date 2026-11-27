@@ -5,7 +5,8 @@
 // fragment's world position, or in Geometry space its position on the object,
 // projects through a camera, shown unlit and alpha-blended over what is behind
 // it. The plate holds straight colour, as live textures do; the surface returns
-// it premultiplied, which the translucent pass blends.
+// it premultiplied, which the translucent pass blends. Paint, premultiplied and
+// sampled at the surface's st, is laid over the projection wherever it lands.
 //
 
 -- configuration
@@ -63,6 +64,14 @@
         "outside": {
             "default": 0,
             "documentation": "Where nothing projects: 0 opaque black, 1 transparent."
+        },
+        "paint": {
+            "default": [0.0, 0.0, 0.0, 0.0],
+            "documentation": "Paint laid over the projection, colour premultiplied by its alpha. Connect a texture's rgba output read at st."
+        },
+        "paintEnabled": {
+            "default": 0,
+            "documentation": "1: paint is laid over the projection; 0: it is not read."
         }
     },
     "techniques": {
@@ -144,14 +153,29 @@ natronProject3DReferenceFlipped()
     return flip;
 }
 
+// What shows where under, premultiplied, has paint laid over it. Where neither leaves any alpha the
+// fragment is discarded rather than drawn transparent: Storm's pick applies no alpha threshold to
+// translucent materials, so a transparent fragment would still pick the prim and take its
+// selection highlight.
 vec4
-natronProject3DOutside()
+natronProject3DShown(vec4 under, vec4 paint)
 {
-    if (HdGet_outside() == 1) {
+    vec4 shown = paint + under * (1.0 - paint.a);
+    if (shown.a <= 0.0) {
         discard;
     }
 
-    return vec4(0.0, 0.0, 0.0, 1.0);
+    return ApplyColorOverrides(shown);
+}
+
+vec4
+natronProject3DOutside(vec4 paint)
+{
+    if (HdGet_outside() == 1) {
+        return natronProject3DShown(vec4(0.0), paint);
+    }
+
+    return paint + vec4(0.0, 0.0, 0.0, 1.0) * (1.0 - paint.a);
 }
 
 vec4
@@ -186,6 +210,7 @@ surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord)
     // neighbour has left, so a quad straddling the frame's edge would read a coarse, smeared
     // level. Beyond the texture, the image's data window, the sampler reads transparent black.
     vec4 plate = HdGet_plate(uv);
+    vec4 paint = (HdGet_paintEnabled() != 0) ? HdGet_paint() : vec4(0.0);
 
     int projectOn = HdGet_projectOn();
     if ((projectOn != 0) && hasFaces) {
@@ -193,28 +218,26 @@ surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord)
         vec3 outward = (gl_FrontFacing != natronProject3DReferenceFlipped()) ? Ng : -Ng;
         bool facing = dot(outward, origin.xyz - Preference.xyz * origin.w) > 0.0;
         if (facing != (projectOn == 1)) {
-            return natronProject3DOutside();
+            return natronProject3DOutside(paint);
         }
     }
 
     // Behind the camera nothing projects.
     if (c.w <= 0.0) {
-        return natronProject3DOutside();
+        return natronProject3DOutside(paint);
     }
     float depth = c.z / c.w;
     if (HdGet_clip() != 0 && (depth < -1.0 || depth > 1.0)) {
-        return natronProject3DOutside();
+        return natronProject3DOutside(paint);
     }
     // The image is transparent black beyond its format when cropped and beyond its data window
-    // always, as the 2D viewer shows it. Where nothing shows the fragment is discarded rather than
-    // drawn transparent: Storm's pick applies no alpha threshold to translucent materials, so a
-    // transparent fragment would still pick the prim and take its selection highlight.
+    // always, as the 2D viewer shows it.
     if (crop && (any(lessThan(frame, vec2(0.0))) || any(greaterThan(frame, vec2(1.0))))) {
-        discard;
+        return natronProject3DShown(vec4(0.0), paint);
     }
-    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0))) || (plate.a <= 0.0)) {
-        discard;
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+        return natronProject3DShown(vec4(0.0), paint);
     }
 
-    return ApplyColorOverrides(vec4(plate.rgb * plate.a, plate.a));
+    return natronProject3DShown(vec4(plate.rgb * plate.a, plate.a), paint);
 }

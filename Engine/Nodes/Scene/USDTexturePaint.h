@@ -67,6 +67,7 @@
 #define kUSDTexturePaintParamBakedOutput "bakedOutput"
 #define kUSDTexturePaintParamBakeGeneration "bakeGeneration"
 #define kUSDTexturePaintParamOutputTile "outputTile"
+#define kUSDTexturePaintParamOutputMode "outputMode"
 
 /**
  * The output metadata names the material input each plane of the texture set feeds, under this
@@ -117,6 +118,13 @@ struct ExplicitCamera;
  * only the sessions not frozen are laid over them, so a frozen session is never rendered or
  * projected again. The strokes stay the truth: undoing the bake unfreezes its sessions, puts back
  * the output files it overwrote, and the tiles are rebuilt from the strokes.
+ *
+ * Output Mode Paint Only lays the strokes over transparent black instead of the base: the session
+ * views render transparent black, so the output's alpha is the strokes' coverage and its colour is
+ * premultiplied by it. Bake Output in Paint Only writes that paint-only set beside the Bake Output
+ * files (paintOnlyPattern()), which the tiles then start from, and the Bake Output files
+ * themselves as the paint-only set laid over the Bake Inputs base. The mode is locked while a Bake
+ * Output is in effect, since the frozen sessions are only in the files of the mode they were baked in.
  **/
 class USDTexturePaint
     : public NativeEffectBase {
@@ -124,6 +132,11 @@ public:
     enum TextureModeEnum {
         eTextureModeStatic = 0,
         eTextureModeAnimated
+    };
+
+    enum OutputModeEnum {
+        eOutputModeOverBase = 0,
+        eOutputModePaintOnly
     };
 
     static constexpr InputSpec kInputs[] = {
@@ -230,6 +243,8 @@ public:
 
     virtual void onEffectCreated(bool mayCreateFileDialog, const CreateNodeArgs& args) OVERRIDE FINAL;
 
+    virtual void onKnobsLoaded() OVERRIDE FINAL;
+
     virtual Route route(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     virtual StatusEnum getRegionOfDefinition(U64 hash,
@@ -256,6 +271,15 @@ public:
     int getBufferResolution() const WARN_UNUSED_RETURN;
 
     TextureModeEnum getTextureMode() const WARN_UNUSED_RETURN;
+
+    OutputModeEnum getOutputMode() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The pattern of the paint-only files beside the Bake Output files of pattern: "paint"
+     * before the separator that precedes its <UDIM> token, as in tex.paint.<UDIM>.exr, or ".paint."
+     * right before the token when no '.' or '_' precedes it. pattern itself when it holds no token.
+     **/
+    static std::string paintOnlyPattern(const std::string& pattern) WARN_UNUSED_RETURN;
     /**
      * @brief The frame the texture is built at for a render at time: time itself when Animated,
      * else the first frame of the project range, so that a Static texture does not depend on
@@ -380,7 +404,10 @@ public:
                               std::vector<std::string>* files,
                               std::string* error);
 
-    // The Bake Output files the tiles start from, as the last bake wrote them. Empty before any bake.
+    /**
+     * @brief The files the last Bake Output wrote, in the order it wrote them: after a Paint Only
+     * bake, each paint-only file followed by its Bake Output file. Empty before any bake.
+     **/
     std::vector<std::string> getBakedOutputFiles() const WARN_UNUSED_RETURN;
 
     // How many session buffers have been rendered over the node's lifetime.
@@ -733,10 +760,23 @@ private:
     // Whether a Bake Output is in effect, so the tiles start from its files.
     bool hasBakedOutput() const WARN_UNUSED_RETURN;
 
-    // The Bake Output file of purpose at tile, empty when the last bake wrote none.
-    std::string getBakedOutputPath(const std::string& purpose, int tile, double time) const WARN_UNUSED_RETURN;
+    // Whether the Bake Output in effect was baked in Paint Only.
+    bool isBakedOutputPaintOnly() const WARN_UNUSED_RETURN;
 
-    // The file a tile of purpose starts from: the Bake Output file, else the Bake Inputs one.
+    // False with *error set when a Bake Output is in effect that was baked in the other Output Mode.
+    bool checkOutputModeMatchesBake(std::string* error) const WARN_UNUSED_RETURN;
+
+    // Locks Output Mode while a Bake Output is in effect.
+    void refreshOutputModeLock();
+
+    /**
+     * @brief The file of purpose at tile the tiles start from after the last Bake Output: its
+     * paint-only file after a Paint Only bake, else its Bake Output file. With overBase, the Bake
+     * Output file whichever the mode. Empty when the last bake wrote none.
+     **/
+    std::string getBakedOutputPath(const std::string& purpose, int tile, double time, bool overBase = false) const WARN_UNUSED_RETURN;
+
+    // The file the session views show for purpose at tile: the Bake Output file, else the Bake Inputs one.
     std::string getBasePath(const std::string& purpose, int tile, double time) const WARN_UNUSED_RETURN;
 
     // The colour plane's base files as USDTexturePaintView::setBase() takes them.
@@ -864,6 +904,7 @@ private:
     // Set to the baker's generation as each bake lands, so that the node's hash changes and the output refreshes.
     KnobIntWPtr _bakeGeneration;
     KnobIntWPtr _outputTile;
+    KnobChoiceWPtr _outputMode;
     RotoPaintInteractPtr _paintInteract;
     std::unique_ptr<USDTexturePaintInteract> _viewInteract;
     std::atomic<int> _sessionRenders;

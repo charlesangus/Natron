@@ -184,7 +184,12 @@ USDTexturePaintView::initializeKnobs()
     baseResolution->setDefaultValue(1024);
     _baseResolution = baseResolution;
 
-    for (const KnobIPtr& knob : std::vector<KnobIPtr> { cameraToWorld, viewHeight, aspect, orthographic, nearClip, farClip, primPattern, uvPrimvar, baseFiles, baseResolution }) {
+    KnobBoolPtr paintOnly = createKnob<KnobBool>(tr("Paint Only"));
+    paintOnly->setName(kUSDTexturePaintViewParamPaintOnly);
+    paintOnly->setDefaultValue(false);
+    _paintOnly = paintOnly;
+
+    for (const KnobIPtr& knob : std::vector<KnobIPtr> { cameraToWorld, viewHeight, aspect, orthographic, nearClip, farClip, primPattern, uvPrimvar, baseFiles, baseResolution, paintOnly }) {
         knob->setAnimationEnabled(false);
         page->addKnob(knob);
     }
@@ -264,6 +269,12 @@ USDTexturePaintView::setBase(const std::string& files,
     setIfDifferent(_baseResolution.lock(), resolution);
 }
 
+void
+USDTexturePaintView::setPaintOnly(bool paintOnly)
+{
+    setIfDifferent(_paintOnly.lock(), paintOnly);
+}
+
 double
 USDTexturePaintView::getAspect() const
 {
@@ -328,6 +339,11 @@ USDTexturePaintView::renderView(double time,
     const int height = pixels.height();
 
     rgba->assign((std::size_t)width * (std::size_t)height * 4, 0.f);
+
+    KnobBoolPtr paintOnly = _paintOnly.lock();
+    if (paintOnly && paintOnly->getValue()) {
+        return true;
+    }
 
     // With nothing to look at, strokes still paint over a transparent view.
     EffectInstancePtr input = getInput(0);

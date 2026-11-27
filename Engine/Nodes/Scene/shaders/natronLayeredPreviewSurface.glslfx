@@ -1,0 +1,609 @@
+-- glslfx version 0.1
+
+//
+// Copyright 2018 Pixar
+//
+// Licensed under the terms set forth in the LICENSE.txt file available at
+// https://openusd.org/license.
+//
+// Natron's layered UsdPreviewSurface for Storm: UsdPreviewSurface's inputs,
+// each mixable one followed by a <input>Paint layer mixed over it before
+// lighting. A layer holds colour premultiplied by its coverage, in its alpha, so
+// the mix is original * (1 - alpha) + layer; a layer with no alpha, such as an
+// RGB texture's rgba output, covers fully. Scalar inputs take the layer's first
+// channel.
+//
+
+#import $TOOLS/hdSt/shaders/surfaceHelpers.glslfx
+
+-- configuration
+{
+    "parameters": {
+        "diffuseColor": {
+            "default": [0.18, 0.18, 0.18],
+            "documentation": "As UsdPreviewSurface's diffuseColor."
+        },
+        "diffuseColorPaint": {
+            "default": [0.0, 0.0, 0.0, 0.0],
+            "documentation": "The layer over diffuseColor, premultiplied."
+        },
+        "emissiveColor": {
+            "default": [0.0, 0.0, 0.0],
+            "documentation": "As UsdPreviewSurface's emissiveColor."
+        },
+        "emissiveColorPaint": {
+            "default": [0.0, 0.0, 0.0, 0.0],
+            "documentation": "The layer over emissiveColor, premultiplied."
+        },
+        "useSpecularWorkflow": {
+            "default": 0,
+            "documentation": "As UsdPreviewSurface's useSpecularWorkflow."
+        },
+        "specularColor": {
+            "default": [0.0, 0.0, 0.0],
+            "documentation": "As UsdPreviewSurface's specularColor."
+        },
+        "specularColorPaint": {
+            "default": [0.0, 0.0, 0.0, 0.0],
+            "documentation": "The layer over specularColor, premultiplied."
+        },
+        "metallic": {
+            "default": 0.0,
+            "documentation": "As UsdPreviewSurface's metallic."
+        },
+        "metallicPaint": {
+            "default": [0.0, 0.0, 0.0, 0.0],
+            "documentation": "The layer over metallic, premultiplied, in its first channel."
+        },
+        "roughness": {
+            "default": 0.5,
+            "documentation": "As UsdPreviewSurface's roughness."
+        },
+        "roughnessPaint": {
+            "default": [0.0, 0.0, 0.0, 0.0],
+            "documentation": "The layer over roughness, premultiplied, in its first channel."
+        },
+        "clearcoat": {
+            "default": 0.0,
+            "documentation": "As UsdPreviewSurface's clearcoat."
+        },
+        "clearcoatPaint": {
+            "default": [0.0, 0.0, 0.0, 0.0],
+            "documentation": "The layer over clearcoat, premultiplied, in its first channel."
+        },
+        "clearcoatRoughness": {
+            "default": 0.01,
+            "documentation": "As UsdPreviewSurface's clearcoatRoughness."
+        },
+        "clearcoatRoughnessPaint": {
+            "default": [0.0, 0.0, 0.0, 0.0],
+            "documentation": "The layer over clearcoatRoughness, premultiplied, in its first channel."
+        },
+        "opacity": {
+            "default": 1.0,
+            "documentation": "As UsdPreviewSurface's opacity."
+        },
+        "opacityPaint": {
+            "default": [0.0, 0.0, 0.0, 0.0],
+            "documentation": "The layer over opacity, premultiplied, in its first channel."
+        },
+        "opacityMode": {
+            "default": 1,
+            "documentation": "UsdPreviewSurface's opacityMode as an integer: 1 transparent, 0 presence."
+        },
+        "opacityThreshold": {
+            "default": 0.0,
+            "documentation": "As UsdPreviewSurface's opacityThreshold."
+        },
+        "ior": {
+            "default": 1.5,
+            "documentation": "As UsdPreviewSurface's ior."
+        },
+        "normal": {
+            "default": [0.0, 0.0, 1.0],
+            "documentation": "As UsdPreviewSurface's normal: tangent space, -1 to 1."
+        },
+        "normalPaint": {
+            "default": [0.0, 0.0, 0.0, 0.0],
+            "documentation": "The layer over normal as painted, encoded 0 to 1 and premultiplied, not scaled and biased: the surface decodes it as 2 * rgb - alpha."
+        },
+        "displacement": {
+            "default": 0.0,
+            "documentation": "As UsdPreviewSurface's displacement."
+        },
+        "occlusion": {
+            "default": 1.0,
+            "documentation": "As UsdPreviewSurface's occlusion."
+        },
+        "occlusionPaint": {
+            "default": [0.0, 0.0, 0.0, 0.0],
+            "documentation": "The layer over occlusion, premultiplied, in its first channel."
+        }
+    },
+    "techniques": {
+        "default": {
+            "displacementShader": {
+                "source": [ "Preview.Displacement" ]
+            },
+            "surfaceShader": {
+                "source": [ "Preview.LightStructures",
+                            "SurfaceHelpers.Lighting",
+                            "Preview.Lighting",
+                            "Preview.LightIntegration",
+                            "SurfaceHelpers.TangentSpace",
+                            "Preview.NormalMapping",
+                            "Preview.Surface" ]
+            }
+        }
+    }
+}
+
+
+-- glsl Preview.Displacement
+
+vec4
+displacementShader(int index, vec4 Peye, vec3 Neye, vec4 patchCoord)
+{
+    float texDisplacement = HdGetScalar_displacement(index);
+    return Peye + vec4(Neye*texDisplacement, 0);
+}
+
+
+-- glsl Preview.Surface
+
+float
+natronLayerScalar(float original, vec4 layer)
+{
+    return original * (1.0 - layer.a) + layer.r;
+}
+
+vec3
+natronLayerColor(vec3 original, vec4 layer)
+{
+    return original * (1.0 - layer.a) + layer.rgb;
+}
+
+vec4
+surfaceShader(vec4 Peye, vec3 Neye, vec4 color, vec4 patchCoord)
+{
+    float clearcoatAmount    = natronLayerScalar(HdGetScalar_clearcoat(), HdGet_clearcoatPaint());
+    float clearcoatRoughness = natronLayerScalar(HdGetScalar_clearcoatRoughness(), HdGet_clearcoatRoughnessPaint());
+    vec3 diffuseColor        = HdGet_diffuseColor().xyz;
+    vec3 emissiveColor       = natronLayerColor(HdGet_emissiveColor().xyz, HdGet_emissiveColorPaint());
+    float ior                = HdGetScalar_ior();
+    float metallic           = natronLayerScalar(HdGetScalar_metallic(), HdGet_metallicPaint());
+    float occlusion          = natronLayerScalar(HdGetScalar_occlusion(), HdGet_occlusionPaint());
+    float opacity            = natronLayerScalar(HdGetScalar_opacity(), HdGet_opacityPaint());
+    float opacityThreshold   = HdGetScalar_opacityThreshold();
+    float roughness          = natronLayerScalar(HdGetScalar_roughness(), HdGet_roughnessPaint());
+    vec3 specularColor       = natronLayerColor(HdGet_specularColor().xyz, HdGet_specularColorPaint());
+    bool useSpecularWorkflow = (HdGetScalar_useSpecularWorkflow() == 1);
+    // Sampled before any fragment discards, for the texture's level of detail.
+    vec4 diffuseColorPaint   = HdGet_diffuseColorPaint();
+
+    vec3 clearcoatColor      = vec3(1.0);
+    float specularAmount     = 1.0;
+    const int opacityMode    = HdGet_opacityMode();
+
+#ifdef HD_MATERIAL_TAG_MASKED
+
+    if (opacity < opacityThreshold) {
+        discard;
+        return vec4(1.0);
+    }
+    opacity = 1.0;
+
+#else // !HD_MATERIAL_TAG_MASKED
+
+#ifdef diffuseColor_IS_PREMULTIPLIED
+    // The layer mixes over straight colour, so a premultiplied diffuse texture
+    // is unpremultiplied by its own opacity, before scale and bias, first.
+    diffuseColor = HdGet_diffuseColor_withoutScaleAndBias();
+    const float opacity_withoutScaleAndBias =
+        HdGet_opacity_withoutScaleAndBias();
+    if (opacity_withoutScaleAndBias > 0) {
+        diffuseColor.rgb /= opacity_withoutScaleAndBias;
+    }
+    diffuseColor = HdGet_diffuseColor_applyScaleAndBias(diffuseColor);
+#endif // diffuseColor_IS_PREMULTIPLIED
+
+#endif // HD_MATERIAL_TAG_MASKED
+
+    diffuseColor = natronLayerColor(diffuseColor, diffuseColorPaint);
+
+#ifndef HD_MATERIAL_TAG_MASKED
+    // If opacityMode is "transparent", opacity should only apply to the
+    // diffuseColor component.
+    if (opacityMode == 1) {
+        diffuseColor *= opacity;
+    }
+#endif // HD_MATERIAL_TAG_MASKED
+
+    // Selection highlighting.
+    vec4 colorAndOpacity = vec4(diffuseColor, opacity);
+    diffuseColor = ApplyColorOverrides(colorAndOpacity).rgb;
+
+    vec3 c = evaluateLights(
+        emissiveColor,
+        diffuseColor,
+        useSpecularWorkflow,
+        ior,
+        metallic,
+        specularAmount,
+        specularColor,
+        roughness,
+        clearcoatAmount,
+        clearcoatColor,
+        clearcoatRoughness,
+        occlusion,
+        Peye,
+        perturbFragmentNormal(Peye.xyz, Neye));
+
+    // If opacityMode is "presence", opacity applies to all color components.
+    if (opacityMode == 0) {
+        c *= opacity;
+    }
+
+    return vec4(c, opacity);
+}
+
+
+
+-- glsl Preview.LightStructures
+
+struct LightingContributions
+{
+    vec3 diffuse;
+    vec3 specular;
+};
+
+
+-- glsl Preview.Lighting
+
+#define EPSILON 0.001
+
+
+float
+SchlickFresnel(float EdotH)
+{
+    return pow(max(0.0, 1.0 - EdotH), 5.0);
+}
+
+float
+NormalDistribution(float specularRoughness, float NdotH)
+{
+    float alpha = specularRoughness * specularRoughness;
+    float alpha2 = alpha * alpha;
+    float NdotH2 = NdotH * NdotH;
+    float DDenom = (NdotH2 * (alpha2 - 1.0)) + 1.0;
+    DDenom *= DDenom;
+    DDenom *= PI;
+    float D = (alpha2 + EPSILON) / DDenom;
+    return D;
+}
+
+float
+Geometric(
+        float specularRoughness,
+        float NdotL,
+        float NdotE,
+        float NdotH,
+        float EdotH)
+{
+    float alpha = specularRoughness * specularRoughness;
+    float k = alpha * 0.5;
+    float G = NdotE / (NdotE * (1.0 - k) + k);
+    G *= NdotL / (NdotL * (1.0 - k) + k);
+    return G;
+}
+
+vec3
+evaluateDirectDiffuse()
+{
+    return vec3(1.0 / PI);
+}
+
+vec3
+evaluateDirectSpecular(
+        vec3 specularColorF0,
+        vec3 specularColorF90,
+        float specularRoughness,
+        float fresnel,
+        float NdotL,
+        float NdotE,
+        float NdotH,
+        float EdotH)
+{
+    vec3 F = mix(specularColorF0, specularColorF90, fresnel);
+    float D = NormalDistribution(specularRoughness, NdotH);
+    float G = Geometric(specularRoughness, NdotL, NdotE, NdotH, EdotH);
+    vec3 RNum = F * G * D;
+    float RDenom = 4.0f * NdotL * NdotE + EPSILON;
+    return RNum / RDenom;
+}
+
+LightingContributions
+evaluateLight(
+        vec3 diffuseColor,
+        bool useSpecularWorkflow,
+        float ior,
+        float metallic,
+        float specularAmount,
+        vec3 specularColor,
+        float specularRoughness,
+        float clearcoatAmount,
+        vec3 clearcoatColor,
+        float clearcoatRoughness,
+        float occlusion,
+        float NdotL,
+        float NdotE,
+        float NdotH,
+        float EdotH,
+        vec3 lightDiffuseIrradiance,
+        vec3 lightSpecularIrradiance)
+{
+    specularRoughness = max(0.001, specularRoughness);
+    clearcoatRoughness = max(0.001, clearcoatRoughness);
+
+    float fresnel = SchlickFresnel(EdotH);
+
+    // Evaluate diffuse
+    vec3 d = diffuseColor * evaluateDirectDiffuse();
+
+    // Evaluate specular first lobe
+    vec3 s1 = vec3(0.0);
+    const float R = (1.0 - ior) / (1.0 + ior);
+    if (specularAmount > 0.0) {
+        vec3 F0 = specularColor;
+        vec3 F90 = vec3(1.0);
+
+        if (!useSpecularWorkflow) {
+            vec3 specColor = mix(vec3(1.0), diffuseColor, metallic);
+            F0 = mix(R * R * specColor, specColor, metallic);
+            F90 = specColor;
+
+            // For metallic workflows, pure metals have no diffuse
+            d *= 1.0 - metallic;
+        }
+
+        s1 = specularAmount * evaluateDirectSpecular(
+             F0,                          // Specular color 0
+             F90,                         // Specular color 90
+             specularRoughness,           // Roughness
+             fresnel,                     // Fresnel
+             NdotL, NdotE, NdotH, EdotH); // Dot products needed for lights
+
+        // Adjust the diffuse so glazing angles have less diffuse
+        d *= (1.0 - mix(F0, F90, fresnel));
+    }
+
+    // Evaluate clearcoat
+    vec3 s2 = vec3(0.0);
+    if (clearcoatAmount > 0.0) {
+        s2 = clearcoatAmount * evaluateDirectSpecular(
+             R * R * clearcoatColor,      // Clearcoat color 0
+             clearcoatColor,              // Clearcoat color 90
+             clearcoatRoughness,          // Roughness
+             fresnel,                     // Fresnel
+             NdotL, NdotE, NdotH, EdotH); // Dot products needed for lights
+    }
+
+    LightingContributions lightingContrib;
+
+    lightingContrib.diffuse =
+        occlusion * NdotL * d * lightDiffuseIrradiance;
+
+    lightingContrib.specular =
+        occlusion * NdotL * (s1 + s2) * lightSpecularIrradiance;
+
+    return lightingContrib;
+}
+
+
+-- glsl Preview.LightIntegration
+
+mat4 GetDomeLightTransform(mat4 worldToLightTransform)
+{
+    // transform from view space to light space
+    mat4 worldToViewInverse = GetWorldToViewInverseMatrix();
+    return worldToLightTransform * worldToViewInverse;
+}
+
+LightingContributions
+evaluateIndirectLighting(
+        vec3 diffuseColor,
+        vec3 specularColor,
+        vec3 Neye,
+        vec3 Reye,
+        float NdotE,
+        float EdotH,
+        float ior,
+        float metallic,
+        float occlusion,
+        float roughness,
+        bool useSpecularWorkflow,
+        float clearcoatAmount, 
+        vec3 clearcoatColor, 
+        float clearcoatRoughness,
+        mat4 worldToLightTransform)
+{
+    LightingContributions indirect;
+    indirect.diffuse = vec3(0.0);
+    indirect.specular = vec3(0.0);
+
+#ifdef HD_HAS_domeLightIrradiance
+    vec3 F0 = specularColor;
+    vec3 F90 = vec3(1.0);
+    vec3 d = diffuseColor;
+    const float R = (1.0 - ior) / (1.0 + ior);
+    if (!useSpecularWorkflow) {
+        vec3 specColor = mix(vec3(1.0), diffuseColor, metallic);
+        F0 = mix(R * R * specColor, specColor, metallic);
+        F90 = specColor;
+
+        // For metallic workflows, pure metals have no diffuse
+        d *= 1.0 - metallic;
+    }
+    // Adjust the diffuse so glazing angles have less diffuse
+    float fresnel = SchlickFresnel(EdotH);
+    vec3 F = mix(F0, F90, fresnel);
+    d *= (1.0 - F);
+
+    mat4 transformationMatrix = GetDomeLightTransform(worldToLightTransform);
+
+    // Diffuse Component
+    vec3 dir = normalize((transformationMatrix * vec4(Neye,0.0)).xyz);
+    vec3 diffuse = HdGet_domeLightIrradiance(dir).rgb;
+
+    // Specular Component 
+    const float MAX_REFLECTION_LOD = 
+        textureQueryLevels(HdGetSampler_domeLightPrefilter());
+    float lod = roughness * MAX_REFLECTION_LOD;
+    vec3 Rdir = normalize((transformationMatrix * vec4(Reye,0.0)).xyz);
+    vec3 prefilter = HdTextureLod_domeLightPrefilter(Rdir, lod).rgb;
+
+    vec2 brdf = HdGet_domeLightBRDF(vec2(NdotE, roughness)).rg;
+
+    vec3 specular = prefilter * (F * brdf.x + brdf.y);
+
+    // Clearcoat Component
+    vec3 clearcoat = vec3(0.0);
+    if (clearcoatAmount > 0.0) {
+        const vec3 clearcoatF = clearcoatAmount * mix(
+            R * R * clearcoatColor, // Clearcoat F0
+            clearcoatColor,         // Clearcoat F90
+            fresnel);
+        lod = clearcoatRoughness * MAX_REFLECTION_LOD;
+        prefilter = HdTextureLod_domeLightPrefilter(Rdir, lod).rgb;
+        brdf = HdGet_domeLightBRDF(vec2(NdotE, clearcoatRoughness)).rg;
+        clearcoat = prefilter * (clearcoatF * brdf.x + brdf.y);
+    }
+
+    // Indirect Lighting
+    indirect.diffuse = (d * diffuse) * occlusion;
+    indirect.specular = (specular + clearcoat) * occlusion;
+
+#endif
+
+    return indirect;
+}
+
+vec3
+evaluateLights(
+        vec3 emissiveColor,
+        vec3 diffuseColor,
+        bool useSpecularWorkflow,
+        float ior,
+        float metallic,
+        float specularAmount,
+        vec3 specularColor,
+        float specularRoughness,
+        float clearcoatAmount,
+        vec3 clearcoatColor,
+        float clearcoatRoughness,
+        float occlusion,
+        vec4 Peye,
+        vec3 Neye)
+{
+    vec3 n = Neye;
+    vec3 e = normalize(-Peye.xyz);
+    float NdotE = max(0.0, dot(n, e));
+
+    vec3 Reye = reflect(-e, n);
+
+    vec3 directLight = vec3(0.0);
+    vec3 indirectLight = vec3(0.0);
+
+#if NUM_LIGHTS > 0
+    for (int i = 0; i < GetLightCount(); ++i) {
+        LightSource light = GetLightSource(i);
+
+        // Calculate necessary vector information for lighting
+        vec4 Plight = light.isIndirectLight
+                        ? vec4(0,0,0,1)
+                        : light.position;
+        vec3 l = (Plight.w == 0.0)
+                    ? normalize(Plight.xyz)
+                    : normalize(Plight - Peye).xyz;
+        vec3 h = normalize(e + l);
+        float NdotL = max(0.0, dot(n, l));
+        float NdotH = max(0.0, dot(n, h));
+        float EdotH = max(0.0, dot(e, h));
+
+        // Calculate light intensity
+        float atten = lightDistanceAttenuation(Peye, i);
+        float spot = lightSpotAttenuation(l, i);
+
+        // Calculate the shadow factor
+        float shadow = 1.0;
+    #if USE_SHADOWS
+        shadow = light.hasShadow ?
+            shadowing(/*lightIndex=*/i, Peye) : 1.0;
+    #endif
+
+        float intensity = atten * spot * shadow;
+
+        vec3 lightDiffuseIrradiance = intensity * light.diffuse.rgb;
+        vec3 lightSpecularIrradiance = intensity * light.specular.rgb;
+
+        LightingContributions lightingContrib = evaluateLight(
+            diffuseColor,
+            useSpecularWorkflow,
+            ior,
+            metallic,
+            specularAmount,
+            specularColor,
+            specularRoughness,
+            clearcoatAmount,
+            clearcoatColor,
+            clearcoatRoughness,
+            occlusion,
+            NdotL,
+            NdotE,
+            NdotH,
+            EdotH,
+            lightDiffuseIrradiance,
+            lightSpecularIrradiance);
+
+        // calculate the indirect light (DomeLight)
+        if (light.isIndirectLight) {
+
+            LightingContributions indirectLightContrib = 
+                evaluateIndirectLighting(diffuseColor, specularColor,
+                    Neye, Reye, NdotE, EdotH, ior, metallic, occlusion,
+                    specularRoughness, useSpecularWorkflow,
+                    clearcoatAmount, clearcoatColor, clearcoatRoughness,
+                    light.worldToLightTransform);
+            indirectLight = (indirectLightContrib.diffuse * light.diffuse.rgb 
+                           + indirectLightContrib.specular * light.specular.rgb);
+        }
+        // all other light sources contribute to the direct lighting
+        else {
+            directLight += (lightingContrib.diffuse + lightingContrib.specular);
+        }
+    }
+#endif
+
+    return (emissiveColor + directLight + indirectLight);
+}
+
+
+-- glsl Preview.NormalMapping
+
+vec3
+perturbFragmentNormal(vec3 P, vec3 N)
+{
+#if defined(HD_HAS_COORD_normal) || defined(HD_HAS_COORD_normalPaint)
+    vec3 under = normalize(HdGet_normal().xyz);
+    vec4 layer = HdGet_normalPaint();
+    vec3 Nt = under * (1.0 - layer.a) + (2.0 * layer.rgb - vec3(layer.a));
+    Nt = (dot(Nt, Nt) > 1e-12) ? normalize(Nt) : under;
+#if defined(HD_HAS_COORD_normal)
+    vec2 st = HdGetCoord_normal().xy;
+#else
+    vec2 st = HdGetCoord_normalPaint().xy;
+#endif
+    return PerturbNormal(P, N, st, Nt);
+#endif
+    return N;
+}

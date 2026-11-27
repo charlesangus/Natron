@@ -3905,3 +3905,86 @@ TEST_F(USDTexturePaintTest, UndoingABakeWhoseFilesAnotherNodeIsBakingIsRefusedNa
     expectColor(bakedTexelAt(red, kSmallTile, 0.5, 0.5), 0.f, 0.f, 1.f, 1.f, "the other node's bake");
     EXPECT_TRUE(bakeTemps(dir).empty());
 }
+
+namespace {
+void
+setPaintOnly(const NodePtr& paint,
+             bool paintOnly)
+{
+    getKnob<KnobChoice>(paint, kUSDTexturePaintParamOutputMode)->setValueFromID(paintOnly ? "paintOnly" : "overBase", 0);
+}
+} // anon namespace
+
+TEST_F(USDTexturePaintTest, PaintOnlyAlphaIsTheStrokeCoverage)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    (void)setBakeInputsPath(paint, dir);
+    std::vector<std::string> files;
+    std::string warning;
+    ASSERT_TRUE(bake(paint, &files, &warning));
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "green", kRedU, 0.5), 0., 1., 0.);
+
+    const std::vector<float> overBase = tileTexels(renderTile(paint));
+    ImagePtr tile = renderTile(paint);
+    ASSERT_TRUE(bool(tile));
+    expectColor(texelAt(tile, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "over base, under the stroke");
+    expectColor(texelAt(tile, 0.5, 0.9), 1.f, 0.f, 0.f, 1.f, "over base, away from the stroke");
+
+    setPaintOnly(paint, true);
+    tile = renderTile(paint);
+    ASSERT_TRUE(bool(tile));
+    expectColor(texelAt(tile, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "paint only, under the stroke");
+    expectColor(texelAt(tile, 0.5, 0.9), 0.f, 0.f, 0.f, 0.f, "paint only, away from the stroke");
+
+    setPaintOnly(paint, false);
+    EXPECT_EQ(0u, countDifferences(overBase, tileTexels(renderTile(paint)), 1e-5f)) << "over base once switched back";
+}
+
+TEST_F(USDTexturePaintTest, PaintOnlyBakeOutputKeepsThePaintAndLocksTheMode)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    (void)setBakeInputsPath(paint, dir);
+    std::vector<std::string> inputs;
+    std::string warning;
+    ASSERT_TRUE(bake(paint, &inputs, &warning));
+    const std::string overBasePath = setBakeOutputPath(paint, dir);
+    const std::string paintPath = (dir.path() + QString::fromUtf8("/out.paint.1001.exr")).toStdString();
+    setPaintOnly(paint, true);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "green", kRedU, 0.5), 0., 1., 0.);
+
+    const std::vector<float> painted = tileTexels(renderTile(paint));
+    std::vector<std::string> files;
+    UndoCommandPtr command = bakeOutput(paint, &files);
+    ASSERT_TRUE(bool(command));
+    EXPECT_NE(files.end(), std::find(files.begin(), files.end(), paintPath));
+    EXPECT_NE(files.end(), std::find(files.begin(), files.end(), overBasePath));
+    EXPECT_EQ(files, getUSDTexturePaint(paint)->getBakedOutputFiles());
+    EXPECT_TRUE(USDTexturePaint::isSessionFrozen(session));
+
+    std::vector<float> baked;
+    bool resampled = true;
+    std::string error;
+    ASSERT_TRUE(MaterialBake::readBaseTile(paintPath, kSmallTile, &baked, &resampled, &error)) << error;
+    EXPECT_EQ(0u, countDifferences(painted, baked, 1e-3f));
+    EXPECT_EQ(0u, countDifferences(painted, tileTexels(renderTile(paint)), 1e-3f)) << "paint only after the bake";
+    expectColor(bakedTexelAt(overBasePath, kSmallTile, 0.5, 0.5), 0.f, 1.f, 0.f, 1.f, "over base file under the stroke");
+    expectColor(bakedTexelAt(overBasePath, kSmallTile, 0.5, 0.9), 1.f, 0.f, 0.f, 1.f, "over base file away from the stroke");
+
+    KnobChoicePtr mode = getKnob<KnobChoice>(paint, kUSDTexturePaintParamOutputMode);
+    EXPECT_FALSE(mode->isEnabled(0)) << "locked while the bake is in effect";
+    undoBakeOutput(paint, command, true);
+    EXPECT_TRUE(mode->isEnabled(0)) << "free once the bake is undone";
+    EXPECT_FALSE(USDTexturePaint::isSessionFrozen(session));
+    undoBakeOutput(paint, command, false);
+    EXPECT_FALSE(mode->isEnabled(0)) << "locked again on redo";
+}

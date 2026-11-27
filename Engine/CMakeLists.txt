@@ -308,6 +308,10 @@ install(FILES ${NatronEngine_LIVE_TEXTURE_PLUGINFO} DESTINATION Resources/usd/na
 set(NatronEngine_PROJECT3D_GLSLFX ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/shaders/natronProject3D.glslfx)
 configure_file(${NatronEngine_PROJECT3D_GLSLFX} ${CMAKE_BINARY_DIR}/Resources/usd/natronLiveTexture/natronProject3D.glslfx COPYONLY)
 install(FILES ${NatronEngine_PROJECT3D_GLSLFX} DESTINATION Resources/usd/natronLiveTexture)
+# The layered UsdPreviewSurface Storm renders painted materials with, found the same way.
+set(NatronEngine_LAYERED_PREVIEW_GLSLFX ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/shaders/natronLayeredPreviewSurface.glslfx)
+configure_file(${NatronEngine_LAYERED_PREVIEW_GLSLFX} ${CMAKE_BINARY_DIR}/Resources/usd/natronLiveTexture/natronLayeredPreviewSurface.glslfx COPYONLY)
+install(FILES ${NatronEngine_LAYERED_PREVIEW_GLSLFX} DESTINATION Resources/usd/natronLiveTexture)
 # The natrongeo: layer resolver and file format, registered at startup by GeoLayers::registerPlugin.
 set(NatronEngine_GEO_LAYER_PLUGINFO ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/plugInfo.json)
 configure_file(${NatronEngine_GEO_LAYER_PLUGINFO} ${CMAKE_BINARY_DIR}/Resources/usd/natronGeo/plugInfo.json COPYONLY)

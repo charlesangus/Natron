@@ -622,8 +622,7 @@ TEST(VolumeRenderCycles, ASurfaceOnlyMaterialKeepsTheDefaultVolume)
     expectASurfaceOnlyMaterialKeepsTheDefaultVolume(kRenderDelegateCyclesId);
 }
 
-// Disabled until the image's Cycles turns motion blur on from the shutter and scales velocity by it.
-TEST(VolumeRenderCycles, DISABLED_VelocityBlursTheVolume)
+TEST(VolumeRenderCycles, VelocityBlursTheVolume)
 {
     if (!CyclesTestUtils::cyclesOrSkip()) {
         return;

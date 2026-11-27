@@ -1764,6 +1764,94 @@ TEST_F(USDRenderCyclesSubdivisionTest, KnobsSubdivideAndDice)
 }
 
 namespace {
+// Usda text for a strip of two quads facing the camera, each two units wide and high, the left one
+// over x in [-2, 0] and the right one over [0, 2], with extra text in its body.
+std::string
+subdivisionStrip(const std::string& extra = std::string())
+{
+    return std::string("    def Mesh \"Strip\"\n    {\n"
+                       "        uniform token subdivisionScheme = \"catmullClark\"\n"
+                       "        int[] faceVertexCounts = [4, 4]\n"
+                       "        int[] faceVertexIndices = [0, 1, 4, 3, 1, 2, 5, 4]\n"
+                       "        point3f[] points = [(-2, -1, 0), (0, -1, 0), (2, -1, 0), (-2, 1, 0), (0, 1, 0), (2, 1, 0)]\n"
+                       "        color3f[] primvars:displayColor = [(0.8, 0.8, 0.8)]\n")
+        + extra + "    }\n";
+}
+} // anon namespace
+
+// A subdivided mesh leaves its hole faces undrawn and draws the others as it would without them.
+TEST_F(USDRenderCyclesSubdivisionTest, AHoleFaceIsNotDrawn)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    std::vector<float> whole, holed;
+    ASSERT_TRUE(renderStage(subdivisionStrip(), on(), &whole));
+    ASSERT_TRUE(renderStage(subdivisionStrip("        int[] holeIndices = [1]\n"), on(), &holed));
+
+    // Columns well inside the left quad, which spans about 11 to 32, and the right, 32 to 53.
+    const double wholeLeft = coverage(whole, 14, 28);
+    const double wholeRight = coverage(whole, 36, 50);
+    EXPECT_GT(wholeLeft, 100.);
+    EXPECT_GT(wholeRight, 100.);
+    EXPECT_NEAR(wholeLeft, coverage(holed, 14, 28), 0.02 * wholeLeft);
+    EXPECT_LT(coverage(holed, 36, 50), 0.02 * wholeRight);
+}
+
+// Cycles dices in pixel space as seen from the camera, so a mesh diced from far away is diced
+// again when the camera comes close: an engine that rendered the far view first renders the near
+// one as a fresh engine does, not as the mesh diced from the far camera looks from near.
+TEST_F(USDRenderCyclesSubdivisionTest, MovingTheCameraDicesAgain)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const QString file = _dir.path() + QString::fromUtf8("/moving.usda");
+    ASSERT_TRUE(_dir.isValid());
+    ASSERT_TRUE(writeSubdivisionStage(file, subdivisionCube("Cube", "catmullClark")));
+    std::map<std::string, PXR_NS::VtValue> settings = fixedSampling(16);
+    settings["natron:subdivisionSurfaces"] = PXR_NS::VtValue(true);
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, settings);
+    HydraRender::releaseAllCpuEngines();
+    NodePtr reader;
+    NodePtr node = createGraph(&reader, file.toStdString().c_str());
+    ASSERT_TRUE(bool(node));
+
+    static const int reused = 0;
+    static const int fresh = 1;
+    static const int farDiced = 2;
+    HydraRender::Request request;
+    ASSERT_TRUE(cyclesRequest(reader, &reused, &request));
+    const PXR_NS::GfFrustum nearView = request.frustum;
+    request.frustum.SetPosition(PXR_NS::GfVec3d(0., 0., 400.));
+    HydraRender::Result farRender;
+    std::string error;
+    ASSERT_TRUE(HydraRender::render(request, &farRender, &error)) << error;
+
+    request.frustum = nearView;
+    HydraRender::Result moved;
+    ASSERT_TRUE(HydraRender::render(request, &moved, &error)) << error;
+    request.owner = &fresh;
+    HydraRender::Result reference;
+    ASSERT_TRUE(HydraRender::render(request, &reference, &error)) << error;
+
+    settings["natron:dicingCamera"] = PXR_NS::VtValue(std::string("/World/FarCam"));
+    HydraRender::setRendererSettings(kRenderDelegateCyclesId, settings);
+    request.owner = &farDiced;
+    HydraRender::Result stale;
+    ASSERT_TRUE(HydraRender::render(request, &stale, &error)) << error;
+
+    const std::size_t pixels = (std::size_t)kSize * (std::size_t)kSize;
+    ASSERT_EQ(pixels * 4, moved.rgba.size());
+    ASSERT_EQ(pixels * 4, reference.rgba.size());
+    ASSERT_EQ(pixels * 4, stale.rgba.size());
+    const double staleGap = coverage(reference.rgba) - coverage(stale.rgba);
+    ASSERT_GT(staleGap, 1.) << "dicing from the far camera does not coarsen the near view";
+    EXPECT_LT(std::fabs(coverage(reference.rgba) - coverage(moved.rgba)), 0.25 * staleGap);
+    EXPECT_LE((double)differingPixels(moved.rgba, reference.rgba), kDifferingFraction * (double)pixels);
+}
+
+namespace {
 // Two assets, each a payload holding a unit cube, left and right of the centre of /World/Cam's view.
 class PayloadPair {
 public:

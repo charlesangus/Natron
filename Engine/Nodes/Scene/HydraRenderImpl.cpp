@@ -3116,25 +3116,10 @@ setEngineCamera(UsdImagingGLEngine* engine,
 }
 
 bool
-rendersThroughCamera(const std::string& renderer,
-                     FitModeEnum fit,
-                     double pixelAspect)
+rendersThroughCamera(const std::string& /*renderer*/,
+                     FitModeEnum /*fit*/,
+                     double /*pixelAspect*/)
 {
-    struct Delegate {
-        bool (*matches)(const std::string&);
-        bool honoursFit;
-        bool honoursPixelAspect;
-    };
-    static const Delegate kDelegates[] = {
-        { &CyclesAovs::isCycles, false, false },
-        { &MoonRayAovs::isMoonRay, true, true },
-    };
-    for (const Delegate& delegate : kDelegates) {
-        if (delegate.matches(renderer)) {
-            return (delegate.honoursFit || (fit == eFitModeExpand)) && (delegate.honoursPixelAspect || (pixelAspect == 1.));
-        }
-    }
-
     return true;
 }
 

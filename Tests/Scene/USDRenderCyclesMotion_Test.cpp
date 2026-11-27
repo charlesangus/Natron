@@ -243,8 +243,7 @@ coverageDifferences(const std::vector<float>& a,
 }
 } // anon namespace
 
-// Disabled until the image's Cycles turns motion blur on from the shutter and samples it.
-TEST(USDRenderCyclesMotion, DISABLED_TheShutterBlursAMovingTransform)
+TEST(USDRenderCyclesMotion, TheShutterBlursAMovingTransform)
 {
     if (!CyclesTestUtils::cyclesOrSkip()) {
         return;
@@ -252,8 +251,7 @@ TEST(USDRenderCyclesMotion, DISABLED_TheShutterBlursAMovingTransform)
     expectTheShutterBlursAlongTheMotion(kMovingCube);
 }
 
-// Disabled until the image's Cycles turns motion blur on from the shutter and samples it.
-TEST(USDRenderCyclesMotion, DISABLED_TheShutterBlursMovingPoints)
+TEST(USDRenderCyclesMotion, TheShutterBlursMovingPoints)
 {
     if (!CyclesTestUtils::cyclesOrSkip()) {
         return;
@@ -265,8 +263,7 @@ TEST(USDRenderCyclesMotion, DISABLED_TheShutterBlursMovingPoints)
 // fill fit of an image wider than the aperture and at the expand fit of pixels twice as wide as
 // tall, and the two framings differ. Where rendersThroughCamera() is false the path render goes
 // through the frustum as well, which would match it whatever Cycles does.
-// Disabled until the image's Cycles honours the window policy override and the pixel aspect.
-TEST(USDRenderCyclesMotion, DISABLED_ThePathFramesAsTheFrustum)
+TEST(USDRenderCyclesMotion, ThePathFramesAsTheFrustum)
 {
     if (!CyclesTestUtils::cyclesOrSkip()) {
         return;

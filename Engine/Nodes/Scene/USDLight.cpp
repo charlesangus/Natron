@@ -34,6 +34,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Nodes/KnobReader.h"
+#include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
@@ -134,6 +135,25 @@ USDLight::initializeKnobs()
     normalize->setDefaultValue(true);
     page->addKnob(normalize);
     _normalize = normalize;
+
+    KnobChoicePtr visibleInRender = createKnob<KnobChoice>(tr("Visible In Render"));
+    visibleInRender->setName(kUSDLightParamVisibleInRender);
+    visibleInRender->setHintToolTip(tr("Whether the light itself shows up when a camera looks straight at it (visibleInPrimaryRay). "
+                                       "Default authors nothing and leaves it to the renderer: a dome's environment shows as the "
+                                       "background and every other light stays hidden. On and Off author the attribute. The light "
+                                       "still illuminates the scene when hidden. A dome is hidden through the render setting, so "
+                                       "Off on one dome hides the environment behind every dome of the scene."));
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("default", tr("Default").toStdString(), tr("Author nothing: the renderer shows domes and hides other lights.").toStdString()));
+        options.push_back(ChoiceOption("on", tr("On").toStdString(), tr("The light is visible to the camera.").toStdString()));
+        options.push_back(ChoiceOption("off", tr("Off").toStdString(), tr("The light is hidden from the camera.").toStdString()));
+        visibleInRender->populateChoices(options);
+    }
+    visibleInRender->setDefaultValue((int)eVisibleInRenderDefault);
+    visibleInRender->setAnimationEnabled(false);
+    page->addKnob(visibleInRender);
+    _visibleInRender = visibleInRender;
 
     _angle = createScalarKnob(this, page, tr("Angle"), kUSDLightParamAngle,
                               tr("The angular diameter of a distant light, in degrees (inputs:angle)."), 0.53);
@@ -281,6 +301,12 @@ USDLight::authorLayer(const SceneLayerEdit& edit,
         *errorMessage = tr("USD could not define a light at %1.").arg(QString::fromStdString(path.GetString())).toStdString();
 
         return false;
+    }
+
+    KnobChoicePtr visibleInRender = _visibleInRender.lock();
+    if (authored && visibleInRender && visibleInRender->getValue() != (int)eVisibleInRenderDefault) {
+        authored = prim.CreateAttribute(PXR_NS::TfToken(kLightVisibleInPrimaryRayAttribute), PXR_NS::SdfValueTypeNames->Bool)
+                       .Set(visibleInRender->getValue() == (int)eVisibleInRenderOn);
     }
 
     const PXR_NS::UsdLuxLightAPI light(prim);

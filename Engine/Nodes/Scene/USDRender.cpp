@@ -31,6 +31,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <QCoreApplication>
@@ -43,6 +44,11 @@
 #include "Engine/ChoiceOption.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/Format.h"
+#include "Engine/Hash64.h"
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRuntime.h"
+#endif
+#include "Engine/GpuContext.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobTypes.h"
@@ -62,6 +68,8 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
 #include "Engine/SceneLoadSet.h"
 
 #include <pxr/imaging/hd/tokens.h>
@@ -84,6 +92,44 @@ primIdKey(std::uint32_t hash)
     std::snprintf(hex, sizeof(hex), "%08x", hash);
 
     return std::string(kUSDRenderMetadataPrimIdPrefix) + hex;
+}
+
+bool
+utilityUvUnwrap(const std::string& renderer,
+                const RenderSettingsPrim::Values& values)
+{
+    if (renderer != kRenderDelegateUtilityId) {
+        return false;
+    }
+    const RenderSettingsPrim::Values::const_iterator projection = values.find(kUtilitySettingProjection);
+
+    return (projection != values.end()) && projection->second.IsHolding<PXR_NS::TfToken>() && (projection->second.UncheckedGet<PXR_NS::TfToken>() == kUtilityProjectionUvUnwrap);
+}
+
+// A UV Unwrap render's pixels are the texture's texels, so it has nothing beyond them to grow into.
+int
+utilityOverscan(const std::string& renderer,
+                const RenderSettingsPrim::Values& values)
+{
+    if ((renderer != kRenderDelegateUtilityId) || utilityUvUnwrap(renderer, values)) {
+        return 0;
+    }
+    const RenderSettingsPrim::Values::const_iterator found = values.find(kUtilitySettingOverscan);
+    if (found == values.end()) {
+        return 0;
+    }
+    const PXR_NS::VtValue pixels = PXR_NS::VtValue::Cast<int>(found->second);
+
+    return pixels.IsHolding<int>() ? std::max(0, pixels.UncheckedGet<int>()) : 0;
+}
+
+// The overscan's pixels added to the canonical format; x is in pixels of the pixel aspect ratio.
+RectD
+withOverscan(const RectD& canonical,
+             int overscan,
+             double par)
+{
+    return RectD(canonical.x1 - overscan * par, canonical.y1 - overscan, canonical.x2 + overscan * par, canonical.y2 + overscan);
 }
 
 // How many frames' settings summaries are kept under one hash.
@@ -188,6 +234,33 @@ USDRender::initializeKnobs()
     headlight->setAnimationEnabled(false);
     page->addKnob(headlight);
     _headlight = headlight;
+
+    KnobBoolPtr renderPurpose = createKnob<KnobBool>(tr("Render Purpose"));
+    renderPurpose->setName(kUSDRenderParamRenderPurpose);
+    renderPurpose->setHintToolTip(tr("Draws the prims whose USD purpose is render, the full-detail geometry meant for final "
+                                     "images. Prims of the default purpose are always drawn."));
+    renderPurpose->setDefaultValue(true);
+    renderPurpose->setAnimationEnabled(false);
+    page->addKnob(renderPurpose);
+    _renderPurpose = renderPurpose;
+
+    KnobBoolPtr proxyPurpose = createKnob<KnobBool>(tr("Proxy Purpose"));
+    proxyPurpose->setName(kUSDRenderParamProxyPurpose);
+    proxyPurpose->setHintToolTip(tr("Draws the prims whose USD purpose is proxy, the lightweight stand-ins for render "
+                                    "geometry. With Render Purpose on too, both are drawn."));
+    proxyPurpose->setDefaultValue(false);
+    proxyPurpose->setAnimationEnabled(false);
+    page->addKnob(proxyPurpose);
+    _proxyPurpose = proxyPurpose;
+
+    KnobBoolPtr guidePurpose = createKnob<KnobBool>(tr("Guide Purpose"));
+    guidePurpose->setName(kUSDRenderParamGuidePurpose);
+    guidePurpose->setHintToolTip(tr("Draws the prims whose USD purpose is guide, the helper geometry not meant to be "
+                                    "seen in images."));
+    guidePurpose->setDefaultValue(false);
+    guidePurpose->setAnimationEnabled(false);
+    page->addKnob(guidePurpose);
+    _guidePurpose = guidePurpose;
 } // USDRender::initializeKnobs
 
 void
@@ -480,6 +553,12 @@ USDRender::summarizeSettings(double time,
             summary.width = active.standard.resolution[0];
             summary.height = active.standard.resolution[1];
             summary.pixelAspectRatio = active.standard.pixelAspectRatio;
+            summary.overscan = utilityOverscan(active.renderer, RenderSettingsPrim::settings(active.prim.GetPrim(), active.renderer, active.time));
+            const RenderSettingsPrim::Values values = RenderSettingsPrim::settings(active.prim.GetPrim(), kRenderDelegateUtilityId, active.time);
+            const RenderSettingsPrim::Values::const_iterator device = values.find(kUtilitySettingDevice);
+            if ((device != values.end()) && device->second.IsHolding<PXR_NS::TfToken>()) {
+                summary.utilityDevice = device->second.UncheckedGet<PXR_NS::TfToken>().GetString();
+            }
         }
     }
 
@@ -925,14 +1004,21 @@ void
 USDRender::outputFormat(double time,
                         ViewIdx view,
                         RectI* format,
-                        double* par) const
+                        double* par,
+                        int* overscan) const
 {
     const SettingsSummary summary = getSettingsSummary(time, view);
 
+    if (overscan) {
+        *overscan = 0;
+    }
     if (summary.read && summary.hasPrim) {
         const int width = summary.width;
         const int height = summary.height;
         const double aspect = summary.pixelAspectRatio;
+        if (overscan) {
+            *overscan = summary.overscan;
+        }
         if ((width > 0) && (height > 0) && (aspect > 0.)) {
             *format = RectI(0, 0, width, height);
             *par = aspect;
@@ -973,9 +1059,10 @@ USDRender::getRegionOfDefinition(U64 /*hash*/,
 {
     RectI format;
     double par;
+    int overscan;
 
-    outputFormat(time, view, &format, &par);
-    *rod = Format(format, par).toCanonicalFormat();
+    outputFormat(time, view, &format, &par, &overscan);
+    *rod = withOverscan(Format(format, par).toCanonicalFormat(), overscan, par);
 
     return eStatusOK;
 }
@@ -996,7 +1083,7 @@ USDRender::getComponentsNeededAndProduced(double time,
     produced.push_back(ImageLayerDesc::getRGBAComponents());
     produced.push_back(depthLayer());
     produced.push_back(primIdLayer());
-    // Storm renders no normal AOV.
+    // Storm and Natron Utility render no normal AOV.
     const std::shared_ptr<const SpecAovs> spec = specAovs(time, view, nullptr);
     std::string renderer;
     std::string error;
@@ -1005,7 +1092,7 @@ USDRender::getComponentsNeededAndProduced(double time,
     } else if (!activeRenderer(time, view, &renderer, &error)) {
         renderer = kRenderDelegateStormId;
     }
-    if (!RenderDelegates::isStorm(renderer)) {
+    if (!RenderDelegates::isStorm(renderer) && (renderer != kRenderDelegateUtilityId)) {
         produced.push_back(normalLayer());
     }
     for (std::size_t i = 0; spec && spec->error.empty() && (i < spec->aovs.size()); ++i) {
@@ -1036,14 +1123,38 @@ namespace {
 // How many frames' primId tables are kept under one hash.
 const std::size_t kMaxPrimIdTables = 64;
 
-// Every prim Storm can draw, so that each primId.id value a render gives has its entry.
+// The purposes a render draws besides the default one.
+enum PrimIdPurposeEnum {
+    ePrimIdPurposeRender = 1,
+    ePrimIdPurposeProxy = 2,
+    ePrimIdPurposeGuide = 4,
+};
+
+unsigned
+primIdPurposesOf(const KnobBoolWPtr& render,
+                 const KnobBoolWPtr& proxy,
+                 const KnobBoolWPtr& guide)
+{
+    const auto isOn = [](const KnobBoolWPtr& weak) {
+        const KnobBoolPtr knob = weak.lock();
+
+        return knob && knob->getValue();
+    };
+
+    return (isOn(render) ? ePrimIdPurposeRender : 0) | (isOn(proxy) ? ePrimIdPurposeProxy : 0) | (isOn(guide) ? ePrimIdPurposeGuide : 0);
+}
+
+// Every prim Storm can draw with the purposes given, so that each primId.id value a render gives has its entry.
 ImageMetadata
-primIdTableOf(const PXR_NS::UsdStageRefPtr& stage)
+primIdTableOf(const PXR_NS::UsdStageRefPtr& stage,
+              unsigned purposes)
 {
     ImageMetadata table;
     // Point instancer prototypes are commonly authored as class or over prims, which the default traversal skips but Storm draws
-    // through the instancer, so every prim is visited. The render draws the default and proxy purposes only (HydraRender leaves
-    // showGuides and showRender off), so guide- and render-purpose prims get no entry.
+    // through the instancer, so every prim is visited.
+    const bool showRender = (purposes & ePrimIdPurposeRender) != 0;
+    const bool showProxy = (purposes & ePrimIdPurposeProxy) != 0;
+    const bool showGuides = (purposes & ePrimIdPurposeGuide) != 0;
     const PXR_NS::UsdPrimRange all(stage->GetPseudoRoot(), PXR_NS::UsdTraverseInstanceProxies(PXR_NS::UsdPrimAllPrimsPredicate));
 
     for (const PXR_NS::UsdPrim& prim : all) {
@@ -1051,7 +1162,8 @@ primIdTableOf(const PXR_NS::UsdStageRefPtr& stage)
             continue;
         }
         const PXR_NS::TfToken purpose = PXR_NS::UsdGeomImageable(prim).ComputePurpose();
-        if ((purpose != PXR_NS::UsdGeomTokens->default_) && (purpose != PXR_NS::UsdGeomTokens->proxy)) {
+        if (((purpose == PXR_NS::UsdGeomTokens->render) && !showRender) || ((purpose == PXR_NS::UsdGeomTokens->proxy) && !showProxy)
+            || ((purpose == PXR_NS::UsdGeomTokens->guide) && !showGuides)) {
             continue;
         }
         const std::string path = prim.GetPath().GetString();
@@ -1067,7 +1179,16 @@ USDRender::primIdTableHash() const
 {
     const EffectInstancePtr input = getInput(0);
 
-    return input ? input->getHash() : 0;
+    if (!input) {
+        return 0;
+    }
+    // The purpose knobs decide which prims the table names.
+    Hash64 hash;
+    hash.append(input->getHash());
+    hash.append(primIdPurposesOf(_renderPurpose, _proxyPurpose, _guidePurpose));
+    hash.computeHash();
+
+    return hash.value();
 }
 
 bool
@@ -1169,9 +1290,9 @@ USDRender::deriveOutputMetadata(double time,
     if (!stage) {
         return metadata;
     }
-    table = primIdTableOf(stage);
+    table = primIdTableOf(stage, primIdPurposesOf(_renderPurpose, _proxyPurpose, _guidePurpose));
     // A table of a scene that moved while it was read must not be served under the newer hash.
-    if (input->getHash() == hash) {
+    if (primIdTableHash() == hash) {
         storePrimIdTable(hash, time, view, table);
     }
     metadata.merge(table, ImageMetadata::eMergePreferOther);
@@ -1246,7 +1367,7 @@ USDRender::prepareRender(double time,
     ImageMetadata primIds;
     const U64 primIdHash = primIdTableHash();
     if (node && !findPrimIdTable(primIdHash, time, view, false, &primIds)) {
-        primIds = primIdTableOf(active.stage);
+        primIds = primIdTableOf(active.stage, primIdPurposesOf(_renderPurpose, _proxyPurpose, _guidePurpose));
         if (primIdTableHash() == primIdHash) {
             storePrimIdTable(primIdHash, time, view, primIds);
         }
@@ -1293,18 +1414,34 @@ USDRender::prepareRender(double time,
                       "format with the renderer's own settings.")
                        .toStdString());
     }
-    setup->pixels = Format(format, par).toCanonicalFormat().toPixelEnclosing(level, par);
-    if (setup->pixels.isNull()) {
+    if (active.prim) {
+        setup->request.settings = RenderSettingsPrim::settings(active.prim.GetPrim(), active.renderer, active.time);
+    }
+    const RectD canonical = Format(format, par).toCanonicalFormat();
+    const RectI shown = canonical.toPixelEnclosing(level, par);
+    setup->pixels = withOverscan(canonical, utilityOverscan(active.renderer, setup->request.settings), par).toPixelEnclosing(level, par);
+    if (shown.isNull()) {
         return failWith(tr("The format is empty.").toStdString());
     }
+    setup->request.overscanLeft = shown.x1 - setup->pixels.x1;
+    setup->request.overscanBottom = shown.y1 - setup->pixels.y1;
+    setup->request.overscanRight = setup->pixels.x2 - shown.x2;
+    setup->request.overscanTop = setup->pixels.y2 - shown.y2;
 
+    // A bake's texels look at the surface along its normals, so it needs no camera: one the scene
+    // lacks is left out rather than failing an asset that has none.
+    const bool bake = utilityUvUnwrap(active.renderer, setup->request.settings);
     PXR_NS::SdfPath cameraPath = active.prim ? active.standard.camera : PXR_NS::SdfPath();
     if (cameraPath.IsEmpty()) {
         const std::vector<PXR_NS::SdfPath> cameras = HydraRender::cameraPaths(stage);
-        if (cameras.empty()) {
+        if (!cameras.empty()) {
+            cameraPath = cameras.front();
+        } else if (!bake) {
             return failWith(tr("The input scene has no camera to render through.").toStdString());
         }
-        cameraPath = cameras.front();
+    }
+    if (bake && !cameraPath.IsEmpty() && !PXR_NS::UsdGeomCamera(stage->GetPrimAtPath(cameraPath))) {
+        cameraPath = PXR_NS::SdfPath();
     }
     HydraRender::FitModeEnum fit = HydraRender::eFitModeExpand;
     if (active.prim && !fitModeForPolicy(active.standard.aspectRatioConformPolicy, &fit)) {
@@ -1322,9 +1459,17 @@ USDRender::prepareRender(double time,
     setup->request.height = setup->pixels.height();
     KnobBoolPtr headlightKnob = _headlight.lock();
     setup->request.headlight = headlightKnob && headlightKnob->getValue();
+    KnobBoolPtr renderPurposeKnob = _renderPurpose.lock();
+    KnobBoolPtr proxyPurposeKnob = _proxyPurpose.lock();
+    KnobBoolPtr guidePurposeKnob = _guidePurpose.lock();
+    setup->request.showRender = renderPurposeKnob && renderPurposeKnob->getValue();
+    setup->request.showProxy = proxyPurposeKnob && proxyPurposeKnob->getValue();
+    setup->request.showGuides = guidePurposeKnob && guidePurposeKnob->getValue();
     setup->request.renderer = active.renderer;
-    if (active.prim) {
-        setup->request.settings = RenderSettingsPrim::settings(active.prim.GetPrim(), active.renderer, active.time);
+    if (cameraPath.IsEmpty()) {
+        setup->request.frustum = PXR_NS::GfFrustum();
+
+        return true;
     }
     setup->spec = specAovs(time, view, &active);
     if (setup->spec && !setup->spec->error.empty()) {
@@ -1339,9 +1484,39 @@ USDRender::prepareRender(double time,
     if (setup->spec && !setup->spec->warning.empty()) {
         addWarning(setup->spec->warning);
     }
+    RenderSettingsPrim::addDomeLightCameraVisibility(stage, RenderSettingsPrim::domeLights(stage), active.time, &setup->request.settings);
     const double aspect = (format.width() * par) / format.height();
     if (!HydraRender::cameraFrustum(stage, cameraPath, active.time, aspect, fit, &setup->request.frustum, error)) {
         return false;
+    }
+    const PXR_NS::UsdGeomCamera camera(stage->GetPrimAtPath(cameraPath));
+    double shutterOpen = 0.;
+    double shutterClose = 0.;
+    (void)camera.GetShutterOpenAttr().Get(&shutterOpen, active.time);
+    (void)camera.GetShutterCloseAttr().Get(&shutterClose, active.time);
+    setup->request.shutterOpen = shutterOpen;
+    setup->request.shutterClose = shutterClose;
+    if (!active.time.IsDefault() && HydraRender::cameraMotionBlur(setup->request)) {
+        // Between these the delegate interpolates the camera, so a few follow a curved move closely.
+        const int kCameraMotionSamples = 9;
+        const PXR_NS::GfVec2d shutter = HydraRender::shutterInterval(setup->request);
+        for (int i = 0; i < kCameraMotionSamples; ++i) {
+            const double t = shutter[0] + (shutter[1] - shutter[0]) * i / (kCameraMotionSamples - 1);
+            PXR_NS::GfFrustum frustum;
+            if (!HydraRender::cameraFrustum(stage, cameraPath, PXR_NS::UsdTimeCode(active.time.GetValue() + t), aspect, fit, &frustum, error)) {
+                return false;
+            }
+            setup->request.cameraMotion.push_back(std::make_pair(t, frustum));
+        }
+        std::vector<std::pair<double, PXR_NS::GfFrustum>>& motion = setup->request.cameraMotion;
+        // The delegate moves the camera it is given by how these differ from the frame's, so the
+        // frame's is among them even when the shutter misses the frame.
+        if ((shutter[0] > 0.) || (shutter[1] < 0.)) {
+            motion.insert((shutter[0] > 0.) ? motion.begin() : motion.end(), std::make_pair(0., setup->request.frustum));
+        }
+        if (std::all_of(motion.begin(), motion.end(), [&motion](const std::pair<double, PXR_NS::GfFrustum>& s) { return s.second == motion.front().second; })) {
+            motion.clear();
+        }
     }
 
     return true;
@@ -1470,21 +1645,12 @@ USDRender::render(const RenderActionArgs& args)
             }
         }
     }
-    // The render stands; what the delegate could not render, or logged as an error naming no prim
-    // of the scene, stays on the node until a render without it.
     std::string warning = setup.warning;
     const std::string aovWarning = followRenderedAovs(getRenderHash(), args.time, args.view, setup, result);
     if (!aovWarning.empty()) {
         warning = warning.empty() ? aovWarning : warning + "\n" + aovWarning;
     }
-    if (!result.warning.empty()) {
-        warning = warning.empty() ? result.warning : warning + "\n" + result.warning;
-    }
-    if (!result.errors.empty()) {
-        setPersistentMessage(eMessageTypeError, warning.empty() ? result.errors : result.errors + "\n" + warning);
-    } else {
-        showWarning(warning);
-    }
+    showRenderMessages(warning, result.warning, result.errors, result.device);
 
     return eStatusOK;
 } // USDRender::render
@@ -1569,6 +1735,39 @@ USDRender::followRenderedAovs(U64 hash,
 } // USDRender::followRenderedAovs
 
 void
+USDRender::showRenderMessages(const std::string& setupWarning,
+                              const std::string& resultWarning,
+                              const std::string& errors,
+                              const std::string& device)
+{
+    // The render stands; what the delegate could not render, or logged as an error naming no prim
+    // of the scene, stays on the node until a render without it.
+    std::string warning = setupWarning;
+    if (!resultWarning.empty()) {
+        warning = warning.empty() ? resultWarning : warning + "\n" + resultWarning;
+    }
+    const std::string rendered = device.empty() ? std::string() : "Rendered on " + device + ".";
+    if (!errors.empty()) {
+        setPersistentMessage(eMessageTypeError, warning.empty() ? errors : errors + "\n" + warning);
+    } else if (!warning.empty()) {
+        showWarning(rendered.empty() ? warning : warning + "\n" + rendered);
+    } else if (!rendered.empty()) {
+        setPersistentMessage(eMessageTypeInfo, rendered);
+    } else {
+        showWarning(warning);
+    }
+}
+
+std::string
+USDRender::utilityDevice(double time,
+                         ViewIdx view) const
+{
+    const SettingsSummary summary = getSettingsSummary(time, view);
+
+    return (summary.read && !summary.utilityDevice.empty()) ? summary.utilityDevice : std::string(kUtilityDeviceAuto);
+}
+
+void
 USDRender::showWarning(const std::string& warning)
 {
     if (warning.empty()) {
@@ -1602,10 +1801,32 @@ USDRender::canRenderOnGpu(const GpuQuery& query) const
     if ((query.bitDepth != eImageBitDepthFloat) || (!query.plane.isColorLayer() && (layerID != "depth") && (layerID != "primId"))) {
         return false;
     }
-    // Only Storm renders into GL; the other delegates' host pixels are read back by render().
     std::string renderer;
     std::string error;
-    if (!activeRenderer(query.time, query.view, &renderer, &error) || !RenderDelegates::isStorm(renderer)) {
+    if (!activeRenderer(query.time, query.view, &renderer, &error)) {
+        return false;
+    }
+    // Natron Utility keeps a GPU frame's colour on the device, where renderGpu() copies it from.
+    if (renderer == kRenderDelegateUtilityId) {
+        if (!query.plane.isColorLayer() || (utilityDevice(query.time, query.view) == kUtilityDeviceCpu)) {
+            return false;
+        }
+        // Asked while the frame is being planned, so it neither waits for the GPU nor recovers a lost one:
+        // the render itself does both, and a frame asked before then renders on the CPU.
+        GpuContext* context = appPTR ? appPTR->getGpuContext() : nullptr;
+        if (!context || context->isInitializing() || !context->isAvailable()) {
+            return false;
+        }
+        const std::shared_ptr<void> hold = context->holdRuntime();
+        gpu::GpuRuntime* runtime = hold ? context->runtime() : nullptr;
+        if (!runtime || runtime->isLost() || !WavefrontGpu::missingSupport(*runtime).empty()) {
+            return false;
+        }
+
+        return !HydraRender::deviceFrameFellBack(this, context->generation(), utilityGpuBudget(), utilityDevice(query.time, query.view));
+    }
+    // Only Storm renders into GL; the other delegates' host pixels are read back by render().
+    if (!RenderDelegates::isStorm(renderer)) {
         return false;
     }
 
@@ -1636,6 +1857,17 @@ USDRender::renderGpu(const GpuRenderArgs& args)
     window.y1 = args.outputRect.y1 - setup.pixels.y1;
     window.x2 = args.outputRect.x2 - setup.pixels.x1;
     window.y2 = args.outputRect.y2 - setup.pixels.y1;
+    if (setup.request.renderer == kRenderDelegateUtilityId) {
+        setup.request.aborted = [this]() { return aborted(); };
+        setup.request.threads = appPTR->getNCPUsAvailableForEffect();
+        HydraRender::Result info;
+        if (!HydraRender::recordDeviceWindow(setup.request, window, args.context, args.output, args.outputRect, &info, &error)) {
+            return eStatusFailed;
+        }
+        showRenderMessages(setup.warning, info.warning, info.errors, info.device);
+
+        return eStatusOK;
+    }
     if (!HydraHandoff::instance().record(setup.request, window, args.context, args.output, args.outputRect, &error)) {
         return eStatusFailed;
     }

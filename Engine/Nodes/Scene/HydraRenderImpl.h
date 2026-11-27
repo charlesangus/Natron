@@ -35,6 +35,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Engine/Nodes/Scene/RenderDelegates.h"
@@ -42,9 +43,28 @@
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/ScenePayload.h"
 #include <pxr/base/vt/dictionary.h>
+#include <pxr/base/gf/vec2d.h>
 #include <pxr/base/vt/value.h>
+#include <pxr/imaging/cameraUtil/framing.h>
+
+PXR_NAMESPACE_OPEN_SCOPE
+class UsdImagingGLEngine;
+class UsdImagingGLRenderParams;
+PXR_NAMESPACE_CLOSE_SCOPE
+
+#ifdef NATRON_HAVE_GPU
+namespace gpu {
+class GpuRecordContext;
+}
+#endif
 
 NATRON_NAMESPACE_ENTER
+
+#ifdef NATRON_HAVE_GPU
+struct GpuImageView;
+class RectI;
+class UtilityDeviceResource;
+#endif
 
 struct SceneStageSnapshot;
 
@@ -137,7 +157,7 @@ struct AovPlane {
 
 struct Request {
     // Whose stage and engine render it. A request of the owner's last render with the same stack,
-    // time, camera, size and headlight, and no barrier write since, reuses that render, so the
+    // time, camera, size, headlight and purposes, and no barrier write since, reuses that render, so the
     // planes of a frame asked for one by one cost one Storm render.
     const void* owner = nullptr;
     ScenePayload scene;
@@ -148,13 +168,18 @@ struct Request {
     // Whether a light at the camera lights the scene too. Without it, only the scene's own lights
     // do, and a scene with none renders its lit surfaces black.
     bool headlight = false;
+    // Which prims of a purpose other than default are drawn. Default-purpose prims always are.
+    bool showRender = true;
+    bool showProxy = false;
+    bool showGuides = false;
     // The render delegate's plug-in id. One that is not installed or cannot render here fails the
     // render with an error naming it, before any engine is made: there is no fallback.
     std::string renderer = kRenderDelegateStormId;
     // Polled on the calling thread while any delegate renders; true cancels the render: Storm's
-    // between its passes, a path tracer's once the Render() call under way returns, when its
-    // engine is dropped. A request without one renders until its delegate converges, however
-    // long that takes.
+    // between its passes, a path tracer's at once where its delegate can stop its threads, the stop
+    // waiting for what cannot be interrupted, and otherwise once the Render() call under way
+    // returns, when its engine is dropped. A request without one renders until its delegate
+    // converges, however long that takes.
     std::function<bool()> aborted;
     // The threads a CPU delegate's engine may render on, from the scheduler's budget for the
     // calling task; any count when 0. Cycles and MoonRay take it when an engine is made. Every
@@ -172,7 +197,34 @@ struct Request {
     // The settings RenderVars give the AOVs every render has, by the delegate's name of each. A
     // change of them makes the owner's engine again.
     std::vector<Aov> builtInAovs;
+    // The camera's shutter:open and shutter:close, in frames relative to time.
+    double shutterOpen = 0.;
+    double shutterClose = 0.;
+    // The camera's frustum at times within shutterInterval(*this), relative to time and increasing.
+    // Empty for a camera that does not blur: its frustum is frustum throughout.
+    std::vector<std::pair<double, PXR_NS::GfFrustum>> cameraMotion;
+    // Pixels of width and height beyond the frustum's frame on each side. The frustum frames the
+    // image within them and the delegate carries its projection on into them, as a framing whose
+    // data window is larger than its display window asks.
+    int overscanLeft = 0;
+    int overscanBottom = 0;
+    int overscanRight = 0;
+    int overscanTop = 0;
 };
+
+/**
+ * @brief The shutter request's delegate samples motion over, in frames relative to request.time: the
+ * camera's unless the delegate's settings override it. Closed, both equal, for a delegate other than
+ * Natron Utility, the one that blurs, and for a shutter of no length.
+ **/
+PXR_NS::GfVec2d shutterInterval(const Request& request) WARN_UNUSED_RETURN;
+
+// Whether request's delegate blurs the camera's motion within shutterInterval(request).
+bool cameraMotionBlur(const Request& request) WARN_UNUSED_RETURN;
+
+// The framing request's engine renders under: its width by height pixels, the frustum framing the
+// part within its overscan.
+PXR_NS::CameraUtilFraming framing(const Request& request) WARN_UNUSED_RETURN;
 
 // The AOVs, width x height pixels each, the bottom row first as Natron's images.
 struct Result {
@@ -194,6 +246,8 @@ struct Result {
     std::vector<PXR_NS::TfToken> rejectedAovs;
     // The dictionary the delegate's render stats hold for an AOV under "aovMetadata:<aov>", by AOV.
     std::map<PXR_NS::TfToken, PXR_NS::VtDictionary> aovMetadata;
+    // The device the delegate says it rendered on; empty for a delegate that does not say.
+    std::string device;
 };
 
 /**
@@ -292,12 +346,51 @@ bool renderWindow(const Request& request,
 // Whether the render thread's context packs windows on the GPU, making it if need be.
 bool packsOnGpu();
 
+#ifdef NATRON_HAVE_GPU
+/**
+ * @brief Renders request as render() does, then records into context the copy of window, a colour
+ * window, into output's outputRect, on the device and from the frame the delegate left there:
+ * Natron Utility's, when it rendered on the GPU. *info gets the render's warning, errors and device.
+ * False with *error set when the frame is not on context's device, so the caller renders on the CPU,
+ * where the frame is read back.
+ **/
+bool recordDeviceWindow(const Request& request,
+                        const PlaneWindow& window,
+                        gpu::GpuRecordContext& context,
+                        const GpuImageView& output,
+                        const RectI& outputRect,
+                        Result* info,
+                        std::string* error) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Whether a render of owner's found the delegate had rendered on the CPU instead (recordDeviceWindow()
+ * got no frame on the device, or Natron Utility reported falling back from the GPU), under the same device generation, pool budget and Device setting (kUtilitySettingDevice, "auto" when
+ * unset), and no render of owner's has been on the GPU since. A caller asking whether to take the GPU
+ * path then knows it would fall back. Never waits. MT-safe.
+ **/
+bool deviceFrameFellBack(const void* owner,
+                         std::uint64_t generation,
+                         std::uint64_t budget,
+                         const std::string& device);
+#endif
+
 /**
  * @brief Render settings every engine of renderer gets on top of its request's; for tests, to fix
  * a path tracer's sample count and seed whatever the node's knobs say.
  **/
 void setRendererSettings(const std::string& renderer,
                          const std::map<std::string, PXR_NS::VtValue>& settings);
+
+/**
+ * @brief Has engine, a renderer engine, draw the purposes asked for in params. Natron Utility is made
+ * to sync every purpose and told which to draw, so a purpose toggle builds no geometry there.
+ **/
+void setPurposes(PXR_NS::UsdImagingGLEngine* engine,
+                 const std::string& renderer,
+                 bool showRender,
+                 bool showProxy,
+                 bool showGuides,
+                 PXR_NS::UsdImagingGLRenderParams* params);
 
 /**
  * @brief The setting key of owner's engine as its delegate reports it
@@ -323,11 +416,22 @@ void setRenderStatsForTests(const std::string& renderer,
 // Drops owner's stage and engine, whichever delegate it is of, without waiting.
 void release(const void* owner);
 
-// Drops every owner's stage and Storm engine, on the render thread, without waiting.
+// Drops every owner's stage and Storm engine, and has every Natron Utility engine give back what it
+// keeps on the GPU, on the render threads, without waiting.
 void releaseAll();
+
+// releaseAll() and ProgressiveRender::releaseAllGpu(), then, on the thread the Natron Utility engines
+// render on, once they gave their GPU memory back, empties the GPU pool of its free buffers. Does not wait.
+void releaseAllGpuMemory();
 
 // Drops every owner's stage and engine of a delegate other than Storm, without waiting.
 void releaseAllCpuEngines();
+
+/**
+ * @brief Drops every owner's stage and engine of a delegate other than Storm, waiting up to
+ * timeoutMs for their thread to have done so. False if it had not by then.
+ **/
+bool releaseAllCpuEnginesAndWait(int timeoutMs);
 
 /**
  * @brief The GPU memory, in bytes, the engines may hold together before the least recently used
@@ -344,6 +448,14 @@ std::size_t getCpuEngineCount();
 
 // How many engines, of every delegate, have been made in this process.
 std::uint64_t getEngineBuildCount();
+
+// How many frames engines of every delegate have rendered in this process, not counting a request
+// served by the owner's last render.
+std::uint64_t getEngineRenderCount();
+
+// How many times, in this process, a MoonRay render, USDRender's or a progressive one, read its
+// session's progress past zero: the session is connected and its render process is rendering.
+std::uint64_t getMoonRayProgressReads();
 
 /**
  * @brief Whether Storm renders write the ids of translucent prims into their primId plane, as
@@ -373,12 +485,15 @@ std::string contextDescription(std::string* error);
  * makes its own) and polls it: a path tracer renders on threads of its own between Render() calls,
  * each of which syncs the stage's changes into it. After each poll whose sample count moved it
  * publishes the colour, over a background and encoded to sRGB, and the depth, as the window depth
- * of the frame's projection, and calls the listener on the worker.
+ * of the frame's projection, and calls the listener on the worker. Natron Utility, which has no
+ * samples to refine, publishes only its finished frames.
  *
  * Edits coalesce: a restart waits until no edit has come for a short quiet time, or until the first
  * waiting one is a bounded time old, so that a burst of edits restarts once and a camera dragged
  * without pause still restarts several times a second. A pass that was under way when an edit came
- * is never published, and neither are the delegate's pixels from before a restart.
+ * is never published, and neither are the delegate's pixels from before a restart. A delegate that
+ * can stop is stopped as soon as an edit comes, ahead of the quiet time, and by stop() when it cannot
+ * pause.
  *
  * The worker, and the threads the delegate starts from it, run at a lowered priority, which is what
  * keeps the interface responsive: a Cycles engine renders on the process' one Cycles thread count
@@ -417,6 +532,11 @@ public:
         int width = 0;
         int height = 0;
         PXR_NS::UsdTimeCode time;
+        bool showRender = false;
+        bool showProxy = true;
+        bool showGuides = false;
+        // Lit by a light at the camera instead of the stage's lights.
+        bool headlight = false;
 
         bool operator==(const View& other) const;
         bool operator!=(const View& other) const
@@ -443,6 +563,11 @@ public:
         std::uint64_t serial = 0;
         // The edits made before its pass, for pick().
         std::uint64_t generation = 0;
+#ifdef NATRON_HAVE_GPU
+        // Set instead of rgba when setDeviceColor() asked for the colour of a GPU frame to stay
+        // on the device: its linear premultiplied RGBA floats, the bottom row first.
+        std::shared_ptr<const UtilityDeviceResource> deviceColor;
+#endif
     };
 
     struct Status {
@@ -464,6 +589,8 @@ public:
         std::uint64_t engines = 0;
         // Of those, the ones made again for that bound alone, which no edit asked for.
         std::uint64_t unseenRemakes = 0;
+        // Of those, the ones made again because a MoonRay session's progress held still.
+        std::uint64_t stallRemakes = 0;
         std::uint64_t frames = 0;
         // Why the delegate cannot render, empty if it can.
         std::string error;
@@ -574,6 +701,40 @@ public:
 
     // How many renders have been started, the first included.
     std::uint64_t getRestartCount() const;
+
+#ifdef NATRON_HAVE_GPU
+    /**
+     * @brief Whether frames the Natron Utility renderer leaves on the GPU are published with
+     * deviceColor and no rgba, for a viewer that imports them; off at first. Frames published
+     * before a change keep the form they had.
+     **/
+    void setDeviceColor(bool onDevice);
+
+    /**
+     * @brief The rgba frame would have had without deviceColor, read back from the device. False
+     * with *error set when frame has no deviceColor or the device cannot read it back.
+     **/
+    bool hostColor(const Frame& frame,
+                   std::vector<unsigned char>* rgba,
+                   std::string* error) const;
+
+    /**
+     * @brief Has a Natron Utility engine give back, on the worker, the GPU memory it keeps between
+     * frames, then empties the GPU pool of its free buffers. A frame published with deviceColor is
+     * published again with its colour read back into rgba, and its film is let go for every holder.
+     * Does not wait.
+     **/
+    void releaseGpu();
+
+    // Has a Natron Utility engine let go of its GPU, on the worker, if that was lost. Does not wait.
+    void releaseLostGpu();
+
+    // releaseGpu() on every ProgressiveRender alive. MT-safe.
+    static void releaseAllGpu();
+
+    // releaseLostGpu() on every ProgressiveRender alive; a GPU loss releaser calls it. MT-safe.
+    static void releaseAllLostGpu();
+#endif
 
     /**
      * @brief The path of the prim drawn at the pixel (x, y) of frame, one getFrame() gave, counted

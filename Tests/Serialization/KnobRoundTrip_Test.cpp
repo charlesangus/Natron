@@ -186,18 +186,46 @@ makeUserKnob(const KnobIPtr& knob)
     if (KnobString* isString = dynamic_cast<KnobString*>(knob.get())) {
         isString->setAsMultiLine();
         isString->setUsesRichText(true);
+        isString->setPreferredRows(5);
     } else if (KnobFile* isFile = dynamic_cast<KnobFile*>(knob.get())) {
         isFile->setAsInputImage();
     } else if (KnobOutputFile* isOutputFile = dynamic_cast<KnobOutputFile*>(knob.get())) {
         isOutputFile->setAsOutputImageFile();
     } else if (KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(knob.get())) {
         isLayerSelect->setWithChannelButtons(true);
+        isLayerSelect->setAllowNone(true);
+        isLayerSelect->setAllowAll(true);
+        isLayerSelect->setAllLabel("Matching");
+    } else if (KnobInt* isInt = dynamic_cast<KnobInt*>(knob.get())) {
+        isInt->disableSlider();
     } else if (KnobDouble* isDouble = dynamic_cast<KnobDouble*>(knob.get())) {
         std::vector<double> minimums(isDouble->getDimension(), -5.), maximums(isDouble->getDimension(), 5.);
         std::vector<double> displayMinimums(isDouble->getDimension(), -2.), displayMaximums(isDouble->getDimension(), 2.);
         isDouble->setMinimumsAndMaximums(minimums, maximums);
         isDouble->setDisplayMinimumsAndMaximums(displayMinimums, displayMaximums);
+        isDouble->disableSlider();
+        isDouble->setSpatial(true);
+        isDouble->setValueIsNormalized(0, eValueIsNormalizedX);
+        isDouble->setDimensionName(0, "width");
     }
+}
+
+// The keys the user-knob form of a knob made by makeUserKnob() writes beyond the ones every
+// user knob of its type writes.
+std::vector<std::string>
+userPropertyKeysFor(const std::string& typeName)
+{
+    if (typeName == KnobString::typeNameStatic()) {
+        return { "rows: 5" };
+    } else if (typeName == KnobLayerSelect::typeNameStatic()) {
+        return { "allowNone: true", "allowAll: true", "allLabel: \"Matching\"" };
+    } else if (typeName == KnobInt::typeNameStatic()) {
+        return { "noSlider: true" };
+    } else if (typeName == KnobDouble::typeNameStatic()) {
+        return { "noSlider: true", "spatial: true", "normalized: [\"x\", \"none\"]", "dimensionNames: [\"width\", \"y\"]" };
+    }
+
+    return {};
 }
 
 // Values that differ from every type's default.
@@ -388,6 +416,14 @@ TEST_F(BaseTest, KnobYamlRoundTripThroughALiveKnobIsByteIdentical)
             }
 
             const std::string savedYaml = saveKnobToYaml(source);
+            if (variant == eKnobVariantUserKnob) {
+                for (const std::string& key : userPropertyKeysFor(typeName)) {
+                    EXPECT_NE(std::string::npos, savedYaml.find(key)) << key << " in\n"
+                                                                      << savedYaml;
+                }
+            } else {
+                EXPECT_EQ(std::string::npos, savedYaml.find("noSlider")) << savedYaml;
+            }
 
             Serialization::KnobSerialization loaded;
             if (!loadFromYaml(savedYaml, &loaded)) {

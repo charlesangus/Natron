@@ -36,14 +36,18 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QElapsedTimer>
+#include <QStringList>
 #include <QTemporaryDir>
 #include <QThread>
+#include <QThreadPool>
 
 #include "BaseTest.h"
 #include "CountingTestEffect.h"
@@ -60,6 +64,7 @@
 #include "Engine/Project.h"
 #include "Engine/RectD.h"
 #include "Engine/RectI.h"
+#include "Engine/RenderScheduler.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
 #include "Engine/UpdateViewerParams.h"
@@ -251,7 +256,7 @@ public:
     void endTransferBufferFromRAMToGPU(int /*textureIndex*/,
                                        const TexturePtr& /*texture*/,
                                        const ImagePtr& /*image*/,
-                                       int /*time*/,
+                                       int time,
                                        const RectD& /*rod*/,
                                        double /*par*/,
                                        ImageBitDepthEnum /*depth*/,
@@ -263,6 +268,17 @@ public:
                                        const Point& /*viewportCenter*/,
                                        bool /*isPartialRect*/) OVERRIDE
     {
+        std::lock_guard<std::mutex> k(shownMutex);
+        shownTimes.push_back(time);
+    }
+
+    std::vector<int> takeShownTimes()
+    {
+        std::lock_guard<std::mutex> k(shownMutex);
+        std::vector<int> ret;
+        ret.swap(shownTimes);
+
+        return ret;
     }
 
     void setLastRenderedDeepImage(int /*textureIndex*/, unsigned int /*mipmapLevel*/, const DeepImagePtr& /*deepImage*/) OVERRIDE { }
@@ -285,8 +301,8 @@ public:
 
     void getViewerFrameRange(int* first, int* last) const OVERRIDE
     {
-        *first = 1;
-        *last = kPlaybackFrames;
+        *first = rangeFirst.load();
+        *last = rangeLast.load();
     }
 
     ViewerCompositingOperatorEnum getCompositingOperator() const OVERRIDE { return eViewerCompositingOperatorNone; }
@@ -336,6 +352,81 @@ public:
     }
 
     TimeLinePtr timeline;
+    std::atomic<int> rangeFirst { 1 };
+    std::atomic<int> rangeLast { kPlaybackFrames };
+    std::mutex shownMutex;
+    // The time of every image the viewer was handed for display.
+    std::vector<int> shownTimes;
+};
+
+// The frames the display scheduler displayed, in order, each with when it did.
+class DisplayedFrames {
+public:
+    explicit DisplayedFrames(const RenderEnginePtr& engine)
+        : _mutex()
+        , _frames()
+        , _clock()
+        , _connection()
+    {
+        _clock.start();
+        _connection = QObject::connect(engine.get(), &RenderEngine::frameRendered, engine.get(), [this](int time, double /*progress*/) {
+            std::lock_guard<std::mutex> k(_mutex);
+            _frames.push_back(std::make_pair(time, _clock.elapsed())); }, Qt::DirectConnection);
+    }
+
+    ~DisplayedFrames()
+    {
+        QObject::disconnect(_connection);
+    }
+
+    std::size_t count() const
+    {
+        std::lock_guard<std::mutex> k(_mutex);
+
+        return _frames.size();
+    }
+
+    std::vector<std::pair<int, qint64>> frames() const
+    {
+        std::lock_guard<std::mutex> k(_mutex);
+
+        return _frames;
+    }
+
+    DisplayedFrames(const DisplayedFrames&) = delete;
+    DisplayedFrames& operator=(const DisplayedFrames&) = delete;
+
+private:
+    mutable std::mutex _mutex;
+    std::vector<std::pair<int, qint64>> _frames;
+    QElapsedTimer _clock;
+    QMetaObject::Connection _connection;
+};
+
+// Enough pool threads and parallel renders for the frames in flight a playback needs to keep up, whatever the runner's
+// core count: the renders below sleep rather than compute.
+class PlaybackConcurrencyScope {
+public:
+    PlaybackConcurrencyScope()
+        : _savedPoolThreads(QThreadPool::globalInstance()->maxThreadCount())
+        , _savedParallelRenders(appPTR->getCurrentSettings()->getNumberOfParallelRenders())
+    {
+        QThreadPool::globalInstance()->setMaxThreadCount(std::max(8, _savedPoolThreads));
+        appPTR->getCurrentSettings()->setNumberOfParallelRenders(8);
+    }
+
+    ~PlaybackConcurrencyScope()
+    {
+        appPTR->getCurrentSettings()->setNumberOfParallelRenders(_savedParallelRenders);
+        QThreadPool::globalInstance()->setMaxThreadCount(_savedPoolThreads);
+    }
+
+    PlaybackConcurrencyScope(const PlaybackConcurrencyScope&) = delete;
+    PlaybackConcurrencyScope& operator=(const PlaybackConcurrencyScope&) = delete;
+
+private:
+    int _savedPoolThreads;
+    int _savedParallelRenders;
 };
 
 } // namespace
@@ -348,7 +439,6 @@ protected:
         , _rendering(false)
         , _probeStarted(false)
         , _probeInHook(false)
-        , _savedMode(eRenderSchedulerModeLegacy)
         , _viewer(0)
     {
     }
@@ -356,8 +446,6 @@ protected:
     virtual void SetUp() OVERRIDE
     {
         BaseTest::SetUp();
-        _savedMode = appPTR->getRenderSchedulerMode();
-        appPTR->setRenderSchedulerMode(eRenderSchedulerModeTaskGraph);
         CountingTestRegistry::reset();
         ProjectPtr project = getApp()->getProject();
         project->reset(false, true);
@@ -376,7 +464,6 @@ protected:
         _viewerNode.reset();
         _slow.reset();
         getApp()->getProject()->reset(false, true);
-        appPTR->setRenderSchedulerMode(_savedMode);
         BaseTest::TearDown();
     }
 
@@ -418,6 +505,27 @@ protected:
         return true;
     }
 
+    void setSlowKnobs(int delayMs)
+    {
+        KnobInt* delay = dynamic_cast<KnobInt*>(_slow->getKnobByName("delayMs").get());
+        KnobBool* frameVarying = dynamic_cast<KnobBool*>(_slow->getKnobByName("frameVarying").get());
+        ASSERT_TRUE(delay != NULL);
+        ASSERT_TRUE(frameVarying != NULL);
+        delay->setValue(delayMs);
+        // Every frame then renders, rather than reusing the first frame's image.
+        frameVarying->setValue(true);
+    }
+
+    static void stopPlayback(const RenderEnginePtr& engine)
+    {
+        engine->abortRenderingNoRestart();
+        if (!pumpUntil([&engine]() { return !engine->isDoingSequentialRender(); }, kWatchdogMs)) {
+            // Frame listeners are direct-connection lambdas on locals; unwinding past a live playback would call them after they are destroyed.
+            std::fprintf(stderr, "the playback did not stop once aborted\n");
+            std::abort();
+        }
+    }
+
     // Keeps the main thread's event loop running, as the schedulers' main-thread requests need.
     static bool pumpUntil(const std::function<bool()>& done,
                           qint64 timeoutMs)
@@ -457,7 +565,6 @@ protected:
     bool _probeInHook;
     RenderEnginePtr _probeEngine;
     AbortProbe _probe;
-    RenderSchedulerModeEnum _savedMode;
     ViewerInstance* _viewer;
     AbortFakeViewerUi _ui;
 };
@@ -488,6 +595,72 @@ TEST_F(SchedulerAbortLatency, WriterAbortReturnsWithinBudget)
     EXPECT_LT(_probe.latencyMs(), kAbortBudgetMs);
 }
 
+// A frame of this graph queues more source renders than the pool runs at once, which fails the load test straight after
+// every admission: the frame that replaces an ended one must still be admitted, with the next frames rendering alongside.
+TEST_F(SchedulerAbortLatency, WriterRangeOfAWideGraphRendersFramesInParallel)
+{
+    const int kLeaves = 16;
+    const int kLeafRenderMs = 20;
+    const int kPoolThreads = 4;
+    const int kFrames = 6;
+
+    std::vector<NodePtr> level;
+    level.push_back(_slow);
+    for (int i = 1; i < kLeaves; ++i) {
+        NodePtr leaf = createNode(QString::fromUtf8(kTestPluginIDCounting));
+        ASSERT_TRUE(bool(leaf));
+        level.push_back(leaf);
+    }
+    for (std::size_t i = 0; i < level.size(); ++i) {
+        KnobInt* delay = dynamic_cast<KnobInt*>(level[i]->getKnobByName("delayMs").get());
+        KnobBool* frameVarying = dynamic_cast<KnobBool*>(level[i]->getKnobByName("frameVarying").get());
+        ASSERT_TRUE(delay != NULL);
+        ASSERT_TRUE(frameVarying != NULL);
+        delay->setValue(kLeafRenderMs);
+        frameVarying->setValue(true);
+    }
+    while (level.size() > 1) {
+        std::vector<NodePtr> next;
+        for (std::size_t i = 0; i + 1 < level.size(); i += 2) {
+            NodePtr merge = createNode(QString::fromUtf8(kTestPluginIDCountingMerge));
+            ASSERT_TRUE(bool(merge));
+            connectNodes(level[i], merge, 0, true);
+            connectNodes(level[i + 1], merge, 1, true);
+            next.push_back(merge);
+        }
+        level.swap(next);
+    }
+
+    NodePtr writer = createNativeWriter();
+    ASSERT_TRUE(bool(writer));
+    connectNodes(level.front(), writer, 0, true);
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    writer->setOutputFilesForWriter((tmp.path() + QString::fromUtf8("/wide.####.exr")).toStdString());
+    OutputEffectInstance* writerEffect = dynamic_cast<OutputEffectInstance*>(writer->getEffectInstance().get());
+    ASSERT_TRUE(writerEffect != NULL);
+    RenderEnginePtr engine = writerEffect->getRenderEngine();
+    ASSERT_TRUE(bool(engine));
+
+    const int savedPoolThreads = QThreadPool::globalInstance()->maxThreadCount();
+    const int savedParallelRenders = appPTR->getCurrentSettings()->getNumberOfParallelRenders();
+    QThreadPool::globalInstance()->setMaxThreadCount(kPoolThreads);
+    appPTR->getCurrentSettings()->setNumberOfParallelRenders(kPoolThreads);
+
+    std::list<AppInstance::RenderWork> works;
+    works.push_back(AppInstance::RenderWork(writerEffect, 1, kFrames, 1, false));
+    {
+        Watchdog watchdog("the blocking writer render");
+        getApp()->startWritersRendering(eRenderModeBlocking, works);
+    }
+
+    appPTR->getCurrentSettings()->setNumberOfParallelRenders(savedParallelRenders);
+    QThreadPool::globalInstance()->setMaxThreadCount(savedPoolThreads);
+
+    EXPECT_EQ(kFrames, (int)QDir(tmp.path()).entryList(QStringList(QString::fromUtf8("wide.*.exr")), QDir::Files).size());
+    EXPECT_GT(engine->getMaxFramesInFlight(), 1) << "the frames rendered one at a time";
+}
+
 // Playback of the viewer's display scheduler, aborted while its frame renders are in progress.
 TEST_F(SchedulerAbortLatency, ViewerPlaybackAbortReturnsWithinBudget)
 {
@@ -498,6 +671,31 @@ TEST_F(SchedulerAbortLatency, ViewerPlaybackAbortReturnsWithinBudget)
 
     engine->renderFromCurrentFrame(false, std::vector<ViewIdx>(1, ViewIdx(0)), eRenderDirectionForward);
     expectAbortWithinBudget(engine);
+}
+
+// Playback renders its frames on the global pool: neither a thread per frame nor the fallback worker is started for a
+// graph the RenderScheduler can render.
+TEST_F(SchedulerAbortLatency, ViewerPlaybackStartsNoFrameThreads)
+{
+    ASSERT_TRUE(createViewer());
+    RenderEnginePtr engine = _viewer->getRenderEngine();
+    ASSERT_TRUE(bool(engine));
+
+    std::atomic<int> framesShown { 0 };
+    QMetaObject::Connection onFrame = QObject::connect(engine.get(), &RenderEngine::frameRendered, engine.get(), [&framesShown](int /*time*/, double /*progress*/) { ++framesShown; }, Qt::DirectConnection);
+    const int threadsBefore = OutputSchedulerThread::getFrameThreadsStartedForTests();
+    const int poolWaitsBefore = FrameFuture::getPoolThreadWaitsForTests();
+    engine->renderFromCurrentFrame(false, std::vector<ViewIdx>(1, ViewIdx(0)), eRenderDirectionForward);
+    const bool played = pumpUntil([&framesShown]() { return framesShown.load() >= 5; }, kWatchdogMs);
+    engine->abortRenderingNoRestart();
+    const bool stopped = pumpUntil([&engine]() { return !engine->isDoingSequentialRender(); }, kWatchdogMs);
+    QObject::disconnect(onFrame);
+
+    EXPECT_TRUE(played) << "only " << framesShown.load() << " frame(s) were displayed";
+    EXPECT_TRUE(stopped) << "the playback did not stop once aborted";
+    EXPECT_EQ(0, OutputSchedulerThread::getFrameThreadsStartedForTests() - threadsBefore);
+    // The pool threads that finish the frames read what the frames rendered without waiting for them.
+    EXPECT_EQ(0, FrameFuture::getPoolThreadWaitsForTests() - poolWaitsBefore);
 }
 
 // The current-frame scheduler, whose render runs on its backup thread in Task graph mode, aborted mid-render. The abort
@@ -511,4 +709,154 @@ TEST_F(SchedulerAbortLatency, ViewerCurrentFrameAbortReturnsWithinBudget)
 
     _viewer->renderCurrentFrame(true);
     expectAbortWithinBudget(engine, false);
+}
+
+// The display drains the frames buffered ahead at the playback rate while admission keeps the next ones rendering, so
+// the playback shows no gap of a render's length each time the buffer runs dry.
+TEST_F(SchedulerAbortLatency, ViewerPlaybackAdmitsWhileTheBufferDrains)
+{
+    const int kRenderMs = 400;
+    const double kFps = 10.;
+    const qint64 kPeriodMs = 100;
+    const std::size_t kWarmUpFrames = 5;
+    const std::size_t kFramesToCheck = 30;
+
+    // The renders in flight are capped at three per hardware thread, which must cover a render's length of frames.
+    const int idealThreads = appPTR->getHardwareIdealThreadCount();
+    if (3 * idealThreads < kRenderMs / kPeriodMs + 2) {
+        std::printf("skipped: %d hardware thread(s) cap the buffer below the frames a %d ms render needs at %g fps\n", idealThreads, kRenderMs, kFps);
+        return;
+    }
+
+    ASSERT_TRUE(createViewer());
+    setSlowKnobs(kRenderMs);
+    PlaybackConcurrencyScope concurrency;
+    RenderEnginePtr engine = _viewer->getRenderEngine();
+    ASSERT_TRUE(bool(engine));
+    engine->setPlaybackMode(ePlaybackModeOnce);
+    engine->setDesiredFPS(kFps);
+
+    DisplayedFrames shown(engine);
+    engine->renderFromCurrentFrame(false, std::vector<ViewIdx>(1, ViewIdx(0)), eRenderDirectionForward);
+    const bool played = pumpUntil([&shown]() { return shown.count() >= kWarmUpFrames + kFramesToCheck; }, kWatchdogMs);
+    stopPlayback(engine);
+
+    ASSERT_TRUE(played) << "only " << shown.count() << " frame(s) were displayed";
+    const std::vector<std::pair<int, qint64>> frames = shown.frames();
+    qint64 maxGapMs = 0;
+    int gapAfterFrame = -1;
+    for (std::size_t i = kWarmUpFrames + 1; i < frames.size(); ++i) {
+        const qint64 gap = frames[i].second - frames[i - 1].second;
+        if (gap > maxGapMs) {
+            maxGapMs = gap;
+            gapAfterFrame = frames[i - 1].first;
+        }
+    }
+    // A frame admitted only once the buffer ran dry shows as a gap of a whole render, four periods here.
+    EXPECT_LT(maxGapMs, (kPeriodMs * 5) / 2) << "the display waited " << maxGapMs << " ms after frame " << gapAfterFrame;
+}
+
+// Moving the in and out points while the buffer holds frames past them: the playback goes on, inside the new range only.
+TEST_F(SchedulerAbortLatency, ViewerPlaybackFollowsAFrameRangeChange)
+{
+    const int kNewFirst = 200;
+    const int kNewLast = 220;
+    const std::size_t kFramesBeforeChange = 20;
+    const std::size_t kFramesAfterChange = 40;
+    // The frame the display had taken when the range changed may still show.
+    const std::size_t kGraceFrames = 2;
+
+    ASSERT_TRUE(createViewer());
+    setSlowKnobs(5);
+    PlaybackConcurrencyScope concurrency;
+    RenderEnginePtr engine = _viewer->getRenderEngine();
+    ASSERT_TRUE(bool(engine));
+    engine->setPlaybackMode(ePlaybackModeLoop);
+    // Slower than the renders, so that the buffer is full when the range changes.
+    engine->setDesiredFPS(30.);
+
+    DisplayedFrames shown(engine);
+    engine->renderFromCurrentFrame(false, std::vector<ViewIdx>(1, ViewIdx(0)), eRenderDirectionForward);
+    const bool started = pumpUntil([&shown, kFramesBeforeChange]() { return shown.count() >= kFramesBeforeChange; }, kWatchdogMs);
+    const std::size_t shownAtChange = shown.count();
+    _ui.rangeFirst = kNewFirst;
+    _ui.rangeLast = kNewLast;
+    const bool resumed = started && pumpUntil([&shown, shownAtChange, kFramesAfterChange]() { return shown.count() >= shownAtChange + kFramesAfterChange; }, kWatchdogMs);
+    stopPlayback(engine);
+
+    ASSERT_TRUE(started) << "only " << shown.count() << " frame(s) were displayed before the range changed";
+    EXPECT_TRUE(resumed) << "the playback stalled after the range changed: " << (shown.count() - shownAtChange) << " frame(s) since";
+    const std::vector<std::pair<int, qint64>> frames = shown.frames();
+    for (std::size_t i = shownAtChange + kGraceFrames; i < frames.size(); ++i) {
+        EXPECT_TRUE((frames[i].first >= kNewFirst) && (frames[i].first <= kNewLast)) << "frame " << frames[i].first << " is outside the new range";
+    }
+}
+
+// A playback aborted while its scheduler thread prepares a frame stops at once, and the next playback on that thread
+// still renders and displays its frames rather than reading itself as aborted.
+TEST_F(SchedulerAbortLatency, ViewerPlaybackAfterAnAbortInPrepareRendersFrames)
+{
+    const int kSecondStart = 500;
+
+    ASSERT_TRUE(createViewer());
+    setSlowKnobs(0);
+    RenderEnginePtr engine = _viewer->getRenderEngine();
+    ASSERT_TRUE(bool(engine));
+    engine->setPlaybackMode(ePlaybackModeOnce);
+
+    std::shared_ptr<std::atomic<bool>> holdPrepare = std::make_shared<std::atomic<bool>>(true);
+    std::shared_ptr<std::atomic<bool>> inPrepare = std::make_shared<std::atomic<bool>>(false);
+    // A frame's region of definition is computed on the scheduler thread while it prepares the frame.
+    CountingTestRegistry::setRegionOfDefinitionHook([holdPrepare, inPrepare](const Node* node) {
+        if (!holdPrepare->load() || !dynamic_cast<OutputSchedulerThread*>(QThread::currentThread())) {
+            return;
+        }
+        *inPrepare = true;
+        QElapsedTimer clock;
+        clock.start();
+        while (!node->aborted() && (clock.elapsed() < kSlowRenderMs)) {
+            QThread::msleep(2);
+        }
+    });
+
+    engine->renderFromCurrentFrame(false, std::vector<ViewIdx>(1, ViewIdx(0)), eRenderDirectionForward);
+    ASSERT_TRUE(pumpUntil([inPrepare]() { return inPrepare->load(); }, kStartGuardMs)) << "the scheduler thread never prepared a frame";
+    {
+        Watchdog watchdog("the abort wait");
+        _probe.start(engine);
+        pumpUntil([this]() { return _probe.done(); }, 2 * kWatchdogMs);
+        _probe.join();
+    }
+    EXPECT_LT(_probe.latencyMs(), kAbortBudgetMs);
+    ASSERT_TRUE(pumpUntil([&engine]() { return !engine->isDoingSequentialRender(); }, kWatchdogMs)) << "the aborted playback did not stop";
+
+    *holdPrepare = false;
+    _ui.takeShownTimes();
+    getApp()->getTimeLine()->seekFrame(kSecondStart, false, NULL, eTimelineChangeReasonOtherSeek);
+    pumpUntil([]() { return false; }, 50);
+    _ui.takeShownTimes();
+
+    std::vector<int> shownTimes;
+    engine->renderFromCurrentFrame(false, std::vector<ViewIdx>(1, ViewIdx(0)), eRenderDirectionForward);
+    const bool displayed = pumpUntil([this, &shownTimes, kSecondStart]() {
+        const std::vector<int> more = _ui.takeShownTimes();
+        shownTimes.insert(shownTimes.end(), more.begin(), more.end());
+        int n = 0;
+        for (std::size_t i = 0; i < shownTimes.size(); ++i) {
+            n += (shownTimes[i] > kSecondStart) ? 1 : 0;
+        }
+
+        return n >= 3;
+    },
+                                     kWatchdogMs);
+    stopPlayback(engine);
+    CountingTestRegistry::setRegionOfDefinitionHook(CountingTestRegistry::RenderHook());
+
+    EXPECT_TRUE(displayed) << "the second playback displayed " << shownTimes.size() << " image(s)";
+    const std::vector<double> renderTimes = CountingTestRegistry::renderTimes(_slow);
+    int rendersPastStart = 0;
+    for (std::size_t i = 0; i < renderTimes.size(); ++i) {
+        rendersPastStart += (renderTimes[i] > kSecondStart) ? 1 : 0;
+    }
+    EXPECT_GE(rendersPastStart, 3);
 }

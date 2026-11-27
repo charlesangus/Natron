@@ -34,9 +34,10 @@
 #include <stdexcept>
 #include <sstream> // stringstream
 
+#include <QCoreApplication>
+#include <QDateTime>
 #include <QDebug>
 #include <QThread>
-#include <QCoreApplication>
 
 #include "Engine/AppInstance.h"
 #include "Engine/Bezier.h"
@@ -50,6 +51,7 @@
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
 #include "Engine/RotoContext.h"
@@ -618,6 +620,78 @@ bool
 KnobButton::trigger()
 {
     return evaluateValueChange(0, getCurrentTime(), ViewIdx(0),  eValueChangedReasonUserEdited);
+}
+
+void
+KnobButton::setScript(const std::string& script)
+{
+    QMutexLocker k(&_scriptMutex);
+
+    _script = script;
+}
+
+std::string
+KnobButton::getScript() const
+{
+    QMutexLocker k(&_scriptMutex);
+
+    return _script;
+}
+
+static std::string
+toHex(const std::string& str)
+{
+    static const char kDigits[] = "0123456789abcdef";
+    std::string hex;
+
+    hex.reserve(str.size() * 2);
+    for (std::size_t i = 0; i < str.size(); ++i) {
+        const unsigned char c = (unsigned char)str[i];
+        hex.push_back(kDigits[c >> 4]);
+        hex.push_back(kDigits[c & 0xf]);
+    }
+
+    return hex;
+}
+
+bool
+KnobButton::runScript()
+{
+    const std::string script = getScript();
+    EffectInstance* effect = dynamic_cast<EffectInstance*>(getHolder());
+    if (script.empty() || !effect || !effect->getNode() || !effect->getApp()) {
+        return true;
+    }
+    NodePtr node = effect->getNode();
+    AppInstancePtr app = effect->getApp();
+    const std::string appID = app->getAppIDString();
+    const std::string thisNodeVar = appID + "." + node->getFullyQualifiedName();
+    std::string thisGroupVar = appID;
+    NodeGroup* parentGroup = dynamic_cast<NodeGroup*>(node->getGroup().get());
+    if (parentGroup) {
+        thisGroupVar = appID + "." + parentGroup->getNode()->getFullyQualifiedName();
+    }
+
+    // The source travels as hex so that no quoting of it can break the call around it; globals()
+    // is copied so that the script's own names do not leak into the main module.
+    std::stringstream ss;
+    ss << "exec(compile(bytes.fromhex(\"" << toHex(script) << "\").decode(\"utf-8\"), \"" << getName()
+       << "\", \"exec\"), dict(globals(), thisParam=" << thisNodeVar << "." << getName() << ", thisNode=" << thisNodeVar
+       << ", thisGroup=" << thisGroupVar << ", app=" << appID << "))\n";
+
+    std::string error;
+    std::string output;
+    const bool ok = NATRON_PYTHON_NAMESPACE::interpretPythonScript(ss.str(), &error, &output);
+    if (!output.empty()) {
+        app->appendToScriptEditor(output);
+    }
+    if (!ok) {
+        const QString message = tr("Failed to run the script of %1: %2").arg(QString::fromUtf8(getName().c_str()), QString::fromUtf8(error.c_str()));
+        app->appendToScriptEditor(message.toStdString());
+        appPTR->writeToErrorLog_mt_safe(QString::fromUtf8(node->getLabel_mt_safe().c_str()), QDateTime::currentDateTime(), message);
+    }
+
+    return ok;
 }
 
 bool
@@ -1799,8 +1873,14 @@ KnobString::hasContentWithoutHtmlTags()
 }
 
 void
-KnobString::setAsLabel()
+KnobString::setAsLabel(bool isLabel)
 {
+    if (!isLabel) {
+        _isLabel = false;
+        setHashExempt(false);
+
+        return;
+    }
     setAnimationEnabled(false); //< labels cannot animate
     _isLabel = true;
     // A label takes no input and only shows text, which plugins rewrite from their actions; in
@@ -1835,9 +1915,9 @@ KnobGroup::KnobGroup(KnobHolder* holder,
 }
 
 void
-KnobGroup::setAsTab()
+KnobGroup::setAsTab(bool isTab)
 {
-    _isTab = true;
+    _isTab = isTab;
 }
 
 bool

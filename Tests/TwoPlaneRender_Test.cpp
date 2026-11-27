@@ -52,12 +52,26 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
-const RenderSchedulerModeEnum kModes[] = { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph };
-
 RectI
 testWindow()
 {
     return RectI(0, 0, kCountingTestSize, kCountingTestSize);
+}
+
+// The scheduler plans the planes to render itself, so `layers` only steers the direct pull.
+bool
+renderPulled(const NodePtr& node,
+             const std::list<ImageLayerDesc>& layers,
+             bool scheduled,
+             bool byPassCache,
+             std::vector<RenderedPlane>* planes,
+             std::string* error)
+{
+    if (scheduled) {
+        return renderNodePlanesScheduled(node, 1., ViewIdx(0), 0, testWindow(), byPassCache, planes, error);
+    }
+
+    return renderNodePlanesDirect(node, 1., ViewIdx(0), 0, testWindow(), layers, planes, error, byPassCache);
 }
 
 std::vector<float>
@@ -124,11 +138,11 @@ TEST_F(TwoPlaneRender, EachPlaneHoldsItsOwnValues)
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDTwoPlaneSource));
     ASSERT_TRUE(bool(source));
 
-    for (RenderSchedulerModeEnum mode : kModes) {
-        SCOPED_TRACE((int)mode);
+    for (bool scheduled : { false, true }) {
+        SCOPED_TRACE(scheduled);
         std::vector<RenderedPlane> planes;
         std::string error;
-        ASSERT_TRUE(renderNodePlanesInMode(source, 1., ViewIdx(0), 0, testWindow(), bothLayers(), mode, true /*byPassCache*/, &planes, &error)) << error;
+        ASSERT_TRUE(renderPulled(source, bothLayers(), scheduled, true /*byPassCache*/, &planes, &error)) << error;
         expectBothPlanes(planes);
     }
 }
@@ -139,15 +153,15 @@ TEST_F(TwoPlaneRender, PlanesReadBackFromTheCacheKeepTheirValues)
     NodePtr source = createNode(QString::fromUtf8(kTestPluginIDTwoPlaneSource));
     ASSERT_TRUE(bool(source));
 
-    for (RenderSchedulerModeEnum mode : kModes) {
-        SCOPED_TRACE((int)mode);
+    for (bool scheduled : { false, true }) {
+        SCOPED_TRACE(scheduled);
         appPTR->clearAllCaches();
         CountingTestRegistry::reset();
         for (int pass = 0; pass < 2; ++pass) {
             SCOPED_TRACE(pass);
             std::vector<RenderedPlane> planes;
             std::string error;
-            ASSERT_TRUE(renderNodePlanesInMode(source, 1., ViewIdx(0), 0, testWindow(), bothLayers(), mode, false /*byPassCache*/, &planes, &error)) << error;
+            ASSERT_TRUE(renderPulled(source, bothLayers(), scheduled, false /*byPassCache*/, &planes, &error)) << error;
             expectBothPlanes(planes);
         }
         EXPECT_EQ(CountingTestRegistry::renders(source), 1);
@@ -164,11 +178,11 @@ TEST_F(TwoPlaneRender, ConsumerGetsEachPlaneOfItsInput)
 
     const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
     const std::vector<float> expected = constantPixels({ kTwoPlaneFirstU, kTwoPlaneFirstV, kTwoPlaneSecondU, kTwoPlaneSecondV });
-    for (RenderSchedulerModeEnum mode : kModes) {
-        SCOPED_TRACE((int)mode);
+    for (bool scheduled : { false, true }) {
+        SCOPED_TRACE(scheduled);
         std::vector<RenderedPlane> planes;
         std::string error;
-        ASSERT_TRUE(renderNodePlanesInMode(reader, 1., ViewIdx(0), 0, testWindow(), rgba, mode, true /*byPassCache*/, &planes, &error)) << error;
+        ASSERT_TRUE(renderPulled(reader, rgba, scheduled, true /*byPassCache*/, &planes, &error)) << error;
         ASSERT_EQ(planes.size(), 1u);
         EXPECT_EQ(planes[0].pixels, expected);
     }

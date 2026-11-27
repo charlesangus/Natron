@@ -603,6 +603,75 @@ TEST_F(BaseTest, ProjectLoadReportsRawIntoImageConflict)
     EXPECT_FALSE(source2->hasPersistentMessage());
 }
 
+// Scene and geometry are different payloads, so a geometry output can never land on a scene input.
+TEST_F(BaseTest, GeometrySourceRejectedBySceneSink)
+{
+    NodePtr geoSource = createNode(QString::fromUtf8(kTestPluginIDDataKindGeometrySource));
+    NodePtr sceneSink = createNode(QString::fromUtf8(kTestPluginIDDataKindSceneSink));
+
+    ASSERT_TRUE(geoSource && sceneSink);
+
+    NodePtr conflictingNode;
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, sceneSink->canConnectInput(geoSource, 0, &conflictingNode));
+    EXPECT_EQ(geoSource.get(), conflictingNode.get());
+}
+
+TEST_F(BaseTest, GeometrySourceRejectedByImageSink)
+{
+    NodePtr geoSource = createNode(QString::fromUtf8(kTestPluginIDDataKindGeometrySource));
+    NodePtr imageSink = createNode(QString::fromUtf8(kTestPluginIDDataKindImageSink));
+
+    ASSERT_TRUE(geoSource && imageSink);
+
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, imageSink->canConnectInput(geoSource, 0));
+}
+
+// The image input that refuses geometry above is the Viewer's kind too; the Viewer alone takes it,
+// to show it in its 3D view.
+TEST_F(BaseTest, GeometrySourceAcceptedByViewer)
+{
+    NodePtr geoSource = createNode(QString::fromUtf8(kTestPluginIDDataKindGeometrySource));
+    NodePtr viewer = createNode(QString::fromUtf8(PLUGINID_NATRON_VIEWER));
+
+    ASSERT_TRUE(geoSource && viewer);
+
+    EXPECT_EQ(Node::eCanConnectInput_ok, viewer->canConnectInput(geoSource, 0));
+    EXPECT_TRUE(viewer->connectInput(geoSource, 0));
+    EXPECT_FALSE(viewer->hasPersistentMessage());
+}
+
+TEST_F(BaseTest, GeometrySourceConnectsThroughDotToGeometrySink)
+{
+    NodePtr geoSource = createNode(QString::fromUtf8(kTestPluginIDDataKindGeometrySource));
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr geoSink = createNode(QString::fromUtf8(kTestPluginIDDataKindGeometrySink));
+
+    ASSERT_TRUE(geoSource && dot && geoSink);
+
+    connectNodes(geoSource, dot, 0, true);
+    bool ambiguous = true;
+    EXPECT_EQ(eDataKindGeometry, dot->getEffectiveOutputDataKind(&ambiguous));
+    EXPECT_FALSE(ambiguous);
+
+    EXPECT_EQ(Node::eCanConnectInput_ok, geoSink->canConnectInput(dot, 0));
+    connectNodes(dot, geoSink, 0, true);
+    EXPECT_EQ(eDataKindGeometry, geoSink->getEffectiveOutputDataKind());
+    EXPECT_FALSE(geoSink->hasPersistentMessage());
+}
+
+// A Dot typed as geometry by its source refuses a downstream scene consumer.
+TEST_F(BaseTest, GeometryTypedDotRejectedBySceneSink)
+{
+    NodePtr geoSource = createNode(QString::fromUtf8(kTestPluginIDDataKindGeometrySource));
+    NodePtr dot = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    NodePtr sceneSink = createNode(QString::fromUtf8(kTestPluginIDDataKindSceneSink));
+
+    ASSERT_TRUE(geoSource && dot && sceneSink);
+
+    connectNodes(geoSource, dot, 0, true);
+    EXPECT_EQ(Node::eCanConnectInput_incompatibleDataKind, sceneSink->canConnectInput(dot, 0));
+}
+
 // A connect re-resolves the pass-throughs below the edited node, but the invalidation stops at a
 // node of concrete kind: nothing past one can have changed, so a large graph cut into concrete
 // nodes walks only the stretch around the edit.

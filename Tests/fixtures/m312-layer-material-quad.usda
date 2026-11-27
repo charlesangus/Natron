@@ -17,6 +17,7 @@ def Xform "World"
         texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
             interpolation = "vertex"
         )
+        uniform token subdivisionScheme = "none"
         uniform bool doubleSided = true
     }
 }

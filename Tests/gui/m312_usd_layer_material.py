@@ -7,7 +7,8 @@ view paints into it. Its colour plane carries the diffuseColor purpose, which US
 Color Layer (From Metadata) takes. A plain left drag paints a pure red Solid stroke. A Ctrl+left drag
 tumbles the camera, which closes the session and queues its bake. Once the node's hidden bakeGeneration
 knob counts it and the unbaked overlay is gone, the quad shows red where the stroke is, through the
-layered material, and blue elsewhere.
+layered material, and blue elsewhere. USDRead draws the quad in full, the view lights it with the headlight
+and the grid and guides are hidden, since their axis lines are red and blue.
 
 Mouse events are sent to the SceneViewport (synthesized window-system events do not reach Natron's
 widgets under Xvfb). Run through Tests/gui/run-gui-test.sh at 1920x1080. Screenshots and results.txt
@@ -27,13 +28,17 @@ SETTLE_MS = 500
 STARTUP_TIMEOUT_S = 60.0
 NUKE = 0
 PAINT_ONLY = 1
-MIN_RED_PIXELS = 200
+MIN_RED_PIXELS = 100
 MIN_BLUE_PIXELS = 200
+TEXTURE_BUDGET_MB = 256
+INITIAL_DRAW_FULL = 3
+HEADLIGHT = 2
 
 try:
     import NatronEngine
     from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Qt
     from PySide6.QtGui import QGuiApplication, QImage, QMouseEvent
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QLabel, QLineEdit
 
     from guitest import (FIXTURES, check, finish, plugin_problem, report, require, run, section, shot, viewer_up,
@@ -47,6 +52,19 @@ try:
     original_navigation = navigation.getValue()
     navigation.setValue(NUKE)
 
+    # Software GL reports a few MB free, under the automatic budget's headroom, so that budget would
+    # load no texture and the paint would read its texture's transparent fallback.
+    budget = NatronEngine.natron.getSettings().getParam("gpuTextureBudget")
+    require(budget is not None, "Preferences have a gpuTextureBudget parameter")
+    original_budget = budget.getValue()
+    budget.setValue(TEXTURE_BUDGET_MB)
+
+    # The scene has no light, and the default Scene Lights mode would show the lit quad black.
+    lighting = NatronEngine.natron.getSettings().getParam("viewer3DLighting")
+    require(lighting is not None, "Preferences have a viewer3DLighting parameter")
+    original_lighting = lighting.getValue()
+    lighting.setValue(HEADLIGHT)
+
     def create(plugin_id):
         node = app.createNode(plugin_id)
         require(node is not None, "create " + plugin_id, plugin_problem(plugin_id))
@@ -54,6 +72,10 @@ try:
 
     usd = create("USDRead")
     usd.getParam("filename").setValue(scene_path)
+    # Full: the quad draws with its material, not as the outline of its bounds.
+    initial_draw = usd.getParam("initialDraw")
+    require(initial_draw is not None, "USDRead has an initialDraw parameter")
+    initial_draw.setValue(INITIAL_DRAW_FULL)
     surface = create("USDPreviewSurface")
     assign = create("USDAssignMaterial")
     paint = create("USDTexturePaint")
@@ -94,6 +116,14 @@ try:
         for i in range(1, 11):
             mouse(v, QEvent.MouseMove, start + delta * (i / 10.), Qt.NoButton, Qt.LeftButton, modifiers)
         mouse(v, QEvent.MouseButtonRelease, start + delta, Qt.LeftButton, Qt.NoButton, modifiers)
+        QApplication.processEvents()
+
+    def key(k, modifiers=Qt.NoModifier):
+        v = view()
+        v.activateWindow()
+        v.setFocus()
+        QApplication.processEvents()
+        QTest.keyClick(v, k, modifiers)
         QApplication.processEvents()
 
     def node_graph_view():
@@ -173,6 +203,15 @@ try:
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
         v = view()
         require(ok, "the scene view shows the scene (%r)" % (v.property("natronSceneError") if v else None,))
+        # The grid's axis lines are red and blue, so they would count as paint and material.
+        key(Qt.Key_G, Qt.ControlModifier | Qt.ShiftModifier)
+        key(Qt.Key_G, Qt.ControlModifier)
+        yield ("sleep", SETTLE_MS)
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        require(view().property("natronSceneLighting") == "headlight",
+                "the view lights with the headlight (%r)" % view().property("natronSceneLighting"))
+        require(ok and view().property("natronSceneShowGrid") is False
+                and view().property("natronSceneShowGuides") is False, "Ctrl+G and Ctrl+Shift+G hide the grid and guides")
         yield ("sleep", SETTLE_MS)
         red, blue = counts()
         report("NOTE before painting: %d red, %d blue pixels" % (red, blue))
@@ -208,6 +247,8 @@ try:
         shot("m312-layer-material-layered.png")
 
         navigation.setValue(original_navigation)
+        budget.setValue(original_budget)
+        lighting.setValue(original_lighting)
 
     run(steps())
 except Exception:

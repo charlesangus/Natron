@@ -343,8 +343,10 @@ authorMaterial(const PXR_NS::UsdStageRefPtr& stage,
             return false;
         }
     } else {
+        // The node's layer alone does not compose the specialized original, so the over is typeless and the
+        // schema's bool (an IsA check) is false; only the prim's validity says the over was authored.
         terminal = PXR_NS::UsdShadeShader(stage->OverridePrim(layered.terminal));
-        if (!terminal) {
+        if (!terminal.GetPrim()) {
             *error = EffectInstance::tr("USD could not author the layered surface of %1.").arg(pathString).toStdString();
 
             return false;

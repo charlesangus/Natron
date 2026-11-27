@@ -95,6 +95,27 @@ separation(const Box& a,
     return std::max(std::max(b.x0 - a.x1, a.x0 - b.x1), std::max(b.y0 - a.y1, a.y0 - b.y1));
 }
 
+// Smallest separation over every pair of polygon bounding boxes, one from each island; exact for rectangular polygons.
+double
+polygonSeparation(const GeoUVPackIsland& a,
+                  const GeoUVPackPlacement& pa,
+                  const GeoUVPackIsland& b,
+                  const GeoUVPackPlacement& pb)
+{
+    double least = 1e300;
+    for (const std::vector<GeoUV>& polyA : a.polygons) {
+        GeoUVPackIsland oneA;
+        oneA.polygons = { polyA };
+        for (const std::vector<GeoUV>& polyB : b.polygons) {
+            GeoUVPackIsland oneB;
+            oneB.polygons = { polyB };
+            least = std::min(least, separation(placedBox(oneA, pa), placedBox(oneB, pb)));
+        }
+    }
+
+    return least;
+}
+
 bool
 inside(const Box& box,
        double x0,
@@ -325,7 +346,7 @@ TEST(GeoUVPack, StackingNeedsTheSameScale)
     const Box small = placedBox(islands[0], result.placements[0]);
     const Box large = placedBox(islands[1], result.placements[1]);
     EXPECT_NEAR((large.x1 - large.x0) * (large.y1 - large.y0), 4. * (small.x1 - small.x0) * (small.y1 - small.y0), 1e-9);
-    EXPECT_GE(separation(small, large), 1. / 64. - 1e-9);
+    EXPECT_GE(polygonSeparation(islands[0], result.placements[0], islands[1], result.placements[1]), 1. / 64. - 1e-9);
 }
 
 TEST(GeoUVPack, NoScaleFittingEverythingKeepsAUsableScale)

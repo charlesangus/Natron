@@ -382,7 +382,7 @@ container with `NATRON_DEV_CONTAINER` (see "Where things live").
 ## 4. Test
 
 ```
-[NATRON_RENDER_SCHEDULER=legacy|taskgraph] [NATRON_CTEST_JOBS=<n>] \
+[NATRON_CTEST_JOBS=<n>] \
   [GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<n> GTEST_REPEAT=<n>] \
   tools/ci/local/test.sh <ctest|smoke|startup> [debug|release|fast] [--gdb]
 ```
@@ -405,9 +405,6 @@ container with `NATRON_DEV_CONTAINER` (see "Where things live").
   driver calls, and no ctest case ever starts the GUI. A SIGFPE shows up as
   exit status 136. `check-startup.sh` cannot take this role, as it needs a
   staged bundle and a debug build is not packaged in the container.
-- `NATRON_RENDER_SCHEDULER` selects the render scheduler for `ctest` and
-  `smoke`; unset leaves Natron's default. It is forwarded into the container
-  when set.
 - `NATRON_CTEST_JOBS` (`ctest` only) is how many cases run at once, all as
   clients of the one Xvfb server. Unset or 1 is the serial `ctest -V` run.
   Above 1 only failing cases' output is printed as each finishes; the full

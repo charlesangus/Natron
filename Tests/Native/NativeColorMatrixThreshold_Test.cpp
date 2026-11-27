@@ -390,7 +390,7 @@ TEST_F(NativeColorMatrixThresholdTest, ThresholdIdentityOnlyAtMixZero)
     EXPECT_EQ(0, inputNb);
 }
 
-TEST_F(NativeColorMatrixThresholdTest, BothSchedulerModesAgreeWithNoUnplannedPull)
+TEST_F(NativeColorMatrixThresholdTest, DirectAndScheduledAgreeWithNoUnplannedPull)
 {
     const char* const ids[2] = { PLUGINID_NATRON_COLORMATRIX, PLUGINID_NATRON_THRESHOLD };
     for (int n = 0; n < 2; ++n) {

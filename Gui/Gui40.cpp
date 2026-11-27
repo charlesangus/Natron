@@ -561,6 +561,12 @@ Gui::getNodeDiffPanel() const
     return _imp->_nodeDiffPanel;
 }
 
+GeoSpreadsheetPanel*
+Gui::getGeoSpreadsheetPanel() const
+{
+    return _imp->_geoSpreadsheetPanel;
+}
+
 PropertiesBinWrapper*
 Gui::getPropertiesBin() const
 {

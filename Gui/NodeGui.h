@@ -193,6 +193,35 @@ private:
     std::vector<QPainterPath> _partsWithoutText;
 };
 
+class NodeGuiMessageBadge
+    : public QGraphicsItem {
+public:
+    NodeGuiMessageBadge(NodeGraph* graph,
+                        QGraphicsItem* parent,
+                        double diameter);
+
+    virtual ~NodeGuiMessageBadge();
+
+    void setSeverity(bool isError, const QColor& fill);
+
+    void setCenter(const QPointF& center);
+
+    virtual QRectF boundingRect() const OVERRIDE FINAL;
+    virtual QPainterPath shape() const OVERRIDE FINAL;
+    virtual void paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) OVERRIDE FINAL;
+
+private:
+    void refreshShapes();
+
+    NodeGraph* _graph;
+    double _diameter;
+    bool _isError;
+    QColor _fill;
+    QPointF _center;
+    QPainterPath _outline;
+    QPainterPath _mark;
+};
+
 /**
  * @brief The two diagonals drawn over a disabled node, as one scene item.
  **/
@@ -343,6 +372,12 @@ public:
        hit-testing use this so they reach past the border rather than stopping at the node
        it wraps.*/
     QRectF outlineBoundingRect() const;
+
+    /*The message caption hangs below the body, outside boundingRect(), so that edges keep
+       attaching to the body; collision, placement and selection go through these instead.*/
+    QRectF withMessageCaption(const QRectF& localRect) const;
+    QRectF sceneFootprint() const;
+    double messageCaptionDrop() const;
 
     /*this function does the painting, using QPainter, you can overload it to change the aspect of
        the node.*/
@@ -882,6 +917,8 @@ private:
 
     void refreshUserColorBorderGeometry();
 
+    void refreshMessageGeometry(const QRectF& bbox);
+
     void refreshNameItemTextColor();
 
     void refreshPanelColorIndicator();
@@ -931,7 +968,10 @@ private:
     mutable QMutex _previewDataMutex;
     std::vector<unsigned int> _previewData;
     int _previewW, _previewH;
-    QGraphicsSimpleTextItem* _persistentMessage;
+    NodeGuiMessageBadge* _messageBadge;
+    QGraphicsRectItem* _messageBorder;
+    QGraphicsSimpleTextItem* _messageCaption;
+    QString _messageCaptionLine;
     NodeGraphRectItem* _stateIndicator;
     bool _stateIndicatorSelected; //< the selection refreshStateIndicator() last showed
     // Whether the node executed on each device since the refresh before the last one, as refreshRenderingIndicator()

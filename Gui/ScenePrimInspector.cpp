@@ -59,6 +59,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
+#include "Gui/GeoSpreadsheet.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -605,7 +606,7 @@ private:
 class FullValueWindow
     : public QDialog {
 public:
-    FullValueWindow(const InspectorCell& cell,
+    FullValueWindow(const std::function<QString(const std::atomic<bool>* cancelled)>& full,
                     QWidget* parent)
         : QDialog(parent)
         , _text(new QPlainTextEdit(this))
@@ -623,12 +624,12 @@ public:
         QVBoxLayout* layout = new QVBoxLayout(this);
         layout->setContentsMargins(0, 0, 0, 0);
         layout->addWidget(_text);
-        _worker = std::thread([this, value = cell.value, tip = cell.tip]() {
-            const QString full = value.IsEmpty() ? tip : QString::fromStdString(SceneOps::valueText(value, std::numeric_limits<std::size_t>::max(), &_cancelled));
+        _worker = std::thread([this, full]() {
+            const QString text = full(&_cancelled);
             if (_cancelled) {
                 return;
             }
-            const std::shared_ptr<const QString> wrapped = std::make_shared<const QString>(wrappedForTip(full, &_cancelled));
+            const std::shared_ptr<const QString> wrapped = std::make_shared<const QString>(wrappedForTip(text, &_cancelled));
             if (_cancelled) {
                 return;
             }
@@ -786,7 +787,9 @@ public:
                     _openNode(node);
                 }
             } else if (cell->cut) {
-                (new FullValueWindow(*cell, _view))->show();
+                openScenePrimFullValue(_view, [value = cell->value, tip = cell->tip](const std::atomic<bool>* cancelled) {
+                    return value.IsEmpty() ? tip : QString::fromStdString(SceneOps::valueText(value, std::numeric_limits<std::size_t>::max(), cancelled));
+                });
             }
         });
         QObject::connect(_view->selectionModel(), &QItemSelectionModel::selectionChanged, _view, [this]() {
@@ -942,7 +945,7 @@ public:
         _requestRead = requestRead;
     }
 
-    bool readsWithoutPrim() const override
+    bool readsWithoutPrim(const NodePtr& /*node*/) const override
     {
         return _modeValue == eLayerModeNodeContribution;
     }
@@ -1119,6 +1122,13 @@ private:
 
 } // anon namespace
 
+void
+openScenePrimFullValue(QWidget* parent,
+                       const std::function<QString(const std::atomic<bool>* cancelled)>& full)
+{
+    (new FullValueWindow(full, parent))->show();
+}
+
 ScenePrimInspectorRead::ScenePrimInspectorRead(const SceneGraphStageSourcePtr& source,
                                                const QString& path,
                                                const QString& property,
@@ -1126,7 +1136,8 @@ ScenePrimInspectorRead::ScenePrimInspectorRead(const SceneGraphStageSourcePtr& s
                                                double framesPerSecond,
                                                const std::atomic<U64>& latestGeneration,
                                                U64 generation,
-                                               const NodePtr& node)
+                                               const NodePtr& node,
+                                               const ViewerInstancePtr& viewer)
     : _source(source)
     , _path(path)
     , _property(property)
@@ -1135,6 +1146,7 @@ ScenePrimInspectorRead::ScenePrimInspectorRead(const SceneGraphStageSourcePtr& s
     , _latestGeneration(latestGeneration)
     , _generation(generation)
     , _node(node)
+    , _viewer(viewer)
 {
 }
 
@@ -1154,6 +1166,12 @@ const NodePtr&
 ScenePrimInspectorRead::getNode() const
 {
     return _node;
+}
+
+const ViewerInstancePtr&
+ScenePrimInspectorRead::getViewer() const
+{
+    return _viewer;
 }
 
 const SceneGraphStageSourcePtr&
@@ -1211,6 +1229,7 @@ struct ScenePrimInspector::Implementation {
         double frame = 0.;
         double framesPerSecond = 24.;
         NodePtr node;
+        ViewerInstancePtr viewer;
         ScenePrimInspectorTab* tab = nullptr;
         U64 generation = 0;
     };
@@ -1224,6 +1243,7 @@ struct ScenePrimInspector::Implementation {
     SceneGraphStageSourcePtr source;
     QString path;
     NodePtr node;
+    ViewerInstanceWPtr viewer;
     // The property the Opinions tab lists the specs of, besides the prim's.
     QString property;
     std::function<void(const NodePtr&)> openNode;
@@ -1310,7 +1330,7 @@ struct ScenePrimInspector::Implementation {
 
     bool readUnderWayIsFor(const ScenePrimInspectorTab* tab) const
     {
-        return running.tab && (running.tab == tab) && (running.source == source) && (running.path == path) && (running.property == property) && (running.node == node) && (runningEditCount == source->getEditCount());
+        return running.tab && (running.tab == tab) && (running.source == source) && (running.path == path) && (running.property == property) && (running.node == node) && (running.viewer == viewer.lock()) && (runningEditCount == source->getEditCount());
     }
 
     void startRead()
@@ -1335,7 +1355,7 @@ struct ScenePrimInspector::Implementation {
         }
         readOwed = false;
         const int current = tabWidget->currentIndex();
-        if (!source || (current < 0) || (path.isEmpty() && !tabs[current]->readsWithoutPrim())) {
+        if (!source || (current < 0) || (path.isEmpty() && !tabs[current]->readsWithoutPrim(node))) {
             busy = false;
             greyTimer.stop();
             for (const std::unique_ptr<ScenePrimInspectorTab>& tab : tabs) {
@@ -1357,6 +1377,7 @@ struct ScenePrimInspector::Implementation {
             request.source = source;
             request.path = path;
             request.node = node;
+            request.viewer = viewer.lock();
             request.property = property;
             request.frame = frame;
             request.framesPerSecond = framesPerSecond;
@@ -1415,11 +1436,12 @@ struct ScenePrimInspector::Implementation {
             }
             std::function<void()> show;
             if (next.generation == generation) {
-                const ScenePrimInspectorRead read(next.source, next.path, next.property, next.frame, next.framesPerSecond, generation, next.generation, next.node);
+                const ScenePrimInspectorRead read(next.source, next.path, next.property, next.frame, next.framesPerSecond, generation, next.generation, next.node, next.viewer);
                 show = next.tab->read(read);
             }
             next.source.reset();
             next.node.reset();
+            next.viewer.reset();
             const U64 readGeneration = next.generation;
             const QString readPath = next.path;
             QMetaObject::invokeMethod(inspector, [this, readGeneration, readPath, show]() { onReadEnded(readGeneration, readPath, show); }, Qt::QueuedConnection);
@@ -1484,6 +1506,7 @@ ScenePrimInspector::ScenePrimInspector(QWidget* parent)
     addTableTab(tr("Opinions"), "sceneGraphOpinions",
                 QStringList() << tr("Opinion") << tr("Authored By") << tr("Layer") << tr("Value") << tr("Layer Offset"), readOpinions, false, true);
     addTab(std::make_unique<LayerTextTab>(&_imp->definitionReads));
+    addTab(createScenePrimSpreadsheetTab());
     _imp->publishState();
     _imp->worker = std::thread([this]() { _imp->run(); });
 }
@@ -1514,9 +1537,11 @@ ScenePrimInspector::setNodeOpener(const std::function<void(const NodePtr& node)>
 }
 
 void
-ScenePrimInspector::setNode(const NodePtr& node)
+ScenePrimInspector::setNode(const NodePtr& node,
+                            const ViewerInstancePtr& viewer)
 {
     _imp->node = node;
+    _imp->viewer = viewer;
 }
 
 void

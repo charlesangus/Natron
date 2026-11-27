@@ -55,7 +55,6 @@
 using std::make_pair;
 NATRON_NAMESPACE_ENTER
 
-
 DockablePanelPrivate::DockablePanelPrivate(DockablePanel* publicI,
                                            Gui* gui,
                                            KnobHolder* holder,
@@ -91,6 +90,8 @@ DockablePanelPrivate::DockablePanelPrivate(DockablePanel* publicI,
     , _undoButton(NULL)
     , _redoButton(NULL)
     , _restoreDefaultsButton(NULL)
+    , _editButton(NULL)
+    , _editMode(NULL)
     , _minimized(false)
     , _floating(false)
     , _floatingWidget(NULL)

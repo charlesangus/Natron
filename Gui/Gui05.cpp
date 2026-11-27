@@ -126,6 +126,7 @@ Gui::setupUi()
     _imp->createSceneGraphPanelGui();
     _imp->createMergeConflictPanelGui();
     _imp->createNodeDiffPanelGui();
+    _imp->createGeoSpreadsheetPanelGui();
     ///Must be absolutely called once _nodeGraphArea has been initialized.
     _imp->createPropertiesBinGui();
 

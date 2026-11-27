@@ -192,7 +192,7 @@ NodeGraphPrivate::editSelectionFromSelectionRectangle(bool addToSelection)
     NodesGuiList inside;
 
     for (NodesGuiList::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
-        QRectF bbox = (*it)->mapToScene((*it)->outlineBoundingRect()).boundingRect();
+        QRectF bbox = (*it)->mapToScene((*it)->withMessageCaption((*it)->outlineBoundingRect())).boundingRect();
         if ( selection.contains(bbox) ) {
             inside.push_back(*it);
         }

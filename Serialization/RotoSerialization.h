@@ -203,6 +203,7 @@ struct RotoLayerChildSerialization;
  **/
 struct RotoLayerSerialization
     : public RotoItemSerialization {
+    std::list<KnobSerialization> knobs;
     std::list<RotoLayerChildSerialization> children;
 
     RotoLayerSerialization();

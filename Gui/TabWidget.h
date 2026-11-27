@@ -317,6 +317,7 @@ public Q_SLOTS:
     void moveMergeConflictsHere();
 
     void moveNodeDiffHere();
+    void moveGeoSpreadsheetHere();
 
     void onSplitHorizontally()
     {

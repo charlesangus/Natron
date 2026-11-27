@@ -28,13 +28,16 @@
 #include <algorithm>
 #include <list>
 #include <map>
+#include <string>
 #include <vector>
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/GraphEditRecorder.h"
 #include "Engine/IsolatedJob.h"
 #include "Engine/Knob.h"
+#include "Engine/KnobFactory.h"
 #include "Engine/KnobLinkGroup.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
@@ -873,6 +876,11 @@ struct PythonUserKnobs {
         serialization.pagesOrder = full.pagesOrder;
     }
 
+    bool sameAs(const PythonUserKnobs& other) const
+    {
+        return (serialization.userPages == other.serialization.userPages) && (serialization.pagesOrder == other.serialization.pagesOrder);
+    }
+
     void apply(Node& node) const
     {
         std::list<KnobIWPtr> userKnobs;
@@ -904,6 +912,255 @@ struct PythonUserKnobs {
     }
 };
 
+/*
+ * The expressions and links of the knobs outside a node's user knobs that read or link to them:
+ * knobs of other nodes and the plug-in's own knobs. Rebuilding the user knobs from a snapshot
+ * leaves those knobs with expressions naming knobs that are gone and links that were dropped.
+ */
+struct UserKnobDependentStates {
+    // The user knob dimension a dimension shares a link group with, and both members' flags in it.
+    struct Link {
+        std::string partner;
+        int partnerDimension = -1;
+        bool linked = false;
+        bool nodeLink = false;
+        bool partnerLinked = false;
+        bool partnerNodeLink = false;
+
+        bool operator==(const Link& other) const
+        {
+            return (partner == other.partner) && (partnerDimension == other.partnerDimension) && (linked == other.linked) && (nodeLink == other.nodeLink) && (partnerLinked == other.partnerLinked) && (partnerNodeLink == other.partnerNodeLink);
+        }
+
+        bool operator!=(const Link& other) const
+        {
+            return !(*this == other);
+        }
+    };
+
+    struct Dependent {
+        UndoKnobRef knob;
+        std::vector<std::string> expressions;
+        std::vector<bool> expressionsHaveRet;
+        // Per dimension; an empty partner name when the dimension shares no group with a user knob.
+        std::vector<Link> links;
+    };
+
+    std::vector<Dependent> dependents;
+
+    static bool isOwnUserKnob(const Node& node,
+                              const KnobIPtr& knob)
+    {
+        return knob && (knob->getHolder() == node.getEffectInstance().get()) && knob->isUserKnob();
+    }
+
+    static std::vector<KnobIPtr> collect(const Node& node)
+    {
+        std::vector<KnobIPtr> found;
+        const auto add = [&](const KnobIPtr& knob) {
+            if (knob && !isOwnUserKnob(node, knob) && (std::find(found.begin(), found.end(), knob) == found.end())) {
+                found.push_back(knob);
+            }
+        };
+        const KnobsVec& knobs = node.getKnobs();
+        for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            if (!(*it)->isUserKnob()) {
+                continue;
+            }
+            KnobI::ListenerDimsMap listeners;
+            (*it)->getListeners(listeners);
+            for (KnobI::ListenerDimsMap::const_iterator l = listeners.begin(); l != listeners.end(); ++l) {
+                add(l->first.lock());
+            }
+            // Unlinked members too: they can rejoin the group.
+            for (int i = 0; i < (*it)->getDimension(); ++i) {
+                KnobLinkGroupPtr group = (*it)->getLinkGroup(i);
+                if (!group) {
+                    continue;
+                }
+                const std::vector<KnobLinkGroup::Member> members = group->getMembers();
+                for (std::size_t m = 0; m < members.size(); ++m) {
+                    add(members[m].knob.lock());
+                }
+            }
+        }
+
+        return found;
+    }
+
+    static Dependent capture(const Node& node,
+                             const KnobIPtr& knob)
+    {
+        Dependent dependent;
+        dependent.knob = UndoKnobRef(knob);
+        const int dimensionCount = knob->getDimension();
+        dependent.links.resize(dimensionCount);
+        for (int i = 0; i < dimensionCount; ++i) {
+            dependent.expressions.push_back(knob->getExpression(i));
+            dependent.expressionsHaveRet.push_back(knob->isExpressionUsingRetVariable(i));
+            KnobLinkGroupPtr group = knob->getLinkGroup(i);
+            if (!group) {
+                continue;
+            }
+            const std::vector<KnobLinkGroup::Member> members = group->getMembers();
+            const KnobLinkGroup::Member* partner = 0;
+            KnobIPtr partnerKnob;
+            for (std::size_t m = 0; m < members.size(); ++m) {
+                KnobIPtr member = members[m].knob.lock();
+                if (!isOwnUserKnob(node, member) || (partner && partner->linked)) {
+                    continue;
+                }
+                partner = &members[m];
+                partnerKnob = member;
+            }
+            if (!partner) {
+                continue;
+            }
+            Link& link = dependent.links[i];
+            link.partner = partnerKnob->getName();
+            link.partnerDimension = partner->dimension;
+            link.linked = group->isMemberLinked(knob.get(), i);
+            link.nodeLink = group->isMemberNodeLink(knob.get(), i);
+            link.partnerLinked = partner->linked;
+            link.partnerNodeLink = partner->nodeLink;
+        }
+
+        return dependent;
+    }
+
+    void captureAll(const Node& node,
+                    const std::vector<KnobIPtr>& knobs)
+    {
+        for (std::size_t i = 0; i < knobs.size(); ++i) {
+            dependents.push_back(capture(node, knobs[i]));
+        }
+    }
+
+    bool sameAs(const UserKnobDependentStates& other) const
+    {
+        if (dependents.size() != other.dependents.size()) {
+            return false;
+        }
+        for (std::size_t i = 0; i < dependents.size(); ++i) {
+            const Dependent& a = dependents[i];
+            const Dependent& b = other.dependents[i];
+            if ((a.knob.lock() != b.knob.lock()) || (a.expressions != b.expressions) || (a.expressionsHaveRet != b.expressionsHaveRet) || (a.links != b.links)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    std::vector<KnobIPtr> knobs() const
+    {
+        std::vector<KnobIPtr> ret;
+        for (std::size_t i = 0; i < dependents.size(); ++i) {
+            KnobIPtr knob = dependents[i].knob.lock();
+            if (knob) {
+                ret.push_back(knob);
+            }
+        }
+
+        return ret;
+    }
+
+    // Returns whether the dimension is in partner's group afterwards.
+    static bool relink(const KnobIPtr& knob,
+                       int dimension,
+                       const KnobIPtr& partner,
+                       const Link& link)
+    {
+        KnobLinkGroupPtr group = knob->getLinkGroup(dimension);
+        KnobLinkGroupPtr partnerGroup = partner->getLinkGroup(link.partnerDimension);
+        KnobHelperPtr ownState;
+        if (!group || (group != partnerGroup)) {
+            if (!link.linked) {
+                // Joining adopts the group's state, which an unlinked member does not share.
+                ownState = appPTR->getKnobFactory().createKnob(knob->typeName(), NULL, knob->getName(), knob->getDimension(), false);
+                if (ownState) {
+                    ownState->clone(knob.get(), dimension, dimension);
+                }
+            }
+            if (partnerGroup) {
+                // Linking to an unlinked member would move it out of its group.
+                partnerGroup->setMemberLinked(partner.get(), link.partnerDimension, true);
+            }
+            knob->linkTo(dimension, partner, link.partnerDimension);
+            group = knob->getLinkGroup(dimension);
+            if (partnerGroup && (group != partnerGroup)) {
+                partnerGroup->setMemberLinked(partner.get(), link.partnerDimension, link.partnerLinked);
+            }
+        }
+        if (!group || (group != partner->getLinkGroup(link.partnerDimension))) {
+            return false;
+        }
+        group->setMemberNodeLink(knob.get(), dimension, link.nodeLink);
+        group->setMemberNodeLink(partner.get(), link.partnerDimension, link.partnerNodeLink);
+        if (link.linked && !group->isMemberLinked(knob.get(), dimension)) {
+            group->setMemberLinked(partner.get(), link.partnerDimension, true);
+            knob->linkTo(dimension, partner, link.partnerDimension);
+        }
+        group->setMemberLinked(partner.get(), link.partnerDimension, link.partnerLinked);
+        if (!link.linked) {
+            group->setMemberLinked(knob.get(), dimension, false);
+            if (ownState) {
+                knob->clone(ownState.get(), dimension, dimension);
+            }
+        }
+
+        return true;
+    }
+
+    void apply(Node& node) const
+    {
+        EffectInstancePtr effect = node.getEffectInstance();
+        if (!effect) {
+            return;
+        }
+        bool nodeLinks = false;
+        for (std::size_t d = 0; d < dependents.size(); ++d) {
+            const Dependent& dependent = dependents[d];
+            KnobIPtr knob = dependent.knob.lock();
+            if (!knob || (knob->getDimension() != (int)dependent.expressions.size())) {
+                continue;
+            }
+            for (int i = 0; i < knob->getDimension(); ++i) {
+                const Link& link = dependent.links[i];
+                KnobIPtr partner = link.partner.empty() ? KnobIPtr() : effect->getKnobByName(link.partner);
+                if (partner && (link.partnerDimension >= 0) && (link.partnerDimension < partner->getDimension()) && relink(knob, i, partner, link)) {
+                    nodeLinks |= link.nodeLink || link.partnerNodeLink;
+                    if (link.linked) {
+                        // A linked dimension shares the group's expression. Members adopt it only when its text
+                        // changes, so one left invalid by a deleted knob is re-set, and the set reaches the group.
+                        if (!dependent.expressions[i].empty() && !knob->isExpressionValid(i, 0)) {
+                            try {
+                                knob->setExpression(i, dependent.expressions[i], dependent.expressionsHaveRet[i], false);
+                            } catch (...) {
+                            }
+                        }
+                        continue;
+                    }
+                }
+                // Even when the text is unchanged: it was read from the knobs the rebuild replaced.
+                try {
+                    if (dependent.expressions[i].empty()) {
+                        if (!knob->getExpression(i).empty()) {
+                            knob->clearExpression(i, true);
+                        }
+                    } else {
+                        knob->setExpression(i, dependent.expressions[i], dependent.expressionsHaveRet[i], false);
+                    }
+                } catch (...) {
+                }
+            }
+        }
+        if (nodeLinks) {
+            node.emitLinksChanged(NodesList());
+        }
+    }
+};
+
 namespace {
 
 /*
@@ -914,12 +1171,28 @@ class UserKnobsCommand
     : public UndoCommand {
 public:
     UserKnobsCommand(const NodePtr& node,
-                     const std::shared_ptr<PythonUserKnobs>& before)
+                     const std::shared_ptr<PythonUserKnobs>& before,
+                     const std::shared_ptr<UserKnobDependentStates>& beforeDependents)
         : UndoCommand("Edit parameters of " + node->getLabel_mt_safe())
         , _node(node)
         , _before(before)
         , _after(std::make_shared<PythonUserKnobs>(*node))
+        , _beforeDependents(beforeDependents)
+        , _afterDependents(std::make_shared<UserKnobDependentStates>())
     {
+        std::vector<KnobIPtr> knobs = _beforeDependents->knobs();
+        const std::vector<KnobIPtr> now = UserKnobDependentStates::collect(*node);
+        for (std::size_t i = 0; i < now.size(); ++i) {
+            if (std::find(knobs.begin(), knobs.end(), now[i]) == knobs.end()) {
+                knobs.push_back(now[i]);
+            }
+        }
+        _afterDependents->captureAll(*node, knobs);
+    }
+
+    bool changes() const
+    {
+        return !_before->sameAs(*_after) || !_beforeDependents->sameAs(*_afterDependents);
     }
 
     virtual void undo() OVERRIDE FINAL
@@ -927,6 +1200,7 @@ public:
         NodePtr node = _node.lock();
         if (node) {
             _before->apply(*node);
+            _beforeDependents->apply(*node);
         }
     }
 
@@ -935,6 +1209,7 @@ public:
         NodePtr node = _node.lock();
         if (node) {
             _after->apply(*node);
+            _afterDependents->apply(*node);
         }
     }
 
@@ -942,7 +1217,18 @@ private:
     NodeWPtr _node;
     std::shared_ptr<PythonUserKnobs> _before;
     std::shared_ptr<PythonUserKnobs> _after;
+    std::shared_ptr<UserKnobDependentStates> _beforeDependents;
+    std::shared_ptr<UserKnobDependentStates> _afterDependents;
 };
+
+// The nodes a PythonUserKnobsUndoGuard is recording, which nested guards leave to it.
+std::vector<const Node*>&
+nodesRecordingUserKnobs()
+{
+    static std::vector<const Node*> nodes;
+
+    return nodes;
+}
 
 // Knobs whose holder is part of the project: a node, a node's track, or the project itself.
 bool
@@ -1147,18 +1433,90 @@ PythonUserKnobsUndoGuard::PythonUserKnobsUndoGuard(KnobHolder* holder)
     : _recorder()
     , _node(nodeOfHolder(holder))
     , _before()
+    , _beforeDependents()
 {
     _recorder = recorderForNode(_node);
-    if (_recorder) {
-        _before = std::make_shared<PythonUserKnobs>(*_node);
+    if (!_recorder) {
+        return;
     }
+    std::vector<const Node*>& recording = nodesRecordingUserKnobs();
+    if (std::find(recording.begin(), recording.end(), _node.get()) != recording.end()) {
+        _recorder.reset();
+
+        return;
+    }
+    recording.push_back(_node.get());
+    _before = std::make_shared<PythonUserKnobs>(*_node);
+    _beforeDependents = std::make_shared<UserKnobDependentStates>();
+    _beforeDependents->captureAll(*_node, UserKnobDependentStates::collect(*_node));
 }
 
 PythonUserKnobsUndoGuard::~PythonUserKnobsUndoGuard()
 {
-    if (_recorder) {
-        _recorder->record(std::make_shared<UserKnobsCommand>(_node, _before), touchedNode(_node));
+    if (!_recorder) {
+        return;
     }
+    std::vector<const Node*>& recording = nodesRecordingUserKnobs();
+    std::vector<const Node*>::iterator found = std::find(recording.begin(), recording.end(), _node.get());
+    if (found != recording.end()) {
+        recording.erase(found);
+    }
+    std::shared_ptr<UserKnobsCommand> command = std::make_shared<UserKnobsCommand>(_node, _before, _beforeDependents);
+    if (command->changes()) {
+        _recorder->record(command, touchedNode(_node));
+    }
+}
+
+UserKnobsUndoScope::UserKnobsUndoScope(KnobHolder* holder,
+                                       const std::string& label,
+                                       bool snapshot)
+    : _holder(holder)
+    , _changed(false)
+    , _step()
+    , _guard()
+{
+    NodePtr node = nodeOfHolder(holder);
+    if (!node) {
+        return;
+    }
+    _step.reset(new UndoStepGuard(node->getApp(), label, true));
+    if (snapshot) {
+        _guard.reset(new PythonUserKnobsUndoGuard(holder));
+    }
+}
+
+UserKnobsUndoScope::~UserKnobsUndoScope()
+{
+    _guard.reset();
+    _step.reset();
+    // Edits of a knob's definition alone, such as its label, list no knob change otherwise.
+    if (_changed && _holder && GraphEditRecorder::isActive()) {
+        GraphEditRecorder::onKnobListChanged(_holder);
+    }
+}
+
+void
+UserKnobsUndoScope::record(const UndoCommandPtr& command)
+{
+    _changed = true;
+    NodePtr node = nodeOfHolder(_holder);
+    if (!command || !node) {
+        return;
+    }
+    const std::vector<const Node*>& recording = nodesRecordingUserKnobs();
+    if (std::find(recording.begin(), recording.end(), node.get()) != recording.end()) {
+        return;
+    }
+    UndoRecorderPtr recorder = recorderForNode(node);
+    if (recorder) {
+        recorder->record(command, touchedNode(node));
+    }
+}
+
+void
+UserKnobsUndoScope::markChanged()
+{
+    _changed = true;
 }
 
 NATRON_NAMESPACE_EXIT

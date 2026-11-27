@@ -89,6 +89,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/DockablePanel.h"
 #include "Gui/DopeSheetEditor.h"
 #include "Gui/FloatingWidget.h"
+#include "Gui/GeoSpreadsheetPanel.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
@@ -208,6 +209,7 @@ GuiPrivate::GuiPrivate(const GuiAppInstancePtr& app,
     , _nodeDiffPanel(0)
     , menuUpdateFromTemplate(0)
     , graphComparison()
+    , _geoSpreadsheetPanel(0)
     , _dopeSheetEditor(0)
     , _toolBox(0)
     , _propertiesBin(0)
@@ -478,6 +480,16 @@ GuiPrivate::createNodeDiffPanelGui()
     _nodeDiffPanel->setScriptName("nodeDiff");
     _nodeDiffPanel->setVisible(false);
     _gui->registerTab(_nodeDiffPanel, _nodeDiffPanel);
+}
+
+void
+GuiPrivate::createGeoSpreadsheetPanelGui()
+{
+    _geoSpreadsheetPanel = new GeoSpreadsheetPanel(_gui);
+    _geoSpreadsheetPanel->setScriptName("geometrySpreadsheet");
+    _geoSpreadsheetPanel->setLabel(tr("Geometry Spreadsheet").toStdString());
+    _geoSpreadsheetPanel->setVisible(false);
+    _gui->registerTab(_geoSpreadsheetPanel, _geoSpreadsheetPanel);
 }
 
 TabWidget*

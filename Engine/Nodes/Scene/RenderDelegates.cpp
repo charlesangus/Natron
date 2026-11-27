@@ -40,6 +40,8 @@
 #include <pxr/imaging/hf/pluginDesc.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
 
+#include "Engine/Nodes/Scene/SceneCaches.h"
+
 PXR_NAMESPACE_USING_DIRECTIVE
 
 NATRON_NAMESPACE_ENTER
@@ -121,6 +123,9 @@ list()
 
     if (!gListed) {
         gListed = true;
+        // Hydra discovers its renderers once, and the first to ask may precede the application's own
+        // registration of the utility renderer. The failure, if any, is reported by that registration.
+        SceneCaches::registerLiveTextures(nullptr);
         HfPluginDescVector descs;
         HdRendererPluginRegistry::GetInstance().GetPluginDescs(&descs);
         bool haveStorm = false;

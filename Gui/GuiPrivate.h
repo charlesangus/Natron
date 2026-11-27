@@ -191,6 +191,7 @@ public:
     NodeDiffPanel* _nodeDiffPanel;
     Menu* menuUpdateFromTemplate;
     std::shared_ptr<ProjectMerge::ChangeSummary> graphComparison;
+    GeoSpreadsheetPanel* _geoSpreadsheetPanel;
     std::list<SceneGraphPanel*> _extraSceneGraphPanels;
 
     // The dope sheet
@@ -311,6 +312,7 @@ public:
     void createMergeConflictPanelGui();
 
     void createNodeDiffPanelGui();
+    void createGeoSpreadsheetPanelGui();
 
     ///If there's only 1 non-floating pane in the main window, return it, otherwise returns NULL
     TabWidget* getOnly1NonFloatingPane(int & count) const;

@@ -28,6 +28,9 @@
 
 #include "Global/Macros.h"
 
+#include <optional>
+#include <utility>
+
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QtGlobal> // for Q_OS_*
@@ -283,11 +286,12 @@ public:
      **/
     QWidget* getCentralWidget() const;
     std::string popOpenFileDialog(bool sequenceDialog,
-                                  const std::vector<std::string> & initialfilters, const std::string & initialDir,
-                                  bool allowRelativePaths);
+                                  const std::vector<std::string>& initialfilters, const std::string& initialDir,
+                                  bool allowRelativePaths,
+                                  std::optional<std::pair<int, int>>* frameRange = nullptr);
     std::string popSaveFileDialog(bool sequenceDialog, const std::vector<std::string>& initialfilters, const std::string& initialDir,
                                   bool allowRelativePaths, const std::string& suggestedFileName = std::string());
-    std::string openImageSequenceDialog();
+    std::string openImageSequenceDialog(std::optional<std::pair<int, int>>* frameRange = nullptr);
     std::string saveImageSequenceDialog();
 
     void setDraftRenderEnabled(bool b);
@@ -364,6 +368,8 @@ public:
     SceneGraphPanel* getSceneGraphPanel() const;
     MergeConflictPanel* getMergeConflictPanel() const;
     NodeDiffPanel* getNodeDiffPanel() const;
+
+    GeoSpreadsheetPanel* getGeoSpreadsheetPanel() const;
 
     // A further Scene Graph panel following the active viewer, not yet in a pane. scriptName, a
     // layout's sceneGraph<N> with N >= 2, is used when no tab has it; otherwise the lowest free N is.
@@ -445,6 +451,8 @@ public:
 
     void addVisibleDockablePanel(DockablePanel* panel);
     void removeVisibleDockablePanel(DockablePanel* panel);
+
+    void notifyPanelForegroundChanged() const;
 
     const std::list<DockablePanel*>& getVisiblePanels() const;
     std::list<DockablePanel*> getVisiblePanels_mt_safe() const;

@@ -31,6 +31,10 @@ A hide-unmodified case turns on the panel's hide-unmodified button, then shows a
 shown yet: the unmodified rows of that page (any type with a label) must stay hidden, as they would on
 a page built with the panel, and must show once the button is turned off again.
 
+An unfold case opens a Grade panel, whose multiply parameter starts folded to one field: clicking
+its dimension switch must show a field per channel, holding the parameter's values, with Tab going
+from the second field to the third, and typing into the third field must set that channel alone.
+
 Widget wrappers are looked up again on every pass and never kept across a yield: a wrapper kept
 across one can outlive its C++ object.
 """
@@ -64,6 +68,9 @@ LAZY_SKIP = ("read", "write", "viewer", "group", "backdrop", "dot", "input", "ou
 LAZY_SCAN_LIMIT = 60
 LAZY_PANEL_LIMIT = 12
 SECOND_PANEL_PLUGIN = "Blur"
+UNFOLD_PLUGIN = "Grade"
+UNFOLD_PARAM = "multiply"
+UNFOLD_VALUE = 0.25
 # Tried in turn for a page other than the one a new panel shows, holding unmodified rows.
 UNMODIFIED_PLUGINS = ("Merge", "Transform", "Grade", "Blur", "ColorCorrect")
 HIDE_UNMODIFIED_TIP = "without modifications"
@@ -83,6 +90,7 @@ try:
     from PySide6.QtWidgets import (QAbstractButton, QApplication, QLabel, QLineEdit, QMainWindow, QScrollArea,
                                    QTabWidget, QWidget)
 
+    from PySide6.QtTest import QTest
     import guitest as gt
     from guitest import check, report, require
 
@@ -675,6 +683,81 @@ try:
             button.click()
         return found
 
+    def unfold_fields(node, dim):
+        panel = panel_of(node)
+        tip = "<b>%s</b>" % UNFOLD_PARAM
+        found = []
+        for w in (panel.findChildren(QWidget) if panel is not None else []):
+            try:
+                if (gt.class_name(w) == "SpinBox" and w.objectName() == "dim-%d" % dim and w.isVisible()
+                        and tip in w.toolTip()):
+                    found.append(w)
+            except RuntimeError:
+                continue
+        return found
+
+    def unfold_switch(node, dims):
+        """The row's dimension switch: the checkable button, labelled with the dimension count, beside
+        dimension 0's field."""
+        fields = unfold_fields(node, 0)
+        row = fields[0].parentWidget().parentWidget() if len(fields) == 1 else None
+        for b in (row.findChildren(QAbstractButton) if row is not None else []):
+            if b.isCheckable() and b.text() == str(dims) and b.isVisible():
+                return b
+        return None
+
+    def unfold_steps():
+        tag = "unfold"
+        gt.section(tag)
+        yield from quiet()
+        node = app.createNode(UNFOLD_PLUGIN)
+        require(node is not None, "%s: create a %s" % (tag, UNFOLD_PLUGIN), gt.plugin_problem(UNFOLD_PLUGIN))
+        node.setPosition(-300, 250)
+        param = node.getParam(UNFOLD_PARAM)
+        require(param is not None and param.getNumDimensions() >= 3,
+                "%s: %s.%s has three dimensions or more" % (tag, UNFOLD_PLUGIN, UNFOLD_PARAM))
+        dims = param.getNumDimensions()
+        ok = yield from open_panel(node)
+        require(ok, "%s: the panel of %s opens" % (tag, node.getLabel()))
+
+        switch = unfold_switch(node, dims)
+        require(switch is not None, "%s: %s has a dimension switch" % (tag, UNFOLD_PARAM))
+        require(not switch.isChecked(), "%s: %s starts folded" % (tag, UNFOLD_PARAM))
+        check(not unfold_fields(node, 2), "%s: folded, %s shows no field for dimension 2" % (tag, UNFOLD_PARAM))
+        switch.click()
+        switch = None
+        yield ("sleep", SETTLE_MS)
+
+        values = [param.getValue(i) for i in range(dims)]
+        shown = [unfold_fields(node, i) for i in range(dims)]
+        check(all(len(f) == 1 for f in shown), "%s: unfolded, %s shows one field per dimension (%r)" % (
+            tag, UNFOLD_PARAM, [len(f) for f in shown]))
+        if all(len(f) == 1 for f in shown):
+            texts = [f[0].text() for f in shown]
+            check(all(abs(float(t) - v) < 1e-6 for t, v in zip(texts, values)),
+                  "%s: the fields hold the values %r (show %r)" % (tag, values, texts))
+            check(tab_neighbour(shown[1][0], True) is not None and ptr(tab_neighbour(shown[1][0], True)) == ptr(shown[2][0]),
+                  "%s: Tab goes from dimension 1's field to dimension 2's" % tag)
+            box = shown[2][0]
+            box.setFocus()
+            box.selectAll()
+            QTest.keyClicks(box, str(UNFOLD_VALUE))
+            QTest.keyClick(box, Qt.Key_Return)
+        shown = None
+        box = None
+        yield ("sleep", SETTLE_MS)
+
+        after = [param.getValue(i) for i in range(dims)]
+        expected = list(values)
+        expected[2] = UNFOLD_VALUE
+        check(all(abs(a - e) < 1e-6 for a, e in zip(after, expected)),
+              "%s: typing %s into dimension 2's field sets that dimension alone (%r, expected %r)" % (
+                  tag, UNFOLD_VALUE, after, expected))
+        fields = unfold_fields(node, 2)
+        check(len(fields) == 1 and abs(float(fields[0].text()) - UNFOLD_VALUE) < 1e-6,
+              "%s: dimension 2's field shows %s" % (tag, UNFOLD_VALUE))
+        fields = None
+
     def hide_unmodified_steps():
         tag = "hide unmodified"
         gt.section(tag)
@@ -929,6 +1012,8 @@ try:
         yield from lazy_page_steps()
         gt.close_all_panels()
         yield from hide_unmodified_steps()
+        gt.close_all_panels()
+        yield from unfold_steps()
 
         faulthandler.cancel_dump_traceback_later()
 

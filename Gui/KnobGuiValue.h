@@ -270,6 +270,13 @@ private:
     void setDimensionLinesRightInset(QHBoxLayout* containerLayout);
     void seekDimensionSlidersToSpinBoxes();
     void ensureDimensionSliders();
+    SpinBox* createDimensionSpinBox(int dimension, QWidget* parent,
+                                    const std::vector<double>& increments,
+                                    const std::vector<int>& decimals);
+    /**
+     * @brief Builds the fields a folded row left unbuilt, applying what was set on them meanwhile.
+     **/
+    void ensureDimensionWidgets();
     void dimensionSliderEditingEnd(int dimension, double d);
     void onDimensionSliderValueChanged(int dimension, double d);
     void onDimensionSliderEditingFinished(int dimension, bool hasMovedOnce);

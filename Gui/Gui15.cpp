@@ -709,6 +709,16 @@ Gui::addVisibleDockablePanel(DockablePanel* panel)
             }
             NodeCreationStageLog::Scope stage("panelDockShow");
             panel->setVisible(true);
+            // Showing posts a LayoutRequest that the event loop only handles after the next repaint, so
+            // that frame would go out without the panel and it would appear one frame later. Laying out
+            // now lets the very next frame paint it.
+            NodeCreationStageLog::Scope layoutStage("panelDockLayout");
+            if (QLayout* panelLayout = panel->layout()) {
+                panelLayout->activate();
+            }
+            if (!panel->isFloating()) {
+                _imp->_layoutPropertiesBin->activate();
+            }
         }
 
         {

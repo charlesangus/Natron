@@ -57,13 +57,6 @@ class TabTabTabPlugin:
         """Trigger the selected menu item."""
         raise NotImplementedError
 
-    def invoke_opens_window(self, thing):
-        """Return False when invoking thing opens no window, dialog or
-        menu, so the popup can stay up until the choice has run and close
-        in the same event-loop pass. The default, True, closes the popup
-        first, so whatever the choice opens comes up over the host."""
-        return True
-
     def get_icon(self, menuobj):
         """Return a QIcon for menuobj, or None.
         Default works for any Qt object whose .icon() returns a QIcon."""
@@ -1124,17 +1117,13 @@ class TabTabTabWidget(QtWidgets.QDialog):
         self.weights.increment(thing['menupath'])
         self._pending_text = prev_string
 
-        if self.plugin.invoke_opens_window(thing):
-            # Windows the choice opens (a file dialog, a menu) come up over
-            # the host rather than under the popup.
-            self.close()
-            self.plugin.invoke(thing)
-        else:
-            # Hiding after the choice has run lets the host's repaint of
-            # what the popup covered and of the choice's result happen in
-            # one paint.
-            self.plugin.invoke(thing)
-            self.close()
+        # Hiding first gives the window system the choice's run time to
+        # expose what the popup covered, so the host can repaint that area
+        # in the same frame as the choice's result instead of pushing a
+        # second frame for the expose alone. Windows the choice opens (a
+        # file dialog, a menu) also come up over the host, not the popup.
+        self.close()
+        self.plugin.invoke(thing)
 
 
 _tabtabtab_instance = None

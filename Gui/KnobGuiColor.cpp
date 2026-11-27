@@ -1383,8 +1383,10 @@ KnobGuiColor::onDimensionsFolded()
     for (int i = 0; i < nDims; ++i) {
         SpinBox* sb = 0;
         getSpinBox(i, &sb);
-        assert(sb);
-        sb->setUseLineColor(false, Qt::red);
+        // A folded row builds its other fields on first unfold, without the line colour.
+        if (sb) {
+            sb->setUseLineColor(false, Qt::red);
+        }
         ScaleSliderQWidget* slider = getDimensionSlider(i);
         if (slider) {
             slider->setUseLineColor(false, Qt::red);
@@ -1415,8 +1417,9 @@ KnobGuiColor::onDimensionsExpanded()
         SpinBox* sb = 0;
         Label* label = 0;
         getSpinBox(i, &sb, &label);
-        assert(sb);
-        sb->setUseLineColor(true, colors[i]);
+        if (sb) {
+            sb->setUseLineColor(true, colors[i]);
+        }
         ScaleSliderQWidget* slider = getDimensionSlider(i);
         if (slider) {
             slider->setUseLineColor(true, colors[i]);

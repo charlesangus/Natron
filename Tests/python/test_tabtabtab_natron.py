@@ -701,38 +701,6 @@ class NatronAdapterTests(unittest.TestCase):
 
         self.assertEqual(action.trigger_calls, 0)
 
-    def test_plain_node_opens_no_window(self):
-        h = self._load_adapter()
-        plugin = h.module.NatronPlugin()
-
-        self.assertFalse(plugin.invoke_opens_window({"menuobj": _plugin_action("Blur", "BlurOFX")}))
-
-    def test_read_and_write_open_a_file_dialog(self):
-        h = self._load_adapter()
-        plugin = h.module.NatronPlugin()
-
-        self.assertTrue(plugin.invoke_opens_window({"menuobj": _plugin_action("Read", "Read")}))
-        self.assertTrue(plugin.invoke_opens_window({"menuobj": _plugin_action("Write", "Write")}))
-
-    def test_commands_and_script_actions_may_open_a_window(self):
-        h = self._load_adapter()
-        plugin = h.module.NatronPlugin()
-
-        self.assertTrue(plugin.invoke_opens_window({"menuobj": _FakeAction(text="Preferences...")}))
-        self.assertTrue(plugin.invoke_opens_window({"menuobj": None}))
-
-    def test_deleted_action_counts_as_opening_a_window(self):
-        h = self._load_adapter()
-        plugin = h.module.NatronPlugin()
-        action = _plugin_action("Blur", "BlurOFX")
-
-        def _deleted(name):
-            raise RuntimeError("wrapped C++ object destroyed")
-
-        action.property = _deleted
-
-        self.assertTrue(plugin.invoke_opens_window({"menuobj": action}))
-
     # --- warm-up -------------------------------------------------------------
 
     def test_warm_up_prepares_the_popup_without_showing_it(self):

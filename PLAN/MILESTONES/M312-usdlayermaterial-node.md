@@ -41,7 +41,7 @@ What exists today:
 - M311 URIs resolve non-rgba planes (`natron://<node>/<layer>.<UDIM>`).
 
 ## Phase 312.1: Inputs and terminals
-- [ ] M312.P1.T1 — Paint Only output on USDTexturePaint
+- [x] M312.P1.T1 — Paint Only output on USDTexturePaint
   - files: `Engine/Nodes/Scene/USDTexturePaint.{h,cpp}`, `USDTexturePaintCache.cpp`, `docs/USDTexturePaint.md`, `Tests/Scene/USDTexturePaint_Test.cpp`
   - approach:
     - Add an `outputMode` knob: "Output Mode", Over Base | Paint Only, default Over Base.
@@ -53,7 +53,7 @@ What exists today:
     - After Bake Output, Paint Only still matches the pre-bake paint.
     - Over Base output is unchanged.
   - size: M
-- [ ] M312.P1.T2 — Layered glslfx terminals for Storm
+- [x] M312.P1.T2 — Layered glslfx terminals for Storm
   - files: `Engine/Nodes/Scene/shaders/natronLayeredPreviewSurface.glslfx` (new; previewSurface.glslfx is Apache-2.0), `shaders/natronProject3D.glslfx`, shader CMake install
   - approach:
     - The preview-surface copy takes `<input>Paint` (float4) for each mixable input and mixes before lighting.
@@ -99,3 +99,4 @@ What exists today:
 ## Decisions
 - 2026-11-26 (PM): file overlap with M315 - Direct Texel Painting (USDTexturePaint). M312.P1.T1 lands before M315 starts.
 - 2026-11-27 — **Paint Only: the mode drives the session source (user, option A).** In Paint Only each session view renders transparent black, so brushes that read the texture (blur, smear, clone, dodge, burn) see nothing under them in that mode. Bake Output writes the current mode's set; the over-base set in Paint Only is rebuilt as the paint-only set laid over the Bake Inputs base. Switching mode after a Bake Output asks for a new bake. This replaces "Bake Output always writes both sets". Paint Only colour is premultiplied by coverage, so the layer mix is original * (1 - a) + paint (PM).
+- 2026-11-27 (PM) — P1: the mode switch after a Bake Output is locked (Output Mode greyed while a bake is in effect; undo frees it). A Paint Only bake writes the paint set and the over-base set rebuilt over the Bake Inputs base. normalPaint holds the painted normal premultiplied (0–1, no scale/bias; the shader decodes 2*rgb - alpha), so Phase 2 authoring must not scale or bias it. The layered shader's opacityMode is an int, so the node converts the token. Storm uses outputs:glslfx:surface before the universal surface (hdSt/renderDelegate.cpp:702, usdShade/material.cpp:486-533, OpenUSD v26.08). Open: paint that lowers opacity doesn't make an opaque material translucent; MaterialBake and the Slang projection kernels don't mirror projection paint yet.

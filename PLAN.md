@@ -679,7 +679,7 @@ future core work has solid ground to build on.
 | M606 | Viewer Snapping | todo | M603 |  | E28 | F40 | | [M606-viewer-snapping.md](PLAN/MILESTONES/M606-viewer-snapping.md) |
 | M607 | Geometry Marker Controls | todo | M602 |  | E28 | F40 | | [M607-geometry-marker-controls.md](PLAN/MILESTONES/M607-geometry-marker-controls.md) |
 | M608 | Geometry Group Picker | todo | M602, M359 |  | E28 | F40 | | [M608-geometry-group-picker.md](PLAN/MILESTONES/M608-geometry-group-picker.md) |
-| M609 | GeoToUSD Path And Placement | doing | M358 | bosley-executor | E9 | F42 | | [M609-geotousd-path-and-placement.md](PLAN/MILESTONES/M609-geotousd-path-and-placement.md) |
+| M609 | GeoToUSD Path And Placement | done | M358 | bosley-executor | E9 | F42 | | [M609-geotousd-path-and-placement.md](PLAN/MILESTONES/M609-geotousd-path-and-placement.md) |
 | M610 | GeoToUSD Attribute And Material Controls | todo | M609 |  | E9 | F42 | | [M610-geotousd-attribute-and-material-controls.md](PLAN/MILESTONES/M610-geotousd-attribute-and-material-controls.md) |
 | M611 | USDToGeo Source Controls | doing | M358 | bosley-executor | E9 | F42 | | [M611-usdtogeo-source-controls.md](PLAN/MILESTONES/M611-usdtogeo-source-controls.md) |
 | M612 | USDGeoModify Node | todo | M609, M610, M611, M159 |  | E9 | F42 | | [M612-usdgeomodify-node.md](PLAN/MILESTONES/M612-usdgeomodify-node.md) |

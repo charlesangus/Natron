@@ -650,10 +650,13 @@ TEST_F(WholeFrameTest, ResultSomeoneWaitsForAsksForNoRender)
         aborted = true;
         replaced.join();
         WholeFrameCache::Result result;
+        std::atomic<int> cancelChecks(0);
         std::thread replacing([&]() {
-            result = cache.get("frame", never, held.prepare(2.f));
+            result = cache.get("frame", [&]() { ++cancelChecks; return false; }, held.prepare(2.f));
         });
-        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        // The first check comes before the caller joins the job and the later ones while it waits on it: a job
+        // released before the caller joined has no waiter left, and rightly asks for a render.
+        ASSERT_LT(timeUntil([&]() { return cancelChecks.load() > 1; }), std::chrono::seconds(5));
         held.release();
         replacing.join();
         EXPECT_TRUE(bool(result));

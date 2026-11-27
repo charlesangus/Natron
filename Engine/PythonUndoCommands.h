@@ -54,11 +54,24 @@ NATRON_NAMESPACE_ENTER
 bool recordPythonKnobEdit(const KnobIPtr& knob) WARN_UNUSED_RETURN;
 
 /**
+ * @brief recordPythonKnobEdit() for a knob that may belong to a roto item, which has no holder:
+ * itemNode is the node whose curve context holds the item, or null for any other knob.
+ **/
+bool recordPythonKnobEdit(const KnobIPtr& knob, const NodePtr& itemNode) WARN_UNUSED_RETURN;
+
+/**
  * @brief The recording recordPythonKnobEdit() does, for edits made outside Python, such as the
  * edits of a Viewer overlay inside its gesture's undo step. Call on the main thread before changing
  * knob; does nothing unless the application's recorder is recording.
  **/
 void recordKnobEdit(const KnobIPtr& knob);
+
+/**
+ * @brief The recording recordKnobEdit() does, for a knob of a roto item, which has no holder: node
+ * is the node whose curve context holds the item, and undoing the record needs it to still exist.
+ * Call on the main thread before changing knob.
+ **/
+void recordRotoItemKnobEdit(const NodePtr& node, const KnobIPtr& knob);
 
 /**
  * @brief Call once a node created from Python exists. Undo removes it, redo brings it back.
@@ -131,10 +144,16 @@ private:
 };
 
 struct PythonUserKnobs;
+struct UserKnobDependentStates;
 
 /**
- * @brief Records what a Python call changes on a node's user knobs and page order. Holders that
- * are not nodes are not recorded.
+ * @brief Records what a Python call changes on a node's user knobs and page order, and on the
+ * expressions and links of the knobs that depend on them. Holders that are not nodes are not
+ * recorded. A guard opened while another one is open on the same node records nothing: the outer
+ * one records it all. A call that leaves all of them as they were records nothing either.
+ *
+ * Undoing the record rebuilds every user knob of the node, so the knob objects change: it suits
+ * edits that create or remove knobs, not edits of a knob that stays.
  **/
 class PythonUserKnobsUndoGuard {
 public:
@@ -149,6 +168,44 @@ private:
     UndoRecorderPtr _recorder;
     NodePtr _node;
     std::shared_ptr<PythonUserKnobs> _before;
+    std::shared_ptr<UserKnobDependentStates> _beforeDependents;
+};
+
+/**
+ * @brief Makes what is done to a node holder's user knobs during its lifetime one undo entry
+ * labelled label, on the application's recorder. Within another scope or guard on the same node
+ * it adds to that one's entry. Holders that are not nodes are not recorded.
+ *
+ * With snapshot set the entry is a PythonUserKnobsUndoGuard's. Without it the operation records
+ * its own command through record(), one that undoes it on the knobs it changed.
+ *
+ * The holder's user knobs are reported changed to the GraphEditRecorder at the end only when
+ * markChanged() or record() was called.
+ **/
+class UserKnobsUndoScope {
+public:
+    UserKnobsUndoScope(KnobHolder* holder,
+                       const std::string& label,
+                       bool snapshot = true);
+
+    ~UserKnobsUndoScope();
+
+    /**
+     * @brief Adds command, whose edit is already made, to the entry. Inside a guard on the same
+     * node the guard's snapshot covers the edit and command is dropped.
+     **/
+    void record(const UndoCommandPtr& command);
+
+    void markChanged();
+
+private:
+    UserKnobsUndoScope(const UserKnobsUndoScope&) = delete;
+    UserKnobsUndoScope& operator=(const UserKnobsUndoScope&) = delete;
+
+    KnobHolder* _holder;
+    bool _changed;
+    std::unique_ptr<UndoStepGuard> _step;
+    std::unique_ptr<PythonUserKnobsUndoGuard> _guard;
 };
 
 NATRON_NAMESPACE_EXIT

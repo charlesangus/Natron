@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -104,6 +106,8 @@ namespace {
         VkPhysicalDeviceVulkan11Features f11 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
         VkPhysicalDeviceVulkan12Features f12 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
         VkPhysicalDeviceVulkan13Features f13 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
+        VkPhysicalDeviceAccelerationStructureFeaturesKHR accel { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR };
+        VkPhysicalDeviceRayQueryFeaturesKHR rayQuery { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR };
         VkPhysicalDeviceFeatures2 f2 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
 
         Features()
@@ -112,9 +116,25 @@ namespace {
             f11.pNext = &f12;
             f12.pNext = &f13;
         }
+        // The extension structs may only be chained on a device that exposes their extensions.
+        void chainRayQuery()
+        {
+            f13.pNext = &accel;
+            accel.pNext = &rayQuery;
+        }
         Features(const Features&) = delete;
         Features& operator=(const Features&) = delete;
     };
+
+    bool formatBlendsAsAttachment(VkPhysicalDevice pd, VkFormat format)
+    {
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(pd, format, &fp);
+        const VkFormatFeatureFlags need = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT
+            | VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT
+            | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+        return (fp.optimalTilingFeatures & need) == need;
+    }
 
     bool meetsRequirements(VkPhysicalDevice pd, const VkPhysicalDeviceProperties& props)
     {
@@ -375,6 +395,24 @@ planQueues(std::span<const VkQueueFamilyProperties> families)
         plan.downloadQueueIndex = plan.computeQueues - 1;
     }
     plan.transferSharesComputeQueue = transfer < 0 && plan.computeQueues == 1;
+
+    constexpr VkQueueFlags graphicsAndCompute = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
+    if ((families[compute].queueFlags & graphicsAndCompute) == graphicsAndCompute) {
+        plan.graphics = true;
+        plan.graphicsFamily = plan.computeFamily;
+        plan.graphicsQueueIndex = plan.computeQueueIndex;
+        plan.graphicsSharesComputeQueue = true;
+    } else {
+        for (size_t i = 0; i < families.size(); ++i) {
+            if ((families[i].queueFlags & graphicsAndCompute) == graphicsAndCompute && families[i].queueCount > 0) {
+                plan.graphics = true;
+                plan.graphicsFamily = static_cast<uint32_t>(i);
+                plan.graphicsQueueIndex = 0;
+                plan.graphicsQueues = 1;
+                break;
+            }
+        }
+    }
     return plan;
 }
 
@@ -552,6 +590,10 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     dev->info_.uploadQueueIndex = queues->uploadQueueIndex;
     dev->info_.downloadQueueIndex = queues->downloadQueueIndex;
     dev->info_.transferSharesComputeQueue = queues->transferSharesComputeQueue;
+    dev->info_.graphicsQueue = queues->graphics;
+    dev->info_.graphicsFamily = queues->graphicsFamily;
+    dev->info_.graphicsQueueIndex = queues->graphicsQueueIndex;
+    dev->info_.graphicsSharesComputeQueue = queues->graphicsSharesComputeQueue;
 
     uint32_t ne = 0;
     vkEnumerateDeviceExtensionProperties(dev->physical_, nullptr, &ne, nullptr);
@@ -569,6 +611,9 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     optional(VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME, dev->info_.externalSemaphoreFd);
     optional(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME, dev->info_.externalMemoryHost);
     optional(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME, dev->info_.memoryBudget);
+    const bool rayQueryExtensions = hasName(exts, VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)
+        && hasName(exts, VK_KHR_RAY_QUERY_EXTENSION_NAME)
+        && hasName(exts, VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
     if (!options.disablePushDescriptor) {
         optional(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME, dev->info_.pushDescriptor);
     }
@@ -590,8 +635,13 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
             range = std::min<uint64_t>(range, options.maxStorageBufferRange);
         }
         dev->info_.maxStorageBufferRange = range;
+        dev->info_.minStorageBufferOffsetAlignment = std::max<uint64_t>(p2.properties.limits.minStorageBufferOffsetAlignment, 1);
+        dev->info_.maxDrawIndirectCount = std::max<uint32_t>(p2.properties.limits.maxDrawIndirectCount, 1);
         dev->info_.copyChunkSize = std::max<uint64_t>(options.copyChunkSize, 1);
         dev->info_.maxMemoryAllocationSize = p11.maxMemoryAllocationSize;
+        if (options.maxMemoryAllocationSize != 0) {
+            dev->info_.maxMemoryAllocationSize = std::min<uint64_t>(p11.maxMemoryAllocationSize, options.maxMemoryAllocationSize);
+        }
         dev->info_.minImportedHostPointerAlignment
             = dev->info_.externalMemoryHost ? hostProps.minImportedHostPointerAlignment : 0;
 
@@ -600,14 +650,46 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     }
 
     Features avail;
+    if (rayQueryExtensions) {
+        avail.chainRayQuery();
+    }
     vkGetPhysicalDeviceFeatures2(dev->physical_, &avail.f2);
     dev->info_.shaderFloat16 = avail.f12.shaderFloat16 == VK_TRUE;
+    // Every kernel other than the ray-traced ones runs without these, so a device lacking any of them stays on the
+    // plain feature set and keeps allocations free of device-address flags.
+    dev->info_.rayQuery = rayQueryExtensions && !envFlag("NATRON_GPU_NO_RAY_QUERY")
+        && avail.accel.accelerationStructure == VK_TRUE && avail.rayQuery.rayQuery == VK_TRUE
+        && avail.f12.bufferDeviceAddress == VK_TRUE;
+    dev->info_.dynamicRendering = avail.f13.dynamicRendering == VK_TRUE;
+    dev->info_.multiDrawIndirect = avail.f2.features.multiDrawIndirect == VK_TRUE;
+    if (!dev->info_.multiDrawIndirect) {
+        dev->info_.maxDrawIndirectCount = 1;
+    }
+    dev->info_.vertexPipelineStores = avail.f2.features.vertexPipelineStoresAndAtomics == VK_TRUE;
+    dev->info_.fragmentStores = avail.f2.features.fragmentStoresAndAtomics == VK_TRUE;
+    dev->info_.rasterFloatBlend = dev->info_.graphicsQueue && dev->info_.dynamicRendering
+        && dev->info_.vertexPipelineStores && dev->info_.fragmentStores
+        && formatBlendsAsAttachment(dev->physical_, VK_FORMAT_R32G32B32A32_SFLOAT)
+        && formatBlendsAsAttachment(dev->physical_, VK_FORMAT_R32_SFLOAT);
 
     Features want;
     want.f11.storageBuffer16BitAccess = VK_TRUE;
     want.f12.timelineSemaphore = VK_TRUE;
     want.f12.shaderFloat16 = avail.f12.shaderFloat16;
     want.f13.synchronization2 = VK_TRUE;
+    if (dev->info_.rayQuery) {
+        want.chainRayQuery();
+        want.accel.accelerationStructure = VK_TRUE;
+        want.rayQuery.rayQuery = VK_TRUE;
+        want.f12.bufferDeviceAddress = VK_TRUE;
+        enabled.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
+        enabled.push_back(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+        enabled.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
+    }
+    want.f13.dynamicRendering = avail.f13.dynamicRendering;
+    want.f2.features.multiDrawIndirect = avail.f2.features.multiDrawIndirect;
+    want.f2.features.vertexPipelineStoresAndAtomics = avail.f2.features.vertexPipelineStoresAndAtomics;
+    want.f2.features.fragmentStoresAndAtomics = avail.f2.features.fragmentStoresAndAtomics;
 
     const float prios[3] = { 1.0f, 1.0f, 1.0f };
     std::vector<VkDeviceQueueCreateInfo> qcis;
@@ -621,6 +703,9 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     addQueues(queues->computeFamily, queues->computeQueues);
     if (queues->transferQueues > 0) {
         addQueues(queues->transferFamily, queues->transferQueues);
+    }
+    if (queues->graphicsQueues > 0) {
+        addQueues(queues->graphicsFamily, queues->graphicsQueues);
     }
 
     VkDeviceCreateInfo dci { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
@@ -649,9 +734,13 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
             { QueueKind::Compute, dev->info_.computeFamily, dev->info_.computeQueueIndex },
             { QueueKind::Upload, dev->info_.transferFamily, dev->info_.uploadQueueIndex },
             { QueueKind::Download, dev->info_.transferFamily, dev->info_.downloadQueueIndex },
+            { QueueKind::Graphics, dev->info_.graphicsFamily, dev->info_.graphicsQueueIndex },
         };
         size_t used = 0;
         for (const auto& r : routes) {
+            if (r.kind == QueueKind::Graphics && !dev->info_.graphicsQueue) {
+                continue;
+            }
             VkQueue handle = VK_NULL_HANDLE;
             vkGetDeviceQueue(dev->device_, r.family, r.index, &handle);
             Queue* q = nullptr;
@@ -676,6 +765,9 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     if (dev->info_.memoryBudget) {
         aci.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
     }
+    if (dev->info_.rayQuery) {
+        aci.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    }
     r = vmaCreateAllocator(&aci, &dev->allocator_);
     if (r != VK_SUCCESS) {
         return fail(r, "vmaCreateAllocator failed");
@@ -696,6 +788,21 @@ GpuDevice::~GpuDevice()
     }
     if (device_ != VK_NULL_HANDLE) {
         vkDeviceWaitIdle(device_);
+        std::vector<std::shared_ptr<void>> released;
+        {
+            std::lock_guard<std::mutex> lock(retiringMutex_);
+            released.swap(reaped_);
+            for (Retiring& r : retiring_) {
+                released.push_back(std::move(r.holdings));
+                for (std::shared_ptr<void>& d : r.deferred) {
+                    released.push_back(std::move(d));
+                }
+            }
+            retiring_.clear();
+            retiringCount_.store(0, std::memory_order_release);
+            reapedCount_.store(0, std::memory_order_release);
+        }
+        released.clear();
     }
     if (allocator_) {
         vmaDestroyAllocator(allocator_);
@@ -718,7 +825,16 @@ GpuDevice::~GpuDevice()
 uint32_t
 GpuDevice::queueFamily(QueueKind kind) const
 {
-    return kind == QueueKind::Compute ? info_.computeFamily : info_.transferFamily;
+    switch (kind) {
+    case QueueKind::Compute:
+        return info_.computeFamily;
+    case QueueKind::Graphics:
+        return info_.graphicsFamily;
+    case QueueKind::Upload:
+    case QueueKind::Download:
+        break;
+    }
+    return info_.transferFamily;
 }
 
 GpuDevice::Queue&
@@ -792,6 +908,7 @@ GpuDevice::drainQueues()
         return;
     }
     waitIdleLocked();
+    collectSignalled(true);
 }
 
 void
@@ -799,7 +916,226 @@ GpuDevice::abandonInFlightWork(const char* what)
 {
     // Set before the loss is latched, so that whoever sees the loss also sees there is nothing to drain.
     abandoned_.store(true, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(retiringMutex_);
+        parkRetiringLocked();
+    }
     check(VK_ERROR_DEVICE_LOST, what);
+}
+
+namespace {
+    // Set while releaseReaped() releases holdings, whose destructors may reach a reap again.
+    thread_local bool tReaping = false;
+
+    constexpr std::chrono::nanoseconds kRetiringTimeout = std::chrono::seconds(30);
+}
+
+GpuDevice::RetiringFence::~RetiringFence()
+{
+    vkDestroyFence(device, fence, nullptr);
+}
+
+void
+GpuDevice::parkRetiringLocked()
+{
+    for (Retiring& r : retiring_) {
+        // The work may never finish, so its fence is leaked with the rest.
+        parkForever(std::move(r.fence));
+        parkForever(std::move(r.holdings));
+        for (std::shared_ptr<void>& d : r.deferred) {
+            parkForever(std::move(d));
+        }
+    }
+    retiring_.clear();
+    retiringCount_.store(0, std::memory_order_release);
+    // Their work finished, but nothing may release them once the device is abandoned: its destructor skips the
+    // release, and what they refer to is parked by its owners.
+    for (std::shared_ptr<void>& h : reaped_) {
+        parkForever(std::move(h));
+    }
+    reaped_.clear();
+    reapedCount_.store(0, std::memory_order_release);
+}
+
+void
+GpuDevice::retireWhenSignalled(VkFence fence, std::shared_ptr<void> holdings, std::vector<VkBuffer> buffers)
+{
+    std::lock_guard<std::mutex> lock(retiringMutex_);
+    if (hasAbandonedWork()) {
+        parkForever(std::move(holdings));
+        return;
+    }
+    std::sort(buffers.begin(), buffers.end());
+    buffers.erase(std::unique(buffers.begin(), buffers.end()), buffers.end());
+    Retiring r;
+    r.serial = ++nextRetiringSerial_;
+    r.fence = std::make_shared<RetiringFence>();
+    r.fence->device = device_;
+    r.fence->fence = fence;
+    r.holdings = std::move(holdings);
+    r.buffers = std::move(buffers);
+    retiring_.push_back(std::move(r));
+    retiringCount_.store(retiring_.size(), std::memory_order_release);
+}
+
+void
+GpuDevice::reapRetired()
+{
+    if (hasRetiringWork()) {
+        collectSignalled(false);
+    }
+    releaseReaped();
+}
+
+void
+GpuDevice::collectSignalled(bool block)
+{
+    VkResult lost = VK_SUCCESS;
+    {
+        std::unique_lock<std::mutex> lock(retiringMutex_, std::defer_lock);
+        if (block) {
+            lock.lock();
+        } else if (!lock.try_lock()) {
+            return;
+        }
+        for (auto it = retiring_.begin(); it != retiring_.end();) {
+            const VkResult status = vkGetFenceStatus(device_, it->fence->fence);
+            if (status == VK_NOT_READY) {
+                ++it;
+                continue;
+            }
+            if (status == VK_SUCCESS) {
+                reaped_.push_back(std::move(it->holdings));
+                for (std::shared_ptr<void>& d : it->deferred) {
+                    reaped_.push_back(std::move(d));
+                }
+            } else {
+                // The work may still be pending on a lost device, so its fence and holdings are leaked.
+                lost = status;
+                parkForever(std::move(it->fence));
+                parkForever(std::move(it->holdings));
+                for (std::shared_ptr<void>& d : it->deferred) {
+                    parkForever(std::move(d));
+                }
+            }
+            it = retiring_.erase(it);
+        }
+        retiringCount_.store(retiring_.size(), std::memory_order_release);
+        reapedCount_.store(reaped_.size(), std::memory_order_release);
+    }
+    if (lost != VK_SUCCESS) {
+        check(lost, "vkGetFenceStatus");
+    }
+}
+
+void
+GpuDevice::releaseReaped()
+{
+    if (tReaping || (reapedCount_.load(std::memory_order_acquire) == 0)) {
+        return;
+    }
+    std::vector<std::shared_ptr<void>> released;
+    {
+        std::lock_guard<std::mutex> lock(retiringMutex_);
+        released.swap(reaped_);
+        reapedCount_.store(0, std::memory_order_release);
+    }
+    // Released with no lock held: the holdings return buffers to their pool and end their registry's recording.
+    tReaping = true;
+    released.clear();
+    tReaping = false;
+}
+
+void
+GpuDevice::finishRetiring()
+{
+    if ((device_ == VK_NULL_HANDLE) || hasAbandonedWork()) {
+        return;
+    }
+    if (hasRetiringWork()) {
+        std::vector<std::shared_ptr<RetiringFence>> fences;
+        {
+            std::lock_guard<std::mutex> lock(retiringMutex_);
+            for (const Retiring& r : retiring_) {
+                fences.push_back(r.fence);
+            }
+        }
+        const auto deadline = std::chrono::steady_clock::now() + kRetiringTimeout;
+        bool timedOut = false;
+        for (const std::shared_ptr<RetiringFence>& f : fences) {
+            const auto left = std::max(std::chrono::steady_clock::duration::zero(), deadline - std::chrono::steady_clock::now());
+            const uint64_t leftNs = static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(left).count());
+            const VkResult waited = vkWaitForFences(device_, 1, &f->fence, VK_TRUE, leftNs);
+            if (waited == VK_TIMEOUT) {
+                timedOut = true;
+                break;
+            }
+            if (waited != VK_SUCCESS) {
+                // The reap below finds the loss.
+                break;
+            }
+        }
+        if (timedOut) {
+            std::fprintf(stderr, "GpuDevice: stopped device work did not finish within %llu ms; the GPU device is treated as lost\n",
+                         static_cast<unsigned long long>(std::chrono::duration_cast<std::chrono::milliseconds>(kRetiringTimeout).count()));
+            // Parks the fences before this drops its references to them, so that none is destroyed while pending.
+            abandonInFlightWork("vkWaitForFences");
+            return;
+        }
+        fences.clear();
+        collectSignalled(true);
+    }
+    releaseReaped();
+}
+
+void
+GpuDevice::destroyWhenRetired(std::function<void()> destroy)
+{
+    if (!destroy) {
+        return;
+    }
+    if (hasRetiringWork()) {
+        std::lock_guard<std::mutex> lock(retiringMutex_);
+        if (!retiring_.empty()) {
+            // Shared by every entry retiring now, so that it runs when the last of them is reaped.
+            std::shared_ptr<void> deferred(nullptr, [destroy = std::move(destroy)](void*) { destroy(); });
+            for (Retiring& r : retiring_) {
+                r.deferred.push_back(deferred);
+            }
+            return;
+        }
+    }
+    destroy();
+}
+
+uint64_t
+GpuDevice::retiringMark(VkBuffer buffer) const
+{
+    if ((buffer == VK_NULL_HANDLE) || !hasRetiringWork()) {
+        return 0;
+    }
+    std::lock_guard<std::mutex> lock(retiringMutex_);
+    for (auto it = retiring_.rbegin(); it != retiring_.rend(); ++it) {
+        if (std::binary_search(it->buffers.begin(), it->buffers.end(), buffer)) {
+            return it->serial;
+        }
+    }
+    return 0;
+}
+
+bool
+GpuDevice::retiredThrough(uint64_t mark) const
+{
+    if ((mark == 0) || !hasRetiringWork()) {
+        return true;
+    }
+    std::lock_guard<std::mutex> lock(retiringMutex_);
+    for (const Retiring& r : retiring_) {
+        if (r.serial <= mark) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void
@@ -816,7 +1152,7 @@ VkResult
 GpuDevice::waitIdleLocked()
 {
     // Vulkan requires every queue of the device to be externally synchronized across vkDeviceWaitIdle.
-    std::scoped_lock lock(queues_[0].mutex, queues_[1].mutex, queues_[2].mutex);
+    std::scoped_lock lock(queues_[0].mutex, queues_[1].mutex, queues_[2].mutex, queues_[3].mutex);
     return vkDeviceWaitIdle(device_);
 }
 
@@ -889,6 +1225,12 @@ GpuDevice::submitUncounted(QueueKind kind, std::span<const VkSubmitInfo2> submit
 {
     if (isLost()) {
         return lostStatus();
+    }
+    if (!route_[static_cast<size_t>(kind)]) {
+        return fail(VK_ERROR_FEATURE_NOT_PRESENT, "the device has no queue of that kind");
+    }
+    if (hasRetiringWork()) {
+        collectSignalled(false);
     }
     Queue& q = queueFor(kind);
     std::lock_guard<std::mutex> lock(q.mutex);

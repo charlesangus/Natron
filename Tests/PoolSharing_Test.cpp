@@ -54,6 +54,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
+#include "Engine/FrameArgsOverlay.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -595,11 +596,7 @@ TEST_F(PoolSharing, NCPUsOutsideATaskUseTheLegacyFormula)
     ASSERT_NE(-1, nThreadsToRender) << "rendering is set single-threaded";
 
     ASSERT_EQ(0, AppTLS::currentThreadBudget());
-#ifndef NATRON_PLAYBACK_USES_THREAD_POOL
     const int running = appPTR->getNRunningThreads();
-#else
-    const int running = 0;
-#endif
     const int perEffect = (nThreadsPerEffect > 0) ? nThreadsPerEffect : std::min(4, appPTR->getHardwareIdealThreadCount());
     EXPECT_EQ(AppManager::computeNCPUsAvailable(4, QThreadPool::globalInstance()->activeThreadCount(), running, std::max(1, perEffect)),
               appPTR->getNCPUsAvailableForEffect());
@@ -835,7 +832,7 @@ TEST_F(PoolSharing, SpawnedThreadScopeInstallsTheSpawnersFrame)
     QThread* spawner = QThread::currentThread();
     ASSERT_TRUE(AppTLS::currentFrameContext() == NULL);
     {
-        AppTLS::SpawnedThreadScope sameThread(spawner, context.get(), NULL);
+        AppTLS::SpawnedThreadScope sameThread(spawner, context.get(), FrameArgsOverlayPtr(), NULL);
         EXPECT_TRUE(AppTLS::currentFrameContext() == NULL) << "the spawner's own frame must not change";
     }
 
@@ -848,7 +845,7 @@ TEST_F(PoolSharing, SpawnedThreadScopeInstallsTheSpawnersFrame)
     QThread* worker = QThread::create([&]() {
         before = AppTLS::currentFrameContext();
         {
-            AppTLS::SpawnedThreadScope scope(spawner, context.get(), NULL);
+            AppTLS::SpawnedThreadScope scope(spawner, context.get(), FrameArgsOverlayPtr(), NULL);
             inside = AppTLS::currentFrameContext();
             budgetInside = AppTLS::currentThreadBudget();
             nCPUsInside = appPTR->getNCPUsAvailableForEffect();

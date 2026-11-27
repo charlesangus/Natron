@@ -128,6 +128,7 @@ class BlockingBackgroundRender;
 class BufferableObject;
 class CLArgs;
 class CacheEntryHolder;
+class CacheRetentionSignals;
 class CacheSignalEmitter;
 class ContextReadSource;
 class CreateNodeArgs;
@@ -137,6 +138,10 @@ class DeepImage;
 class DeepImageCacheEntry;
 class DeepImageKey;
 class DeepImageParams;
+class GeoDetail;
+class GeoDetailCacheEntry;
+class GeoDetailKey;
+class GeoDetailParams;
 struct DeepSample;
 class Dimension;
 class DockablePanelI;
@@ -351,6 +356,7 @@ NATRON_PYTHON_NAMESPACE_EXIT
 
 
 typedef std::shared_ptr<AbortableRenderInfo> AbortableRenderInfoPtr;
+typedef std::shared_ptr<CacheRetentionSignals> CacheRetentionSignalsPtr;
 typedef std::shared_ptr<AbstractOfxEffectInstance> AbstractOfxEffectInstancePtr;
 typedef std::shared_ptr<ActionsCache> ActionsCachePtr;
 typedef std::shared_ptr<AppInstance> AppInstancePtr;
@@ -364,6 +370,10 @@ typedef std::shared_ptr<DeepImage> DeepImagePtr;
 typedef std::shared_ptr<DeepImage const> DeepImageConstPtr;
 typedef std::shared_ptr<DeepImageCacheEntry> DeepImageCacheEntryPtr;
 typedef std::shared_ptr<DeepImageParams> DeepImageParamsPtr;
+typedef std::shared_ptr<GeoDetail> GeoDetailPtr;
+typedef std::shared_ptr<const GeoDetail> GeoDetailConstPtr;
+typedef std::shared_ptr<GeoDetailCacheEntry> GeoDetailCacheEntryPtr;
+typedef std::shared_ptr<GeoDetailParams> GeoDetailParamsPtr;
 typedef std::shared_ptr<EffectInstance> EffectInstancePtr;
 typedef std::shared_ptr<FileSystemItem> FileSystemItemPtr;
 typedef std::shared_ptr<FileSystemModel> FileSystemModelPtr;

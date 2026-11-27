@@ -59,6 +59,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
@@ -83,7 +84,7 @@ metadataSourceOf(const NodePtr& node)
 int
 outputNComps(const NodeMetadataConstPtr& metadata)
 {
-    if ((metadata->getOutputStorageNComps() > 0) && (metadata->getComponentsType(-1) == kNatronColorLayerID)) {
+    if ((metadata->getOutputStorageNComps() > 0) && (metadata->getComponentsType(-1) == eImageComponentsTypeColor)) {
         return metadata->getOutputStorageNComps();
     }
 
@@ -672,8 +673,7 @@ TEST_F(PerFrameMetadataTest, KeyedSwitchRendersEachFramesLayout)
             const int frame = (i == 0) ? firstFrame : 3 - firstFrame;
             std::vector<RenderedPlane> planes;
             std::string error;
-            ASSERT_TRUE(renderNodePlanesInMode(switchNode, frame, ViewIdx(0), 0, RectI(0, 0, 8, 8), std::list<ImageLayerDesc>(),
-                                               eRenderSchedulerModeTaskGraph, true, &planes, &error))
+            ASSERT_TRUE(renderNodePlanesScheduled(switchNode, frame, ViewIdx(0), 0, RectI(0, 0, 8, 8), true, &planes, &error))
                 << "frame=" << frame << " " << error;
             const RenderedPlane* color = NULL;
             for (std::size_t p = 0; p < planes.size(); ++p) {
@@ -789,28 +789,22 @@ renderRedAt(const NodePtr& node,
     return true;
 }
 
-// Renders on this thread's renderRoI path, and restores the scheduler mode and empties the caches
-// on the way out, so no image cached here outlives the test.
-class LegacyRenderScope {
+// Empties the caches on entry and on the way out, so no image cached by a renderRoI pull on this
+// thread outlives the test.
+class DirectRenderScope {
 public:
-    LegacyRenderScope()
-        : _saved(appPTR->getRenderSchedulerMode())
+    DirectRenderScope()
     {
-        appPTR->setRenderSchedulerMode(eRenderSchedulerModeLegacy);
         appPTR->clearAllCaches();
     }
 
-    ~LegacyRenderScope()
+    ~DirectRenderScope()
     {
-        appPTR->setRenderSchedulerMode(_saved);
         appPTR->clearAllCaches();
     }
 
-    LegacyRenderScope(const LegacyRenderScope&) = delete;
-    LegacyRenderScope& operator=(const LegacyRenderScope&) = delete;
-
-private:
-    RenderSchedulerModeEnum _saved;
+    DirectRenderScope(const DirectRenderScope&) = delete;
+    DirectRenderScope& operator=(const DirectRenderScope&) = delete;
 };
 
 // A Constant whose colour is edited, below a Blur that caches its output. The Constant fills the
@@ -857,7 +851,7 @@ const int kProbeY = 116;
 // state before it. Going back to that state brings its hash back, and must not find that image.
 TEST_F(CleanHashCacheTest, RenderOverlappingAnEditCachesNothingUnderTheOldHash)
 {
-    LegacyRenderScope scope;
+    DirectRenderScope scope;
     CachedConstantBlur graph;
     ASSERT_TRUE(createConstantBlur(&graph));
 
@@ -939,7 +933,7 @@ TEST_F(CleanHashCacheTest, EditDuringARenderLeavesNoStaleImageForAConcurrentLook
     const RectI roi(0, 0, kCountingTestSize, kCountingTestSize);
     const int probe = kCountingTestSize / 2;
 
-    LegacyRenderScope scope;
+    DirectRenderScope scope;
     CountingTestRegistry::reset();
     RenderHookScope hookScope;
     NodePtr upstream = createNode(QString::fromUtf8(kTestPluginIDCounting));
@@ -1081,4 +1075,179 @@ TEST_F(PerFrameMetadataTest, EditAndRevertDuringDeriveCachesNoStaleMetadata)
     EXPECT_EQ(std::optional<int>(1), blurEffect->getOutputMetadata(3., ViewIdx(0)).getInt("exr/tag"));
     EXPECT_EQ(std::optional<int>(1), sourceEffect->getOutputMetadata(3., ViewIdx(0)).getInt("exr/tag"));
     EXPECT_GT(sourceEffect->derivationCount(), derivations);
+}
+
+TEST(NodeMetadataEdgeMode, DefaultsToStretchAndParticipatesInCopyAndEquality)
+{
+    NodeMetadata base;
+    EXPECT_EQ(EdgeMode::Stretch, base.getEdgeMode());
+
+    NodeMetadata black;
+    black.setEdgeMode(EdgeMode::Black);
+    EXPECT_EQ(EdgeMode::Black, black.getEdgeMode());
+    EXPECT_TRUE(base != black);
+
+    NodeMetadata copied(black);
+    EXPECT_EQ(EdgeMode::Black, copied.getEdgeMode());
+    EXPECT_TRUE(copied == black);
+
+    NodeMetadata assigned;
+    assigned = black;
+    EXPECT_EQ(EdgeMode::Black, assigned.getEdgeMode());
+    EXPECT_TRUE(assigned == black);
+
+    black.setEdgeMode(EdgeMode::Stretch);
+    EXPECT_TRUE(base == black);
+}
+
+namespace {
+
+EdgeMode
+edgeModeOf(const NodePtr& node)
+{
+    NodeMetadataConstPtr metadata = node->getEffectInstance()->getMetadata(1., ViewIdx(0));
+    EXPECT_TRUE(bool(metadata)) << node->getScriptName();
+
+    return metadata ? metadata->getEdgeMode() : EdgeMode::Stretch;
+}
+
+} // namespace
+
+TEST_F(PerFrameMetadataTest, EdgeModeForwardsThroughPassThroughNodes)
+{
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
+    NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
+    ASSERT_TRUE(constant && grade && merge);
+    connectNodes(constant, grade, 0, true);
+    connectNodes(grade, merge, 0, true);
+
+    EXPECT_EQ(EdgeMode::Stretch, edgeModeOf(constant));
+    EXPECT_EQ(EdgeMode::Stretch, edgeModeOf(grade));
+    EXPECT_EQ(EdgeMode::Stretch, edgeModeOf(merge));
+
+    NodePtr black = createSource(4);
+    ASSERT_TRUE(bool(black));
+    metadataSourceOf(black)->setForcedEdgeMode(EdgeMode::Black);
+    EXPECT_EQ(EdgeMode::Black, edgeModeOf(black));
+
+    NodePtr blackGrade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE));
+    NodePtr blackMerge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
+    ASSERT_TRUE(blackGrade && blackMerge);
+    connectNodes(black, blackGrade, 0, true);
+    connectNodes(blackGrade, blackMerge, 0, true);
+    EXPECT_EQ(EdgeMode::Black, edgeModeOf(blackGrade));
+    EXPECT_EQ(EdgeMode::Black, edgeModeOf(blackMerge));
+}
+
+TEST_F(PerFrameMetadataTest, EdgeModeOfMergeFollowsB)
+{
+    NodePtr black = createSource(4);
+    NodePtr stretch = createSource(4);
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
+    ASSERT_TRUE(black && stretch && merge);
+    metadataSourceOf(black)->setForcedEdgeMode(EdgeMode::Black);
+    connectNodes(black, merge, 0, true);
+    connectNodes(stretch, merge, 1, true);
+    EXPECT_EQ(EdgeMode::Black, edgeModeOf(merge));
+
+    NodePtr swapped = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
+    ASSERT_TRUE(bool(swapped));
+    connectNodes(stretch, swapped, 0, true);
+    connectNodes(black, swapped, 1, true);
+    EXPECT_EQ(EdgeMode::Stretch, edgeModeOf(swapped));
+}
+
+TEST_F(PerFrameMetadataTest, EdgeModeOfSwitchFollowsThePickedInput)
+{
+    NodePtr stretch = createSource(4);
+    NodePtr black = createSource(4);
+    NodePtr switchNode = createNode(QString::fromUtf8(PLUGINID_NATRON_SWITCH));
+    ASSERT_TRUE(stretch && black && switchNode);
+    metadataSourceOf(black)->setForcedEdgeMode(EdgeMode::Black);
+    connectNodes(stretch, switchNode, 0, true);
+    connectNodes(black, switchNode, 1, true);
+    KnobIntPtr which = std::dynamic_pointer_cast<KnobInt>(switchNode->getKnobByName(kSwitchParamWhich));
+    ASSERT_TRUE(bool(which));
+
+    which->setValue(0, ViewSpec::all(), 0);
+    EXPECT_EQ(EdgeMode::Stretch, edgeModeOf(switchNode));
+    which->setValue(1, ViewSpec::all(), 0);
+    EXPECT_EQ(EdgeMode::Black, edgeModeOf(switchNode));
+}
+
+TEST_F(PerFrameMetadataTest, OpenFXEffectResetsEdgeModeToStretch)
+{
+    NodePtr black = createSource(4);
+    ASSERT_TRUE(bool(black));
+    metadataSourceOf(black)->setForcedEdgeMode(EdgeMode::Black);
+    NodePtr rgbPoint = createNode(QString::fromUtf8(kNatronTestRGBPointPluginID), kNatronTestRGBPointMajor);
+    if (!rgbPoint) {
+        return;
+    }
+    connectNodes(black, rgbPoint, 0, true);
+    EXPECT_EQ(EdgeMode::Black, edgeModeOf(black));
+    EXPECT_EQ(EdgeMode::Stretch, edgeModeOf(rgbPoint));
+}
+
+// The plug-in passing its input through still answers for its output, which resets the edge mode;
+// the host passing a disabled node's input through forwards it.
+TEST_F(PerFrameMetadataTest, OpenFXIdentityResetsEdgeModeButDisabledForwardsIt)
+{
+    NodePtr black = createSource(4);
+    ASSERT_TRUE(bool(black));
+    metadataSourceOf(black)->setForcedEdgeMode(EdgeMode::Black);
+    NodePtr rgbPoint = createNode(QString::fromUtf8(kNatronTestRGBPointPluginID), kNatronTestRGBPointMajor);
+    if (!rgbPoint) {
+        return;
+    }
+    connectNodes(black, rgbPoint, 0, true);
+    KnobDoublePtr mix = std::dynamic_pointer_cast<KnobDouble>(rgbPoint->getKnobByName(kNatronTestPointMatrixParamMix));
+    ASSERT_TRUE(bool(mix));
+    mix->setValue(0., ViewSpec::all(), 0);
+
+    double inputTime = 0.;
+    ViewIdx inputView(0);
+    int inputNb = -1;
+    const NodeMetadataConstPtr own = rgbPoint->getEffectInstance()->getTimeInvariantMetadata();
+    ASSERT_TRUE(bool(own));
+    ASSERT_TRUE(rgbPoint->getEffectInstance()->isIdentity_public(false, rgbPoint->getEffectInstance()->getRenderHash(), 1., RenderScale::identity, own->getOutputFormat(), ViewIdx(0), &inputTime, &inputView, &inputNb));
+    EXPECT_EQ(0, inputNb);
+    EXPECT_EQ(EdgeMode::Stretch, edgeModeOf(rgbPoint));
+
+    KnobBoolPtr disable = std::dynamic_pointer_cast<KnobBool>(rgbPoint->getKnobByName(kDisableNodeKnobName));
+    ASSERT_TRUE(bool(disable));
+    disable->setValue(true);
+    EXPECT_EQ(EdgeMode::Black, edgeModeOf(rgbPoint));
+
+    disable->setValue(false);
+    EXPECT_EQ(EdgeMode::Stretch, edgeModeOf(rgbPoint));
+}
+
+TEST_F(PerFrameMetadataTest, InfoReadoutShowsEachInputAndTheOutputEdgeMode)
+{
+    const std::string blackLine = "Edge Mode:</b> <font color=#c8c8c8>Black</font>";
+    const std::string stretchLine = "Edge Mode:</b> <font color=#c8c8c8>Stretch</font>";
+
+    NodePtr black = createSource(4);
+    NodePtr stretch = createSource(4);
+    NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE));
+    ASSERT_TRUE(black && stretch && merge);
+    metadataSourceOf(black)->setForcedEdgeMode(EdgeMode::Black);
+    connectNodes(black, merge, 0, true);
+    connectNodes(stretch, merge, 1, true);
+
+    const std::string bInfo = merge->makeInfoForInput(0);
+    EXPECT_NE(std::string::npos, bInfo.find(blackLine)) << bInfo;
+    EXPECT_EQ(std::string::npos, bInfo.find(stretchLine)) << bInfo;
+
+    const std::string aInfo = merge->makeInfoForInput(1);
+    EXPECT_NE(std::string::npos, aInfo.find(stretchLine)) << aInfo;
+    EXPECT_EQ(std::string::npos, aInfo.find(blackLine)) << aInfo;
+
+    const std::string outputInfo = merge->makeInfoForInput(-1);
+    EXPECT_NE(std::string::npos, outputInfo.find(blackLine)) << outputInfo;
+
+    const std::string stretchOutputInfo = stretch->makeInfoForInput(-1);
+    EXPECT_NE(std::string::npos, stretchOutputInfo.find(stretchLine)) << stretchOutputInfo;
 }

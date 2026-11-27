@@ -83,8 +83,8 @@ inputRegion(const EffectInstancePtr& input,
     return input->getRegionOfDefinition_public(input->getRenderHash(), time, inputScale, view, rod, &isProjectFormat) != eStatusFailed;
 }
 
-// One channel of the UV input, locked on the calling thread; with no image, and outside its
-// bounds, it reads outside.
+// One channel of the UV input, locked on the calling thread. With no image it reads outside;
+// outside its bounds it reads outside under EdgeMode::Black and its nearest pixel under Stretch.
 struct UVPlane {
     ImagePtr image;
     int channel = -1;
@@ -92,6 +92,7 @@ struct UVPlane {
     RectI bounds;
     std::shared_ptr<Image::ReadAccess> access;
     float outside = 0.f;
+    EdgeMode edgeMode = EdgeMode::Black;
 
     void readRow(int x0,
                  int y,
@@ -103,9 +104,22 @@ struct UVPlane {
 
             return;
         }
+        if ((edgeMode == EdgeMode::Stretch) && !bounds.isNull()) {
+            PassExec::readChannelRow(image.get(), access.get(), bounds, nComps, channel, x0, y, width, EdgeMode::Stretch, row);
+
+            return;
+        }
         PassExec::readChannelRow(image.get(), access.get(), bounds, nComps, channel, x0, y, width, outside, row);
     }
 };
+
+// The bounds coordJacobiansWithinBounds() keeps differences inside: none for a Black UV input,
+// whose 0 past its bounds is a value like any other.
+RectI
+uvEdgeBounds(const UVPlane& plane)
+{
+    return (plane.access && (plane.edgeMode == EdgeMode::Stretch)) ? plane.bounds : RectI();
+}
 } // namespace
 
 STMap::STMap(NodePtr node)
@@ -240,8 +254,9 @@ STMap::initializeKnobs()
     uvAlpha->setName(kSTMapParamUVAlpha);
     uvAlpha->setDefaultValue(true);
     uvAlpha->setHintToolTip(tr("When checked, the alpha of the layer U Channel reads from marks where the map holds a "
-                               "position: output pixels where it is 0 or less are black. A layer without alpha, or a "
-                               "pixel outside the UV input's region of definition, counts as opaque."));
+                               "position: output pixels where it is 0 or less are black. A layer without alpha counts as "
+                               "opaque. Outside the UV input's region of definition the alpha counts as opaque when the "
+                               "UV input is black outside, and holds its nearest edge pixel when it stretches."));
     page->addKnob(uvAlpha);
     _uvAlpha = uvAlpha;
 
@@ -270,13 +285,6 @@ STMap::initializeKnobs()
     clamp->setSpacingBetweenItems(1);
     page->addKnob(clamp);
     _clamp = clamp;
-
-    KnobBoolPtr blackOutside = createKnob<KnobBool>(tr(kResamplerParamFilterBlackOutsideLabel));
-    blackOutside->setName(kResamplerParamFilterBlackOutside);
-    blackOutside->setHintToolTip(tr(kResamplerParamFilterBlackOutsideHint));
-    blackOutside->setDefaultValue(true);
-    page->addKnob(blackOutside);
-    _blackOutside = blackOutside;
 
     _filterKnobs.create(this, page, filter, clamp);
 
@@ -327,10 +335,7 @@ STMap::readSettings(double time,
     if (clamp) {
         settings->clamp = clamp->getValueAtTime(time, 0, view);
     }
-    KnobBoolPtr blackOutside = _blackOutside.lock();
-    if (blackOutside) {
-        settings->blackOutside = blackOutside->getValueAtTime(time, 0, view);
-    }
+    settings->edgeMode = resolvedEdgeMode(time, view);
     KnobDoublePtr uvOffset = _uvOffset.lock();
     if (uvOffset) {
         settings->uOffset = uvOffset->getValueAtTime(time, 0, view);
@@ -454,6 +459,8 @@ STMap::getPreferredMetadataAt(double time,
             metadata.setOutputFormat(format);
         }
     }
+    // The defaults take the UV input's edge mode, which gives the format.
+    metadata.setEdgeMode(resolvedEdgeMode(time, view));
 
     return eStatusOK;
 }
@@ -626,6 +633,7 @@ STMap::renderOp(const RenderActionArgs& args,
         UVChannel uvChannels[2];
         resolveUVChannels(args.time, args.view, &uvChannels[0], &uvChannels[1]);
         ImagePtr uvImages[2];
+        const EdgeMode uvEdgeMode = stageInputEdgeMode(*this, kSTMapInputUV, args.time, args.view);
         for (int i = 0; i < 2; ++i) {
             if (!uvChannels[i].valid) {
                 continue;
@@ -647,6 +655,7 @@ STMap::renderOp(const RenderActionArgs& args,
             uvPlanes[i].channel = uvChannels[i].channel;
             uvPlanes[i].nComps = (int)uvImages[i]->getComponentsCount();
             uvPlanes[i].bounds = uvImages[i]->getBounds();
+            uvPlanes[i].edgeMode = uvEdgeMode;
             uvPlanes[i].access = std::make_shared<Image::ReadAccess>(uvImages[i].get());
         }
         if (settings.uvAlpha) {
@@ -655,7 +664,6 @@ STMap::renderOp(const RenderActionArgs& args,
             if (alpha.valid && holder.access && (alpha.channel < holder.nComps)) {
                 alphaPlane = holder;
                 alphaPlane.channel = alpha.channel;
-                alphaPlane.outside = 1.f;
                 gated = true;
             }
         }
@@ -756,10 +764,10 @@ STMap::renderOp(const RenderActionArgs& args,
                 if (jacobians) {
                     jacobian.resize((std::size_t)4 * n);
                     Resampler::coordJacobiansWithinBounds(&sx[0], &sx[n], &sx[2 * n], &sy[0], &sy[n], &sy[2 * n], io.x0 - 1, io.y, n,
-                                                          uvPlanes[0].access ? uvPlanes[0].bounds : RectI(), uvPlanes[1].access ? uvPlanes[1].bounds : RectI(), 0., 0., &jacobian[0]);
+                                                          uvEdgeBounds(uvPlanes[0]), uvEdgeBounds(uvPlanes[1]), 0., 0., &jacobian[0]);
                 }
                 Resampler::resampleRowFromCoords(source, &sx[n + 1], &sy[n + 1], jacobians ? &jacobian[4] : 0, io.width,
-                                                 settings.filter, settings.clamp, settings.blackOutside, settings.wrapU, settings.wrapV,
+                                                 settings.filter, settings.clamp, settings.edgeMode, settings.wrapU, settings.wrapV,
                                                  &out[0], io.nComps, &domain);
                 if (gated) {
                     std::vector<float> alphaRow(io.width);
@@ -943,7 +951,7 @@ STMap::renderOpGpu(const GpuRenderArgs& args)
     params.lobes = spec.lobes;
     params.bicubicB = (float)spec.B;
     params.bicubicC = (float)spec.C;
-    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kWarpGpuClamp : 0u) | (settings.blackOutside ? kWarpGpuBlackOutside : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | (hasDomain ? kWarpGpuSample : 0u);
+    params.flags = ((settings.clamp && Resampler::filterHonoursClamp(settings.filter.filter)) ? kWarpGpuClamp : 0u) | (settings.edgeMode == EdgeMode::Black ? kWarpGpuEdgeBlack : 0u) | ((settings.filter.filter != Resampler::eFilterImpulse) ? kWarpGpuJacobian : 0u) | (hasDomain ? kWarpGpuSample : 0u);
     params.wrapU = (uint32_t)settings.wrapU;
     params.wrapV = (uint32_t)settings.wrapV;
     if (hasDomain) {

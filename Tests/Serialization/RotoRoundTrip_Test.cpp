@@ -47,6 +47,7 @@
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPoint.h"
 #include "Engine/RotoStrokeItem.h"
+#include "Engine/Transform.h"
 #include "Engine/ViewIdx.h"
 
 #include "Serialization/RotoSerialization.h"
@@ -65,6 +66,7 @@ void
 completeItemKnobsLike(Serialization::RotoLayerSerialization* decoded,
                       const Serialization::RotoLayerSerialization& original)
 {
+    completeLike(&decoded->knobs, original.knobs);
     std::list<Serialization::RotoLayerChildSerialization>::const_iterator source = original.children.begin();
     for (std::list<Serialization::RotoLayerChildSerialization>::iterator it = decoded->children.begin(); (it != decoded->children.end()) && (source != original.children.end()); ++it, ++source) {
         if (it->type == Serialization::eRotoLayerChildTypeLayer) {
@@ -302,7 +304,7 @@ TEST_F(RotoRoundTripTest, AnimatedFeatheredBezierWithBrokenTangent)
 
     const std::list<BezierCPPtr> controlPoints = square->getControlPoints_mt_safe();
     ASSERT_EQ(4u, controlPoints.size());
-    controlPoints.front()->setBroken(true);
+    controlPoints.front()->setBroken(false, true);
     square->setLeftBezierPoint(0, 10., 2., 52.);
 
     KnobDoublePtr featherKnob = square->getFeatherKnob();
@@ -442,4 +444,60 @@ TEST_F(RotoRoundTripTest, NestedLayers)
     const std::list<RotoItemPtr> restoredSelection = restored->getSelectedItems();
     ASSERT_EQ(1u, restoredSelection.size());
     EXPECT_EQ(restoredInnerSquare, restoredSelection.front());
+}
+
+// A layer's keyed transform is saved with the layer, and the reloaded shapes inside it move as the
+// saved ones did; an untouched layer saves no transform.
+TEST_F(RotoRoundTripTest, LayerTransform)
+{
+    RotoContextPtr context = createRotoPaintContext();
+
+    ASSERT_TRUE(bool(context));
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    RotoLayerPtr layer = context->addLayer();
+    ASSERT_TRUE(layer != nullptr);
+    BezierPtr square = context->makeSquare(5., 5., 10., 1.);
+    ASSERT_TRUE(square != nullptr);
+    ASSERT_EQ(layer, square->getParentLayer());
+    KnobDoublePtr translate = std::dynamic_pointer_cast<KnobDouble>(layer->getKnobByName("translate"));
+    KnobDoublePtr rotate = std::dynamic_pointer_cast<KnobDouble>(layer->getKnobByName("rotate"));
+    ASSERT_TRUE(translate != nullptr && rotate != nullptr);
+    translate->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    translate->setValueAtTime(10., 30., ViewSpec::all(), 0);
+    rotate->setValue(15., ViewSpec::all(), 0);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+
+    Serialization::RotoContextSerialization loaded;
+    RotoContextPtr restored = expectRoundTripMatches(context, &loaded);
+    ASSERT_TRUE(bool(restored));
+    EXPECT_TRUE(loaded.baseLayer.knobs.empty());
+    ASSERT_EQ(1u, loaded.baseLayer.children.size());
+    ASSERT_EQ(Serialization::eRotoLayerChildTypeLayer, loaded.baseLayer.children.front().type);
+    EXPECT_FALSE(loaded.baseLayer.children.front().layer.knobs.empty());
+
+    const std::list<RotoItemPtr> restoredBaseItems = restored->getOrCreateBaseLayer()->getItems_mt_safe();
+    ASSERT_EQ(1u, restoredBaseItems.size());
+    RotoLayerPtr restoredLayer = std::dynamic_pointer_cast<RotoLayer>(restoredBaseItems.front());
+    ASSERT_TRUE(restoredLayer != nullptr);
+    KnobIPtr restoredTranslate = restoredLayer->getKnobByName("translate");
+    ASSERT_TRUE(restoredTranslate != nullptr);
+    CurvePtr curve = restoredTranslate->getCurve(ViewIdx(0), 0, true);
+    ASSERT_TRUE(curve != nullptr);
+    EXPECT_EQ(keyframeTimes(translate->getCurve(ViewIdx(0), 0, true)), keyframeTimes(curve));
+
+    const std::list<RotoItemPtr> restoredLayerItems = restoredLayer->getItems_mt_safe();
+    ASSERT_EQ(1u, restoredLayerItems.size());
+    BezierPtr restoredSquare = std::dynamic_pointer_cast<Bezier>(restoredLayerItems.front());
+    ASSERT_TRUE(restoredSquare != nullptr);
+    for (double time : { 1., 5., 10. }) {
+        Transform::Matrix3x3 expected, actual;
+        square->getTransformAtTime(time, &expected);
+        restoredSquare->getTransformAtTime(time, &actual);
+        EXPECT_NEAR(expected.a, actual.a, 1e-9) << "at " << time;
+        EXPECT_NEAR(expected.b, actual.b, 1e-9) << "at " << time;
+        EXPECT_NEAR(expected.c, actual.c, 1e-9) << "at " << time;
+        EXPECT_NEAR(expected.d, actual.d, 1e-9) << "at " << time;
+        EXPECT_NEAR(expected.e, actual.e, 1e-9) << "at " << time;
+        EXPECT_NEAR(expected.f, actual.f, 1e-9) << "at " << time;
+    }
 }

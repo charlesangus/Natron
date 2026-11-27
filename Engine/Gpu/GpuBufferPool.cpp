@@ -3,6 +3,9 @@
 #include "GpuSizeClass.h"
 
 #include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <limits>
 
 namespace gpu {
 
@@ -15,6 +18,19 @@ namespace {
                  "GPU buffer pool cannot provide " + std::to_string(size) + " bytes within a budget of "
                      + std::to_string(budget) + " bytes" };
     }
+
+    // The cached map orders leases by score, which a NaN would break; one goes first, as the least worth keeping.
+    double
+    sanitizedScore(double score)
+    {
+        if (std::isnan(score)) {
+            return 0.0;
+        }
+
+        return std::clamp(score, std::numeric_limits<double>::lowest(), std::numeric_limits<double>::max());
+    }
+
+    constexpr uint64_t kPoisonTimeoutNs = 30'000'000'000ull;
 
 } // namespace
 
@@ -31,6 +47,18 @@ GpuBufferHandle::markEvictable(std::function<void()> onEvict) const
 }
 
 void
+GpuBufferHandle::markCached(std::function<void()> onEvict, double score) const
+{
+    lease_->pool->setCached(lease_.get(), std::move(onEvict), score);
+}
+
+void
+GpuBufferHandle::setCachedScore(double score) const
+{
+    lease_->pool->setScore(lease_.get(), score);
+}
+
+void
 GpuBufferHandle::clearEvictable() const
 {
     lease_->pool->clearEvictable(lease_.get());
@@ -39,11 +67,15 @@ GpuBufferHandle::clearEvictable() const
 GpuBufferPool::GpuBufferPool(GpuDevice& dev, const GpuBufferPoolOptions& options)
     : dev_(dev)
     , options_(options)
+    , poison_(options.poisonOnAcquire)
 {
 }
 
 GpuBufferPool::~GpuBufferPool()
 {
+    // Retiring work holds handles whose release comes back here.
+    dev_.finishRetiring();
+    returnQuarantined();
     trim();
 }
 
@@ -121,6 +153,36 @@ GpuBufferPool::reserveLocked(uint64_t bytes)
 }
 
 void
+GpuBufferPool::returnQuarantined()
+{
+    dev_.reapRetired();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (quarantine_.empty()) {
+            return;
+        }
+    }
+    const uint64_t limit = computeBudget();
+    std::vector<GpuBuffer> doomed;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (auto it = quarantine_.begin(); it != quarantine_.end();) {
+        if (!dev_.retiredThrough(it->mark)) {
+            ++it;
+            continue;
+        }
+        const VkDeviceSize size = it->buffer.size();
+        stats_.quarantinedBytes -= size;
+        if (usageLocked() + size <= limit) {
+            free_[size].push_back(std::move(it->buffer));
+            stats_.pooledBytes += size;
+        } else {
+            doomed.push_back(std::move(it->buffer));
+        }
+        it = quarantine_.erase(it);
+    }
+}
+
+void
 GpuBufferPool::trim()
 {
     std::map<VkDeviceSize, std::vector<GpuBuffer>> doomed;
@@ -148,18 +210,12 @@ GpuBufferPool::evict(uint64_t bytes)
         std::function<void()> cb;
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            if (lru_.empty()) {
+            // As in acquire(): removed before the unlocked call so that the callback runs exactly once.
+            detail::BufferLease* victim = takeVictimLocked(cb);
+            if (!victim) {
                 break;
             }
-            // As in acquire(): removed before the unlocked call so that the callback runs exactly once.
-            auto oldest = lru_.begin();
-            detail::BufferLease* victim = oldest->second;
-            cb = std::move(victim->onEvict);
-            victim->onEvict = nullptr;
-            victim->evictable = false;
             freed += victim->buffer.size();
-            lru_.erase(oldest);
-            ++stats_.evictions;
         }
         if (cb) {
             cb();
@@ -174,6 +230,7 @@ GpuStatus
 GpuBufferPool::acquire(VkDeviceSize size, GpuBufferHandle& out)
 {
     out = GpuBufferHandle();
+    returnQuarantined();
     const uint64_t limit = computeBudget();
     if (size > limit) {
         return outOfMemory(size, limit);
@@ -192,6 +249,18 @@ GpuBufferPool::acquire(VkDeviceSize size, GpuBufferHandle& out)
         out = GpuBufferHandle(std::shared_ptr<detail::BufferLease>(lease, [this](detail::BufferLease* l) { release(l); }));
     };
 
+    auto handOut = [&](GpuBuffer&& buf) -> GpuStatus {
+        wrap(std::move(buf));
+        if (!poison_.load(std::memory_order_relaxed)) {
+            return {};
+        }
+        GpuStatus s = fillWithPoison(out.buffer());
+        if (!s) {
+            out = GpuBufferHandle();
+        }
+        return s;
+    };
+
     bool vmaRefused = false;
     for (;;) {
         std::unique_lock<std::mutex> lock(mutex_);
@@ -207,8 +276,7 @@ GpuBufferPool::acquire(VkDeviceSize size, GpuBufferHandle& out)
             stats_.pooledBytes -= pooled;
             reserveLocked(pooled);
             lock.unlock();
-            wrap(std::move(buf));
-            return {};
+            return handOut(std::move(buf));
         }
 
         if (!vmaRefused && usageLocked() + cls <= limit) {
@@ -216,10 +284,11 @@ GpuBufferPool::acquire(VkDeviceSize size, GpuBufferHandle& out)
             lock.unlock();
             GpuBuffer buf;
             allocations_.fetch_add(1, std::memory_order_relaxed);
-            GpuStatus s = GpuBuffer::createDeviceLocal(dev_, cls, kGpuBufferDefaultUsage, buf);
+            const VkBufferUsageFlags usage
+                = kGpuBufferDefaultUsage | (dev_.supportsRayQuery() ? kGpuBufferRayQueryUsage : 0);
+            GpuStatus s = GpuBuffer::createDeviceLocal(dev_, cls, usage, buf);
             if (s.ok()) {
-                wrap(std::move(buf));
-                return {};
+                return handOut(std::move(buf));
             }
             lock.lock();
             stats_.liveBytes -= cls;
@@ -251,26 +320,148 @@ GpuBufferPool::acquire(VkDeviceSize size, GpuBufferHandle& out)
             continue;
         }
 
-        if (lru_.empty()) {
-            GpuStatus s = outOfMemory(size, limit);
-            s.budgetContention = !vmaRefused;
-            return s;
-        }
-
         // Removing the entry before the call is what makes each callback run exactly once, and running
         // it unlocked lets it release handles, which re-enter release() and take the lock.
-        auto oldest = lru_.begin();
-        detail::BufferLease* victim = oldest->second;
-        std::function<void()> cb = std::move(victim->onEvict);
-        victim->onEvict = nullptr;
-        victim->evictable = false;
-        lru_.erase(oldest);
-        ++stats_.evictions;
+        std::function<void()> cb;
+        if (!takeVictimLocked(cb)) {
+            GpuStatus s = outOfMemory(size, limit);
+            // Quarantined buffers come back once the retiring work that uses them is reaped.
+            s.budgetContention = !vmaRefused || (stats_.quarantinedBytes > 0);
+            return s;
+        }
         vmaRefused = false;
         lock.unlock();
         if (cb) {
             cb();
         }
+    }
+}
+
+// Waits for the fill, so that the poison is in place before the caller records anything on the buffer, and fences
+// it on both sides with full barriers, so that it neither overlaps the work queued before it nor is overlapped by
+// the work queued after it on the compute queue.
+GpuStatus
+GpuBufferPool::fillWithPoison(const GpuBuffer& buffer)
+{
+    const VkDevice dev = dev_.device();
+    VkCommandPoolCreateInfo pci { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+    pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    pci.queueFamilyIndex = dev_.queueFamily(QueueKind::Compute);
+    VkCommandPool pool = VK_NULL_HANDLE;
+    if (GpuStatus s = dev_.check(vkCreateCommandPool(dev, &pci, nullptr, &pool), "vkCreateCommandPool"); !s) {
+        return s;
+    }
+    VkCommandBuffer cmd = VK_NULL_HANDLE;
+    VkCommandBufferAllocateInfo cai { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+    cai.commandPool = pool;
+    cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cai.commandBufferCount = 1;
+    VkCommandBufferBeginInfo cbi { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    cbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    GpuStatus s = dev_.check(vkAllocateCommandBuffers(dev, &cai, &cmd), "vkAllocateCommandBuffers");
+    if (s) {
+        s = dev_.check(vkBeginCommandBuffer(cmd, &cbi), "vkBeginCommandBuffer");
+    }
+    if (!s) {
+        vkDestroyCommandPool(dev, pool, nullptr);
+        return s;
+    }
+
+    VkMemoryBarrier2 before { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+    before.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    before.srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    before.dstStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    before.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    VkDependencyInfo dep { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
+    dep.memoryBarrierCount = 1;
+    dep.pMemoryBarriers = &before;
+    vkCmdPipelineBarrier2(cmd, &dep);
+
+    vkCmdFillBuffer(cmd, buffer.buffer(), 0, VK_WHOLE_SIZE, kGpuPoolPoisonBits);
+
+    VkMemoryBarrier2 after { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
+    after.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+    after.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    after.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+    after.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+    dep.pMemoryBarriers = &after;
+    vkCmdPipelineBarrier2(cmd, &dep);
+
+    if (s = dev_.check(vkEndCommandBuffer(cmd), "vkEndCommandBuffer"); !s) {
+        vkDestroyCommandPool(dev, pool, nullptr);
+        return s;
+    }
+
+    VkFence fence = VK_NULL_HANDLE;
+    VkFenceCreateInfo fi { VK_STRUCTURE_TYPE_FENCE_CREATE_INFO };
+    if (s = dev_.check(vkCreateFence(dev, &fi, nullptr, &fence), "vkCreateFence"); !s) {
+        vkDestroyCommandPool(dev, pool, nullptr);
+        return s;
+    }
+    VkCommandBufferSubmitInfo csi { VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO };
+    csi.commandBuffer = cmd;
+    VkSubmitInfo2 submit { VK_STRUCTURE_TYPE_SUBMIT_INFO_2 };
+    submit.commandBufferInfoCount = 1;
+    submit.pCommandBufferInfos = &csi;
+    // Uncounted, so that poisoning does not move the operation a fault plan fires on.
+    s = dev_.submitUncounted(QueueKind::Compute, std::span<const VkSubmitInfo2>(&submit, 1), fence);
+    bool mayBePending = (s.result == VK_ERROR_DEVICE_LOST);
+    if (s) {
+        VkResult waited = vkWaitForFences(dev, 1, &fence, VK_TRUE, kPoisonTimeoutNs);
+        if (waited == VK_TIMEOUT) {
+            std::fprintf(stderr, "GpuBufferPool::acquire: the poison fill did not finish within %llu ms; the GPU device is treated as lost\n",
+                         static_cast<unsigned long long>(kPoisonTimeoutNs / 1000000));
+            dev_.abandonInFlightWork("vkWaitForFences");
+            return { VK_ERROR_DEVICE_LOST, "GpuBufferPool::acquire: the poison fill timed out" };
+        }
+        if (waited != VK_SUCCESS) {
+            s = dev_.check(waited, "vkWaitForFences");
+            mayBePending = true;
+        }
+    }
+    vkDestroyFence(dev, fence, nullptr);
+    if (!mayBePending) {
+        vkDestroyCommandPool(dev, pool, nullptr);
+    }
+    return s;
+}
+
+detail::BufferLease*
+GpuBufferPool::takeVictimLocked(std::function<void()>& cb)
+{
+    detail::BufferLease* victim = nullptr;
+    if (!cached_.empty()) {
+        victim = cached_.begin()->second;
+    } else if (!lru_.empty()) {
+        victim = lru_.begin()->second;
+    } else {
+        return nullptr;
+    }
+    unlinkLocked(victim);
+    cb = std::move(victim->onEvict);
+    victim->onEvict = nullptr;
+    victim->evictable = false;
+    ++stats_.evictions;
+    return victim;
+}
+
+void
+GpuBufferPool::unlinkLocked(detail::BufferLease* lease)
+{
+    if (lease->cached) {
+        cached_.erase({ lease->score, lease->stamp });
+    } else {
+        lru_.erase(lease->stamp);
+    }
+}
+
+void
+GpuBufferPool::linkLocked(detail::BufferLease* lease)
+{
+    if (lease->cached) {
+        cached_[{ lease->score, lease->stamp }] = lease;
+    } else {
+        lru_[lease->stamp] = lease;
     }
 }
 
@@ -280,13 +471,17 @@ GpuBufferPool::release(detail::BufferLease* lease)
     GpuBuffer buf = std::move(lease->buffer);
     const VkDeviceSize size = buf.size();
     const uint64_t limit = computeBudget();
+    const uint64_t mark = dev_.retiringMark(buf.buffer());
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (lease->evictable) {
-            lru_.erase(lease->stamp);
+            unlinkLocked(lease);
         }
         stats_.liveBytes -= size;
-        if (usageLocked() + size <= limit) {
+        if (mark != 0) {
+            quarantine_.push_back({ std::move(buf), mark });
+            stats_.quarantinedBytes += size;
+        } else if (usageLocked() + size <= limit) {
             free_[size].push_back(std::move(buf));
             stats_.pooledBytes += size;
         }
@@ -299,9 +494,9 @@ GpuBufferPool::touch(detail::BufferLease* lease)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     if (lease->evictable) {
-        lru_.erase(lease->stamp);
+        unlinkLocked(lease);
         lease->stamp = ++clock_;
-        lru_[lease->stamp] = lease;
+        linkLocked(lease);
     } else {
         lease->stamp = ++clock_;
     }
@@ -310,14 +505,39 @@ GpuBufferPool::touch(detail::BufferLease* lease)
 void
 GpuBufferPool::setEvictable(detail::BufferLease* lease, std::function<void()> cb)
 {
+    setClassified(lease, std::move(cb), false, 0.0);
+}
+
+void
+GpuBufferPool::setCached(detail::BufferLease* lease, std::function<void()> cb, double score)
+{
+    setClassified(lease, std::move(cb), true, score);
+}
+
+void
+GpuBufferPool::setClassified(detail::BufferLease* lease, std::function<void()> cb, bool cached, double score)
+{
     std::lock_guard<std::mutex> lock(mutex_);
     if (lease->evictable) {
-        lru_.erase(lease->stamp);
+        unlinkLocked(lease);
     }
     lease->onEvict = std::move(cb);
     lease->evictable = true;
+    lease->cached = cached;
+    lease->score = sanitizedScore(score);
     lease->stamp = ++clock_;
-    lru_[lease->stamp] = lease;
+    linkLocked(lease);
+}
+
+void
+GpuBufferPool::setScore(detail::BufferLease* lease, double score)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (lease->evictable && lease->cached) {
+        unlinkLocked(lease);
+        lease->score = sanitizedScore(score);
+        linkLocked(lease);
+    }
 }
 
 void
@@ -325,7 +545,7 @@ GpuBufferPool::clearEvictable(detail::BufferLease* lease)
 {
     std::lock_guard<std::mutex> lock(mutex_);
     if (lease->evictable) {
-        lru_.erase(lease->stamp);
+        unlinkLocked(lease);
         lease->evictable = false;
         lease->onEvict = nullptr;
     }

@@ -81,8 +81,16 @@ resolved when the container is created, and a running container is never
 touched. To force the fallback by hand:
 
 ```
-docker build -f tools/ci/local/Dockerfile -t "$(tools/ci/local/dev-image-tag.sh)" tools/ci/local/
+DOCKER_BUILDKIT=1 docker build --build-arg BUILDKIT_INLINE_CACHE=1 \
+  --cache-from ghcr.io/charlesangus/natron-dev:latest \
+  -f tools/ci/local/Dockerfile -t "$(tools/ci/local/dev-image-tag.sh)" tools/ci/local/
 ```
+
+Published images carry inline build cache and both builds pass `:latest` as
+`--cache-from`, so a Dockerfile change rebuilds only from the first changed
+layer on. Keep the slow layers (Cycles, MoonRay) early in the Dockerfile and
+put frequently edited steps after them. A missing or cache-less `:latest`
+only produces a warning and a full build.
 
 After a Dockerfile change (or a pull of a newer tag), run
 `tools/ci/local/devshell.sh --recreate` to pick the new image up, and only
@@ -374,7 +382,7 @@ container with `NATRON_DEV_CONTAINER` (see "Where things live").
 ## 4. Test
 
 ```
-[NATRON_RENDER_SCHEDULER=legacy|taskgraph] [NATRON_CTEST_JOBS=<n>] \
+[NATRON_CTEST_JOBS=<n>] \
   [GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<n> GTEST_REPEAT=<n>] \
   tools/ci/local/test.sh <ctest|smoke|startup> [debug|release|fast] [--gdb]
 ```
@@ -397,9 +405,6 @@ container with `NATRON_DEV_CONTAINER` (see "Where things live").
   driver calls, and no ctest case ever starts the GUI. A SIGFPE shows up as
   exit status 136. `check-startup.sh` cannot take this role, as it needs a
   staged bundle and a debug build is not packaged in the container.
-- `NATRON_RENDER_SCHEDULER` selects the render scheduler for `ctest` and
-  `smoke`; unset leaves Natron's default. It is forwarded into the container
-  when set.
 - `NATRON_CTEST_JOBS` (`ctest` only) is how many cases run at once, all as
   clients of the one Xvfb server. Unset or 1 is the serial `ctest -V` run.
   Above 1 only failing cases' output is printed as each finishes; the full
@@ -448,26 +453,6 @@ equivalent of `release.yml`'s "Stage bundle" / "Create tarball" / "Create
 AppImage" steps, which only run on a tag push and drop their output in
 `/tmp/artifacts` instead of the build tree. Defaults to `release` (packaging
 a debug build is rarely useful, but supported).
-
-`appimagetool` needs a route to `upload.wikimedia.org` to validate the
-AppData screenshot URL; sandboxes without one can drop a wrapper at
-`build/appimagetool-wrapper/appimagetool` that execs the real tool with
-`-n`/`--no-appstream` (see that wrapper's own header for the full story) --
-`package.sh` puts it ahead of `PATH` when present, and does nothing when it
-isn't (e.g. CI, which has real network access).
-
-`make-appimagetool-wrapper.sh` creates that wrapper:
-
-```
-tools/ci/local/make-appimagetool-wrapper.sh <dir> [<real-appimagetool>]
-```
-
-`<dir>` receives `appimagetool` (the wrapper) and `appimagetool.real` (a
-copy of the real tool). The real tool is the path given, else the first
-`appimagetool` on `PATH`, else the `appimagetool.real` already in the main
-checkout's `build/appimagetool-wrapper/`; it exits 1 when none is found.
-`package.sh` calls it itself when the wrapper is missing but one of those
-sources exists, so you normally never run it by hand.
 
 ## 6. Verify a release bundle starts outside the dev container
 
@@ -668,8 +653,6 @@ when its result is already there, so it is safe to re-run:
    shared dev container and a caller may not want to start a build there.
 3. `.natron-deps` linked to the main checkout's copy (not needed in the main
    checkout itself).
-4. `build/appimagetool-wrapper/` copied from the main checkout, or
-   regenerated with `make-appimagetool-wrapper.sh`.
 
 It prints a summary of what it did, what was already present, and notes. It
 never builds Natron.
@@ -737,6 +720,7 @@ Confirmed recipe: not yet recorded.
 | Packaged artifacts | `build/<type>/artifacts` (gitignored) | delete the directory |
 | Test assets | `build/assets` (gitignored) | delete, then re-run `fetch-assets.sh` |
 | ccache | `.ccache` (repo root, gitignored, host bind mount) | delete the directory |
+| Remote cache config | `.local/ccache-remote` (main checkout, gitignored) | delete the file to go local-only |
 | `HOME` | Docker named volume `natron-dev-home` | `docker volume rm` |
 | Container | `natron-dev` | `docker rm -f natron-dev`, or see below |
 | GPU container | `natron-dev-gpu`, home volume `natron-dev-gpu-home` | `docker rm -f natron-dev-gpu` |
@@ -757,6 +741,65 @@ and builds in the same `build/<type>` layout relative to its own root, as
 can name the other tree's source paths. Under `base_dir`, `__FILE__`
 expands to a path relative to the build dir, so code must not locate files
 from `__FILE__`.
+
+### Remote cache
+
+A shared ccache remote storage server lets the main tree, worktrees and other
+hosts reuse each other's objects. The local `.ccache` stays the first layer:
+ccache asks the remote only on a local miss, and writes new objects to both.
+The server is not part of this repo; it is an HTTP cache that speaks ccache's
+`layout=bazel` and requires basic auth.
+
+It is off unless the gitignored file `.local/ccache-remote` exists in the
+main checkout. Worktrees read the main checkout's copy, found through the git
+common dir. The file holds `KEY=value` lines; blank lines and lines starting
+with `#` are skipped:
+
+```
+# Credentials; already embedded in the URLs below. devshell.sh ignores them.
+user=USER
+password=PASS
+# Used by devshell.sh: for containers on the server's docker network.
+docker_url=http://USER:PASS@CACHE_SERVICE:PORT|layout=bazel
+# Ignored by devshell.sh: for processes on the cache host, and for anywhere.
+host_url=http://USER:PASS@HOST:PORT|layout=bazel
+wan_url=https://USER:PASS@cache.example.com|@layout=bazel
+# Optional overrides of what devshell.sh picks from the keys above.
+url=...
+network=CACHE_NETWORK
+```
+
+The values above are placeholders; the file carries the password, so keep it
+private. `devshell.sh` resolves two things from it:
+
+- **The storage URL** is `url` if set, otherwise `docker_url`. With neither,
+  the remote cache is off.
+- **The network** the container joins is `network` if set; otherwise
+  `docker_default`, the generic docker compose default network name, when
+  `docker_url` was chosen; otherwise none. The default `bridge` network can't
+  reach ports the server only publishes on the host's LAN, so a `docker_url`
+  container has to join the server's network.
+
+`user`, `password`, `host_url` and `wan_url` are recognised and silently
+ignored, as other tools read them; any other key draws a warning naming it.
+To use the public HTTPS address from the container, set `url=` to the
+`wan_url` value (and no `network=`). `https://` URLs go through the
+`ccache-storage-https` helper, which the image installs in `/usr/local/bin`;
+ccache's built-in client serves `http://` URLs. The helper takes its layout as a custom attribute (`@layout=bazel`, where an `http://` URL has `layout=bazel`) and defaults to a different key layout without it. `devshell.sh` therefore replaces any layout attribute on an `http://` or `https://` URL with the right bazel spelling, so a plain URL works (a value that is not an `http://` or `https://` URL turns the remote cache off, with a warning that never prints it) and local builds share keys with the remote CI workflow, which applies the same rule.
+
+`devshell.sh` reads the file on every call and passes `CCACHE_REMOTE_STORAGE`
+on every `docker exec`, so a running container picks up a new or changed file
+without `--recreate`. When the resolved network is one the container hasn't
+joined, it runs `docker network connect` first; that is live too. The URL and
+the network name are never printed. `build.sh`'s banner says only
+`remote cache: yes` or `no`, and its closing `ccache -s` counts remote hits
+and misses under "Remote storage".
+
+If the server is down or slow, ccache marks it failed for that compile and
+carries on locally, so the cache can't fail a build. To turn the remote cache
+off, delete `.local/ccache-remote`; `ccache -p | grep remote_storage` inside
+the container then shows it empty. While the file is in place, `ccache -p`
+prints the URL with its password, so keep its output out of logs and issues.
 
 ## Running build.sh/test.sh/package.sh from inside a container already (e.g. CI)
 

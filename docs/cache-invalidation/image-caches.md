@@ -9,10 +9,10 @@ State recorded on branch `milestone/m242-cache-invalidation-audit`. "Fixed by M2
 | Cache | Owner | Entry key | Lifetime |
 | --- | --- | --- | --- |
 | NodeCache | `Cache<Image>` "NodeCache", AppManager.cpp:1041 | `ImageKey` | RAM, LRU, app-wide |
-| DiskCache | `Cache<Image>` "DiskCache", AppManager.cpp:1042 | `ImageKey` | Disk, LRU, restored across sessions (AppManagerPrivate.cpp:461) |
-| DeepImageCache | `Cache<DeepImageCacheEntry>` "DeepImageCache", AppManager.cpp:1046 | `DeepImageKey` | RAM, LRU, app-wide |
+| Pins | `pins/` of NodeCache's disk tier, CacheDiskTier.cpp:2627 | `ImageKey` and holder | Disk, own budget, restored across sessions by lookup |
+| Deep entries of NodeCache | `DeepImageCacheEntry` in `Cache<Image>` "NodeCache" | `DeepImageKey` | RAM, LRU, app-wide, sharing the NodeCache budget |
 | FrameStore | `FrameRenderContext::_store` FrameRenderContext.h:355, `class FrameStore` :58 | `FrameStore::TaskKey` | One frame render; an entry lives until its consumers release it |
-| DiskCache node | `DiskCacheNode`, storage forced to disk at EffectInstanceRenderRoI.cpp:715-716 | `ImageKey` in DiskCache | As DiskCache |
+| DiskCache node | `DiskCacheNode`, output pinned when its render ends at EffectInstanceRenderRoI.cpp:1802 | `ImageKey` in the holder's pins | As pins |
 
 ViewerCache (AppManager.cpp:1043) is in the Phase 2 viewer document.
 
@@ -45,7 +45,7 @@ Not in the key at all; checked per entry after lookup in `getImageFromCacheAndCo
 - Bit depth. Equal or deeper storage matches (EffectInstance.cpp:2133).
 - Project-format RoD. An entry whose RoD followed the project format is dropped when the format
   changed (EffectInstance.cpp:2109-2117).
-- Disk entries are found through `getImage_diskCache` (AppManager.cpp:2567).
+- Pins are found through `getPinnedImage` (AppManager.cpp), for a DiskCache node's keys only.
 
 ### DeepImageKey (DeepImageKey.h:46-49; DeepImageKey.cpp:53-64)
 
@@ -105,23 +105,23 @@ not known well enough to rule time out. See hole I1 for what it was before.
   `removeAll = true` from `removeAllEntriesForHolderPublic` (Cache.h:1630-1637) and the cleaner thread
   (Cache.h:332).
 - Holder removal. `AppManager::removeAllCacheEntriesForHolder` (AppManager.cpp:2528) clears the
-  node's entries in NodeCache, DiskCache, ViewerCache and DeepImageCache by cache ID. Its only caller
+  node's entries in NodeCache (deep included) and ViewerCache by cache ID, and releases its pins, which go unless a live peer holds them. Its only caller
   is `Node::removeAllImagesFromCache` (Node.cpp:1901, call 1913), which skips projects that are
   closing or loading (1910). That is called by node destruction (NodeMain.cpp:712), an aborted
   paint-stroke render (EffectInstanceRenderRoI.cpp:1539), precomp reload (PrecompNode.cpp:682) and
   `NativeWrite::purgeCaches` (NativeWrite.cpp:1592, 1609). The cache ID is the node's first script
   name, serialized so disk entries persist (NodePrivate.h:368-372, NodeName.cpp:92, 416-422).
 - `AppManager::clearAllCaches` (AppManager.cpp:1380): aborts viewers, drains the deleter threads
-  (1392-1404), then `clearDiskCache` (1407; viewer and disk caches, 1337-1345), `clearNodeCache`
-  (1408; 1349-1361), `_deepImageCache->clear()` (1409), and per app `clearOpenFXPluginsCaches`
+  (1392-1404), then `clearDiskCache` (1407; viewer cache and this session's holders' pins, 1443), `clearNodeCache`
+  (1408; 1349-1361, deep entries included), and per app `clearOpenFXPluginsCaches`
   (1416) and `renderAllViewers(true)` (1420).
 - Project format change: project-format entries dropped on lookup (EffectInstance.cpp:2109-2117).
 - FrameStore: dies with its `FrameRenderContext`. An entry also goes once its consumer count reaches
   zero (`put` FrameRenderContext.h:126).
 - Persistence: `NATRON_CACHE_VERSION` is 10 (GlobalDefines.h:97). On launch the stored version is
   compared (AppManager.cpp:1052-1059). A mismatch or `--clear-cache` wipes the disk structure
-  (1062-1064); otherwise `restoreCaches` reloads the ViewerCache and DiskCache tables of contents
-  (AppManagerPrivate.cpp:458-462). NodeCache and DeepImageCache are memory-only. A restored entry
+  (1062-1064); otherwise `restoreCaches` reloads the ViewerCache table of contents
+  (AppManagerPrivate.cpp:458-462). NodeCache, deep entries included, is memory-only. A restored entry
   can only hit under an identical node hash. That hash includes the binary content stamp and the
   plug-in stamps (keys.md), so a rebuilt binary orphans every restored entry instead of reusing it.
 
@@ -131,13 +131,13 @@ not known well enough to rule time out. See hole I1 for what it was before.
 - Holder: content sharing means `removeAllImagesFromCache` on one node leaves identical-hash
   entries stored by another node's ID.
 - Mipmap level, layer and bit depth are not in `ImageKey`; they are filtered per entry (above).
-- Draft for the deep cache (no draft field).
+- Draft for deep entries (no draft field).
 
 ## Covered by tests
 
 - Seeded stress (`Tests/CacheStress.h`): `Tests/CacheStress_Test.cpp` and `Tests/CacheStressSelf_Test.cpp` (the self-test plants a member-cache hole and checks it is caught); seeds replay with `NATRON_CACHE_STRESS_SEED`.
-- DeepImageCache: `Tests/DeepImageCache_Test.cpp:120` (round trip), :162 (own budget), :248
-  (`clearAllCaches`), :282 (holder purge), :348, :382, :440.
+- Deep entries: `Tests/DeepImageCache_Test.cpp` (round trip, shared budget, deep and image of one node, pins, byte
+  accounting, `clearAllCaches`, `clearNodeCache`, holder purge, memory stats, pressure eviction).
 - FrameStore: `Tests/FrameStoreHandoff_Test.cpp:348, 359, 399, 410`.
 - `clearAllCaches`: `Tests/Native/ClearAllCaches_Test.cpp:55` (ActionsCache side).
 - No test checks `ImageKey` time omission, the frame-varying test, cross-session persistence or
@@ -180,3 +180,6 @@ not known well enough to rule time out. See hole I1 for what it was before.
   stored for RGB can answer an RGBA request with a synthesized alpha. **Checked in M260:**
   `CacheStressTest.RgbThenRgbaRequest` passes in Legacy and Task graph, so the case does not
   occur and the engine is unchanged.
+  **Since M300 - Unified Tiered Cache:** the key carries mip level, layer and bit depth, so a
+  colour request is served by the node's own colour layer or the RGBA holding it, never by a
+  layout that would make up channels.

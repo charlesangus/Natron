@@ -31,6 +31,7 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -61,10 +62,13 @@
 #define kUSDProject3DShaderName "Projection"
 #define kUSDProject3DTextureName "PlateTexture"
 #define kUSDProject3DReaderName "TexCoordReader"
+#define kUSDProject3DFrameReaderName "GeometryFrameReader"
+#define kUSDProject3DReferenceReaderName "ReferencePointsReader"
 // Shader inputs and attributes read beyond the node: by the geometry nodes the material is grafted
 // under, and by USDWrite's bake.
 #define kUSDProject3DInputProjectionSpace "projectionSpace"
 #define kUSDProject3DInputGeometryFrame "geometryFrame"
+#define kUSDProject3DInputReferencePoints "referencePoints"
 #define kUSDProject3DInputPlateTransform "plateTransform"
 #define kUSDProject3DInputWorldToProjector "worldToProjector"
 #define kUSDProject3DInputProjectorOrigin "projectorOrigin"
@@ -137,11 +141,22 @@ public:
     virtual ~USDProject3D();
 
     /**
-     * @brief Fills the camera menu with every camera of the Camera input's scene at the current
-     * frame, then Camera Path when none of them has it. Main thread only; the
-     * node calls it itself, queued, whenever an input or anything upstream changes.
+     * @brief Starts listing every camera of the Camera input's scene at the current frame for the
+     * camera menu, then Camera Path when none of them has it.
+     * The menu keeps its entries until applyCameraMenu() fills it with the job's result, which
+     * the job queues to the main thread when it ends; a later refresh supersedes it. The search
+     * runs on a worker, on the load set of the viewer showing the node (nothing loaded when none
+     * does), and the menu ends with a row counting the unloaded branches not searched, when
+     * there are some. Returns at once. Main thread only; the node calls it itself, queued,
+     * whenever an input or anything upstream changes.
      **/
-    void refreshCameraMenu();
+    std::shared_ptr<SceneMenuJob> refreshCameraMenu();
+
+    /**
+     * @brief Fills the camera menu from job, unless a later refresh superseded it or it is not
+     * done. Returns whether it did. Main thread.
+     **/
+    bool applyCameraMenu(const std::shared_ptr<SceneMenuJob>& job);
 
     /**
      * @brief The installed natronProject3D.glslfx the material's surface names, absolute; empty
@@ -154,6 +169,8 @@ private:
     virtual void initializeKnobs() OVERRIDE FINAL;
     virtual void onKnobsLoaded() OVERRIDE FINAL;
     virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
+    virtual void onInputSourceDeleted(int inputNo,
+                                      const std::string& sourceName) OVERRIDE FINAL;
     virtual void onNodeHashChanged(U64 hash) OVERRIDE FINAL;
     virtual void onScriptNameChanged(const std::string& fullyQualifiedName) OVERRIDE FINAL;
     virtual bool knobChanged(KnobI* k,
@@ -164,6 +181,17 @@ private:
     virtual StatusEnum renderScene(const SceneRenderActionArgs& args,
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    virtual SceneEvaluationContext getSceneInputContext(int inputNb,
+                                                        const SceneEvaluationContext& ctx,
+                                                        double time,
+                                                        ViewIdx view) const OVERRIDE FINAL;
+
+    virtual void mapSceneInputReach(int inputNb,
+                                    double time,
+                                    ViewIdx view,
+                                    const std::vector<std::string>& in,
+                                    std::vector<std::string>* out) const OVERRIDE FINAL;
 
     void scheduleCameraMenuRefresh();
 
@@ -186,6 +214,7 @@ private:
     KnobBoolWPtr _useFrameHold;
     KnobDoubleWPtr _frameHold;
     std::atomic<bool> _cameraMenuRefreshPending;
+    SceneMenuRefresh _cameraMenuRefresh;
 };
 
 NATRON_NAMESPACE_EXIT

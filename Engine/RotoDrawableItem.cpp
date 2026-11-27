@@ -555,13 +555,6 @@ RotoDrawableItem::rotoKnobChanged(const KnobIPtr& knob,
         type = eRotoStrokeTypeSolid;
     }
 
-    if ( (reason == eValueChangedReasonSlaveRefresh) && (knob != _imp->center) && (knob != _imp->cloneCenter) ) {
-        RotoContextPtr paintContext = getPaintContext();
-        if (paintContext) {
-            paintContext->s_breakMultiStroke();
-        }
-    }
-
     if (knob == compKnob) {
         KnobIPtr mergeOperatorKnob = _imp->mergeNode->getKnobByName(kNativeMergeParamOperation);
         KnobChoice* mergeOp = dynamic_cast<KnobChoice*>( mergeOperatorKnob.get() );
@@ -955,20 +948,7 @@ static void
 serializeRotoKnob(const KnobIPtr& knob,
                   Serialization::KnobSerialization* serialization)
 {
-    std::pair<int, KnobIPtr> master = knob->getMaster(0);
-
-    if (master.second) {
-        // The values are those of the knob this one is slaved to, but the expressions remain
-        // this knob's own.
-        master.second->toSerialization(serialization);
-        const int dimensionCount = std::min(knob->getDimension(), (int)serialization->dimensions.size());
-        for (int i = 0; i < dimensionCount; ++i) {
-            serialization->dimensions[i].expression = knob->getExpression(i);
-            serialization->dimensions[i].expressionHasReturnVariable = knob->isExpressionUsingRetVariable(i);
-        }
-    } else {
-        knob->toSerialization(serialization);
-    }
+    knob->toSerialization(serialization);
 }
 
 void
@@ -1465,18 +1445,6 @@ RotoDrawableItem::getKnobs() const
     return _imp->knobs;
 }
 
-KnobIPtr
-RotoDrawableItem::getKnobByName(const std::string& name) const
-{
-    for (std::list<KnobIPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-        if ( (*it)->getName() == name ) {
-            return *it;
-        }
-    }
-
-    return KnobIPtr();
-}
-
 void
 RotoDrawableItem::getTransformAtTime(double time,
                                      Transform::Matrix3x3* matrix) const
@@ -1586,13 +1554,25 @@ RotoDrawableItem::setExtraMatrix(bool setKeyframe,
 }
 
 void
+RotoDrawableItem::setTranslateKeyframe(double time,
+                                       double tx,
+                                       double ty)
+{
+    _imp->translate->beginChanges();
+    _imp->translate->setValueAtTime(time, tx, ViewSpec::all(), 0);
+    _imp->translate->setValueAtTime(time, ty, ViewSpec::all(), 1);
+    _imp->translate->endChanges();
+    onTransformSet(time);
+}
+
+void
 RotoDrawableItem::resetTransformCenter()
 {
     RotoCurveContextPtr context = getContext();
     double time = context->getNode()->getApp()->getTimeLine()->currentFrame();
     double centerX, centerY;
     if (!context->getDefaultTransformCenter(time, &centerX, &centerY)) {
-        RectD bbox = getBoundingBox(time);
+        RectD bbox = getBoundingBox(time, true);
         centerX = (bbox.x1 + bbox.x2) / 2.;
         centerY = (bbox.y1 + bbox.y2) / 2.;
     }
@@ -1600,20 +1580,9 @@ RotoDrawableItem::resetTransformCenter()
 
     centerKnob->beginChanges();
 
-    std::pair<int, KnobIPtr> hasMaster = centerKnob->getMaster(0);
-    if (hasMaster.second) {
-        for (int i = 0; i < centerKnob->getDimension(); ++i) {
-            dynamic_cast<KnobI*>( centerKnob.get() )->unSlave(i, false);
-        }
-    }
     dynamic_cast<KnobI*>( centerKnob.get() )->removeAnimation(ViewSpec::all(), 0);
     dynamic_cast<KnobI*>( centerKnob.get() )->removeAnimation(ViewSpec::all(), 1);
     centerKnob->setValues(centerX, centerY, ViewSpec::all(), eValueChangedReasonNatronInternalEdited);
-    if (hasMaster.second) {
-        for (int i = 0; i < centerKnob->getDimension(); ++i) {
-            dynamic_cast<KnobI*>( centerKnob.get() )->slaveTo(i, hasMaster.second, i);
-        }
-    }
     centerKnob->endChanges();
 }
 

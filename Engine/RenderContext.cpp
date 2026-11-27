@@ -91,7 +91,13 @@ struct ValueHasher {
         }
     }
 
-    void operator()(const RenderContextBinding& v) const { h->appendU64(v.identity); }
+    void operator()(const RenderContextBinding& v) const
+    {
+        if (ContentHasher::isSalted(v.identity)) {
+            ContentHasher::noteSalted();
+        }
+        h->appendU64(v.identity);
+    }
 };
 
 struct ValueEquals {
@@ -205,6 +211,7 @@ bindingIdentity(const KnobIPtr& knob,
                 const std::string& name,
                 const RenderContextPtr& captured)
 {
+    ContentHasher::SaltScope salt;
     ContentHasher h;
     U64 contentHash = 0;
     std::string owner;
@@ -223,9 +230,13 @@ bindingIdentity(const KnobIPtr& knob,
     h.appendString(owner);
     h.appendU64(contentHash);
     h.appendString(name);
-    h.appendU64(captured->hash());
+    const U64 capturedHash = captured->hash();
+    if (ContentHasher::isSalted(capturedHash)) {
+        ContentHasher::noteSalted();
+    }
+    h.appendU64(capturedHash);
 
-    return h.finalize();
+    return ContentHasher::withSaltFlag(h.finalize(), salt.salted());
 }
 } // anonymous namespace
 
@@ -439,6 +450,7 @@ RenderContext::RenderContext(std::vector<Entry>&& sortedEntries)
         return;
     }
     g_nonEmptyContextBuilt.store(true, std::memory_order_relaxed);
+    ContentHasher::SaltScope salt;
     ContentHasher h;
     h.appendU64(_entries.size());
     ValueHasher valueHasher = { &h };
@@ -448,7 +460,7 @@ RenderContext::RenderContext(std::vector<Entry>&& sortedEntries)
         h.appendU64(entry.second.index());
         std::visit(valueHasher, entry.second);
     }
-    _hash = h.finalize();
+    _hash = ContentHasher::withSaltFlag(h.finalize(), salt.salted());
 }
 
 RenderContextPtr
@@ -557,7 +569,7 @@ mixRenderContextKey(U64 hash,
     h.appendU64(hash);
     h.appendU64(contextKey);
 
-    return h.finalize();
+    return ContentHasher::withSaltFlag(h.finalize(), ContentHasher::isSalted(hash) || ContentHasher::isSalted(contextKey));
 }
 
 NATRON_NAMESPACE_EXIT

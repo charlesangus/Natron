@@ -67,6 +67,7 @@
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CacheDeviceTier.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Format.h"
 #include "Engine/FrameRenderContext.h"
@@ -113,6 +114,8 @@
 #include "Engine/ViewIdx.h"
 
 #ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuDownscale.h"
+#include "Engine/Gpu/GpuRecord.h"
 #include "Engine/Gpu/GpuRuntime.h"
 #endif
 
@@ -574,7 +577,8 @@ protected:
     bool prepareFrame(const NodePtr& root,
                       FrameRun* run,
                       std::string* error,
-                      const RectI& renderWindow = RectI(0, 0, kWidth, kHeight))
+                      const RectI& renderWindow = RectI(0, 0, kWidth, kHeight),
+                      unsigned int mipmapLevel = 0)
     {
         run->abortInfo = AbortableRenderInfo::create(true, 0);
         run->stats = std::make_shared<RenderStats>(false);
@@ -594,7 +598,7 @@ protected:
                                            run->stats);
         std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
         const RectD window(renderWindow.x1, renderWindow.y1, renderWindow.x2, renderWindow.y2);
-        if (EffectInstance::computeRequestPass(kTime, ViewIdx(0), 0 /*mipmapLevel*/, window, root, *request) == eStatusFailed) {
+        if (EffectInstance::computeRequestPass(kTime, ViewIdx(0), mipmapLevel, window, root, *request) == eStatusFailed) {
             *error = "request pass failed";
 
             return false;
@@ -614,7 +618,7 @@ protected:
                                                   false /*draftMode*/,
                                                   run->stats);
         run->context->setRequest(request);
-        run->graph = RenderScheduler::buildGraph(run->context, root, kTime, ViewIdx(0), 0 /*mipmapLevel*/);
+        run->graph = RenderScheduler::buildGraph(run->context, root, kTime, ViewIdx(0), mipmapLevel);
         if (run->graph.tasks.empty()) {
             *error = "empty graph";
 
@@ -667,14 +671,15 @@ protected:
         return run->future->wait() == EffectInstance::eRenderRoIRetCodeOk;
     }
 
-    // Compares the root of run with root rendered directly on the CPU over the project format.
+    // Compares the root of run with root rendered directly on the CPU over window, in pixels at mipmapLevel.
     void expectMatchesCpu(const NodePtr& root,
                           const FrameRun& run,
-                          const RectI& window = RectI(0, 0, kWidth, kHeight))
+                          const RectI& window = RectI(0, 0, kWidth, kHeight),
+                          unsigned int mipmapLevel = 0)
     {
         std::vector<RenderedPlane> planes;
         std::string error;
-        ASSERT_TRUE(renderNodePlanesDirect(root, kTime, ViewIdx(0), 0, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error)) << error;
+        ASSERT_TRUE(renderNodePlanesDirect(root, kTime, ViewIdx(0), mipmapLevel, window, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error)) << error;
         ASSERT_EQ(1u, planes.size());
         const std::map<ImageLayerDesc, ImagePtr> rootPlanes = run.future->getRootPlanes();
         ASSERT_FALSE(rootPlanes.empty());
@@ -839,6 +844,35 @@ protected:
         return true;
     }
 
+    // The key renderRoI looks the RGBA output of node's task in graph up by.
+    static ImageKey outputKey(const FrameGraph& graph,
+                              const NodePtr& node)
+    {
+        const int index = taskOf(graph, node);
+        if (index < 0) {
+            return ImageKey();
+        }
+        const FrameGraph::Task& task = graph.tasks[index];
+
+        return task.key.node->getEffectInstance()->outputCacheKey(task.nodeHash, task.cacheKeyHasTime, task.key.time, task.key.view, false /*draft*/, task.cacheMipmapLevel).forEntry(task.key.mipmapLevel, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat);
+    }
+
+    // A RAM entry of the host tier, not the stub a peek makes of a device entry.
+    static bool inHostTier(const ImageKey& key)
+    {
+        std::list<ImagePtr> cached;
+        if (!appPTR->peekImage(key, &cached)) {
+            return false;
+        }
+        for (const ImagePtr& image : cached) {
+            if (image && (image->getStorageMode() == eStorageModeRAM) && image->isAllocated()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     static std::vector<float> rootPixels(const FrameRun& run)
     {
         const std::map<ImageLayerDesc, ImagePtr> planes = run.future->getRootPlanes();
@@ -959,6 +993,23 @@ protected:
         for (const std::string& record : records) {
             const std::size_t at = record.find("\"fallback\":");
             if ((record.compare(0, key.size(), key) == 0) && (record.find(id) != std::string::npos) && (at != std::string::npos)) {
+                const std::size_t end = record.find(",\"executed\":", at);
+                return record.substr(at, end - at);
+            }
+        }
+
+        return std::string();
+    }
+
+    // The "executed" field of region's record, or an empty string when it has none.
+    static std::string regionExecutedOf(const std::vector<std::string>& records,
+                                        int region)
+    {
+        const std::string key = "{\"kind\":\"region\",";
+        const std::string id = "\"regionId\":" + std::to_string(region) + ",";
+        for (const std::string& record : records) {
+            const std::size_t at = record.find("\"executed\":");
+            if ((record.compare(0, key.size(), key) == 0) && (record.find(id) != std::string::npos) && (at != std::string::npos)) {
                 return record.substr(at, record.size() - at - 1);
             }
         }
@@ -1059,6 +1110,79 @@ TEST_F(GpuResidencyTest, ChainUploadsOnceAndDownloadsOnce)
     EXPECT_EQ(0, run.context->getStore().downloadCount());
     expectReleased(run);
     expectMatchesCpu(sink, run);
+}
+
+// The middle Grade renders at full scale whatever the level, so a frame at 100% leaves the entry a half-scale request
+// looks for one level finer in the device tier. After an edit of the last Grade, a half-scale frame reads it from there
+// downscaled on the device: nothing upstream renders, nothing is uploaded, and the half-scale entry joins the tier.
+TEST_F(GpuResidencyTest, FinerDeviceEntryServesAHalfScaleRequestWithoutAHostRoundTrip)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    NodePtr source = makeNode(PLUGINID_NATRON_CHECKERBOARD, PLUGIN_MAJOR_NATRON_CHECKERBOARD);
+    ASSERT_TRUE(bool(source));
+    std::vector<NodePtr> grades;
+    NodePtr previous = source;
+    for (int i = 0; i < 3; ++i) {
+        NodePtr grade = makeGrade(1.1 + 0.1 * i, 0.05);
+        ASSERT_TRUE(bool(grade));
+        KnobBoolPtr forceCaching = std::dynamic_pointer_cast<KnobBool>(grade->getKnobByName("forceCaching"));
+        ASSERT_TRUE(bool(forceCaching));
+        forceCaching->setValue(true);
+        connectNodes(previous, grade, 0, true);
+        grades.push_back(grade);
+        previous = grade;
+    }
+    grades[1]->getEffectInstance()->setSupportsRenderScaleMaybe(EffectInstance::eSupportsNo);
+    const CacheDeviceTierPtr tier = appPTR->getDeviceCacheTier();
+    ASSERT_TRUE(bool(tier));
+
+    std::string error;
+    {
+        FrameRun full;
+        ASSERT_TRUE(prepareFrame(grades.back(), &full, &error)) << error;
+        placeOnGpu(&full, grades);
+        ASSERT_EQ(1u, full.graph.regions.size());
+        const ImageKey fullKey = outputKey(full.graph, grades[1]);
+        ASSERT_TRUE(render(&full));
+        ASSERT_TRUE(bool(tier->find(fullKey))) << "the full-scale frame left the middle Grade out of the device tier";
+    }
+    ASSERT_TRUE(setKnobValues(grades.back(), "multiply", { 0.7, 0.8, 0.9, 1. }));
+
+    const RectI halfWindow(0, 0, kWidth / 2, kHeight / 2);
+    FrameRun run;
+    ASSERT_TRUE(prepareFrame(grades.back(), &run, &error, RectI(0, 0, kWidth, kHeight), 1)) << error;
+    RenderScheduler::pruneBehindCacheHits(run.graph, run.context);
+    const int middle = taskOf(run.graph, grades[1]);
+    ASSERT_GE(middle, 0);
+    ASSERT_EQ(0u, run.graph.tasks[middle].cacheMipmapLevel) << "the middle Grade does not render at full scale";
+    EXPECT_TRUE(run.graph.tasks[middle].servedFromCache);
+    EXPECT_EQ(EffectInstance::OutputCacheTier::Device, run.graph.tasks[middle].servedTier);
+    const ImageKey halfKey = outputKey(run.graph, grades[1]);
+    EXPECT_FALSE(bool(tier->find(halfKey))) << "a half-scale entry already exists, which proves nothing";
+    placeOnGpu(&run, grades);
+    ASSERT_TRUE(render(&run));
+
+    EXPECT_EQ(0, renderRoICallsOf(run, grades[0]));
+    EXPECT_EQ(0, renderRoICallsOf(run, grades[1]));
+    EXPECT_EQ(0, run.stats->getUploadCount()) << "the middle Grade went through the host";
+    EXPECT_EQ(1, gpuRunsOf(run, grades.back()));
+    const CacheDeviceEntryPtr downscaled = tier->find(halfKey);
+    ASSERT_TRUE(bool(downscaled)) << "the downscaled entry is not in the device tier";
+    expectReleased(run);
+    // In-place readers and the RAM copy an eviction makes take their key from the image's layout, not the tier's.
+    const GpuDeviceImagePtr image = downscaled->image();
+    EXPECT_TRUE(image->layout().key == halfKey) << "the downscaled image carries the finer entry's key";
+    const ImagePtr evicted = image->evictToRam();
+    ASSERT_TRUE(bool(evicted));
+    EXPECT_TRUE(evicted->getKey() == halfKey);
+    EXPECT_EQ(1u, evicted->getMipmapLevel());
+    const ImagePtr downloaded = image->downloadToRam();
+    ASSERT_TRUE(bool(downloaded));
+    EXPECT_TRUE(downloaded->getKey() == halfKey);
+    appPTR->clearAllCaches();
+    expectMatchesCpu(grades.back(), run, halfWindow, 1);
 }
 
 // Grade -> Switch -> default Grade -> Blur -> CPU Invert: the Switch and the default Grade are identities, which join
@@ -1640,6 +1764,7 @@ TEST_F(GpuResidencyTest, OutOfMemoryAtTheSecondRegionRendersItOnTheCpu)
     const std::vector<std::string> records = readProfileRecords(profileFile);
     EXPECT_EQ("\"fallback\":\"\",\"retries\":0", regionOutcomeOf(records, 0));
     EXPECT_EQ("\"fallback\":\"out of device memory\",\"retries\":1", regionOutcomeOf(records, 1));
+    EXPECT_EQ("\"executed\":[" + std::to_string(grade2Task) + "]", regionExecutedOf(records, 1));
     EXPECT_EQ("\"device\":\"gpu\",\"regionId\":0", taskPlacementOf(records, grade1Task));
     EXPECT_EQ("\"device\":\"gpu\",\"regionId\":0", taskPlacementOf(records, blurTask));
     EXPECT_EQ("\"device\":\"cpu\",\"regionId\":1", taskPlacementOf(records, grade2Task));
@@ -1816,15 +1941,21 @@ TEST_F(GpuResidencyTest, StripsMatchTheWholeRegionExactly)
     expectReleased(whole);
 
     setGpuStripOverridesForTests(1u << 20, 0);
+    appPTR->clearAllCaches();
     FrameRun tiled;
     ASSERT_TRUE(prepareStripFrame(chain, &tiled, &error)) << error;
+    const ImageKey grade1Key = outputKey(tiled.graph, chain.grade1);
+    const ImageKey blurKey = outputKey(tiled.graph, chain.blur);
+    ASSERT_FALSE(inHostTier(grade1Key));
+    ASSERT_FALSE(inHostTier(blurKey));
     ASSERT_TRUE(render(&tiled));
     EXPECT_EQ(0, fallbacksOf(tiled));
     EXPECT_EQ(1, tiled.stats->getGpuRegionsRun());
     EXPECT_EQ(0, renderRoICallsOf(tiled, chain.blur)) << "the Blur rendered on the CPU";
-    // One upload of the source and one download of the second Grade per strip.
+    // One upload of the source per strip; the interior members' outputs reach the host tier.
     EXPECT_GT(tiled.stats->getUploadCount(), 2);
-    EXPECT_EQ(tiled.stats->getUploadCount(), tiled.stats->getDownloadCount());
+    EXPECT_TRUE(inHostTier(grade1Key)) << "the host tier did not admit the first Grade";
+    EXPECT_TRUE(inHostTier(blurKey)) << "the host tier did not admit the Blur";
     EXPECT_LE(tiled.stats->getPeakDeviceBytes(), (std::size_t)(1u << 20) * 4 * ((tiled.stats->getGpuPipelinedRegions() > 0) ? kGpuStripMaxInFlight : 1));
 
     const std::vector<float> tiledPixels = rootPixels(tiled);
@@ -2094,7 +2225,11 @@ TEST_F(GpuResidencyTest, LargeCompStaysWithinTheDeviceBudget)
     EXPECT_GT(evictions + thinned, 0) << "the pool was never short, which proves nothing about the budget";
     EXPECT_LE(after.peakBytes, budget);
     EXPECT_EQ(budget, runtime()->pool().budget()) << "the device ran out of memory, which shrinks the budget";
-    EXPECT_EQ(before.liveBytes, after.liveBytes);
+    // Region outputs published to the device tier outlive the frames, as cache entries; nothing else may.
+    const CacheDeviceTierPtr tier = appPTR->getDeviceCacheTier();
+    ASSERT_TRUE(bool(tier));
+    tier->clear();
+    EXPECT_EQ(before.liveBytes, runtime()->pool().stats().liveBytes);
     for (const FrameRun& run : runs) {
         expectReleased(run);
     }
@@ -2180,9 +2315,13 @@ TEST_F(GpuResidencyTest, PipelinedStripsMatchTheWholeRegionExactly)
         const bool on = (mode == GpuStripPipelining::On);
         SCOPED_TRACE(on ? "pipelined" : "serial");
         setGpuStripPipeliningForTests(mode);
+        // So that the host tier holds no output of the other mode's run.
+        appPTR->clearAllCaches();
         const std::uint64_t liveBefore = runtime()->pool().stats().liveBytes;
         FrameRun tiled;
         ASSERT_TRUE(prepareStripFrame(chain, &tiled, &error)) << error;
+        const ImageKey grade1Key = outputKey(tiled.graph, chain.grade1);
+        const ImageKey blurKey = outputKey(tiled.graph, chain.blur);
         ASSERT_TRUE(render(&tiled));
         std::printf("[          ] %s: uploads %d, pipelined regions %d, transfer hidden %.3f ms, exposed %.3f ms, peak %llu bytes\n",
                     on ? "pipelined" : "serial",
@@ -2196,7 +2335,8 @@ TEST_F(GpuResidencyTest, PipelinedStripsMatchTheWholeRegionExactly)
         EXPECT_EQ((on && canPipeline()) ? 1 : 0, tiled.stats->getGpuPipelinedRegions());
         EXPECT_EQ(0, renderRoICallsOf(tiled, chain.blur)) << "the Blur rendered on the CPU";
         EXPECT_GT(tiled.stats->getUploadCount(), 2);
-        EXPECT_EQ(tiled.stats->getUploadCount(), tiled.stats->getDownloadCount());
+        EXPECT_TRUE(inHostTier(grade1Key)) << "the host tier did not admit the first Grade";
+        EXPECT_TRUE(inHostTier(blurKey)) << "the host tier did not admit the Blur";
         EXPECT_LE(tiled.stats->getPeakDeviceBytes(), (std::size_t)(1u << 20) * 4 * (on ? kGpuStripMaxInFlight : 1));
 
         const std::vector<float> tiledPixels = rootPixels(tiled);
@@ -2952,6 +3092,7 @@ TEST_F(GpuResidencyTest, StripTransfersCopyOutOfWholeImageImports)
         const int blurTask = taskOf(run.graph, blur);
         const int gradeTask = taskOf(run.graph, grade);
         ASSERT_TRUE(blurTask >= 0 && gradeTask >= 0);
+        const ImageKey blurKey = outputKey(run.graph, blur);
         assignRegions(&run.graph, { { blurTask, gradeTask } });
         run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Interactive);
         ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
@@ -2965,7 +3106,8 @@ TEST_F(GpuResidencyTest, StripTransfersCopyOutOfWholeImageImports)
         EXPECT_GT(report.strips, 1);
         EXPECT_LE(report.stripsInFlight, 1);
         EXPECT_EQ((unsigned long long)report.strips, report.uploadsImported + report.uploadsStaged);
-        EXPECT_EQ((unsigned long long)report.strips, report.downloadsImported + report.downloadsStaged);
+        EXPECT_TRUE(inHostTier(blurKey)) << "the host tier did not admit the Blur";
+        EXPECT_GT(report.downloadsImported, 0ull);
         // Even on the first frame, each strip's download finds the chunks of its rows prepared.
         EXPECT_EQ(0u, report.importsAtDownload) << "a strip download imported its rows itself";
         EXPECT_EQ(0u, report.downloadsStaged);
@@ -2991,6 +3133,133 @@ TEST_F(GpuResidencyTest, StripTransfersCopyOutOfWholeImageImports)
         EXPECT_NE(std::string::npos, lastRecord.find(field)) << field << " in " << lastRecord;
     }
     EXPECT_NE(std::string::npos, lastRecord.find("\"prepareWaitMs\":")) << lastRecord;
+}
+
+namespace {
+
+struct MipDownscaleCase {
+    RectI bounds;
+    RectI read;
+    unsigned int levels;
+};
+
+// The device's mip_downscale of case.read, held in a buffer of case.bounds, against the CPU's repeated halving of the
+// same pixels, over every pixel of the level the halving writes.
+void
+expectMipDownscaleMatchesCpu(gpu::GpuRuntime* rt,
+                             const MipDownscaleCase& test)
+{
+    const int nComps = 4;
+    const RectI& bounds = test.bounds;
+    const std::size_t srcFloats = (std::size_t)bounds.area() * nComps;
+    std::vector<float> host(srcFloats);
+    for (std::size_t i = 0; i < srcFloats; ++i) {
+        host[i] = (float)((i * 7919u) % 1009u) / 1009.f - 0.25f;
+    }
+    const RectD rod(bounds.x1, bounds.y1, bounds.x2, bounds.y2);
+    const ImagePtr source = std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(), rod, bounds, 0, 1., eImageBitDepthFloat, eImageFieldingOrderNone, false);
+    {
+        Image::WriteAccess access = source->getWriteRights();
+        for (int y = bounds.y1; y < bounds.y2; ++y) {
+            float* row = (float*)access.pixelAt(bounds.x1, y);
+            ASSERT_TRUE(row != nullptr);
+            std::memcpy(row, &host[(std::size_t)(y - bounds.y1) * bounds.width() * nComps], sizeof(float) * bounds.width() * nComps);
+        }
+    }
+    const RectI out = test.read.downscalePowerOfTwoSmallestEnclosing(test.levels);
+    const ImagePtr cpu = std::make_shared<Image>(ImageLayerDesc::getRGBAComponents(), rod, out, test.levels, 1., eImageBitDepthFloat, eImageFieldingOrderNone, false);
+    source->downscaleMipmap(rod, test.read, 0, test.levels, false, cpu.get());
+
+    gpu::GpuBufferHandle srcHandle;
+    gpu::GpuBufferHandle dstHandle;
+    const std::size_t dstFloats = (std::size_t)out.area() * nComps;
+    ASSERT_TRUE(bool(rt->acquire(srcFloats * sizeof(float), srcHandle)));
+    ASSERT_TRUE(bool(rt->acquire(dstFloats * sizeof(float), dstHandle)));
+    gpu::TimelineValue up;
+    ASSERT_TRUE(bool(rt->upload({ host.data(), srcFloats * sizeof(float) }, srcHandle.buffer(), 0, up)));
+    ASSERT_TRUE(bool(rt->wait(up)));
+    gpu::GpuDownscaleView src;
+    src.buffer = &srcHandle.buffer();
+    src.strideFloats = (std::uint32_t)(bounds.width() * nComps);
+    src.offsetFloats = (std::uint64_t)(test.read.y1 - bounds.y1) * src.strideFloats + (std::uint64_t)(test.read.x1 - bounds.x1) * nComps;
+    src.bounds = { test.read.x1, test.read.y1, test.read.x2, test.read.y2 };
+    src.nComps = nComps;
+    gpu::GpuDownscaleView dst;
+    dst.buffer = &dstHandle.buffer();
+    dst.bounds = { out.x1, out.y1, out.x2, out.y2 };
+    dst.strideFloats = (std::uint32_t)(out.width() * nComps);
+    dst.nComps = nComps;
+    std::unique_ptr<gpu::GpuRecordContext> recorder;
+    ASSERT_TRUE(bool(rt->newRecordContext(recorder)));
+    ASSERT_TRUE(bool(gpu::recordMipDownscale(*recorder, src, dst, dst.bounds, test.levels)));
+    recorder->computeBarrier();
+    ASSERT_TRUE(bool(recorder->submitAndWait()));
+    std::vector<float> device(dstFloats, -1.f);
+    gpu::TimelineValue down;
+    ASSERT_TRUE(bool(rt->download(dstHandle.buffer(), 0, { device.data(), dstFloats * sizeof(float) }, down)));
+    ASSERT_TRUE(bool(rt->wait(down)));
+
+    const std::vector<float> expected = readRgba(cpu, out);
+    int mismatches = 0;
+    for (int y = out.y1; y < out.y2; ++y) {
+        for (int x = out.x1; x < out.x2; ++x) {
+            for (int c = 0; c < nComps; ++c) {
+                const std::size_t i = ((std::size_t)(y - out.y1) * out.width() + (x - out.x1)) * nComps + c;
+                if ((std::fabs(device[i] - expected[i]) > 1e-5f) && (++mismatches <= 8)) {
+                    ADD_FAILURE() << "levels " << test.levels << " read (" << test.read.x1 << "," << test.read.y1 << ")-(" << test.read.x2 << ","
+                                  << test.read.y2 << "): pixel (" << x << "," << y << ") channel " << c << ": GPU " << device[i] << ", CPU " << expected[i];
+                }
+            }
+        }
+    }
+}
+
+} // namespace
+
+// Odd origins, negative ones included, odd sizes, single rows and columns, and two and three levels, where repeated
+// halving weighs the pixels of a partial edge block unevenly.
+TEST_F(GpuResidencyTest, DeviceMipDownscaleMatchesTheCpuAtOddEdges)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    gpu::GpuRuntime* rt = runtime();
+    ASSERT_TRUE(rt != nullptr);
+    const MipDownscaleCase cases[] = {
+        { RectI(0, 0, 32, 16), RectI(0, 0, 32, 16), 1 },
+        { RectI(0, 0, 32, 16), RectI(0, 0, 32, 16), 3 },
+        { RectI(1, 3, 38, 24), RectI(1, 3, 38, 24), 1 },
+        { RectI(-3, -5, 30, 18), RectI(-3, -5, 30, 18), 2 },
+        { RectI(5, 7, 46, 36), RectI(5, 7, 46, 36), 3 },
+        { RectI(-7, 1, 26, 2), RectI(-7, 1, 26, 2), 2 },
+        { RectI(3, -9, 4, 20), RectI(3, -9, 4, 20), 3 },
+        { RectI(0, 0, 40, 40), RectI(3, 5, 37, 31), 2 },
+    };
+    for (const MipDownscaleCase& test : cases) {
+        expectMipDownscaleMatchesCpu(rt, test);
+    }
+}
+
+// More levels than one kernel pass takes run as several, through intermediate levels whose partial edge blocks must
+// weigh their pixels as the CPU's halving does.
+TEST_F(GpuResidencyTest, DeviceMipDownscaleOfMoreThanOnePassMatchesTheCpu)
+{
+    if (!gpuOrSkip()) {
+        return;
+    }
+    gpu::GpuRuntime* rt = runtime();
+    ASSERT_TRUE(rt != nullptr);
+    const MipDownscaleCase cases[] = {
+        { RectI(0, 0, 32, 16), RectI(0, 0, 32, 16), 17 },
+        { RectI(-3, -5, 30, 18), RectI(-3, -5, 30, 18), 17 },
+        { RectI(5, 7, 46, 36), RectI(5, 7, 46, 36), 18 },
+        { RectI(0, 0, 40, 40), RectI(3, 5, 37, 31), 20 },
+        { RectI(-70001, 0, 70003, 3), RectI(-70001, 0, 70003, 3), 17 },
+        { RectI(-70001, -1, 70003, 2), RectI(-70001, -1, 70003, 2), 30 },
+    };
+    for (const MipDownscaleCase& test : cases) {
+        expectMipDownscaleMatchesCpu(rt, test);
+    }
 }
 
 #endif // NATRON_HAVE_GPU
@@ -3215,6 +3484,64 @@ TEST(GpuRegionStrips, StripsCarryTheHalosBackwardsAndPartitionTheOutput)
     EXPECT_EQ(kPlanHeight, next);
 }
 
+// A RAM mosaic -> a stage at level 0 read after the region -> a demosaic at level 1 reading the level-0 rows under its
+// own, also read after the region: every strip covers the same rows of the image at both levels.
+TEST(GpuRegionStrips, StripsOfImagesAtTwoLevelsCoverTheSameRows)
+{
+    GpuStripGraph graph;
+    const RectI fullScale(0, 0, kPlanWidth, kPlanHeight);
+    const RectI half(0, 0, kPlanWidth / 2, kPlanHeight / 2);
+    for (int s = 0; s < 3; ++s) {
+        GpuStripSlot slot;
+        slot.bounds = (s == 2) ? half : fullScale;
+        slot.mipmapLevel = (s == 2) ? 1 : 0;
+        slot.nComps = (s == 2) ? 4 : 1;
+        slot.external = (s == 0);
+        slot.interior = (s != 0);
+        graph.images.push_back(slot);
+    }
+    GpuStripMember stage;
+    stage.outSlot = 1;
+    stage.inputSlots.push_back(0);
+    stage.inputRoI = [](int, const RectI& rect) {
+        return rect;
+    };
+    graph.members.push_back(stage);
+    GpuStripMember demosaic;
+    demosaic.outSlot = 2;
+    demosaic.inputSlots.push_back(1);
+    demosaic.inputRoI = [](int, const RectI& rect) {
+        return RectI(rect.x1 * 2, rect.y1 * 2, rect.x2 * 2, rect.y2 * 2);
+    };
+    graph.members.push_back(demosaic);
+    EXPECT_EQ(RectI(0, 0, kPlanWidth, kPlanHeight), gpuStripBands(graph));
+
+    GpuStripLimits limits;
+    limits.maxBufferBytes = 64 * kPlanRowBytes / 4;
+    std::vector<GpuStrip> strips;
+    int rows = 0;
+    ASSERT_EQ(GpuStripResult::Strips, planGpuStrips(graph, limits, &strips, &rows));
+    ASSERT_GT(strips.size(), 1u);
+
+    int nextFull = 0;
+    int nextHalf = 0;
+    for (const GpuStrip& strip : strips) {
+        const RectI& stageRows = strip.interiors[1];
+        const RectI& demosaicRows = strip.interiors[2];
+        ASSERT_FALSE(stageRows.isNull());
+        ASSERT_FALSE(demosaicRows.isNull());
+        EXPECT_EQ(nextFull, stageRows.y1);
+        EXPECT_EQ(nextHalf, demosaicRows.y1);
+        EXPECT_EQ(stageRows.y1, demosaicRows.y1 * 2);
+        EXPECT_EQ(stageRows.y2, demosaicRows.y2 * 2);
+        EXPECT_TRUE(strip.rects[1].contains(RectI(0, demosaicRows.y1 * 2, kPlanWidth, demosaicRows.y2 * 2)));
+        nextFull = stageRows.y2;
+        nextHalf = demosaicRows.y2;
+    }
+    EXPECT_EQ(kPlanHeight, nextFull);
+    EXPECT_EQ(kPlanHeight / 2, nextHalf);
+}
+
 TEST(GpuRegionStrips, BudgetAloneStrips)
 {
     const GpuStripGraph graph = planChain();
@@ -3388,6 +3715,22 @@ TEST(GpuRegionStrips, WholeRegionWithLargeTransferStripsToOverlap)
     GpuStripLimits small = overlapLimits();
     small.overlapMinBytes = std::uint64_t(1) << 30;
     EXPECT_EQ(GpuStripResult::Whole, planGpuStrips(graph, small, &strips, &rows, &inFlight, &overlapped));
+    EXPECT_TRUE(strips.empty());
+    EXPECT_FALSE(overlapped);
+}
+
+TEST(GpuRegionStrips, WholeRegionReadingAnInputWholeInEveryStripStaysWhole)
+{
+    GpuStripGraph graph = planChain();
+    const RectI whole(0, 0, kPlanWidth, kPlanHeight);
+    graph.members[0].inputRoI = [whole](int, const RectI&) {
+        return whole;
+    };
+    std::vector<GpuStrip> strips;
+    int rows = 0;
+    bool overlapped = true;
+
+    EXPECT_EQ(GpuStripResult::Whole, planGpuStrips(graph, overlapLimits(), &strips, &rows, nullptr, &overlapped));
     EXPECT_TRUE(strips.empty());
     EXPECT_FALSE(overlapped);
 }

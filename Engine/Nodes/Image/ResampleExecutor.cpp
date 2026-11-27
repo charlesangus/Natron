@@ -41,6 +41,7 @@
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Image/EdgeSample.h"
 #include "Engine/Nodes/Image/PassExecutor.h"
 #include "Engine/Nodes/Image/PixelKernel.h"
 #include "Engine/Nodes/Image/StagePlan.h"
@@ -139,29 +140,41 @@ convertSource(const Image::ReadAccess& access,
     }
 }
 
-// Pixels [x0, x0 + width) of row y of src, src.nComps floats each, zero outside readable, which
-// lies within src's bounds.
+// Pixels [x0, x0 + width) of row y of src, src.nComps floats each, read outside readable, which
+// lies within src's bounds, as EdgeSample does under mode.
 void
 readSourceImageRow(const Resampler::SourceImage& src,
                    const RectI& readable,
+                   EdgeMode mode,
                    int x0,
                    int y,
                    int width,
                    float* row)
 {
     const int nComps = src.nComps;
+    int sy = 0;
 
     std::fill(row, row + (std::size_t)width * nComps, 0.f);
-    if (!src.isValid() || (y < readable.y1) || (y >= readable.y2)) {
+    if (!src.isValid() || !EdgeSample::coord(y, readable.y1, readable.y2, mode, &sy)) {
         return;
     }
     const int xStart = std::max(x0, readable.x1);
     const int xEnd = std::min(x0 + width, readable.x2);
-    if (xStart >= xEnd) {
+    if (xStart < xEnd) {
+        const float* pix = src.pixel(xStart, sy);
+        std::copy(pix, pix + (std::size_t)(xEnd - xStart) * nComps, row + (std::size_t)(xStart - x0) * nComps);
+    }
+    if ((mode != EdgeMode::Stretch) || readable.isNull()) {
         return;
     }
-    const float* pix = src.pixel(xStart, y);
-    std::copy(pix, pix + (std::size_t)(xEnd - xStart) * nComps, row + (std::size_t)(xStart - x0) * nComps);
+    const float* left = src.pixel(readable.x1, sy);
+    const float* right = src.pixel(readable.x2 - 1, sy);
+    for (int x = x0; x < std::min(x0 + width, readable.x1); ++x) {
+        std::copy(left, left + nComps, row + (std::size_t)(x - x0) * nComps);
+    }
+    for (int x = std::max(x0, readable.x2); x < x0 + width; ++x) {
+        std::copy(right, right + nComps, row + (std::size_t)(x - x0) * nComps);
+    }
 }
 
 // One axis of a matte sampled over [first, first + count): weights is 1 where the weight function
@@ -242,7 +255,7 @@ regionParams(const ResampleRequest& request,
     params.invert = settings.invert;
     params.blur = settings.blur;
     params.filter = settings.filter;
-    params.blackOutside = settings.blackOutside;
+    params.edgeMode = settings.edgeMode;
     params.isIdentity = settings.transformIsIdentity;
     params.doMasking = stages.doMasking;
     params.mix = stages.mix;
@@ -388,7 +401,7 @@ recordResampleMatrixGpu(gpu::GpuRecordContext& ctx,
     resample.B = filter.B;
     resample.C = filter.C;
     resample.clamp = settings.clamp && Resampler::filterHonoursClamp(filter.filter);
-    resample.blackOutside = settings.blackOutside;
+    resample.edgeMode = settings.edgeMode;
     resample.matrices.resize(transforms.invTransforms.size());
     for (std::size_t i = 0; i < transforms.invTransforms.size(); ++i) {
         const Mat3& H = transforms.invTransforms[i];
@@ -402,15 +415,7 @@ recordResampleMatrixGpu(gpu::GpuRecordContext& ctx,
         }
         m.scaleX = Resampler::kernelScale(H(0, 0), H(0, 1));
         m.scaleY = Resampler::kernelScale(H(1, 0), H(1, 1));
-        // The Jacobian the CPU samples an affine matrix with, by which axes fall inside the
-        // source. The kernel works a projective matrix's out per pixel.
-        for (int state = 1; state < 4 && !m.isProjective(); ++state) {
-            const bool x = (state & 1) != 0;
-            const bool y = (state & 2) != 0;
-            const bool zeroX = !x || (H(0, 0) == 0. && H(0, 1) == 0.);
-            const bool zeroY = !y || (H(1, 0) == 0. && H(1, 1) == 0.);
-            m.jacobians[state].zero = zeroX && zeroY;
-        }
+        m.jacobianZero = (H(0, 0) == 0.) && (H(0, 1) == 0.) && (H(1, 0) == 0.) && (H(1, 1) == 0.);
     }
     if (resample.matrices.size() > 1) {
         const double quality = transforms.motionBlur;
@@ -511,6 +516,7 @@ runResampleCpu(EffectInstance& effect,
     // the band threads only read through these.
     PassExec::MaskInput maskSource;
     maskSource.image = mask;
+    maskSource.edgeMode = plan.maskEdgeMode;
     maskSource.lock();
     const int nThreads = appPTR->getNCPUsAvailableForEffect();
     std::vector<RectI> bandRects;
@@ -523,10 +529,11 @@ runResampleCpu(EffectInstance& effect,
         }
         const int nComps = plane.nComps;
         if (plane.src) {
+            // Bounds read under the lock that pins the buffer, so the pointer below is into the buffer they describe.
+            plane.srcAccess = std::make_shared<Image::ReadAccess>(plane.src.get());
             plane.srcBounds = plane.src->getBounds();
             plane.readable = (!matrix && request.clipSourceToRoI) ? plane.srcBounds.intersect(plane.srcRoI) : plane.srcBounds;
             plane.srcNComps = (int)plane.src->getComponentsCount();
-            plane.srcAccess = std::make_shared<Image::ReadAccess>(plane.src.get());
             if (plane.srcNComps == nComps) {
                 plane.source = Resampler::SourceImage((const float*)plane.srcAccess->pixelAt(plane.srcBounds.x1, plane.srcBounds.y1), plane.srcBounds, nComps);
             } else {
@@ -542,15 +549,15 @@ runResampleCpu(EffectInstance& effect,
                     if (readsReference) {
                         // The source fetched is upstream of the concatenated transforms, but the
                         // reference must show this node's immediate input: resample it through
-                        // the input transform alone. That input is black outside its own region,
-                        // whatever the op's black-outside setting says.
+                        // the input transform alone. Concatenation stops where edge modes
+                        // differ, so that input reads past its region as the op does.
                         plane.referenceTransforms.invTransforms.push_back(Mat3::identity());
                         Resampler::concatenateInputTransform(inputTransform, &plane.referenceTransforms);
-                        plane.referenceParams = Resampler::makeResampleParams(plane.referenceTransforms, filter, request.settings.clamp, true);
+                        plane.referenceParams = Resampler::makeResampleParams(plane.referenceTransforms, filter, request.settings.clamp, request.settings.edgeMode);
                         plane.resampleReference = true;
                     }
                 }
-                plane.params = Resampler::makeResampleParams(plane.transforms, filter, request.settings.clamp, request.settings.blackOutside);
+                plane.params = Resampler::makeResampleParams(plane.transforms, filter, request.settings.clamp, request.settings.edgeMode);
             }
         } else {
             plane.source = Resampler::SourceImage((const float*)0, RectI(), nComps);
@@ -589,7 +596,7 @@ runResampleCpu(EffectInstance& effect,
             } else if (matrix) {
                 Resampler::resampleRow(plane.params, plane.source, y, roi.x1, roi.x2, outRow);
             } else {
-                readSourceImageRow(plane.source, plane.readable, roi.x1 - offset.x, y - offset.y, width, outRow);
+                readSourceImageRow(plane.source, plane.readable, request.settings.edgeMode, roi.x1 - offset.x, y - offset.y, width, outRow);
             }
             if (matted && plane.src) {
                 const std::size_t r = (std::size_t)(y - roi.y1);
@@ -602,11 +609,11 @@ runResampleCpu(EffectInstance& effect,
                 if (plane.resampleReference) {
                     Resampler::resampleRow(plane.referenceParams, plane.source, y, roi.x1, roi.x2, &referenceRow[0]);
                 } else {
-                    readSourceImageRow(plane.source, plane.readable, roi.x1, y, width, &referenceRow[0]);
+                    readSourceImageRow(plane.source, plane.readable, EdgeMode::Black, roi.x1, y, width, &referenceRow[0]);
                 }
             }
             if (doMask) {
-                PassExec::readChannelRow(mask.get(), maskSource.access.get(), maskSource.bounds, maskSource.nComps, maskChannel, roi.x1, y, width, 0.f, &maskRow[0]);
+                PassExec::readChannelRow(mask.get(), maskSource.access.get(), maskSource.bounds, maskSource.nComps, maskChannel, roi.x1, y, width, maskSource.edgeMode, &maskRow[0]);
             }
 
             for (int i = 0; i < width; ++i, dstPix += nComps) {
@@ -962,6 +969,7 @@ recordResampleGpu(EffectInstance& effect,
         shift.channels = (uint32_t)nComps;
         shift.dx = request.offset.x;
         shift.dy = request.offset.y;
+        shift.edgeMode = request.settings.edgeMode;
         // runResampleCpu() weighs only a plane whose source it fetched.
         if (request.matte.isSet() && source.buffer) {
             MatteAxis columns;

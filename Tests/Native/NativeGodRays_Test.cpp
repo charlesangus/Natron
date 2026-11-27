@@ -55,6 +55,7 @@
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/GodRays.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -234,7 +235,7 @@ protected:
             return node;
         }
         EXPECT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filter)));
-        EXPECT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+        EXPECT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(blackOutside ? "black" : "stretch")));
         EXPECT_TRUE(setKnobValues(node, kGodRaysParamScale, { 1.3, 1.3 }));
         EXPECT_TRUE(setKnobValues(node, kGodRaysParamRotate, { 12. }));
         EXPECT_TRUE(setKnobValues(node, kGodRaysParamTranslate, { 4.5, -3.25 }));
@@ -302,7 +303,7 @@ TEST_F(NativeGodRaysTest, InputsAndKnobs)
         { kGodRaysParamMax, "Max", false },
         { kResamplerParamFilterType, "Filter", false },
         { kResamplerParamFilterClamp, "Clamp", true },
-        { kResamplerParamFilterBlackOutside, "Black outside", false },
+        { kEdgeModeParam, kEdgeModeParamLabel, false },
         // Shown only for the filters that read them.
         { kResamplerParamLobes, "Lobes", true },
         { kResamplerParamBicubicB, "Bicubic B", true },
@@ -364,9 +365,10 @@ TEST_F(NativeGodRaysTest, InputsAndKnobs)
     EXPECT_TRUE(clamp->getIsSecret());
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("keys")));
     EXPECT_FALSE(clamp->getIsSecret());
-    KnobBoolPtr blackOutside = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kResamplerParamFilterBlackOutside));
-    ASSERT_TRUE(bool(blackOutside));
-    EXPECT_TRUE(blackOutside->getValue());
+    EXPECT_FALSE(bool(node->getKnobByName(kResamplerParamFilterBlackOutside)));
+    KnobChoicePtr edgeMode = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kEdgeModeParam));
+    ASSERT_TRUE(bool(edgeMode));
+    EXPECT_EQ((int)EdgeModeChoice::Input, edgeMode->getValue());
 }
 
 // The copies run from none of the transform to all of it; averaging, the factors of white tints
@@ -516,6 +518,7 @@ TEST_F(NativeGodRaysTest, ScaleStreaksAwayFromCenter)
     ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamBottomLeft, { (double)box.x1, (double)box.y1 }));
     ASSERT_TRUE(setKnobValues(source, kNativeGeneratorParamSize, { (double)box.width(), (double)box.height() }));
     ASSERT_TRUE(setKnobValues(source, kConstantParamColor, { 1., 1., 1., 1. }));
+    setBlackOutside(source, true);
     NodePtr node = makeGodRays(source);
     ASSERT_TRUE(bool(node));
     ASSERT_TRUE(setKnobValues(node, kGodRaysParamScale, { 2., 2. }));
@@ -559,7 +562,7 @@ TEST_F(NativeGodRaysTest, TileMatchesFullFrame)
         ASSERT_TRUE(bool(node));
         ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(tc.filter)));
         ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { tc.clamp ? 1. : 0. }));
-        ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { tc.blackOutside ? 1. : 0. }));
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(tc.blackOutside ? "black" : "stretch")));
         ASSERT_TRUE(setKnobValues(node, kGodRaysParamTranslate, { 3., -2. }));
         ASSERT_TRUE(setKnobValues(node, kGodRaysParamRotate, { 12. }));
         ASSERT_TRUE(setKnobValues(node, kGodRaysParamScale, { 1.3, 1.1 }));
@@ -603,7 +606,7 @@ TEST_F(NativeGodRaysTest, UntransformedCopiesAreExactAndTileLikeTheFullFrame)
                 NodePtr node = makeGodRays(source);
                 ASSERT_TRUE(bool(node));
                 ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filter)));
-                ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+                ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(blackOutside ? "black" : "stretch")));
                 ASSERT_TRUE(setKnobValues(node, kGodRaysParamSamples, { 5. }));
                 ASSERT_TRUE(setKnobValues(node, kGodRaysParamFromColor, { 1., 0.9, 0.7, 1. }));
                 ASSERT_TRUE(setKnobValues(node, kGodRaysParamToColor, { 0.3, 0.6, 1., 0.5 }));
@@ -680,7 +683,7 @@ TEST_F(NativeGodRaysTest, SameBothWays)
     expectSame("max");
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("keys")));
     ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { 1. }));
-    ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 0. }));
+    ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("stretch")));
     expectSame("keys-clamp-edge-repeat");
 
     NodePtr mask = makeParitySource(8, 4);
@@ -701,7 +704,7 @@ TEST_F(NativeGodRaysTest, RenderScalesKeepTheSourceRange)
     for (unsigned int mipmapLevel = 1; mipmapLevel <= 3; ++mipmapLevel) {
         std::vector<float> input;
         std::string error;
-        ASSERT_TRUE(renderBlurRangePlane(source, kTime, mipmapLevel, pixelRoDAt(source, mipmapLevel), eRenderSchedulerModeLegacy, true, &input, &error)) << error;
+        ASSERT_TRUE(renderBlurRangePlane(source, kTime, mipmapLevel, pixelRoDAt(source, mipmapLevel), false, true, &input, &error)) << error;
         BlurRange range;
         range.include(input);
         ASSERT_GT(range.high, 100.f);
@@ -712,7 +715,7 @@ TEST_F(NativeGodRaysTest, RenderScalesKeepTheSourceRange)
                 NodePtr node = makeBrightRays(source, filter.id, blackOutside, takeMax);
                 ASSERT_TRUE(bool(node));
                 std::vector<float> output;
-                ASSERT_TRUE(renderBlurRangePlane(node, kTime, mipmapLevel, pixelRoDAt(node, mipmapLevel), eRenderSchedulerModeLegacy, true, &output, &error)) << error;
+                ASSERT_TRUE(renderBlurRangePlane(node, kTime, mipmapLevel, pixelRoDAt(node, mipmapLevel), false, true, &output, &error)) << error;
                 EXPECT_EQ(std::string(), blurRangeViolation(output, range, filter.lobes)) << filter.id << (takeMax ? " max" : "") << (blackOutside ? "" : " edge repeat") << ", mipmap " << mipmapLevel;
             }
         }
@@ -760,27 +763,27 @@ TEST_F(NativeGodRaysTest, ZoomingOutOverACachedFullScaleRenderKeepsTheSourceRang
     resetProject();
     NodePtr source = makeBrightSource();
     ASSERT_TRUE(bool(source));
-    for (const RenderSchedulerModeEnum schedulerMode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+    for (const bool scheduled : { false, true }) {
         NodePtr node = makeBrightRays(source, "cubic", true, false);
         ASSERT_TRUE(bool(node));
         const RectI fullRoD = pixelRoDAt(node, 0);
         const RectI quarter(fullRoD.x1 + fullRoD.width() / 4, fullRoD.y1 + fullRoD.height() / 4, fullRoD.x1 + fullRoD.width() / 2, fullRoD.y1 + fullRoD.height() / 2);
         std::string error;
         std::vector<float> input;
-        ASSERT_TRUE(renderBlurRangePlane(source, kTime, 0, pixelRoDAt(source, 0), eRenderSchedulerModeLegacy, true, &input, &error)) << error;
+        ASSERT_TRUE(renderBlurRangePlane(source, kTime, 0, pixelRoDAt(source, 0), false, true, &input, &error)) << error;
         BlurRange range;
         range.include(input);
         for (unsigned int mipmapLevel = 1; mipmapLevel <= 3; ++mipmapLevel) {
-            ASSERT_TRUE(renderBlurRangePlane(source, kTime, mipmapLevel, pixelRoDAt(source, mipmapLevel), eRenderSchedulerModeLegacy, true, &input, &error)) << error;
+            ASSERT_TRUE(renderBlurRangePlane(source, kTime, mipmapLevel, pixelRoDAt(source, mipmapLevel), false, true, &input, &error)) << error;
             range.include(input);
         }
         for (unsigned int mipmapLevel = 1; mipmapLevel <= 3; ++mipmapLevel) {
             appPTR->clearAllCaches();
             std::vector<float> atFullScale;
-            ASSERT_TRUE(renderBlurRangePlane(node, kTime, 0, quarter, schedulerMode, false, &atFullScale, &error)) << error;
+            ASSERT_TRUE(renderBlurRangePlane(node, kTime, 0, quarter, scheduled, false, &atFullScale, &error)) << error;
             std::vector<float> zoomedOut;
-            ASSERT_TRUE(renderBlurRangePlane(node, kTime, mipmapLevel, pixelRoDAt(node, mipmapLevel), schedulerMode, false, &zoomedOut, &error)) << error;
-            EXPECT_EQ(std::string(), blurRangeViolation(zoomedOut, range, kBlurRangeNoLobes)) << "mipmap " << mipmapLevel << ((schedulerMode == eRenderSchedulerModeLegacy) ? ", legacy" : ", task graph");
+            ASSERT_TRUE(renderBlurRangePlane(node, kTime, mipmapLevel, pixelRoDAt(node, mipmapLevel), scheduled, false, &zoomedOut, &error)) << error;
+            EXPECT_EQ(std::string(), blurRangeViolation(zoomedOut, range, kBlurRangeNoLobes)) << "mipmap " << mipmapLevel << (scheduled ? ", scheduled" : ", direct");
         }
         appPTR->clearAllCaches();
     }
@@ -807,7 +810,7 @@ TEST_F(NativeGodRaysTest, Golden)
         return setKnobValues(g.node, kGodRaysParamScale, { 1.5, 1.5 }) && setKnobValues(g.node, kGodRaysParamToColor, { 0., 0., 0., 0. }) && setKnobValues(g.node, kGodRaysParamGamma, { 2.5 }) && setKnobValues(g.node, kGodRaysParamMax, { 1. });
     }));
     v.push_back(goldenVariant("keysClampEdgeRepeat", false, [](const GoldenGraph& g) {
-        return setKnobValues(g.node, kGodRaysParamScale, { 1.25, 1.25 }) && setKnobValues(g.node, kGodRaysParamSkewX, { 0.2 }) && setKnobValue(g.node, kResamplerParamFilterType, std::string("keys")) && setKnobValues(g.node, kResamplerParamFilterClamp, { 1. }) && setKnobValues(g.node, kResamplerParamFilterBlackOutside, { 0. });
+        return setKnobValues(g.node, kGodRaysParamScale, { 1.25, 1.25 }) && setKnobValues(g.node, kGodRaysParamSkewX, { 0.2 }) && setKnobValue(g.node, kResamplerParamFilterType, std::string("keys")) && setKnobValues(g.node, kResamplerParamFilterClamp, { 1. }) && setKnobValue(g.node, kEdgeModeParam, std::string("stretch"));
     }));
     v.push_back(goldenVariant("maskmix", true, [](const GoldenGraph& g) {
         return setKnobValues(g.node, kGodRaysParamScale, { 1.4, 1.4 }) && setKnobValues(g.node, kOfxMixParamName, { 0.5 }) && setKnobValues(g.node, kOfxMaskInvertParamName, { 1. });

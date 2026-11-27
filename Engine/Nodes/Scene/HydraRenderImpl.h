@@ -35,14 +35,37 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/SceneDrawFilter.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/ScenePayload.h"
+#include <pxr/base/gf/vec2d.h>
 #include <pxr/base/vt/value.h>
+#include <pxr/imaging/cameraUtil/framing.h>
+
+PXR_NAMESPACE_OPEN_SCOPE
+class UsdImagingGLEngine;
+class UsdImagingGLRenderParams;
+PXR_NAMESPACE_CLOSE_SCOPE
+
+#ifdef NATRON_HAVE_GPU
+namespace gpu {
+class GpuRecordContext;
+}
+#endif
 
 NATRON_NAMESPACE_ENTER
+
+#ifdef NATRON_HAVE_GPU
+struct GpuImageView;
+class RectI;
+class UtilityDeviceResource;
+#endif
+
+struct SceneStageSnapshot;
 
 /**
  * @brief USDRender's Storm render: a composed stage seen through a camera, read back from GL into
@@ -114,7 +137,7 @@ float hashToFloat(std::uint32_t hash) WARN_UNUSED_RETURN;
 
 struct Request {
     // Whose stage and engine render it. A request of the owner's last render with the same stack,
-    // time, camera, size and headlight, and no barrier write since, reuses that render, so the
+    // time, camera, size, headlight and purposes, and no barrier write since, reuses that render, so the
     // planes of a frame asked for one by one cost one Storm render.
     const void* owner = nullptr;
     ScenePayload scene;
@@ -125,10 +148,18 @@ struct Request {
     // Whether a light at the camera lights the scene too. Without it, only the scene's own lights
     // do, and a scene with none renders its lit surfaces black.
     bool headlight = false;
+    // Which prims of a purpose other than default are drawn. Default-purpose prims always are.
+    bool showRender = true;
+    bool showProxy = false;
+    bool showGuides = false;
     // The render delegate's plug-in id. One that is not installed or cannot render here fails the
     // render with an error naming it, before any engine is made: there is no fallback.
     std::string renderer = kRenderDelegateStormId;
-    // Polled on the calling thread while a render that is not Storm's converges; true cancels it.
+    // Polled on the calling thread while any delegate renders; true cancels the render: Storm's
+    // between its passes, a path tracer's at once where its delegate can stop its threads, the stop
+    // waiting for what cannot be interrupted, and otherwise once the Render() call under way
+    // returns, when its engine is dropped. A request without one renders until its delegate
+    // converges, however long that takes.
     std::function<bool()> aborted;
     // The threads a CPU delegate's engine may render on, from the scheduler's budget for the
     // calling task; any count when 0. Cycles and MoonRay take it when an engine is made. Every
@@ -140,7 +171,34 @@ struct Request {
     // defaults. The owner's engine is made again when they change: Cycles restarts a converged
     // render only for some of its settings.
     std::map<std::string, PXR_NS::VtValue> settings;
+    // The camera's shutter:open and shutter:close, in frames relative to time.
+    double shutterOpen = 0.;
+    double shutterClose = 0.;
+    // The camera's frustum at times within shutterInterval(*this), relative to time and increasing.
+    // Empty for a camera that does not blur: its frustum is frustum throughout.
+    std::vector<std::pair<double, PXR_NS::GfFrustum>> cameraMotion;
+    // Pixels of width and height beyond the frustum's frame on each side. The frustum frames the
+    // image within them and the delegate carries its projection on into them, as a framing whose
+    // data window is larger than its display window asks.
+    int overscanLeft = 0;
+    int overscanBottom = 0;
+    int overscanRight = 0;
+    int overscanTop = 0;
 };
+
+/**
+ * @brief The shutter request's delegate samples motion over, in frames relative to request.time: the
+ * camera's unless the delegate's settings override it. Closed, both equal, for a delegate other than
+ * Natron Utility, the one that blurs, and for a shutter of no length.
+ **/
+PXR_NS::GfVec2d shutterInterval(const Request& request) WARN_UNUSED_RETURN;
+
+// Whether request's delegate blurs the camera's motion within shutterInterval(request).
+bool cameraMotionBlur(const Request& request) WARN_UNUSED_RETURN;
+
+// The framing request's engine renders under: its width by height pixels, the frustum framing the
+// part within its overscan.
+PXR_NS::CameraUtilFraming framing(const Request& request) WARN_UNUSED_RETURN;
 
 // The AOVs, width x height pixels each, the bottom row first as Natron's images.
 struct Result {
@@ -156,6 +214,8 @@ struct Result {
     std::string warning;
     // The errors the delegate logged that name no prim of the scene, one per line; empty if none.
     std::string errors;
+    // The device the delegate says it rendered on; empty for a delegate that does not say.
+    std::string device;
 };
 
 /**
@@ -254,12 +314,51 @@ bool renderWindow(const Request& request,
 // Whether the render thread's context packs windows on the GPU, making it if need be.
 bool packsOnGpu();
 
+#ifdef NATRON_HAVE_GPU
+/**
+ * @brief Renders request as render() does, then records into context the copy of window, a colour
+ * window, into output's outputRect, on the device and from the frame the delegate left there:
+ * Natron Utility's, when it rendered on the GPU. *info gets the render's warning, errors and device.
+ * False with *error set when the frame is not on context's device, so the caller renders on the CPU,
+ * where the frame is read back.
+ **/
+bool recordDeviceWindow(const Request& request,
+                        const PlaneWindow& window,
+                        gpu::GpuRecordContext& context,
+                        const GpuImageView& output,
+                        const RectI& outputRect,
+                        Result* info,
+                        std::string* error) WARN_UNUSED_RETURN;
+
+/**
+ * @brief Whether a render of owner's found the delegate had rendered on the CPU instead (recordDeviceWindow()
+ * got no frame on the device, or Natron Utility reported falling back from the GPU), under the same device generation, pool budget and Device setting (kUtilitySettingDevice, "auto" when
+ * unset), and no render of owner's has been on the GPU since. A caller asking whether to take the GPU
+ * path then knows it would fall back. Never waits. MT-safe.
+ **/
+bool deviceFrameFellBack(const void* owner,
+                         std::uint64_t generation,
+                         std::uint64_t budget,
+                         const std::string& device);
+#endif
+
 /**
  * @brief Render settings every engine of renderer gets on top of its request's; for tests, to fix
  * a path tracer's sample count and seed whatever the node's knobs say.
  **/
 void setRendererSettings(const std::string& renderer,
                          const std::map<std::string, PXR_NS::VtValue>& settings);
+
+/**
+ * @brief Has engine, a renderer engine, draw the purposes asked for in params. Natron Utility is made
+ * to sync every purpose and told which to draw, so a purpose toggle builds no geometry there.
+ **/
+void setPurposes(PXR_NS::UsdImagingGLEngine* engine,
+                 const std::string& renderer,
+                 bool showRender,
+                 bool showProxy,
+                 bool showGuides,
+                 PXR_NS::UsdImagingGLRenderParams* params);
 
 /**
  * @brief The setting key of owner's engine as its delegate reports it
@@ -273,11 +372,22 @@ bool engineSetting(const void* owner,
 // Drops owner's stage and engine, whichever delegate it is of, without waiting.
 void release(const void* owner);
 
-// Drops every owner's stage and Storm engine, on the render thread, without waiting.
+// Drops every owner's stage and Storm engine, and has every Natron Utility engine give back what it
+// keeps on the GPU, on the render threads, without waiting.
 void releaseAll();
+
+// releaseAll() and ProgressiveRender::releaseAllGpu(), then, on the thread the Natron Utility engines
+// render on, once they gave their GPU memory back, empties the GPU pool of its free buffers. Does not wait.
+void releaseAllGpuMemory();
 
 // Drops every owner's stage and engine of a delegate other than Storm, without waiting.
 void releaseAllCpuEngines();
+
+/**
+ * @brief Drops every owner's stage and engine of a delegate other than Storm, waiting up to
+ * timeoutMs for their thread to have done so. False if it had not by then.
+ **/
+bool releaseAllCpuEnginesAndWait(int timeoutMs);
 
 /**
  * @brief The GPU memory, in bytes, the engines may hold together before the least recently used
@@ -294,6 +404,21 @@ std::size_t getCpuEngineCount();
 
 // How many engines, of every delegate, have been made in this process.
 std::uint64_t getEngineBuildCount();
+
+// How many frames engines of every delegate have rendered in this process, not counting a request
+// served by the owner's last render.
+std::uint64_t getEngineRenderCount();
+
+// How many times, in this process, a MoonRay render, USDRender's or a progressive one, read its
+// session's progress past zero: the session is connected and its render process is rendering.
+std::uint64_t getMoonRayProgressReads();
+
+/**
+ * @brief Whether Storm renders write the ids of translucent prims into their primId plane, as
+ * they do unless turned off; for tests, to compare against Storm's own ids. Read when a render's
+ * ids are first decoded.
+ **/
+void setStormTranslucentIds(bool enabled);
 
 /**
  * @brief The thread count every Cycles session is made under, 0 for any: Cycles' task scheduler is
@@ -316,12 +441,15 @@ std::string contextDescription(std::string* error);
  * makes its own) and polls it: a path tracer renders on threads of its own between Render() calls,
  * each of which syncs the stage's changes into it. After each poll whose sample count moved it
  * publishes the colour, over a background and encoded to sRGB, and the depth, as the window depth
- * of the frame's projection, and calls the listener on the worker.
+ * of the frame's projection, and calls the listener on the worker. Natron Utility, which has no
+ * samples to refine, publishes only its finished frames.
  *
  * Edits coalesce: a restart waits until no edit has come for a short quiet time, or until the first
  * waiting one is a bounded time old, so that a burst of edits restarts once and a camera dragged
  * without pause still restarts several times a second. A pass that was under way when an edit came
- * is never published, and neither are the delegate's pixels from before a restart.
+ * is never published, and neither are the delegate's pixels from before a restart. A delegate that
+ * can stop is stopped as soon as an edit comes, ahead of the quiet time, and by stop() when it cannot
+ * pause.
  *
  * The worker, and the threads the delegate starts from it, run at a lowered priority, which is what
  * keeps the interface responsive: a Cycles engine renders on the process' one Cycles thread count
@@ -333,8 +461,25 @@ std::string contextDescription(std::string* error);
  * the next invalidate(), setSettings() or setMaxSamples() that changes something, which try it
  * again with a new engine, or until another renderer is set; setView() does not.
  *
- * The stage is read, and the engine renders, under the lock given at construction, the one that
- * guards the stage's edits; nothing else of the class takes that lock while holding its own.
+ * The worker renders a stage of its own, kept for its whole life, that composes the same layers as
+ * the caller's: before each pass it takes a snapshot of the caller's stage (its payload and drag
+ * preview) and the edit count under the lock given at construction, the one that guards the
+ * stage's edits, and then syncs its stage to the snapshot and renders it without that lock. A
+ * sync of a large scene or a long Render() so never holds up the caller, and the engine,
+ * subscribed to the worker's stage alone, can be dropped without it. The worker takes the
+ * caller's lock only to snapshot, by polling rather than blocking on it, and holds none of the
+ * class's locks meanwhile except the one the destructor takes to detach it; under the caller's
+ * lock it takes the lock guarding its requests, never the other way round.
+ *
+ * The worker's stage shares the caller's layers read from files, which a layer reload edits in
+ * place: the worker is a SceneWriteBarrier participant whose quiesce waits for the delegate call
+ * under way, the sync of the worker's stage or a Render(), as both read those layers.
+ *
+ * An edit interrupts the delegate's render at once where the delegate can stop its threads
+ * (IsStopRendererSupported()); one that cannot, such as Cycles or MoonRay, is reset by the sync
+ * that brings the edit. A change of renderer or of settings drops the engine on the worker as soon
+ * as the delegate call under way returns. No setter waits for the worker, and neither does the
+ * destructor.
  **/
 class ProgressiveRender {
 public:
@@ -343,6 +488,11 @@ public:
         int width = 0;
         int height = 0;
         PXR_NS::UsdTimeCode time;
+        bool showRender = false;
+        bool showProxy = true;
+        bool showGuides = false;
+        // Lit by a light at the camera instead of the stage's lights.
+        bool headlight = false;
 
         bool operator==(const View& other) const;
         bool operator!=(const View& other) const
@@ -369,6 +519,11 @@ public:
         std::uint64_t serial = 0;
         // The edits made before its pass, for pick().
         std::uint64_t generation = 0;
+#ifdef NATRON_HAVE_GPU
+        // Set instead of rgba when setDeviceColor() asked for the colour of a GPU frame to stay
+        // on the device: its linear premultiplied RGBA floats, the bottom row first.
+        std::shared_ptr<const UtilityDeviceResource> deviceColor;
+#endif
     };
 
     struct Status {
@@ -388,23 +543,60 @@ public:
         // is made again when the delegate does not show it restarted within a bound, as a loaded
         // machine may not.
         std::uint64_t engines = 0;
+        // Of those, the ones made again for that bound alone, which no edit asked for.
+        std::uint64_t unseenRemakes = 0;
+        // Of those, the ones made again because a MoonRay session's progress held still.
+        std::uint64_t stallRemakes = 0;
         std::uint64_t frames = 0;
         // Why the delegate cannot render, empty if it can.
         std::string error;
     };
 
+    // The lock that guards the stage's edits, as a pair of functions, so that its owner may hand
+    // out a shared hold of a reader-writer lock, or learn when the hold ends. The worker only
+    // tries it, polling, so tryAcquire must not block.
+    struct StageLock {
+        std::function<bool()> tryAcquire;
+        std::function<void()> release;
+
+        bool try_lock()
+        {
+            return tryAcquire();
+        }
+
+        void unlock()
+        {
+            release();
+        }
+    };
+
     /**
-     * @brief stage, called on the worker with *stageLock held, gives the stage to render, null for
-     * none. listener is called on the worker after each frame is published and when the delegate
-     * fails. background is the
-     * linear grey the colour is composited over.
+     * @brief snapshot, called on the worker with *stageLock held, sets what the stage to render
+     * composes (SceneStage::getSnapshot()) and returns true, or returns false when there is none.
+     * The caller calls invalidate() for an edit of its stage before it lets go of *stageLock, so
+     * that a snapshot and the edit count read with it agree; the other setters need no lock.
+     * They may be called with *stageLock held. listener is called on the
+     * worker after each frame is published and when the delegate fails. background is the linear
+     * grey the colour is composited over. None of snapshot, listener, setThreads()' function or
+     * *stageLock is used once the destructor returns.
      **/
     ProgressiveRender(std::mutex* stageLock,
-                      const std::function<PXR_NS::UsdStageRefPtr()>& stage,
+                      const std::function<bool(SceneStageSnapshot*)>& snapshot,
                       const std::function<void()>& listener,
                       float background);
 
-    // Stops the delegate's threads and drops the engine, on the worker, then joins it.
+    ProgressiveRender(const StageLock& stageLock,
+                      const std::function<bool(SceneStageSnapshot*)>& snapshot,
+                      const std::function<void()>& listener,
+                      float background);
+
+    /**
+     * @brief Tells the worker to end and returns without waiting for it: the worker finishes the
+     * delegate call under way, drops the engine and its stage and ends on its own, keeping alive
+     * what it uses. Waits only for a call of the snapshot, the listener or the threads function
+     * under way, so it must not run while the caller holds *stageLock or inside the listener.
+     * waitForDetachedWorkers() waits for the workers so ended.
+     **/
     ~ProgressiveRender();
 
     /**
@@ -439,6 +631,21 @@ public:
     // The cap in force: the one set, or the delegate's default once its engine is made, else 0.
     int getMaxSamples() const;
 
+    /**
+     * @brief The viewer's draw rules, which the engine draws by from its next restart: what they
+     * hide leaves the frame. An engine made later starts from them. Different rules restart, the
+     * same ones change nothing.
+     **/
+    void setDrawRules(const SceneDrawFilter::Rules& rules);
+
+    void applyDrawDeltas(const std::vector<SceneDrawDelta>& deltas);
+
+    /**
+     * @brief Draws everything regardless of the draw rules while on, keeping them for when it is
+     * off again. Neither way makes the engine again.
+     **/
+    void setRenderEverything(bool on);
+
     // Pauses the delegate where it is, keeping its samples; resume() continues from them.
     void stop();
     void resume();
@@ -451,22 +658,72 @@ public:
     // How many renders have been started, the first included.
     std::uint64_t getRestartCount() const;
 
+#ifdef NATRON_HAVE_GPU
+    /**
+     * @brief Whether frames the Natron Utility renderer leaves on the GPU are published with
+     * deviceColor and no rgba, for a viewer that imports them; off at first. Frames published
+     * before a change keep the form they had.
+     **/
+    void setDeviceColor(bool onDevice);
+
+    /**
+     * @brief The rgba frame would have had without deviceColor, read back from the device. False
+     * with *error set when frame has no deviceColor or the device cannot read it back.
+     **/
+    bool hostColor(const Frame& frame,
+                   std::vector<unsigned char>* rgba,
+                   std::string* error) const;
+
+    /**
+     * @brief Has a Natron Utility engine give back, on the worker, the GPU memory it keeps between
+     * frames, then empties the GPU pool of its free buffers. A frame published with deviceColor is
+     * published again with its colour read back into rgba, and its film is let go for every holder.
+     * Does not wait.
+     **/
+    void releaseGpu();
+
+    // Has a Natron Utility engine let go of its GPU, on the worker, if that was lost. Does not wait.
+    void releaseLostGpu();
+
+    // releaseGpu() on every ProgressiveRender alive. MT-safe.
+    static void releaseAllGpu();
+
+    // releaseLostGpu() on every ProgressiveRender alive; a GPU loss releaser calls it. MT-safe.
+    static void releaseAllLostGpu();
+#endif
+
     /**
      * @brief The path of the prim drawn at the pixel (x, y) of frame, one getFrame() gave, counted
      * from its bottom-left pixel, or empty. Empty too once the render was edited since frame's pass:
-     * the engine's IDs are then of another render than the pixels frame shows. Takes the stage lock.
+     * the engine's IDs are then of another render than the pixels frame shows, and while the
+     * worker is in a pass: it never waits for one. Does not take the stage lock.
      **/
     std::string pick(const Frame& frame,
                      int x,
                      int y);
 
-    // How many workers are alive in the process, for leak checks.
+    // How many workers are alive in the process, those still ending after their render went
+    // included, for leak checks.
     static int getLiveCount();
+
+    /**
+     * @brief Waits up to timeoutMs for every worker whose render was destroyed to end; false, with
+     * a warning, if some still run then. For process exit, ahead of the teardown of what the
+     * delegates use, and for tests. MT-safe.
+     **/
+    static bool waitForDetachedWorkers(int timeoutMs);
+
+    /**
+     * @brief For tests: hook is called on every worker in each pass, after it synced its stage to
+     * the snapshot and before the delegate renders, under the lock the sync and the render hold
+     * (never the stage lock). Empty for none.
+     **/
+    static void setPassHook(const std::function<void()>& hook);
 
     struct Implementation;
 
 private:
-    std::unique_ptr<Implementation> _imp;
+    std::shared_ptr<Implementation> _imp;
 };
 } // namespace HydraRender
 

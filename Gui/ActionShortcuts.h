@@ -288,6 +288,9 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionProxyEnabled "proxyEnabled"
 #define kShortcutDescActionProxyEnabled "Enable Proxy Rendering"
 
+#define kShortcutIDActionAutoProxyScrubbing "autoProxyScrubbing"
+#define kShortcutDescActionAutoProxyScrubbing "Auto Proxy Scrubbing"
+
 #define kShortcutIDActionProxyLevel2 "proxy2"
 #define kShortcutDescActionProxyLevel2 "Proxy Level 2"
 
@@ -314,6 +317,9 @@ CLANG_DIAG_ON(uninitialized)
 
 #define kShortcutIDActionHideOverlays "hideOverlays"
 #define kShortcutDescActionHideOverlays "Show/Hide Overlays"
+
+#define kShortcutIDActionMapSiblingOverlays "mapSiblingOverlays"
+#define kShortcutDescActionMapSiblingOverlays "Map Sibling Overlays"
 
 #define kShortcutIDActionHidePlayer "hidePlayer"
 #define kShortcutDescActionHidePlayer "Show/Hide Player"
@@ -451,6 +457,60 @@ CLANG_DIAG_ON(uninitialized)
 
 #define kShortcutIDActionViewer3DBakePaint "bakePaint"
 #define kShortcutDescActionViewer3DBakePaint "Bake Paint"
+
+#define kShortcutIDActionViewer3DDrawChildren "drawStateChildren"
+#define kShortcutDescActionViewer3DDrawChildren "Draw Children"
+
+#define kShortcutIDActionViewer3DDrawFull "drawStateFull"
+#define kShortcutDescActionViewer3DDrawFull "Draw Full"
+
+#define kShortcutIDActionViewer3DDrawLoadAll "drawStateLoadAll"
+#define kShortcutDescActionViewer3DDrawLoadAll "Load All"
+
+#define kShortcutIDActionViewer3DDrawParentBBox "drawStateParentBBox"
+#define kShortcutDescActionViewer3DDrawParentBBox "Box Parent"
+
+#define kShortcutIDActionViewer3DPickwalkParent "pickwalkParent"
+#define kShortcutDescActionViewer3DPickwalkParent "Pickwalk Parent"
+
+#define kShortcutIDActionViewer3DPickwalkChild "pickwalkChild"
+#define kShortcutDescActionViewer3DPickwalkChild "Pickwalk Child"
+
+#define kShortcutIDActionViewer3DPickwalkPrevSibling "pickwalkPrevSibling"
+#define kShortcutDescActionViewer3DPickwalkPrevSibling "Pickwalk Previous Sibling"
+
+#define kShortcutIDActionViewer3DPickwalkNextSibling "pickwalkNextSibling"
+#define kShortcutDescActionViewer3DPickwalkNextSibling "Pickwalk Next Sibling"
+
+#define kShortcutIDActionViewer3DPickObjects "geoPickObjects"
+#define kShortcutDescActionViewer3DPickObjects "Pick Objects"
+
+#define kShortcutIDActionViewer3DPickPoints "geoPickPoints"
+#define kShortcutDescActionViewer3DPickPoints "Pick Points"
+
+#define kShortcutIDActionViewer3DPickEdges "geoPickEdges"
+#define kShortcutDescActionViewer3DPickEdges "Pick Edges"
+
+#define kShortcutIDActionViewer3DPickPrimitives "geoPickPrimitives"
+#define kShortcutDescActionViewer3DPickPrimitives "Pick Primitives"
+
+#define kShortcutIDActionViewer3DGrowSelection "geoGrowSelection"
+#define kShortcutDescActionViewer3DGrowSelection "Grow Selection"
+
+#define kShortcutIDActionViewer3DShrinkSelection "geoShrinkSelection"
+#define kShortcutDescActionViewer3DShrinkSelection "Shrink Selection"
+
+#define kShortcutIDActionViewer3DConvertToPoints "geoConvertToPoints"
+#define kShortcutDescActionViewer3DConvertToPoints "Convert to Points"
+
+#define kShortcutIDActionViewer3DConvertToEdges "geoConvertToEdges"
+#define kShortcutDescActionViewer3DConvertToEdges "Convert to Edges"
+
+#define kShortcutIDActionViewer3DConvertToPrimitives "geoConvertToPrimitives"
+#define kShortcutDescActionViewer3DConvertToPrimitives "Convert to Primitives"
+
+#define kShortcutIDActionViewer3DReselect "geoReselect"
+#define kShortcutDescActionViewer3DReselect "Reselect for Current Node"
 
 #define kShortcutIDToggleWipe "toggleWipe"
 #define kShortcutDescToggleWipe "Toggle Wipe"

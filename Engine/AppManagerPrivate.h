@@ -53,6 +53,7 @@
 #include "Engine/FrameEntry.h"
 #include "Engine/GPUContextPool.h"
 #include "Engine/GenericSchedulerThreadWatcher.h"
+#include "Engine/GeoDetailCacheEntry.h"
 #include "Engine/GpuContext.h"
 #include "Engine/Image.h"
 #include "Engine/TLSHolder.h"
@@ -70,8 +71,8 @@ public:
     typedef std::shared_ptr<ImageCache> ImageCachePtr;
     typedef Cache<FrameEntry> FrameEntryCache;
     typedef std::shared_ptr<FrameEntryCache> FrameEntryCachePtr;
-    typedef Cache<DeepImageCacheEntry> DeepImageCache;
-    typedef std::shared_ptr<DeepImageCache> DeepImageCachePtr;
+    typedef Cache<GeoDetailCacheEntry> GeoDetailCache;
+    typedef std::shared_ptr<GeoDetailCache> GeoDetailCachePtr;
 
     AppTLS globalTLS;
     AppManager::AppTypeEnum _appType; //< the type of app
@@ -85,9 +86,8 @@ public:
     std::unique_ptr<OfxHost> ofxHost; //< OpenFX host
     std::unique_ptr<KnobFactory> _knobFactory; //< knob maker
     ImageCachePtr _nodeCache; //< Images cache
-    ImageCachePtr _diskCache; //< Images disk cache (used by DiskCache nodes)
     FrameEntryCachePtr _viewerCache; //< Viewer textures cache
-    DeepImageCachePtr _deepImageCache; //< Deep image cache, own memory budget separate from _nodeCache
+    GeoDetailCachePtr _geoDetailCache; //< Geometry cache, own memory budget separate from _nodeCache
     mutable QMutex diskCachesLocationMutex;
     QString diskCachesLocation;
     std::unique_ptr<ProcessInputChannel> _backgroundIPC; //< object used to communicate with the main app
@@ -114,13 +114,12 @@ public:
     bool useThreadPool; // whether the multi-thread suite should use the global thread pool (of QtConcurrent) or not
     mutable QMutex nThreadsMutex; // protects nThreadsToRender & nThreadsPerEffect & useThreadPool
 
-    // Read on render threads, so atomic rather than behind nThreadsMutex.
-    std::atomic<int> renderSchedulerMode;
-    // NATRON_RENDER_SCHEDULER was set to a valid value at startup; settings changes must not override it.
-    bool renderSchedulerEnvOverride;
-
     // Created once the settings are loaded; destroyed with the private data.
     std::unique_ptr<GpuContext> gpuContext;
+
+    // Declared after gpuContext, so that it goes first: its images return their buffers to the runtime's pool.
+    std::mutex deviceTierMutex;
+    CacheDeviceTierPtr deviceTier;
 
     //The idea here is to keep track of the number of threads launched by Natron (except the ones of the global thread pool of QtConcurrent)
     //So that we can properly have an estimation of how much the cores of the CPU are used.
@@ -243,6 +242,9 @@ public:
     void tearDownGL();
 
     void setViewerCacheTileSize();
+
+    // Detaches the device tier from the image cache and empties it, before the GPU context it belongs to goes.
+    void dropDeviceTier();
 
     void handleCommandLineArgs(int argc, char** argv);
     void handleCommandLineArgsW(int argc, wchar_t** argv);

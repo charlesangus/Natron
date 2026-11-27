@@ -100,6 +100,10 @@ void evictMemoryCachesUntilShortfallCovered(std::size_t totalAvailableRAM,
                                             const std::function<std::size_t()>& getAccountedMemory,
                                             const std::function<bool()>& evictOnce);
 
+class CacheDeviceTier;
+class CacheDeviceHost;
+class CacheDiskTier;
+class CacheHostTier;
 struct AppManagerPrivate;
 class AppManager
     : public QObject, public AfterQuitProcessingI
@@ -231,24 +235,51 @@ public:
     bool getImage(const ImageKey & key, std::list<ImagePtr>* returnValue) const;
 
     /**
+     * @brief Finds images as getImage does without counting as a use of them, so a render plan can ask what is cached
+     * without changing what gets evicted.
+     **/
+    bool peekImage(const ImageKey& key, std::list<ImagePtr>* returnValue) const;
+
+    /**
      * @brief Same as getImage, but if it couldn't find a matching image in the cache, it will create one with the given parameters.
      **/
     bool getImageOrCreate(const ImageKey & key, const ImageParamsPtr& params,
                           ImagePtr* returnValue) const;
 
-    bool getImage_diskCache(const ImageKey & key, std::list<ImagePtr>* returnValue) const;
+    /**
+     * @brief As getImage(), peekImage() and getImageOrCreate(), for a node that pins its outputs: the key's holder's
+     * pins are looked up too.
+     **/
+    bool getPinnedImage(const ImageKey& key, std::list<ImagePtr>* returnValue) const;
 
-    bool getImageOrCreate_diskCache(const ImageKey & key, const ImageParamsPtr& params,
-                                    ImagePtr* returnValue) const;
+    bool peekPinnedImage(const ImageKey& key, std::list<ImagePtr>* returnValue) const;
+
+    bool getPinnedImageOrCreate(const ImageKey& key, const ImageParamsPtr& params,
+                                ImagePtr* returnValue) const;
 
     /**
-     * @brief Same as getImage/getImageOrCreate but for the deep image cache, which has its own
-     * memory budget separate from the regular image cache above.
+     * @brief Writes a rendered image to the holder's pins on this thread. If it cannot be pinned it stays an ordinary
+     * cache entry.
+     **/
+    void pinRenderedImage(const std::string& holderID, const ImagePtr& image);
+
+    /**
+     * @brief Same as getImage/getImageOrCreate but for deep images, which live in the node cache
+     * next to images and under the same budget. Neither ever finds the other's entries.
      **/
     bool getDeepImage(const DeepImageKey& key, std::list<DeepImageCacheEntryPtr>* returnValue) const;
 
     bool getDeepImageOrCreate(const DeepImageKey& key, const DeepImageParamsPtr& params,
                               DeepImageCacheEntryPtr* returnValue) const;
+
+    /**
+     * @brief Same as getImage/getImageOrCreate but for the geometry cache, which has its own
+     * memory budget separate from the image caches.
+     **/
+    bool getGeoDetail(const GeoDetailKey& key, std::list<GeoDetailCacheEntryPtr>* returnValue) const;
+
+    bool getGeoDetailOrCreate(const GeoDetailKey& key, const GeoDetailParamsPtr& params,
+                              GeoDetailCacheEntryPtr* returnValue) const;
 
     bool getTexture(const FrameKey & key,
                     std::list<FrameEntryPtr>* returnValue) const;
@@ -279,21 +310,27 @@ public:
 
     void setApplicationsCachesMaximumViewerDiskSpace(unsigned long long size);
 
-    void setApplicationsCachesMaximumDiskSpace(unsigned long long size);
+    void setNodeCachePinBudget(U64 bytes);
 
-    void setApplicationsCachesMaximumDeepImageCacheSize(unsigned long long size);
+    void setApplicationsCachesMaximumGeoDetailCacheSize(unsigned long long size);
 
     void removeFromNodeCache(const ImagePtr & image);
     void removeFromViewerCache(const FrameEntryPtr & texture);
 
     /**
-     * @brief Drops one deep image entry. A cache entry is sealed as soon as it is created, i.e.
+     * @brief Drops one deep entry from the node cache. A cache entry is sealed as soon as it is created, i.e.
      * before its payload exists, so a deep render that aborts or fails must take its own
      * half-built entry back out rather than leave it to be found by the next lookup.
      **/
-    void removeFromDeepImageCache(const DeepImageCacheEntryPtr& entry);
+    void removeFromNodeCache(const DeepImageCacheEntryPtr& entry);
+
+    /** @brief Drops one geometry entry, for a pull that aborts or fails after creating it. */
+    void removeFromGeoDetailCache(const GeoDetailCacheEntryPtr& entry);
 
     void removeFromNodeCache(U64 hash);
+    // Also unlinks the key's files of every params variation, known to this session or not.
+    void removeFromNodeCache(const ImageKey& key);
+    void setNodeCacheDiskTierSize(U64 bytes);
     void removeFromViewerCache(U64 hash);
     void removeAllCacheEntriesForHolder(const CacheEntryHolder* holder, bool blocking);
 
@@ -406,10 +443,20 @@ public:
      **/
     void checkCacheFreeMemoryIsGoodEnough();
 
+    CacheHostTier& getNodeCacheHostTier() const;
+
     /**
-     * @brief Evicts a single least-recently-used in-memory entry from each of the app-wide
-     * in-memory caches (the node cache and the deep image cache). Returns true if at least one
-     * entry was evicted from either cache.
+     * @brief The image cache as what a render admits an image it made outside the cache to the host tier through: the
+     * image is made with deviceHostCache() as its cache and put in the table with adoptFromDevice(). Null without an
+     * image cache.
+     **/
+    const CacheDeviceHost* getNodeCacheHost() const;
+    // Null when the node cache has no disk tier.
+    std::shared_ptr<CacheDiskTier> getNodeCacheDiskTier() const;
+
+    /**
+     * @brief Evicts the least-recently-used in-memory entry of the node cache, image or deep.
+     * Returns true if an entry was evicted.
      **/
     bool evictLRUFromMemoryCaches();
 
@@ -441,13 +488,6 @@ public:
     bool getUseThreadPool() const;
 
     /**
-     * @brief Parses a NATRON_RENDER_SCHEDULER value: "legacy" or "taskgraph". Returns nothing for anything else.
-     **/
-    static std::optional<RenderSchedulerModeEnum> parseRenderSchedulerModeEnv(const char* value);
-
-    RenderSchedulerModeEnum getRenderSchedulerMode() const;
-
-    /**
      * @brief The GPU context, null before the settings are loaded. It reports unavailable while it initializes
      * on its own thread and whenever no suitable device exists.
      **/
@@ -455,19 +495,17 @@ public:
 
     /**
      * @brief Replaces the GPU context and returns the previous one, so that a test can render with a device the
-     * settings would not select. No render may be running.
+     * settings would not select. Drops the scene engines and waits for their render threads first, so
+     * that the previous context can be destroyed. No render may be running.
      **/
     std::unique_ptr<GpuContext> swapGpuContextForTests(std::unique_ptr<GpuContext> context);
 
     /**
-     * @brief Overrides the mode, whatever its source, until the next Settings change.
+     * @brief The image cache's tier of the GPU context's device, made and attached to the cache the first time it is
+     * asked for once the device is ready. Null without a ready device or an image cache. The caller holds the runtime
+     * through GpuContext::holdRuntime() while it uses the tier.
      **/
-    void setRenderSchedulerMode(RenderSchedulerModeEnum mode);
-
-    /**
-     * @brief Called by the Settings when the knob changes. Ignored while the environment variable override is active.
-     **/
-    void onRenderSchedulerModeSettingChanged(RenderSchedulerModeEnum mode);
+    std::shared_ptr<CacheDeviceTier> getDeviceCacheTier() const;
 
     /**
      * @brief Updates the global runningThreadsCount maintained across the whole application
@@ -554,8 +592,6 @@ public:
     }
 
     bool isNodeCacheAlmostFull() const;
-
-    bool isAggressiveCachingEnabled() const;
 
     void refreshDiskCacheLocation();
     const QString& getDiskCacheLocation() const;
@@ -738,6 +774,9 @@ public Q_SLOTS:
 
     void clearAllCaches();
 
+    // What clearAllCaches() clears in RAM, for when other sessions may still use the files.
+    void clearAllCachesInRam();
+
     // Frees the GPU memory Natron keeps between renders: the stages and Storm engines of USDRender
     // nodes, which each node makes again when it next renders, the Storm engines of the viewers'
     // scene views, which each makes again as it redraws, and the device buffers the GPU runtime's
@@ -813,14 +852,18 @@ protected:
     virtual void onAllPluginsLoaded();
     virtual void clearLastRenderedTextures() {}
 
-    // Has every viewer's scene view destroy its Storm engine and redraw; the GUI does it.
-    virtual void releaseSceneViewEngines() { }
+    // Has every viewer's scene view destroy its Storm engine and redraw, or with keptOnly only the
+    // views on another delegate, which keep their Storm engine for a switch back; the GUI does it.
+    virtual void releaseSceneViewEngines(bool /*keptOnly*/) { }
 
     virtual void initBuiltinPythonModules();
 
     bool loadInternalAfterInitGui(const CLArgs& cl);
 
 private:
+    void clearCaches(bool inRamOnly);
+    void rebuildDiskCacheStructure();
+
     void findAllScriptsRecursive(const QDir& directory,
                                  QStringList& allPlugins,
                                  QStringList* foundInit,
@@ -982,6 +1025,21 @@ public:
     PythonGILUnlocker();
 
     ~PythonGILUnlocker();
+};
+
+// Releases the Python GIL for the lifetime of the object, only if the calling thread holds it.
+// Use it around a blocking wait: the thread being waited on may need the GIL to finish.
+class PythonUnlockedWhileWaiting {
+public:
+    PythonUnlockedWhileWaiting();
+
+    ~PythonUnlockedWhileWaiting();
+
+    PythonUnlockedWhileWaiting(const PythonUnlockedWhileWaiting&) = delete;
+    PythonUnlockedWhileWaiting& operator=(const PythonUnlockedWhileWaiting&) = delete;
+
+private:
+    PyThreadState* _state;
 };
 
 NATRON_NAMESPACE_EXIT

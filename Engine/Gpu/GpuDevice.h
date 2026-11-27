@@ -26,6 +26,8 @@ struct GpuStatus {
     // Set on an out-of-memory from the buffer pool when the request fits its budget but the buffers held by their
     // owners fill it: the device itself did not refuse, and the room comes back as the owners release them.
     bool budgetContention = false;
+    // Set when a GpuRecordContext stopped recording because its abort check fired; result is VK_INCOMPLETE.
+    bool aborted = false;
 
     bool ok() const { return result == VK_SUCCESS; }
     explicit operator bool() const { return ok(); }
@@ -35,6 +37,8 @@ enum class QueueKind {
     Compute,
     Upload,
     Download,
+    // Only on a device with GpuDeviceInfo::graphicsQueue.
+    Graphics,
 };
 
 using GpuDebugMessageFn = std::function<void(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
@@ -87,6 +91,8 @@ struct GpuDeviceOptions {
     GpuDebugMessageFn debugMessage;
     // Test override: caps the reported maxStorageBufferRange when smaller than the device limit. 0 = none.
     uint64_t maxStorageBufferRange = 0;
+    // Test override: caps the reported maxMemoryAllocationSize when smaller than the device limit. 0 = none.
+    uint64_t maxMemoryAllocationSize = 0;
     // Size of one host<->device copy chunk.
     uint64_t copyChunkSize = 512ull << 20;
     GpuFaultPlan fault;
@@ -113,6 +119,12 @@ struct GpuDeviceInfo {
     uint32_t downloadQueueIndex = 0;
     // True when uploads and downloads submit to the very VkQueue compute does, so they cannot overlap it.
     bool transferSharesComputeQueue = false;
+    // A family with graphics and compute, which raster record contexts submit to. When it is computeFamily the
+    // graphics queue is the compute queue itself; otherwise it is the first queue of graphicsFamily.
+    bool graphicsQueue = false;
+    uint32_t graphicsFamily = 0;
+    uint32_t graphicsQueueIndex = 0;
+    bool graphicsSharesComputeQueue = false;
 
     bool validationEnabled = false;
     bool debugMessenger = false;
@@ -122,9 +134,25 @@ struct GpuDeviceInfo {
     bool externalMemoryHost = false;
     bool memoryBudget = false;
     bool pushDescriptor = false;
+    // Acceleration structures, ray queries and buffer device address are all present and enabled; see
+    // GpuDevice::supportsRayQuery().
+    bool rayQuery = false;
+    // Vulkan 1.3 dynamic rendering, enabled whenever the device offers it.
+    bool dynamicRendering = false;
+    // Storage writes and atomics from the vertex and fragment stages, enabled whenever the device offers them.
+    bool vertexPipelineStores = false;
+    bool fragmentStores = false;
+    // graphicsQueue, dynamicRendering, vertexPipelineStores and fragmentStores, plus colour-attachment blending of
+    // R32G32B32A32_SFLOAT and R32_SFLOAT. The stores are required because a raster's storage buffers are bound
+    // to both stages and may be written from either. Raster users take their CPU path when it is false.
+    bool rasterFloatBlend = false;
+    // Without it an indirect draw of several commands is recorded as one draw per command.
+    bool multiDrawIndirect = false;
+    uint32_t maxDrawIndirectCount = 1;
 
     // Effective values: the device limit, or the GpuDeviceOptions override when that is smaller.
     uint64_t maxStorageBufferRange = 0;
+    uint64_t minStorageBufferOffsetAlignment = 1;
     uint64_t copyChunkSize = 0;
     // 0 when VK_EXT_external_memory_host is absent.
     uint64_t minImportedHostPointerAlignment = 0;
@@ -171,11 +199,18 @@ struct GpuQueuePlan {
     uint32_t computeQueues = 0;
     uint32_t transferQueues = 0;
     bool transferSharesComputeQueue = false;
+    // graphicsQueues is 0 when there is no graphics family or it is computeFamily, whose compute queue it then shares.
+    bool graphics = false;
+    uint32_t graphicsFamily = 0;
+    uint32_t graphicsQueueIndex = 0;
+    uint32_t graphicsQueues = 0;
+    bool graphicsSharesComputeQueue = false;
 };
 
 // Routes uploads and downloads to the first transfer-only family when there is one, else to extra queues of the
 // compute family, which itself is the first one without graphics, else the first with compute. Empty when no family
-// has compute.
+// has compute. The graphics queue is in the compute family when that has graphics, else in the first family with
+// graphics and compute; the compute choice never depends on it.
 std::optional<GpuQueuePlan> planQueues(std::span<const VkQueueFamilyProperties> families);
 
 // A RADV_PERFTEST-style list (current may be null) with token appended, unless it already holds token.
@@ -204,6 +239,11 @@ public:
     VkDevice device() const { return device_; }
     VmaAllocator allocator() const { return allocator_; }
     uint32_t queueFamily(QueueKind kind) const;
+
+    // True when the device exposes VK_KHR_acceleration_structure, VK_KHR_ray_query and
+    // VK_KHR_deferred_host_operations with bufferDeviceAddress, and they were enabled, which also makes VMA allocate
+    // with device addresses. NATRON_GPU_NO_RAY_QUERY=1 forces false.
+    bool supportsRayQuery() const { return info_.rayQuery; }
 
     bool isLost() const { return lost_.load(std::memory_order_acquire); }
 
@@ -243,10 +283,54 @@ public:
     // Keeps `object` alive until the process exits, without ever destroying it.
     static void parkForever(std::shared_ptr<void> object);
 
+    // Takes over `fence`, of submitted work nobody waits for any more, and keeps `holdings` alive until it signals;
+    // a reap then destroys the fence and releases them. `buffers` are what the work reads or writes, whose pooled
+    // releases retiringMark() holds back. A fence that reports the device lost, and every fence once
+    // abandonInFlightWork() runs, has its holdings parked with parkForever() instead.
+    void retireWhenSignalled(VkFence fence, std::shared_ptr<void> holdings, std::vector<VkBuffer> buffers = {});
+
+    // Reaps every retiring fence that has signalled and releases what they held. Every submit and drainQueues() reap
+    // too, but leave the release to the next call of this, of finishRetiring() or of a buffer pool's acquire(), as
+    // their callers may hold locks that the holdings' destructors take. Returns at once when another thread is
+    // reaping.
+    void reapRetired();
+
+    // Waits, 30 s at most in all, for every fence retiring now, then reaps and releases them, for the owner of
+    // something the holdings refer to, before it goes away. A fence still pending then is handled as
+    // GpuRecordContext::submitAndWait handles one, through abandonInFlightWork().
+    void finishRetiring();
+
+    bool hasRetiringWork() const { return retiringCount_.load(std::memory_order_acquire) != 0; }
+
+    // Runs `destroy` once every fence retiring now has been reaped, as what it destroys may be used by their work, or
+    // at once when none is retiring.
+    void destroyWhenRetired(std::function<void()> destroy);
+
+    // For `buffer` released now: 0 when no retiring work uses it, else a mark that retiredThrough() accepts once
+    // every fence retiring now that uses it has been reaped.
+    uint64_t retiringMark(VkBuffer buffer) const;
+    bool retiredThrough(uint64_t mark) const;
+
 private:
     struct Queue {
         VkQueue handle = VK_NULL_HANDLE;
         std::mutex mutex;
+    };
+
+    // Shared with finishRetiring() while it waits unlocked, so that a reap meanwhile does not destroy it.
+    struct RetiringFence {
+        VkDevice device = VK_NULL_HANDLE;
+        VkFence fence = VK_NULL_HANDLE;
+        ~RetiringFence();
+    };
+
+    struct Retiring {
+        uint64_t serial = 0;
+        std::shared_ptr<RetiringFence> fence;
+        std::shared_ptr<void> holdings;
+        std::vector<std::shared_ptr<void>> deferred;
+        // Sorted.
+        std::vector<VkBuffer> buffers;
     };
 
     GpuDevice() = default;
@@ -254,6 +338,9 @@ private:
     Queue& queueFor(QueueKind kind);
     GpuStatus lostStatus() const;
     VkResult waitIdleLocked();
+    void collectSignalled(bool block);
+    void releaseReaped();
+    void parkRetiringLocked();
 
     GpuDeviceInfo info_;
     GpuDebugMessageFn debugMessage_;
@@ -266,8 +353,8 @@ private:
 
     // The distinct VkQueues, each with the lock Vulkan's external synchronization of vkQueueSubmit2 needs, and
     // the one each QueueKind submits to.
-    std::array<Queue, 3> queues_;
-    std::array<Queue*, 3> route_ {};
+    std::array<Queue, 4> queues_;
+    std::array<Queue*, 4> route_ {};
 
     // The fault plan, written by injectFault() while other threads count operations; faultAt_ 0 means none.
     std::atomic<GpuFaultPlan::Kind> faultKind_ { GpuFaultPlan::Kind::Off };
@@ -278,6 +365,14 @@ private:
     std::function<void()> onDeviceLost_;
     std::atomic<bool> lost_ { false };
     std::atomic<bool> abandoned_ { false };
+
+    mutable std::mutex retiringMutex_;
+    std::vector<Retiring> retiring_;
+    uint64_t nextRetiringSerial_ = 0;
+    std::atomic<size_t> retiringCount_ { 0 };
+    // What reaped entries held, released by the next releaseReaped().
+    std::vector<std::shared_ptr<void>> reaped_;
+    std::atomic<size_t> reapedCount_ { 0 };
 };
 
 } // namespace gpu

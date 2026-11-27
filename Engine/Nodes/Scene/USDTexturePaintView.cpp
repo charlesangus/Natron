@@ -49,6 +49,7 @@
 #include "Engine/Nodes/Scene/USDTexturePaintCache.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Project.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_ENTER
@@ -277,7 +278,7 @@ USDTexturePaintView::getPreferredMetadataAt(double /*time*/,
                                             NodeMetadata& metadata)
 {
     metadata.setBitDepth(-1, eImageBitDepthFloat);
-    metadata.setComponentsType(-1, kNatronColorLayerID);
+    metadata.setComponentsType(-1, eImageComponentsTypeColor);
     metadata.setNComps(-1, 4);
     metadata.setIsFrameVarying(true);
     const RectD bounds = paintSpaceBounds(getAspect());
@@ -344,7 +345,7 @@ USDTexturePaintView::renderView(double time,
     if (scene.isEmpty()) {
         return true;
     }
-    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, error);
+    SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(scene, SceneLoadSet::everything(), error);
     const PXR_NS::UsdStageRefPtr stage = lease.getStage();
     if (!stage) {
         if (error->empty()) {

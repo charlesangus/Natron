@@ -72,11 +72,14 @@
         <file>Resources/Fonts/DroidSans-Bold.ttf</file>
         <file>Resources/Fonts/DroidSans.ttf</file>
         <file>Resources/Icons/lucide/aperture.svg</file>
+        <file>Resources/Icons/lucide/arrow-left-from-line.svg</file>
         <file>Resources/Icons/lucide/arrow-left-right.svg</file>
         <file>Resources/Icons/lucide/arrow-left.svg</file>
+        <file>Resources/Icons/lucide/arrow-right-from-line.svg</file>
         <file>Resources/Icons/lucide/arrow-right-to-line.svg</file>
         <file>Resources/Icons/lucide/arrow-right.svg</file>
         <file>Resources/Icons/lucide/arrow-up.svg</file>
+        <file>Resources/Icons/lucide/blend.svg</file>
         <file>Resources/Icons/lucide/bold.svg</file>
         <file>Resources/Icons/lucide/box.svg</file>
         <file>Resources/Icons/lucide/brush-cleaning.svg</file>
@@ -114,6 +117,7 @@
         <file>Resources/Icons/lucide/fullscreen.svg</file>
         <file>Resources/Icons/lucide/glasses.svg</file>
         <file>Resources/Icons/lucide/hard-drive.svg</file>
+        <file>Resources/Icons/lucide/house.svg</file>
         <file>Resources/Icons/lucide/image.svg</file>
         <file>Resources/Icons/lucide/info.svg</file>
         <file>Resources/Icons/lucide/italic.svg</file>
@@ -124,6 +128,7 @@
         <file>Resources/Icons/lucide/list-checks.svg</file>
         <file>Resources/Icons/lucide/list-filter.svg</file>
         <file>Resources/Icons/lucide/list-x.svg</file>
+        <file>Resources/Icons/lucide/list.svg</file>
         <file>Resources/Icons/lucide/locate-fixed.svg</file>
         <file>Resources/Icons/lucide/lock-open.svg</file>
         <file>Resources/Icons/lucide/lock.svg</file>
@@ -171,6 +176,7 @@
         <file>Resources/Icons/lucide/step-forward.svg</file>
         <file>Resources/Icons/lucide/sun.svg</file>
         <file>Resources/Icons/lucide/swatch-book.svg</file>
+        <file>Resources/Icons/lucide/table.svg</file>
         <file>Resources/Icons/lucide/tags.svg</file>
         <file>Resources/Icons/lucide/tangent.svg</file>
         <file>Resources/Icons/lucide/timer.svg</file>

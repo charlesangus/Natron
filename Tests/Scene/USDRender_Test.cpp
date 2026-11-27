@@ -34,12 +34,17 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <future>
 #include <iostream>
 #include <limits>
 #include <list>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
+#include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <unistd.h>
@@ -67,12 +72,17 @@
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
+#include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
+#include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
+#include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
@@ -81,8 +91,25 @@
 #include "ofxNatron.h"
 
 #ifdef NATRON_HAVE_GPU
+#include "Engine/AbortableRenderInfo.h"
+#include "Engine/FrameRenderContext.h"
 #include "Engine/Gpu/GpuBufferPool.h"
 #include "Engine/Gpu/GpuRuntime.h"
+#include "Engine/GpuPlacement.h"
+#include "Engine/GpuRegionStrips.h"
+#include "Engine/Image.h"
+#include "Engine/Nodes/Color/Grade.h"
+#include "Engine/Nodes/Image/GpuRender.h"
+#include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
+#include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
+#include "Engine/ParallelRenderArgs.h"
+#include "Engine/RenderScheduler.h"
+#include "Engine/RenderStats.h"
+#include "Engine/TimeLine.h"
+#include "Gpu/GpuTestDevice.h"
 #endif
 
 NATRON_NAMESPACE_USING
@@ -90,6 +117,8 @@ NATRON_NAMESPACE_USING
 namespace {
 const char* const kFixture = NATRON_TESTS_FIXTURES_DIR "/scene-reference.usda";
 const char* const kInstancerFixture = NATRON_TESTS_FIXTURES_DIR "/scene-instancer-prototypes.usda";
+const char* const kPurposeFixture = NATRON_TESTS_FIXTURES_DIR "/scene-purposes.usda";
+const char* const kNestedInstancesFixture = NATRON_TESTS_FIXTURES_DIR "/scene-nested-instances.usda";
 const int kWidth = 200;
 const int kHeight = 100;
 
@@ -199,6 +228,109 @@ referenceRequest(const PXR_NS::UsdStageRefPtr& stage,
     EXPECT_TRUE(HydraRender::cameraFrustum(stage, PXR_NS::SdfPath("/World/Cam"), request.time, double(kWidth) / kHeight, HydraRender::eFitModeFill, &request.frustum, &error)) << error;
 
     return request;
+}
+} // anonymous namespace
+
+namespace {
+// Storm's default resolve keeps one MSAA sample per pixel, off the centre by a fraction of a pixel, so
+// its depth moves with the surface's slope and no tolerance on depth alone separates that from a wrong
+// ray. USDRenderSingleSampleTest therefore runs Storm with one sample, at the pixel's centre as a ray
+// is. Float window depth then leaves a worst difference of 1.2e-6 on the reference scene.
+const double kCentreDepthTolerance = 1e-5;
+
+// A centre within rounding of a silhouette can land either side of it, as Storm's fill rule and the
+// ray's test need not agree there: 0 pixels on the reference scene and 4 on the nested instances. A
+// sampling shift disagrees along whole edges, 26 pixels already for the offset of Storm's MSAA sample.
+const std::size_t kSilhouetteTies = 8;
+
+bool
+sameBits(float a,
+         float b)
+{
+    return std::memcmp(&a, &b, sizeof(float)) == 0;
+}
+
+// Holds a render's depth and primId to single-sample Storm's on every pixel, and returns how many
+// pixels hit the same prim in both.
+std::size_t
+expectMatchesSingleSampleStorm(const std::vector<float>& stormDepth,
+                               const std::vector<float>& stormPrimId,
+                               const std::vector<float>& depth,
+                               const std::vector<float>& primId)
+{
+    std::size_t compared = 0;
+    std::size_t primIdFailures = 0;
+    std::size_t depthFailures = 0;
+    double worst = 0.;
+
+    for (std::size_t i = 0; i < stormDepth.size(); ++i) {
+        if (!sameBits(primId[i], stormPrimId[i])) {
+            ++primIdFailures;
+            continue;
+        }
+        if (!std::isfinite(stormDepth[i]) && !std::isfinite(depth[i])) {
+            continue;
+        }
+        ++compared;
+
+        const double relative = std::fabs((double)depth[i] - stormDepth[i]) / std::max(std::fabs((double)depth[i]), std::fabs((double)stormDepth[i]));
+
+        worst = std::max(worst, relative);
+        if (!(relative <= kCentreDepthTolerance)) {
+            ++depthFailures;
+        }
+    }
+    EXPECT_LE(primIdFailures, kSilhouetteTies);
+    EXPECT_EQ(0u, depthFailures) << "worst relative depth difference " << worst;
+    std::cout << "[ depth  ] " << compared << " pixels, worst relative difference from Storm " << worst << ", " << primIdFailures << " primId differences" << std::endl;
+
+    return compared;
+}
+
+std::set<std::string>
+primsIn(const std::vector<float>& primId,
+        const std::vector<std::string>& candidates)
+{
+    std::set<std::string> shown;
+
+    for (const std::string& path : candidates) {
+        const float value = HydraRender::hashToFloat(HydraRender::primPathHash(path));
+        for (const float pixel : primId) {
+            if (sameBits(pixel, value)) {
+                shown.insert(path);
+                break;
+            }
+        }
+    }
+
+    return shown;
+}
+
+// Each instance of the nested fixture has its own side of the frame, so a flattened list in the wrong
+// order names a wrong instance's path at these pixels.
+void
+expectNestedInstancesInPlace(const HydraRender::Result& result)
+{
+    const std::vector<std::string> paths = { "/World/Zed/Upper/Geo", "/World/Zed/Lower/Geo", "/World/Alpha/Upper/Geo", "/World/Alpha/Lower/Geo" };
+
+    for (const std::string& path : paths) {
+        EXPECT_EQ(1u, result.primPaths.count(HydraRender::primPathHash(path))) << path;
+    }
+    for (int y = 0; y < kHeight; ++y) {
+        for (int x = 0; x < kWidth; ++x) {
+            const float value = result.primId[(std::size_t)y * kWidth + x];
+            if (sameBits(value, 0.f)) {
+                continue;
+            }
+            std::uint32_t hash = 0;
+            std::memcpy(&hash, &value, sizeof(hash));
+            const std::map<std::uint32_t, std::string>::const_iterator found = result.primPaths.find(hash);
+            ASSERT_TRUE(found != result.primPaths.end()) << "pixel " << x << ", " << y;
+            const std::string& path = found->second;
+            ASSERT_EQ(x < kWidth / 2, path.rfind("/World/Zed/", 0) == 0) << path << " at " << x << ", " << y;
+            ASSERT_EQ(y >= kHeight / 2, path.find("/Upper/") != std::string::npos) << path << " at " << x << ", " << y;
+        }
+    }
 }
 } // anonymous namespace
 
@@ -508,11 +640,11 @@ protected:
         return node ? dynamic_cast<USDRender*>(node->getEffectInstance().get()) : nullptr;
     }
 
-    // The renderer node renders frame 1 with, empty with *error set if it cannot tell.
+    // The renderer node renders frame 1 with, empty with *error set if it cannot tell. Asked off
+    // the main thread, which is given a provisional answer until a worker read the settings.
     static std::string activeRendererOf(const NodePtr& node,
                                         std::string* error)
     {
-        std::string id;
         USDRender* render = renderOf(node);
         if (!render) {
             *error = "not a USDRender";
@@ -520,17 +652,35 @@ protected:
             return std::string();
         }
 
-        return render->activeRenderer(1., ViewIdx(0), &id, error) ? id : std::string();
+        return std::async(std::launch::async, [render, error]() {
+            std::string id;
+
+            return render->activeRenderer(1., ViewIdx(0), &id, error) ? id : std::string(); }).get();
     }
 
-    // The node's output format as its region of definition at frame 1.
+    // Refreshes effect's Settings Prim menu and waits for its entries.
+    static void refreshSettingsPrimMenuOf(USDRender* effect)
+    {
+        const std::shared_ptr<SceneMenuJob> job = effect->refreshSettingsPrimMenu();
+        ASSERT_TRUE(job != nullptr);
+        job->wait();
+        EXPECT_TRUE(effect->applySettingsPrimMenu(job));
+    }
+
+    // The node's output format as its region of definition at frame 1, asked off the main thread
+    // as activeRendererOf() is.
     static RectD rodOf(const NodePtr& node)
     {
         RectD rod;
         USDRender* render = renderOf(node);
         EXPECT_TRUE(render != nullptr);
         if (render) {
-            EXPECT_EQ(eStatusOK, render->getRegionOfDefinition(node->getHashValue(), 1., RenderScale::identity, ViewIdx(0), &rod));
+            const U64 hash = node->getHashValue();
+            rod = std::async(std::launch::async, [render, hash]() {
+                RectD r;
+                EXPECT_EQ(eStatusOK, render->getRegionOfDefinition(hash, 1., RenderScale::identity, ViewIdx(0), &r));
+
+                return r; }).get();
         }
 
         return rod;
@@ -540,8 +690,8 @@ protected:
     {
         std::list<ImageLayerDesc> layers;
         layers.push_back(ImageLayerDesc::getRGBAComponents());
-        layers.push_back(ImageLayerDesc("depth", "depth", "", std::vector<std::string>(1, "Z")));
-        layers.push_back(ImageLayerDesc("primId", "primId", "", std::vector<std::string>(1, "id")));
+        layers.push_back(ImageLayerDesc("depth", std::vector<std::string>(1, "Z")));
+        layers.push_back(ImageLayerDesc("primId", std::vector<std::string>(1, "id")));
 
         return layers;
     }
@@ -553,7 +703,7 @@ TEST_F(USDRenderNodeTest, TheSettingsPrimMenuListsTheScenesRenderSettingsPrims)
     ASSERT_TRUE(node != nullptr);
     USDRender* effect = renderOf(node);
     ASSERT_TRUE(effect);
-    effect->refreshSettingsPrimMenu();
+    refreshSettingsPrimMenuOf(effect);
     KnobChoice* settingsPrim = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDRenderParamSettingsPrim).get());
     ASSERT_TRUE(settingsPrim);
     const std::vector<ChoiceOption> entries = settingsPrim->getEntries_mt_safe();
@@ -580,13 +730,23 @@ TEST_F(USDRenderNodeTest, ThePrimsResolutionIsTheFormat)
     EXPECT_EQ(32., rod.y2);
 }
 
+namespace {
+// The output metadata as a reader off the main thread derives it: the main thread is only served
+// the primId table a render or such a reader stored.
+ImageMetadata
+outputMetadataOffTheMainThread(NativeEffectBase* effect)
+{
+    return std::async(std::launch::async, [effect]() { return effect->getOutputMetadata(1., ViewIdx(0)); }).get();
+}
+} // anonymous namespace
+
 TEST_F(USDRenderNodeTest, MetadataMapsEveryPrimIdToItsPath)
 {
     NodePtr node = createRender();
     ASSERT_TRUE(node != nullptr);
     NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
     ASSERT_TRUE(effect);
-    const ImageMetadata metadata = effect->getOutputMetadata(1., ViewIdx(0));
+    const ImageMetadata metadata = outputMetadataOffTheMainThread(effect);
     for (const char* path : { "/World/Box", "/World/Ball" }) {
         char key[32];
         std::snprintf(key, sizeof(key), kUSDRenderMetadataPrimIdPrefix "%08x", HydraRender::primPathHash(path));
@@ -602,7 +762,7 @@ TEST_F(USDRenderNodeTest, MetadataNamesInstancerPrototypesAndSkipsGuides)
     ASSERT_TRUE(node != nullptr);
     NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
     ASSERT_TRUE(effect);
-    const ImageMetadata metadata = effect->getOutputMetadata(1., ViewIdx(0));
+    const ImageMetadata metadata = outputMetadataOffTheMainThread(effect);
     auto lookup = [&metadata](const char* path) {
         char key[32];
         std::snprintf(key, sizeof(key), kUSDRenderMetadataPrimIdPrefix "%08x", HydraRender::primPathHash(path));
@@ -800,6 +960,139 @@ TEST_F(USDRenderRendererTest, TheRendererKnobBeatsThePrimWhichBeatsStorm)
     EXPECT_EQ(std::string(kRenderDelegateStormId), activeRendererOf(node, &error)) << error;
 }
 
+// Natron Utility's overscan widens the output by its pixels on every side, and only while Natron
+// Utility renders; a UV Unwrap's texels have nothing beyond them.
+TEST_F(USDRenderRendererTest, UtilityOverscanGrowsTheOutputOnEverySide)
+{
+    NodePtr settings;
+    NodePtr node = createRender(kFixture, &settings);
+    ASSERT_TRUE(node != nullptr);
+    USDRenderSettings* effect = dynamic_cast<USDRenderSettings*>(settings->getEffectInstance().get());
+    ASSERT_TRUE(effect && effect->renderSettings());
+    KnobInt* overscan = dynamic_cast<KnobInt*>(effect->renderSettings()->knob(kRenderDelegateUtilityId, kUtilitySettingOverscan).get());
+    KnobChoice* projection = dynamic_cast<KnobChoice*>(effect->renderSettings()->knob(kRenderDelegateUtilityId, kUtilitySettingProjection).get());
+    ASSERT_TRUE(overscan && projection);
+    overscan->setValue(16);
+    ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateStormId));
+    RectD rod = rodOf(node);
+    EXPECT_EQ(0., rod.x1);
+    EXPECT_EQ((double)kWidth, rod.x2);
+
+    ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateUtilityId));
+    rod = rodOf(node);
+    EXPECT_EQ(-16., rod.x1);
+    EXPECT_EQ(-16., rod.y1);
+    EXPECT_EQ(kWidth + 16., rod.x2);
+    EXPECT_EQ(kHeight + 16., rod.y2);
+    EXPECT_EQ(kWidth + 32., rod.width());
+    EXPECT_EQ(kHeight + 32., rod.height());
+
+    (void)projection->setValueFromID(kUtilityProjectionUvUnwrap, 0);
+    rod = rodOf(node);
+    EXPECT_EQ(0., rod.x1);
+    EXPECT_EQ((double)kWidth, rod.x2);
+}
+
+namespace {
+const int kBakeTexels = 16;
+
+// A quad with stLines for its UVs and no camera, baked over tile 1001 by a RenderSettings prim with
+// cameraLine, of the prim at uvPrim.
+std::string
+bakeScene(const std::string& cameraLine,
+          const std::string& stLines,
+          const std::string& uvPrim)
+{
+    const std::string id = kRenderDelegateUtilityId;
+
+    return std::string("#usda 1.0\n(\n    renderSettingsPrimPath = \"/Render/bake\"\n)\n\n"
+                       "def Xform \"World\"\n{\n    def Mesh \"Quad\"\n    {\n"
+                       "        uniform token subdivisionScheme = \"none\"\n"
+                       "        int[] faceVertexCounts = [4]\n        int[] faceVertexIndices = [0, 1, 2, 3]\n"
+                       "        point3f[] points = [(-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0)]\n")
+        + stLines + "    }\n}\n\n"
+        + "def Scope \"Render\"\n{\n    def RenderSettings \"bake\"\n    {\n" + cameraLine
+        + "        uniform int2 resolution = (" + std::to_string(kBakeTexels) + ", " + std::to_string(kBakeTexels) + ")\n"
+        + "        token " + RenderSettingsPrim::attributeName(id, kUtilitySettingDevice) + " = \"" + kUtilityDeviceCpu + "\"\n"
+        + "        int " + RenderSettingsPrim::attributeName(id, kUtilitySettingPixelSamples) + " = 1\n"
+        + "        token " + RenderSettingsPrim::attributeName(id, kUtilitySettingProjection) + " = \"" + kUtilityProjectionUvUnwrap + "\"\n"
+        + "        string " + RenderSettingsPrim::attributeName(id, kUtilitySettingUvPrim) + " = \"" + uvPrim + "\"\n"
+        + "        string " + RenderSettingsPrim::attributeName(id, kUtilitySettingUvPrimvar) + " = \"st\"\n"
+        + "    }\n}\n";
+}
+
+const char* const kBakeFaceVaryingSt = "        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (\n"
+                                       "            interpolation = \"faceVarying\"\n        )\n";
+} // anon namespace
+
+// A bake needs no camera, so a scene without the one its settings name, or without any, still
+// bakes; a bake that cannot lay out its prim fails with the reason as the node's error.
+TEST_F(USDRenderRendererTest, AUvUnwrapBakesWithoutACameraAndFailsWithItsReasonOnTheNode)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    struct Case {
+        const char* name;
+        std::string text;
+        std::vector<std::string> named;
+    };
+    const std::string missingCamera = "        rel camera = </World/Cam>\n";
+    const std::vector<Case> cases = {
+        { "a camera the scene lacks", bakeScene(missingCamera, kBakeFaceVaryingSt, "/World/Quad"), {} },
+        { "no camera", bakeScene(std::string(), kBakeFaceVaryingSt, "/World/Quad"), {} },
+        { "no primvar", bakeScene(missingCamera, std::string(), "/World/Quad"), { "/World/Quad", "\"st\"" } },
+        { "a uniform primvar", bakeScene(missingCamera, "        texCoord2f[] primvars:st = [(0.5, 0.5)] (\n            interpolation = \"uniform\"\n        )\n", "/World/Quad"), { "/World/Quad", "\"st\"", "constant or uniform" } },
+        { "no prim", bakeScene(missingCamera, kBakeFaceVaryingSt, "/World/Gone"), { "/World/Gone" } },
+    };
+    std::vector<std::string> paths;
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        const QString filePath = tmp.path() + QString::fromUtf8("/bake-%1.usda").arg((int)i);
+        QFile file(filePath);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        ASSERT_GT(file.write(cases[i].text.c_str()), 0);
+        paths.push_back(filePath.toStdString());
+    }
+    NodePtr reader = createReader(paths[0].c_str());
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(reader && node);
+    connectNodes(reader, node, 0, true);
+    USDRender* effect = renderOf(node);
+    ASSERT_TRUE(effect);
+    effect->refreshSettingsPrimMenu();
+    ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateUtilityId));
+    KnobFile* file = dynamic_cast<KnobFile*>(reader->getKnobByName(kUSDReadParamFile).get());
+    ASSERT_TRUE(file);
+
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        const Case& c = cases[i];
+        file->setValue(paths[i]);
+        appPTR->clearAllCaches();
+        node->clearPersistentMessage(false);
+        ASSERT_FALSE(node->hasPersistentMessage()) << c.name;
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        const bool rendered = renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kBakeTexels, kBakeTexels), allPlanes(), &planes, &error, false);
+        if (c.named.empty()) {
+            ASSERT_TRUE(rendered) << c.name << ": " << error;
+            ASSERT_EQ(3u, planes.size()) << c.name;
+            ASSERT_EQ((std::size_t)kBakeTexels * kBakeTexels, planes[2].pixels.size()) << c.name;
+            const std::ptrdiff_t empty = std::count(planes[2].pixels.begin(), planes[2].pixels.end(), 0.f);
+            EXPECT_EQ(0, empty) << c.name << ": the quad's UVs cover the whole tile";
+            continue;
+        }
+        EXPECT_FALSE(rendered) << c.name;
+        ASSERT_TRUE(node->hasPersistentMessage()) << c.name;
+        QString message;
+        int type = -1;
+        node->getPersistentMessage(&message, &type, false);
+        EXPECT_EQ((int)eMessageTypeError, type) << c.name;
+        for (const std::string& part : c.named) {
+            EXPECT_TRUE(message.contains(QString::fromStdString(part))) << c.name << ": " << message.toStdString();
+        }
+    }
+    HydraRender::releaseAllCpuEngines();
+}
+
 // The Settings Prim knob beats the stage's renderSettingsPrimPath metadata.
 TEST_F(USDRenderRendererTest, TheSettingsPrimKnobBeatsTheStageMetadata)
 {
@@ -827,7 +1120,7 @@ TEST_F(USDRenderRendererTest, TheSettingsPrimKnobBeatsTheStageMetadata)
 
     USDRender* effect = renderOf(node);
     ASSERT_TRUE(effect);
-    effect->refreshSettingsPrimMenu();
+    refreshSettingsPrimMenuOf(effect);
     KnobChoice* settingsPrim = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDRenderParamSettingsPrim).get());
     ASSERT_TRUE(settingsPrim);
     const std::vector<ChoiceOption> entries = settingsPrim->getEntries_mt_safe();
@@ -956,7 +1249,7 @@ TEST_F(USDRenderRendererTest, AHandWrittenRenderSettingsPrimIsHonoured)
 
     USDRender* effect = renderOf(node);
     ASSERT_TRUE(effect);
-    effect->refreshSettingsPrimMenu();
+    refreshSettingsPrimMenuOf(effect);
     KnobChoice* settingsPrim = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDRenderParamSettingsPrim).get());
     ASSERT_TRUE(settingsPrim);
     const std::vector<ChoiceOption> entries = settingsPrim->getEntries_mt_safe();
@@ -1000,18 +1293,759 @@ TEST_F(USDRenderRendererTest, AHandWrittenRenderSettingsPrimIsHonoured)
     HydraRender::releaseAllCpuEngines();
 }
 
+namespace {
+// A box seen by /World/Cam, whose shutter opens and closes at open and close; settings, attribute
+// lines for the RenderSettings prim, override it.
+std::string
+shutterScene(double open,
+             double close,
+             const std::string& settings)
+{
+    return std::string("#usda 1.0\n(\n    renderSettingsPrimPath = \"/Render/shot\"\n)\n\n"
+                       "def Xform \"World\"\n{\n    def Cube \"Box\"\n    {\n        double size = 2\n    }\n\n"
+                       "    def Camera \"Cam\"\n    {\n        double3 xformOp:translate = (0, 0, 10)\n"
+                       "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+                       "        double shutter:open = ")
+        + std::to_string(open) + "\n        double shutter:close = " + std::to_string(close) + "\n    }\n}\n\n"
+        + "def Scope \"Render\"\n{\n    def RenderSettings \"shot\"\n    {\n        rel camera = </World/Cam>\n"
+          "        uniform int2 resolution = (32, 16)\n"
+        + settings + "    }\n}\n";
+}
+} // anon namespace
+
+TEST_F(USDRenderRendererTest, TheShutterReachesNatronUtilityAndTheHash)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string id = kRenderDelegateUtilityId;
+    const std::string overrides = std::string("        bool ") + RenderSettingsPrim::attributeName(id, kUtilitySettingOverrideShutter) + " = 1\n"
+        + "        float " + RenderSettingsPrim::attributeName(id, kUtilitySettingShutter) + " = 1\n"
+        + "        token " + RenderSettingsPrim::attributeName(id, kUtilitySettingShutterOffset) + " = \"" + kUtilityShutterStart + "\"\n";
+    const std::string noBlur = std::string("        bool ") + RenderSettingsPrim::attributeName(id, kUtilitySettingCameraMotionBlur) + " = 0\n"
+        + "        bool " + RenderSettingsPrim::attributeName(id, kUtilitySettingTransformMotionBlur) + " = 0\n"
+        + "        bool " + RenderSettingsPrim::attributeName(id, kUtilitySettingDeformationMotionBlur) + " = 0\n";
+    struct Case {
+        const char* name;
+        std::string text;
+        PXR_NS::GfVec2d interval;
+    };
+    const std::vector<Case> cases = {
+        { "centred", shutterScene(-0.25, 0.25, std::string()), PXR_NS::GfVec2d(-0.25, 0.25) },
+        { "opening", shutterScene(0., 0.5, std::string()), PXR_NS::GfVec2d(0., 0.5) },
+        { "overridden", shutterScene(0., 0.5, overrides), PXR_NS::GfVec2d(0., 1.) },
+        { "unblurred", shutterScene(0., 0.5, noBlur), PXR_NS::GfVec2d(0., 0.) },
+    };
+    std::vector<std::string> paths;
+    for (const Case& c : cases) {
+        const QString filePath = tmp.path() + QString::fromUtf8("/shutter-") + QString::fromUtf8(c.name) + QString::fromUtf8(".usda");
+        QFile file(filePath);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        ASSERT_GT(file.write(c.text.c_str()), 0);
+        paths.push_back(filePath.toStdString());
+    }
+    NodePtr reader = createReader(paths[0].c_str());
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(reader && node);
+    connectNodes(reader, node, 0, true);
+    USDRender* effect = renderOf(node);
+    ASSERT_TRUE(effect);
+    effect->refreshSettingsPrimMenu();
+    ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateUtilityId));
+    KnobFile* file = dynamic_cast<KnobFile*>(reader->getKnobByName(kUSDReadParamFile).get());
+    ASSERT_TRUE(file);
+    HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) }, { kUtilitySettingMaxRayDepth, PXR_NS::VtValue(0) } });
+
+    std::set<U64> hashes;
+    for (std::size_t i = 0; i < cases.size(); ++i) {
+        file->setValue(paths[i]);
+        EXPECT_TRUE(hashes.insert(node->getHashValue()).second) << cases[i].name << " left the hash of another shutter";
+        std::vector<RenderedPlane> planes;
+        std::list<ImageLayerDesc> rgba;
+        rgba.push_back(ImageLayerDesc::getRGBAComponents());
+        std::string error;
+        appPTR->clearAllCaches();
+        ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, 32, 16), rgba, &planes, &error, false)) << cases[i].name << ": " << error;
+        PXR_NS::VtValue interval;
+        ASSERT_TRUE(HydraRender::engineSetting(effect, kRenderDelegateUtilityShutterSetting, &interval)) << cases[i].name;
+        ASSERT_TRUE(interval.IsHolding<PXR_NS::GfVec2d>()) << cases[i].name;
+        EXPECT_EQ(cases[i].interval, interval.UncheckedGet<PXR_NS::GfVec2d>()) << cases[i].name;
+    }
+    HydraRender::setRendererSettings(kRenderDelegateUtilityId, {});
+    HydraRender::releaseAllCpuEngines();
+}
+
 TEST_F(USDRenderRendererTest, ChangingTheRendererChangesTheHash)
 {
     NodePtr node = createRender();
     ASSERT_TRUE(bool(node));
     KnobChoice* renderer = rendererKnob(node);
     ASSERT_TRUE(renderer);
+    // A USDRead's hash is a placeholder until its first evaluation walks the file; settle it so the
+    // hashes below are not taken across that change.
+    std::string error;
+    ASSERT_FALSE(activeRendererOf(node, &error).empty()) << error;
     const U64 stormHash = node->getHashValue();
     ASSERT_TRUE(selectRenderer(renderer, kStubRendererId));
     const U64 stubHash = node->getHashValue();
     EXPECT_NE(stormHash, stubHash);
     ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateSceneDefaultId));
     EXPECT_EQ(stormHash, node->getHashValue());
+}
+
+// HDX_MSAA_SAMPLE_COUNT is read once per process and would change the bits of every other Storm render
+// in it, so Tests/SuiteProperties.cmake sets it for this suite's process alone.
+class USDRenderSingleSampleTest
+    : public USDRenderRendererTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        USDRenderRendererTest::SetUp();
+        // Natron Utility too traces one ray through each pixel's centre, and Storm renders the cage,
+        // which a level above 0 would refine on the Utility side. Storm has no reflections.
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) }, { kUtilitySettingSubdivLevel, PXR_NS::VtValue(0) }, { kUtilitySettingMaxRayDepth, PXR_NS::VtValue(0) } });
+        const char* samples = std::getenv("HDX_MSAA_SAMPLE_COUNT");
+        ASSERT_TRUE(samples && (std::strcmp(samples, "1") == 0)) << "run this suite alone with HDX_MSAA_SAMPLE_COUNT=1, as ctest does";
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        HydraRender::setRendererSettings(kRenderDelegateUtilityId, {});
+        USDRenderRendererTest::TearDown();
+    }
+};
+
+TEST_F(USDRenderSingleSampleTest, NatronUtilityMatchesStorm)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr node = createRender();
+    ASSERT_TRUE(bool(node));
+    KnobChoice* renderer = rendererKnob(node);
+    ASSERT_TRUE(renderer);
+    const RectI window(0, 0, kWidth, kHeight);
+    std::vector<RenderedPlane> storm;
+    std::vector<RenderedPlane> utility;
+    std::string error;
+
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, window, allPlanes(), &storm, &error)) << error;
+    ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateUtilityId));
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, window, allPlanes(), &utility, &error)) << error;
+    ASSERT_EQ(3u, storm.size());
+    ASSERT_EQ(3u, utility.size());
+
+    const std::size_t pixels = (std::size_t)kWidth * kHeight;
+    ASSERT_EQ(pixels * 4, utility[0].pixels.size());
+    ASSERT_EQ(pixels, utility[1].pixels.size());
+    ASSERT_EQ(pixels, utility[2].pixels.size());
+
+    const std::size_t compared = expectMatchesSingleSampleStorm(storm[1].pixels, storm[2].pixels, utility[1].pixels, utility[2].pixels);
+    EXPECT_GT(compared, 100u);
+
+    const float boxId = HydraRender::hashToFloat(HydraRender::primPathHash("/World/Box"));
+    const float ballId = HydraRender::hashToFloat(HydraRender::primPathHash("/World/Ball"));
+    std::size_t boxPixels = 0;
+    std::size_t ballPixels = 0;
+    for (std::size_t i = 0; i < pixels; ++i) {
+        if (sameBits(utility[2].pixels[i], ballId)) {
+            ++ballPixels;
+        } else if (sameBits(utility[2].pixels[i], boxId)) {
+            ++boxPixels;
+            // The box has no material and the scene no light, which leaves it unlit.
+            EXPECT_EQ(0.f, utility[0].pixels[i * 4]);
+            EXPECT_EQ(0.f, utility[0].pixels[i * 4 + 1]);
+            EXPECT_EQ(0.f, utility[0].pixels[i * 4 + 2]);
+            EXPECT_EQ(1.f, utility[0].pixels[i * 4 + 3]);
+        }
+    }
+    EXPECT_GT(boxPixels, 100u);
+    EXPECT_GT(ballPixels, 0u);
+}
+
+TEST_F(USDRenderSingleSampleTest, NatronUtilityPicksNestedInstancesAsStormDoes)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kNestedInstancesFixture);
+    ASSERT_TRUE(stage);
+    const int stormOwner = 0;
+    const int utilityOwner = 0;
+    HydraRender::Request request = referenceRequest(stage, 1., &stormOwner);
+    HydraRender::Result storm;
+    HydraRender::Result utility;
+    std::string error;
+
+    ASSERT_TRUE(HydraRender::render(request, &storm, &error)) << error;
+    expectNestedInstancesInPlace(storm);
+    request.owner = &utilityOwner;
+    request.renderer = kRenderDelegateUtilityId;
+    ASSERT_TRUE(HydraRender::render(request, &utility, &error)) << error;
+    EXPECT_GT(expectMatchesSingleSampleStorm(storm.depth, storm.primId, utility.depth, utility.primId), 100u);
+    HydraRender::releaseAll();
+}
+
+TEST_F(USDRenderRendererTest, ThePurposeKnobsDefaultToRenderOnlyAndChooseWhatEachRendererDraws)
+{
+    NodePtr node = createRender(kPurposeFixture);
+    ASSERT_TRUE(bool(node));
+    KnobBool* render = dynamic_cast<KnobBool*>(node->getKnobByName(kUSDRenderParamRenderPurpose).get());
+    KnobBool* proxy = dynamic_cast<KnobBool*>(node->getKnobByName(kUSDRenderParamProxyPurpose).get());
+    KnobBool* guide = dynamic_cast<KnobBool*>(node->getKnobByName(kUSDRenderParamGuidePurpose).get());
+    KnobChoice* renderer = rendererKnob(node);
+    ASSERT_TRUE(render && proxy && guide && renderer);
+    EXPECT_EQ(std::string("Render Purpose"), render->getLabel());
+    EXPECT_EQ(std::string("Proxy Purpose"), proxy->getLabel());
+    EXPECT_EQ(std::string("Guide Purpose"), guide->getLabel());
+    EXPECT_TRUE(render->getValue());
+    EXPECT_FALSE(proxy->getValue());
+    EXPECT_FALSE(guide->getValue());
+
+    const std::string defaultPrim = "/World/Default";
+    const std::string renderPrim = "/World/Render";
+    const std::string proxyPrim = "/World/Proxy";
+    const std::string guidePrim = "/World/Guide";
+    const std::vector<std::string> prims = { defaultPrim, renderPrim, proxyPrim, guidePrim };
+    const auto shown = [&node, &prims]() {
+        std::vector<RenderedPlane> planes;
+        std::string error;
+
+        EXPECT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), &planes, &error)) << error;
+
+        return planes.size() == 3 ? primsIn(planes[2].pixels, prims) : std::set<std::string>();
+    };
+    const auto expectToggles = [&]() {
+        EXPECT_EQ(std::set<std::string>({ defaultPrim, renderPrim }), shown());
+        const U64 defaultHash = node->getHashValue();
+        proxy->setValue(true);
+        EXPECT_NE(defaultHash, node->getHashValue());
+        EXPECT_EQ(std::set<std::string>({ defaultPrim, renderPrim, proxyPrim }), shown());
+        render->setValue(false);
+        EXPECT_EQ(std::set<std::string>({ defaultPrim, proxyPrim }), shown());
+        guide->setValue(true);
+        EXPECT_EQ(std::set<std::string>({ defaultPrim, proxyPrim, guidePrim }), shown());
+        proxy->setValue(false);
+        guide->setValue(false);
+        render->setValue(true);
+        EXPECT_EQ(std::set<std::string>({ defaultPrim, renderPrim }), shown());
+    };
+
+    ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateUtilityId));
+    expectToggles();
+    if (skipWithoutGL()) {
+        return;
+    }
+    ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateStormId));
+    expectToggles();
+}
+
+#ifdef NATRON_HAVE_GPU
+namespace {
+// Puts a forced GPU context in the application's place while it lives, since the application's may
+// refuse a CPU-type device. The Utility engines hold the context's runtime, so they go first. A non-zero
+// poolBudget caps the runtime's buffer pool, so that a frame runs out of device memory.
+class OwnGpuContext {
+public:
+    explicit OwnGpuContext(std::uint64_t poolBudget = 0)
+    {
+        GpuContextOptions options;
+        std::shared_ptr<std::string> logged = std::make_shared<std::string>();
+
+        options.mode = GpuResolvedMode::Force;
+        options.device = gputest::cpuFallbackSelector();
+        options.infoLog = [logged](const std::string& line) {
+            *logged = line;
+        };
+
+        std::unique_ptr<GpuContext> own(new GpuContext(options));
+
+        if (!own->waitForInit(std::chrono::seconds(60)) || !own->isAvailable()) {
+            unavailable = logged->empty() ? std::string("the GPU context did not come up") : *logged;
+
+            return;
+        }
+        if (poolBudget) {
+            own->runtime()->pool().setUserBudget(poolBudget);
+        }
+        _saved = appPTR->swapGpuContextForTests(std::move(own));
+        _swapped = true;
+    }
+
+    ~OwnGpuContext()
+    {
+        HydraRender::releaseAll();
+        appPTR->clearAllCaches();
+        if (_swapped) {
+            appPTR->swapGpuContextForTests(std::move(_saved));
+        }
+    }
+
+    gpu::GpuRuntime* runtime() const
+    {
+        return _swapped ? appPTR->getGpuContext()->runtime() : nullptr;
+    }
+
+    std::string unavailable;
+
+private:
+    std::unique_ptr<GpuContext> _saved;
+    bool _swapped = false;
+};
+
+const std::uint64_t kStarvedPoolBytes = 1024;
+} // anon namespace
+
+TEST_F(USDRenderRendererTest, AnAutoUtilityRenderThatFallsBackToTheCpuWarnsOnTheNode)
+{
+    OwnGpuContext gpu(kStarvedPoolBytes);
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << missing;
+    }
+
+    NodePtr node = createRender();
+    ASSERT_TRUE(bool(node));
+    KnobChoice* renderer = rendererKnob(node);
+    ASSERT_TRUE(renderer);
+    ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateUtilityId));
+    HydraRender::releaseAll();
+
+    std::vector<RenderedPlane> planes;
+    std::string error;
+
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), &planes, &error)) << error;
+    ASSERT_TRUE(node->hasPersistentMessage());
+
+    QString message;
+    int type = -1;
+
+    node->getPersistentMessage(&message, &type, false);
+    EXPECT_EQ((int)eMessageTypeWarning, type);
+    EXPECT_TRUE(message.contains(QString::fromUtf8("out of memory"))) << message.toStdString();
+    EXPECT_TRUE(message.contains(QString::fromUtf8("Rendered on CPU"))) << message.toStdString();
+    HydraRender::releaseAll();
+}
+
+namespace {
+struct SchedulerFrame {
+    AbortableRenderInfoPtr abortInfo;
+    RenderStatsPtr stats;
+    FrameRenderContextPtr context;
+    FrameFuturePtr future;
+};
+} // anon namespace
+
+class USDRenderUtilityGpuTest
+    : public USDRenderRendererTest {
+protected:
+    // Sets the Device menu the settings node shows for Natron Utility to the entry device.
+    static bool selectUtilityDevice(const NodePtr& settings,
+                                    const std::string& device)
+    {
+        const USDRenderSettings* effect = dynamic_cast<const USDRenderSettings*>(settings->getEffectInstance().get());
+        const RenderSettingsKnobs* knobs = effect ? effect->renderSettings() : nullptr;
+
+        if (!knobs) {
+            return false;
+        }
+        for (const std::pair<std::string, std::string>& setting : knobs->audit(kRenderDelegateUtilityId)) {
+            if (setting.first == kUtilitySettingDevice) {
+                KnobChoice* knob = dynamic_cast<KnobChoice*>(settings->getKnobByName(setting.second).get());
+
+                return knob && selectRenderer(knob, device);
+            }
+        }
+
+        return false;
+    }
+
+    // Renders root's colour over the format as a frame of the scheduler, with the tasks of gpuNodes
+    // placed on the GPU as placeGraph() would if every region were accepted.
+    bool renderFrame(const NodePtr& root,
+                     const std::vector<NodePtr>& gpuNodes,
+                     SchedulerFrame* run,
+                     std::string* error)
+    {
+        const double time = 1.;
+
+        run->abortInfo = AbortableRenderInfo::create(true, 0);
+        run->stats = std::make_shared<RenderStats>(false);
+
+        ParallelRenderArgsSetter frameArgs(time, ViewIdx(0), false, false, run->abortInfo, root, 0, getApp()->getTimeLine().get(), NodePtr(), false, false, run->stats);
+        std::shared_ptr<FrameRequestMap> request = std::make_shared<FrameRequestMap>();
+
+        if (EffectInstance::computeRequestPass(time, ViewIdx(0), 0, RectD(0, 0, kWidth, kHeight), root, *request) == eStatusFailed) {
+            *error = "the request pass failed";
+
+            return false;
+        }
+        frameArgs.updateNodesRequest(*request);
+        run->context = FrameRenderContext::create(time, ViewIdx(0), false, false, run->abortInfo, root, 0, getApp()->getTimeLine().get(), NodePtr(), false, false, run->stats);
+        run->context->setRequest(request);
+
+        FrameGraph graph = RenderScheduler::buildGraph(run->context, root, time, ViewIdx(0), 0);
+
+        if (graph.tasks.empty()) {
+            *error = "the frame has no task";
+
+            return false;
+        }
+        // A root nobody consumes asks for every plane it produces, and a task of several planes stays on the CPU;
+        // the viewer narrows its root to the plane it shows the same way.
+        graph.tasks.front().components = std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents());
+
+        std::set<const Node*> onGpu;
+
+        for (const NodePtr& node : gpuNodes) {
+            onGpu.insert(node.get());
+        }
+
+        const FrameRenderContextPtr context = run->context;
+        PlacementInputs inputs;
+
+        inputs.canRenderOnGpu = [onGpu, context](const FrameGraph::Task& task, GpuRefusal*) {
+            GpuQuery query;
+            const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(task.key.node->getEffectInstance().get());
+
+            return onGpu.count(task.key.node.get()) && makeGpuQueryForTask(task, *context, &query) && native && native->canRenderOnGpu(query);
+        };
+        placeGraph(graph, inputs);
+        run->future = appPTR->getRenderScheduler()->submit(run->context, std::move(graph), RenderScheduler::Priority::Interactive);
+        if (run->future->wait() != EffectInstance::eRenderRoIRetCodeOk) {
+            *error = "the frame failed";
+
+            return false;
+        }
+
+        return true;
+    }
+
+    static int gpuRunsOf(const SchedulerFrame& run,
+                         const NodePtr& node)
+    {
+        const std::map<std::string, int> runs = run.stats->getGpuTasksPerNode();
+        const std::map<std::string, int>::const_iterator found = runs.find(node->getScriptName_mt_safe());
+
+        return (found == runs.end()) ? 0 : found->second;
+    }
+
+    // The frame's root colour as float RGBA rows from the bottom one, empty if it has none.
+    static std::vector<float> rootRgba(const SchedulerFrame& run)
+    {
+        const std::map<ImageLayerDesc, ImagePtr> planes = run.future->getRootPlanes();
+
+        if (planes.empty() || !planes.begin()->second || (planes.begin()->second->getBitDepth() != eImageBitDepthFloat)) {
+            return std::vector<float>();
+        }
+
+        const ImagePtr& image = planes.begin()->second;
+        const int nComps = (int)image->getComponentsCount();
+        std::vector<float> out((std::size_t)kWidth * kHeight * 4, 0.f);
+        Image::ReadAccess access = image->getReadRights();
+
+        for (int y = 0; y < kHeight; ++y) {
+            for (int x = 0; x < kWidth; ++x) {
+                const float* pixel = (const float*)access.pixelAt(x, y);
+
+                if (!pixel) {
+                    continue;
+                }
+                for (int c = 0; c < std::min(nComps, 4); ++c) {
+                    out[((std::size_t)y * kWidth + x) * 4 + c] = pixel[c];
+                }
+            }
+        }
+
+        return out;
+    }
+};
+
+// A GPU frame's colour stays on the device: a GPU Grade reads it there, so the frame downloads only
+// its root, and a CPU render downloads the same pixels from the device when it maps them.
+TEST_F(USDRenderUtilityGpuTest, AGpuGradeReadsTheGpuFrameOnTheDeviceAndTheCpuMapsTheSamePixels)
+{
+    OwnGpuContext gpu;
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << "Natron Utility cannot render on this GPU: " << missing;
+    }
+
+    NodePtr settings;
+    NodePtr render = createRender(kFixture, &settings);
+
+    ASSERT_TRUE(bool(render));
+    ASSERT_TRUE(selectRenderer(rendererKnob(render), kRenderDelegateUtilityId));
+    ASSERT_TRUE(selectUtilityDevice(settings, kUtilityDeviceGpu));
+
+    NodePtr grade = createNode(QString::fromUtf8(PLUGINID_NATRON_GRADE), PLUGIN_MAJOR_NATRON_GRADE);
+
+    ASSERT_TRUE(bool(grade));
+    ASSERT_TRUE(setKnobValues(grade, "multiply", { 2., 2., 2., 2. }));
+    ASSERT_TRUE(setKnobValues(grade, "offset", { 0.1, 0.1, 0.1, 0.1 }));
+    connectNodes(render, grade, 0, true);
+    HydraRender::releaseAll();
+
+    const std::uint64_t mapped = UtilityRenderBuffer::deviceDownloadCount();
+    SchedulerFrame graded;
+    std::string error;
+
+    ASSERT_TRUE(renderFrame(grade, { render, grade }, &graded, &error)) << error;
+    EXPECT_LT(0, gpuRunsOf(graded, render));
+    EXPECT_LT(0, gpuRunsOf(graded, grade));
+    EXPECT_EQ(0, graded.stats->getUploadCount());
+    EXPECT_EQ(1, graded.stats->getDownloadCount()) << "only the root comes back to the host";
+    EXPECT_EQ(0, graded.context->getStore().downloadCount());
+    EXPECT_EQ(mapped, UtilityRenderBuffer::deviceDownloadCount()) << "the film was mapped on the host";
+
+    SchedulerFrame plain;
+
+    ASSERT_TRUE(renderFrame(render, { render }, &plain, &error)) << error;
+    EXPECT_LT(0, gpuRunsOf(plain, render));
+    EXPECT_EQ(mapped, UtilityRenderBuffer::deviceDownloadCount()) << "the film was mapped on the host";
+
+    const std::vector<float> onGpu = rootRgba(plain);
+    const std::vector<float> gradedOnGpu = rootRgba(graded);
+    std::vector<RenderedPlane> planes;
+
+    ASSERT_TRUE(renderNodePlanesDirect(render, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error)) << error;
+    EXPECT_GT(UtilityRenderBuffer::deviceDownloadCount(), mapped) << "the CPU render did not map a GPU frame";
+    ASSERT_EQ(1u, planes.size());
+
+    const std::vector<float>& onCpu = planes.front().pixels;
+
+    ASSERT_EQ((std::size_t)kWidth * kHeight * 4, onCpu.size());
+    ASSERT_EQ(onCpu.size(), onGpu.size());
+    ASSERT_EQ(onCpu.size(), gradedOnGpu.size());
+    EXPECT_EQ(0, std::memcmp(onCpu.data(), onGpu.data(), onCpu.size() * sizeof(float)));
+
+    std::size_t covered = 0;
+
+    for (std::size_t i = 0; i < onCpu.size(); i += 4) {
+        covered += (onCpu[i + 3] > 0.f) ? 1 : 0;
+        for (std::size_t c = 0; c < 3; ++c) {
+            const float want = 2.f * onCpu[i + c] + 0.1f;
+
+            ASSERT_NEAR(want, gradedOnGpu[i + c], 1e-5f * std::max(1.f, std::fabs(want))) << "pixel " << (i / 4) << " channel " << c;
+        }
+    }
+    EXPECT_GT(covered, 100u) << "the frame is empty, which proves nothing";
+}
+
+namespace {
+// Whether native takes the GPU for query, asked off the main thread: the main thread is given the
+// settings summary stored before the last edit until a worker reads the new one.
+bool
+canRenderOnGpuOffTheMainThread(const NativeEffectBase* native,
+                               const GpuQuery& query)
+{
+    return std::async(std::launch::async, [native, &query]() { return native->canRenderOnGpu(query); }).get();
+}
+} // anon namespace
+
+// An Auto frame that ran out of GPU memory keeps later Auto frames off the GPU, but not a frame the
+// Device setting forces onto it.
+TEST_F(USDRenderUtilityGpuTest, AnAutoFallbackDoesNotRefuseAForcedGpuRender)
+{
+    OwnGpuContext gpu(kStarvedPoolBytes);
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << "Natron Utility cannot render on this GPU: " << missing;
+    }
+
+    NodePtr settings;
+    NodePtr render = createRender(kFixture, &settings);
+
+    ASSERT_TRUE(bool(render));
+    ASSERT_TRUE(selectRenderer(rendererKnob(render), kRenderDelegateUtilityId));
+    ASSERT_TRUE(selectUtilityDevice(settings, kUtilityDeviceAuto));
+    HydraRender::releaseAll();
+
+    const NativeEffectBase* native = dynamic_cast<const NativeEffectBase*>(render->getEffectInstance().get());
+
+    ASSERT_TRUE(native);
+
+    GpuQuery query;
+
+    query.time = 1.;
+    query.view = ViewIdx(0);
+    query.plane = ImageLayerDesc::getRGBAComponents();
+    query.nComps = 4;
+    query.bitDepth = eImageBitDepthFloat;
+    ASSERT_TRUE(canRenderOnGpuOffTheMainThread(native, query));
+
+    SchedulerFrame run;
+    std::string error;
+
+    ASSERT_TRUE(renderFrame(render, { render }, &run, &error)) << error;
+    ASSERT_FALSE(canRenderOnGpuOffTheMainThread(native, query)) << "the Auto frame did not fall back to the CPU, which proves nothing";
+
+    ASSERT_TRUE(selectUtilityDevice(settings, kUtilityDeviceGpu));
+    EXPECT_TRUE(canRenderOnGpuOffTheMainThread(native, query)) << "an Auto fallback refused a frame forced onto the GPU";
+
+    ASSERT_TRUE(selectUtilityDevice(settings, kUtilityDeviceAuto));
+    EXPECT_FALSE(canRenderOnGpuOffTheMainThread(native, query));
+    HydraRender::releaseAll();
+}
+
+namespace {
+// Forces the GPU regions into strips of rows rows while it lives. The row cap alone only bounds the
+// height of strips a region already needs, so the buffer range is capped below a whole RGBA frame too.
+class StripRows {
+public:
+    explicit StripRows(int rows)
+    {
+        const std::uint64_t wholeFrameBytes = (std::uint64_t)kWidth * kHeight * 4 * sizeof(float);
+
+        setGpuStripOverridesForTests(wholeFrameBytes / 2, rows);
+    }
+
+    ~StripRows()
+    {
+        setGpuStripOverridesForTests(0, 0);
+    }
+};
+} // anon namespace
+
+// Each strip of a region copies its window out of one GPU frame, so the frame renders once however
+// many strips there are, and gives the pixels the CPU maps.
+TEST_F(USDRenderUtilityGpuTest, AStrippedRegionRendersTheUtilityFrameOnce)
+{
+    OwnGpuContext gpu;
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << "Natron Utility cannot render on this GPU: " << missing;
+    }
+
+    NodePtr settings;
+    NodePtr render = createRender(kFixture, &settings);
+
+    ASSERT_TRUE(bool(render));
+    ASSERT_TRUE(selectRenderer(rendererKnob(render), kRenderDelegateUtilityId));
+    ASSERT_TRUE(selectUtilityDevice(settings, kUtilityDeviceGpu));
+    HydraRender::releaseAll();
+
+    const std::uint64_t renders = HydraRender::getEngineRenderCount();
+    SchedulerFrame stripped;
+    std::string error;
+
+    {
+        const StripRows strips(32);
+
+        ASSERT_TRUE(renderFrame(render, { render }, &stripped, &error)) << error;
+    }
+    EXPECT_LT(0, gpuRunsOf(stripped, render));
+    EXPECT_GT(stripped.stats->getDownloadCount(), 1) << "the region did not run as strips";
+    EXPECT_EQ(renders + 1, HydraRender::getEngineRenderCount()) << "the strips did not share one frame";
+
+    const std::vector<float> onGpu = rootRgba(stripped);
+    std::vector<RenderedPlane> planes;
+
+    ASSERT_TRUE(renderNodePlanesDirect(render, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error)) << error;
+    ASSERT_EQ(1u, planes.size());
+
+    const std::vector<float>& onCpu = planes.front().pixels;
+
+    ASSERT_EQ((std::size_t)kWidth * kHeight * 4, onCpu.size());
+    ASSERT_EQ(onCpu.size(), onGpu.size());
+    EXPECT_EQ(0, std::memcmp(onCpu.data(), onGpu.data(), onCpu.size() * sizeof(float)));
+}
+#endif // NATRON_HAVE_GPU
+
+TEST_F(USDRenderRendererTest, TheMetadataFollowsThePurposeKnobs)
+{
+    NodePtr node = createRender(kPurposeFixture);
+    ASSERT_TRUE(bool(node));
+    NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
+    KnobBool* render = dynamic_cast<KnobBool*>(node->getKnobByName(kUSDRenderParamRenderPurpose).get());
+    KnobBool* proxy = dynamic_cast<KnobBool*>(node->getKnobByName(kUSDRenderParamProxyPurpose).get());
+    KnobBool* guide = dynamic_cast<KnobBool*>(node->getKnobByName(kUSDRenderParamGuidePurpose).get());
+    ASSERT_TRUE(effect && render && proxy && guide);
+    const auto named = [effect](const char* path) {
+        char key[32];
+        std::snprintf(key, sizeof(key), kUSDRenderMetadataPrimIdPrefix "%08x", HydraRender::primPathHash(path));
+
+        return outputMetadataOffTheMainThread(effect).getString(key).has_value();
+    };
+
+    EXPECT_TRUE(named("/World/Default"));
+    EXPECT_TRUE(named("/World/Render"));
+    EXPECT_FALSE(named("/World/Proxy"));
+    EXPECT_FALSE(named("/World/Guide"));
+    render->setValue(false);
+    proxy->setValue(true);
+    guide->setValue(true);
+    EXPECT_TRUE(named("/World/Default"));
+    EXPECT_FALSE(named("/World/Render"));
+    EXPECT_TRUE(named("/World/Proxy"));
+    EXPECT_TRUE(named("/World/Guide"));
+}
+
+// Each level of a nested instancer multiplies the flattened instance list, and the decoded path names
+// the instance only if its index counts through the levels in the order Storm's does.
+TEST(USDRenderRenderers, NatronUtilityDecodesNestedInstancesToTheirOwnPaths)
+{
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kNestedInstancesFixture);
+    ASSERT_TRUE(stage);
+    const int owner = 0;
+    HydraRender::Request request = referenceRequest(stage, 1., &owner);
+    request.renderer = kRenderDelegateUtilityId;
+    HydraRender::Result utility;
+    std::string error;
+
+    ASSERT_TRUE(HydraRender::render(request, &utility, &error)) << error;
+    expectNestedInstancesInPlace(utility);
+    HydraRender::releaseAll();
+}
+
+// The abort is first polled 20 ms in, and the render is large enough to be drawing tiles by then and
+// nowhere near done. Keeping the engine is the proof the delegate stopped: one that cannot stop has
+// its engine dropped.
+TEST(USDRenderRenderers, CancellingNatronUtilityStopsItKeepsItsEngineAndTheNextRenderWorks)
+{
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kFixture);
+    ASSERT_TRUE(stage);
+    const int owner = 0;
+    HydraRender::Request request = referenceRequest(stage, 1., &owner);
+    request.renderer = kRenderDelegateUtilityId;
+    HydraRender::Result before;
+    std::string error;
+
+    ASSERT_TRUE(HydraRender::render(request, &before, &error)) << error;
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+
+    HydraRender::Request large = request;
+    large.width = 4096;
+    large.height = 4096;
+    large.aborted = []() { return true; };
+    HydraRender::Result cancelled;
+    EXPECT_FALSE(HydraRender::render(large, &cancelled, &error));
+    EXPECT_NE(std::string::npos, error.find("cancelled")) << error;
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+
+    HydraRender::Result after;
+    error.clear();
+    ASSERT_TRUE(HydraRender::render(request, &after, &error)) << error;
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+    ASSERT_EQ(before.depth.size(), after.depth.size());
+    EXPECT_EQ(0, std::memcmp(before.depth.data(), after.depth.data(), before.depth.size() * sizeof(float)));
+    EXPECT_EQ(0, std::memcmp(before.primId.data(), after.primId.data(), before.primId.size() * sizeof(float)));
+    HydraRender::releaseAll();
 }
 
 // Free GPU Memory drops USDRender's Storm engines and the device buffers the GPU runtime's pool
@@ -1101,3 +2135,269 @@ TEST_F(USDRenderNodeTest, FreeGpuMemoryReleasesEnginesAndPooledBuffers)
     HydraRender::releaseAll();
     EXPECT_EQ(0u, HydraRender::getEngineCount());
 }
+
+#ifdef NATRON_HAVE_GPU
+// Free GPU Memory has a Natron Utility engine, which renders on a thread of its own, give back its
+// tracer and its film, and empties the pool of them once it did; the engine itself stays.
+TEST_F(USDRenderNodeTest, FreeGpuMemoryReleasesNatronUtilityGpuMemory)
+{
+    OwnGpuContext gpu;
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << "Natron Utility cannot render on this GPU: " << missing;
+    }
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kFixture);
+    ASSERT_TRUE(stage);
+    const int owner = 0;
+    HydraRender::Request request = referenceRequest(stage, 1., &owner);
+    request.renderer = kRenderDelegateUtilityId;
+    request.settings[kUtilitySettingDevice] = PXR_NS::VtValue(PXR_NS::TfToken(kUtilityDeviceGpu));
+    HydraRender::Result result;
+    std::string error;
+
+    HydraRender::releaseAll();
+    gpu.runtime()->pool().trim();
+    ASSERT_TRUE(HydraRender::render(request, &result, &error)) << error;
+    ASSERT_EQ(0u, result.device.rfind("GPU", 0)) << result.device;
+    const std::size_t engines = HydraRender::getCpuEngineCount();
+    EXPECT_GT(gpu.runtime()->pool().stats().liveBytes, 0u);
+
+    appPTR->freeGpuMemory();
+    // Waits for the engine's thread to run what Free GPU Memory queued on it.
+    EXPECT_EQ(engines, HydraRender::getCpuEngineCount());
+
+    const gpu::GpuBufferPoolStats freed = gpu.runtime()->pool().stats();
+
+    EXPECT_EQ(0u, freed.liveBytes);
+    EXPECT_EQ(0u, freed.pooledBytes);
+
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+
+    error.clear();
+    request.time = PXR_NS::UsdTimeCode(2.);
+    ASSERT_TRUE(HydraRender::render(request, &result, &error)) << error;
+    EXPECT_EQ(0u, result.device.rfind("GPU", 0)) << result.device;
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+
+    const Coverage box = coverageOf("/World/Box", kWidth, kHeight, result.primId, result.depth, result.rgba);
+
+    EXPECT_GT(box.count, 100);
+    HydraRender::release(&owner);
+    // Waits for the engine, which holds the context's runtime, to go before the context does.
+    EXPECT_EQ(engines - 1, HydraRender::getCpuEngineCount());
+}
+
+namespace {
+typedef HydraRender::ProgressiveRender ProgressiveRender;
+
+const std::chrono::seconds kProgressiveTimeout(60);
+
+// A progressive render of stage's root layer synced into a SceneStage, as the 3D viewer drives one. Its
+// worker outlives the render, holding the GPU runtime, so the destructor waits for it to end before the
+// test's GPU context goes.
+class StageProgressiveRender {
+public:
+    explicit StageProgressiveRender(const PXR_NS::UsdStageRefPtr& stage)
+    {
+        EXPECT_TRUE(_stage.isValid());
+        _stage.sync(SceneOps::appendLayer(ScenePayload(), stage->GetRootLayer(), 1));
+
+        SceneStage* sceneStage = &_stage;
+
+        _render.reset(new ProgressiveRender(&_stageLock, [sceneStage](SceneStageSnapshot* into) {
+            *into = sceneStage->getSnapshot();
+
+            return true; }, std::function<void()>(), 0.05f));
+    }
+
+    ~StageProgressiveRender()
+    {
+        _render.reset();
+        EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(int(std::chrono::milliseconds(kProgressiveTimeout).count())));
+    }
+
+    ProgressiveRender& render()
+    {
+        return *_render;
+    }
+
+private:
+    SceneStage _stage;
+    std::mutex _stageLock;
+    std::unique_ptr<ProgressiveRender> _render;
+};
+
+// Renders the reference scene through the 3D viewer's progressive engine with Natron Utility forced onto the GPU,
+// its colour left on the device as the viewer asks for it.
+void
+startUtilityOnGpu(ProgressiveRender& render,
+                  const PXR_NS::UsdStageRefPtr& stage,
+                  const void* owner)
+{
+    ProgressiveRender::View view;
+
+    view.frustum = referenceRequest(stage, 1., owner).frustum;
+    view.width = kWidth;
+    view.height = kHeight;
+    view.time = PXR_NS::UsdTimeCode(1.);
+    RenderDelegates::list();
+    render.setDeviceColor(true);
+    render.setSettings({ { kUtilitySettingDevice, PXR_NS::VtValue(PXR_NS::TfToken(kUtilityDeviceGpu)) } });
+    render.setRenderer(kRenderDelegateUtilityId);
+    render.setThreads([]() { return 0; });
+    render.setView(view);
+}
+
+// The converged frame of a restart at least as late as minRestart, null with *error set when the render fails
+// or does not converge in time.
+std::shared_ptr<const ProgressiveRender::Frame>
+convergedFrame(const ProgressiveRender& render,
+               std::uint64_t minRestart,
+               std::string* error)
+{
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kProgressiveTimeout;
+
+    while (std::chrono::steady_clock::now() < end) {
+        const ProgressiveRender::Status status = render.getStatus();
+        const std::shared_ptr<const ProgressiveRender::Frame> frame = render.getFrame();
+
+        if (!status.error.empty()) {
+            *error = status.error;
+
+            return std::shared_ptr<const ProgressiveRender::Frame>();
+        }
+        if (status.converged && frame && frame->converged && (frame->restart == status.restarts) && (status.restarts >= minRestart)) {
+            return frame;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    *error = "the render did not converge in " + std::to_string(kProgressiveTimeout.count()) + " s";
+
+    return std::shared_ptr<const ProgressiveRender::Frame>();
+}
+} // anon namespace
+
+// The 3D viewer's Natron Utility engine renders nothing more once converged, so Free GPU Memory has its own
+// worker give its GPU memory back; the frame shown is published again from host memory.
+TEST_F(USDRenderNodeTest, FreeGpuMemoryReleasesAProgressiveNatronUtilityRendersGpuMemory)
+{
+    OwnGpuContext gpu;
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << "Natron Utility cannot render on this GPU: " << missing;
+    }
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kFixture);
+    ASSERT_TRUE(stage);
+    const int owner = 0;
+    StageProgressiveRender progressive(stage);
+    ProgressiveRender& render = progressive.render();
+    std::string error;
+
+    HydraRender::releaseAll();
+    gpu.runtime()->pool().trim();
+    startUtilityOnGpu(render, stage, &owner);
+
+    const std::shared_ptr<const ProgressiveRender::Frame> first = convergedFrame(render, 1, &error);
+
+    ASSERT_TRUE(bool(first)) << error;
+    ASSERT_TRUE(bool(first->deviceColor)) << "the frame is not on the GPU";
+
+    std::vector<unsigned char> before;
+
+    ASSERT_TRUE(render.hostColor(*first, &before, &error)) << error;
+    EXPECT_GT(gpu.runtime()->pool().stats().liveBytes, 0u);
+
+    appPTR->freeGpuMemory();
+
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kProgressiveTimeout;
+    gpu::GpuBufferPoolStats freed = gpu.runtime()->pool().stats();
+    std::shared_ptr<const ProgressiveRender::Frame> hosted = render.getFrame();
+
+    while (((freed.liveBytes != 0) || (freed.pooledBytes != 0) || !hosted || hosted->deviceColor) && (std::chrono::steady_clock::now() < end)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        freed = gpu.runtime()->pool().stats();
+        hosted = render.getFrame();
+    }
+    EXPECT_EQ(0u, freed.liveBytes) << "the frame held here keeps no film";
+    EXPECT_EQ(0u, freed.pooledBytes);
+    ASSERT_TRUE(bool(hosted));
+    EXPECT_FALSE(bool(hosted->deviceColor));
+    EXPECT_EQ(first->restart, hosted->restart);
+    EXPECT_TRUE(hosted->rgba == before) << "the frame published again is not the one shown";
+
+    render.invalidate();
+
+    const std::shared_ptr<const ProgressiveRender::Frame> again = convergedFrame(render, first->restart + 1, &error);
+
+    ASSERT_TRUE(bool(again)) << error;
+    EXPECT_TRUE(bool(again->deviceColor)) << "the render after Free GPU Memory is not on the GPU";
+}
+
+// A converged progressive Natron Utility render issues no further frame that would notice a lost device, so the
+// loss releaser has its worker drop the runtime it holds, and the runtime recovers.
+TEST_F(USDRenderNodeTest, AConvergedProgressiveNatronUtilityRenderLetsALostGpuRecover)
+{
+    OwnGpuContext gpu;
+
+    GPUTEST_DEVICE_OR_SKIP(gpu.unavailable.empty(), gpu.unavailable);
+
+    const std::string missing = WavefrontGpu::missingSupport(*gpu.runtime());
+
+    if (!missing.empty()) {
+        GPUTEST_SKIP() << "Natron Utility cannot render on this GPU: " << missing;
+    }
+
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kFixture);
+    ASSERT_TRUE(stage);
+    const int owner = 0;
+    StageProgressiveRender progressive(stage);
+    ProgressiveRender& render = progressive.render();
+    std::string error;
+
+    HydraRender::releaseAll();
+    startUtilityOnGpu(render, stage, &owner);
+
+    const std::shared_ptr<const ProgressiveRender::Frame> first = convergedFrame(render, 1, &error);
+
+    ASSERT_TRUE(bool(first)) << error;
+    ASSERT_TRUE(bool(first->deviceColor)) << "the frame is not on the GPU";
+
+    GpuContext* context = appPTR->getGpuContext();
+    gpu::GpuRuntime* runtime = gpu.runtime();
+    const std::uint64_t generation = context->generation();
+
+    runtime->device().injectFault(gpu::GpuFaultPlan::Kind::DeviceLost, 1);
+
+    gpu::GpuBufferHandle handle;
+
+    EXPECT_EQ(VK_ERROR_DEVICE_LOST, runtime->acquire(1 << 20, handle).result);
+    ASSERT_TRUE(runtime->isLost());
+
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kProgressiveTimeout;
+    bool recovered = context->recoverIfLost();
+
+    while (!recovered && (std::chrono::steady_clock::now() < end)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        recovered = context->recoverIfLost();
+    }
+    ASSERT_TRUE(recovered) << "the progressive render kept the lost runtime";
+    EXPECT_NE(generation, context->generation());
+
+    render.invalidate();
+
+    const std::shared_ptr<const ProgressiveRender::Frame> again = convergedFrame(render, first->restart + 1, &error);
+
+    ASSERT_TRUE(bool(again)) << error;
+    EXPECT_TRUE(bool(again->deviceColor)) << "the render after the recovery is not on the GPU";
+}
+#endif

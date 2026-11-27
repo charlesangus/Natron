@@ -59,9 +59,6 @@ NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
     , _lastMousePos()
     , _lastSelectionStartPointScene()
     , _evtState(eEventStateNone)
-    , _magnifiedNode()
-    , _nodeSelectedScaleBeforeMagnif(1.)
-    , _magnifOn(false)
     , _arrowSelected(NULL)
     , _nodesMutex()
     , _nodes()
@@ -194,7 +191,7 @@ NodeGraphPrivate::editSelectionFromSelectionRectangle(bool addToSelection)
     NodesGuiList inside;
 
     for (NodesGuiList::iterator it = _nodes.begin(); it != _nodes.end(); ++it) {
-        QRectF bbox = (*it)->mapToScene((*it)->outlineBoundingRect()).boundingRect();
+        QRectF bbox = (*it)->mapToScene((*it)->withMessageCaption((*it)->outlineBoundingRect())).boundingRect();
         if ( selection.contains(bbox) ) {
             inside.push_back(*it);
         }

@@ -904,7 +904,7 @@ namespace YamlDetail {
             MapReader reader(node, context, warnings);
             readItemCommon(reader, layer, expectedParent);
             if (YAML::Node knobs = reader.get("knobs")) {
-                layer->knobs = readKnobMap(knobs, context + ".knobs", reader.warnings());
+                layer->knobs = readKnobMap(knobs, context + ".knobs", warnings);
             }
             if (YAML::Node items = reader.get("items")) {
                 if (!items.IsSequence()) {

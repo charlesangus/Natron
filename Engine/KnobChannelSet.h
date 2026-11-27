@@ -118,12 +118,11 @@ struct ResolvedLayer {
  * Rows are persisted as one KnobTable string with the columns Mode/Layer/Channels.
  * Row 0 may be "none" or "all"; any row may name a layer (by ID, with an explicit
  * channel list or an empty list meaning "every channel the layer has at resolve time")
- * or a whole-string, case-sensitive regular expression matched against layer labels.
+ * or a whole-string, case-sensitive regular expression matched against layer IDs.
  *
- * The colour plane is named through its views (rgba, rgb, alpha, xy), never through its
- * storage ID: resolve() maps each view onto the one colour storage layer of the present list,
- * so every row touching colour accumulates into a single ResolvedLayer whose desc is the
- * storage layer. A row naming the storage ID itself resolves to nothing.
+ * The colour plane is named through its views (rgba, rgb, alpha, xy): resolve() maps each
+ * view onto the one colour storage layer of the present list, so every row touching colour
+ * accumulates into a single ResolvedLayer whose desc is the storage layer.
  *
  * The knob owns no layer list: resolve() is a pure function of the rows and of the
  * caller's list of present layers.

@@ -193,6 +193,35 @@ private:
     std::vector<QPainterPath> _partsWithoutText;
 };
 
+class NodeGuiMessageBadge
+    : public QGraphicsItem {
+public:
+    NodeGuiMessageBadge(NodeGraph* graph,
+                        QGraphicsItem* parent,
+                        double diameter);
+
+    virtual ~NodeGuiMessageBadge();
+
+    void setSeverity(bool isError, const QColor& fill);
+
+    void setCenter(const QPointF& center);
+
+    virtual QRectF boundingRect() const OVERRIDE FINAL;
+    virtual QPainterPath shape() const OVERRIDE FINAL;
+    virtual void paint(QPainter* painter, const QStyleOptionGraphicsItem* option, QWidget* widget) OVERRIDE FINAL;
+
+private:
+    void refreshShapes();
+
+    NodeGraph* _graph;
+    double _diameter;
+    bool _isError;
+    QColor _fill;
+    QPointF _center;
+    QPainterPath _outline;
+    QPainterPath _mark;
+};
+
 /**
  * @brief The two diagonals drawn over a disabled node, as one scene item.
  **/
@@ -344,6 +373,12 @@ public:
        it wraps.*/
     QRectF outlineBoundingRect() const;
 
+    /*The message caption hangs below the body, outside boundingRect(), so that edges keep
+       attaching to the body; collision, placement and selection go through these instead.*/
+    QRectF withMessageCaption(const QRectF& localRect) const;
+    QRectF sceneFootprint() const;
+    double messageCaptionDrop() const;
+
     /*this function does the painting, using QPainter, you can overload it to change the aspect of
        the node.*/
     virtual void paint(QPainter* painter, const QStyleOptionGraphicsItem* options, QWidget* parent) OVERRIDE;
@@ -399,8 +434,8 @@ public:
 
     QSize getSize() const;
 
-    // The laid-out body size that resize() takes: no outline pen, no magnify scale.
-    QRectF bodyRect() const;
+    // The laid-out body size that resize() takes: no outline pen.
+    virtual QRectF bodyRect() const;
 
     /*Returns an edge if the node has an edge close to the
        point pt. pt is in scene coord.*/
@@ -674,6 +709,14 @@ public Q_SLOTS:
 
     void refreshSize();
 
+    /**
+     * @brief resize() for a size the node's own content dictates: the top edge and the horizontal
+     * centre stay put, so the node keeps lining up with its neighbours as its text grows or shrinks.
+     * A node with no explicit size (Node::hasSize()) is laid out from its default size, so it
+     * shrinks back when its content does; an explicitly sized node or a backdrop only grows.
+     **/
+    void resizeToContent(bool adjustToTextSize, bool hadContentLayout);
+
     /*Updates the preview image, only if the project is in auto-preview mode*/
     void updatePreviewImage(double time);
 
@@ -867,6 +910,8 @@ private:
 
     void refreshUserColorBorderGeometry();
 
+    void refreshMessageGeometry(const QRectF& bbox);
+
     void refreshNameItemTextColor();
 
     void refreshPanelColorIndicator();
@@ -916,9 +961,16 @@ private:
     mutable QMutex _previewDataMutex;
     std::vector<unsigned int> _previewData;
     int _previewW, _previewH;
-    QGraphicsSimpleTextItem* _persistentMessage;
+    NodeGuiMessageBadge* _messageBadge;
+    QGraphicsRectItem* _messageBorder;
+    QGraphicsSimpleTextItem* _messageCaption;
+    QString _messageCaptionLine;
     NodeGraphRectItem* _stateIndicator;
     bool _stateIndicatorSelected; //< the selection refreshStateIndicator() last showed
+    // Whether the node executed on each device since the refresh before the last one, as refreshRenderingIndicator()
+    // took the counts.
+    bool _ranOnCpu = false;
+    bool _ranOnGpu = false;
     std::uint64_t _stackingSerial = 0;
 
     QGraphicsItem* edgeParent() const;

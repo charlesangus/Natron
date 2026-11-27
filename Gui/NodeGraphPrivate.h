@@ -299,9 +299,6 @@ public:
     QPoint _pressPos;
     QPointF _lastSelectionStartPointScene;
     EventStateEnum _evtState;
-    NodeGuiPtr _magnifiedNode;
-    double _nodeSelectedScaleBeforeMagnif;
-    bool _magnifOn;
     Edge* _arrowSelected;
     mutable QMutex _nodesMutex;
     IndexedNodeGuiList _nodes;
@@ -312,6 +309,7 @@ public:
     QGraphicsItem* _root;
     QGraphicsItem* _nodeRoot; ///< this is the parent of all nodes
     LoopBlockOverlay* _loopBlocks;
+    bool _selectionChangeScheduled = false;
     GpuRegionOverlay* _gpuRegions;
     NodeGraphLowDetailLayer* lowDetailEdgeLayer;
     NodeGraphLowDetailLayer* lowDetailNodeLayer;

@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <iostream>
 #include <list>
@@ -49,8 +50,10 @@
 #include "Engine/KnobChannelSet.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Filter/BlurKernels.h"
 #include "Engine/Nodes/Filter/EdgeDetect.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -140,7 +143,7 @@ protected:
         project->setOrAddProjectFormat(Format(0, 0, kParitySourceWidth, kParitySourceHeight, "nativeEdgeDetect64x48", 1.));
     }
 
-    // Renders `node` in Legacy mode and as a task graph at pool sizes 1 and 4 over its own region
+    // Renders `node` by a direct pull and as a task graph at pool sizes 1 and 4 over its own region
     // of definition: bit-exact, and the task graph pulls nothing it did not plan.
     void expectSameBothWays(const NodePtr& node,
                             const std::string& caseName)
@@ -204,12 +207,16 @@ TEST_F(NativeEdgeDetectTest, SourceRegionOfInterestAddsErosionAndSuppression)
     EXPECT_EQ(10 - 4, roi.x1);
     EXPECT_EQ(40 + 4, roi.y2);
 
-    // The finite-difference schemes use the Gaussian pre-blur's halo.
+    // The finite-difference schemes use the Gaussian pre-blur's halo, at least the recursion's
+    // reach, which is longer than CImg's 1.5 times the size.
     params.filter = eEdgeDetectFilterSobel;
     params.sizeX = params.sizeY = 10.;
+    const float sigma = (float)(10. / 2.4);
+    const int preBlurReach = BlurKernels::LineFilter::vanVliet(sigma, 0, EdgeMode::Black).recursiveReach();
+    EXPECT_GT(preBlurReach, 15);
     roi = EdgeDetect::getSourceRoI(rect, RenderScale::identity, params);
-    EXPECT_EQ(10 - 15 - 1, roi.x1);
-    EXPECT_EQ(30 + 15 + 1, roi.x2);
+    EXPECT_EQ(10 - preBlurReach - 1, roi.x1);
+    EXPECT_EQ(30 + preBlurReach + 1, roi.x2);
 
     // Quadratic: 3 * (floor((10 - 1) / 2) + 1) = 15, plus one for the derivative.
     params.filter = eEdgeDetectFilterQuadratic;
@@ -220,9 +227,12 @@ TEST_F(NativeEdgeDetectTest, SourceRegionOfInterestAddsErosionAndSuppression)
     params.filter = eEdgeDetectFilterGaussian;
     params.erodeSize = -2.;
     params.nms = true;
+    const int derivativeReach = std::max(BlurKernels::LineFilter::vanVliet(sigma, 0, EdgeMode::Black).recursiveReach(),
+                                         BlurKernels::LineFilter::vanVliet(sigma, 1, EdgeMode::Black).recursiveReach());
+    EXPECT_GT(derivativeReach, 15 + 1);
     roi = EdgeDetect::getSourceRoI(rect, RenderScale::identity, params);
-    EXPECT_EQ(10 - 15 - 1 - 2 - 1, roi.x1);
-    EXPECT_EQ(40 + 15 + 1 + 2 + 1, roi.y2);
+    EXPECT_EQ(10 - derivativeReach - 2 - 1, roi.x1);
+    EXPECT_EQ(40 + derivativeReach + 2 + 1, roi.y2);
 
     // At half scale the erosion radius is floor(2 * 0.5) = 1.
     int rx = 0;
@@ -259,6 +269,7 @@ TEST_F(NativeEdgeDetectTest, UnitStepEdgeHasUnitGradientMagnitude)
     ASSERT_TRUE(setKnobValues(white, kNativeGeneratorParamBottomLeft, { (double)whiteBox.x1, (double)whiteBox.y1 }));
     ASSERT_TRUE(setKnobValues(white, kNativeGeneratorParamSize, { (double)whiteBox.width(), (double)whiteBox.height() }));
     ASSERT_TRUE(setKnobValues(white, kConstantParamColor, { 1., 1., 1., 1. }));
+    setBlackOutside(white, true);
     ASSERT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, std::string("over")));
     connectNodes(black, merge, 0, true);
     connectNodes(white, merge, 1, true);
@@ -319,6 +330,66 @@ TEST_F(NativeEdgeDetectTest, UnitStepEdgeHasUnitGradientMagnitude)
     }
 }
 
+// A constant image has no edge inside it. Where the node repeats the source's edge (Stretch, and
+// Input over a generator, which reports Stretch) its border shows none either; where it reads black
+// past the source the border is an edge.
+TEST_F(NativeEdgeDetectTest, EdgeModeDecidesTheBorderResponseOfAConstant)
+{
+    const RectI format(0, 0, kParitySourceWidth, kParitySourceHeight);
+    const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
+    const char* const filters[] = { kEdgeDetectParamFilterSimple, kEdgeDetectParamFilterSobel, kEdgeDetectParamFilterGaussian, kEdgeDetectParamFilterBox };
+
+    for (const char* filter : filters) {
+        for (const double blurSize : { 0., 6. }) {
+            for (const char* mode : { "input", "stretch", "black" }) {
+                resetProject();
+                NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
+                NodePtr edge = createNode(QString::fromUtf8(kEdgeDetectID), kNativeEdgeDetectMajor);
+                ASSERT_TRUE(bool(constant));
+                ASSERT_TRUE(isNative(edge));
+                ASSERT_TRUE(setKnobValue(constant, kNativeGeneratorParamExtent, std::string(kNativeGeneratorExtentProject)));
+                ASSERT_TRUE(setKnobValues(constant, kConstantParamColor, { 0.5, 0.5, 0.5, 0.5 }));
+                connectNodes(constant, edge, 0, true);
+                ASSERT_TRUE(processRGBA(edge));
+                ASSERT_TRUE(setKnobValue(edge, kEdgeDetectParamFilter, std::string(filter)));
+                ASSERT_TRUE(setKnobValues(edge, kEdgeDetectParamBlurSize, { blurSize }));
+                ASSERT_TRUE(setKnobValue(edge, kEdgeModeParam, std::string(mode)));
+
+                const std::string what = std::string(filter) + ", blur size " + std::to_string(blurSize) + ", edge mode " + mode;
+                std::vector<RenderedPlane> planes;
+                std::string error;
+                ASSERT_TRUE(renderNodePlanesDirect(edge, kTime, ViewIdx(0), 0, format, rgba, &planes, &error)) << what << ": " << error;
+                ASSERT_EQ(1u, planes.size()) << what;
+                ASSERT_EQ(static_cast<std::size_t>(format.width()) * format.height() * 4, planes[0].pixels.size()) << what;
+                float border = 0.f;
+                float centre = 0.f;
+                for (int y = format.y1; y < format.y2; ++y) {
+                    for (int x = format.x1; x < format.x2; ++x) {
+                        const bool onBorder = (x == format.x1) || (y == format.y1) || (x == format.x2 - 1) || (y == format.y2 - 1);
+                        const bool inCentre = (x >= format.x1 + 16) && (x < format.x2 - 16) && (y >= format.y1 + 16) && (y < format.y2 - 16);
+                        const std::size_t at = ((std::size_t)(y - format.y1) * format.width() + (std::size_t)(x - format.x1)) * 4;
+                        const float v = std::abs(planes[0].pixels[at]);
+                        if (onBorder) {
+                            border = std::max(border, v);
+                        }
+                        if (inCentre) {
+                            centre = std::max(centre, v);
+                        }
+                    }
+                }
+                // The black border's response reaches the centre through the blur's tails.
+                const float centreLimit = (std::string(mode) == "black") ? 2e-3f : 1e-4f;
+                EXPECT_LE(centre, centreLimit) << what << ": the inside of a constant has no edge";
+                if (std::string(mode) == "black") {
+                    EXPECT_GT(border, 0.05f) << what << ": the black past the source makes an edge";
+                } else {
+                    EXPECT_LE(border, 1e-4f) << what << ": the repeated edge makes none";
+                }
+            }
+        }
+    }
+}
+
 // The filter runs over the window plus its halo whatever the mask, so the masked node is its
 // unmasked render blended with the source by mask x mix. The OpenFX plug-in shrank the filtered
 // window past mask-zero rows and columns, which moves the recursive filters' lines, so this is
@@ -334,6 +405,7 @@ TEST_F(NativeEdgeDetectTest, MaskAndMixBlendTheUnmaskedRender)
     ASSERT_TRUE(isNative(plain) && isNative(masked));
     setParitySourceOrigin(source, 0, 0);
     setParitySourceOrigin(mask, 8, 4);
+    setBlackOutside(mask, true);
     connectNodes(source, plain, 0, true);
     connectNodes(source, masked, 0, true);
     connectNodes(mask, masked, 1, true);
@@ -385,7 +457,7 @@ TEST_F(NativeEdgeDetectTest, MaskAndMixBlendTheUnmaskedRender)
     }
 }
 
-TEST_F(NativeEdgeDetectTest, RendersTheSameInBothSchedulerModesAtAnyPoolSize)
+TEST_F(NativeEdgeDetectTest, RendersTheSameDirectAndScheduledAtAnyPoolSize)
 {
     resetProject();
     NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
@@ -416,4 +488,135 @@ TEST_F(NativeEdgeDetectTest, RendersTheSameInBothSchedulerModesAtAnyPoolSize)
 TEST_F(NativeEdgeDetectTest, RegisteredIdentity)
 {
     expectNativeIdentity(PLUGINID_NATRON_EDGEDETECT, PLUGIN_MAJOR_NATRON_EDGEDETECT, "EdgeDetect");
+}
+
+// Under Stretch the passes hold the source grown by the reach of the passes before the last, and
+// read past it by repeating its edge: the result matches the same filters under Black over a
+// source whose edge is laid out explicitly past every pixel they reach, and a blur far larger
+// than the image stays finite with a tile matching the whole.
+TEST_F(NativeEdgeDetectTest, StretchFarPastTheImageMatchesTheLaidOutEdge)
+{
+    const RectI format(0, 0, kParitySourceWidth, kParitySourceHeight);
+    const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
+    const int pad = 300;
+    const RectI padded(format.x1 - pad, format.y1 - pad, format.x2 + pad, format.y2 + pad);
+    const auto makeConstant = [&](const RectI& extent, const std::vector<double>& color, bool blackOutside) -> NodePtr {
+        NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT), PLUGIN_MAJOR_NATRON_CONSTANT);
+        EXPECT_TRUE(bool(constant));
+        if (constant) {
+            EXPECT_TRUE(setKnobValue(constant, kNativeGeneratorParamExtent, std::string(kNativeGeneratorExtentSize)));
+            EXPECT_TRUE(setKnobValues(constant, kNativeGeneratorParamBottomLeft, { (double)extent.x1, (double)extent.y1 }));
+            EXPECT_TRUE(setKnobValues(constant, kNativeGeneratorParamSize, { (double)extent.width(), (double)extent.height() }));
+            EXPECT_TRUE(setKnobValues(constant, kConstantParamColor, color));
+            setBlackOutside(constant, blackOutside);
+        }
+
+        return constant;
+    };
+    const auto makeOver = [&](const NodePtr& b, const NodePtr& a) -> NodePtr {
+        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_NATIVE_MERGE), PLUGIN_MAJOR_NATRON_NATIVE_MERGE);
+        EXPECT_TRUE(bool(merge) && bool(a) && bool(b));
+        if (!merge || !a || !b) {
+            return NodePtr();
+        }
+        EXPECT_TRUE(setKnobValue(merge, kNativeMergeParamOperation, std::string("over")));
+        connectNodes(b, merge, 0, true);
+        connectNodes(a, merge, 1, true);
+
+        return merge;
+    };
+    const auto makeSource = [&](const RectI& left, const RectI& right) -> NodePtr {
+        NodePtr halves = makeOver(makeConstant(left, { 0.2, 0.4, 0.6, 1. }, false), makeConstant(right, { 0.9, 0.1, 0.3, 1. }, true));
+
+        return makeOver(halves, makeConstant(RectI(20, 14, 44, 34), { 1., 0.5, 0.25, 1. }, true));
+    };
+    const auto makeEdge = [&](const NodePtr& source, const char* filter, double blurSize, double erodeSize, bool nms, const char* mode) -> NodePtr {
+        NodePtr edge = createNode(QString::fromUtf8(kEdgeDetectID), kNativeEdgeDetectMajor);
+        EXPECT_TRUE(isNative(edge) && bool(source));
+        if (!edge || !source) {
+            return NodePtr();
+        }
+        connectNodes(source, edge, 0, true);
+        EXPECT_TRUE(processRGBA(edge));
+        EXPECT_TRUE(setKnobValue(edge, kEdgeDetectParamFilter, std::string(filter)));
+        EXPECT_TRUE(setKnobValues(edge, kEdgeDetectParamBlurSize, { blurSize }));
+        EXPECT_TRUE(setKnobValues(edge, kEdgeDetectParamErodeSize, { erodeSize }));
+        EXPECT_TRUE(setKnobValues(edge, kEdgeDetectParamNMS, { nms ? 1. : 0. }));
+        EXPECT_TRUE(setKnobValue(edge, kEdgeModeParam, std::string(mode)));
+
+        return edge;
+    };
+    const auto render = [&](const NodePtr& node, const RectI& window, RenderedPlane* plane) -> bool {
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        const bool ok = node && renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, window, rgba, &planes, &error) && (planes.size() == 1);
+        EXPECT_TRUE(ok) << error;
+        if (ok) {
+            *plane = planes[0];
+        }
+
+        return ok;
+    };
+    const auto pixel = [](const RenderedPlane& plane, int x, int y, int c) -> float {
+        const RectI& w = plane.window;
+
+        return plane.pixels[((std::size_t)(y - w.y1) * w.width() + (x - w.x1)) * 4 + c];
+    };
+    const RectI tile(5, 30, 27, 48);
+
+    struct Case {
+        const char* filter;
+        double blurSize;
+        double erodeSize;
+        bool nms;
+    };
+    const Case cases[] = {
+        { kEdgeDetectParamFilterSobel, 30., 2., true },
+        { kEdgeDetectParamFilterSimple, 20., -3., false },
+        { kEdgeDetectParamFilterGaussian, 25., 0., true },
+        { kEdgeDetectParamFilterBox, 15., 0., false },
+    };
+    for (const Case& k : cases) {
+        resetProject();
+        const std::string what = std::string(k.filter) + ", blur size " + std::to_string(k.blurSize) + ", erode size " + std::to_string(k.erodeSize) + (k.nms ? ", nms" : "");
+        NodePtr stretched = makeEdge(makeSource(format, RectI(32, format.y1, format.x2, format.y2)), k.filter, k.blurSize, k.erodeSize, k.nms, "stretch");
+        NodePtr reference = makeEdge(makeSource(padded, RectI(32, padded.y1, padded.x2, padded.y2)), k.filter, k.blurSize, k.erodeSize, k.nms, "black");
+        RenderedPlane whole, part, expected;
+        ASSERT_TRUE(render(stretched, format, &whole)) << what;
+        ASSERT_TRUE(render(stretched, tile, &part)) << what;
+        // The recursive blurs' line ends under Black read zero past the buffer, a window plus the
+        // halo, so the reference renders far enough past the format that this truncation stays
+        // out of the compared pixels.
+        const int margin = pad / 2;
+        ASSERT_TRUE(render(reference, RectI(format.x1 - margin, format.y1 - margin, format.x2 + margin, format.y2 + margin), &expected)) << what;
+        for (int y = format.y1; y < format.y2; ++y) {
+            for (int x = format.x1; x < format.x2; ++x) {
+                for (int c = 0; c < 4; ++c) {
+                    const float v = pixel(whole, x, y, c);
+                    ASSERT_TRUE(std::isfinite(v)) << what;
+                    ASSERT_NEAR(pixel(expected, x, y, c), v, 1e-4 * std::max(1.f, std::fabs(v))) << what << " at (" << x << "," << y << "," << c << ")";
+                    if (tile.contains(x, y)) {
+                        ASSERT_NEAR(v, pixel(part, x, y, c), 1e-5 * std::max(1.f, std::fabs(v))) << what << " tile at (" << x << "," << y << "," << c << ")";
+                    }
+                }
+            }
+        }
+    }
+
+    // A derivative blur alone reads only the source, so a blur far larger than the image costs
+    // no more memory than the image.
+    resetProject();
+    NodePtr huge = makeEdge(makeSource(format, RectI(32, format.y1, format.x2, format.y2)), kEdgeDetectParamFilterGaussian, 20000., 0., false, "stretch");
+    RenderedPlane whole, part;
+    ASSERT_TRUE(render(huge, format, &whole));
+    ASSERT_TRUE(render(huge, tile, &part));
+    for (int y = tile.y1; y < tile.y2; ++y) {
+        for (int x = tile.x1; x < tile.x2; ++x) {
+            for (int c = 0; c < 4; ++c) {
+                const float v = pixel(whole, x, y, c);
+                ASSERT_TRUE(std::isfinite(v));
+                ASSERT_NEAR(v, pixel(part, x, y, c), 1e-5 * std::max(1.f, std::fabs(v))) << "at (" << x << "," << y << "," << c << ")";
+            }
+        }
+    }
 }

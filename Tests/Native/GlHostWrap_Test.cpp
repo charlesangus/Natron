@@ -141,25 +141,19 @@ private:
     int _savedPoolSize;
 };
 
-class SchedulerModeRestorer {
+class CacheClearOnExit {
 public:
-    SchedulerModeRestorer()
-        : _saved(appPTR->getRenderSchedulerMode())
+    CacheClearOnExit()
     {
-        appPTR->setRenderSchedulerMode(eRenderSchedulerModeTaskGraph);
     }
 
-    ~SchedulerModeRestorer()
+    ~CacheClearOnExit()
     {
-        appPTR->setRenderSchedulerMode(_saved);
         appPTR->clearAllCaches();
     }
 
-    SchedulerModeRestorer(const SchedulerModeRestorer&) = delete;
-    SchedulerModeRestorer& operator=(const SchedulerModeRestorer&) = delete;
-
-private:
-    RenderSchedulerModeEnum _saved;
+    CacheClearOnExit(const CacheClearOnExit&) = delete;
+    CacheClearOnExit& operator=(const CacheClearOnExit&) = delete;
 };
 
 struct Rendered {
@@ -318,7 +312,7 @@ protected:
 
         const RectI window = paritySourceWindow(setup.source, kTime, 0);
         DisableUnreachableRAMPurging noPurge;
-        SchedulerModeRestorer mode;
+        CacheClearOnExit clearCaches;
         GpuPlacementOffGuard cpuPlacement;
         appPTR->getGPUContextPool()->clear();
 

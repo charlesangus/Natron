@@ -89,6 +89,7 @@
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPaintInteract.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/TimeLine.h"
 #include "Serialization/NodeSerialization.h"
@@ -250,7 +251,7 @@ openInputScene(const EffectInstancePtr& input,
     if (out->scene.isEmpty()) {
         return true;
     }
-    out->lease = SceneQueryPool::instance().borrow(out->scene, error);
+    out->lease = SceneQueryPool::instance().borrow(out->scene, SceneLoadSet::everything(), error);
     out->stage = out->lease.getStage();
     if (!out->stage) {
         if (error->empty()) {
@@ -816,7 +817,7 @@ USDTexturePaint::getPreferredMetadataAt(double /*time*/,
     const int size = getTileResolution();
 
     metadata.setBitDepth(-1, eImageBitDepthFloat);
-    metadata.setComponentsType(-1, kNatronColorLayerID);
+    metadata.setComponentsType(-1, eImageComponentsTypeColor);
     metadata.setNComps(-1, 4);
     metadata.setIsFrameVarying(getTextureMode() == eTextureModeAnimated);
     metadata.setOutputFormat(RectI(0, 0, size, size));
@@ -2696,7 +2697,7 @@ tilesCached(const std::vector<std::string>& paths,
 AbortableRenderInfoPtr
 callerAbortInfo(const EffectInstance& effect)
 {
-    const ParallelRenderArgsPtr frameArgs = effect.getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr frameArgs = effect.getFrameArgs();
 
     return frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
 }

@@ -26,16 +26,28 @@
 #include "SceneNodeAuthoring.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <string>
+#include <thread>
 #include <tuple>
+#include <utility>
 #include <vector>
 
+#include <QCoreApplication>
+#include <QMetaObject>
+#include <QThread>
+
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
@@ -50,10 +62,13 @@
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NonTrappingMath.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
+#include "Engine/Nodes/Scene/PrimSelector.h"
+#include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
+#include "Engine/ViewerInstance.h"
 
 #include <pxr/usd/usd/collectionAPI.h>
 #include <pxr/usd/usd/primRange.h>
@@ -218,7 +233,9 @@ SceneCameraPathKnobs::getPath() const
 
 void
 SceneCameraPathKnobs::refreshMenu(const std::vector<std::string>& cameras,
-                                  bool readDownstream) const
+                                  bool readDownstream,
+                                  std::size_t unsearched,
+                                  bool noViewer) const
 {
     KnobChoicePtr menuKnob = menu.lock();
     if (!menuKnob) {
@@ -243,6 +260,9 @@ SceneCameraPathKnobs::refreshMenu(const std::vector<std::string>& cameras,
                                            EffectInstance::tr("%1 (missing)").arg(QString::fromStdString(chosen)).toStdString(),
                                            EffectInstance::tr("No camera upstream has this path yet: nothing projects until one does.").toStdString()));
         }
+    }
+    if (unsearched > 0) {
+        options.push_back(makeSceneUnsearchedOption(unsearched, noViewer));
     }
     // Repopulating an unchanged menu would move the node's hash and come back here.
     const std::vector<ChoiceOption> current = menuKnob->getEntries_mt_safe();
@@ -273,7 +293,11 @@ SceneCameraPathKnobs::knobChanged(KnobI* k,
         const int index = menuKnob->getValue();
         if (((reason == eValueChangedReasonUserEdited) || (reason == eValueChangedReasonNatronGuiEdited))
             && (index >= 0) && (index < menuKnob->getNumEntries())) {
-            pathKnob->setValue(menuKnob->getEntry(index).id);
+            const ChoiceOption picked = menuKnob->getEntry(index);
+            // A script can still set a disabled note row, which names no camera.
+            if (!picked.disabled) {
+                pathKnob->setValue(picked.id);
+            }
         }
 
         return true;
@@ -285,6 +309,494 @@ SceneCameraPathKnobs::knobChanged(KnobI* k,
     }
 
     return false;
+}
+
+ChoiceOption
+makeSceneUnsearchedOption(std::size_t unsearched,
+                          bool noViewer)
+{
+    const QString tip = noViewer ? EffectInstance::tr("No viewer shows this node, so nothing inside a payload was searched. Show the node in a viewer and load these branches there to list what they hold.")
+                                 : EffectInstance::tr("The viewer showing this node leaves these branches unloaded. Load them there to list what they hold.");
+
+    ChoiceOption option(kSceneMenuUnsearchedId,
+                        EffectInstance::tr("%1 unloaded branches not searched").arg((qulonglong)unsearched).toStdString(),
+                        tip.toStdString());
+    option.disabled = true;
+
+    return option;
+}
+
+bool
+isSceneUnsearchedOption(const std::string& id)
+{
+    return id == kSceneMenuUnsearchedId;
+}
+
+SceneMenuJob::SceneMenuJob(bool noViewer)
+    : _noViewer(noViewer)
+    , _abortInfo(AbortableRenderInfo::create(true, 0))
+{
+}
+
+void
+SceneMenuJob::cancel()
+{
+    _abortInfo->setAborted();
+}
+
+bool
+SceneMenuJob::isCancelled() const
+{
+    return _abortInfo->isAborted();
+}
+
+void
+SceneMenuJob::wait() const
+{
+    std::unique_lock<std::mutex> l(_lock);
+
+    _done.wait(l, [this]() { return _finished; });
+}
+
+bool
+SceneMenuJob::isDone() const
+{
+    std::lock_guard<std::mutex> l(_lock);
+
+    return _finished;
+}
+
+SceneMenuJob::Result
+SceneMenuJob::getResult() const
+{
+    std::lock_guard<std::mutex> l(_lock);
+
+    return _result;
+}
+
+void
+SceneMenuJob::finish(const Result& result)
+{
+    {
+        std::lock_guard<std::mutex> l(_lock);
+        _result = result;
+        _finished = true;
+    }
+    _done.notify_all();
+}
+
+struct SceneWorker::Implementation {
+    std::mutex lock;
+    std::condition_variable wake;
+    bool stopping = false;
+    bool started = false;
+    bool pending = false;
+    Task pendingRun;
+    Task pendingDropped;
+
+    void loop();
+};
+
+namespace {
+// The threads of every worker, for joinAll(). Never destroyed: a thread joinAll() gave up on may
+// still reach it while the process exits.
+struct SceneWorkerThreads {
+    std::mutex lock;
+    std::condition_variable ended;
+    std::size_t running = 0;
+    bool shutDown = false;
+    std::vector<std::weak_ptr<SceneWorker::Implementation>> workers;
+};
+
+SceneWorkerThreads&
+sceneWorkerThreads()
+{
+    static SceneWorkerThreads* threads = new SceneWorkerThreads;
+
+    return *threads;
+}
+
+// Releases the Python GIL while the calling thread waits, if it holds it: a job may need the GIL
+// (expressions) to finish.
+class PythonUnlockedWhileJoining {
+public:
+    PythonUnlockedWhileJoining()
+        : _state(nullptr)
+    {
+        if (Py_IsInitialized() && PyGILState_Check()) {
+            _state = PyEval_SaveThread();
+        }
+    }
+
+    ~PythonUnlockedWhileJoining()
+    {
+        if (_state) {
+            PyEval_RestoreThread(_state);
+        }
+    }
+
+    PythonUnlockedWhileJoining(const PythonUnlockedWhileJoining&) = delete;
+    PythonUnlockedWhileJoining& operator=(const PythonUnlockedWhileJoining&) = delete;
+
+private:
+    PyThreadState* _state;
+};
+
+void
+callDropped(const SceneWorker::Task& dropped)
+{
+    if (!dropped) {
+        return;
+    }
+    try {
+        dropped();
+    } catch (...) {
+    }
+}
+
+// Sets imp stopping and returns its waiting job's dropped callback, for the caller to call unlocked.
+SceneWorker::Task
+stopWorker(SceneWorker::Implementation* imp)
+{
+    SceneWorker::Task dropped;
+    {
+        std::lock_guard<std::mutex> l(imp->lock);
+        imp->stopping = true;
+        if (imp->pending) {
+            dropped.swap(imp->pendingDropped);
+            imp->pendingRun = SceneWorker::Task();
+            imp->pending = false;
+        }
+    }
+    imp->wake.notify_one();
+
+    return dropped;
+}
+} // anonymous namespace
+
+void
+SceneWorker::Implementation::loop()
+{
+    for (;;) {
+        Task run;
+        {
+            std::unique_lock<std::mutex> l(lock);
+            wake.wait(l, [this]() { return stopping || pending; });
+            if (stopping) {
+                break;
+            }
+            run.swap(pendingRun);
+            pendingDropped = Task();
+            pending = false;
+        }
+        try {
+            run();
+        } catch (...) {
+        }
+    }
+    SceneWorkerThreads& threads = sceneWorkerThreads();
+    {
+        std::lock_guard<std::mutex> l(threads.lock);
+        --threads.running;
+    }
+    threads.ended.notify_all();
+}
+
+SceneWorker::SceneWorker()
+    : _imp(std::make_shared<Implementation>())
+{
+}
+
+SceneWorker::~SceneWorker()
+{
+    stop();
+}
+
+void
+SceneWorker::post(const Task& run,
+                  const Task& dropped)
+{
+    Task replaced;
+    bool start = false;
+    {
+        std::lock_guard<std::mutex> l(_imp->lock);
+        if (_imp->stopping) {
+            replaced = dropped;
+        } else {
+            if (_imp->pending) {
+                replaced.swap(_imp->pendingDropped);
+            }
+            _imp->pendingRun = run;
+            _imp->pendingDropped = dropped;
+            _imp->pending = true;
+            start = !_imp->started;
+            _imp->started = true;
+        }
+    }
+    if (start) {
+        SceneWorkerThreads& threads = sceneWorkerThreads();
+        bool refused = false;
+        {
+            std::lock_guard<std::mutex> l(threads.lock);
+            refused = threads.shutDown;
+            if (!refused) {
+                ++threads.running;
+                threads.workers.erase(std::remove_if(threads.workers.begin(), threads.workers.end(), [](const std::weak_ptr<Implementation>& worker) { return worker.expired(); }), threads.workers.end());
+                threads.workers.push_back(_imp);
+            }
+        }
+        if (refused) {
+            callDropped(stopWorker(_imp.get()));
+        } else {
+            std::shared_ptr<Implementation> imp = _imp;
+            std::thread([imp]() { imp->loop(); }).detach();
+        }
+    }
+    _imp->wake.notify_one();
+    callDropped(replaced);
+}
+
+void
+SceneWorker::stop()
+{
+    callDropped(stopWorker(_imp.get()));
+}
+
+bool
+SceneWorker::joinAll(int timeoutMs)
+{
+    SceneWorkerThreads& threads = sceneWorkerThreads();
+    std::vector<std::shared_ptr<Implementation>> workers;
+    {
+        std::lock_guard<std::mutex> l(threads.lock);
+        threads.shutDown = true;
+        for (const std::weak_ptr<Implementation>& weak : threads.workers) {
+            if (const std::shared_ptr<Implementation> worker = weak.lock()) {
+                workers.push_back(worker);
+            }
+        }
+        threads.workers.clear();
+    }
+    for (const std::shared_ptr<Implementation>& worker : workers) {
+        callDropped(stopWorker(worker.get()));
+    }
+    workers.clear();
+    PythonUnlockedWhileJoining unlocked;
+    std::unique_lock<std::mutex> l(threads.lock);
+
+    return threads.ended.wait_for(l, std::chrono::milliseconds(timeoutMs), [&threads]() { return threads.running == 0; });
+}
+
+struct SceneMenuRefresh::State {
+    std::mutex lock;
+    std::shared_ptr<SceneMenuJob> current;
+    SceneWorker worker;
+    const U64 noViewerId = SceneEvaluationContext::makeId();
+    const U64 mappedId = SceneEvaluationContext::makeId();
+    // The rest is main thread only.
+    RerunFunc rerun;
+    std::weak_ptr<EffectInstance> effect;
+    // What the latest refresh searched on, and its job.
+    bool searched = false;
+    SceneLoadSetPtr searchedLoadSet;
+    SceneLoadReachPtr searchedReach;
+    bool searchedNoViewer = false;
+    std::shared_ptr<SceneMenuJob> latest;
+    // Set while followLoadChanges() reruns the refresh.
+    bool followingLoad = false;
+
+    ~State()
+    {
+        EffectInstance::retireSceneContextId(noViewerId);
+        EffectInstance::retireSceneContextId(mappedId);
+    }
+};
+
+namespace {
+std::mutex menuRefreshRegistryLock;
+std::vector<std::weak_ptr<SceneMenuRefresh::State>> menuRefreshRegistry;
+std::atomic<bool> followLoadChangesPending(false);
+
+// Whether a refresh searching on loadSet, with no viewer when noViewer, may find other entries than the last one did.
+bool
+loadChangeReachesSearch(const SceneMenuRefresh::State& state,
+                        const SceneLoadSetPtr& loadSet,
+                        bool noViewer)
+{
+    if (noViewer != state.searchedNoViewer) {
+        return true;
+    }
+    const bool sameLoadSet = state.searchedLoadSet ? (loadSet && (*state.searchedLoadSet == *loadSet)) : !loadSet;
+    if (sameLoadSet) {
+        return false;
+    }
+    // A search still running, or cut short, has not gathered its whole reach.
+    if (!state.searchedReach || !state.latest || !state.latest->isDone() || state.latest->isCancelled()) {
+        return true;
+    }
+
+    return SceneOps::loadChangeReaches(state.searchedLoadSet.get(), loadSet.get(), state.searchedReach->getPrefixes());
+}
+} // anonymous namespace
+
+SceneMenuRefresh::SceneMenuRefresh()
+    : _state(std::make_shared<State>())
+{
+    std::lock_guard<std::mutex> l(menuRefreshRegistryLock);
+
+    menuRefreshRegistry.erase(std::remove_if(menuRefreshRegistry.begin(), menuRefreshRegistry.end(), [](const std::weak_ptr<State>& state) { return state.expired(); }), menuRefreshRegistry.end());
+    menuRefreshRegistry.push_back(_state);
+}
+
+void
+SceneMenuRefresh::setRerun(const RerunFunc& rerun)
+{
+    _state->rerun = rerun;
+}
+
+SceneMenuRefresh::~SceneMenuRefresh()
+{
+    {
+        std::lock_guard<std::mutex> l(_state->lock);
+        if (_state->current) {
+            _state->current->cancel();
+        }
+    }
+    _state->worker.stop();
+}
+
+SceneEvaluationContext
+SceneMenuRefresh::getContext(EffectInstance* effect,
+                             bool* noViewer) const
+{
+    SceneEvaluationContext context;
+    SceneEvaluationContext viewerContext;
+
+    bool ownSet = false;
+    *noViewer = !SceneNodeAuthoring::getShowingViewerContext(effect, &context, &viewerContext, &ownSet);
+    if (*noViewer) {
+        context = SceneEvaluationContext(_state->noViewerId, std::make_shared<const SceneLoadSet>(SceneLoadSet::none()));
+    } else if (ownSet || !context.hasSameLoadSet(viewerContext)) {
+        // A set mapped through the graph must not share the memos the viewer's own id keys.
+        context.id = _state->mappedId;
+    }
+    context.reach = std::make_shared<SceneLoadReach>();
+
+    return context;
+}
+
+U64
+SceneMenuRefresh::getMappedContextId() const
+{
+    return _state->mappedId;
+}
+
+std::shared_ptr<SceneMenuJob>
+SceneMenuRefresh::start(EffectInstance* effect,
+                        const SceneEvaluationContext& context,
+                        bool noViewer,
+                        const WorkFunc& work,
+                        const ApplyFunc& apply)
+{
+    if (_state->followingLoad && _state->searched && !loadChangeReachesSearch(*_state, context.loadSet, noViewer)) {
+        return std::shared_ptr<SceneMenuJob>();
+    }
+    std::shared_ptr<SceneMenuJob> job = std::make_shared<SceneMenuJob>(noViewer);
+    _state->effect = effect ? effect->weak_from_this() : std::weak_ptr<EffectInstance>();
+    _state->searched = true;
+    _state->searchedLoadSet = context.loadSet;
+    _state->searchedReach = context.reach;
+    _state->searchedNoViewer = noViewer;
+    _state->latest = job;
+    {
+        std::lock_guard<std::mutex> l(_state->lock);
+        if (_state->current) {
+            _state->current->cancel();
+        }
+        _state->current = job;
+    }
+    std::weak_ptr<State> weakState = _state;
+    std::weak_ptr<EffectInstance> weakEffect = effect ? effect->weak_from_this() : std::weak_ptr<EffectInstance>();
+    _state->worker.post([job, work, apply, weakState, weakEffect]() {
+        SceneMenuJob::Result result;
+        if (!job->isCancelled()) {
+            try {
+                work(*job, &result);
+            } catch (...) {
+                result = SceneMenuJob::Result();
+            }
+        }
+        job->finish(result);
+        if (job->isCancelled() || !QCoreApplication::instance()) {
+            return;
+        }
+        QMetaObject::invokeMethod(QCoreApplication::instance(), [job, apply, weakState, weakEffect]() {
+            const std::shared_ptr<State> state = weakState.lock();
+            const EffectInstancePtr effect = weakEffect.lock();
+            if (state && effect && effect->getNode()) {
+                apply(job);
+            } }, Qt::QueuedConnection); }, [job]() { job->finish(SceneMenuJob::Result()); });
+
+    return job;
+}
+
+bool
+SceneMenuRefresh::take(const std::shared_ptr<SceneMenuJob>& job)
+{
+    if (!job || !job->isDone() || job->isCancelled()) {
+        return false;
+    }
+    std::lock_guard<std::mutex> l(_state->lock);
+    if (_state->current != job) {
+        return false;
+    }
+    _state->current.reset();
+
+    return true;
+}
+
+std::vector<std::shared_ptr<SceneMenuJob>>
+SceneMenuRefresh::followLoadChanges()
+{
+    followLoadChangesPending = false;
+    std::vector<std::shared_ptr<State>> states;
+    {
+        std::lock_guard<std::mutex> l(menuRefreshRegistryLock);
+        for (const std::weak_ptr<State>& weak : menuRefreshRegistry) {
+            if (const std::shared_ptr<State> state = weak.lock()) {
+                states.push_back(state);
+            }
+        }
+    }
+    std::vector<std::shared_ptr<SceneMenuJob>> jobs;
+    for (const std::shared_ptr<State>& state : states) {
+        // A refresh never run has nothing to follow; one whose node is gone has no one to rerun it.
+        if (!state->searched || !state->rerun || state->effect.expired()) {
+            continue;
+        }
+        state->followingLoad = true;
+        std::shared_ptr<SceneMenuJob> job;
+        try {
+            job = state->rerun();
+        } catch (...) {
+            job.reset();
+        }
+        state->followingLoad = false;
+        if (job) {
+            jobs.push_back(job);
+        }
+    }
+
+    return jobs;
+}
+
+void
+SceneMenuRefresh::scheduleFollowLoadChanges()
+{
+    if (!QCoreApplication::instance() || followLoadChangesPending.exchange(true)) {
+        return;
+    }
+    QMetaObject::invokeMethod(QCoreApplication::instance(), []() { followLoadChanges(); }, Qt::QueuedConnection);
 }
 
 std::string
@@ -314,7 +826,248 @@ followSceneNodeRename(const KnobStringPtr& knob,
     }
 }
 
+namespace {
+// Evaluation contexts a pattern's matches are kept for at once.
+const std::size_t kPatternCacheEntries = 4;
+} // anonymous namespace
+
+struct PrimPatternCache::State {
+    struct Entry {
+        U64 context = 0;
+        ScenePayload upstream;
+        std::string pattern;
+        U64 filterKey = 0;
+        SceneLoadSetPtr loadSet;
+        // SceneOps::getLoadReach() of the pattern's prefixes on the stage the matches came from.
+        std::vector<std::string> loadReach;
+        SceneNodeAuthoring::PatternMatches matches;
+    };
+
+    mutable std::mutex mutex;
+    // Most recently used first.
+    std::list<Entry> entries;
+    U64 queryCount = 0;
+};
+
+PrimPatternCache::PrimPatternCache()
+    : _state(new State)
+{
+}
+
+PrimPatternCache::~PrimPatternCache()
+{
+}
+
+void
+PrimPatternCache::invalidate()
+{
+    std::lock_guard<std::mutex> lock(_state->mutex);
+
+    _state->entries.clear();
+}
+
+U64
+PrimPatternCache::getQueryCount() const
+{
+    std::lock_guard<std::mutex> lock(_state->mutex);
+
+    return _state->queryCount;
+}
+
+PrimPatternCache::State&
+PrimPatternCache::getState()
+{
+    return *_state;
+}
+
+namespace {
+bool
+borrowFor(const ScenePayload& upstream,
+          const SceneEvaluationContext& context,
+          SceneQueryPool::Lease* lease,
+          std::string* errorMessage)
+{
+    if (!lease->isValid()) {
+        *lease = SceneQueryPool::instance().borrow(upstream, context.loadSet, errorMessage);
+    }
+    if (!lease->getStage()) {
+        if (errorMessage->empty()) {
+            *errorMessage = EffectInstance::tr("USD could not compose the input scene.").toStdString();
+        }
+
+        return false;
+    }
+
+    return true;
+}
+
+bool
+isUnloadedPayload(const PXR_NS::UsdPrim& prim)
+{
+    return prim.HasAuthoredPayloads() && !prim.IsLoaded();
+}
+} // anonymous namespace
+
 namespace SceneNodeAuthoring {
+bool
+matchPattern(PrimPatternCache* cache,
+             const ScenePayload& upstream,
+             const std::string& pattern,
+             const SceneEvaluationContext& context,
+             U64 filterKey,
+             const PatternFilter& filter,
+             SceneQueryPool::Lease* lease,
+             PatternMatches* matches,
+             std::string* errorMessage,
+             bool traverseInstanceProxies)
+{
+    *matches = PatternMatches();
+    if (traverseInstanceProxies) {
+        // The cache tells the two searches apart by the key alone.
+        ContentHasher key;
+        key.appendU64(filterKey);
+        key.appendBool(true);
+        filterKey = key.finalize();
+    }
+    PrimSelector::Reach reach;
+    if (!PrimSelector::getReach(pattern, &reach, errorMessage)) {
+        return false;
+    }
+    if (upstream.isEmpty() || PrimSelector::isBlank(pattern)) {
+        return true;
+    }
+    PrimPatternCache::State& state = cache->getState();
+    {
+        std::lock_guard<std::mutex> lock(state.mutex);
+        for (std::list<PrimPatternCache::State::Entry>::iterator it = state.entries.begin(); it != state.entries.end(); ++it) {
+            if ((it->pattern != pattern) || (it->filterKey != filterKey) || !it->upstream.isSameStack(upstream)
+                || (it->upstream.getStackHash() != upstream.getStackHash())) {
+                continue;
+            }
+            const bool sameLoadSet = it->loadSet ? (context.loadSet && (*it->loadSet == *context.loadSet)) : !context.loadSet;
+            // Literal paths in a partial load set match by what is loaded above them.
+            if (!sameLoadSet && (reach.literalOnly || SceneOps::loadChangeReaches(it->loadSet.get(), context.loadSet.get(), it->loadReach))) {
+                continue;
+            }
+            *matches = it->matches;
+            if (context.reach) {
+                context.reach->add(it->loadReach);
+            }
+            PrimPatternCache::State::Entry entry = *it;
+            entry.context = context.id;
+            entry.upstream = upstream;
+            entry.loadSet = context.loadSet;
+            state.entries.erase(it);
+            for (std::list<PrimPatternCache::State::Entry>::iterator own = state.entries.begin(); own != state.entries.end(); ++own) {
+                if (own->context == context.id) {
+                    state.entries.erase(own);
+                    break;
+                }
+            }
+            state.entries.push_front(entry);
+
+            return true;
+        }
+        ++state.queryCount;
+    }
+
+    if (!borrowFor(upstream, context, lease, errorMessage)) {
+        if (context.reach) {
+            context.reach->add(reach.prefixes);
+        }
+
+        return false;
+    }
+    const PXR_NS::UsdStageRefPtr stage = lease->getStage();
+    const std::vector<std::string> loadReach = SceneOps::getLoadReach(stage, reach.prefixes);
+    if (context.reach) {
+        context.reach->add(loadReach);
+    }
+    const bool partial = !context.includesEverything();
+    std::vector<PXR_NS::SdfPath> found;
+    if (partial && reach.literalOnly) {
+        for (const std::string& literal : reach.literals) {
+            const PXR_NS::SdfPath path(literal);
+            const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(path);
+            if (prim) {
+                if (prim.IsActive() && prim.IsDefined() && !prim.IsAbstract() && (!filter || filter(prim))) {
+                    found.push_back(path);
+                }
+                continue;
+            }
+            if (filter) {
+                continue;
+            }
+            for (PXR_NS::SdfPath ancestor = path.GetParentPath(); !ancestor.IsEmpty() && !ancestor.IsAbsoluteRootPath(); ancestor = ancestor.GetParentPath()) {
+                const PXR_NS::UsdPrim above = stage->GetPrimAtPath(ancestor);
+                if (above) {
+                    if (above.IsActive() && isUnloadedPayload(above)) {
+                        found.push_back(path);
+                    }
+                    break;
+                }
+            }
+        }
+        std::sort(found.begin(), found.end());
+        found.erase(std::unique(found.begin(), found.end()), found.end());
+    } else {
+        std::vector<PXR_NS::SdfPath> selected;
+        if (!SceneOps::selectPrims(stage, pattern, &selected, errorMessage, traverseInstanceProxies)) {
+            return false;
+        }
+        for (const PXR_NS::SdfPath& path : selected) {
+            if (!filter || filter(stage->GetPrimAtPath(path))) {
+                found.push_back(path);
+            }
+        }
+    }
+    matches->paths = found;
+    if (partial && found.empty()) {
+        matches->unsearched = SceneOps::countUnloadedPayloads(stage, reach.prefixes);
+    }
+
+    std::lock_guard<std::mutex> lock(state.mutex);
+    for (std::list<PrimPatternCache::State::Entry>::iterator it = state.entries.begin(); it != state.entries.end(); ++it) {
+        if (it->context == context.id) {
+            state.entries.erase(it);
+            break;
+        }
+    }
+    PrimPatternCache::State::Entry entry;
+    entry.context = context.id;
+    entry.upstream = upstream;
+    entry.pattern = pattern;
+    entry.filterKey = filterKey;
+    entry.loadSet = context.loadSet;
+    entry.loadReach = loadReach;
+    entry.matches = *matches;
+    state.entries.push_front(entry);
+    if (state.entries.size() > kPatternCacheEntries) {
+        state.entries.pop_back();
+    }
+
+    return true;
+} // matchPattern
+
+std::string
+describeNoMatch(const std::string& pattern,
+                const PatternMatches& matches,
+                const std::string& consequence)
+{
+    if (matches.unsearched > 0) {
+        return EffectInstance::tr("The prim pattern \"%1\" found 0 matches, %2 unloaded branches not searched; %3.")
+            .arg(QString::fromStdString(pattern))
+            .arg((qulonglong)matches.unsearched)
+            .arg(QString::fromStdString(consequence))
+            .toStdString();
+    }
+
+    return EffectInstance::tr("The prim pattern \"%1\" matches no prim; %2.")
+        .arg(QString::fromStdString(pattern))
+        .arg(QString::fromStdString(consequence))
+        .toStdString();
+}
+
 double
 getTimeCodesPerSecond(const SceneLayerEdit& edit)
 {
@@ -411,24 +1164,42 @@ openLayerStage(const SceneLayerEdit& edit,
     return stage;
 }
 
+namespace {
+    bool
+    getPrimPathFrom(const std::string& value,
+                    PXR_NS::SdfPath* path,
+                    std::string* errorMessage)
+    {
+        if (PXR_NS::SdfPath::IsValidPathString(value)) {
+            const PXR_NS::SdfPath candidate(value);
+            if (candidate.IsAbsolutePath() && candidate.IsPrimPath()) {
+                *path = candidate;
+
+                return true;
+            }
+        }
+        *errorMessage = EffectInstance::tr("\"%1\" is not an absolute prim path such as /World/Prim.").arg(QString::fromStdString(value)).toStdString();
+
+        return false;
+    }
+} // anonymous namespace
+
 bool
 getPrimPath(const KnobStringPtr& knob,
             PXR_NS::SdfPath* path,
             std::string* errorMessage)
 {
-    const std::string value = knob ? knob->getValue() : std::string();
+    return getPrimPathFrom(knob ? knob->getValue() : std::string(), path, errorMessage);
+}
 
-    if (PXR_NS::SdfPath::IsValidPathString(value)) {
-        const PXR_NS::SdfPath candidate(value);
-        if (candidate.IsAbsolutePath() && candidate.IsPrimPath()) {
-            *path = candidate;
-
-            return true;
-        }
-    }
-    *errorMessage = EffectInstance::tr("\"%1\" is not an absolute prim path such as /World/Prim.").arg(QString::fromStdString(value)).toStdString();
-
-    return false;
+bool
+getPrimPath(const KnobStringPtr& knob,
+            double time,
+            ViewIdx view,
+            PXR_NS::SdfPath* path,
+            std::string* errorMessage)
+{
+    return getPrimPathFrom(knob ? knob->getValueAtTime(time, 0, view) : std::string(), path, errorMessage);
 }
 
 bool
@@ -541,7 +1312,17 @@ namespace {
                 return false;
             }
 
-            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(material, errorMessage);
+            // Only the roots grafted are searched for the material, so a load under one of them
+            // is all that can change what is found.
+            const SceneEvaluationContext& materialContext = args.inputContexts.empty() ? SceneEvaluationContext::current() : args.inputContexts.front();
+            if (materialContext.reach) {
+                std::vector<std::string> rootPaths;
+                for (const SceneRootGraft& root : grafts) {
+                    rootPaths.push_back(root.sourcePath);
+                }
+                materialContext.reach->add(rootPaths);
+            }
+            SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(material, materialContext.loadSet, errorMessage);
             const PXR_NS::UsdStageRefPtr stage = lease.getStage();
             if (!stage) {
                 if (errorMessage->empty()) {
@@ -559,14 +1340,7 @@ namespace {
                         continue;
                     }
                     graft->materialPath = prim.GetPath().ReplacePrefix(sourceRoot, graftedRoot).GetString();
-                    const PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(prim).ComputeSurfaceSource();
-                    const PXR_NS::UsdShadeInput space = isProjectionShader(surface) ? surface.GetInput(PXR_NS::TfToken(kUSDProject3DInputProjectionSpace)) : PXR_NS::UsdShadeInput();
-                    int spaceValue = (int)USDProject3D::eProjectionSpaceWorld;
-                    if (space && space.Get(&spaceValue) && (spaceValue == (int)USDProject3D::eProjectionSpaceGeometry)) {
-                        graft->geometryProjectionShader = surface.GetPath().ReplacePrefix(sourceRoot, graftedRoot).GetString();
-                        const PXR_NS::UsdAttribute hold = surface.GetPrim().GetAttribute(PXR_NS::TfToken(kUSDProject3DAttrFrameHold));
-                        graft->projectionHeld = hold && hold.Get(&graft->projectionHoldFrame);
-                    }
+                    readGeometryProjection(prim, &graft->projection);
                     break;
                 }
                 if (!graft->materialPath.empty()) {
@@ -578,9 +1352,9 @@ namespace {
         ContentHasher facts;
         appendUpstreamMetadata(graft->payload, &facts);
         facts.appendString(graft->materialPath);
-        facts.appendString(graft->geometryProjectionShader);
-        facts.appendBool(graft->projectionHeld);
-        facts.appendDouble(graft->projectionHoldFrame);
+        facts.appendString(graft->projection.framePrimvar);
+        facts.appendBool(graft->projection.held);
+        facts.appendDouble(graft->projection.holdFrame);
         graft->factsDigest = facts.finalize();
 
         return true;
@@ -589,6 +1363,7 @@ namespace {
 
 bool
 graftMaterialInput(const ScenePayload& material,
+                   const SceneEvaluationContext& materialContext,
                    const std::string& primPath,
                    const std::string& layerTag,
                    SceneGraftMemo* memo,
@@ -600,12 +1375,30 @@ graftMaterialInput(const ScenePayload& material,
     args.inputs.push_back(material);
     args.destinationPath = primPath;
     args.layerTag = layerTag;
+    args.inputContexts.push_back(materialContext);
 
     return graftMaterial(material, args, memo, graft, errorMessage);
 }
 
+SceneEvaluationContext
+getMaterialInputContext(const SceneEvaluationContext& ctx,
+                        const std::string& primPath)
+{
+    return SceneEvaluationContext(ctx.id, SceneOps::mapGraftLoadSet(ctx.loadSet, primPath, std::string(), false));
+}
+
+void
+mapMaterialInputReach(SceneGraftMemo* memo,
+                      const std::string& primPath,
+                      const std::vector<std::string>& in,
+                      std::vector<std::string>* out)
+{
+    SceneOps::mapGraftReach(memo, 0, primPath, std::string(), in, out);
+}
+
 bool
 graftSharedMaterial(const ScenePayload& material,
+                    const SceneEvaluationContext& materialContext,
                     const std::string& scope,
                     const std::string& layerTag,
                     SceneGraftMemo* memo,
@@ -625,8 +1418,263 @@ graftSharedMaterial(const ScenePayload& material,
     args.ancestorType = "Scope";
     args.passThroughRoot = scope;
     args.layerTag = layerTag;
+    args.inputContexts.push_back(materialContext);
 
     return graftMaterial(material, args, memo, graft, errorMessage);
+}
+
+namespace {
+    bool
+    reachesTarget(const EffectInstance* consumer,
+                  const EffectInstance* target,
+                  std::map<const EffectInstance*, bool>* memo)
+    {
+        if (consumer == target) {
+            return true;
+        }
+        const std::map<const EffectInstance*, bool>::const_iterator known = memo->find(consumer);
+        if (known != memo->end()) {
+            return known->second;
+        }
+        bool reaches = false;
+        const int nInputs = consumer->getNInputs();
+        for (int i = 0; (i < nInputs) && !reaches; ++i) {
+            const EffectInstancePtr input = consumer->getInput(i);
+            reaches = input && input->producesSceneData() && reachesTarget(input.get(), target, memo);
+        }
+        (*memo)[consumer] = reaches;
+
+        return reaches;
+    }
+
+    // Unites into *united the sets target would evaluate on through every route from consumer.
+    void
+    mapThroughRoutes(const EffectInstance* consumer,
+                     const EffectInstance* target,
+                     const SceneEvaluationContext& ctx,
+                     double time,
+                     ViewIdx view,
+                     std::map<const EffectInstance*, bool>* memo,
+                     bool* hasRoute,
+                     SceneLoadSetPtr* united,
+                     U64* firstRouteId,
+                     SceneEvaluationContext* firstRoute)
+    {
+        if (consumer == target) {
+            if (!*hasRoute) {
+                *firstRouteId = ctx.id;
+                *firstRoute = ctx;
+            }
+            *united = *hasRoute ? SceneLoadSet::unite(*united, ctx.loadSet) : ctx.loadSet;
+            *hasRoute = true;
+
+            return;
+        }
+        // As evaluateScene() does, a node passing a scene through evaluates only that one, on ctx.
+        double identityTime = time;
+        ViewIdx identityView = view;
+        int identityInputNb = -1;
+        if (consumer->getSceneIdentity(time, view, &identityTime, &identityView, &identityInputNb)) {
+            if (identityInputNb == -2) {
+                if (identityTime != time) {
+                    mapThroughRoutes(consumer, target, ctx, identityTime, identityView, memo, hasRoute, united, firstRouteId, firstRoute);
+                }
+
+                return;
+            }
+            const EffectInstancePtr source = consumer->getIdentitySource(identityInputNb);
+            if (source && source->producesSceneData() && reachesTarget(source.get(), target, memo)) {
+                mapThroughRoutes(source.get(), target, ctx, identityTime, identityView, memo, hasRoute, united, firstRouteId, firstRoute);
+            }
+
+            return;
+        }
+        const int nInputs = consumer->getNInputs();
+        for (int i = 0; i < nInputs; ++i) {
+            const EffectInstancePtr input = consumer->getInput(i);
+            if (!input || !input->producesSceneData() || !reachesTarget(input.get(), target, memo)) {
+                continue;
+            }
+            SceneEvaluationContext inputContext;
+            try {
+                inputContext = consumer->getEvaluatedSceneInputContext(i, ctx, time, view);
+            } catch (...) {
+                // A mapping that fails is one nothing is known about, which is every payload.
+                inputContext = SceneEvaluationContext(ctx.id, SceneLoadSetPtr());
+            }
+            mapThroughRoutes(input.get(), target, inputContext, time, view, memo, hasRoute, united, firstRouteId, firstRoute);
+        }
+    }
+} // anonymous namespace
+
+bool
+mapContextDownToNode(const EffectInstance* consumer,
+                     const EffectInstance* target,
+                     const SceneEvaluationContext& ctx,
+                     double time,
+                     ViewIdx view,
+                     SceneEvaluationContext* mapped,
+                     bool* ownSet)
+{
+    std::map<const EffectInstance*, bool> memo;
+    if (!consumer || !target || !reachesTarget(consumer, target, &memo)) {
+        return false;
+    }
+    bool hasRoute = false;
+    SceneLoadSetPtr united;
+    U64 firstRouteId = ctx.id;
+    SceneEvaluationContext firstRoute;
+    mapThroughRoutes(consumer, target, ctx, time, view, &memo, &hasRoute, &united, &firstRouteId, &firstRoute);
+    *mapped = SceneEvaluationContext(firstRouteId, united);
+    if (ownSet) {
+        *ownSet = hasRoute && !mapped->hasSameLoadSet(firstRoute);
+    }
+
+    return hasRoute;
+}
+
+bool
+getShowingViewerContext(EffectInstance* effect,
+                        SceneEvaluationContext* context,
+                        SceneEvaluationContext* viewerContext,
+                        bool* ownSet)
+{
+    const NodePtr node = effect ? effect->getNode() : NodePtr();
+    if (!node) {
+        return false;
+    }
+    std::list<ViewerInstance*> downstream;
+    Node::getViewersDownstreamOf(std::list<NodePtr>(1, node), &downstream);
+    if (downstream.empty()) {
+        return false;
+    }
+    std::vector<ViewerInstance*> candidates;
+    const AppInstancePtr app = effect->getApp();
+    const std::list<NodePtr> recent = app ? app->getViewerNodesByRecentActivity() : std::list<NodePtr>();
+    for (const NodePtr& viewerNode : recent) {
+        for (ViewerInstance* viewer : downstream) {
+            if ((viewer->getNode() == viewerNode) && (std::find(candidates.begin(), candidates.end(), viewer) == candidates.end())) {
+                candidates.push_back(viewer);
+            }
+        }
+    }
+    for (ViewerInstance* viewer : downstream) {
+        if (std::find(candidates.begin(), candidates.end(), viewer) == candidates.end()) {
+            candidates.push_back(viewer);
+        }
+    }
+    const double time = effect->getCurrentTime();
+    for (ViewerInstance* viewer : candidates) {
+        const SceneEvaluationContext shown = viewer->getSceneEvaluationContext();
+        if (mapContextDownToNode(viewer, effect, shown, time, ViewIdx(0), context, ownSet)) {
+            if (viewerContext) {
+                *viewerContext = shown;
+            }
+
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+borrowMenuScene(const EffectInstanceWPtr& input,
+                double time,
+                const SceneEvaluationContext& context,
+                const SceneMenuJob& job,
+                ScenePayload* scene,
+                SceneQueryPool::Lease* lease)
+{
+    if (job.isCancelled()) {
+        return false;
+    }
+    EffectInstancePtr effect = input.lock();
+    if (!effect) {
+        return false;
+    }
+    std::string error;
+    const EffectInstance::RenderRoIRetCode code = effect->evaluateScene(EffectInstance::EvaluateSceneArgs(time, ViewIdx(0), context, job.getAbortInfo()), scene, &error);
+    std::shared_ptr<const EffectInstance> held = std::move(effect);
+    releaseOnMainThread(&held);
+    if ((code != EffectInstance::eRenderRoIRetCodeOk) || scene->isEmpty() || job.isCancelled()) {
+        return false;
+    }
+    *lease = SceneQueryPool::instance().borrow(*scene, context.loadSet, &error);
+
+    return lease->isValid();
+}
+
+void
+releaseOnMainThread(std::shared_ptr<const EffectInstance>* effect)
+{
+    QCoreApplication* app = QCoreApplication::instance();
+    if (!*effect || !app || (QThread::currentThread() == app->thread())) {
+        effect->reset();
+
+        return;
+    }
+    // A copy left on this thread would drop the last reference here, off the main thread.
+    auto release = [held = std::move(*effect)]() mutable { held.reset(); };
+    QMetaObject::invokeMethod(app, std::move(release), Qt::QueuedConnection);
+}
+
+std::size_t
+countMenuUnsearched(const PXR_NS::UsdStageRefPtr& stage,
+                    const SceneEvaluationContext& context)
+{
+    if (!stage || context.includesEverything()) {
+        return 0;
+    }
+
+    return SceneOps::countUnloadedPayloads(stage, std::vector<std::string>(1, std::string("/")));
+}
+
+SceneEvaluationContext
+getCameraInputContext(const SceneEvaluationContext& ctx,
+                      const std::string& cameraPath)
+{
+    if (!PXR_NS::SdfPath::IsValidPathString(cameraPath) || !PXR_NS::SdfPath(cameraPath).IsAbsolutePath() || !PXR_NS::SdfPath(cameraPath).IsPrimPath()) {
+        return ctx;
+    }
+
+    return SceneEvaluationContext(ctx.id, SceneLoadSet::withPaths(std::make_shared<const SceneLoadSet>(SceneLoadSet::none()), std::vector<std::string>(1, cameraPath)));
+}
+
+SceneEvaluationContext
+getCameraMenuContext(const SceneEvaluationContext& ctx,
+                     const std::string& cameraPath)
+{
+    if (!PXR_NS::SdfPath::IsValidPathString(cameraPath) || !PXR_NS::SdfPath(cameraPath).IsAbsolutePath() || !PXR_NS::SdfPath(cameraPath).IsPrimPath()) {
+        return ctx;
+    }
+
+    return SceneEvaluationContext(ctx.id, SceneLoadSet::withPaths(ctx.loadSet, std::vector<std::string>(1, cameraPath)), ctx.reach);
+}
+
+SceneEvaluationContext
+getSharedMaterialContext(const SceneEvaluationContext& ctx,
+                         const std::string& scope)
+{
+    if (scope.empty()) {
+        return ctx;
+    }
+
+    return SceneEvaluationContext(ctx.id, SceneOps::mapGraftLoadSet(ctx.loadSet, "/" + scope, scope, false));
+}
+
+void
+mapSharedMaterialReach(SceneGraftMemo* memo,
+                       const std::string& scope,
+                       const std::vector<std::string>& in,
+                       std::vector<std::string>* out)
+{
+    if (scope.empty()) {
+        *out = in;
+
+        return;
+    }
+    SceneOps::mapGraftReach(memo, 0, "/" + scope, scope, in, out);
 }
 
 std::vector<PXR_NS::TfToken>
@@ -668,7 +1716,8 @@ authorCollectionBinding(const PXR_NS::UsdPrim& root,
     const PXR_NS::UsdShadeMaterialBindingAPI bindingAPI = PXR_NS::UsdShadeMaterialBindingAPI::Apply(root);
     bool authored = collection && bindingAPI
         && collection.CreateExpansionRuleAttr(PXR_NS::VtValue(PXR_NS::UsdTokens->expandPrims))
-        && collection.CreateIncludesRel().SetTargets(binding.includes);
+        && collection.CreateIncludesRel().SetTargets(binding.includes)
+        && (binding.excludes.empty() || collection.CreateExcludesRel().SetTargets(binding.excludes));
     PXR_NS::TfToken relName;
     if (authored) {
         relName = bindingAPI.GetCollectionBindingRel(name, binding.purpose).GetName();
@@ -712,36 +1761,313 @@ isProjectionShader(const PXR_NS::UsdShadeShader& shader)
 }
 
 bool
-authorProjectionGeometryFrame(const PXR_NS::UsdStageRefPtr& stage,
-                              const SceneLayerEdit& edit,
-                              const SceneMaterialGraft& graft,
-                              bool animated,
-                              const std::function<PXR_NS::GfMatrix4d(double)>& frameAt)
+readGeometryProjection(const PXR_NS::UsdPrim& material,
+                       SceneGeometryProjection* projection)
 {
-    if (graft.geometryProjectionShader.empty()) {
-        return true;
+    *projection = SceneGeometryProjection();
+    if (!material || !material.IsA<PXR_NS::UsdShadeMaterial>()) {
+        return false;
     }
-    const PXR_NS::UsdPrim shader = stage->OverridePrim(PXR_NS::SdfPath(graft.geometryProjectionShader));
-    const PXR_NS::TfToken name(PXR_NS::UsdShadeTokens->inputs.GetString() + kUSDProject3DInputGeometryFrame);
-    const PXR_NS::UsdAttribute attribute = shader ? shader.CreateAttribute(name, PXR_NS::SdfValueTypeNames->Matrix4d) : PXR_NS::UsdAttribute();
-    if (graft.projectionHeld) {
-        return attribute && attribute.Set(frameAt(graft.projectionHoldFrame));
+    const PXR_NS::UsdShadeShader surface = PXR_NS::UsdShadeMaterial(material).ComputeSurfaceSource();
+    if (!isProjectionShader(surface)) {
+        return false;
+    }
+    const PXR_NS::UsdShadeInput space = surface.GetInput(PXR_NS::TfToken(kUSDProject3DInputProjectionSpace));
+    int spaceValue = (int)USDProject3D::eProjectionSpaceWorld;
+    if (!space || !space.Get(&spaceValue) || (spaceValue != (int)USDProject3D::eProjectionSpaceGeometry)) {
+        return false;
+    }
+    const PXR_NS::UsdShadeInput frame = surface.GetInput(PXR_NS::TfToken(kUSDProject3DInputGeometryFrame));
+    PXR_NS::UsdShadeConnectableAPI reader;
+    PXR_NS::TfToken readerOutput;
+    PXR_NS::UsdShadeAttributeType readerOutputType;
+    if (!frame || !frame.GetConnectedSource(&reader, &readerOutput, &readerOutputType)) {
+        return false;
+    }
+    const PXR_NS::UsdShadeInput varname = reader.GetInput(PXR_NS::TfToken("varname"));
+    std::string framePrimvar;
+    if (!varname || !varname.Get(&framePrimvar) || framePrimvar.empty()) {
+        return false;
+    }
+    projection->framePrimvar = framePrimvar;
+    const PXR_NS::UsdAttribute hold = surface.GetPrim().GetAttribute(PXR_NS::TfToken(kUSDProject3DAttrFrameHold));
+    projection->held = hold && hold.Get(&projection->holdFrame);
+    const PXR_NS::UsdShadeInput reference = surface.GetInput(PXR_NS::TfToken(kUSDProject3DInputReferencePoints));
+    PXR_NS::UsdShadeConnectableAPI referenceReader;
+    if (reference && reference.GetConnectedSource(&referenceReader, &readerOutput, &readerOutputType)) {
+        const PXR_NS::UsdShadeInput referenceName = referenceReader.GetInput(PXR_NS::TfToken("varname"));
+        if (referenceName) {
+            referenceName.Get(&projection->referencePrimvar);
+        }
     }
 
-    return authorValue(attribute, edit, animated, frameAt);
+    return true;
+}
+
+bool
+authorProjectionFrame(const PXR_NS::UsdPrim& prim,
+                      const SceneLayerEdit& edit,
+                      const SceneGeometryProjection& projection,
+                      bool animated,
+                      const std::function<PXR_NS::GfMatrix4d(double)>& frameAt)
+{
+    if (projection.framePrimvar.empty()) {
+        return true;
+    }
+    const PXR_NS::UsdGeomPrimvarsAPI primvars(prim);
+    std::vector<PXR_NS::UsdAttribute> attributes(1, primvars.CreatePrimvar(PXR_NS::TfToken(projection.framePrimvar), PXR_NS::SdfValueTypeNames->Matrix4d, PXR_NS::UsdGeomTokens->constant).GetAttr());
+    for (int column = 0; column < 3; ++column) {
+        const PXR_NS::TfToken name(SceneProjectionCameras::frameColumnPrimvar(projection.framePrimvar, column));
+        attributes.push_back(primvars.CreatePrimvar(name, PXR_NS::SdfValueTypeNames->Float4Array, PXR_NS::UsdGeomTokens->constant).GetAttr());
+    }
+    for (int part = 0; part < 4; ++part) {
+        const PXR_NS::TfToken name(SceneProjectionCameras::moonRayFramePrimvar(projection.framePrimvar, part));
+        attributes.push_back(primvars.CreatePrimvar(name, PXR_NS::SdfValueTypeNames->Float3, PXR_NS::UsdGeomTokens->constant).GetAttr());
+    }
+    const auto setFrame = [&attributes](const PXR_NS::GfMatrix4d& frame, PXR_NS::UsdTimeCode time) {
+        bool ok = attributes[0] && attributes[0].Set(frame, time);
+        for (int column = 0; ok && (column < 3); ++column) {
+            ok = attributes[column + 1] && attributes[column + 1].Set(SceneProjectionCameras::frameColumn(frame, column), time);
+        }
+        for (int part = 0; ok && (part < 4); ++part) {
+            ok = attributes[part + 4] && attributes[part + 4].Set(SceneProjectionCameras::moonRayFramePart(frame, part), time);
+        }
+
+        return ok;
+    };
+    if (projection.held) {
+        return setFrame(frameAt(projection.holdFrame), PXR_NS::UsdTimeCode::Default());
+    }
+    if (!animated) {
+        return setFrame(frameAt(edit.firstFrame), PXR_NS::UsdTimeCode::Default());
+    }
+    for (double frame : getSampleFrames(edit)) {
+        if (!setFrame(frameAt(frame), frameToTimeCode(edit, frame))) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+namespace {
+    // The samples inside the range miss a value held into it from a sample outside, so its ends
+    // are read too.
+    std::vector<double>
+    getTimesOverRange(const PXR_NS::UsdAttribute& attribute,
+                      const SceneReferenceContext& context)
+    {
+        std::vector<double> times;
+        attribute.GetTimeSamplesInInterval(PXR_NS::GfInterval(context.firstTime, context.lastTime), &times);
+        times.push_back(context.firstTime);
+        times.push_back(context.lastTime);
+
+        return times;
+    }
+
+    // By value: a cache can re-sample unchanged arrays, and USD then reports them as time-varying.
+    template <typename ArrayType>
+    bool
+    holdsItsValueOverRange(const PXR_NS::UsdAttribute& attribute,
+                           const SceneReferenceContext& context)
+    {
+        if (!attribute || !attribute.HasValue()) {
+            return true;
+        }
+        ArrayType reference;
+        attribute.Get(&reference, context.holdTime);
+        for (const double time : getTimesOverRange(attribute, context)) {
+            ArrayType value;
+            if (!attribute.Get(&value, time) || (value != reference)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    bool
+    topologyHoldsOverRange(const PXR_NS::UsdPrim& prim,
+                           const PXR_NS::UsdAttribute& pointsAttribute,
+                           std::size_t pointCount,
+                           const SceneReferenceContext& context)
+    {
+        if (prim.IsA<PXR_NS::UsdGeomMesh>()) {
+            const PXR_NS::UsdGeomMesh mesh(prim);
+            if (!holdsItsValueOverRange<PXR_NS::VtIntArray>(mesh.GetFaceVertexCountsAttr(), context)
+                || !holdsItsValueOverRange<PXR_NS::VtIntArray>(mesh.GetFaceVertexIndicesAttr(), context)) {
+                return false;
+            }
+        } else if (prim.IsA<PXR_NS::UsdGeomCurves>()) {
+            if (!holdsItsValueOverRange<PXR_NS::VtIntArray>(PXR_NS::UsdGeomCurves(prim).GetCurveVertexCountsAttr(), context)) {
+                return false;
+            }
+        } else if (prim.IsA<PXR_NS::UsdGeomPoints>() && !holdsItsValueOverRange<PXR_NS::VtInt64Array>(PXR_NS::UsdGeomPoints(prim).GetIdsAttr(), context)) {
+            return false;
+        }
+        // Unchanged indices can still come with more or fewer unused points, and Storm drops a
+        // vertex primvar whose size differs from the points'.
+        const std::vector<double> times = getTimesOverRange(pointsAttribute, context);
+        PXR_NS::VtVec3fArray value;
+        for (const double time : times) {
+            if (!pointsAttribute.Get(&value, time) || (value.size() != pointCount)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    bool
+    isBoundToSkin(const PXR_NS::UsdPrim& prim)
+    {
+        const PXR_NS::UsdSkelBindingAPI binding(prim);
+        if (!binding.GetInheritedSkeleton()) {
+            return false;
+        }
+        // A skeleton inherited from far up reaches props with no weights too, which it does not move.
+        const PXR_NS::UsdGeomPrimvar indices = PXR_NS::UsdGeomPrimvarsAPI(prim).FindPrimvarWithInheritance(PXR_NS::TfToken("skel:jointIndices"));
+        const PXR_NS::UsdAttribute shapes = binding.GetBlendShapesAttr();
+
+        return (indices && indices.HasValue()) || (shapes && shapes.HasValue());
+    }
+
+    bool
+    applyBlendShapes(const PXR_NS::UsdSkelSkinningQuery& skinning,
+                     const PXR_NS::UsdSkelSkeletonQuery& skeleton,
+                     double time,
+                     PXR_NS::VtVec3fArray* points)
+    {
+        const PXR_NS::UsdSkelAnimQuery& animation = skeleton.GetAnimQuery();
+        PXR_NS::VtFloatArray animationWeights;
+        if (!animation || !animation.ComputeBlendShapeWeights(&animationWeights, PXR_NS::UsdTimeCode(time))) {
+            return true;
+        }
+        PXR_NS::VtFloatArray weights;
+        const PXR_NS::UsdSkelAnimMapperRefPtr& mapper = skinning.GetBlendShapeMapper();
+        if (!mapper || !mapper->Remap(animationWeights, &weights)) {
+            return false;
+        }
+        const PXR_NS::UsdSkelBlendShapeQuery shapes { PXR_NS::UsdSkelBindingAPI(skinning.GetPrim()) };
+        PXR_NS::VtFloatArray subShapeWeights;
+        PXR_NS::VtUIntArray shapeIndices;
+        PXR_NS::VtUIntArray subShapeIndices;
+        if (!shapes.ComputeSubShapeWeights(weights, &subShapeWeights, &shapeIndices, &subShapeIndices)) {
+            return false;
+        }
+
+        return shapes.ComputeDeformedPoints(subShapeWeights, shapeIndices, subShapeIndices,
+                                            shapes.ComputeBlendShapePointIndices(), shapes.ComputeSubShapePointOffsets(), *points);
+    }
+
+    // Joint-skinned points come out in the skeleton's space: the prim's own transform plays no part, as
+    // in Storm. *space gets the prim whose local to world carries them on.
+    bool
+    computeSkinnedPoints(const PXR_NS::UsdPrim& prim,
+                         SceneReferenceContext* context,
+                         PXR_NS::VtVec3fArray* points,
+                         PXR_NS::UsdPrim* space)
+    {
+        const PXR_NS::UsdSkelRoot root = PXR_NS::UsdSkelRoot::Find(prim);
+        if (!root) {
+            return false;
+        }
+        if (context->populatedRoots.insert(root.GetPath()).second && !context->skinning.Populate(root, PXR_NS::UsdTraverseInstanceProxies())) {
+            return false;
+        }
+        const PXR_NS::UsdSkelSkinningQuery skinning = context->skinning.GetSkinningQuery(prim);
+        const PXR_NS::UsdSkelSkeleton bound = PXR_NS::UsdSkelBindingAPI(prim).GetInheritedSkeleton();
+        const PXR_NS::UsdSkelSkeletonQuery skeleton = context->skinning.GetSkelQuery(bound);
+        if (!skinning || !skeleton) {
+            return false;
+        }
+        if (skinning.HasBlendShapes() && !applyBlendShapes(skinning, skeleton, context->holdTime, points)) {
+            return false;
+        }
+        if (!skinning.HasJointInfluences()) {
+            *space = prim;
+
+            return true;
+        }
+        PXR_NS::VtMatrix4dArray joints;
+        if (!skeleton.ComputeSkinningTransforms(&joints, PXR_NS::UsdTimeCode(context->holdTime))
+            || !skinning.ComputeSkinnedPoints(joints, points, PXR_NS::UsdTimeCode(context->holdTime))) {
+            return false;
+        }
+        *space = bound.GetPrim();
+
+        return true;
+    }
+} // anonymous namespace
+
+SceneReferencePoints
+readReferencePoints(const PXR_NS::UsdPrim& prim,
+                    SceneReferenceContext* context,
+                    PXR_NS::UsdGeomXformCache* xforms)
+{
+    SceneReferencePoints result;
+    if (!prim.IsA<PXR_NS::UsdGeomPointBased>()) {
+        return result;
+    }
+    const PXR_NS::UsdAttribute pointsAttribute = PXR_NS::UsdGeomPointBased(prim).GetPointsAttr();
+    const bool skinned = isBoundToSkin(prim);
+    if (!skinned && !pointsAttribute.ValueMightBeTimeVarying()) {
+        return result;
+    }
+    PXR_NS::VtVec3fArray points;
+    if (!pointsAttribute.Get(&points, context->holdTime) || points.empty()) {
+        return result;
+    }
+    if (!topologyHoldsOverRange(prim, pointsAttribute, points.size(), *context)) {
+        result.status = SceneReferencePoints::eStatusTopologyChanges;
+
+        return result;
+    }
+    PXR_NS::UsdPrim space = prim;
+    if (skinned && !computeSkinnedPoints(prim, context, &points, &space)) {
+        result.status = SceneReferencePoints::eStatusCannotSkin;
+
+        return result;
+    }
+    const PXR_NS::GfMatrix4d toWorld = xforms->GetLocalToWorldTransform(space);
+    for (PXR_NS::GfVec3f& point : points) {
+        point = PXR_NS::GfVec3f(toWorld.Transform(PXR_NS::GfVec3d(point)));
+    }
+    result.status = SceneReferencePoints::eStatusRead;
+    result.points = points;
+
+    return result;
+}
+
+bool
+authorReferencePoints(const PXR_NS::UsdPrim& prim,
+                      const SceneGeometryProjection& projection,
+                      const PXR_NS::VtVec3fArray& points)
+{
+    const PXR_NS::UsdGeomPrimvarsAPI primvars(prim);
+    const PXR_NS::UsdGeomPrimvar primvar = primvars.CreatePrimvar(PXR_NS::TfToken(projection.referencePrimvar), PXR_NS::SdfValueTypeNames->Point3fArray, PXR_NS::UsdGeomTokens->vertex);
+    // A one-element array, not a float: Cycles copies a primvar by its array size, so a scalar
+    // reaches its shaders as zero.
+    const PXR_NS::UsdGeomPrimvar present = primvars.CreatePrimvar(PXR_NS::TfToken(SceneProjectionCameras::cyclesReferencePresentPrimvar(projection.referencePrimvar)), PXR_NS::SdfValueTypeNames->FloatArray, PXR_NS::UsdGeomTokens->constant);
+
+    return primvar && primvar.Set(points) && present && present.Set(PXR_NS::VtFloatArray(1, 1.f));
 }
 
 bool
 authorMaterialBinding(const PXR_NS::UsdPrim& prim,
                       const std::string& materialPath,
-                      std::string* errorMessage)
+                      std::string* errorMessage,
+                      const PXR_NS::TfToken& purpose,
+                      const PXR_NS::TfToken& strength)
 {
     if (materialPath.empty()) {
         return true;
     }
     const PXR_NS::UsdShadeMaterialBindingAPI binding = prim ? PXR_NS::UsdShadeMaterialBindingAPI::Apply(prim) : PXR_NS::UsdShadeMaterialBindingAPI();
-    const PXR_NS::UsdRelationship rel = binding ? prim.CreateRelationship(PXR_NS::UsdShadeTokens->materialBinding, false) : PXR_NS::UsdRelationship();
-    if (!rel || !rel.SetTargets({ PXR_NS::SdfPath(materialPath) })) {
+    const bool allPurpose = purpose.IsEmpty() || (purpose == PXR_NS::UsdShadeTokens->allPurpose);
+    const PXR_NS::TfToken relName = allPurpose ? PXR_NS::UsdShadeTokens->materialBinding : PXR_NS::TfToken(PXR_NS::UsdShadeTokens->materialBinding.GetString() + ":" + purpose.GetString());
+    const PXR_NS::UsdRelationship rel = binding ? prim.CreateRelationship(relName, false) : PXR_NS::UsdRelationship();
+    if (!rel || !rel.SetTargets({ PXR_NS::SdfPath(materialPath) }) || (!strength.IsEmpty() && !PXR_NS::UsdShadeMaterialBindingAPI::SetMaterialBindingStrength(rel, strength))) {
         *errorMessage = EffectInstance::tr("USD could not bind %1 to the material at %2.").arg(QString::fromStdString(prim ? prim.GetPath().GetString() : std::string())).arg(QString::fromStdString(materialPath)).toStdString();
 
         return false;
@@ -1012,6 +2338,81 @@ namespace {
     } // readDeclaredTilesOverFrames
 } // anonymous namespace
 
+namespace {
+    // The knob's value: one "<input>\t<source name>\n" per input that lost its source.
+    std::map<int, std::string>
+    parseDeletedTextureSources(const std::string& value)
+    {
+        std::map<int, std::string> sources;
+        std::istringstream lines(value);
+
+        for (std::string line; std::getline(lines, line);) {
+            const std::size_t tab = line.find('\t');
+            if ((tab != std::string::npos) && (tab + 1 < line.size())) {
+                sources[std::atoi(line.c_str())] = line.substr(tab + 1);
+            }
+        }
+
+        return sources;
+    }
+
+    void
+    setDeletedTextureSources(const KnobStringPtr& knob,
+                             const std::map<int, std::string>& sources)
+    {
+        std::string value;
+
+        for (const std::pair<const int, std::string>& source : sources) {
+            value += std::to_string(source.first) + "\t" + source.second + "\n";
+        }
+        if (value != knob->getValue()) {
+            knob->setValue(value);
+        }
+    }
+} // anonymous namespace
+
+void
+createDeletedTextureSourcesKnob(KnobHolder* holder,
+                                const KnobPagePtr& page)
+{
+    KnobStringPtr knob = AppManager::createKnob<KnobString>(holder, EffectInstance::tr("Deleted Texture Sources"));
+
+    knob->setName(kSceneParamDeletedTextureSources);
+    knob->setHintToolTip(EffectInstance::tr("The image inputs whose node was deleted, which show the missing-texture colour until something is connected to them."));
+    knob->setAnimationEnabled(false);
+    knob->setSecretByDefault(true);
+    page->addKnob(knob);
+}
+
+void
+recordDeletedTextureSource(const EffectInstance& consumer,
+                           int inputNb,
+                           const std::string& sourceName)
+{
+    const KnobStringPtr knob = consumer.getKnobByNameAndType<KnobString>(kSceneParamDeletedTextureSources);
+
+    if (knob) {
+        std::map<int, std::string> sources = parseDeletedTextureSources(knob->getValue());
+        sources[inputNb] = sourceName;
+        setDeletedTextureSources(knob, sources);
+    }
+}
+
+void
+forgetDeletedTextureSourceIfConnected(const EffectInstance& consumer,
+                                      int inputNb)
+{
+    const KnobStringPtr knob = consumer.getKnobByNameAndType<KnobString>(kSceneParamDeletedTextureSources);
+    const NodePtr node = consumer.getNode();
+
+    // The real input: a group's Input node counts as connected even with nothing outside the group.
+    if (knob && node && node->getRealInput(inputNb)) {
+        std::map<int, std::string> sources = parseDeletedTextureSources(knob->getValue());
+        sources.erase(inputNb);
+        setDeletedTextureSources(knob, sources);
+    }
+}
+
 bool
 getLiveTextureSource(const EffectInstance& consumer,
                      int inputNb,
@@ -1020,12 +2421,35 @@ getLiveTextureSource(const EffectInstance& consumer,
                      std::string* udimError)
 {
     const EffectInstancePtr connected = consumer.getInput(inputNb);
-    NodePtr node = connected ? connected->getNode() : NodePtr();
     const double time = consumer.getCurrentTime();
-    // A disabled node renders as its preferred input, so the texture shows what the render would.
-    while (node && node->isNodeDisabled(time)) {
-        node = node->getPreferredInputNode();
+    source->tiles.clear();
+    source->frameTiles.reset();
+    source->missingTilesWarning.clear();
+    if (udimError) {
+        udimError->clear();
     }
+    if (!connected) {
+        const KnobStringPtr knob = consumer.getKnobByNameAndType<KnobString>(kSceneParamDeletedTextureSources);
+        const std::map<int, std::string> deleted = knob ? parseDeletedTextureSources(knob->getValue()) : std::map<int, std::string>();
+        const std::map<int, std::string>::const_iterator found = deleted.find(inputNb);
+        if (found == deleted.end()) {
+            return false;
+        }
+        source->node.reset();
+        source->consumer = consumer.getNode();
+        source->nodeName = found->second;
+        source->layer = layer;
+        source->contentHash = 0;
+        source->varying = false;
+        const AppInstancePtr app = consumer.getApp();
+        if (app && app->getProject()) {
+            app->getProject()->getFrameRange(&source->firstFrame, &source->lastFrame);
+        }
+
+        return true;
+    }
+    // A disabled node renders as its preferred input, so the texture shows what the render would.
+    const NodePtr node = resolveDisabledNode(connected->getNode(), time);
     const EffectInstancePtr input = node ? node->getEffectInstance() : EffectInstancePtr();
     if (!input) {
         return false;
@@ -1040,11 +2464,7 @@ getLiveTextureSource(const EffectInstance& consumer,
     if (app && app->getProject()) {
         app->getProject()->getFrameRange(&source->firstFrame, &source->lastFrame);
     }
-    source->tiles.clear();
-    source->frameTiles.reset();
-    source->missingTilesWarning.clear();
     if (udimError) {
-        udimError->clear();
         if (source->varying) {
             const DeclaredTiles declared = readDeclaredTilesOverFrames(input, source->nodeName, source->contentHash, source->firstFrame, source->lastFrame);
             source->tiles = declared.tiles;
@@ -1057,6 +2477,19 @@ getLiveTextureSource(const EffectInstance& consumer,
     }
 
     return true;
+}
+
+std::string
+getLiveTextureFailure(const LiveTextureSource& source,
+                      double time)
+{
+    const NodePtr node = source.node.lock();
+
+    if (!source.nodeName.empty() && (!node || !node->isActivated())) {
+        return "the node " + source.nodeName + " that feeds it no longer exists";
+    }
+
+    return LiveTextureStore::instance().getFailure(source.getUri(time));
 }
 
 void
@@ -1080,7 +2513,7 @@ getLiveTextureWarnings(const LiveTextureSource& source,
     std::vector<std::string> warnings;
     const double frame = source.getSourceFrame(time);
     const std::string uri = source.getUri(frame);
-    const std::string failure = LiveTextureStore::instance().getFailure(uri);
+    const std::string failure = getLiveTextureFailure(source, frame);
 
     if (!failure.empty()) {
         if (source.isUdim()) {
@@ -1108,7 +2541,7 @@ getLiveTextureWarnings(const LiveTextureSource& source,
                                        .toStdString());
             }
         } else {
-            warnings.push_back(EffectInstance::tr("The live texture %1 shows the renderer's fallback: %2.")
+            warnings.push_back(EffectInstance::tr("The live texture %1 shows magenta, the missing-texture colour: %2.")
                                    .arg(QString::fromStdString(uri))
                                    .arg(QString::fromStdString(failure))
                                    .toStdString());

@@ -126,6 +126,10 @@ NodeGraph::NodeGraph(Gui* gui,
     }
 
     QObject::connect( &_imp->autoScrollTimer, SIGNAL(timeout()), this, SLOT(onAutoScrollTimerTriggered()) );
+    if (gui) {
+        QObject::connect(this, &NodeGraph::selectionChanged, gui, &Gui::nodeSelectionChanged);
+        QObject::connect(this, &NodeGraph::topologyChanged, gui, &Gui::nodeGraphTopologyChanged);
+    }
 
     _imp->overlayRefreshTimer.setSingleShot(true);
     QObject::connect(&_imp->overlayRefreshTimer, &QTimer::timeout, this, [this]() {
@@ -345,6 +349,18 @@ NodeGraph::scheduleLoopBlockRefresh(bool topology)
 }
 
 void
+NodeGraph::scheduleSelectionChanged()
+{
+    if (_imp->_selectionChangeScheduled) {
+        return;
+    }
+    _imp->_selectionChangeScheduled = true;
+    QMetaObject::invokeMethod(this, [this]() {
+        _imp->_selectionChangeScheduled = false;
+        Q_EMIT selectionChanged(); }, Qt::QueuedConnection);
+}
+
+void
 NodeGraph::notifyGuiClosing()
 {
     NodeCollectionPtr group = getGroup();
@@ -365,7 +381,6 @@ NodeGraph::onNodesCleared()
     invalidateNavigatorContent();
 
     _imp->_selection.clear();
-    _imp->_magnifiedNode.reset();
 }
 
 void

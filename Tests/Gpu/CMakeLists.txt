@@ -29,13 +29,17 @@ set(GpuTests_SOURCES
     BlurCpu_Test.cpp
     BlurGpu_Test.cpp
     CurveSnapshotPrecision_Test.cpp
+    GpuAccel_Test.cpp
     GpuBuffer_Test.cpp
     GpuBufferPool_Test.cpp
     GpuDevice_Test.cpp
+    GpuDeviceRayTracing_Test.cpp
     GpuKernel_Test.cpp
     GpuKernelRegistry_Test.cpp
     GpuPipelineCache_Test.cpp
     GpuQueuePlan_Test.cpp
+    GpuRaster_Test.cpp
+    GpuRecordCancel_Test.cpp
     GpuRuntime_Test.cpp
     GpuRuntimeShader_Test.cpp
     GpuShaderCompiler_Test.cpp

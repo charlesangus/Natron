@@ -1,27 +1,46 @@
 #include "GpuKernelRegistry.h"
 
+#include <array>
+#include <atomic>
+#include <tuple>
+
 namespace gpu {
 
 #define GPU_KERNELS_TABLE
 #include "GpuKernels.inc"
 #undef GPU_KERNELS_TABLE
 
+#define GPU_RASTERS_TABLE
+#include "GpuKernels.inc"
+#undef GPU_RASTERS_TABLE
+
 namespace {
 
     constexpr size_t kGeneratedCount = sizeof(kGpuKernelTable) / sizeof(kGpuKernelTable[0]);
     static_assert(kGeneratedCount == static_cast<size_t>(GpuKernelId::Count),
                   "kernel table and id enum come from the same list");
+    constexpr size_t kGeneratedRasterCount = std::tuple_size_v<decltype(kGpuRasterTable)>;
+    static_assert(kGeneratedRasterCount == static_cast<size_t>(GpuRasterId::Count),
+                  "raster table and id enum come from the same list");
+
+    std::atomic<uint64_t> gNextRegistrySerial { 1 };
+
+    // Expires when the thread exits, which hands its command pools' retired buffers to whichever thread sweeps next.
+    thread_local const std::shared_ptr<int> tThreadAlive = std::make_shared<int>(0);
 
 } // namespace
 
 GpuKernelRegistry::GpuKernelRegistry(GpuDevice& device)
     : device_(device)
+    , serial_(gNextRegistrySerial.fetch_add(1, std::memory_order_relaxed))
     , slots_(kGeneratedCount)
 {
 }
 
 GpuKernelRegistry::~GpuKernelRegistry()
 {
+    // Retiring work runs out of the command pools and ends its recording here once reaped.
+    device_.finishRetiring();
     std::lock_guard<std::mutex> lock(mutex_);
     slots_.clear();
     destroyPoolsLocked();
@@ -34,6 +53,28 @@ GpuKernelRegistry::registerKernel(const GpuKernelDesc& desc)
     registered_.push_back(desc);
     slots_.emplace_back();
     return static_cast<GpuKernelId>(kGeneratedCount + registered_.size() - 1);
+}
+
+GpuRasterId
+GpuKernelRegistry::registerRaster(const GpuRasterDesc& desc)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    registeredRasters_.push_back(desc);
+    return static_cast<GpuRasterId>(kGeneratedRasterCount + registeredRasters_.size() - 1);
+}
+
+const GpuRasterDesc*
+GpuKernelRegistry::rasterDesc(GpuRasterId id) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    const size_t i = static_cast<size_t>(id);
+    if (i < kGeneratedRasterCount) {
+        return &kGpuRasterTable[i];
+    }
+    if (i - kGeneratedRasterCount < registeredRasters_.size()) {
+        return &registeredRasters_[i - kGeneratedRasterCount];
+    }
+    return nullptr;
 }
 
 GpuKernelId
@@ -106,6 +147,8 @@ void
 GpuKernelRegistry::destroyPoolsLocked()
 {
     // A command buffer of work that never finished may still be executing out of one of these pools.
+    retiredCommandBuffers_.clear();
+    poolOwners_.clear();
     if (device_.hasAbandonedWork()) {
         pools_.clear();
         return;
@@ -119,6 +162,7 @@ GpuKernelRegistry::destroyPoolsLocked()
 void
 GpuKernelRegistry::invalidate()
 {
+    device_.finishRetiring();
     std::lock_guard<std::mutex> lock(mutex_);
     for (Slot& slot : slots_) {
         slot.kernel.reset();
@@ -128,24 +172,71 @@ GpuKernelRegistry::invalidate()
 }
 
 GpuStatus
-GpuKernelRegistry::commandPoolForThisThread(VkCommandPool& out)
+GpuKernelRegistry::commandPoolForThisThread(VkCommandPool& out, QueueKind queue)
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto it = pools_.find(std::this_thread::get_id());
+    const uint32_t family = device_.queueFamily(queue);
+    const auto key = std::make_pair(std::this_thread::get_id(), family);
+    auto it = pools_.find(key);
     if (it == pools_.end()) {
         VkCommandPoolCreateInfo ci { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
         ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-        ci.queueFamilyIndex = device_.queueFamily(QueueKind::Compute);
+        ci.queueFamilyIndex = family;
         VkCommandPool pool = VK_NULL_HANDLE;
         if (GpuStatus s = device_.check(vkCreateCommandPool(device_.device(), &ci, nullptr, &pool),
                                         "vkCreateCommandPool");
             !s) {
             return s;
         }
-        it = pools_.emplace(std::this_thread::get_id(), pool).first;
+        it = pools_.emplace(key, pool).first;
     }
     out = it->second;
+    // Set before the sweep, under the lock, so that a pool its exited owner left to a new thread of the same id is
+    // not swept while that thread records into it.
+    poolOwners_[out] = tThreadAlive;
+    sweepRetiredLocked(out);
     return {};
+}
+
+void
+GpuKernelRegistry::sweepRetiredLocked(VkCommandPool mine)
+{
+    for (auto r = retiredCommandBuffers_.begin(); r != retiredCommandBuffers_.end();) {
+        bool ownerExited = false;
+        if (r->pool != mine) {
+            const auto owner = poolOwners_.find(r->pool);
+            ownerExited = (owner == poolOwners_.end()) || owner->second.expired();
+        }
+        if (((r->pool != mine) && !ownerExited) || !r->done->load(std::memory_order_acquire)) {
+            ++r;
+            continue;
+        }
+        vkFreeCommandBuffers(device_.device(), r->pool, static_cast<uint32_t>(r->buffers.size()), r->buffers.data());
+        r = retiredCommandBuffers_.erase(r);
+    }
+}
+
+size_t
+GpuKernelRegistry::retiredCommandBufferCountForTests() const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    size_t count = 0;
+    for (const RetiredCommandBuffers& r : retiredCommandBuffers_) {
+        count += r.buffers.size();
+    }
+    return count;
+}
+
+void
+GpuKernelRegistry::retireCommandBuffers(VkCommandPool pool, std::vector<VkCommandBuffer> buffers,
+                                        std::shared_ptr<std::atomic<bool>> done)
+{
+    if (buffers.empty()) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    retiredCommandBuffers_.push_back({ pool, std::move(buffers), std::move(done) });
+    sweepRetiredLocked(pool);
 }
 
 void

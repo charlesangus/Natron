@@ -357,7 +357,7 @@ TEST_F(RotoLayerTest, RotoPaintWritesATwoChannelRegistryLayerTheInputLacks)
     ab.push_back("A");
     ab.push_back("B");
     std::string error;
-    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask2", "mask2", "", ab), LayerRegistryEntry::eOriginUser, &error)) << error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask2", ab), LayerRegistryEntry::eOriginUser, &error)) << error;
 
     KnobLayerSelectPtr layer;
     NodePtr roto = createRotoOnReader(PLUGINID_NATRON_ROTOPAINT, &layer);
@@ -439,7 +439,7 @@ TEST_F(RotoLayerTest, LayerUsersCountOnlyTheRotoPaintContainer)
 
     std::vector<std::string> a(1, "A");
     std::string error;
-    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", "mask", "", a), LayerRegistryEntry::eOriginUser, &error)) << error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", a), LayerRegistryEntry::eOriginUser, &error)) << error;
 
     KnobLayerSelectPtr layer;
     NodePtr roto = createRotoOnReader(PLUGINID_NATRON_ROTOPAINT, &layer);
@@ -475,7 +475,7 @@ TEST_F(RotoLayerTest, LayerUsersCountOnlyTheRotoContainer)
 
     std::vector<std::string> a(1, "A");
     std::string error;
-    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", "mask", "", a), LayerRegistryEntry::eOriginUser, &error)) << error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, project->addLayer(ImageLayerDesc("mask", a), LayerRegistryEntry::eOriginUser, &error)) << error;
 
     KnobLayerSelectPtr layer;
     NodePtr roto = createRotoOnReader(PLUGINID_NATRON_ROTO, &layer);

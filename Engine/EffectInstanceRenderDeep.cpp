@@ -35,7 +35,11 @@
 #include <QDebug>
 #include <QThread>
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppManager.h"
+#include "Engine/CacheEntry.h"
+#include "Engine/CacheRetention.h"
+#include "Engine/CacheTier.h"
 #include "Engine/DeepFlatten.h"
 #include "Engine/DeepImage.h"
 #include "Engine/DeepImageCacheEntry.h"
@@ -111,27 +115,6 @@ collectFramesNeededForInput(const FramesNeededMap& framesNeeded,
     }
 }
 
-// Pops the fallback frame args renderDeepRoI() pushes when it is called outside of a render
-// set up by the scheduler. Without this, a second direct call would find the first call's
-// stale hash and time still on the thread and key its cache lookup with them.
-class ScopedFallbackFrameArgs {
-public:
-    explicit ScopedFallbackFrameArgs(const EffectInstance::EffectTLSDataPtr& tls)
-        : _tls(tls)
-    {
-    }
-
-    ~ScopedFallbackFrameArgs()
-    {
-        if (_tls && !_tls->frameArgs.empty()) {
-            _tls->frameArgs.pop_back();
-        }
-    }
-
-private:
-    EffectInstance::EffectTLSDataPtr _tls;
-};
-
 bool
 lookupCachedDeepImage(const DeepImageKey& key,
                       const RectI& roi,
@@ -151,7 +134,7 @@ lookupCachedDeepImage(const DeepImageKey& key,
             continue;
         }
         if (entryImage->getBounds().contains(roi)) {
-            *outputDeepImage = entryImage;
+            *outputDeepImage = DeepImageCacheEntry::pinnedDeepImage(*it);
 
             return true;
         }
@@ -175,31 +158,47 @@ isSameFlattenedLayout(const ImageLayerDesc& a,
     return (a == b) && (a.getChannels() == b.getChannels());
 }
 
-// Every flattened layer of a frame shares one ImageKey, so its entry is told apart by components.
-// EffectInstance::getImageFromCacheAndConvertIfNeeded() cannot do that: it treats any two colour
-// layouts as interchangeable, and would hand an Alpha flatten back for an RGBA request.
+// EffectInstance::getImageFromCacheAndConvertIfNeeded() cannot serve a flattened layer: it lets a
+// colour request fall back to RGBA, while a flattened image only stands in for its exact layout.
 ImagePtr
 findFlattenedLayerInCache(const ImageKey& key,
                           const ImageLayerDesc& layer,
                           unsigned int mipmapLevel)
 {
     std::list<ImagePtr> cached;
-    if (!appPTR->getImage(key, &cached)) {
-        return ImagePtr();
-    }
-    for (std::list<ImagePtr>::const_iterator it = cached.begin(); it != cached.end(); ++it) {
-        if (!*it || (*it)->getBounds().isNull()) {
-            continue;
-        }
-        if (isSameFlattenedLayout((*it)->getComponents(), layer) && ((*it)->getMipmapLevel() == mipmapLevel) && ((*it)->getBitDepth() == eImageBitDepthFloat)) {
-            return *it;
+    appPTR->getImage(key.forEntry(mipmapLevel, layer, eImageBitDepthFloat), &cached);
+    for (const ImagePtr& image : cached) {
+        if (image && !image->getBounds().isNull()) {
+            return image;
         }
     }
 
     return ImagePtr();
 }
 
+thread_local bool s_lastPullFresh = false;
+
 } // anonymous namespace
+
+PullFreshRecorder::PullFreshRecorder()
+    : _fresh(false)
+{
+}
+
+PullFreshRecorder::~PullFreshRecorder()
+{
+    s_lastPullFresh = _fresh;
+}
+
+bool
+EffectInstance::takeLastPullFresh()
+{
+    const bool fresh = s_lastPullFresh;
+
+    s_lastPullFresh = false;
+
+    return fresh;
+}
 
 bool
 EffectInstance::producesDeepData() const
@@ -219,6 +218,8 @@ EffectInstance::RenderRoIRetCode
 EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
                               DeepImagePtr* outputDeepImage)
 {
+    CacheRecomputeStopwatch wholeCall;
+
     assert(outputDeepImage);
     if (!outputDeepImage) {
         return eRenderRoIRetCodeFailed;
@@ -235,11 +236,13 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
         return _imp->mainInstance->renderDeepRoI(args, outputDeepImage);
     }
 
-    EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
-    assert(tls);
-    ParallelRenderArgsPtr frameArgs;
-    std::unique_ptr<ScopedFallbackFrameArgs> fallbackFrameArgs;
-    if (tls->frameArgs.empty()) {
+    PullFreshRecorder freshRecorder;
+
+    ParallelRenderArgsPtr frameArgs = getFrameArgs();
+    // Popped when the call returns: a second direct call would otherwise find this call's stale
+    // hash and time still on the thread and key its cache lookup with them.
+    FrameArgsToken fallbackFrameArgs;
+    if (!frameArgs) {
         // No pre-pass set this render up (a direct call, e.g. from a test or a script). Build the
         // minimal frame args renderRoI() builds in the same situation so that the hash used for
         // the cache key and the abort flag both have somewhere to live.
@@ -254,11 +257,11 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
         frameArgs->view = args.view;
         frameArgs->isSequentialRender = false;
         frameArgs->isRenderResponseToUserInteraction = true;
-        tls->frameArgs.push_back(frameArgs);
-        fallbackFrameArgs.reset(new ScopedFallbackFrameArgs(tls));
-    } else {
-        frameArgs = tls->frameArgs.back();
+        fallbackFrameArgs = FrameArgsToken(this, frameArgs);
     }
+    const CacheRetentionSignalsPtr retention = getNode()->getRetentionSignals();
+    const AbortableRenderInfoPtr retentionAbortInfo = frameArgs->abortInfo.lock();
+    const std::uint64_t renderSequence = retentionAbortInfo ? retentionAbortInfo->getRenderSequence() : 0;
 
     if (aborted()) {
         return eRenderRoIRetCodeAborted;
@@ -325,7 +328,11 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
                 selfArgs.view = identityView;
                 selfArgs.preComputedRoD.clear();
 
-                return renderDeepRoI(selfArgs, outputDeepImage);
+                takeLastPullFresh();
+                const RenderRoIRetCode selfCode = renderDeepRoI(selfArgs, outputDeepImage);
+                freshRecorder.setFresh(takeLastPullFresh());
+
+                return selfCode;
             }
 
             EffectInstancePtr identityInput = getIdentitySource(identityInputNb);
@@ -347,12 +354,19 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
             InputContextArgs identityContext(this, identityInput, identityInputNb, args.time, args.view);
             identityContext.install();
 
-            return identityInput->renderDeepRoI(identityArgs, outputDeepImage);
+            takeLastPullFresh();
+            const RenderRoIRetCode identityCode = identityInput->renderDeepRoI(identityArgs, outputDeepImage);
+            if (takeLastPullFresh()) {
+                freshRecorder.setFresh(true);
+                getNode()->noteInputExecution(identityInputNb);
+            }
+
+            return identityCode;
         }
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////
-    ////////////////////////////// Look-up the deep cache //////////////////////////////////////
+    ////////////////////////////// Look-up the node cache //////////////////////////////////////
 
     const DeepImageKey key(getNode().get(), nodeHash, args.time, args.view, args.scale);
     RectI boundsToRender = roi;
@@ -379,7 +393,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
                     continue;
                 }
                 if (entryImage->getBounds().contains(roi)) {
-                    *outputDeepImage = entryImage;
+                    *outputDeepImage = DeepImageCacheEntry::pinnedDeepImage(*it);
 
                     return eRenderRoIRetCodeOk;
                 }
@@ -438,8 +452,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
         std::set<double> inputTimes;
         collectFramesNeededForInput(framesNeeded, i, args.view, args.time, &inputTimes);
 
-        NotifyInputNRenderingStarted_RAII inputNIsRendering_RAII(getNode().get(), i);
-
+        bool inputFresh = false;
         for (std::set<double>::const_iterator it = inputTimes.begin(); it != inputTimes.end(); ++it) {
             RenderDeepRoIArgs inputArgs(*it,
                                         args.scale,
@@ -451,7 +464,9 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
                                         this,
                                         args.time);
             DeepImagePtr inputImage;
+            takeLastPullFresh();
             RenderRoIRetCode inputCode = input->renderDeepRoI(inputArgs, &inputImage);
+            inputFresh = takeLastPullFresh() || inputFresh;
 
             if (inputCode != eRenderRoIRetCodeOk) {
                 return inputCode;
@@ -459,6 +474,10 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
             if (inputImage) {
                 inputDeepImages[i][*it] = inputImage;
             }
+        }
+        // An input the cache served lights no edge: nothing ran upstream for this render.
+        if (inputFresh) {
+            getNode()->noteInputExecution(i);
         }
     }
 
@@ -482,7 +501,8 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
         // getOrCreate() returns true when it *found* an entry and false when it created one.
         if (appPTR->getDeepImageOrCreate(key, params, &cacheEntry)) {
             if (cacheEntry && cacheEntry->getDeepImage() && cacheEntry->isFullyRendered()) {
-                *outputDeepImage = cacheEntry->getDeepImage();
+                CacheRetention::noteHit(*cacheEntry->getEntryHeader(), retention, renderSequence);
+                *outputDeepImage = DeepImageCacheEntry::pinnedDeepImage(cacheEntry);
 
                 return eRenderRoIRetCodeOk;
             }
@@ -514,16 +534,18 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
     actionArgs.isRenderResponseToUserInteraction = frameArgs->isRenderResponseToUserInteraction;
     actionArgs.byPassCache = args.byPassCache;
 
+    CacheRecomputeStopwatch renderWatch;
     StatusEnum st;
     try {
         st = renderDeep(actionArgs);
     } catch (...) {
         st = eStatusFailed;
     }
+    const double renderOwnNs = renderWatch.ownNs();
 
     if (aborted()) {
         if (cacheEntry) {
-            appPTR->removeFromDeepImageCache(cacheEntry);
+            appPTR->removeFromNodeCache(cacheEntry);
         }
 
         return eRenderRoIRetCodeAborted;
@@ -531,7 +553,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
 
     if (st != eStatusOK) {
         if (cacheEntry) {
-            appPTR->removeFromDeepImageCache(cacheEntry);
+            appPTR->removeFromNodeCache(cacheEntry);
         }
         if (st == eStatusReplyDefault) {
             qDebug() << getScriptName_mt_safe().c_str() << "renderDeepRoI: this effect does not implement renderDeep()";
@@ -542,7 +564,7 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
 
     if (renderedImage->getSampleTable().getTotalSampleCount() > 0 && !renderedImage->hasChannel("A")) {
         if (cacheEntry) {
-            appPTR->removeFromDeepImageCache(cacheEntry);
+            appPTR->removeFromNodeCache(cacheEntry);
         }
         setPersistentMessage(eMessageTypeError, getScriptName_mt_safe() + " produced deep data without an alpha (A) channel");
 
@@ -551,20 +573,35 @@ EffectInstance::renderDeepRoI(const RenderDeepRoIArgs& args,
 
     if (cacheEntry && !clean.allowsStoreUnder(nodeHash)) {
         // An edit or a mark came during the render: the samples may be another state's.
-        appPTR->removeFromDeepImageCache(cacheEntry);
+        appPTR->removeFromNodeCache(cacheEntry);
         cacheEntry.reset();
     }
     if (cacheEntry) {
         // The one point at which the cache captures this entry's byte cost, so it must happen
         // after renderDeep() has populated the sample table and the channel buffers.
         cacheEntry->allocateMemory();
+        // A deep entry is all-or-nothing, so this render was of the whole of it.
+        const float cost = CacheEviction::costAfterRender(0.f, renderOwnNs, 1., 1.);
+        cacheEntry->getEntryHeader()->recomputeCostNs.store(cost);
+        retention->rememberCost(cost);
+        CacheRetention::noteStored(*cacheEntry->getEntryHeader(), retention, renderSequence);
     }
 
     for (std::list<DeepImageCacheEntryPtr>::const_iterator it = supersededDeepEntries.begin(); it != supersededDeepEntries.end(); ++it) {
-        appPTR->removeFromDeepImageCache(*it);
+        appPTR->removeFromNodeCache(*it);
     }
 
-    *outputDeepImage = renderedImage;
+    if (cacheEntry) {
+        // Creating the entry could only make room by what it knew then, which was nothing: a deep
+        // entry weighs nothing until it has rendered. Its own bytes are pinned by cacheEntry.
+        supersededDeepEntries.clear();
+        appPTR->clearExceedingEntriesFromNodeCache();
+        *outputDeepImage = DeepImageCacheEntry::pinnedDeepImage(cacheEntry);
+    } else {
+        *outputDeepImage = renderedImage;
+    }
+    getNode()->noteExecution(Node::eExecutionDeviceCpu);
+    freshRecorder.setFresh(true);
 
     return eRenderRoIRetCodeOk;
 } // EffectInstance::renderDeepRoI
@@ -612,21 +649,23 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
         return _imp->mainInstance->renderDeepRoIFlattened(args, layers, outputImages, outputDeepImage);
     }
 
-    EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
     // No fallback frame args here, deliberately, unlike renderDeepRoI(): the hash this keys the
     // flattened Image with must be the one the scheduler assigned this node, the content hash of
     // the state being rendered. A hash read here instead could name a state the node has moved
     // to since, and the entry would then be served for a state it was not rendered in.
-    assert(tls && !tls->frameArgs.empty());
-    if (!tls || tls->frameArgs.empty()) {
+    const ParallelRenderArgsPtr frameArgs = getFrameArgs();
+    assert(frameArgs);
+    if (!frameArgs) {
         return eRenderRoIRetCodeFailed;
     }
-    const ParallelRenderArgsPtr frameArgs = tls->frameArgs.back();
 
     if (aborted()) {
         return eRenderRoIRetCodeAborted;
     }
 
+    const CacheRetentionSignalsPtr retention = getNode()->getRetentionSignals();
+    const AbortableRenderInfoPtr retentionAbortInfo = frameArgs->abortInfo.lock();
+    const std::uint64_t renderSequence = retentionAbortInfo ? retentionAbortInfo->getRenderSequence() : 0;
     const U64 nodeHash = frameArgs->nodeHash;
     const CleanHashSnapshot clean(getNode(), frameArgs->context);
     const NodeMetadataConstPtr renderMetadata = getRenderMetadata(frameArgs, args.time, args.view);
@@ -673,10 +712,10 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
     ////////////////////////////////////////////////////////////////////////////////////////////
     ////////////////////////////// Look-up the image cache /////////////////////////////////////
 
-    // An effect whose output kind is eDataKindDeep never produces Cache<Image> entries of its own
-    // -- its renders live in the deep cache under DeepImageKey -- so this node's hash identifies
+    // An effect whose output kind is eDataKindDeep never produces image entries of its own -- its
+    // renders live under DeepImageKey, which neither hashes nor compares like an ImageKey, and a
+    // lookup only ever finds its own payload -- so among image entries this node's hash identifies
     // the flattened layers and nothing else, and a purge of the node reaches all of them.
-    // Every layer shares this key; ImageParams' components keep their entries apart.
     const ImageKey key(getNode().get(),
                        nodeHash,
                        true /*frameVaryingOrAnimated*/,
@@ -699,16 +738,17 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
             std::list<RectI> restToRender;
             cached->getRestToRender(args.roi, restToRender);
             if (!args.byPassCache && cached->getBounds().contains(args.roi) && restToRender.empty()) {
+                CacheRetention::noteHit(*cached->getEntryHeader(), retention, renderSequence);
                 it->image = cached;
                 continue;
             }
             // Bounds growth, not tiling, the same way renderDeepRoI() handles it: re-flatten over
             // the union of what was asked for rather than mint a narrower entry that the next,
-            // wider request would miss again. Unlike the deep cache's entries, ImageParams::
+            // wider request would miss again. Unlike the deep entries, ImageParams::
             // operator==() does not compare bounds, so getImageOrCreate() below would treat this
             // stale entry as a match for the wider params and hand it straight back instead of
             // making a new one if it were still here -- this removal cannot be deferred to the
-            // success path the way renderDeepRoI() defers its deep-cache counterpart.
+            // success path the way renderDeepRoI() defers its deep counterpart.
             boundsToRender.merge(cached->getBounds());
             appPTR->removeFromNodeCache(cached);
         }
@@ -791,6 +831,7 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
             if (!foundInCache) {
                 image->allocateMemory();
                 created.push_back(image);
+                CacheRetention::noteStored(*image->getEntryHeader(), retention, renderSequence);
             } else {
                 // Another render created this entry between the lookup above and here. Its
                 // bounds need not cover this request and it may still be filling in, so it is
@@ -798,7 +839,8 @@ EffectInstance::renderDeepRoIFlattened(const RenderDeepRoIArgs& args,
                 image->allocateMemory();
                 std::list<RectI> restToRender;
                 image->getRestToRender(args.roi, restToRender);
-                if (!args.byPassCache && isSameFlattenedLayout(image->getComponents(), layer.storage) && image->getBounds().contains(args.roi) && restToRender.empty()) {
+                if (!args.byPassCache && image->getBounds().contains(args.roi) && restToRender.empty()) {
+                    CacheRetention::noteHit(*image->getEntryHeader(), retention, renderSequence);
                     layer.image = image;
                     layer.needsFlatten = false;
                     continue;

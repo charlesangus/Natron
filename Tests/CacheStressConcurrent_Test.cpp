@@ -29,6 +29,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <mutex>
 #include <random>
@@ -40,6 +41,9 @@
 #include <gtest/gtest.h>
 
 #include <QCoreApplication>
+#include <QProcess>
+#include <QProcessEnvironment>
+#include <QTemporaryDir>
 
 #include "BaseTest.h"
 #include "CacheStress.h"
@@ -50,6 +54,8 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CacheDiskTier.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -59,6 +65,7 @@
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_USING
@@ -262,25 +269,25 @@ dequeueAll(const AppInstancePtr& app)
 bool
 reference(const AppInstancePtr& app,
           const GateGraph& g,
-          RenderSchedulerModeEnum mode,
+          bool scheduled,
           RenderedPlane* out,
           std::string* error)
 {
     clearEverything(app);
 
-    return renderProbe(g.blur, kTime, 0, kWindow, mode, true, out, error);
+    return (scheduled ? renderProbeScheduled : renderProbeDirect)(g.blur, kTime, 0, kWindow, true, out, error);
 }
 
 std::string
 checkCached(const GateGraph& g,
-            RenderSchedulerModeEnum mode,
+            bool scheduled,
             const RenderedPlane& ref,
             const std::string& what)
 {
     RenderedPlane got;
     std::string error;
 
-    if (!renderProbe(g.blur, kTime, 0, kWindow, mode, false, &got, &error)) {
+    if (!(scheduled ? renderProbeScheduled : renderProbeDirect)(g.blur, kTime, 0, kWindow, false, &got, &error)) {
         return what + ": the cached render failed: " + error;
     }
     const std::string diff = compareExact(ref, got);
@@ -294,14 +301,14 @@ class GatedRender {
 public:
     GatedRender(Gate* gate,
                 const GateGraph& g,
-                RenderSchedulerModeEnum mode)
+                bool scheduled)
         : _gate(gate)
     {
         gate->arm();
         const NodePtr probe = g.blur;
-        _thread = std::thread([this, probe, mode]() {
+        _thread = std::thread([this, probe, scheduled]() {
             RenderingFlagSetter flag(probe);
-            _ok = renderProbe(probe, kTime, 0, kWindow, mode, false, &_plane, &_error);
+            _ok = (scheduled ? renderProbeScheduled : renderProbeDirect)(probe, kTime, 0, kWindow, false, &_plane, &_error);
         });
     }
 
@@ -354,7 +361,7 @@ std::string
 raceRound(const AppInstancePtr& app,
           Gate* gate,
           const GateGraph& g,
-          RenderSchedulerModeEnum mode,
+          bool scheduled,
           const Edit& edit,
           RaceKind kind)
 {
@@ -362,11 +369,11 @@ raceRound(const AppInstancePtr& app,
     RenderedPlane after;
     std::string error;
 
-    if (!reference(app, g, mode, &before, &error)) {
+    if (!reference(app, g, scheduled, &before, &error)) {
         return "the reference before the edit failed: " + error;
     }
     edit.apply();
-    const bool afterOk = reference(app, g, mode, &after, &error);
+    const bool afterOk = reference(app, g, scheduled, &after, &error);
     edit.undo();
     if (!afterOk) {
         return "the reference after the edit failed: " + error;
@@ -375,7 +382,7 @@ raceRound(const AppInstancePtr& app,
     clearEverything(app);
     std::string workerMismatch;
     {
-        GatedRender first(gate, g, mode);
+        GatedRender first(gate, g, scheduled);
         if (!first.waitHeld()) {
             return "the render never reached the gate";
         }
@@ -385,7 +392,7 @@ raceRound(const AppInstancePtr& app,
             // The queue is still pending: a second render starts on the old inputs, and a
             // dequeue attempted under it must wait for it to end.
             clearEverything(app);
-            GatedRender second(gate, g, mode);
+            GatedRender second(gate, g, scheduled);
             if (!second.waitHeld()) {
                 return "the restarted render never reached the gate";
             }
@@ -417,23 +424,23 @@ raceRound(const AppInstancePtr& app,
         return workerMismatch;
     }
 
-    std::string mismatch = checkCached(g, mode, after, "after the edit");
+    std::string mismatch = checkCached(g, scheduled, after, "after the edit");
     if (!mismatch.empty()) {
         return mismatch;
     }
     edit.undo();
     dequeueAll(app);
-    mismatch = checkCached(g, mode, before, "back to the state before the edit");
+    mismatch = checkCached(g, scheduled, before, "back to the state before the edit");
     if (!mismatch.empty()) {
         return mismatch;
     }
     edit.apply();
     dequeueAll(app);
 
-    return checkCached(g, mode, after, "the edit made again");
+    return checkCached(g, scheduled, after, "the edit made again");
 } // raceRound
 
-// Every seed, both modes, kRounds edits each; one gtest failure per failing seed and mode.
+// Every seed, both pulls, kRounds edits each; one gtest failure per failing seed and pull.
 int
 runRaces(const AppInstancePtr& app,
          RaceKind kind)
@@ -446,7 +453,7 @@ runRaces(const AppInstancePtr& app,
     CountingTestRegistry::setRenderHook([&gate](const Node* node) { gate.hold(node); });
     for (std::size_t s = 0; s < seeds.size(); ++s) {
         for (int m = 0; m < 2; ++m) {
-            const RenderSchedulerModeEnum mode = (m == 0) ? eRenderSchedulerModeLegacy : eRenderSchedulerModeTaskGraph;
+            const bool scheduled = (m == 1);
             const char* modeName = (m == 0) ? "legacy" : "task graph";
             std::printf("[ STRESS   ] seed %u, %s, %d rounds\n", seeds[s], modeName, rounds);
             std::fflush(stdout);
@@ -463,7 +470,7 @@ runRaces(const AppInstancePtr& app,
             for (int r = 0; r < rounds; ++r) {
                 const Edit edit = (kind == eRaceKnobs) ? knobEdit(rng, g) : topologyEdit(rng, g);
                 log << "  " << r << ": " << edit.name << "\n";
-                const std::string mismatch = raceRound(app, &gate, g, mode, edit, kind);
+                const std::string mismatch = raceRound(app, &gate, g, scheduled, edit, kind);
                 if (!mismatch.empty()) {
                     ++failures;
                     ADD_FAILURE() << "cache stress race: NATRON_CACHE_STRESS_SEED=" << seeds[s] << " round " << r << " (" << modeName << "): "
@@ -592,14 +599,14 @@ inputChangedRound(const AppInstancePtr& app,
         return "could not connect the narrow source";
     }
     clearEverything(app);
-    if (!renderProbe(filter, kTime, 0, kWindow, eRenderSchedulerModeLegacy, true, &refNarrow, &error)) {
+    if (!renderProbeDirect(filter, kTime, 0, kWindow, true, &refNarrow, &error)) {
         return "the narrow reference failed: " + error;
     }
     if (!filter->replaceInput(wide, 0)) {
         return "could not connect the wide source";
     }
     clearEverything(app);
-    if (!renderProbe(filter, kTime, 0, kWindow, eRenderSchedulerModeLegacy, true, &refWide, &error)) {
+    if (!renderProbeDirect(filter, kTime, 0, kWindow, true, &refWide, &error)) {
         return "the wide reference failed: " + error;
     }
     if (compareExact(refWide, refNarrow).empty()) {
@@ -624,7 +631,7 @@ inputChangedRound(const AppInstancePtr& app,
             return std::string(step.what) + ": the edit failed";
         }
         RenderedPlane got;
-        if (!renderProbe(filter, kTime, 0, kWindow, eRenderSchedulerModeLegacy, false, &got, &error)) {
+        if (!renderProbeDirect(filter, kTime, 0, kWindow, false, &got, &error)) {
             return std::string(step.what) + ": the cached render failed: " + error;
         }
         const std::string diff = compareExact(*step.ref, got);
@@ -709,12 +716,12 @@ groupInputRound(const AppInstancePtr& app,
         return g.group->connectInput(g.b, 1);
     };
     clearEverything(app);
-    if (!renderProbe(g.grade, kTime, 0, kWindow, eRenderSchedulerModeLegacy, true, &refWith, &error)) {
+    if (!renderProbeDirect(g.grade, kTime, 0, kWindow, true, &refWith, &error)) {
         return "the reference with both inputs failed: " + error;
     }
     remove();
     clearEverything(app);
-    const bool withoutOk = renderProbe(g.grade, kTime, 0, kWindow, eRenderSchedulerModeLegacy, true, &refWithout, &error);
+    const bool withoutOk = renderProbeDirect(g.grade, kTime, 0, kWindow, true, &refWithout, &error);
     if (!restore()) {
         return "could not restore the second input";
     }
@@ -728,10 +735,10 @@ groupInputRound(const AppInstancePtr& app,
     clearEverything(app);
     dequeueAll(app);
     for (int m = 0; m < 2; ++m) {
-        const RenderSchedulerModeEnum mode = (m == 0) ? eRenderSchedulerModeLegacy : eRenderSchedulerModeTaskGraph;
+        const bool scheduled = (m == 1);
         const std::string modeName = (m == 0) ? "legacy" : "task graph";
         RenderedPlane got;
-        if (!renderProbe(g.grade, kTime, 0, kWindow, mode, false, &got, &error)) {
+        if (!(scheduled ? renderProbeScheduled : renderProbeDirect)(g.grade, kTime, 0, kWindow, false, &got, &error)) {
             return modeName + ", both inputs: the cached render failed: " + error;
         }
         std::string diff = compareExact(refWith, got);
@@ -743,7 +750,7 @@ groupInputRound(const AppInstancePtr& app,
             if (group->getNInputs() != 1) {
                 return modeName + ": the removed input came back after the dequeue";
             }
-            if (!renderProbe(g.grade, kTime, 0, kWindow, mode, false, &got, &error)) {
+            if (!(scheduled ? renderProbeScheduled : renderProbeDirect)(g.grade, kTime, 0, kWindow, false, &got, &error)) {
                 return modeName + ", input removed: the cached render failed: " + error;
             }
             diff = compareExact(refWithout, got);
@@ -991,4 +998,312 @@ TEST_F(CacheStressConcurrentTest, GroupInputRemovedThenDequeued)
             }
         }
     }
+}
+
+namespace {
+
+const char* const kTieredChildEnv = "NATRON_TEST_CACHE_STRESS_TIERED";
+
+// Over the cost of writing a small file on any disk, so that what the gate renders earns a file.
+const std::chrono::milliseconds kSlowRender(50);
+
+bool
+isTieredChild()
+{
+    const char* const value = std::getenv(kTieredChildEnv);
+
+    return value && value[0];
+}
+
+// The node cache takes its tier when the process loads, and every test process but this one has
+// switched it off so as not to write into the developer's home directory.
+void
+expectInTieredChild(const char* test)
+{
+    QTemporaryDir home;
+    ASSERT_TRUE(home.isValid());
+
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QString::fromUtf8("NATRON_CACHE_DISK_TIER"), QString::fromUtf8("on"));
+    env.insert(QString::fromUtf8("HOME"), home.path());
+    env.insert(QString::fromUtf8(kTieredChildEnv), QString::fromUtf8("1"));
+
+    QProcess child;
+    child.setProcessChannelMode(QProcess::MergedChannels);
+    child.setProcessEnvironment(env);
+    child.start(QCoreApplication::applicationFilePath(), { QString::fromUtf8("--gtest_filter=CacheStressTieredChild.") + QString::fromUtf8(test) });
+    ASSERT_TRUE(child.waitForStarted(30000));
+    ASSERT_TRUE(child.waitForFinished(240000));
+    const QByteArray output = child.readAll();
+    EXPECT_EQ(QProcess::NormalExit, child.exitStatus()) << output.constData();
+    EXPECT_EQ(0, child.exitCode()) << output.constData();
+    EXPECT_TRUE(output.contains("[  PASSED  ] 1 test")) << output.constData();
+}
+
+// Waits out the publisher's backoff, and nothing longer: it returns as soon as a file appears.
+bool
+publishWhatIsInRam(CacheDiskTier& tier,
+                   std::uint64_t publishedBefore)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        tier.maintainNow(false);
+        if (tier.waitIdle(30000) && (tier.publishedFiles() > publishedBefore)) {
+            return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    return false;
+}
+
+// An entry's cost excludes the time spent rendering its inputs, so the Blur and Grade entries stay
+// too cheap to earn a file however slow the gate is. Only the gate's own entry can reach the disk,
+// and it needs one: the gate otherwise renders to a private image.
+bool
+buildCachedGateGraph(const AppInstancePtr& app,
+                     GateGraph* g,
+                     std::string* error)
+{
+    if (!buildGateGraph(app, g, error)) {
+        return false;
+    }
+    if (!setKnobValues(g->gate, "cacheOutput", { 1. })) {
+        *error = "could not make the gate cache its output";
+
+        return false;
+    }
+
+    return true;
+}
+
+std::string
+demotionUnderAWaitingRender(const AppInstancePtr& app,
+                            Gate* gate,
+                            const GateGraph& g,
+                            bool scheduled,
+                            CacheDiskTier& tier)
+{
+    RenderedPlane ref;
+    std::string error;
+
+    if (!reference(app, g, scheduled, &ref, &error)) {
+        return "the reference failed: " + error;
+    }
+    clearEverything(app);
+
+    // Other states of the gate leave unheld entries, which are what the pressure below can demote.
+    const std::shared_ptr<KnobDoubleBase> value = std::dynamic_pointer_cast<KnobDoubleBase>(g.gate->getKnobByName("value"));
+    if (!value) {
+        return "the gate has no value knob";
+    }
+    const std::uint64_t publishedBefore = tier.publishedFiles();
+    const double original = value->getValue(0);
+    for (int i = 1; i <= 3; ++i) {
+        value->setValue(original + 0.25 * i, ViewSpec::all(), 0);
+        RenderedPlane other;
+        if (!(scheduled ? renderProbeScheduled : renderProbeDirect)(g.blur, kTime, 0, kWindow, false, &other, &error)) {
+            return "rendering another state failed: " + error;
+        }
+    }
+    value->setValue(original, ViewSpec::all(), 0);
+
+    const double ramPercent = appPTR->getCurrentSettings()->getRamMaximumPercent();
+    std::string mismatch;
+    {
+        GatedRender first(gate, g, scheduled);
+        if (!first.waitHeld()) {
+            return "the render never reached the gate";
+        }
+        GatedRender waiting(gate, g, scheduled);
+        // Gives the second render time to reach the pending entries. If it is slower the round
+        // still checks the same results, only with the wait starting after the demotion.
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+        appPTR->setApplicationsCachesMaximumMemoryPercent(0.);
+        // The queue takes one entry at a time against a budget this small.
+        for (int i = 0; i < 4; ++i) {
+            appPTR->clearExceedingEntriesFromNodeCache();
+            if (!tier.waitIdle(30000)) {
+                mismatch = "the demotions never finished";
+            }
+        }
+        appPTR->setApplicationsCachesMaximumMemoryPercent(ramPercent);
+
+        first.finish();
+        waiting.finish();
+        if (!first.ok() || !waiting.ok()) {
+            mismatch = "a render failed: " + first.error() + waiting.error();
+        } else {
+            std::string diff = compareExact(ref, first.plane());
+            if (diff.empty()) {
+                diff = compareExact(ref, waiting.plane());
+            }
+            if (!diff.empty()) {
+                mismatch = "a render under demotion differs: " + diff;
+            }
+        }
+    }
+    if (!mismatch.empty()) {
+        return mismatch;
+    }
+    if (tier.publishedFiles() <= publishedBefore) {
+        return "no entry reached the disk";
+    }
+    // The automatic tier is most of what the node graph reports as the disk cache.
+    tier.maintainNow(false);
+    const U64 automaticBytes = tier.used();
+    const U64 diskBytes = automaticBytes + tier.pinnedBytes();
+    if ((automaticBytes == 0) || (appPTR->getCachesTotalDiskSize() < diskBytes)) {
+        return "the reported disk cache size leaves out the automatic tier";
+    }
+
+    tier.forgetProbes();
+
+    return checkCached(g, scheduled, ref, "after the demotion");
+} // demotionUnderAWaitingRender
+
+std::string
+promotionOfAPartialEntry(const AppInstancePtr& app,
+                         const GateGraph& g,
+                         bool scheduled,
+                         CacheDiskTier& tier)
+{
+    const RectI half(0, 0, kCountingTestSize / 2, kCountingTestSize);
+    RenderedPlane halfReference;
+    RenderedPlane wholeReference;
+    std::string error;
+
+    clearEverything(app);
+    // The task graph never bypasses the cache, so in a scheduled pull these leave entries behind until the
+    // clear below.
+    if (!(scheduled ? renderProbeScheduled : renderProbeDirect)(g.blur, kTime, 0, half, true, &halfReference, &error) || !(scheduled ? renderProbeScheduled : renderProbeDirect)(g.blur, kTime, 0, kWindow, true, &wholeReference, &error)) {
+        return "the references failed: " + error;
+    }
+
+    clearEverything(app);
+    RenderedPlane plane;
+    const std::uint64_t publishedBefore = tier.publishedFiles();
+    if (!(scheduled ? renderProbeScheduled : renderProbeDirect)(g.blur, kTime, 0, half, false, &plane, &error)) {
+        return "the partial render failed: " + error;
+    }
+    if (!publishWhatIsInRam(tier, publishedBefore)) {
+        return "the partial entry never reached the disk";
+    }
+    appPTR->clearAllCachesInRam();
+    tier.forgetProbes();
+
+    const int rendersBefore = CountingTestRegistry::renders(g.gate);
+    if (!(scheduled ? renderProbeScheduled : renderProbeDirect)(g.blur, kTime, 0, half, false, &plane, &error)) {
+        return "the promoted render failed: " + error;
+    }
+    std::string diff = compareExact(halfReference, plane);
+    if (!diff.empty()) {
+        return "the promoted region differs: " + diff;
+    }
+    if (CountingTestRegistry::renders(g.gate) != rendersBefore) {
+        return "the region on disk was rendered again";
+    }
+
+    if (!(scheduled ? renderProbeScheduled : renderProbeDirect)(g.blur, kTime, 0, kWindow, false, &plane, &error)) {
+        return "the render of the rest failed: " + error;
+    }
+    diff = compareExact(wholeReference, plane);
+    if (!diff.empty()) {
+        return "the rest differs from a render from empty caches: " + diff;
+    }
+    if (CountingTestRegistry::renders(g.gate) == rendersBefore) {
+        return "the rest was not rendered";
+    }
+
+    return std::string();
+} // promotionOfAPartialEntry
+
+class CacheStressTieredChild
+    : public CacheStressConcurrentTest {
+};
+
+} // anon namespace
+
+TEST_F(CacheStressConcurrentTest, DemotionWhileARenderWaitsOnAPendingRegion)
+{
+    expectInTieredChild("DemotionWhileARenderWaits");
+}
+
+TEST_F(CacheStressConcurrentTest, PromotionOfAPartiallyRenderedEntry)
+{
+    expectInTieredChild("PromotionOfAPartialEntry");
+}
+
+// While a render is held mid-entry and a second one waits on the regions it marked pending, RAM
+// pressure pushes everything unheld to the disk. Both renders must still finish with the pixels of
+// a render from empty caches.
+TEST_F(CacheStressTieredChild, DemotionWhileARenderWaits)
+{
+    if (!isTieredChild()) {
+        std::printf("Only runs in the process the parent test starts.\n");
+
+        return;
+    }
+    const std::shared_ptr<CacheDiskTier> tier = appPTR->getNodeCacheDiskTier();
+    ASSERT_TRUE(tier != nullptr);
+
+    Gate gate;
+    const AppInstancePtr app = getApp();
+    const int rounds = stepBudget(3);
+    std::atomic<const Node*> slowNode(nullptr);
+    CountingTestRegistry::setRenderHook([&gate, &slowNode](const Node* node) {
+        if (node == slowNode.load()) {
+            std::this_thread::sleep_for(kSlowRender);
+        }
+        gate.hold(node);
+    });
+    for (int m = 0; m < 2; ++m) {
+        const bool scheduled = (m == 1);
+        GateGraph g;
+        std::string error;
+        ASSERT_TRUE(buildCachedGateGraph(app, &g, &error)) << error;
+        gate.setNode(g.gate.get());
+        slowNode.store(g.gate.get());
+        for (int r = 0; r < rounds; ++r) {
+            const std::string mismatch = demotionUnderAWaitingRender(app, &gate, g, scheduled, *tier);
+            EXPECT_TRUE(mismatch.empty()) << "pull " << m << " round " << r << ": " << mismatch;
+        }
+        slowNode.store(nullptr);
+        gate.setNode(nullptr);
+    }
+    EXPECT_EQ(0U, tier->writeFailures());
+}
+
+// The file of a half rendered entry comes back into RAM with what it holds: that half renders
+// nothing, the other half renders only then, and the two together match a whole render.
+TEST_F(CacheStressTieredChild, PromotionOfAPartialEntry)
+{
+    if (!isTieredChild()) {
+        std::printf("Only runs in the process the parent test starts.\n");
+
+        return;
+    }
+    const std::shared_ptr<CacheDiskTier> tier = appPTR->getNodeCacheDiskTier();
+    ASSERT_TRUE(tier != nullptr);
+
+    const AppInstancePtr app = getApp();
+    std::atomic<const Node*> slowNode(nullptr);
+    CountingTestRegistry::setRenderHook([&slowNode](const Node* node) {
+        if (node == slowNode.load()) {
+            std::this_thread::sleep_for(kSlowRender);
+        }
+    });
+    for (int m = 0; m < 2; ++m) {
+        const bool scheduled = (m == 1);
+        GateGraph g;
+        std::string error;
+        ASSERT_TRUE(buildCachedGateGraph(app, &g, &error)) << error;
+        slowNode.store(g.gate.get());
+        const std::string mismatch = promotionOfAPartialEntry(app, g, scheduled, *tier);
+        EXPECT_TRUE(mismatch.empty()) << "pull " << m << ": " << mismatch;
+        slowNode.store(nullptr);
+    }
+    EXPECT_EQ(0U, tier->writeFailures());
 }

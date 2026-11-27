@@ -58,16 +58,23 @@ void
 GpuBuffer::reset()
 {
     if (device_ && !device_->hasAbandonedWork()) {
-        if (allocation_) {
-            vmaDestroyBuffer(device_->allocator(), buffer_, allocation_);
-        } else if (buffer_ != VK_NULL_HANDLE) {
-            vkDestroyBuffer(device_->device(), buffer_, nullptr);
-        }
-        if (importedMemory_ != VK_NULL_HANDLE) {
-            vkFreeMemory(device_->device(), importedMemory_, nullptr);
-        }
-        if (pool_) {
-            vmaDestroyPool(device_->allocator(), pool_);
+        auto destroy = [dev = device_, buffer = buffer_, allocation = allocation_, imported = importedMemory_, pool = pool_]() {
+            if (allocation) {
+                vmaDestroyBuffer(dev->allocator(), buffer, allocation);
+            } else if (buffer != VK_NULL_HANDLE) {
+                vkDestroyBuffer(dev->device(), buffer, nullptr);
+            }
+            if (imported != VK_NULL_HANDLE) {
+                vkFreeMemory(dev->device(), imported, nullptr);
+            }
+            if (pool) {
+                vmaDestroyPool(dev->allocator(), pool);
+            }
+        };
+        if (device_->hasRetiringWork()) {
+            device_->destroyWhenRetired(std::move(destroy));
+        } else {
+            destroy();
         }
     }
     device_ = nullptr;
@@ -80,6 +87,15 @@ GpuBuffer::reset()
     size_ = 0;
     mapped_ = nullptr;
     exportInfo_.reset();
+}
+
+VkDeviceAddress
+GpuBuffer::deviceAddress(GpuDevice& dev) const
+{
+    VkBufferDeviceAddressInfo info { VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO };
+
+    info.buffer = buffer_;
+    return vkGetBufferDeviceAddress(dev.device(), &info);
 }
 
 GpuStatus

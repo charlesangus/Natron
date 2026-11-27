@@ -57,6 +57,7 @@
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/DirBlur.h"
 #include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Image/Resampler.h"
 #include "Engine/Nodes/NativeEffectBase.h"
@@ -223,6 +224,7 @@ protected:
             EXPECT_TRUE(setKnobValue(node, kNativeGeneratorParamExtent, std::string(kNativeGeneratorExtentSize)));
             EXPECT_TRUE(setKnobValues(node, kNativeGeneratorParamBottomLeft, { (double)box->x1, (double)box->y1 }));
             EXPECT_TRUE(setKnobValues(node, kNativeGeneratorParamSize, { (double)box->width(), (double)box->height() }));
+            setBlackOutside(node, true);
         } else {
             EXPECT_TRUE(setKnobValue(node, kNativeGeneratorParamExtent, std::string(kNativeGeneratorExtentProject)));
         }
@@ -281,7 +283,7 @@ protected:
             return node;
         }
         EXPECT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(filter)));
-        EXPECT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { blackOutside ? 1. : 0. }));
+        EXPECT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(blackOutside ? "black" : "stretch")));
         EXPECT_TRUE(setKnobValues(node, kDirBlurParamDirection, { 30. }));
         EXPECT_TRUE(setKnobValues(node, kDirBlurParamLength, { 15.5 }));
         EXPECT_TRUE(setKnobValues(node, kDirBlurParamSamples, { 9. }));
@@ -344,7 +346,7 @@ TEST_F(NativeDirBlurTest, InputsAndKnobs)
         { kDirBlurParamMax, "Max" },
         { kResamplerParamFilterType, "Filter" },
         { kResamplerParamFilterClamp, "Clamp" },
-        { kResamplerParamFilterBlackOutside, "Black outside" },
+        { kEdgeModeParam, kEdgeModeParamLabel },
         { kDirBlurParamTintGroup, "Tint" },
     };
     for (const auto& l : labels) {
@@ -399,9 +401,10 @@ TEST_F(NativeDirBlurTest, InputsAndKnobs)
     EXPECT_FALSE(clamp->getIsSecret());
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("bilinear")));
     EXPECT_TRUE(clamp->getIsSecret());
-    KnobBoolPtr blackOutside = std::dynamic_pointer_cast<KnobBool>(node->getKnobByName(kResamplerParamFilterBlackOutside));
-    ASSERT_TRUE(bool(blackOutside));
-    EXPECT_TRUE(blackOutside->getValue());
+    EXPECT_FALSE(bool(node->getKnobByName(kResamplerParamFilterBlackOutside)));
+    KnobChoicePtr edgeMode = std::dynamic_pointer_cast<KnobChoice>(node->getKnobByName(kEdgeModeParam));
+    ASSERT_TRUE(bool(edgeMode));
+    EXPECT_EQ((int)EdgeModeChoice::Input, edgeMode->getValue());
 
     // The tint knobs sit in their own group.
     const struct {
@@ -438,7 +441,7 @@ TEST_F(NativeDirBlurTest, KnobVisibilityFollowsTheMode)
         kDirBlurParamFalloff,
         kDirBlurParamMax,
         kResamplerParamFilterType,
-        kResamplerParamFilterBlackOutside,
+        kEdgeModeParam,
         kDirBlurParamTintGroup,
         kDirBlurParamFromColor,
         kDirBlurParamToColor,
@@ -889,7 +892,7 @@ TEST_F(NativeDirBlurTest, TileMatchesFullFrame)
         ASSERT_TRUE(bool(node));
         ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string(tc.filter)));
         ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { tc.clamp ? 1. : 0. }));
-        ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { tc.blackOutside ? 1. : 0. }));
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string(tc.blackOutside ? "black" : "stretch")));
         ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 12. }));
         ASSERT_TRUE(setKnobValues(node, kDirBlurParamSamples, { 9. }));
         ASSERT_TRUE(setKnobValues(node, kDirBlurParamCentered, { 1. }));
@@ -920,14 +923,16 @@ TEST_F(NativeDirBlurTest, TileMatchesFullFrame)
     }
 }
 
-// Without Black outside the copies read the source's edge pixels beyond it: a flat box stays flat
-// over the whole output, which is not grown by a pixel; with it the copies fade to black at the box.
-TEST_F(NativeDirBlurTest, BlackOutsideOffRepeatsTheEdges)
+// Under Stretch the copies read the source's edge pixels beyond it: a flat box stays flat over the
+// whole output, which is not grown by a pixel; under Black the copies fade to black at the box.
+// Input follows the Constant, set here to stretch.
+TEST_F(NativeDirBlurTest, StretchRepeatsTheEdges)
 {
     resetProject();
     const RectI box(16, 12, 48, 36);
     NodePtr source = makeConstant(0.5, &box);
     ASSERT_TRUE(bool(source));
+    setBlackOutside(source, false);
     for (const char* mode : { kDirBlurParamModeDirectional, kDirBlurParamModeRadial, kDirBlurParamModeZoom }) {
         NodePtr node = makeDirBlur(source, mode);
         ASSERT_TRUE(bool(node));
@@ -935,7 +940,7 @@ TEST_F(NativeDirBlurTest, BlackOutsideOffRepeatsTheEdges)
         ASSERT_TRUE(setKnobValues(node, kDirBlurParamLength, { 10. }));
         ASSERT_TRUE(setKnobValues(node, kDirBlurParamDirection, { 30. }));
 
-        ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 0. }));
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("stretch")));
         const RectI rodOff = pixelRoD(node);
         ASSERT_FALSE(rodOff.isNull()) << mode;
         RenderedPlane off;
@@ -949,7 +954,10 @@ TEST_F(NativeDirBlurTest, BlackOutsideOffRepeatsTheEdges)
             }
         }
 
-        ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 1. }));
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("input")));
+        EXPECT_EQ(rodOff, pixelRoD(node)) << mode;
+
+        ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("black")));
         const RectI rodOn = pixelRoD(node);
         EXPECT_EQ(rodOff.x1 - 1, rodOn.x1) << mode;
         EXPECT_EQ(rodOff.y1 - 1, rodOn.y1) << mode;
@@ -1005,7 +1013,7 @@ TEST_F(NativeDirBlurTest, ClampLimitsTheOvershoot)
     EXPECT_GE(lo, -1e-6f);
 }
 
-// Legacy and task-graph renders agree bit for bit, in each mode, and with a mask and mix.
+// Direct and scheduled renders agree bit for bit, in each blur mode, and with a mask and mix.
 TEST_F(NativeDirBlurTest, SameBothWays)
 {
     resetProject();
@@ -1041,7 +1049,7 @@ TEST_F(NativeDirBlurTest, SameBothWays)
     ASSERT_TRUE(setKnobValues(node, kDirBlurParamMax, { 0. }));
     ASSERT_TRUE(setKnobValue(node, kResamplerParamFilterType, std::string("keys")));
     ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterClamp, { 1. }));
-    ASSERT_TRUE(setKnobValues(node, kResamplerParamFilterBlackOutside, { 0. }));
+    ASSERT_TRUE(setKnobValue(node, kEdgeModeParam, std::string("stretch")));
     expectSame("radial-keys-clamp-edge-repeat");
 
     NodePtr mask = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);
@@ -1064,7 +1072,7 @@ TEST_F(NativeDirBlurTest, RenderScalesKeepTheSourceRange)
     for (unsigned int mipmapLevel = 1; mipmapLevel <= 3; ++mipmapLevel) {
         std::vector<float> input;
         std::string error;
-        ASSERT_TRUE(renderBlurRangePlane(source, kTime, mipmapLevel, pixelRoDAt(source, mipmapLevel), eRenderSchedulerModeLegacy, true, &input, &error)) << error;
+        ASSERT_TRUE(renderBlurRangePlane(source, kTime, mipmapLevel, pixelRoDAt(source, mipmapLevel), false, true, &input, &error)) << error;
         BlurRange range;
         range.include(input);
         ASSERT_GT(range.high, 100.f);
@@ -1076,7 +1084,7 @@ TEST_F(NativeDirBlurTest, RenderScalesKeepTheSourceRange)
                     NodePtr node = makeBrightBlur(source, mode, filter.id, blackOutside, takeMax);
                     ASSERT_TRUE(bool(node));
                     std::vector<float> output;
-                    ASSERT_TRUE(renderBlurRangePlane(node, kTime, mipmapLevel, pixelRoDAt(node, mipmapLevel), eRenderSchedulerModeLegacy, true, &output, &error)) << error;
+                    ASSERT_TRUE(renderBlurRangePlane(node, kTime, mipmapLevel, pixelRoDAt(node, mipmapLevel), false, true, &output, &error)) << error;
                     EXPECT_EQ(std::string(), blurRangeViolation(output, range, filter.lobes)) << mode << ", " << filter.id << (takeMax ? " max" : "") << (blackOutside ? "" : " edge repeat") << ", mipmap " << mipmapLevel;
                 }
             }
@@ -1129,7 +1137,7 @@ TEST_F(NativeDirBlurTest, ZoomingOutOverACachedFullScaleRenderKeepsTheSourceRang
     NodePtr source = makeBrightSource();
     ASSERT_TRUE(bool(source));
     const char* const modes[] = { kDirBlurParamModeDirectional, kDirBlurParamModeRadial, kDirBlurParamModeZoom };
-    for (const RenderSchedulerModeEnum schedulerMode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+    for (const bool scheduled : { false, true }) {
         for (const char* mode : modes) {
             NodePtr node = makeBrightBlur(source, mode, "cubic", true, false);
             ASSERT_TRUE(bool(node));
@@ -1137,20 +1145,20 @@ TEST_F(NativeDirBlurTest, ZoomingOutOverACachedFullScaleRenderKeepsTheSourceRang
             const RectI quarter(fullRoD.x1 + fullRoD.width() / 4, fullRoD.y1 + fullRoD.height() / 4, fullRoD.x1 + fullRoD.width() / 2, fullRoD.y1 + fullRoD.height() / 2);
             std::string error;
             std::vector<float> input;
-            ASSERT_TRUE(renderBlurRangePlane(source, kTime, 0, pixelRoDAt(source, 0), eRenderSchedulerModeLegacy, true, &input, &error)) << error;
+            ASSERT_TRUE(renderBlurRangePlane(source, kTime, 0, pixelRoDAt(source, 0), false, true, &input, &error)) << error;
             BlurRange range;
             range.include(input);
             for (unsigned int mipmapLevel = 1; mipmapLevel <= 3; ++mipmapLevel) {
-                ASSERT_TRUE(renderBlurRangePlane(source, kTime, mipmapLevel, pixelRoDAt(source, mipmapLevel), eRenderSchedulerModeLegacy, true, &input, &error)) << error;
+                ASSERT_TRUE(renderBlurRangePlane(source, kTime, mipmapLevel, pixelRoDAt(source, mipmapLevel), false, true, &input, &error)) << error;
                 range.include(input);
             }
             for (unsigned int mipmapLevel = 1; mipmapLevel <= 3; ++mipmapLevel) {
                 appPTR->clearAllCaches();
                 std::vector<float> atFullScale;
-                ASSERT_TRUE(renderBlurRangePlane(node, kTime, 0, quarter, schedulerMode, false, &atFullScale, &error)) << error;
+                ASSERT_TRUE(renderBlurRangePlane(node, kTime, 0, quarter, scheduled, false, &atFullScale, &error)) << error;
                 std::vector<float> zoomedOut;
-                ASSERT_TRUE(renderBlurRangePlane(node, kTime, mipmapLevel, pixelRoDAt(node, mipmapLevel), schedulerMode, false, &zoomedOut, &error)) << error;
-                EXPECT_EQ(std::string(), blurRangeViolation(zoomedOut, range, kBlurRangeNoLobes)) << mode << ", mipmap " << mipmapLevel << ((schedulerMode == eRenderSchedulerModeLegacy) ? ", legacy" : ", task graph");
+                ASSERT_TRUE(renderBlurRangePlane(node, kTime, mipmapLevel, pixelRoDAt(node, mipmapLevel), scheduled, false, &zoomedOut, &error)) << error;
+                EXPECT_EQ(std::string(), blurRangeViolation(zoomedOut, range, kBlurRangeNoLobes)) << mode << ", mipmap " << mipmapLevel << (scheduled ? ", scheduled" : ", direct");
             }
             appPTR->clearAllCaches();
         }
@@ -1189,7 +1197,7 @@ TEST_F(NativeDirBlurTest, Golden)
         return setKnobValue(g.node, kDirBlurParamMode, std::string(kDirBlurParamModeDirectional)) && setKnobValues(g.node, kDirBlurParamLength, { 12. }) && setKnobValues(g.node, kDirBlurParamUseTarget, { 1. }) && setKnobValues(g.node, kDirBlurParamCenter, { 20., 30. });
     }));
     v.push_back(goldenVariant("radialKeysClampEdgeRepeat", false, [](const GoldenGraph& g) {
-        return setKnobValue(g.node, kDirBlurParamMode, std::string(kDirBlurParamModeRadial)) && setKnobValues(g.node, kDirBlurParamLength, { 20. }) && setKnobValue(g.node, kResamplerParamFilterType, std::string("keys")) && setKnobValues(g.node, kResamplerParamFilterClamp, { 1. }) && setKnobValues(g.node, kResamplerParamFilterBlackOutside, { 0. });
+        return setKnobValue(g.node, kDirBlurParamMode, std::string(kDirBlurParamModeRadial)) && setKnobValues(g.node, kDirBlurParamLength, { 20. }) && setKnobValue(g.node, kResamplerParamFilterType, std::string("keys")) && setKnobValues(g.node, kResamplerParamFilterClamp, { 1. }) && setKnobValue(g.node, kEdgeModeParam, std::string("stretch"));
     }));
     v.push_back(goldenVariant("maskmix", true, [](const GoldenGraph& g) {
         return setKnobValues(g.node, kOfxMixParamName, { 0.5 }) && setKnobValues(g.node, kOfxMaskInvertParamName, { 1. });

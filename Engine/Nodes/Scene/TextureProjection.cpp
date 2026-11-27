@@ -268,7 +268,7 @@ project(const PXR_NS::UsdStageRefPtr& stage,
             if (!bake.coverage[i] || !viewer.sees(bake.worldPosition[i], bake.worldNormal[i], &fx, &fy)) {
                 continue;
             }
-            Resampler::interpolate(Resampler::eFilterBilinear, false, fx, fy, source, false, &result->rgba[i * 4]);
+            Resampler::interpolate(Resampler::eFilterBilinear, false, fx, fy, source, EdgeMode::Stretch, &result->rgba[i * 4]);
             result->coverage[i] = 1;
         }
     });
@@ -351,11 +351,11 @@ projectOver(const PXR_NS::UsdStageRefPtr& stage,
                     }
                     float m = 0.f;
                     float p[4] = { 0.f, 0.f, 0.f, 0.f };
-                    Resampler::interpolate(Resampler::eFilterBilinear, false, fx, fy, maskSource, false, &m);
+                    Resampler::interpolate(Resampler::eFilterBilinear, false, fx, fy, maskSource, EdgeMode::Stretch, &m);
                     if (m <= 0.f) {
                         continue;
                     }
-                    Resampler::interpolate(Resampler::eFilterBilinear, false, fx, fy, paintSource, false, p);
+                    Resampler::interpolate(Resampler::eFilterBilinear, false, fx, fy, paintSource, EdgeMode::Stretch, p);
                     const float keep = std::max(0.f, 1.f - m);
                     float* out = row + (std::size_t)x * 4;
                     for (int c = 0; c < 4; ++c) {

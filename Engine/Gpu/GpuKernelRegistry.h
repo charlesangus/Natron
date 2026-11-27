@@ -1,7 +1,9 @@
 #pragma once
 
 #include "GpuKernel.h"
+#include "GpuRaster.h"
 
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <map>
@@ -11,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace gpu {
@@ -24,7 +27,17 @@ enum class GpuKernelId : uint32_t {
     Count
 };
 
-// Lazily-created compute pipelines for one device. Safe to call from any thread.
+// Ids of the rasters compiled into NatronGpu, from slang_add_raster in the same file order. Descriptors
+// added with GpuKernelRegistry::registerRaster continue after Count.
+enum class GpuRasterId : uint32_t {
+#define GPU_RASTERS_ENUM
+#include "GpuKernels.inc"
+#undef GPU_RASTERS_ENUM
+    Count
+};
+
+// Lazily-created compute pipelines for one device, and the raster descriptions GpuPipelineCache builds
+// graphics pipelines from. Safe to call from any thread.
 //
 // Pointers returned by get() stay valid until invalidate() or destruction; both
 // require that no recorded work still references them.
@@ -36,6 +49,9 @@ public:
     GpuKernelRegistry& operator=(const GpuKernelRegistry&) = delete;
 
     GpuDevice& device() const { return device_; }
+
+    // Unique among the registries of the process, never reused, unlike the registry's address.
+    uint64_t serial() const { return serial_; }
 
     // Adds a kernel that is not part of the generated table, for example a test kernel.
     // The SPIR-V it points to must outlive the registry.
@@ -49,6 +65,12 @@ public:
     // Null for an id that is neither generated nor registered.
     const GpuKernelDesc* desc(GpuKernelId id) const;
 
+    // Adds a raster that is not part of the generated table. The SPIR-V it points to must outlive the registry.
+    GpuRasterId registerRaster(const GpuRasterDesc& desc);
+
+    // Null for an id that is neither generated nor registered.
+    const GpuRasterDesc* rasterDesc(GpuRasterId id) const;
+
     // Creates the pipeline on first use; concurrent callers share one creation.
     // A failed creation is not cached, so the next call retries.
     GpuStatus get(GpuKernelId id, GpuKernel*& out);
@@ -60,15 +82,22 @@ public:
     // How many times the pipeline for `id` was built since construction.
     uint32_t creationCount(GpuKernelId id) const;
 
+    // Command buffers of work left retiring on the device that are not freed yet.
+    size_t retiredCommandBufferCountForTests() const;
+
 private:
     friend class GpuRecordContext;
 
-    // Pools are externally synchronized, so each thread records into its own.
-    GpuStatus commandPoolForThisThread(VkCommandPool& out);
+    // Pools are externally synchronized, so each thread records into its own, one per queue family.
+    GpuStatus commandPoolForThisThread(VkCommandPool& out, QueueKind queue = QueueKind::Compute);
     // Dispatches made through the descriptor-pool fallback draw from a pool shared by every
     // thread, so it is only reset once no recording context is alive.
     void recordingBegan();
     void recordingEnded();
+    // Command buffers of `pool` whose work was left retiring on the device, freed once `done` is set: by the thread
+    // that owns the pool, the next time it asks for it or retires more, or by any thread once that one has exited.
+    void retireCommandBuffers(VkCommandPool pool, std::vector<VkCommandBuffer> buffers, std::shared_ptr<std::atomic<bool>> done);
+    void sweepRetiredLocked(VkCommandPool mine);
     // A kernel the registry does not own, dispatched by a context; its descriptor-pool fallback is
     // recycled with the registry's own once no context is alive.
     void noteExternalKernel(const std::shared_ptr<GpuKernel>& kernel);
@@ -88,13 +117,25 @@ private:
     void destroyPoolsLocked();
 
     GpuDevice& device_;
+    const uint64_t serial_;
     mutable std::mutex mutex_;
     std::vector<Slot> slots_;
     std::deque<GpuKernelDesc> registered_;
+    std::deque<GpuRasterDesc> registeredRasters_;
     std::deque<RuntimeModule> runtimeModules_;
     std::vector<std::weak_ptr<GpuKernel>> external_;
-    std::map<std::thread::id, VkCommandPool> pools_;
+    std::map<std::pair<std::thread::id, uint32_t>, VkCommandPool> pools_;
+    struct RetiredCommandBuffers {
+        VkCommandPool pool = VK_NULL_HANDLE;
+        std::vector<VkCommandBuffer> buffers;
+        std::shared_ptr<std::atomic<bool>> done;
+    };
+    std::vector<RetiredCommandBuffers> retiredCommandBuffers_;
+    // The thread each pool was last handed to.
+    std::map<VkCommandPool, std::weak_ptr<void>> poolOwners_;
     uint32_t activeContexts_ = 0;
+    // What GpuRecordContext learned of this device's speed; 0 until it finished a split context's first batch.
+    std::atomic<uint64_t> learnedBatchWork_ { 0 };
 };
 
 } // namespace gpu

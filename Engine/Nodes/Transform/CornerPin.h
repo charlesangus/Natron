@@ -60,7 +60,6 @@ struct CornerPinNodeParams {
     bool invert = false;
     Resampler::FilterSpec filter;
     bool clamp = false;
-    bool blackOutside = true;
     Resampler::BlurSettings blur;
 };
 
@@ -87,7 +86,7 @@ inline constexpr NodeSpec kCornerPinNodeSpec = {
 };
 
 inline constexpr ImagePipelineSpec kCornerPinPipeline = {
-    .stages = { Stage::MaskMix },
+    .stages = { Stage::EdgeMode, Stage::MaskMix },
     .layers = LayerPolicy::all(),
     .op = OpKind::Resample,
 };
@@ -169,7 +168,6 @@ struct CornerPinOp {
     KnobBoolWPtr invert;
     KnobChoiceWPtr filter;
     KnobBoolWPtr clamp;
-    KnobBoolWPtr blackOutside;
     Resampler::FilterKnobs filterKnobs;
     KnobDoubleWPtr motionBlur;
     KnobDoubleWPtr shutter;

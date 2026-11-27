@@ -73,13 +73,14 @@ namespace {
     }
 
     GpuStatus dispatchPass(GpuRecordContext& ctx, const GpuMorphology& m, const GpuMorphPass& pass,
-                           const GpuBlurImage& src, const GpuBlurImage& dst, const GpuBlurRect& out,
-                           const GpuBuffer* window)
+                           const GpuBlurImage& src, EdgeMode srcEdgeMode, const GpuBlurImage& dst,
+                           const GpuBlurRect& out, const GpuBuffer* window)
     {
         GpuMorphParams p;
         if (!baseParams(src, m.channels, p)) {
             return invalid("source exceeds 32-bit indexing");
         }
+        p.edgeMode = gpuEdgeMode(srcEdgeMode);
         p.width = uint32_t(out.x2 - out.x1);
         p.height = uint32_t(out.y2 - out.y1);
         p.half = pass.half;
@@ -164,7 +165,7 @@ recordMorphology(GpuRecordContext& ctx, const GpuMorphology& m)
     }
 
     if (m.passes.size() == 1) {
-        return dispatchPass(ctx, m, m.passes[0], m.src, m.dst, m.output, window);
+        return dispatchPass(ctx, m, m.passes[0], m.src, m.edgeMode, m.dst, m.output, window);
     }
 
     // The first pass covers the output's extent along the second pass's lines and every position
@@ -187,12 +188,13 @@ recordMorphology(GpuRecordContext& ctx, const GpuMorphology& m)
     midImage.bounds = mid;
     midImage.strideFloats = uint32_t(mid.x2 - mid.x1) * nc;
     if (!mid.empty()) {
-        if (GpuStatus s = dispatchPass(ctx, m, m.passes[0], m.src, midImage, mid, window); !s) {
+        if (GpuStatus s = dispatchPass(ctx, m, m.passes[0], m.src, m.edgeMode, midImage, mid, window); !s) {
             return s;
         }
         ctx.computeBarrier();
     }
-    return dispatchPass(ctx, m, m.passes[1], midImage, m.dst, m.output, window);
+    // The second pass reads the intermediate lines inside the window only.
+    return dispatchPass(ctx, m, m.passes[1], midImage, EdgeMode::Black, m.dst, m.output, window);
 }
 
 } // namespace gpu

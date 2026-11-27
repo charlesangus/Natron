@@ -1,4 +1,6 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include <list>
 #include <map>
@@ -16,13 +18,16 @@
 #include "Global/ThirdPartyTelemetry.h"
 
 #include "Ai/AiModelTestEffect.h"
+#include "CacheDiskTierWorker.h"
 #include "CacheStressTestEffect.h"
 #include "ContextTestEffects.h"
+#include "ContinuationTestEffects.h"
 #include "CountingTestEffect.h"
 #include "CurveHostTestEffect.h"
 #include "DataKindTestEffect.h"
 #include "DeepRenderTestEffect.h"
 #include "Engine/Nodes/Test/OverlayTestNode.h"
+#include "GeoRenderTestEffect.h"
 #include "IdentityHopTestEffect.h"
 #include "InputChangedFetchTestEffect.h"
 #include "MultiplanarTestEffect.h"
@@ -38,6 +43,10 @@
 #include "TestOfxPluginPath.h"
 #include "TestPlaneChoiceTakeOvers.h"
 #include "TestRetiredOfxIds.h"
+// Registers the fatal-signal stack dump and the stall dump for every suite, not only the ones
+// that start a TestWatchdog.
+#include "TestWatchdog.h"
+#include "TwoPlaneTestEffect.h"
 
 using namespace NATRON_NAMESPACE;
 
@@ -95,6 +104,9 @@ registerDataKindTestPlugins()
     registerTestBuiltInPlugin<DataKindTestRawSource>();
     registerTestBuiltInPlugin<DataKindTestRawSink>();
     registerTestBuiltInPlugin<DataKindTestRawAdapterSink>();
+    registerTestBuiltInPlugin<DataKindTestGeometrySource>();
+    registerTestBuiltInPlugin<DataKindTestGeometrySink>();
+    registerTestBuiltInPlugin<DataKindTestSceneSink>();
 }
 
 void
@@ -113,11 +125,24 @@ registerDeepRenderTestPlugins()
 }
 
 void
+registerGeoRenderTestPlugins()
+{
+    // Geometry sources and operators so GeoRender_Test.cpp can drive a real evaluateGeometry()
+    // pull, including a time-varying and a previous-frame input.
+    registerTestBuiltInPlugin<GeoRenderTestTriangle>();
+    registerTestBuiltInPlugin<GeoRenderTestTranslate>();
+    registerTestBuiltInPlugin<GeoRenderTestPreviousFrame>();
+}
+
+void
 registerMultiplanarTestPlugins()
 {
     // Registered so LayerKnobsRender_Test.cpp can exercise a multiplanar effect that never
     // produces Color, which no shipped plugin does today.
     registerTestBuiltInPlugin<MultiplanarDiffuseOnlyTestEffect>();
+    // Registered so TwoPlaneRender_Test.cpp can tell two planes of one layout apart by their values.
+    registerTestBuiltInPlugin<TwoPlaneSourceTestEffect>();
+    registerTestBuiltInPlugin<TwoPlaneReaderTestEffect>();
 }
 
 void
@@ -138,6 +163,7 @@ registerSceneTestPlugins()
     registerTestBuiltInPlugin<SceneTestOp>();
     registerTestBuiltInPlugin<SceneTestGeometry>();
     registerTestBuiltInPlugin<SceneTestAuthored>();
+    registerTestBuiltInPlugin<SceneTestContextProbe>();
 }
 
 void
@@ -146,10 +172,14 @@ registerRenderSchedulerTestPlugins()
     // Registered to count the render calls of every task, which no shipped plugin exposes.
     registerTestBuiltInPlugin<CountingTestEffect>();
     registerTestBuiltInPlugin<CountingMergeTestEffect>();
+    // Registered to cache under draft keys, which only OFX and a few transform nodes do.
+    registerTestBuiltInPlugin<DraftCountingTestEffect>();
     // Registered to count, hold and fail an overlay image pass, which no shipped node can be made to do.
     registerTestBuiltInPlugin<OverlayImageTestEffect>();
     // Registered to be an identity over part of its window only, which no shipped native node is.
     registerTestBuiltInPlugin<TiledIdentityTestEffect>();
+    // Registered to give each input a region of interest apart from the other's, which no shipped native node does.
+    registerTestBuiltInPlugin<SplitInputsTestEffect>();
     // Registered to request inputs under render contexts and read them, which no shipped plugin does yet.
     registerTestBuiltInPlugin<ContextReaderTestEffect>();
     registerTestBuiltInPlugin<ContextFanOutTestEffect>();
@@ -159,6 +189,9 @@ registerRenderSchedulerTestPlugins()
     registerTestBuiltInPlugin<ContextUnionTestEffect>();
     registerTestBuiltInPlugin<ContextSetTestEffect>();
     registerTestBuiltInPlugin<ContextLoopFrameShiftTestEffect>();
+    registerTestBuiltInPlugin<ContinuationSourceTestEffect>();
+    registerTestBuiltInPlugin<ProbeTestEffect>();
+    registerTestBuiltInPlugin<RecursiveProbeTestEffect>();
 }
 
 void
@@ -257,10 +290,15 @@ GTEST_API_ int main(int argc, char **argv)
     }
     printf("Running main() from wmain.cpp\n");
     ::testing::InitGoogleTest(&argc, argv);
+    // No test may fill the developer's home directory; one that wants a tier opens its own.
+    setenv("NATRON_CACHE_DISK_TIER", "off", 0);
     // ctest lists the suites before every run. Every test is registered statically, so the list
     // does not depend on load(), which would cost a cold OFX rescan plus Python and OCIO init.
     if (::testing::GTEST_FLAG(list_tests)) {
         return RUN_ALL_TESTS();
+    }
+    if ((argc > 1) && (strcmp(argv[1], cacheDiskTierWorkerFlag()) == 0)) {
+        return runCacheDiskTierWorker(argc - 2, argv + 2);
     }
     PerProcessUserDirs userDirs;
     // A renderer whose library is missing, for the tests of unavailable delegates. Hydra
@@ -292,6 +330,7 @@ GTEST_API_ int main(int argc, char **argv)
     }
     registerDataKindTestPlugins();
     registerDeepRenderTestPlugins();
+    registerGeoRenderTestPlugins();
     registerSceneTestPlugins();
     registerMultiplanarTestPlugins();
     registerGraphScalingTestPlugins();

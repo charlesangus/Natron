@@ -235,6 +235,7 @@ renderNodeImageImpl(const NodePtr& node,
     case eDataKindDeep:
     // Raw values are camera-native, per-photosite on a mosaic: no RGBA reading of them means anything.
     case eDataKindRaw:
+    case eDataKindGeometry:
         return ImagePtr();
     case eDataKindImage:
     case eDataKindScene:
@@ -305,6 +306,19 @@ renderNodeImageIfAny(const NodePtr& node,
     return rendered;
 }
 
+NodePtr
+resolveDisabledNode(const NodePtr& node,
+                    double time)
+{
+    NodePtr resolved = node;
+
+    while (resolved && resolved->isNodeDisabled(time)) {
+        resolved = resolved->getPreferredInputNode();
+    }
+
+    return resolved;
+}
+
 bool
 getNodeImageWindow(const NodePtr& node,
                    double time,
@@ -356,11 +370,12 @@ renderNodeImageOverWindow(const NodePtr& node,
                           const RectI& window,
                           ImagePtr* image,
                           RectI* renderedRect,
-                          const RenderContextPtr& context)
+                          const RenderContextPtr& context,
+                          const AbortableRenderInfoPtr& abortInfo)
 {
     bool rendered;
 
-    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, &window, context, renderedRect, AbortableRenderInfoPtr(), false, &rendered);
+    *image = renderNodeImageImpl(node, time, view, 0, RectI(), layer, &window, context, renderedRect, abortInfo, false, &rendered);
 
     return rendered;
 }

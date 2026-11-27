@@ -26,10 +26,14 @@
 #include "LiveTextureStore.h"
 
 #include <algorithm>
+#include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <functional>
+#include <future>
 #include <iterator>
 #include <limits>
 #include <new>
@@ -40,12 +44,15 @@
 #include <QtCore/QCoreApplication>
 #include <QtCore/QThread>
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/Node.h"
 #include "Engine/NodeColorSampler.h"
+#include "Engine/Nodes/Scene/LiveTextureOiio/LiveTextureFile.h"
+#include "Engine/Nodes/Scene/LiveTextureSharedMemory.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RectI.h"
@@ -54,9 +61,7 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-// The header the asset bytes start with; the pixels follow at kHeaderSize, float-aligned.
-const char kMagic[8] = { 'N', 'T', 'L', 'I', 'V', 'E', 'T', 'X' };
-const std::size_t kHeaderSize = 16;
+using NatronLiveTexture::kHeaderSize;
 
 // Enough for a few HD sequences' worth of frames held for scrubbing, or one 8K texture.
 const std::size_t kDefaultByteBudget = std::size_t(2) << 30;
@@ -216,6 +221,42 @@ const ViewIdx kLiveTextureView(0);
 // Failure messages kept for getFailure().
 const std::size_t kMaxFailures = 256;
 
+std::string
+fallbackWarning(const std::string& uri,
+                const std::string& failure)
+{
+    return "The live texture " + uri + " shows the missing-texture colour, magenta: " + failure + ".";
+}
+
+// natron://<node>/<layer>?v=<hash>, whose reader knows the node by the name it gave it.
+std::string
+nodeNameOfUri(const std::string& uri)
+{
+    const std::size_t start = std::strlen(kLiveTextureScheme "://");
+    const std::size_t end = uri.rfind('/');
+
+    return ((end == std::string::npos) || (end <= start)) ? uri : uri.substr(start, end - start);
+}
+
+std::string
+megabytes(std::size_t bytes)
+{
+    char text[64];
+
+    std::snprintf(text, sizeof(text), "%.1f MB", double(bytes) / (1024. * 1024.));
+
+    return text;
+}
+
+std::string
+noRoomMessage(const std::string& uri,
+              std::size_t needed,
+              std::size_t available)
+{
+    return "The live texture " + nodeNameOfUri(uri) + " needs " + megabytes(needed) + " of shared memory (" + LiveTextureSharedMemory::directory()
+        + ") to reach the renderer and only " + megabytes(available) + " is free: the render stops. Free space or make the image smaller to render it";
+}
+
 /**
  * The texture of source at frame, or of its UDIM tile when tile is not 0. format receives the
  * format the texture was to span when it could be told, so a stand-in can be of its size. A tile
@@ -229,6 +270,7 @@ renderSource(const LiveTextureSource& source,
              int tile,
              RectI* format,
              RectI* untiledFormat,
+             const AbortableRenderInfoPtr& abortInfo,
              std::string* failure)
 {
     NodePtr node = source.node.lock();
@@ -241,13 +283,11 @@ renderSource(const LiveTextureSource& source,
     // A disabled node shows its pass-through input, as the engine renders it, but the render
     // below declines a disabled node. A source authored while the node was enabled can be
     // rendered after it is disabled, and disabling can be animated.
-    while (node->isNodeDisabled(frame)) {
-        node = node->getPreferredInputNode();
-        if (!node || !node->isActivated()) {
-            *failure = "the node " + source.nodeName + " that feeds it is disabled and passes no input through";
+    node = resolveDisabledNode(node, frame);
+    if (!node || !node->isActivated()) {
+        *failure = "the node " + source.nodeName + " that feeds it is disabled and passes no input through";
 
-            return LiveTextureBufferConstPtr();
-        }
+        return LiveTextureBufferConstPtr();
     }
     char frameText[32];
     std::snprintf(frameText, sizeof(frameText), "%g", frame);
@@ -285,7 +325,7 @@ renderSource(const LiveTextureSource& source,
     *format = window.format;
     RectI rect;
     ImagePtr image;
-    const bool rendered = renderNodeImageOverWindow(node, frame, view, ImageLayerDesc::getRGBAComponents(), window.window, &image, &rect, context);
+    const bool rendered = renderNodeImageOverWindow(node, frame, view, ImageLayerDesc::getRGBAComponents(), window.window, &image, &rect, context, abortInfo);
     if (!rendered || (image && rect.isNull())) {
         *failure = what + " could not be rendered";
 
@@ -344,10 +384,7 @@ makeMagenta(const RectI& format)
     for (int y = 0; y < buffer->getHeight(); ++y) {
         float* row = buffer->getRow(y);
         for (int x = 0; x < buffer->getWidth(); ++x, row += 4) {
-            row[0] = 1.f;
-            row[1] = 0.f;
-            row[2] = 1.f;
-            row[3] = 1.f;
+            std::copy(kLiveTextureMissingColour, kLiveTextureMissingColour + 4, row);
         }
     }
 
@@ -444,9 +481,7 @@ LiveTextureBuffer::create(int width,
     if (!bytes) {
         return std::shared_ptr<LiveTextureBuffer>();
     }
-    std::memcpy(bytes, kMagic, sizeof(kMagic));
-    const std::int32_t size[2] = { width, height };
-    std::memcpy(bytes + sizeof(kMagic), size, sizeof(size));
+    NatronLiveTexture::writeHeader(bytes, width, height);
 
     std::shared_ptr<LiveTextureBuffer> buffer(new LiveTextureBuffer());
     buffer->_bytes = std::shared_ptr<const char>(bytes, [](const char* p) { ::operator delete(const_cast<char*>(p)); });
@@ -455,6 +490,26 @@ LiveTextureBuffer::create(int width,
     buffer->_width = width;
     buffer->_height = height;
     std::fill(buffer->_pixels, buffer->_pixels + numFloats, 0.f);
+
+    return buffer;
+}
+
+std::shared_ptr<const LiveTextureBuffer>
+LiveTextureBuffer::fromFile(const std::shared_ptr<const char>& bytes,
+                            std::size_t byteSize,
+                            int width,
+                            int height,
+                            const std::string& filePath)
+{
+    std::shared_ptr<LiveTextureBuffer> buffer(new LiveTextureBuffer());
+
+    buffer->_bytes = bytes;
+    buffer->_byteSize = byteSize;
+    // Only the const accessors can reach it, through the const pointer returned.
+    buffer->_pixels = reinterpret_cast<float*>(const_cast<char*>(bytes.get()) + kHeaderSize);
+    buffer->_width = width;
+    buffer->_height = height;
+    buffer->_filePath = filePath;
 
     return buffer;
 }
@@ -478,17 +533,15 @@ LiveTextureBuffer::parse(const char* bytes,
                          int* height,
                          const float** pixels)
 {
-    if (!bytes || (size < kHeaderSize) || (std::memcmp(bytes, kMagic, sizeof(kMagic)) != 0)) {
+    int parsedWidth = 0;
+    int parsedHeight = 0;
+
+    if (!NatronLiveTexture::readHeader(bytes, size, &parsedWidth, &parsedHeight)
+        || ((size - kHeaderSize) / sizeof(float) / 4 / std::size_t(parsedWidth) < std::size_t(parsedHeight))) {
         return false;
     }
-    std::int32_t dims[2];
-    std::memcpy(dims, bytes + sizeof(kMagic), sizeof(dims));
-    if ((dims[0] <= 0) || (dims[1] <= 0)
-        || ((size - kHeaderSize) / sizeof(float) / 4 / std::size_t(dims[0]) < std::size_t(dims[1]))) {
-        return false;
-    }
-    *width = dims[0];
-    *height = dims[1];
+    *width = parsedWidth;
+    *height = parsedHeight;
     *pixels = reinterpret_cast<const float*>(bytes + kHeaderSize);
 
     return true;
@@ -651,6 +704,7 @@ LiveTextureStore::insertLocked(const std::string& uri,
         eraseLocked(found);
     }
     _uses.push_front(uri);
+    _noRoom.erase(uri);
     Entry& entry = _entries[uri];
     entry.buffer = buffer;
     entry.use = _uses.begin();
@@ -670,6 +724,31 @@ LiveTextureStore::eraseLocked(std::map<std::string, Entry>::iterator entry)
     }
     _uses.erase(entry->second.use);
     _entries.erase(entry);
+}
+
+void
+LiveTextureStore::replaceBufferLocked(std::map<std::string, Entry>::iterator entry,
+                                      const LiveTextureBufferConstPtr& buffer)
+{
+    const LiveTextureBufferConstPtr old = entry->second.buffer;
+    if (old == buffer) {
+        return;
+    }
+    std::map<const LiveTextureBuffer*, int>::iterator uses = _bufferUses.find(old.get());
+    if ((uses != _bufferUses.end()) && (--uses->second == 0)) {
+        _byteSize -= old->getByteSize();
+        _bufferUses.erase(uses);
+        // The tile it held is reused from its file from now on.
+        for (std::pair<const U64, std::weak_ptr<const LiveTextureBuffer>>& tile : _tiles) {
+            if (tile.second.lock() == old) {
+                tile.second = buffer;
+            }
+        }
+    }
+    entry->second.buffer = buffer;
+    if (++_bufferUses[buffer.get()] == 1) {
+        _byteSize += buffer->getByteSize();
+    }
 }
 
 void
@@ -725,6 +804,8 @@ LiveTextureStore::clear()
     _entries.clear();
     _uses.clear();
     _failures.clear();
+    _noRoom.clear();
+    _failedTiles.clear();
     _lastPrepared.clear();
     _bufferUses.clear();
     _tiles.clear();
@@ -781,6 +862,277 @@ LiveTextureStore::evictLocked()
     }
 }
 
+void
+LiveTextureStore::addConsumerLocked(const std::string& uri,
+                                    const NodeWPtr& consumer)
+{
+    const std::map<std::string, Entry>::iterator found = _entries.find(uri);
+    const NodePtr node = consumer.lock();
+
+    if ((found == _entries.end()) || !node) {
+        return;
+    }
+    std::vector<NodeWPtr>& consumers = found->second.consumers;
+    const bool known = std::any_of(consumers.begin(), consumers.end(), [&node](const NodeWPtr& other) { return other.lock() == node; });
+    if (!known) {
+        consumers.push_back(consumer);
+    }
+}
+
+// Returned rather than destroyed here: removing a large file from tmpfs frees its pages one by one,
+// which no other texture's lookup should wait for.
+std::vector<LiveTextureBufferConstPtr>
+LiveTextureStore::releaseUnusedFilesLocked(const std::string& keptUri,
+                                           std::size_t bytes)
+{
+    std::vector<LiveTextureBufferConstPtr> released;
+    std::size_t freed = 0;
+    std::list<std::string>::iterator use = _uses.end();
+
+    while ((freed < bytes) && (use != _uses.begin())) {
+        --use;
+        const std::map<std::string, Entry>::iterator victim = _entries.find(*use);
+        // A delegate's reference would keep the pages however many entries let go of them.
+        if ((*use == keptUri) || (_pinned.find(*use) != _pinned.end()) || (_lastPrepared.find(*use) != _lastPrepared.end())
+            || (victim == _entries.end()) || victim->second.buffer->getFilePath().empty() || (victim->second.buffer.use_count() > 1)) {
+            continue;
+        }
+        freed += victim->second.buffer->getByteSize();
+        released.push_back(victim->second.buffer);
+        const std::list<std::string>::iterator next = std::next(use);
+        eraseLocked(victim);
+        use = next;
+    }
+
+    return released;
+}
+
+namespace {
+std::function<bool()>&
+exportAborted()
+{
+    thread_local std::function<bool()> aborted;
+
+    return aborted;
+}
+
+const std::chrono::milliseconds kAbortPoll(10);
+} // anonymous namespace
+
+LiveTextureStore::ExportAbortScope::ExportAbortScope(const std::function<bool()>& aborted)
+    : _outer(exportAborted())
+{
+    const std::function<bool()> outer = _outer;
+
+    exportAborted() = outer ? std::function<bool()>([outer, aborted]() { return aborted() || outer(); }) : aborted;
+}
+
+LiveTextureStore::ExportAbortScope::~ExportAbortScope()
+{
+    exportAborted() = _outer;
+}
+
+LiveTextureBufferConstPtr
+LiveTextureStore::exportToSharedMemory(const std::string& uri)
+{
+    // Ends the export on every way out, so callers waiting on the uri do not wait forever.
+    class Exporting {
+    public:
+        Exporting(LiveTextureStore& store,
+                  const std::string& uri)
+            : _store(store)
+            , _uri(uri)
+        {
+        }
+
+        ~Exporting()
+        {
+            if (_held) {
+                {
+                    std::lock_guard<std::mutex> lock(_store._mutex);
+                    _store._exporting.erase(_uri);
+                }
+                _store._rendered.notify_all();
+            }
+        }
+
+        Exporting(const Exporting&) = delete;
+        Exporting& operator=(const Exporting&) = delete;
+
+        void beginLocked()
+        {
+            _store._exporting.insert(_uri);
+            _held = true;
+        }
+
+        void endLocked()
+        {
+            _store._exporting.erase(_uri);
+            _held = false;
+        }
+
+    private:
+        LiveTextureStore& _store;
+        const std::string& _uri;
+        bool _held = false;
+    };
+
+    const std::function<bool()> aborted = exportAborted();
+    Exporting exporting(*this, uri);
+    LiveTextureBufferConstPtr source;
+    LiveTextureBufferConstPtr replaced;
+    bool warned = false;
+    {
+        std::unique_lock<std::mutex> lock(_mutex);
+        const auto idle = [&]() { return (_rendering.find(uri) == _rendering.end()) && (_exporting.find(uri) == _exporting.end()); };
+        while (!idle()) {
+            if (!aborted) {
+                _rendered.wait(lock, idle);
+            } else if (aborted()) {
+                return LiveTextureBufferConstPtr();
+            } else {
+                _rendered.wait_for(lock, kAbortPoll);
+            }
+        }
+        const std::map<std::string, Entry>::iterator found = _entries.find(uri);
+        const std::map<std::string, std::weak_ptr<const LiveTextureBuffer>>::iterator file = _exported.find(uri);
+        const LiveTextureBufferConstPtr alive = (file == _exported.end()) ? LiveTextureBufferConstPtr() : file->second.lock();
+        if (found != _entries.end()) {
+            _uses.splice(_uses.begin(), _uses, found->second.use);
+        }
+        if (alive) {
+            if (found != _entries.end()) {
+                replaced = found->second.buffer;
+                replaceBufferLocked(found, alive);
+                evictLocked();
+            }
+
+            return alive;
+        }
+        if (found == _entries.end()) {
+            if (_failures.find(uri) == _failures.end()) {
+                setFailureLocked(uri, "the image of " + nodeNameOfUri(uri) + " was not rendered for this renderer");
+            }
+
+            return LiveTextureBufferConstPtr();
+        }
+        // Tried again every time: another texture letting go of its file can make room for this one.
+        warned = _failures.find(uri) != _failures.end();
+        exporting.beginLocked();
+        source = found->second.buffer;
+    }
+
+    LiveTextureSharedMemory::Export file;
+    int errorNumber = 0;
+    std::string what;
+    const auto write = [&]() {
+        return LiveTextureSharedMemory::exportImage(uri, source->getWidth(), source->getHeight(), source->getRow(0), &file, &errorNumber, &what, aborted);
+    };
+    bool exported = write();
+    if (!exported && (errorNumber == ENOSPC)) {
+        std::vector<LiveTextureBufferConstPtr> released;
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            released = releaseUnusedFilesLocked(uri, NatronLiveTexture::fileSize(source->getWidth(), source->getHeight()));
+        }
+        if (!released.empty()) {
+            released.clear();
+            exported = write();
+        }
+    }
+    if (!exported && (errorNumber == ECANCELED)) {
+        // Not a failure of the texture: the next render tries again.
+        return LiveTextureBufferConstPtr();
+    }
+
+    LiveTextureBufferConstPtr result;
+    std::string failure;
+    bool noRoom = false;
+    std::vector<NodeWPtr> consumers;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        exporting.endLocked();
+        const std::map<std::string, Entry>::iterator found = _entries.find(uri);
+        if (exported) {
+            result = LiveTextureBuffer::fromFile(file.bytes, file.byteSize, source->getWidth(), source->getHeight(), file.path);
+            for (std::map<std::string, std::weak_ptr<const LiveTextureBuffer>>::iterator it = _exported.begin(); it != _exported.end();) {
+                it = it->second.expired() ? _exported.erase(it) : std::next(it);
+            }
+            _exported[uri] = result;
+            // A tile's magenta stand-in reaches the renderer, but its texture still failed.
+            if ((found == _entries.end()) || !found->second.fallback) {
+                _failures.erase(uri);
+            }
+            _noRoom.erase(uri);
+            if (found != _entries.end()) {
+                replaced = found->second.buffer;
+                replaceBufferLocked(found, result);
+                evictLocked();
+            }
+        } else {
+            if (errorNumber == ENOSPC) {
+                failure = noRoomMessage(uri, NatronLiveTexture::fileSize(source->getWidth(), source->getHeight()), LiveTextureSharedMemory::availableBytes());
+                _noRoom[uri] = failure;
+                noRoom = true;
+            } else {
+                failure = "the image of " + nodeNameOfUri(uri) + " does not fit in shared memory (" + what + ": " + std::strerror(errorNumber) + ")";
+            }
+            setFailureLocked(uri, failure);
+            if ((found != _entries.end()) && !warned) {
+                consumers = found->second.consumers;
+            }
+        }
+    }
+    _rendered.notify_all();
+
+    for (const NodeWPtr& weak : consumers) {
+        if (const NodePtr consumer = weak.lock()) {
+            consumer->setPersistentMessage(eMessageTypeWarning, noRoom ? failure : fallbackWarning(uri, failure));
+        }
+    }
+
+    return result;
+} // LiveTextureStore::exportToSharedMemory
+
+std::string
+LiveTextureStore::getSourceOfFile(const std::string& path) const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    for (const std::pair<const std::string, std::weak_ptr<const LiveTextureBuffer>>& exported : _exported) {
+        const LiveTextureBufferConstPtr buffer = exported.second.lock();
+        if (buffer && (buffer->getFilePath() == path)) {
+            return nodeNameOfUri(exported.first);
+        }
+    }
+
+    return std::string();
+}
+
+std::string
+LiveTextureStore::getNoRoom(const std::string& uri) const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+    const std::map<std::string, std::string>::const_iterator found = _noRoom.find(uri);
+
+    return (found == _noRoom.end()) ? std::string() : found->second;
+}
+
+std::string
+LiveTextureStore::getAnyNoRoom() const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    // A note about a texture no recent render asked for belongs to a scene that has moved on.
+    for (const std::pair<const std::string, std::string>& note : _noRoom) {
+        if ((_lastPrepared.find(note.first) != _lastPrepared.end()) || (_pinned.find(note.first) != _pinned.end())) {
+            return note.second;
+        }
+    }
+
+    return std::string();
+}
+
 std::string
 LiveTextureStore::getFailure(const std::string& uri) const
 {
@@ -801,7 +1153,8 @@ LiveTextureStore::getFailedTiles(const std::string& uri) const
 
 int
 LiveTextureStore::prepare(const LiveTextureSourceList& sources,
-                          double frame)
+                          double frame,
+                          const std::function<bool()>& aborted)
 {
     // Consumer warnings, joined and set once, so one texture's does not hide another's.
     std::map<NodePtr, std::vector<std::string>> warnings;
@@ -837,6 +1190,14 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
                 continue;
             }
             ++numMissing;
+            // Kept as the texture's failure: the consumer's own next evaluation, which may come
+            // from any thread, would otherwise clear the warning below.
+            {
+                std::lock_guard<std::mutex> lock(_mutex);
+                if (_failures.find(job.uri) == _failures.end()) {
+                    setFailureLocked(job.uri, "the image of " + nodeNameOfUri(job.uri) + " is not rendered on the main thread");
+                }
+            }
             std::string& uris = missingBySource[job.source];
             uris += (uris.empty() ? "" : ", ") + job.uri;
         }
@@ -869,10 +1230,13 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
         std::lock_guard<std::mutex> lock(_mutex);
         for (const std::string& uri : uris) {
             ++_pinned[uri];
+            _noRoom.erase(uri);
         }
     }
 
+    const auto isAborted = [&aborted]() { return aborted && aborted(); };
     int numFailed = 0;
+    bool gaveUp = false;
     // The failures of each UDIM set's tiles, which getFailure() gives for the set's URI.
     std::map<std::string, std::string> setFailures;
     std::map<std::string, std::vector<int>> setFailedTiles;
@@ -920,10 +1284,18 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
         {
             std::unique_lock<std::mutex> lock(_mutex);
             // Another consumer rendering the same texture: wait for it rather than render twice.
-            _rendered.wait(lock, [&]() { return _rendering.find(job.uri) == _rendering.end(); });
+            const auto idle = [&]() { return _rendering.find(job.uri) == _rendering.end(); };
+            while (!idle() && !isAborted()) {
+                _rendered.wait_for(lock, kAbortPoll);
+            }
+            if (!idle()) {
+                gaveUp = true;
+                break;
+            }
             std::map<std::string, Entry>::iterator found = _entries.find(job.uri);
             if ((found != _entries.end()) && !found->second.fallback) {
                 _uses.splice(_uses.begin(), _uses, found->second.use);
+                addConsumerLocked(job.uri, source.consumer);
                 noteSetFormat(job, found->second.buffer);
                 continue;
             }
@@ -933,6 +1305,7 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
                 if (buffer) {
                     insertLocked(job.uri, buffer, false);
                     _failures.erase(job.uri);
+                    addConsumerLocked(job.uri, source.consumer);
                     noteSetFormat(job, buffer);
                     continue;
                 }
@@ -946,9 +1319,12 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
         RectI format;
         RectI untiledFormat;
         LiveTextureBufferConstPtr buffer;
+        const AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+        std::promise<void> finished;
+        std::future<void> done = finished.get_future();
         std::thread renderer([&]() {
             try {
-                buffer = renderSource(source, source.getSourceFrame(frame), kLiveTextureView, job.tile, &format, &untiledFormat, &failure);
+                buffer = renderSource(source, source.getSourceFrame(frame), kLiveTextureView, job.tile, &format, &untiledFormat, abortInfo, &failure);
             } catch (const std::exception& e) {
                 buffer.reset();
                 failure = e.what();
@@ -956,32 +1332,50 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
                 buffer.reset();
                 failure = "an unknown error occurred";
             }
+            finished.set_value();
         });
+        // aborted reads the caller's render state, so it is asked here, on the caller's thread.
+        while (aborted && (done.wait_for(kAbortPoll) != std::future_status::ready)) {
+            if (!abortInfo->isAborted() && aborted()) {
+                abortInfo->setAborted();
+            }
+        }
         renderer.join();
+        // A render stopped half way says nothing about the texture, so it is neither kept, stood
+        // in for nor recorded as failed, and the next prepare() renders it again.
+        const bool stopped = abortInfo->isAborted();
+        if (stopped) {
+            buffer.reset();
+        }
         if (job.tile && !format.isNull()) {
             setFormats.insert(std::make_pair(job.setUri, format));
         }
         noteSetFormat(job, buffer);
-        const bool unsized = !buffer && job.tile && format.isNull();
-        const LiveTextureBufferConstPtr magenta = (!buffer && job.tile && !unsized) ? makeMagenta(format) : LiveTextureBufferConstPtr();
+        const bool unsized = !buffer && !stopped && job.tile && format.isNull();
+        const LiveTextureBufferConstPtr magenta = (!buffer && !stopped && job.tile && !unsized) ? makeMagenta(format) : LiveTextureBufferConstPtr();
         {
             std::lock_guard<std::mutex> lock(_mutex);
             _rendering.erase(job.uri);
-            ++_renderCounts[job.tile];
+            if (!stopped) {
+                ++_renderCounts[job.tile];
+            }
             if (buffer) {
                 insertLocked(job.uri, buffer, false);
+                addConsumerLocked(job.uri, source.consumer);
                 if (tileKey) {
                     _tiles[tileKey] = buffer;
                 }
             } else if (magenta) {
                 insertLocked(job.uri, magenta, true);
             }
-            setFailureLocked(job.uri, buffer ? std::string() : failure);
+            if (!stopped) {
+                setFailureLocked(job.uri, buffer ? std::string() : failure);
+            }
             evictLocked();
         }
         _rendered.notify_all();
 
-        if (!buffer) {
+        if (!buffer && !stopped) {
             ++numFailed;
             std::string message;
             if (job.tile) {
@@ -997,10 +1391,14 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
                     unsizedTiles.push_back(pending);
                 }
             } else {
-                message = "The live texture " + job.uri + " shows the renderer's fallback: " + failure + ".";
+                message = fallbackWarning(job.uri, failure);
             }
             failedHere[job.uri] = message;
             warn(source, message);
+        }
+        if (stopped || isAborted()) {
+            gaveUp = true;
+            break;
         }
     }
     // Storm sizes a whole set from its lowest tile, so a 1x1 stand-in there would shrink every
@@ -1030,8 +1428,11 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
 
     {
         std::lock_guard<std::mutex> lock(_mutex);
-        for (const std::pair<const std::string, std::string>& set : setFailures) {
-            setFailureLocked(set.first, set.second, setFailedTiles[set.first]);
+        // A set left part way by an abort keeps what its tiles recorded before.
+        if (!gaveUp) {
+            for (const std::pair<const std::string, std::string>& set : setFailures) {
+                setFailureLocked(set.first, set.second, setFailedTiles[set.first]);
+            }
         }
         for (const std::string& uri : uris) {
             std::map<std::string, int>::iterator pin = _pinned.find(uri);
@@ -1039,7 +1440,10 @@ LiveTextureStore::prepare(const LiveTextureSourceList& sources,
                 _pinned.erase(pin);
             }
         }
-        _lastPrepared.swap(uris);
+        // An abandoned prepare() leaves the last finished one's textures held for the frame on screen.
+        if (!gaveUp) {
+            _lastPrepared.swap(uris);
+        }
         evictLocked();
         for (std::map<U64, std::weak_ptr<const LiveTextureBuffer>>::iterator it = _tiles.begin(); it != _tiles.end();) {
             if (it->second.expired()) {

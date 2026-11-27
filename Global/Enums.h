@@ -517,6 +517,7 @@ enum DataKindEnum {
     eDataKindScene,
     eDataKindPolymorphic,
     eDataKindRaw,
+    eDataKindGeometry,
 };
 
 enum NodeCategoryEnum {
@@ -544,11 +545,6 @@ enum RenderSafetyEnum
     eRenderSafetyInstanceSafe = 1,
     eRenderSafetyFullySafe = 2,
     eRenderSafetyFullySafeFrame = 3,
-};
-
-enum RenderSchedulerModeEnum {
-    eRenderSchedulerModeLegacy = 0,
-    eRenderSchedulerModeTaskGraph = 1,
 };
 
 enum GpuComputeModeEnum {
@@ -610,9 +606,10 @@ enum DopeSheetItemType {
     eDopeSheetItemTypeKnobRoot,
     eDopeSheetItemTypeKnobDim,
 
-    // A curve host's item (Bezier or stroke), and a Bezier's shape keys under it
+    // A curve host's item (Bezier or stroke), a Bezier's shape keys under it and a stroke's painted frame
     eDopeSheetItemTypeRotoItem,
-    eDopeSheetItemTypeShape
+    eDopeSheetItemTypeShape,
+    eDopeSheetItemTypePaintedFrame
 };
 
 enum CreateNodeReason

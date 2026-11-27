@@ -30,20 +30,24 @@
 
 #include <functional>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_set>
 #include <vector>
 
+#include "Engine/BufferableObject.h"
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Raw/RawDisplay.h"
 #include "Engine/OutputEffectInstance.h"
 #include "Engine/OverlayImage.h"
 #include "Engine/ProjectColorManagement.h"
 #include "Engine/RenderScheduler.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/SchedulerEligibility.h"
 #include "Engine/ViewIdx.h"
+#include "Serialization/SerializationFwd.h"
 
 // Script names of the Viewer node's knobs.
 #define kViewerParamEnableGain "enableGain"
@@ -81,7 +85,15 @@
 #define kViewerParamEnableDownscale "enableDownscale"
 #define kViewerParamDownscaleLevel "downscaleLevel"
 #define kViewerParamMaxSamples "maxSamples"
+#define kViewerParamRenderEverything "renderEverything"
 #define kViewerParamRefinementPaused "refinementPaused"
+#define kViewerParamMapSiblingOverlays "mapSiblingOverlays"
+#define kViewerParamPointMarkers "pointMarkers"
+#define kViewerParamPointNumbers "pointNumbers"
+#define kViewerParamPrimitiveNumbers "primitiveNumbers"
+#define kViewerParamNormals "normals"
+#define kViewerParamNormalScale "normalScale"
+#define kViewerParamHighlightGroup "highlightGroup"
 
 NATRON_NAMESPACE_ENTER
 
@@ -217,6 +229,41 @@ private:
     bool _placed = false;
 };
 
+/**
+ * @brief Whether a viewer edit drafts. It keeps a rolling estimate of what an update would cost at the viewer's
+ * own level, from the updates rendered so far scaled by their pixel ratio, and turns draft off once that fits the
+ * frame budget, back on once it overruns it. The gap between the two thresholds keeps it from toggling per frame.
+ **/
+class AdaptiveDraft {
+public:
+    static constexpr double kBudgetMs = 1000. / 30.;
+    static constexpr double kEnterFullRatio = 0.8;
+    static constexpr double kLeaveFullRatio = 1.25;
+
+    /**
+     * @brief Notes an update rendered at renderedLevel in ms, for a viewer whose own level is fullLevel.
+     **/
+    void noteRender(double ms, unsigned int renderedLevel, unsigned int fullLevel);
+
+    // Whether the next update drafts. True until a render has been noted.
+    bool drafts() const
+    {
+        return !_full;
+    }
+
+    // The estimated cost of an update at the viewer's own level, negative before any render has been noted.
+    double predictedFullMs() const
+    {
+        return _predictedFullMs;
+    }
+
+    void reset();
+
+private:
+    double _predictedFullMs = -1.;
+    bool _full = false;
+};
+
 class ViewerArgs
 {
 public:
@@ -226,6 +273,9 @@ public:
     // The input is a scene: renderViewer_internal() evaluates it through the scene action and
     // renders no texture for it.
     bool sceneUpstream = false;
+    // The input is geometry, which the 3D view shows through the viewer's own geometry layer;
+    // sceneUpstream is set along with it.
+    bool geometryUpstream = false;
     std::optional<RawDisplay::Normalisation> rawNormalisation;
     bool forceRender;
     int activeInputIndex;
@@ -256,6 +306,7 @@ GCC_DIAG_SUGGEST_OVERRIDE_ON
 
     friend class ViewerCurrentFrameRequestScheduler;
     friend class GpuPlacementPlanner;
+    friend struct ViewerInstanceTestAccess;
 
 public:
     static EffectInstance* BuildEffect(NodePtr n) WARN_UNUSED_RETURN;
@@ -277,6 +328,24 @@ public:
      * when that input is not raw.
      **/
     std::string getRawDisplayLabel(int textureIndex) const WARN_UNUSED_RETURN;
+
+    typedef std::function<void(Serialization::SceneViewSerialization*)> SceneViewSaver;
+
+    /**
+     * @brief The draw states and loads of the 3D view as the project was opened with them, or once
+     * setSceneViewSaver() is called, as the saver saves them. Main thread.
+     **/
+    Serialization::SceneViewSerialization getLoadedSceneView() const;
+
+    /**
+     * @brief Hands saving the 3D view to saver, which any thread that saves the project runs, and
+     * forgets the view the project was opened with. An empty saver saves nothing; this returns
+     * once a saver running has.
+     **/
+    void setSceneViewSaver(const SceneViewSaver& saver);
+
+    // What the project saves of the 3D view. Any thread.
+    void sceneViewToSerialization(Serialization::SceneViewSerialization* serialization) const;
 
     ///Called upon node creation and then never changed
     void setUiContext(OpenGLViewerI* viewer);
@@ -461,6 +530,48 @@ public:
                                      const ViewerCurrentFrameRequestSchedulerStartArgsPtr& request,
                                      const RenderStatsPtr& stats) WARN_UNUSED_RETURN;
 
+    struct PendingViewerRender;
+
+    /**
+     * @brief One playback frame of the A and B inputs, rendered without any thread waiting on the RenderScheduler:
+     * preparePlaybackFrame() runs on the scheduler thread and submits the inputs, finishPlaybackFrame() converts what
+     * they rendered once their futures finished.
+     **/
+    struct PlaybackFrame {
+        int time = 0;
+        ViewIdx view;
+        RenderStatsPtr stats;
+        U64 viewerHash = 0;
+        ViewerArgsPtr args[2];
+        bool inputRenders[2] = { false, false };
+        bool hadRender[2] = { false, false };
+        U64 renderAges[2] = { 0, 0 };
+        std::shared_ptr<PendingViewerRender> pending[2];
+        // An input that must render synchronously, which only finishPlaybackFrame() on the fallback worker may do.
+        bool deferred[2] = { false, false };
+        ViewerRenderRetCode ret[2] = { eViewerRenderRetCodeRedraw, eViewerRenderRetCodeRedraw };
+        std::vector<FrameFuturePtr> futures;
+        std::vector<AbortableRenderInfoPtr> futureAbortInfos;
+        // Those of every input that renders.
+        std::vector<AbortableRenderInfoPtr> abortInfos;
+        int futuresOutstanding = 0;
+        BufferableObjectPtrList toAppend;
+        bool failed = false;
+    };
+
+    enum PlaybackFrameStageEnum {
+        // Nothing is left to render: toAppend holds what to display.
+        ePlaybackFrameStageDone,
+        // finishPlaybackFrame() may run once every future finished.
+        ePlaybackFrameStageAwaitFutures,
+        // finishPlaybackFrame() must run on the fallback worker.
+        ePlaybackFrameStageFallback
+    };
+
+    PlaybackFrameStageEnum preparePlaybackFrame(PlaybackFrame* frame) WARN_UNUSED_RETURN;
+
+    void finishPlaybackFrame(PlaybackFrame& frame);
+
     ViewerRenderRetCode getViewerArgsAndRenderViewer(SequenceTime time,
                                                      bool canAbort,
                                                      ViewIdx view,
@@ -498,6 +609,19 @@ public:
      **/
     void disconnectTextureAfterRender(int index, bool clearRod, U64 renderAge);
 
+    /**
+     * @brief A render request that will not produce an image because it failed outside the
+     * render itself (an exception, a lost UI context): like renderEndedWithoutImage(), and the
+     * render also leaves the viewer's list of ongoing renders.
+     **/
+    void renderFailed(int textureIndex, U64 renderAge);
+
+    /**
+     * @brief A render request that ended aborted or with no image to show. It counts as shown
+     * unless a newer request exists, in which case that one decides what the viewer shows.
+     **/
+    void renderEndedWithoutImage(int textureIndex, U64 renderAge);
+
     double getGain() const WARN_UNUSED_RETURN;
 
     unsigned int getMipmapLevel() const WARN_UNUSED_RETURN;
@@ -510,6 +634,40 @@ public:
      * processing is on.
      **/
     unsigned int getMipmapLevelWithoutDraft() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The mipmap level of a zoom factor: the nearest finer one (48% renders at 50%, 51% at 100%), or with
+     * nearest, the nearest power of two (33% renders at 25%). Zooms of 100% and more are level 0.
+     **/
+    static unsigned int mipmapLevelForZoom(double zoomFactor, bool nearest) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The level a draft update renders at under auto-proxy: at least autoProxyLevel, less one per doubling
+     * of a zoom above 100%, and never finer than withoutDraft.
+     **/
+    static unsigned int autoProxyMipmapLevel(unsigned int withoutDraft, double zoomFactor, unsigned int autoProxyLevel) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether an update drafts, and at which level: auto-proxy and draft are on, the edits call for it
+     * (AppInstance::draftAppliesToEdits()) and adaptive draft does not predict that the viewer's own level keeps up.
+     **/
+    static void resolveDraft(bool draftOn,
+                             bool editsDraft,
+                             bool autoProxy,
+                             const AdaptiveDraft& adaptive,
+                             unsigned int withoutDraft,
+                             double zoomFactor,
+                             unsigned int autoProxyLevel,
+                             bool* draftModeEnabled,
+                             unsigned int* withDraft);
+
+    /**
+     * @brief Notes how long an interactive update took for adaptive draft. Ignored while draft is off.
+     **/
+    void noteInteractiveRender(double ms, unsigned int renderedLevel, unsigned int fullLevel);
+
+    // A copy of the viewer's adaptive draft state, for tests.
+    AdaptiveDraft getAdaptiveDraft() const WARN_UNUSED_RETURN;
 
     /**
      * @brief The display settings and tiles of the last full-quality texture-cache lookup of input
@@ -530,6 +688,11 @@ public:
 
     bool isLatestRender(int textureIndex, U64 renderAge) const;
 
+    /**
+     * @brief True while the image shown is older than the newest render requested on either input.
+     * A render that failed counts as shown, so a failure with nothing newer queued is not stale.
+     **/
+    bool isStale() const;
 
     void setDisplayChannels(DisplayChannelsEnum channels, bool bothInputs);
 
@@ -644,9 +807,64 @@ public:
     /**
      * @brief What the last evaluation of a scene on the given texture's input produced. Returns
      * false when that input is not a scene or has not been evaluated yet, or when the evaluation
-     * failed, in which case *error carries the message. Either pointer may be null. MT-safe.
+     * failed, in which case *error carries the message. *loadSet and *reach get the load set it
+     * was evaluated with and the reach of the patterns it matched. Any pointer may be null.
+     * MT-safe.
      **/
-    bool getLastEvaluatedScene(int textureIndex, ScenePayload* scene, std::string* error) const;
+    bool getLastEvaluatedScene(int textureIndex,
+                               ScenePayload* scene,
+                               std::string* error,
+                               SceneLoadSetPtr* loadSet = nullptr,
+                               SceneLoadReachPtr* reach = nullptr) const;
+
+    /**
+     * @brief The payloads the viewer's scene evaluations include, which follow what its 3D view's
+     * stage loads: pattern nodes match only those. None until set. A change queues the knob
+     * menus filled from the scene to follow it (SceneMenuRefresh::followLoadChanges()). MT-safe.
+     **/
+    void setSceneLoadSet(const SceneLoadSetPtr& loadSet);
+
+    SceneLoadSetPtr getSceneLoadSet() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Who the viewer's scene evaluations are for: its id, which keeps the nodes' memoized
+     * layers and matches for it apart from other evaluators', and its current load set. Without
+     * a reach. MT-safe.
+     **/
+    SceneEvaluationContext getSceneEvaluationContext() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Evaluates the scene of the A input as the viewer would with loadSet in its place, for
+     * what a load about to be committed shows, at the current frame. getLastEvaluatedScene() is
+     * left as it is. *reach, when given, is set to the reach of the patterns the evaluation
+     * matched. Returns false when that input is not a scene or its evaluation fails, with *error
+     * set for a failure. For a thread other than the main one. MT-safe.
+     **/
+    bool evaluateSceneForLoadSet(const SceneLoadSetPtr& loadSet,
+                                 ScenePayload* scene,
+                                 SceneLoadReachPtr* reach,
+                                 std::string* error);
+
+    /**
+     * @brief Shows in the 3D view the geometry the given texture's input evaluated at @p frame, as
+     * evaluated. Playback evaluates frames ahead of the timeline, so each waits until the timeline
+     * reaches it. True when the geometry shown changed; false when the input is not geometry or
+     * nothing was evaluated at @p frame since it was last shown. MT-safe.
+     **/
+    bool showGeometryFrame(int textureIndex, int frame);
+
+    /**
+     * @brief The geometry the viewer's copy for the given texture's input is served from, so element
+     * numbers match what the 3D view picks, in *frame the frame the 3D view last read it at, and in
+     * *sourceNode and *sourceHash the node it was evaluated from and that node's hash before the
+     * evaluation. False when that input shows no geometry or the 3D view has not read any yet. Any
+     * pointer may be null. MT-safe.
+     **/
+    bool getShownGeometry(int textureIndex,
+                          GeoDetailConstPtr* detail,
+                          int* frame,
+                          NodePtr* sourceNode = nullptr,
+                          U64* sourceHash = nullptr) const;
 
     /**
      * @brief Every node upstream of the A and B inputs that has a persistent message, nearest
@@ -727,8 +945,8 @@ public Q_SLOTS:
     void executeDisconnectTextureRequestOnMainThread(int index, bool clearRoD);
 
     /**
-     * @brief Re-reads the active input's data kind and whether wipe is disabled, and emits
-     * activeInputDataKindChanged() when either changed. Callable from any thread; the work runs
+     * @brief Re-reads the active input's data kind, whether it is connected and whether wipe is
+     * disabled, and emits activeInputDataKindChanged() when any of them changed. Callable from any thread; the work runs
      * on the main thread.
      **/
     void refreshActiveInputDataKind();
@@ -756,10 +974,15 @@ Q_SIGNALS:
 
     void disconnectTextureRequest(int index,bool clearRoD);
 
+    // Emitted queued, so it is safe for it to originate on a render thread. The argument is
+    // the state the viewer entered.
+    void staleChanged(bool stale);
+
     void viewerRenderingStarted();
     void viewerRenderingEnded();
 
-    // getActiveInputDataKind() or isWipeDisabledByDataKind() changed. Emitted on the main thread.
+    // Emitted on the main thread when getActiveInputDataKind(), whether input A is connected,
+    // or isWipeDisabledByDataKind() now reads differently.
     void activeInputDataKindChanged();
 
     // A scene was evaluated for the input of textureIndex; getLastEvaluatedScene() has the
@@ -791,6 +1014,7 @@ private:
                                  const AbortableRenderInfoPtr& abortInfo,
                                  GpuPlacementSnapshotBuilder* builder);
     void computeMipmapLevels(double zoomFactor, ViewerArgs* outArgs) const;
+    void computeMipmapLevels(double zoomFactor, bool draftOn, ViewerArgs* outArgs) const;
 
     /*******************************************
      ******OVERRIDDEN FROM EFFECT INSTANCE******
@@ -845,18 +1069,45 @@ private:
     virtual void addAcceptedComponents(int inputNb, std::list<ImageLayerDesc>* comps) OVERRIDE FINAL;
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL;
 
-    // The Viewer is the one place a deep, raw or scene edge may land on an image input: it
-    // flattens deep, shows raw values as they are (RawDisplay), and shows a scene in its 3D view.
+    // The Viewer is the one place a deep, raw, scene or geometry edge may land on an image input:
+    // it flattens deep, shows raw values as they are (RawDisplay), and shows a scene or geometry
+    // in its 3D view.
     // Listing the kinds rather than declaring eDataKindPolymorphic keeps a kind the Viewer cannot
     // show (a future one) an error instead of a silent connection.
     virtual bool inputAcceptsDataKindViaAdapter(int /*inputNb*/,
                                                 DataKindEnum kind) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
-        return (kind == eDataKindDeep) || (kind == eDataKindRaw) || (kind == eDataKindScene);
+        return (kind == eDataKindDeep) || (kind == eDataKindRaw) || (kind == eDataKindScene) || (kind == eDataKindGeometry);
     }
     /*******************************************/
 
     ViewerRenderRetCode evaluateSceneInput(ViewerArgs& inArgs) WARN_UNUSED_RETURN;
+
+    bool evaluateGeometryInput(ViewerArgs& inArgs,
+                               ScenePayload* scene,
+                               std::string* error,
+                               bool* aborted,
+                               std::unique_lock<std::mutex>& publish,
+                               bool* superseded);
+
+    bool claimScenePublish(const ViewerArgs& inArgs,
+                           std::unique_lock<std::mutex>& publish);
+
+    ViewerRenderRetCode prepareViewerRender(ViewIdx view,
+                                            bool singleThreaded,
+                                            bool isSequentialRender,
+                                            U64 viewerHash,
+                                            const NodePtr& rotoPaintNode,
+                                            bool useTLS,
+                                            const ViewerCurrentFrameRequestSchedulerStartArgsPtr& request,
+                                            const RenderStatsPtr& stats,
+                                            GpuPlacementSnapshotBuilder* placementBuilder,
+                                            ViewerArgs& inArgs,
+                                            PendingViewerRender* pending) WARN_UNUSED_RETURN;
+
+    ViewerRenderRetCode completeViewerRender(PendingViewerRender& pending) WARN_UNUSED_RETURN;
+
+    void finishPlaybackInput(PlaybackFrame& frame, int i);
 
     ViewerRenderRetCode renderViewer_internal(ViewIdx view,
                                               bool singleThreaded,
@@ -887,6 +1138,7 @@ private:
                              double time,
                              bool originatedFromMainThread) OVERRIDE FINAL;
     virtual void onKnobsLoaded() OVERRIDE FINAL;
+    virtual void onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization) OVERRIDE FINAL;
 
     // Re-resolves the layer and alpha knobs against what the A input carries; a value that
     // resolves to nothing keeps the previous description. Returns whether a description changed.
@@ -904,6 +1156,9 @@ private:
     std::unique_ptr<ViewerInstancePrivate> _imp;
     mutable std::mutex _rawDisplayLabelMutex;
     std::string _rawDisplayLabel[2];
+    mutable std::mutex _sceneViewMutex;
+    std::unique_ptr<Serialization::SceneViewSerialization> _loadedSceneView;
+    SceneViewSaver _sceneViewSaver;
 };
 
 enum ViewerDisplayOutputEnum {

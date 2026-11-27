@@ -55,7 +55,6 @@ CLANG_DIAG_OFF(deprecated)
 #include <QThreadPool>
 #include <QTimer>
 #include <QWaitCondition>
-#include <QtConcurrentMap> // QtCore on Qt4, QtConcurrent on Qt5
 #include <QtGlobal>
 CLANG_DIAG_ON(deprecated)
 
@@ -78,9 +77,11 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/MemoryFile.h"
 #include "Engine/MemoryInfo.h" // printAsRAM
 #include "Engine/Node.h"
+#include "Engine/Nodes/Geometry/GeoViewerLayer.h"
 #include "Engine/Nodes/IO/OcioSpaceKnobs.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawDisplay.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/OutputSchedulerThread.h"
@@ -94,12 +95,15 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
+#include "Engine/TLSHolder.h"
+#include "Engine/ThreadPool.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Timer.h"
 #include "Engine/UpdateViewerParams.h"
 #include "Engine/Utils.h"
 #include "Engine/ViewIdx.h"
 #include "Global/FloatingPointExceptions.h"
+#include "Serialization/NodeSerialization.h"
 
 #ifndef M_LN2
 #define M_LN2       0.693147180559945309417232121458176568  /* loge(2)        */
@@ -356,6 +360,9 @@ ViewerInstance::ViewerInstance(NodePtr node)
 
     setSupportsRenderScaleMaybe(EffectInstance::eSupportsYes);
 
+    _imp->staleNotifier = [this](bool stale) {
+        QMetaObject::invokeMethod(this, [this, stale]() { Q_EMIT staleChanged(stale); }, Qt::QueuedConnection);
+    };
     _imp->gpuPlacementPlanner = std::make_shared<GpuPlacementPlanner>(this);
 
     QObject::connect( this, SIGNAL(disconnectTextureRequest(int,bool)), this, SLOT(executeDisconnectTextureRequestOnMainThread(int,bool)) );
@@ -383,6 +390,7 @@ ViewerInstance::~ViewerInstance()
         QMutexLocker l(&liveViewersMutex);
         liveViewers.erase(this);
     }
+    EffectInstance::retireSceneContextId(_imp->sceneContextId);
 
     // A plan reads this viewer until its thread has stopped.
     _imp->gpuPlacementPlanner->quitThread(false);
@@ -458,6 +466,53 @@ ViewerInstance::getRawDisplayLabel(int textureIndex) const
     std::lock_guard<std::mutex> lock(_rawDisplayLabelMutex);
 
     return ((textureIndex == 0) || (textureIndex == 1)) ? _rawDisplayLabel[textureIndex] : std::string();
+}
+
+void
+ViewerInstance::onKnobsAboutToBeLoaded(const Serialization::NodeSerializationPtr& serialization)
+{
+    std::lock_guard<std::mutex> lock(_sceneViewMutex);
+
+    if (serialization && !serialization->sceneView.isEmpty()) {
+        _loadedSceneView.reset(new Serialization::SceneViewSerialization(serialization->sceneView));
+    } else {
+        _loadedSceneView.reset();
+    }
+}
+
+Serialization::SceneViewSerialization
+ViewerInstance::getLoadedSceneView() const
+{
+    Serialization::SceneViewSerialization view;
+
+    // A tab that went, or another one, saves the view as it last was: that is the view to restore.
+    sceneViewToSerialization(&view);
+
+    return view;
+}
+
+void
+ViewerInstance::setSceneViewSaver(const SceneViewSaver& saver)
+{
+    std::lock_guard<std::mutex> lock(_sceneViewMutex);
+
+    _sceneViewSaver = saver;
+    _loadedSceneView.reset();
+}
+
+void
+ViewerInstance::sceneViewToSerialization(Serialization::SceneViewSerialization* serialization) const
+{
+    // Held while the saver runs, so that the view it reads cannot be destroyed under it.
+    std::lock_guard<std::mutex> lock(_sceneViewMutex);
+
+    if (_sceneViewSaver) {
+        _sceneViewSaver(serialization);
+    } else if (_loadedSceneView) {
+        *serialization = *_loadedSceneView;
+    } else {
+        *serialization = Serialization::SceneViewSerialization();
+    }
 }
 
 void
@@ -703,7 +758,7 @@ effectsRequestingOverlayImagesUpstream(const NodePtr& viewerNode,
             continue;
         }
         const EffectInstancePtr effect = node->getEffectInstance();
-        if (effect && effect->isOverlayImageRequested() && !node->isNodeDisabled() && !effect->producesDeepData() && !effect->producesSceneData()) {
+        if (effect && effect->isOverlayImageRequested() && !node->isNodeDisabled() && !effect->producesDeepData() && !effect->producesSceneData() && !effect->producesGeometryData()) {
             effects.push_back(effect);
         }
         const int nInputs = node->getNInputs();
@@ -955,10 +1010,40 @@ ViewerInstance::initializeKnobs()
     maxSamples->setDisplayMaximum(4096);
     k.maxSamples = maxSamples;
 
+    KnobBoolPtr renderEverything = createViewerKnob<KnobBool>(this, page, tr("Render Everything"), kViewerParamRenderEverything,
+                                                              tr("Renders the whole scene, ignoring the draw states, and loads every payload. "
+                                                                 "Turning it off brings the draw states back and unloads nothing."));
+    k.renderEverything = renderEverything;
+
     KnobBoolPtr refinementPaused = createViewerKnob<KnobBool>(this, page, tr("Refinement Paused"), kViewerParamRefinementPaused,
                                                               tr("Holds a progressive renderer's refinement of the 3D view at its "
                                                                  "current samples; off continues from them. Edits wait until it is off."));
     k.refinementPaused = refinementPaused;
+
+    KnobBoolPtr mapSiblingOverlays = createViewerKnob<KnobBool>(this, page, tr("Map Sibling Overlays"), kViewerParamMapSiblingOverlays,
+                                                                tr("Draws the overlay of a node on another branch of a shared input "
+                                                                   "through that input, so it lines up with the viewed image. Off draws "
+                                                                   "it in its own space."));
+    mapSiblingOverlays->setDefaultValue(true);
+    createViewerKnob<KnobBool>(this, page, tr("Point Markers"), kViewerParamPointMarkers,
+                               tr("Marks every point of the geometry viewed in the 3D view."));
+    createViewerKnob<KnobBool>(this, page, tr("Point Numbers"), kViewerParamPointNumbers,
+                               tr("Writes the number of each point of the geometry viewed beside it, in the 3D view. "
+                                  "Only points in view are numbered, up to a limit per frame."));
+    createViewerKnob<KnobBool>(this, page, tr("Primitive Numbers"), kViewerParamPrimitiveNumbers,
+                               tr("Writes the number of each primitive of the geometry viewed at its centre, in the 3D view. "
+                                  "Only primitives in view are numbered, up to a limit per frame."));
+    createViewerKnob<KnobBool>(this, page, tr("Normals"), kViewerParamNormals,
+                               tr("Draws the N point attribute of the geometry viewed as a line from each point, in the 3D view."));
+    KnobDoublePtr normalScale = createViewerKnob<KnobDouble>(this, page, tr("Normal Scale"), kViewerParamNormalScale,
+                                                             tr("The length, in scene units, a normal of length 1 is drawn at."));
+    normalScale->setDefaultValue(0.1);
+    normalScale->setMinimum(0.);
+    normalScale->setDisplayMinimum(0.);
+    normalScale->setDisplayMaximum(10.);
+    createViewerKnob<KnobString>(this, page, tr("Highlight Group"), kViewerParamHighlightGroup,
+                                 tr("The point group, else the primitive group, of the geometry viewed to highlight in the 3D view. "
+                                    "Empty highlights nothing."));
 
     if (NodePtr node = getNode()) {
         node->declareLayerKnob(layer, 0, LayerKnobSpec::eRoleInputBound);
@@ -1077,6 +1162,7 @@ ViewerInstance::getColourToSave(bool* hasColour,
 
     return true;
 }
+
 bool
 ViewerInstance::knobChanged(KnobI* k,
                             ValueChangedReasonEnum reason,
@@ -1186,7 +1272,8 @@ ViewerInstance::redrawOrRenderForColorChange()
     // A scene has no 8-bit texture to bake into: Storm's view grades its pixels as it draws them,
     // and a render would only re-evaluate the scene and resync it. A progressive delegate's frames
     // come sRGB-encoded without the display transform, which a render would not change either.
-    const bool bakesDisplay = (_imp->uiContext->getBitDepth() == eImageBitDepthByte) && (getActiveInputDataKind() != eDataKindScene);
+    const DataKindEnum activeKind = getActiveInputDataKind();
+    const bool bakesDisplay = (_imp->uiContext->getBitDepth() == eImageBitDepthByte) && (activeKind != eDataKindScene) && (activeKind != eDataKindGeometry);
     if (bakesDisplay && !getApp()->getProject()->isLoadingProject()) {
         renderCurrentFrame(true);
     } else {
@@ -1414,17 +1501,24 @@ isRotoPaintNodeInputRecursive(Node* node,
     return false;
 }
 
+// strokeArgs receives the frame args to push on each node set as drawing the stroke; null when invalidating.
 static void
 updateLastStrokeDataRecursively(Node* node,
                                 const NodePtr& rotoPaintNode,
                                 const RectD& lastStrokeBbox,
-                                bool invalidate)
+                                bool invalidate,
+                                FrameArgsToken::Pushes* strokeArgs)
 {
     if ( isRotoPaintNodeInputRecursive(node, rotoPaintNode) ) {
         if (invalidate) {
             node->invalidateLastPaintStrokeDataNoRotopaint();
         } else {
             node->setLastPaintStrokeDataNoRotopaint();
+            const EffectInstancePtr effect = node->getEffectInstance();
+            const ParallelRenderArgsPtr args = effect ? effect->copyFrameArgsDuringPaintStroke(true) : ParallelRenderArgsPtr();
+            if (args && strokeArgs) {
+                strokeArgs->push_back(std::make_pair(effect.get(), args));
+            }
         }
 
         if ( node == rotoPaintNode.get() ) {
@@ -1434,7 +1528,7 @@ updateLastStrokeDataRecursively(Node* node,
         for (int i = 0; i < maxInputs; ++i) {
             NodePtr input = node->getInput(i);
             if (input) {
-                updateLastStrokeDataRecursively(input.get(), rotoPaintNode, lastStrokeBbox, invalidate);
+                updateLastStrokeDataRecursively(input.get(), rotoPaintNode, lastStrokeBbox, invalidate, strokeArgs);
             }
         }
     }
@@ -1445,10 +1539,8 @@ class ViewerParallelRenderArgsSetter
 {
     NodePtr rotoNode;
     NodePtr viewerNode;
-    NodePtr viewerInputNode;
 
 public:
-
     ViewerParallelRenderArgsSetter(double time,
                                    ViewIdx view,
                                    bool isRenderUserInteraction,
@@ -1465,25 +1557,21 @@ public:
         : ParallelRenderArgsSetter(time, view, isRenderUserInteraction, isSequential, abortInfo, treeRoot, textureIndex, timeline, rotoPaintNode, isAnalysis, draftMode, stats)
         , rotoNode(rotoPaintNode)
         , viewerNode(treeRoot)
-        , viewerInputNode()
     {
         ///There can be a case where the viewer input tree does not belong to the project, for example
         ///for the File Dialog preview.
-        if ( viewerInput && !viewerInput->getGroup() ) {
-            viewerInputNode = viewerInput;
+        if (viewerInput && !viewerInput->getGroup()) {
             U64 nodeHash = viewerInput->getHashValue();
 
-            viewerInput->getEffectInstance()->setParallelRenderArgsTLS(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, 1, NodeFrameRequestPtr(), _openGLContext.lock(), textureIndex, timeline, isAnalysis, false, NodesList(), viewerInput->getCurrentRenderThreadSafety(), viewerInput->getCurrentOpenGLRenderSupport(), draftMode, stats);
+            const EffectInstancePtr effect = viewerInput->getEffectInstance();
+            pushArgs(effect.get(), effect->createParallelRenderArgs(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, 1, NodeFrameRequestPtr(), _openGLContext.lock(), textureIndex, timeline, isAnalysis, false, NodesList(), viewerInput->getCurrentRenderThreadSafety(), viewerInput->getCurrentOpenGLRenderSupport(), draftMode, stats));
         }
     }
 
     virtual ~ViewerParallelRenderArgsSetter()
     {
         if (rotoNode) {
-            updateLastStrokeDataRecursively(viewerNode.get(), rotoNode, RectD(), true);
-        }
-        if (viewerInputNode) {
-            viewerInputNode->getEffectInstance()->invalidateParallelRenderArgsTLS();
+            updateLastStrokeDataRecursively(viewerNode.get(), rotoNode, RectD(), true, NULL);
         }
     }
 };
@@ -1685,6 +1773,22 @@ noteHandoffRefusal(const RenderStatsPtr& stats,
 }
 #endif
 
+// The setter has just walked the viewer's branch to install its args, so knowing the branch costs no walk of its own.
+// Runs before any node of the frame asks about admission, so the first render of a branch already counts as on it.
+void
+noteActiveViewerBranch(const ParallelRenderArgsSetter& setter,
+                       const NodePtr& viewer)
+{
+    if (!viewer->getApp()->isViewerActiveForRenders(viewer.get())) {
+        return;
+    }
+
+    const std::uint64_t now = CacheRetention::nowNs();
+    for (const std::pair<const NodePtr, ParallelRenderArgsPtr>& args : setter.getInstalledArgs()) {
+        args.first->getRetentionSignals()->noteViewerBranch(now);
+    }
+}
+
 // The graph of the viewer input for one frame, empty when the request pass does not reach the input. The root task
 // renders exactly what renderRoI would: the viewer's RoI and displayed layers.
 FrameGraph
@@ -1707,6 +1811,7 @@ buildViewerFrameGraph(const FrameRenderContextPtr& context,
         root.roi = roi;
         root.components = components;
         root.bitdepth = bitdepth;
+        RenderScheduler::pruneBehindCacheHits(graph, context);
     }
 
     return graph;
@@ -1799,8 +1904,8 @@ computeViewerFrameEligibility(const ParallelRenderArgsSetter* setter,
     return eligibility;
 }
 
-// Submits the viewer input's render of one frame to the RenderScheduler, or returns null and counts why it falls
-// back to renderRoI.
+// Submits the viewer input's render of one frame to the RenderScheduler, or returns null and, if countFallback,
+// counts why it falls back to renderRoI.
 FrameFuturePtr
 submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
                                    const std::shared_ptr<FrameRequestMap>& request,
@@ -1813,6 +1918,7 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
                                    const RenderStatsPtr& stats,
                                    OpenGLViewerI* uiContext,
                                    GpuPlacementSnapshotBuilder* placementBuilder,
+                                   bool countFallback,
                                    FrameRenderContextPtr* contextOut)
 {
     const ViewerInstance::SchedulerEligibility eligibility = computeViewerFrameEligibility(setter, request, inArgs, hasRotoPaintNode);
@@ -1839,7 +1945,7 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
             return appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Interactive);
         }
     }
-    if (reason && stats) {
+    if (reason && stats && countFallback) {
         stats->incLegacyFallbacks(std::string("viewer: ") + reason);
     }
 
@@ -2712,6 +2818,7 @@ ViewerInstance::planGpuPlacementOfInput(int textureIndex,
 
     const NodeMetadataConstPtr metadata = args.activeInputToRender->getRenderMetadata(time, view);
     args.params->pixelAspectRatio = metadata->getPixelAspectRatio(-1);
+    args.params->edgeMode = metadata->getEdgeMode();
     RectI roi;
     const bool exact = args.userRoIEnabled || args.isDoingPartialUpdates;
     if (!getGpuPlacementRoI(textureIndex, rod, args.params->pixelAspectRatio, mipmapLevel, exact, &roi) || roi.isNull()) {
@@ -2770,7 +2877,7 @@ ViewerInstance::runGpuPlacementDryRun(const AbortableRenderInfoPtr& abortInfo)
     }
     const ViewerInstancePrivate::GpuPlacementStamp stamp = _imp->currentGpuPlacementStamp();
     GpuPlacementSnapshotBuilder builder;
-    if ((appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph) || !isGpuPlacementAvailable()) {
+    if (!isGpuPlacementAvailable()) {
         builder.addUnplacedGraph();
     } else {
         const SequenceTime time = (SequenceTime)getTimeline()->currentFrame();
@@ -2855,6 +2962,8 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                                            NodePtr(),
                                            false,
                                            stats);
+        noteActiveViewerBranch(tls, thisNode);
+        FrameArgsToken strokeArgs;
         NodesList rotoPaintNodes;
         if (rotoPaintNode) {
             if (activeStroke) {
@@ -2906,10 +3015,13 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                     for (NodesList::iterator it = rotoPaintNodes.begin(); it != rotoPaintNodes.end(); ++it) {
                         (*it)->prepareForNextPaintStrokeRender();
                     }
-                    updateLastStrokeDataRecursively(thisNode.get(), rotoPaintNode, lastStrokeBbox, false);
+                    FrameArgsToken::Pushes strokePushes;
+                    updateLastStrokeDataRecursively(thisNode.get(), rotoPaintNode, lastStrokeBbox, false, &strokePushes);
+                    strokeArgs = FrameArgsToken(strokePushes);
                 } else {
                     ///The drawing is already up to date: all changes have been taken into account for this event
                     args[i].reset();
+                    renderEndedWithoutImage(i, abortInfo->getRenderAge());
 
                     return eViewerRenderRetCodeRedraw;
                 }
@@ -2940,6 +3052,9 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
 
 
         if ( (status[i] == eViewerRenderRetCodeFail) || (status[i] == eViewerRenderRetCodeBlack) ) {
+            // The texture is cleared whatever renders are still running, so this counts as shown and an older
+            // running render must not draw over it; a newer request still has a higher age and stays stale.
+            _imp->checkAndUpdateDisplayAge(i, abortInfo->getRenderAge());
             disconnectTextureRequest(i, status[i] == eViewerRenderRetCodeFail);
         } else {
             assert(args[i] && args[i]->params);
@@ -3029,6 +3144,13 @@ ViewerInstance::renderViewer(ViewIdx view,
         placementBuilder.emplace();
         placementStamp = _imp->currentGpuPlacementStamp();
     }
+    // The A and B inputs of one update together make what it costs.
+    struct {
+        double ms = 0.;
+        bool timed = false;
+        unsigned int renderedLevel = 0;
+        unsigned int fullLevel = 0;
+    } interactive;
     for (int i = 0; i < 2; ++i) {
         if (args[i] && args[i]->params) {
             if ( (i == 1) && (_imp->uiContext->getCompositingOperator() == eViewerCompositingOperatorNone) ) {
@@ -3055,10 +3177,20 @@ ViewerInstance::renderViewer(ViewIdx view,
                         effect->renderOverlayImages(args[i]->overlayImageRequest, args[i]->params->abortInfo);
                     }
                 }
+                const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
                 ret[i] = renderViewer_internal(view, singleThreaded, isSequentialRender, viewerHash, canAbort, rotoPaintNode, useTLS, request,
                                                i == 0 ? stats : RenderStatsPtr(),
                                                placementBuilder ? &*placementBuilder : nullptr,
                                                *args[i]);
+                // An aborted update stopped early, so its time would understate the cost.
+                if (!isSequentialRender && (ret[i] == eViewerRenderRetCodeRender) && args[i]->params && !args[i]->params->abortInfo->isAborted()) {
+                    interactive.ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+                    if (!interactive.timed) {
+                        interactive.timed = true;
+                        interactive.renderedLevel = args[i]->draftModeEnabled ? args[i]->mipmapLevelWithDraft : args[i]->mipmapLevelWithoutDraft;
+                        interactive.fullLevel = args[i]->mipmapLevelWithoutDraft;
+                    }
+                }
 
                 // Reset the rednering flag
                 args[i]->isRenderingFlag.reset();
@@ -3099,6 +3231,10 @@ ViewerInstance::renderViewer(ViewIdx view,
                 args[i].reset();
             }
         }
+    }
+
+    if (interactive.timed) {
+        noteInteractiveRender(interactive.ms, interactive.renderedLevel, interactive.fullLevel);
     }
 
     if (placementBuilder && _imp->publishGpuPlacement(*placementBuilder, placementStamp, false)) {
@@ -3281,6 +3417,7 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
 
     // The PAR of the input image
     outArgs->params->pixelAspectRatio = activeInputMetadata->getPixelAspectRatio(-1);
+    outArgs->params->edgeMode = activeInputMetadata->getEdgeMode();
 
     // Is it playback ?
     outArgs->params->isSequential = isSequential;
@@ -3322,28 +3459,120 @@ ViewerInstance::setupMinimalUpdateViewerParams(const SequenceTime time,
 } // ViewerInstance::setupMinimalUpdateViewerParams
 
 void
+AdaptiveDraft::noteRender(double ms,
+                          unsigned int renderedLevel,
+                          unsigned int fullLevel)
+{
+    if (!(ms >= 0.)) {
+        return;
+    }
+    // A fixed per-update overhead scales up with the pixels, which errs towards drafting.
+    const unsigned int levels = renderedLevel > fullLevel ? renderedLevel - fullLevel : 0;
+    const double predicted = ms * std::ldexp(1., 2 * (int)levels);
+    _predictedFullMs = (_predictedFullMs < 0.) ? predicted : (0.5 * _predictedFullMs + 0.5 * predicted);
+    if (!_full && (_predictedFullMs <= kBudgetMs * kEnterFullRatio)) {
+        _full = true;
+    } else if (_full && (_predictedFullMs > kBudgetMs * kLeaveFullRatio)) {
+        _full = false;
+    }
+}
+
+void
+AdaptiveDraft::reset()
+{
+    _predictedFullMs = -1.;
+    _full = false;
+}
+
+unsigned int
+ViewerInstance::mipmapLevelForZoom(double zoomFactor,
+                                   bool nearest)
+{
+    if (!(zoomFactor < 1.) || !(zoomFactor > 0.)) {
+        return 0;
+    }
+    const double levels = -std::log2(zoomFactor);
+
+    return (unsigned int)(nearest ? std::lround(levels) : std::floor(levels));
+}
+
+unsigned int
+ViewerInstance::autoProxyMipmapLevel(unsigned int withoutDraft,
+                                     double zoomFactor,
+                                     unsigned int autoProxyLevel)
+{
+    if (zoomFactor > 1) {
+        // Decrease draft mode at each inverse mipmaplevel level taken
+        const unsigned int invLevel = Image::getLevelFromScale(1. / zoomFactor);
+        autoProxyLevel = (invLevel < autoProxyLevel) ? autoProxyLevel - invLevel : 0;
+    }
+
+    return std::max(withoutDraft, autoProxyLevel);
+}
+
+void
+ViewerInstance::resolveDraft(bool draftOn,
+                             bool editsDraft,
+                             bool autoProxy,
+                             const AdaptiveDraft& adaptive,
+                             unsigned int withoutDraft,
+                             double zoomFactor,
+                             unsigned int autoProxyLevel,
+                             bool* draftModeEnabled,
+                             unsigned int* withDraft)
+{
+    // An update that does not draft renders as the release would, so the release finds it in the cache.
+    *draftModeEnabled = autoProxy && draftOn && editsDraft && adaptive.drafts();
+    *withDraft = *draftModeEnabled ? autoProxyMipmapLevel(withoutDraft, zoomFactor, autoProxyLevel) : withoutDraft;
+}
+
+void
+ViewerInstance::noteInteractiveRender(double ms,
+                                      unsigned int renderedLevel,
+                                      unsigned int fullLevel)
+{
+    if (!getApp()->isDraftRenderEnabled()) {
+        return;
+    }
+    QMutexLocker k(&_imp->adaptiveDraftMutex);
+    _imp->adaptiveDraft.noteRender(ms, renderedLevel, fullLevel);
+}
+
+AdaptiveDraft
+ViewerInstance::getAdaptiveDraft() const
+{
+    QMutexLocker k(&_imp->adaptiveDraftMutex);
+
+    return _imp->adaptiveDraft;
+}
+
+void
 ViewerInstance::computeMipmapLevels(double zoomFactor,
                                     ViewerArgs* outArgs) const
 {
+    computeMipmapLevels(zoomFactor, getApp()->isDraftRenderEnabled(), outArgs);
+}
+
+void
+ViewerInstance::computeMipmapLevels(double zoomFactor,
+                                    bool draftOn,
+                                    ViewerArgs* outArgs) const
+{
     outArgs->mipmapLevelWithoutDraft = getMipmapLevelWithoutDraft();
-    outArgs->mipmapLevelWithDraft = outArgs->mipmapLevelWithoutDraft;
 
-    outArgs->draftModeEnabled = getApp()->isDraftRenderEnabled();
-
-    // If draft mode is enabled, compute the mipmap level according to the auto-proxy setting in the preferences
-    if (outArgs->draftModeEnabled && appPTR->getCurrentSettings()->isAutoProxyEnabled()) {
-        unsigned int autoProxyLevel = appPTR->getCurrentSettings()->getAutoProxyMipmapLevel();
-        if (zoomFactor > 1) {
-            // Decrease draft mode at each inverse mipmaplevel level taken
-            unsigned int invLevel = Image::getLevelFromScale(1. / zoomFactor);
-            if (invLevel < autoProxyLevel) {
-                autoProxyLevel -= invLevel;
-            } else {
-                autoProxyLevel = 0;
-            }
+    AdaptiveDraft adaptive;
+    {
+        QMutexLocker k(&_imp->adaptiveDraftMutex);
+        // Each drag or scrub judges its own cost.
+        if (!draftOn) {
+            _imp->adaptiveDraft.reset();
         }
-        outArgs->mipmapLevelWithDraft = std::max(outArgs->mipmapLevelWithoutDraft, autoProxyLevel);
+        adaptive = _imp->adaptiveDraft;
     }
+    const SettingsPtr settings = appPTR->getCurrentSettings();
+    resolveDraft(draftOn, draftOn && getApp()->draftAppliesToEdits(), settings->isAutoProxyEnabled(), adaptive,
+                 outArgs->mipmapLevelWithoutDraft, zoomFactor, settings->getAutoProxyMipmapLevel(),
+                 &outArgs->draftModeEnabled, &outArgs->mipmapLevelWithDraft);
 }
 
 void
@@ -3710,7 +3939,8 @@ ViewerInstance::getRenderViewerArgsAndCheckCache(SequenceTime time,
     }
     // The scene action resolves disabled nodes itself, so a scene is evaluated from the input
     // as connected rather than from the nearest non-disabled node.
-    outArgs->sceneUpstream = upstreamInput && upstreamInput->producesSceneData();
+    outArgs->geometryUpstream = upstreamInput && upstreamInput->producesGeometryData();
+    outArgs->sceneUpstream = upstreamInput && (outArgs->geometryUpstream || upstreamInput->producesSceneData());
     if (outArgs->sceneUpstream) {
         outArgs->activeInputToRender = upstreamInput;
     }
@@ -3761,23 +3991,49 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
     const int textureIndex = inArgs.params->textureIndex;
     ScenePayload scene;
     std::string error;
-    EffectInstance::RenderRoIRetCode code;
-    try {
-        code = inArgs.activeInputToRender->evaluateScene(EffectInstance::EvaluateSceneArgs(inArgs.params->time, inArgs.params->view), &scene, &error);
-    } catch (const std::exception& e) {
-        code = EffectInstance::eRenderRoIRetCodeFailed;
-        error = e.what();
-    } catch (...) {
-        code = EffectInstance::eRenderRoIRetCodeFailed;
-    }
+    bool ok = false;
+    const SceneEvaluationContext context(_imp->sceneContextId, getSceneLoadSet(), std::make_shared<SceneLoadReach>());
+    std::unique_lock<std::mutex> publish(_imp->scenePublishMutex, std::defer_lock);
+    bool superseded = false;
+    if (inArgs.geometryUpstream) {
+        bool aborted = false;
+        ok = evaluateGeometryInput(inArgs, &scene, &error, &aborted, publish, &superseded);
+        if (aborted) {
+            renderEndedWithoutImage(textureIndex, inArgs.params->abortInfo->getRenderAge());
 
-    if (code == EffectInstance::eRenderRoIRetCodeAborted) {
-        return eViewerRenderRetCodeRedraw;
-    }
+            return eViewerRenderRetCodeRedraw;
+        }
+    } else {
+        EffectInstance::RenderRoIRetCode code;
+        EffectInstance::takeLastPullFresh();
+        try {
+            code = inArgs.activeInputToRender->evaluateScene(EffectInstance::EvaluateSceneArgs(inArgs.params->time, inArgs.params->view, context), &scene, &error);
+        } catch (const std::exception& e) {
+            code = EffectInstance::eRenderRoIRetCodeFailed;
+            error = e.what();
+        } catch (...) {
+            code = EffectInstance::eRenderRoIRetCodeFailed;
+        }
+        if (EffectInstance::takeLastPullFresh() && (code == EffectInstance::eRenderRoIRetCodeOk)) {
+            getNode()->noteInputExecution(inArgs.activeInputIndex);
+        }
 
-    const bool ok = (code == EffectInstance::eRenderRoIRetCodeOk);
+        if (code == EffectInstance::eRenderRoIRetCodeAborted) {
+            renderEndedWithoutImage(textureIndex, inArgs.params->abortInfo->getRenderAge());
+
+            return eViewerRenderRetCodeRedraw;
+        }
+        ok = (code == EffectInstance::eRenderRoIRetCodeOk);
+    }
     if (!ok && error.empty()) {
         error = inArgs.activeInputToRender->getScriptName_mt_safe() + ": scene evaluation failed";
+    }
+    if (!superseded && !publish.owns_lock()) {
+        superseded = !claimScenePublish(inArgs, publish);
+    }
+    if (superseded) {
+        // A newer evaluation is already shown: publishing this one would bring an older edit back.
+        return eViewerRenderRetCodeRedraw;
     }
     if ((textureIndex == 0) || (textureIndex == 1)) {
         {
@@ -3785,7 +4041,10 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
             _imp->lastScene[textureIndex] = ok ? scene : ScenePayload();
             _imp->lastSceneError[textureIndex] = ok ? std::string() : error;
             _imp->lastSceneOk[textureIndex] = ok;
+            _imp->lastSceneLoadSet[textureIndex] = context.loadSet;
+            _imp->lastSceneReach[textureIndex] = context.reach;
         }
+        publish.unlock();
         Q_EMIT sceneEvaluated(textureIndex);
     }
 
@@ -3793,6 +4052,101 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
     // itself, and Fail would stop playback and clear the whole viewer for what the 3D view shows.
     return eViewerRenderRetCodeBlack;
 } // ViewerInstance::evaluateSceneInput
+
+bool
+ViewerInstance::evaluateGeometryInput(ViewerArgs& inArgs,
+                                      ScenePayload* scene,
+                                      std::string* error,
+                                      bool* aborted,
+                                      std::unique_lock<std::mutex>& publish,
+                                      bool* superseded)
+{
+    const int textureIndex = inArgs.params->textureIndex;
+    // Read before evaluating, so an edit made during the evaluation leaves the detail outdated.
+    const NodePtr sourceNode = inArgs.activeInputToRender->getNode();
+    const U64 sourceHash = sourceNode ? sourceNode->getHashValue() : 0;
+    GeoDetailConstPtr detail;
+    EffectInstance::RenderRoIRetCode code;
+    try {
+        code = inArgs.activeInputToRender->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(inArgs.params->time, inArgs.params->view), &detail, error);
+    } catch (const std::exception& e) {
+        code = EffectInstance::eRenderRoIRetCodeFailed;
+        *error = e.what();
+    } catch (...) {
+        code = EffectInstance::eRenderRoIRetCodeFailed;
+    }
+    *aborted = (code == EffectInstance::eRenderRoIRetCodeAborted);
+    if ((code != EffectInstance::eRenderRoIRetCodeOk) || ((textureIndex != 0) && (textureIndex != 1))) {
+        return false;
+    }
+
+    std::shared_ptr<GeoViewerLayer> layer;
+    {
+        std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
+        if (!_imp->geometryLayers[textureIndex]) {
+            _imp->geometryLayers[textureIndex] = std::make_shared<GeoViewerLayer>("viewer-" + getScriptName_mt_safe() + "-" + std::to_string(textureIndex));
+        }
+        layer = _imp->geometryLayers[textureIndex];
+    }
+    if (!claimScenePublish(inArgs, publish)) {
+        *superseded = true;
+
+        return false;
+    }
+
+    return layer->serveFrame(detail, inArgs.params->time, inArgs.params->isSequential, scene, error, sourceNode, sourceHash);
+} // ViewerInstance::evaluateGeometryInput
+
+bool
+ViewerInstance::claimScenePublish(const ViewerArgs& inArgs,
+                                  std::unique_lock<std::mutex>& publish)
+{
+    publish.lock();
+    // Playback shows every frame in order; only interactive renders can finish out of order.
+    if (inArgs.params->isSequential) {
+        return true;
+    }
+
+    return _imp->checkAndUpdateDisplayAge(inArgs.params->textureIndex, inArgs.params->abortInfo->getRenderAge());
+}
+
+struct ViewerInstance::PendingViewerRender {
+    // The frame args are thread-local, so a driven render drops them on the preparing thread right after
+    // preparation. Declared first so that, otherwise, they outlive everything rendered under them.
+    ViewerParallelRenderArgsSetterPtr frameArgs;
+
+    // Set by the caller when the scheduler thread prepares the render and another thread completes it: nothing may
+    // then pull synchronously or bind the render to the preparing thread.
+    bool driven = false;
+    // Why a driven render must run synchronously instead.
+    const char* fallbackReason = nullptr;
+    bool needsCompletion = false;
+
+    ViewIdx view;
+    bool singleThreaded = false;
+    bool isSequentialRender = false;
+    U64 viewerHash = 0;
+    NodePtr rotoPaintNode;
+    ViewerCurrentFrameRequestSchedulerStartArgsPtr request;
+    RenderStatsPtr stats;
+    GpuPlacementSnapshotBuilder* placementBuilder = nullptr;
+    ViewerArgs* inArgs = nullptr;
+
+    std::shared_ptr<FrameRequestMap> requestPassData;
+    std::unique_ptr<EffectInstance::NotifyRenderingStarted_RAII> renderingNotifier;
+
+    bool useTextureCache = false;
+    double par = 1.;
+    ImageBitDepthEnum imageDepth = eImageBitDepthFloat;
+    std::list<ImageLayerDesc> requestedComponents;
+    int alphaChannelIndex = -1;
+    std::vector<RectI> splitRoi;
+
+    // The first rect is submitted when preparing; a null future then means it renders through renderRoI.
+    bool firstRectSubmitted = false;
+    FrameFuturePtr future;
+    FrameRenderContextPtr frameContext;
+};
 
 ViewerInstance::ViewerRenderRetCode
 ViewerInstance::renderViewer_internal(ViewIdx view,
@@ -3807,12 +4161,55 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                       GpuPlacementSnapshotBuilder* placementBuilder,
                                       ViewerArgs& inArgs)
 {
+    PendingViewerRender pending;
+    const ViewerRenderRetCode prepared = prepareViewerRender(view, singleThreaded, isSequentialRender, viewerHash, rotoPaintNode, useTLS, request, stats, placementBuilder, inArgs, &pending);
+
+    if (!pending.needsCompletion) {
+        return prepared;
+    }
+
+    return completeViewerRender(pending);
+}
+
+ViewerInstance::ViewerRenderRetCode
+ViewerInstance::prepareViewerRender(ViewIdx view,
+                                    bool singleThreaded,
+                                    bool isSequentialRender,
+                                    U64 viewerHash,
+                                    const NodePtr& rotoPaintNode,
+                                    bool useTLS,
+                                    const ViewerCurrentFrameRequestSchedulerStartArgsPtr& request,
+                                    const RenderStatsPtr& stats,
+                                    GpuPlacementSnapshotBuilder* placementBuilder,
+                                    ViewerArgs& inArgs,
+                                    PendingViewerRender* pending)
+{
     assert(inArgs.activeInputToRender);
+
+    pending->needsCompletion = false;
+    pending->fallbackReason = nullptr;
 
     // The request was queued behind a render and its node may have been destroyed since.
     const NodePtr activeInputNode = inArgs.activeInputToRender->getNode();
     if (!activeInputNode) {
         return eViewerRenderRetCodeRedraw;
+    }
+
+    if (pending->driven) {
+        if (inArgs.sceneUpstream) {
+            pending->fallbackReason = "scene input";
+        } else if (inArgs.deepUpstream) {
+            pending->fallbackReason = "deep input";
+        } else if (inArgs.isDoingPartialUpdates) {
+            pending->fallbackReason = "partial updates";
+        } else if (rotoPaintNode) {
+            pending->fallbackReason = "paint stroke";
+        } else if (!inArgs.staleOverlayImageEffects.empty()) {
+            pending->fallbackReason = "stale overlay images";
+        }
+        if (pending->fallbackReason) {
+            return eViewerRenderRetCodeRender;
+        }
     }
 
     if (inArgs.sceneUpstream) {
@@ -3821,7 +4218,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
 
     // We are in the render thread, we may not have computed the RoD and lookup the cache yet
 
-    ViewerParallelRenderArgsSetterPtr frameArgs;
+    ViewerParallelRenderArgsSetterPtr& frameArgs = pending->frameArgs;
 
     if (useTLS) {
         frameArgs = std::make_shared<ViewerParallelRenderArgsSetter>(inArgs.params->time,
@@ -3837,6 +4234,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                                                      activeInputNode,
                                                                      inArgs.draftModeEnabled,
                                                                      stats);
+        noteActiveViewerBranch(*frameArgs, getNode());
     }
 
 
@@ -3855,7 +4253,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             return eViewerRenderRetCodeRender;
         }
     }
-    AbortableThread* isAbortable = dynamic_cast<AbortableThread*>( QThread::currentThread() );
+    // A driven render is prepared on the scheduler thread, which is abortable too but prepares every frame.
+    AbortableThread* isAbortable = pending->driven ? nullptr : dynamic_cast<AbortableThread*>(QThread::currentThread());
     if (isAbortable) {
         isAbortable->setAbortInfo( !isSequentialRender, inArgs.params->abortInfo, getNode()->getEffectInstance() );
     }
@@ -3905,13 +4304,15 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
 
     ///Check that we were not aborted already
     if (!isSequentialRender && ((activeInputNode->getHashValue() != inArgs.activeInputHash) || (inArgs.params->time != getTimeline()->currentFrame()))) {
+        renderEndedWithoutImage(inArgs.params->textureIndex, inArgs.params->abortInfo->getRenderAge());
+
         return eViewerRenderRetCodeRedraw;
     }
 
     ///Notify the gui we're rendering.
-    EffectInstance::NotifyRenderingStarted_RAII renderingNotifier( getNode().get() );
+    pending->renderingNotifier.reset(new EffectInstance::NotifyRenderingStarted_RAII(getNode().get()));
 
-    std::shared_ptr<FrameRequestMap> requestPassData;
+    std::shared_ptr<FrameRequestMap>& requestPassData = pending->requestPassData;
     if (useTLS) {
         const RectD canonicalRoi = roi.toCanonical(inArgs.params->mipmapLevel, inArgs.params->pixelAspectRatio, inArgs.params->rod);
 
@@ -3923,7 +4324,6 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
 
         frameArgs->updateNodesRequest(*requestPassData);
     }
-    const bool taskGraphMode = appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph;
 
     // Under frame args this is the snapshot the frame's request pass and hashes were taken with.
     const NodeMetadataConstPtr renderMetadata = inArgs.activeInputToRender->getRenderMetadata(inArgs.params->time, view);
@@ -3949,7 +4349,6 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         return eViewerRenderRetCodeBlack;
     }
 
-    EffectInstance::NotifyInputNRenderingStarted_RAII inputNIsRendering_RAII(getNode().get(), inArgs.activeInputIndex);
     std::vector<RectI> splitRoi;
     if (inArgs.isDoingPartialUpdates) {
         for (std::list<UpdateViewerParams::CachedTile>::iterator it = inArgs.params->tiles.begin(); it != inArgs.params->tiles.end(); ++it) {
@@ -3992,7 +4391,64 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         stats->setGlobalRenderInfosForNode(getNode(), inArgs.params->rod, channelsRendered, true, true, inArgs.params->mipmapLevel);
     }
 
-//#pragma message WARN("Implement Viewer so it accepts OpenGL Textures in input")
+    pending->view = view;
+    pending->singleThreaded = singleThreaded;
+    pending->isSequentialRender = isSequentialRender;
+    pending->viewerHash = viewerHash;
+    pending->rotoPaintNode = rotoPaintNode;
+    pending->request = request;
+    pending->stats = stats;
+    pending->placementBuilder = placementBuilder;
+    pending->inArgs = &inArgs;
+    pending->useTextureCache = useTextureCache;
+    pending->par = par;
+    pending->imageDepth = imageDepth;
+    pending->requestedComponents = requestedComponents;
+    pending->alphaChannelIndex = alphaChannelIndex;
+    pending->splitRoi = splitRoi;
+
+    if (!inArgs.deepUpstream) {
+        pending->firstRectSubmitted = true;
+        pending->future = submitViewerFrameToRenderScheduler(frameArgs.get(), requestPassData, inArgs, bool(rotoPaintNode), view, splitRoi[0], requestedComponents, imageDepth, stats, _imp->uiContext, placementBuilder, !pending->driven, &pending->frameContext);
+        if (!pending->future && pending->driven) {
+            pending->fallbackReason = "ineligible";
+
+            return eViewerRenderRetCodeRender;
+        }
+    }
+    pending->needsCompletion = true;
+
+    return eViewerRenderRetCodeRender;
+} // prepareViewerRender
+
+ViewerInstance::ViewerRenderRetCode
+ViewerInstance::completeViewerRender(PendingViewerRender& pending)
+{
+    ViewerArgs& inArgs = *pending.inArgs;
+    const ViewIdx view = pending.view;
+    const bool singleThreaded = pending.singleThreaded;
+    const U64 viewerHash = pending.viewerHash;
+    const NodePtr& rotoPaintNode = pending.rotoPaintNode;
+    const ViewerCurrentFrameRequestSchedulerStartArgsPtr& request = pending.request;
+    const RenderStatsPtr& stats = pending.stats;
+    GpuPlacementSnapshotBuilder* placementBuilder = pending.placementBuilder;
+    const ViewerParallelRenderArgsSetterPtr& frameArgs = pending.frameArgs;
+    const std::shared_ptr<FrameRequestMap>& requestPassData = pending.requestPassData;
+    const bool useTextureCache = pending.useTextureCache;
+    const double par = pending.par;
+    const ImageBitDepthEnum imageDepth = pending.imageDepth;
+    const std::list<ImageLayerDesc>& requestedComponents = pending.requestedComponents;
+    const int alphaChannelIndex = pending.alphaChannelIndex;
+    const std::vector<RectI>& splitRoi = pending.splitRoi;
+
+    // Without the frame args of the thread that prepared it, the render resolves them, and whether it was aborted,
+    // through its frame context.
+    std::optional<AppTLS::FrameContextScope> contextScope;
+    if (!frameArgs && pending.frameContext) {
+        contextScope.emplace(pending.frameContext.get(), 0, RenderScheduler::runnablePriority(RenderScheduler::Priority::Interactive));
+    }
+
+    // #pragma message WARN("Implement Viewer so it accepts OpenGL Textures in input")
     BufferableObjectPtrList partialUpdateObjects;
     for (std::size_t rectIndex = 0; rectIndex < splitRoi.size(); ++rectIndex) {
         //AlphaImage will only be set when displaying the Matte overlay
@@ -4001,6 +4457,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         GpuDeviceImagePtr deviceColor;
 #endif
         bool hasDeviceColor = false;
+        // Whether the input's pixels were computed for this render rather than taken from a cache.
+        bool inputFresh = false;
 
         // If an exception occurs here it is probably fatal, since
         // it comes from Natron itself. All exceptions from plugins are already caught
@@ -4010,7 +4468,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             std::map<ImageLayerDesc, ImagePtr> layers;
             EffectInstance::RenderRoIRetCode retCode;
             if (inArgs.deepUpstream) {
-                if (taskGraphMode && stats) {
+                if (stats) {
                     stats->incLegacyFallbacks("viewer: deep input");
                 }
                 // Only isDoingPartialUpdates (RotoPaint) ever splits the RoI, and deep has no
@@ -4027,7 +4485,9 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                                            inArgs.params->time);
                 DeepImagePtr deepImage;
                 std::list<ImagePtr> flattened;
+                EffectInstance::takeLastPullFresh();
                 retCode = inArgs.activeInputToRender->renderDeepRoIFlattened(deepArgs, requestedComponents, &flattened, &deepImage);
+                inputFresh = EffectInstance::takeLastPullFresh();
                 if ((retCode == EffectInstance::eRenderRoIRetCodeOk) && !flattened.empty()) {
                     // Two layers only for the matte overlay, which requested the alpha layer first.
                     if (flattened.size() == 2) {
@@ -4049,16 +4509,22 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             } else {
                 FrameFuturePtr future;
                 FrameRenderContextPtr frameContext;
-                if (taskGraphMode) {
-                    future = submitViewerFrameToRenderScheduler(frameArgs.get(), requestPassData, inArgs, bool(rotoPaintNode), view, splitRoi[rectIndex], requestedComponents, imageDepth, stats, _imp->uiContext, placementBuilder, &frameContext);
+                if ((rectIndex == 0) && pending.firstRectSubmitted) {
+                    future = pending.future;
+                    frameContext = pending.frameContext;
+                } else {
+                    future = submitViewerFrameToRenderScheduler(frameArgs.get(), requestPassData, inArgs, bool(rotoPaintNode), view, splitRoi[rectIndex], requestedComponents, imageDepth, stats, _imp->uiContext, placementBuilder, true, &frameContext);
                 }
                 if (future) {
-                    retCode = future->wait();
+                    // A playback frame is completed on a pool thread, where wait() is forbidden, once its futures
+                    // finished; the fallback worker completes one whose other input it renders itself, and waits.
+                    retCode = future->isFinished() ? future->result() : future->wait();
                     if (placementBuilder) {
                         const std::unordered_set<const Node*> renderedNodes = frameContext ? frameContext->renderedNodes() : std::unordered_set<const Node*>();
                         placementBuilder->finishGraph(retCode, future->getRegionFallbacks(), frameContext ? &renderedNodes : nullptr);
                     }
                     layers = future->getRootPlanes();
+                    inputFresh = frameContext && frameContext->hasFreshOutput(inArgs.activeInputToRender->getNode().get(), inArgs.params->time, view);
                     if (const SchedulerResultHook hook = schedulerResultHook()) {
                         hook(frameContext, &layers);
                     }
@@ -4106,7 +4572,13 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                                                        this,
                                                                        eStorageModeRAM /*returnStorage*/,
                                                                        inArgs.params->time));
+                    EffectInstance::takeLastRenderExecuted();
+                    EffectInstance::takeLastPullFresh();
                     retCode = inArgs.activeInputToRender->renderRoI(*renderArgs, &layers);
+                    inputFresh = EffectInstance::takeLastPullFresh();
+                    if (EffectInstance::takeLastRenderExecuted()) {
+                        inArgs.activeInputToRender->getNode()->noteExecution(Node::eExecutionDeviceCpu);
+                    }
                 }
             }
             // Either rendering failed or we have 2 layers (alpha mask and color image) or we have a single layer (color image)
@@ -4147,13 +4619,21 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                        for example when an effect returns a NULL RoD at some point. Don't fail but
                        display a black image
                      */
+                    renderEndedWithoutImage(inArgs.params->textureIndex, inArgs.params->abortInfo->getRenderAge());
+
                     return eViewerRenderRetCodeRedraw;
                 }
+            }
+            getNode()->noteExecution(hasDeviceColor ? Node::eExecutionDeviceGpu : Node::eExecutionDeviceCpu);
+            if (inputFresh) {
+                getNode()->noteInputExecution(inArgs.activeInputIndex);
             }
         } catch (...) {
             ///If the plug-in was aborted, this is probably not a failure due to render but because of abortion.
             ///Don't forward the exception in that case.
             if ( inArgs.activeInputToRender->aborted() ) {
+                renderEndedWithoutImage(inArgs.params->textureIndex, inArgs.params->abortInfo->getRenderAge());
+
                 return eViewerRenderRetCodeRedraw;
             }
             throw;
@@ -4371,6 +4851,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             const RectI tileBounds(0, 0, inArgs.params->tileSize, inArgs.params->tileSize);
             assert(!tileBounds.isNull());
             if (tileBounds.isNull()) {
+                renderEndedWithoutImage(inArgs.params->textureIndex, inArgs.params->abortInfo->getRenderAge());
+
                 return eViewerRenderRetCodeRedraw;
             }
             std::string inputToRenderName = inArgs.activeInputToRender->getNode()->getScriptName_mt_safe();
@@ -4501,10 +4983,14 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                   args, this, *it);
                 }
             } else {
-                QtConcurrent::map( unCachedTiles,
-                                   [&](const UpdateViewerParams::CachedTile &tile) {
-                                    renderFunctor(viewerRenderRoI, args, this, tile);
-                                   } ).waitForFinished();
+                std::vector<const UpdateViewerParams::CachedTile*> tiles;
+                tiles.reserve(unCachedTiles.size());
+                for (std::list<UpdateViewerParams::CachedTile>::const_iterator it = unCachedTiles.begin(); it != unCachedTiles.end(); ++it) {
+                    tiles.push_back(&*it);
+                }
+                parallelForOnGlobalPool((int)tiles.size(), QThreadPool::globalInstance()->maxThreadCount(), [&](int index) {
+                    renderFunctor(viewerRenderRoI, args, this, *tiles[index]);
+                });
             }
 
             if (inArgs.isDoingPartialUpdates) {
@@ -4524,7 +5010,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         }
 
         if ( colorImage && stats && stats->isInDepthProfilingEnabled() ) {
-            stats->addRenderInfosForNode( getNode(), NodePtr(), colorImage->getComponents().getChannelsLabel(), viewerRenderRoI, viewerRenderTimeRecorder->getTimeSinceCreation() );
+            stats->addRenderInfosForNode(getNode(), NodePtr(), colorImage->getComponents().getUserFacingLabel(), viewerRenderRoI, viewerRenderTimeRecorder->getTimeSinceCreation());
         }
     } // for (std::vector<RectI>::iterator rect = splitRoi.begin(); rect != splitRoi.end(), ++rect) {
 
@@ -4540,7 +5026,210 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
     }
 
     return eViewerRenderRetCodeRender;
-} // renderViewer_internal
+} // completeViewerRender
+
+ViewerInstance::PlaybackFrameStageEnum
+ViewerInstance::preparePlaybackFrame(PlaybackFrame* frame)
+{
+    const SequenceTime time = frame->time;
+    const ViewIdx view = frame->view;
+    const RenderStatsPtr& stats = frame->stats;
+    ViewerArgsPtr* args = frame->args;
+
+    frame->viewerHash = getHash();
+
+    ViewerRenderRetCode status[2] = {
+        eViewerRenderRetCodeFail, eViewerRenderRetCodeFail
+    };
+    bool clearTexture[2] = { false, false };
+    for (int i = 0; i < 2; ++i) {
+        args[i] = std::make_shared<ViewerArgs>();
+        status[i] = getRenderViewerArgsAndCheckCache_public(time, true, view, i, frame->viewerHash, true, NodePtr(), stats, args[i].get());
+        clearTexture[i] = (status[i] == eViewerRenderRetCodeFail) || (status[i] == eViewerRenderRetCodeBlack);
+        if (status[i] == eViewerRenderRetCodeFail) {
+            args[i]->params.reset();
+            args[i].reset();
+        } else if (status[i] == eViewerRenderRetCodeBlack) {
+            if (args[i]->params) {
+                args[i]->params->tiles.clear();
+                frame->toAppend.push_back(args[i]->params);
+                args[i]->params.reset();
+            }
+            args[i].reset();
+        }
+    }
+
+    if ((status[0] == eViewerRenderRetCodeFail) && (status[1] == eViewerRenderRetCodeFail)) {
+        disconnectViewer();
+
+        return ePlaybackFrameStageDone;
+    }
+
+    for (int i = 0; i < 2; ++i) {
+        if (clearTexture[i]) {
+            disconnectTexture(i, status[i] == eViewerRenderRetCodeFail);
+        }
+    }
+
+    if (((status[0] == eViewerRenderRetCodeRedraw) && !args[0]->params->isViewerPaused) && ((status[1] == eViewerRenderRetCodeRedraw) && !args[1]->params->isViewerPaused)) {
+        return ePlaybackFrameStageDone;
+    }
+    for (int i = 0; i < 2; ++i) {
+        if (args[i] && args[i]->params) {
+            if (((args[i]->params->nbCachedTile > 0) && (args[i]->params->nbCachedTile == (int)args[i]->params->tiles.size())) || args[i]->params->isViewerPaused) {
+                frame->toAppend.push_back(args[i]->params);
+                args[i].reset();
+            }
+        }
+    }
+
+    if (!(args[0] && (status[0] != eViewerRenderRetCodeFail)) && !(args[1] && (status[1] != eViewerRenderRetCodeFail))) {
+        return ePlaybackFrameStageDone;
+    }
+
+    for (int i = 0; i < 2; ++i) {
+        if (args[i] && args[i]->params && args[i]->params->abortInfo) {
+            frame->renderAges[i] = args[i]->params->abortInfo->getRenderAge();
+            frame->hadRender[i] = true;
+        }
+    }
+
+    if (!_imp->uiContext) {
+        frame->failed = true;
+        finishPlaybackFrame(*frame);
+
+        return ePlaybackFrameStageDone;
+    }
+
+    bool deferred = false;
+    try {
+        for (int i = 0; i < 2; ++i) {
+            if (!args[i] || !args[i]->params) {
+                continue;
+            }
+            if ((i == 1) && (_imp->uiContext->getCompositingOperator() == eViewerCompositingOperatorNone)) {
+                args[i]->params->tiles.clear();
+                break;
+            }
+            frame->inputRenders[i] = true;
+            frame->abortInfos.push_back(args[i]->params->abortInfo);
+
+            std::shared_ptr<PendingViewerRender> pending = std::make_shared<PendingViewerRender>();
+            pending->driven = true;
+            ScopedThreadAbortInfo abortScope(false, args[i]->params->abortInfo, getNode()->getEffectInstance());
+            frame->ret[i] = prepareViewerRender(view, false, true, frame->viewerHash, NodePtr(), true, ViewerCurrentFrameRequestSchedulerStartArgsPtr(),
+                                                i == 0 ? stats : RenderStatsPtr(), nullptr, *args[i], pending.get());
+            // Before the other input installs its own.
+            pending->frameArgs.reset();
+            if (pending->fallbackReason) {
+                frame->deferred[i] = true;
+                deferred = true;
+            } else if (pending->needsCompletion) {
+                frame->futures.push_back(pending->future);
+                frame->futureAbortInfos.push_back(args[i]->params->abortInfo);
+                frame->pending[i] = pending;
+            }
+        }
+    } catch (...) {
+        for (int i = 0; i < 2; ++i) {
+            frame->pending[i].reset();
+            frame->inputRenders[i] = false;
+        }
+        frame->failed = true;
+        finishPlaybackFrame(*frame);
+
+        return ePlaybackFrameStageDone;
+    }
+
+    if (deferred) {
+        return ePlaybackFrameStageFallback;
+    }
+    if (!frame->futures.empty()) {
+        return ePlaybackFrameStageAwaitFutures;
+    }
+    finishPlaybackFrame(*frame);
+
+    return ePlaybackFrameStageDone;
+} // ViewerInstance::preparePlaybackFrame
+
+void
+ViewerInstance::finishPlaybackInput(PlaybackFrame& frame,
+                                    int i)
+{
+    ViewerArgsPtr& args = frame.args[i];
+    ViewerRenderRetCode ret = frame.ret[i];
+    // The fallback worker and the pool threads finish one frame after another.
+    ScopedThreadAbortInfo abortScope(false, args->params ? args->params->abortInfo : AbortableRenderInfoPtr(), getNode()->getEffectInstance());
+
+    if (frame.deferred[i]) {
+        for (const EffectInstancePtr& effect : args->staleOverlayImageEffects) {
+            // The A and B inputs can share a node: the first of them may have refreshed it.
+            if (effect->overlayImagesStale(args->overlayImageRequest)) {
+                effect->renderOverlayImages(args->overlayImageRequest, args->params->abortInfo);
+            }
+        }
+        ret = renderViewer_internal(frame.view, false, true, frame.viewerHash, true, NodePtr(), true, ViewerCurrentFrameRequestSchedulerStartArgsPtr(),
+                                    i == 0 ? frame.stats : RenderStatsPtr(), nullptr, *args);
+    } else if (frame.pending[i]) {
+        ret = completeViewerRender(*frame.pending[i]);
+        frame.pending[i].reset();
+    }
+    frame.ret[i] = ret;
+
+    args->isRenderingFlag.reset();
+    if (ret != eViewerRenderRetCodeRender) {
+        if (args->params) {
+            for (std::list<UpdateViewerParams::CachedTile>::iterator it = args->params->tiles.begin(); it != args->params->tiles.end(); ++it) {
+                it->cachedData.reset();
+            }
+            args->params->tiles.clear();
+        }
+    }
+    if ((ret == eViewerRenderRetCodeBlack) && args->params) {
+        disconnectTexture(args->params->textureIndex, false);
+    }
+    if (ret == eViewerRenderRetCodeFail) {
+        args.reset();
+    }
+}
+
+void
+ViewerInstance::finishPlaybackFrame(PlaybackFrame& frame)
+{
+    if (!frame.failed) {
+        try {
+            for (int i = 0; i < 2; ++i) {
+                if (frame.inputRenders[i]) {
+                    finishPlaybackInput(frame, i);
+                    if (frame.ret[i] == eViewerRenderRetCodeFail) {
+                        frame.failed = true;
+                    }
+                }
+            }
+        } catch (...) {
+            frame.failed = true;
+        }
+    }
+    for (int i = 0; i < 2; ++i) {
+        frame.pending[i].reset();
+    }
+
+    if (frame.failed) {
+        for (int i = 0; i < 2; ++i) {
+            if (frame.hadRender[i]) {
+                renderFailed(i, frame.renderAges[i]);
+            }
+        }
+
+        return;
+    }
+    for (int i = 0; i < 2; ++i) {
+        if (frame.args[i] && frame.args[i]->params) {
+            frame.toAppend.push_back(frame.args[i]->params);
+            frame.args[i].reset();
+        }
+    }
+} // ViewerInstance::finishPlaybackFrame
 
 void
 ViewerInstance::aboutToUpdateTextures()
@@ -5674,6 +6363,9 @@ ViewerInstance::ViewerInstancePrivate::showFrame(const UpdateViewerParamsPtr& pa
         }
     }
 
+    if (!params->isPartialRect) {
+        uiContext->setDisplayedEdgeMode(params->textureIndex, params->edgeMode);
+    }
     uiContext->endTransferBufferFromRAMToGPU(params->textureIndex, texture, originalImage, params->time, params->rod, params->pixelAspectRatio, depth, params->mipmapLevel, params->gain, params->gamma, params->offset, params->recenterViewport, params->viewportCenter, params->isPartialRect);
     if (!params->isPartialRect && (originalImage || deviceFrame)) {
         uiContext->setLastRenderedDeepImage(params->textureIndex, params->mipmapLevel, deepImage);
@@ -6307,13 +6999,22 @@ ViewerInstance::getActiveInputDataKind() const
 bool
 ViewerInstance::isWipeDisabledByDataKind() const
 {
-    return (getInputDataKindForTexture(0) == eDataKindScene) || (getInputDataKindForTexture(1) == eDataKindScene);
+    for (int i = 0; i < 2; ++i) {
+        const DataKindEnum kind = getInputDataKindForTexture(i);
+        if ((kind == eDataKindScene) || (kind == eDataKindGeometry)) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool
 ViewerInstance::getLastEvaluatedScene(int textureIndex,
                                       ScenePayload* scene,
-                                      std::string* error) const
+                                      std::string* error,
+                                      SceneLoadSetPtr* loadSet,
+                                      SceneLoadReachPtr* reach) const
 {
     if ((textureIndex != 0) && (textureIndex != 1)) {
         return false;
@@ -6325,8 +7026,130 @@ ViewerInstance::getLastEvaluatedScene(int textureIndex,
     if (error) {
         *error = _imp->lastSceneError[textureIndex];
     }
+    if (loadSet) {
+        *loadSet = _imp->lastSceneLoadSet[textureIndex];
+    }
+    if (reach) {
+        *reach = _imp->lastSceneReach[textureIndex];
+    }
 
     return _imp->lastSceneOk[textureIndex];
+}
+
+bool
+ViewerInstance::showGeometryFrame(int textureIndex,
+                                  int frame)
+{
+    if ((textureIndex != 0) && (textureIndex != 1)) {
+        return false;
+    }
+    std::shared_ptr<GeoViewerLayer> layer;
+    {
+        std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
+        layer = _imp->geometryLayers[textureIndex];
+    }
+
+    return layer && layer->showFrame(frame);
+}
+
+bool
+ViewerInstance::getShownGeometry(int textureIndex,
+                                 GeoDetailConstPtr* detail,
+                                 int* frame,
+                                 NodePtr* sourceNode,
+                                 U64* sourceHash) const
+{
+    if ((textureIndex != 0) && (textureIndex != 1)) {
+        return false;
+    }
+    std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
+    const std::shared_ptr<GeoViewerLayer>& layer = _imp->geometryLayers[textureIndex];
+    int served = 0;
+    if (!layer || !GeoViewerLayer::getServedFrame(layer->getIdentifier(), &served)) {
+        return false;
+    }
+    NodeWPtr source;
+    const GeoDetailConstPtr shown = layer->getDetail(&source, sourceHash);
+    if (detail) {
+        *detail = shown;
+    }
+    if (sourceNode) {
+        *sourceNode = source.lock();
+    }
+    if (frame) {
+        *frame = served;
+    }
+
+    return true;
+}
+
+void
+ViewerInstance::setSceneLoadSet(const SceneLoadSetPtr& loadSet)
+{
+    bool changed;
+    {
+        std::lock_guard<std::mutex> k(_imp->sceneLoadSetMutex);
+        changed = _imp->sceneLoadSet ? (!loadSet || (*_imp->sceneLoadSet != *loadSet)) : bool(loadSet);
+        _imp->sceneLoadSet = loadSet;
+    }
+    if (changed) {
+        SceneMenuRefresh::scheduleFollowLoadChanges();
+    }
+}
+
+SceneLoadSetPtr
+ViewerInstance::getSceneLoadSet() const
+{
+    std::lock_guard<std::mutex> k(_imp->sceneLoadSetMutex);
+
+    return _imp->sceneLoadSet;
+}
+
+SceneEvaluationContext
+ViewerInstance::getSceneEvaluationContext() const
+{
+    return SceneEvaluationContext(_imp->sceneContextId, getSceneLoadSet());
+}
+
+bool
+ViewerInstance::evaluateSceneForLoadSet(const SceneLoadSetPtr& loadSet,
+                                        ScenePayload* scene,
+                                        SceneLoadReachPtr* reach,
+                                        std::string* error)
+{
+    assert(scene);
+    *scene = ScenePayload();
+    int activeA, activeB;
+    getActiveInputs(activeA, activeB);
+    const EffectInstancePtr input = getInput(activeA);
+    if (!input || !input->producesSceneData()) {
+        return false;
+    }
+    const SceneEvaluationContext context(_imp->sceneContextId, loadSet, std::make_shared<SceneLoadReach>());
+    std::string evaluationError;
+    EffectInstance::RenderRoIRetCode code;
+    try {
+        // The view only decides identities, and the viewer's widget is not read off the main thread.
+        code = input->evaluateScene(EffectInstance::EvaluateSceneArgs(getCurrentTime(), ViewIdx(0), context), scene, &evaluationError);
+    } catch (const std::exception& e) {
+        code = EffectInstance::eRenderRoIRetCodeFailed;
+        evaluationError = e.what();
+    } catch (...) {
+        code = EffectInstance::eRenderRoIRetCodeFailed;
+    }
+    if (code != EffectInstance::eRenderRoIRetCodeOk) {
+        *scene = ScenePayload();
+        if (error) {
+            *error = evaluationError;
+        }
+
+        return false;
+    }
+    if (reach) {
+        *reach = context.reach;
+    }
+
+    return true;
 }
 
 void
@@ -6342,23 +7165,34 @@ ViewerInstance::refreshActiveInputDataKind()
     }
 
     const DataKindEnum kinds[2] = { getInputDataKindForTexture(0), getInputDataKindForTexture(1) };
-    const bool wipeDisabled = (kinds[0] == eDataKindScene) || (kinds[1] == eDataKindScene);
+    int a = -1, b = -1;
+    getActiveInputs(a, b);
+    const EffectInstancePtr inputA = (a >= 0) ? getInput(a) : EffectInstancePtr();
+    const bool hasInputA = inputA && inputA->getNode();
+    const bool shows3D[2] = { (kinds[0] == eDataKindScene) || (kinds[0] == eDataKindGeometry), (kinds[1] == eDataKindScene) || (kinds[1] == eDataKindGeometry) };
+    const bool wipeDisabled = shows3D[0] || shows3D[1];
     {
         std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
         for (int i = 0; i < 2; ++i) {
-            if (kinds[i] != eDataKindScene) {
+            if (kinds[i] != eDataKindGeometry) {
+                _imp->geometryLayers[i].reset();
+            }
+            if (!shows3D[i]) {
                 _imp->lastScene[i] = ScenePayload();
                 _imp->lastSceneError[i].clear();
                 _imp->lastSceneOk[i] = false;
+                _imp->lastSceneLoadSet[i].reset();
+                _imp->lastSceneReach[i].reset();
             }
         }
     }
 
-    if ((kinds[0] == _imp->notifiedInputDataKind) && (wipeDisabled == _imp->notifiedWipeDisabled)) {
+    if ((kinds[0] == _imp->notifiedInputDataKind) && (wipeDisabled == _imp->notifiedWipeDisabled) && (hasInputA == _imp->notifiedHasInputA)) {
         return;
     }
     _imp->notifiedInputDataKind = kinds[0];
     _imp->notifiedWipeDisabled = wipeDisabled;
+    _imp->notifiedHasInputA = hasInputA;
     Q_EMIT activeInputDataKindChanged();
 }
 
@@ -6460,24 +7294,14 @@ ViewerInstance::getMipmapLevelWithoutDraft() const
     if (isFullFrameProcessingEnabled()) {
         return 0;
     }
-    const unsigned int proxyLevel = getMipmapLevel();
 
-    // The nearest mipmap level higher in quality than the zoom factor: 48% renders at 50%
-    // (level 1), 51% at 100% (level 0).
-    double zoomFactor = _imp->uiContext->getZoomFactor();
-    double closestPowerOf2 = zoomFactor >= 1 ? 1 : ipow(2, (int)-std::ceil(std::log(zoomFactor) / M_LN2));
-    unsigned int zoomMipmapLevel = std::log(closestPowerOf2) / M_LN2;
-
-    return std::max(proxyLevel, zoomMipmapLevel);
+    return std::max(getMipmapLevel(), getMipmapLevelFromZoomFactor());
 }
 
 unsigned int
 ViewerInstance::getMipmapLevelFromZoomFactor() const
 {
-    double zoomFactor = _imp->uiContext->getZoomFactor();
-    double closestPowerOf2 = zoomFactor >= 1 ? 1 : std::pow( 2, -std::ceil(std::log(zoomFactor) / M_LN2) );
-
-    return std::log(closestPowerOf2) / M_LN2;
+    return mipmapLevelForZoom(_imp->uiContext->getZoomFactor(), appPTR->getCurrentSettings()->isViewerMipRoundingNearest());
 }
 
 double
@@ -6497,6 +7321,27 @@ ViewerInstance::isLatestRender(int textureIndex,
                                U64 renderAge) const
 {
     return _imp->isLatestRender(textureIndex, renderAge);
+}
+
+bool
+ViewerInstance::isStale() const
+{
+    return _imp->isStale();
+}
+
+void
+ViewerInstance::renderFailed(int textureIndex,
+                             U64 renderAge)
+{
+    _imp->checkAndUpdateDisplayAgeIfNewest(textureIndex, renderAge);
+    _imp->removeOngoingRender(textureIndex, renderAge);
+}
+
+void
+ViewerInstance::renderEndedWithoutImage(int textureIndex,
+                                        U64 renderAge)
+{
+    _imp->checkAndUpdateDisplayAgeIfNewest(textureIndex, renderAge);
 }
 
 void

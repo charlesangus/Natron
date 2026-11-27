@@ -50,10 +50,20 @@ bool checkHolderIsEditable(const KnobHolder* holder);
 
 class Param
 {
+    friend class ItemBase;
+
 protected:
     KnobIWPtr _knob;
 
+    // The node holding the roto item whose knob this is; null for any other knob.
+    NodeWPtr _itemNode;
+
     bool checkIsEditable() const;
+
+    /**
+     * @brief recordPythonKnobEdit() for knob, a knob of this parameter.
+     **/
+    bool recordEdit(const KnobIPtr& knob) const WARN_UNUSED_RETURN;
 
 public:
 
@@ -1350,6 +1360,14 @@ public:
 
 
     void trigger();
+
+    /**
+     * @brief The Python script a user button runs when pressed, before the node's
+     * onParamChanged callback, with thisNode, thisParam, thisGroup and app declared.
+     **/
+    void setScript(const QString& script);
+
+    QString getScript() const;
 };
 
 

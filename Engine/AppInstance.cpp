@@ -27,6 +27,7 @@
 #include "AppInstance.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <cstring> // strlen
 #include <fstream>
@@ -81,6 +82,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/NodeCreationStageLog.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/NativeWrite.h"
+#include "Engine/Nodes/IO/ReadTimeDomainKnobs.h"
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Merge/Switch.h"
@@ -172,6 +174,7 @@ public:
     AppInstance* _publicInterface;
     ProjectPtr _currentProject; //< ptr to the project
     int _appID; //< the unique ID of this instance (or window)
+    std::atomic<const Node*> _viewerActiveForRenders { nullptr };
     mutable QMutex creatingGroupMutex;
 
     //When a pyplug is created
@@ -184,6 +187,8 @@ public:
 
     //When a node tree is created
     int _creatingTree;
+    mutable QMutex draftEditsMutex;
+    std::list<NodeWPtr> draftEdits;
     mutable QMutex renderQueueMutex;
     std::list<RenderQueueItem> renderQueue, activeRenders;
     // Files saved for render processes that a task may still restart from, guarded by renderQueueMutex.
@@ -348,12 +353,91 @@ AppInstance::setProjectBeingLoadedInfo(const ProjectBeingLoadedInfo& info)
     _imp->projectBeingLoaded = info;
 }
 
+void
+AppInstance::noteDraftEdit(const NodePtr& node)
+{
+    if (!node) {
+        return;
+    }
+    QMutexLocker k(&_imp->draftEditsMutex);
+    for (const NodeWPtr& edit : _imp->draftEdits) {
+        if (edit.lock() == node) {
+            return;
+        }
+    }
+    _imp->draftEdits.push_back(node);
+}
+
+void
+AppInstance::clearDraftEdits()
+{
+    QMutexLocker k(&_imp->draftEditsMutex);
+    _imp->draftEdits.clear();
+}
+
+bool
+AppInstance::draftAppliesToEdits() const
+{
+    const std::list<NodePtr> edits = getDraftEdits();
+    if (edits.empty()) {
+        return true;
+    }
+    for (const NodePtr& node : edits) {
+        const EffectInstancePtr effect = node->getEffectInstance();
+        if (!effect || !effect->isPointOp()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+std::list<NodePtr>
+AppInstance::getDraftEdits() const
+{
+    std::list<NodePtr> edits;
+    QMutexLocker k(&_imp->draftEditsMutex);
+    for (const NodeWPtr& edit : _imp->draftEdits) {
+        if (const NodePtr node = edit.lock()) {
+            edits.push_back(node);
+        }
+    }
+
+    return edits;
+}
+
 const std::list<NodePtr>&
 AppInstance::getNodesBeingCreated() const
 {
     assert( QThread::currentThread() == qApp->thread() );
 
     return _imp->_creatingNodeQueue;
+}
+
+std::list<NodePtr>
+AppInstance::getViewerNodesByRecentActivity() const
+{
+    std::list<NodePtr> viewers;
+    const NodePtr active = getActiveViewerNode();
+    if (active) {
+        viewers.push_back(active);
+    }
+
+    return viewers;
+}
+
+void
+AppInstance::setViewerActiveForRenders(const Node* viewer)
+{
+    _imp->_viewerActiveForRenders.store(viewer, std::memory_order_relaxed);
+}
+
+bool
+AppInstance::isViewerActiveForRenders(const Node* viewer) const
+{
+    const Node* active = _imp->_viewerActiveForRenders.load(std::memory_order_relaxed);
+
+    return !active || (active == viewer);
 }
 
 NodePtr
@@ -1391,13 +1475,14 @@ AppInstance::createNodeInternal(CreateNodeArgs& args,
     bool isSilentCreation = args.getProperty<bool>(kCreateNodeArgsPropSilent);
 
     // The file is picked before the node exists so that a deep image creates a DeepRead rather than a Read.
+    std::optional<std::pair<int, int>> pickedFrameRange;
     if (!serialization && !isSilentCreation && !isBackground() && (argsPluginID == QString::fromUtf8(PLUGINID_NATRON_READ)) && !args.getProperty<bool>(kCreateNodeArgsPropOutOfProject) && !args.getProperty<bool>(kCreateNodeArgsPropNoNodeGUI)) {
         const std::string fileParam(kOfxImageEffectFileParamName);
         const std::vector<std::string> defaultParams = args.getPropertyN<std::string>(kCreateNodeArgsPropNodeInitialParamValues);
         const std::string valueProp = std::string(kCreateNodeArgsPropParamValue) + "_" + fileParam;
         const bool hasFile = std::find(defaultParams.begin(), defaultParams.end(), fileParam) != defaultParams.end() && !args.getProperty<std::string>(valueProp).empty();
         if (!hasFile) {
-            const std::string picked = openImageFileDialog();
+            const std::string picked = openImageFileDialog(&pickedFrameRange);
             if (picked.empty()) {
                 return node;
             }
@@ -1568,6 +1653,9 @@ AppInstance::createNodeInternal(CreateNodeArgs& args,
         }
 
         return NodePtr();
+    }
+    if (pickedFrameRange) {
+        ReadTimeDomainKnobs::limitToFrames(node->getEffectInstance().get(), pickedFrameRange->first, pickedFrameRange->second);
     }
 
     NodePtr multiInstanceParent = node->getParentMultiInstance();

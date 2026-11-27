@@ -66,14 +66,14 @@ endif()
 
 # What Engine's scene code (Engine/Nodes/Scene/) links: authoring and composing layers, the stage,
 # UsdGeom's stage metadata (up axis, meters per unit), cameras and xforms, UsdLux's lights,
-# UsdShade's materials, UsdRender's render settings prims, UsdUtils's layer-stack flattening and asset-path rewriting for USDWrite,
+# UsdShade's materials, UsdSkel's skinned points for sticky projections, UsdRender's render settings prims, UsdUtils's layer-stack flattening and asset-path rewriting for USDWrite,
 # and USDRender's Storm render: UsdImagingGLEngine on HgiGL, its AOV render buffers, garch's GL
 # loader for the framebuffer it renders under, the camera framing and conforming and the GL
 # lights it hands the engine; hio's image reader interface for the natron:// live textures; hdSt's
 # resource registry for the Ptex memory limit; and hdsi's implicit-surface scene index, which
 # tessellates UsdGeom's Cube, Sphere and the like for a delegate such as Cycles that takes only
-# meshes.
-set(NATRON_USD_ENGINE_LIBRARIES usdImagingGL usdImaging hdx hdSt hdsi hd hgi hgiGL glf garch hio cameraUtil usdUtils usd sdf usdGeom usdLux usdShade usdRender sdr pcp ar kind plug vt gf tf work trace arch)
+# meshes. hf, hd and hdsi also carry the Natron Utility render delegate (Nodes/Scene/Utility/).
+set(NATRON_USD_ENGINE_LIBRARIES usdImagingGL usdImaging hdx hdSt hdsi hd hf hgi hgiGL glf garch hio cameraUtil usdUtils usd sdf usdGeom usdLux usdShade usdSkel usdRender sdr pcp ar kind plug vt gf tf work trace arch)
 
 # What the viewer's scene view (Gui/SceneViewport) links: the same Storm render as USDRender.
 set(NATRON_USD_GUI_LIBRARIES ${NATRON_USD_ENGINE_LIBRARIES})
@@ -84,6 +84,10 @@ foreach(_natron_usd_target ${NATRON_USD_GUI_LIBRARIES})
     endif()
 endforeach()
 unset(_natron_usd_target)
+
+# The ray tracer of the Natron Utility render delegate. Found here so that the imported target is
+# visible to whatever links NatronEngine, whose static archive passes it on.
+find_package(embree 4 REQUIRED CONFIG)
 
 message(STATUS "OpenUSD ${PXR_MAJOR_VERSION}.${PXR_MINOR_VERSION}.${PXR_PATCH_VERSION} (Python ${NATRON_USD_PYTHON_VERSION}) at ${pxr_DIR}")
 

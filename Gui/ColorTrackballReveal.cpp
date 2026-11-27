@@ -31,9 +31,7 @@
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QCoreApplication>
-#include <QGuiApplication>
 #include <QRegion>
-#include <QScreen>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -286,7 +284,6 @@ ColorTrackballReveal::setMode(ColorGlobalModeEnum mode)
         _wheel->hide();
         _disc->show();
     }
-    setPillTexts(colorTrackballRevealDirectionLabels(mode));
 }
 
 void
@@ -297,7 +294,6 @@ ColorTrackballReveal::setValueKind(GlobalModeKindEnum kind)
     _disc->hide();
     _valueDisc->setKind(kind);
     _valueDisc->show();
-    setPillTexts(valueModeRevealDirectionLabels(kind));
 }
 
 void
@@ -310,17 +306,7 @@ ColorTrackballReveal::setValueTravel(double dx,
 void
 ColorTrackballReveal::setPillTexts(const ColorTrackballRevealLabels& labels)
 {
-    const QString texts[4] = { labels.right, labels.left, labels.top, labels.bottom };
-    bool changed = false;
-
-    for (int i = 0; i < 4; ++i) {
-        if ((_pills[i]->text() != texts[i]) || (_pills[i]->isHidden() != texts[i].isEmpty())) {
-            _pills[i]->setText(texts[i]);
-            _pills[i]->setVisible(!texts[i].isEmpty());
-            changed = true;
-        }
-    }
-    if (changed) {
+    if (colorTrackballSetPillTexts(_pills, labels)) {
         relayout();
     }
 }
@@ -346,26 +332,13 @@ ColorTrackballReveal::relayout()
     // Laid out around a disc centred on the origin, then shifted so the window starts at 0, 0.
     const int reach = (int)std::ceil(Ro + gap);
     QRect disc(-side / 2, -side / 2, side, side);
+    QSize pillSizes[4];
     QRect pillRects[4];
 
     for (int i = 0; i < 4; ++i) {
-        const QSize s = _pills[i]->sizeHint();
-
-        switch ((PillSideEnum)i) {
-        case ePillRight:
-            pillRects[i] = QRect(QPoint(reach, -s.height() / 2), s);
-            break;
-        case ePillLeft:
-            pillRects[i] = QRect(QPoint(-reach - s.width(), -s.height() / 2), s);
-            break;
-        case ePillTop:
-            pillRects[i] = QRect(QPoint(-s.width() / 2, -reach - s.height()), s);
-            break;
-        case ePillBottom:
-            pillRects[i] = QRect(QPoint(-s.width() / 2, reach), s);
-            break;
-        }
+        pillSizes[i] = _pills[i]->sizeHint();
     }
+    colorTrackballPlacePills(reach, reach, pillSizes, pillRects);
 
     const bool hasPills = !_pills[ePillBottom]->isHidden();
     const int blockTop = (hasPills ? pillRects[ePillBottom].bottom() + 1 : (int)std::ceil(Ro)) + (int)std::ceil(TO_DPIY(kBlockGap));
@@ -396,9 +369,7 @@ ColorTrackballReveal::relayout()
     QRegion mask(_discRect, QRegion::Ellipse);
 
     if (hasPills) {
-        for (int i = 0; i < 4; ++i) {
-            mask = mask.united(colorTrackballRoundedRegion(_pills[i]->geometry(), 0.5 * _pills[i]->height()));
-        }
+        mask = mask.united(colorTrackballPillsRegion(_pills));
     }
     mask = mask.united(colorTrackballRoundedRegion(_block->geometry(), colorTrackballHudBlockRadius()));
     setMask(mask);
@@ -441,12 +412,7 @@ ColorTrackballReveal::setStroke(const KnobColorValue& start,
 void
 ColorTrackballReveal::centreOn(const QPoint& globalPos)
 {
-    QScreen* screen = QGuiApplication::screenAt(globalPos);
-
-    if (!screen) {
-        screen = QGuiApplication::primaryScreen();
-    }
-    move(colorTrackballRevealPosition(globalPos, getDiscCentre(), size(), screen ? screen->geometry() : QRect()));
+    move(colorTrackballRevealPosition(globalPos, getDiscCentre(), size(), colorTrackballScreenRectAt(globalPos)));
 }
 
 NATRON_NAMESPACE_EXIT

@@ -53,6 +53,9 @@ class GpuRuntime;
 
 NATRON_NAMESPACE_ENTER
 
+struct CacheEntryHeader;
+typedef std::shared_ptr<CacheEntryHeader> CacheEntryHeaderPtr;
+
 /**
  * @brief What the setting and the NATRON_GPU environment variable resolve to. Force accepts the explicitly
  * selected device even when it is CPU-type, such as lavapipe; Auto and Force never pick a CPU device on their own.
@@ -191,12 +194,34 @@ public:
     std::shared_ptr<void> holdRuntime();
 
     /**
+     * @brief The runtime's GpuRuntime::generation(), which a recovery changes; 0 while unavailable. Needs no hold.
+     **/
+    std::uint64_t generation() const;
+
+    /**
      * @brief Recreates the runtime when it was lost and no holdRuntime() token is alive. A failed recreation is not
      * tried again for a few seconds, since every render start asks. A loss caused by a timed-out GPU operation is
      * never recovered: the first call after it logs once that GPU compute is off for the session. Returns whether the
      * runtime is usable.
      **/
     bool recoverIfLost();
+
+    /**
+     * @brief Adds a function every recoverIfLost() of a lost runtime calls first, before it counts the holdRuntime()
+     * tokens, for a holder that keeps the runtime's memory only to reuse it and can let go of it. It may run on any
+     * thread that asks for recovery, so it must not wait for other work: what it cannot drop at once, it drops later,
+     * and a later recoverIfLost() succeeds. Releasers stay for the process.
+     **/
+    typedef std::function<void()> LossReleaser;
+    static void addLossReleaser(const LossReleaser& release);
+
+    /**
+     * @brief Adds a function the destructor calls before it destroys the runtime, for work on threads of its own
+     * that may still use it. It waits, within a bound of its own, for that work to end, and returns false if some
+     * still runs: the runtime then stays for the process instead of going under it. Waiters stay for the process.
+     **/
+    typedef std::function<bool(const gpu::GpuRuntime& runtime)> TeardownWaiter;
+    static void addTeardownWaiter(const TeardownWaiter& wait);
 
     /**
      * @brief Destroys the device buffers the runtime's pool keeps free for reuse. Buffers in use, by a render or a
@@ -316,6 +341,41 @@ public:
      * thread that needs the memory and must make the image's holder evict it to RAM.
      **/
     void setEvictable(const std::function<void()>& onEvict);
+
+    /**
+     * @brief Like setEvictable(), for pixels a cache can recompute: the pool takes these before any evictable image,
+     * lowest score first. header is the cache entry's, whose device bit a download clears, since pin() refuses the
+     * pixels from then on.
+     *
+     * stillCached runs under the image's mutex, and false leaves the image as it is, so that a cache that let the image
+     * go meanwhile is not undone. onDropped runs, once and off the mutex, when evictToRam(), evictInto() or a download
+     * leaves the cache holding pixels pin() refuses, so that the cache stops counting them.
+     **/
+    void setCached(const std::function<void()>& onEvict,
+                   double score,
+                   const CacheEntryHeaderPtr& header,
+                   const std::function<bool()>& stillCached = std::function<bool()>(),
+                   const std::function<void()>& onDropped = std::function<void()>());
+
+    void setCachedScore(double score);
+
+    /**
+     * @brief Undoes setCached() and setEvictable(): the pool no longer reclaims the buffer.
+     **/
+    void clearEvictable();
+
+    /**
+     * @brief Whether pin() would return the buffer: not evicted and not downloaded.
+     **/
+    bool isResident() const;
+
+    bool isPinned() const;
+
+    /**
+     * @brief Like evictToRam(), into target, which must be an allocated float RAM image of the layout's bounds and
+     * layer. Fails while the image is pinned, evicted or downloaded.
+     **/
+    bool evictInto(const ImagePtr& target);
 
 private:
     GpuDeviceImage();

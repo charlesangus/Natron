@@ -35,6 +35,7 @@
 #include <QString>
 #include <QTemporaryDir>
 
+#include <ofxImageEffect.h>
 #include <ofxNatron.h>
 
 #include "BaseTest.h"

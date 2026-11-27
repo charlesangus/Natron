@@ -193,6 +193,8 @@ ViewerGL::Implementation::Implementation(ViewerGL* this_,
     , pressureOnPress(1.)
     , pressureOnRelease(1.)
     , wheelDeltaSeekFrame(0)
+    , wheelZoomRaw(1.)
+    , wheelZoomFactor(0.)
     , isUpdatingTexture(false)
     , renderOnPenUp(false)
     , updateViewerPboIndex(0)
@@ -335,32 +337,92 @@ ViewerGL::Implementation::drawRenderingVAO(unsigned int mipmapLevel,
         //clipTexCoords<RectD>(canonicalTexRect,rectClippedToRoI,texBottom,texTop,texLeft,texRight);
     }
 
+    const double pixelCenterOffset = 0.5;
+    // The texture coordinates are held at the centres of the outermost drawn pixels, so whatever is drawn
+    // past them repeats those pixels.
+    RectD edgePixelCenters(rectClippedToRoI);
+    edgePixelCenters.x1 += pixelCenterOffset * par;
+    edgePixelCenters.x2 -= pixelCenterOffset * par;
+    edgePixelCenters.y1 += pixelCenterOffset;
+    edgePixelCenters.y2 -= pixelCenterOffset;
+
+    // Under Stretch the image's edge repeats over the visible area past its RoD, as every node reading it
+    // sees it; the RoD and the rendered region stay as they are, so the edge pixels are already in the texture.
+    RectD drawnRect(rod);
+    if (this->displayTextures[textureIndex].edgeMode == EdgeMode::Stretch) {
+        RectD visible;
+        {
+            QMutexLocker l(&this->zoomCtxMutex);
+            visible = RectD(this->zoomCtx.left(), this->zoomCtx.bottom(), this->zoomCtx.right(), this->zoomCtx.top());
+        }
+        if (clipToDisplayWindow) {
+            visible = visible.intersect(this->displayTextures[textureIndex].format);
+        }
+        if (userRoiEnabled) {
+            QMutexLocker l(&this->userRoIMutex);
+            visible = visible.intersect(this->userRoI);
+        }
+        if (!visible.isNull()) {
+            drawnRect.merge(visible);
+        }
+    }
+
+    const bool drawCheckerboard = background && this->viewerTab->isCheckerboardEnabled() && (polygonMode != eDrawPolygonModeWipeRight);
+
     if (polygonMode != eDrawPolygonModeWhole) {
         /// draw only  the plane defined by the wipe handle
-        QPolygonF polygonPoints, polygonTexCoords;
-        RectD floatRectClippedToRoI;
-        floatRectClippedToRoI.x1 = rectClippedToRoI.x1;
-        floatRectClippedToRoI.y1 = rectClippedToRoI.y1;
-        floatRectClippedToRoI.x2 = rectClippedToRoI.x2;
-        floatRectClippedToRoI.y2 = rectClippedToRoI.y2;
-        Implementation::WipePolygonEnum polyType = this->getWipePolygon(floatRectClippedToRoI, polygonMode == eDrawPolygonModeWipeRight, &polygonPoints);
+        const bool rightPlane = (polygonMode == eDrawPolygonModeWipeRight);
+        QPolygonF drawnPolygon;
+        Implementation::WipePolygonEnum polyType = this->getWipePolygon(drawnRect, rightPlane, &drawnPolygon);
 
         if (polyType == Implementation::eWipePolygonEmpty) {
             ///don't draw anything
             return;
         } else if (polyType == Implementation::eWipePolygonPartial) {
-            this->getPolygonTextureCoordinates(polygonPoints, canonicalRoIRoundedToTileSize, polygonTexCoords);
+            if (drawCheckerboard) {
+                bool isblend = glIsEnabled(GL_BLEND);
+                if (isblend) {
+                    glDisable(GL_BLEND);
+                }
+                this->drawCheckerboardTexture(drawnPolygon);
+                if (isblend) {
+                    glEnable(GL_BLEND);
+                }
+            }
 
             this->bindTextureAndActivateShader(textureIndex, useShader);
 
-            glBegin(GL_POLYGON);
-            for (int i = 0; i < polygonTexCoords.size(); ++i) {
-                const QPointF & tCoord = polygonTexCoords[i];
-                const QPointF & vCoord = polygonPoints[i];
-                glTexCoord2d( tCoord.x(), tCoord.y() );
-                glVertex2d( vCoord.x(), vCoord.y() );
+            // The clamped texture coordinates are affine only within each cell of the grid the edge pixel
+            // centres cut drawnRect into, so each cell's part of the wipe plane is drawn on its own.
+            const double xs[4] = { drawnRect.x1, edgePixelCenters.x1, edgePixelCenters.x2, drawnRect.x2 };
+            const double ys[4] = { drawnRect.y1, edgePixelCenters.y1, edgePixelCenters.y2, drawnRect.y2 };
+            for (int j = 0; j < 3; ++j) {
+                for (int i = 0; i < 3; ++i) {
+                    const RectD cell(xs[i], ys[j], xs[i + 1], ys[j + 1]);
+                    if (cell.isNull()) {
+                        continue;
+                    }
+                    QPolygonF cellPolygon;
+                    const Implementation::WipePolygonEnum cellType = this->getWipePolygon(cell, rightPlane, &cellPolygon);
+                    if (cellType == Implementation::eWipePolygonEmpty) {
+                        continue;
+                    }
+                    if (cellType == Implementation::eWipePolygonFull) {
+                        cellPolygon.clear();
+                        cellPolygon << QPointF(cell.x1, cell.y1) << QPointF(cell.x2, cell.y1) << QPointF(cell.x2, cell.y2) << QPointF(cell.x1, cell.y2);
+                    }
+                    glBegin(GL_POLYGON);
+                    for (int k = 0; k < cellPolygon.size(); ++k) {
+                        const QPointF& vCoord = cellPolygon[k];
+                        const double tx = std::min(std::max(vCoord.x(), edgePixelCenters.x1), edgePixelCenters.x2);
+                        const double ty = std::min(std::max(vCoord.y(), edgePixelCenters.y1), edgePixelCenters.y2);
+                        glTexCoord2d((tx - canonicalRoIRoundedToTileSize.x1) / canonicalRoIRoundedToTileSize.width(),
+                                     (ty - canonicalRoIRoundedToTileSize.y1) / canonicalRoIRoundedToTileSize.height());
+                        glVertex2d(vCoord.x(), vCoord.y());
+                    }
+                    glEnd();
+                }
             }
-            glEnd();
 
             this->unbindTextureAndReleaseShader(useShader);
         } else {
@@ -370,30 +432,26 @@ ViewerGL::Implementation::drawRenderingVAO(unsigned int mipmapLevel,
     }
 
     if (polygonMode == eDrawPolygonModeWhole) {
-        const double pixelCenterOffset = 0.5;
         // draw vertices at the center of the first and last pixel in the texture, with the same texture coordinates
-        rectClippedToRoI.x1 += pixelCenterOffset * par;
-        rectClippedToRoI.x2 -= pixelCenterOffset * par;
-        rectClippedToRoI.y1 += pixelCenterOffset;
-        rectClippedToRoI.y2 -= pixelCenterOffset;
+        rectClippedToRoI = edgePixelCenters;
         ///Vertices are in canonical coords
         GLfloat vertices[32] = {
-            (GLfloat)rod.left(),          (GLfloat)rod.top(),    //0
-            (GLfloat)rectClippedToRoI.x1, (GLfloat)rod.top(),          //1
-            (GLfloat)rectClippedToRoI.x2, (GLfloat)rod.top(),    //2
-            (GLfloat)rod.right(),         (GLfloat)rod.top(),   //3
-            (GLfloat)rod.left(),          (GLfloat)rectClippedToRoI.y2, //4
-            (GLfloat)rectClippedToRoI.x1, (GLfloat)rectClippedToRoI.y2,       //5
-            (GLfloat)rectClippedToRoI.x2, (GLfloat)rectClippedToRoI.y2, //6
-            (GLfloat)rod.right(),         (GLfloat)rectClippedToRoI.y2, //7
-            (GLfloat)rod.left(),          (GLfloat)rectClippedToRoI.y1,        //8
-            (GLfloat)rectClippedToRoI.x1, (GLfloat)rectClippedToRoI.y1,             //9
-            (GLfloat)rectClippedToRoI.x2, (GLfloat)rectClippedToRoI.y1,       //10
-            (GLfloat)rod.right(),         (GLfloat)rectClippedToRoI.y1,       //11
-            (GLfloat)rod.left(),          (GLfloat)rod.bottom(), //12
-            (GLfloat)rectClippedToRoI.x1, (GLfloat)rod.bottom(),       //13
-            (GLfloat)rectClippedToRoI.x2, (GLfloat)rod.bottom(), //14
-            (GLfloat)rod.right(),         (GLfloat)rod.bottom() //15
+            (GLfloat)drawnRect.left(), (GLfloat)drawnRect.top(), // 0
+            (GLfloat)rectClippedToRoI.x1, (GLfloat)drawnRect.top(), // 1
+            (GLfloat)rectClippedToRoI.x2, (GLfloat)drawnRect.top(), // 2
+            (GLfloat)drawnRect.right(), (GLfloat)drawnRect.top(), // 3
+            (GLfloat)drawnRect.left(), (GLfloat)rectClippedToRoI.y2, // 4
+            (GLfloat)rectClippedToRoI.x1, (GLfloat)rectClippedToRoI.y2, // 5
+            (GLfloat)rectClippedToRoI.x2, (GLfloat)rectClippedToRoI.y2, // 6
+            (GLfloat)drawnRect.right(), (GLfloat)rectClippedToRoI.y2, // 7
+            (GLfloat)drawnRect.left(), (GLfloat)rectClippedToRoI.y1, // 8
+            (GLfloat)rectClippedToRoI.x1, (GLfloat)rectClippedToRoI.y1, // 9
+            (GLfloat)rectClippedToRoI.x2, (GLfloat)rectClippedToRoI.y1, // 10
+            (GLfloat)drawnRect.right(), (GLfloat)rectClippedToRoI.y1, // 11
+            (GLfloat)drawnRect.left(), (GLfloat)drawnRect.bottom(), // 12
+            (GLfloat)rectClippedToRoI.x1, (GLfloat)drawnRect.bottom(), // 13
+            (GLfloat)rectClippedToRoI.x2, (GLfloat)drawnRect.bottom(), // 14
+            (GLfloat)drawnRect.right(), (GLfloat)drawnRect.bottom() // 15
         };
 
         //        GLfloat texBottom =  0;
@@ -423,13 +481,12 @@ ViewerGL::Implementation::drawRenderingVAO(unsigned int mipmapLevel,
             texRight, texBottom    //15
         };
 
-
-        if ( background && this->viewerTab->isCheckerboardEnabled() && (polygonMode != eDrawPolygonModeWipeRight) ) {
+        if (drawCheckerboard) {
             bool isblend = glIsEnabled(GL_BLEND);
             if (isblend) {
                 glDisable(GL_BLEND);
             }
-            this->drawCheckerboardTexture(rod);
+            this->drawCheckerboardTexture(drawnRect);
             if (isblend) {
                 glEnable(GL_BLEND);
             }
@@ -466,6 +523,48 @@ ViewerGL::Implementation::drawRenderingVAO(unsigned int mipmapLevel,
         this->unbindTextureAndReleaseShader(useShader);
     }
 } // drawRenderingVAO
+
+bool
+ViewerGL::Implementation::displaysImageAt(int textureIndex,
+                                          double x,
+                                          double y) const
+{
+    const TextureInfo& info = displayTextures[textureIndex];
+    const RectD& rod = info.rod;
+    if ((x >= rod.x1) && (x < rod.x2) && (y >= rod.y1) && (y < rod.y2)) {
+        return true;
+    }
+
+    return (info.edgeMode == EdgeMode::Stretch) && !rod.isNull();
+}
+
+bool
+ViewerGL::Implementation::getStretchPixelBounds(int textureIndex,
+                                                unsigned int mipmapLevel,
+                                                double par,
+                                                RectI* bounds) const
+{
+    const TextureInfo& info = displayTextures[textureIndex];
+    const RectD& rod = info.rod;
+    if ((info.edgeMode != EdgeMode::Stretch) || rod.isNull()) {
+        return false;
+    }
+    // The pixels under the centres drawRenderingVAO() holds its texture coordinates at.
+    const double scale = 1. / (1 << mipmapLevel);
+    const double pixelCenterOffset = 0.5;
+    bounds->x1 = (int)std::floor((rod.x1 + pixelCenterOffset * par) * scale / par);
+    bounds->x2 = (int)std::floor((rod.x2 - pixelCenterOffset * par) * scale / par) + 1;
+    bounds->y1 = (int)std::floor((rod.y1 + pixelCenterOffset) * scale);
+    bounds->y2 = (int)std::floor((rod.y2 - pixelCenterOffset) * scale) + 1;
+    if (bounds->x2 <= bounds->x1) {
+        bounds->x2 = bounds->x1 + 1;
+    }
+    if (bounds->y2 <= bounds->y1) {
+        bounds->y2 = bounds->y1 + 1;
+    }
+
+    return true;
+}
 
 void
 ViewerGL::Implementation::initializeGL()

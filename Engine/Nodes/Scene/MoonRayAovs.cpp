@@ -25,12 +25,15 @@
 
 #include "MoonRayAovs.h"
 
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <mutex>
+#include <regex>
 #include <set>
 #include <thread>
 
@@ -378,6 +381,34 @@ namespace {
         return !path->IsEmpty();
     }
 
+    // hdMoonray cannot translate Natron's own frame-hold primvars and does not need them, so its notice about them is noise.
+    // The frame token mirrors the "%.17g" encoding of the primvar name: '-' is 'm', '.' is '_', '+' is 'p'.
+    bool
+    isBenignNotice(const std::string& rest)
+    {
+        static const std::regex benign("\\.primvars:natronProjectionFrameHoldm?[0-9]+(_[0-9]+)?(e[pm][0-9]+)?(Column[0-2])?:[ \t]*[^ \t]+ not translated[ \t\r\n]*");
+
+        return std::regex_match(rest, benign);
+    }
+
+    // MoonRay's own words from the rest of a notice: "/World/Cube.material: no shader" gives "no shader".
+    std::string
+    messageOf(const std::string& rest)
+    {
+        size_t start = 0;
+        if (!rest.empty() && ((rest[0] == '.') || (rest[0] == ':'))) {
+            const size_t colon = rest.find(':');
+            start = (colon != std::string::npos) ? colon + 1 : (rest[0] == '.' ? 1 : rest.size());
+        }
+        const size_t first = rest.find_first_not_of(" \t", start);
+        if (first == std::string::npos) {
+            return std::string();
+        }
+        const size_t last = rest.find_last_not_of(" \t\r\n");
+
+        return rest.substr(first, last - first + 1);
+    }
+
     // The nearest prim at or above path on stage.
     UsdPrim
     nearestPrim(const UsdStageRefPtr& stage,
@@ -609,6 +640,7 @@ warningText(const UsdStageRefPtr& stage,
 {
     std::vector<std::string> names[eKindCount];
 
+    std::vector<std::string> lightMessages(unsupported.size());
     for (const Light& light : unsupported) {
         appendName(&names[eKindLight], light.path.GetString() + " (" + light.type + ")");
     }
@@ -619,12 +651,17 @@ warningText(const UsdStageRefPtr& stage,
             }
             const std::string texture = failedTexture(notice.text);
             if (!texture.empty()) {
-                appendName(&names[eKindTexture], texture);
+                // A live texture's file name means nothing to the artist who wired the node.
+                const std::string source = LiveTextureStore::instance().getSourceOfFile(texture);
+                appendName(&names[eKindTexture], source.empty() ? texture : "the image of " + source);
                 continue;
             }
             SdfPath path;
             std::string rest;
             if (!leadingPath(notice.text, &path, &rest)) {
+                continue;
+            }
+            if (isBenignNotice(rest)) {
                 continue;
             }
             const UsdPrim prim = nearestPrim(stage, path);
@@ -636,14 +673,32 @@ warningText(const UsdStageRefPtr& stage,
             if (kind == eKindLight) {
                 // The scan above already names the light with its type.
                 bool named = false;
-                for (const Light& light : unsupported) {
-                    named = named || (light.path == prim.GetPath());
+                const std::string message = messageOf(rest);
+                for (size_t i = 0; i < unsupported.size(); ++i) {
+                    if (unsupported[i].path == prim.GetPath()) {
+                        named = true;
+                        if (!message.empty() && (lightMessages[i].find(message) == std::string::npos)) {
+                            lightMessages[i] += (lightMessages[i].empty() ? "" : "; ") + message;
+                        }
+                    }
                 }
                 if (named) {
                     continue;
                 }
             }
-            appendName(&names[kind], name);
+            const std::string message = messageOf(rest);
+            appendName(&names[kind], message.empty() ? name : name + " (" + message + ")");
+        }
+    }
+    for (size_t i = 0; i < unsupported.size(); ++i) {
+        if (lightMessages[i].empty()) {
+            continue;
+        }
+        const std::string base = unsupported[i].path.GetString() + " (" + unsupported[i].type + ")";
+        std::vector<std::string>& lights = names[eKindLight];
+        const std::vector<std::string>::iterator found = std::find(lights.begin(), lights.end(), base);
+        if (found != lights.end()) {
+            *found = unsupported[i].path.GetString() + " (" + unsupported[i].type + ": " + lightMessages[i] + ")";
         }
     }
     std::string text;

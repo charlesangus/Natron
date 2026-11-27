@@ -54,7 +54,7 @@ struct LiveTextureSource;
  * @brief Authors an unlit material at its prim path (the node's name under the root by default),
  * as a scene source: a UsdPreviewSurface that gives off its emission unchanged by any light, with
  * no diffuse or specular response, as an image projected or shown on a card wants. A geometry node
- * binds it by taking it on its Material input, as it does a USDMaterial.
+ * binds it by taking it on its Material input, as it does a USDPreviewSurface.
  *
  * The emission is the image connected to the Emissive input, live (a natron:// URI per frame, or
  * one for an image that does not change over time); else the Emissive Texture file; else Emissive
@@ -98,6 +98,9 @@ public:
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void initializeKnobs() OVERRIDE FINAL;
+    virtual void onInputChanged(int inputNo) OVERRIDE FINAL;
+    virtual void onInputSourceDeleted(int inputNo,
+                                      const std::string& sourceName) OVERRIDE FINAL;
     virtual void onScriptNameChanged(const std::string& fullyQualifiedName) OVERRIDE FINAL;
     virtual StatusEnum renderScene(const SceneRenderActionArgs& args,
                                    ScenePayload* outputScene,

@@ -397,8 +397,13 @@ struct BezierOverlayPolygons;
 
 struct BezierPrivate
 {
+    // Renders iterate points and featherPoints, the GUI the gui* lists. Both hold the same
+    // BezierCPPtrs; a structural edit made during a render changes the gui* lists alone until
+    // dequeueGuiActions() writes them back.
     BezierCPs points; //< the control points of the curve
     BezierCPs featherPoints; //< the feather points, the number of feather points must equal the number of cp.
+    BezierCPs guiPoints;
+    BezierCPs guiFeatherPoints;
 
     // Orientation of the feather polygon, computed on first read at a time and erased by the
     // edits that reshape the polygon there; the static value is for a shape with no keyframes.
@@ -410,11 +415,14 @@ struct BezierPrivate
     mutable bool guiIsClockwiseOrientedStaticDirty;
     bool autoRecomputeOrientation; // when false, edits leave the orientation cache alone
     bool finished; //< when finished is true, the last point of the list is connected to the first point of the list.
+    bool guiFinished;
     bool isOpenBezier;
+    bool guiIsOpenBezier;
     mutable QMutex guiCopyMutex;
     // What edits made during a render left in the GUI copy only, for dequeueGuiActions() to write
     // back: everything, every point at some times, or some points at every time.
     bool guiDirtyAll;
+    bool guiDirtyList;
     std::set<double> guiDirtyTimes;
     std::set<BezierCPPtr> guiDirtyPoints;
     // Advanced by each edit of the GUI copy alone, which leaves the content hash as it was.
@@ -431,6 +439,8 @@ struct BezierPrivate
     BezierPrivate(bool isOpenBezier)
         : points()
         , featherPoints()
+        , guiPoints()
+        , guiFeatherPoints()
         , isClockwiseOriented()
         , isClockwiseOrientedStatic(false)
         , isClockwiseOrientedStaticDirty(true)
@@ -439,9 +449,12 @@ struct BezierPrivate
         , guiIsClockwiseOrientedStaticDirty(true)
         , autoRecomputeOrientation(true)
         , finished(false)
+        , guiFinished(false)
         , isOpenBezier(isOpenBezier)
+        , guiIsOpenBezier(isOpenBezier)
         , guiCopyMutex()
         , guiDirtyAll(false)
+        , guiDirtyList(false)
         , guiDirtyTimes()
         , guiDirtyPoints()
         , guiEditGeneration(0)
@@ -482,21 +495,61 @@ struct BezierPrivate
         }
     }
 
+    void markGuiDirtyList()
+    {
+        QMutexLocker k(&guiCopyMutex);
+
+        guiEditGeneration.fetch_add(1, std::memory_order_acq_rel);
+        guiDirtyList = true;
+    }
+
     // Moves the pending write-back into the arguments; false when there is none.
     bool takeGuiDirty(bool* all,
+                      bool* list,
                       std::set<double>* times,
                       std::set<BezierCPPtr>* dirtyPoints)
     {
         QMutexLocker k(&guiCopyMutex);
 
         *all = guiDirtyAll;
+        *list = guiDirtyList;
         times->swap(guiDirtyTimes);
         dirtyPoints->swap(guiDirtyPoints);
         guiDirtyAll = false;
+        guiDirtyList = false;
         guiDirtyTimes.clear();
         guiDirtyPoints.clear();
 
-        return *all || !times->empty() || !dirtyPoints->empty();
+        return *all || *list || !times->empty() || !dirtyPoints->empty();
+    }
+
+    const BezierCPs& pointsFor(bool useGuiCurves) const
+    {
+        return useGuiCurves ? guiPoints : points;
+    }
+
+    const BezierCPs& featherPointsFor(bool useGuiCurves) const
+    {
+        return useGuiCurves ? guiFeatherPoints : featherPoints;
+    }
+
+    bool finishedFor(bool useGuiCurves) const
+    {
+        return useGuiCurves ? guiFinished : finished;
+    }
+
+    bool openFor(bool useGuiCurves) const
+    {
+        return useGuiCurves ? guiIsOpenBezier : isOpenBezier;
+    }
+
+    // After a structural edit made under a render-start hold, when both sides are written.
+    void copyGuiListsToRenderLists()
+    {
+        points = guiPoints;
+        featherPoints = guiFeatherPoints;
+        finished = guiFinished;
+        isOpenBezier = guiIsOpenBezier;
     }
 
     bool hasKeyframeAtTime(bool useGuiCurves,
@@ -504,12 +557,11 @@ struct BezierPrivate
     {
         // PRIVATE - should not lock
 
-        if ( points.empty() ) {
+        const BezierCPs& cps = pointsFor(useGuiCurves);
+        if (cps.empty()) {
             return false;
         } else {
-            KeyFrame k;
-
-            return points.front()->hasKeyFrameAtTime(useGuiCurves, time);
+            return cps.front()->hasKeyFrameAtTime(useGuiCurves, time);
         }
     }
 
@@ -518,10 +570,11 @@ struct BezierPrivate
     {
         // PRIVATE - should not lock
 
-        if ( points.empty() ) {
+        const BezierCPs& cps = pointsFor(useGuiCurves);
+        if (cps.empty()) {
             return;
         }
-        points.front()->getKeyframeTimes(useGuiCurves, times);
+        cps.front()->getKeyframeTimes(useGuiCurves, times);
     }
 
     // The shared pointer the shape holds to a control or feather point, or null.
@@ -532,12 +585,12 @@ struct BezierPrivate
         if (!point) {
             return BezierCPPtr();
         }
-        for (BezierCPs::const_iterator it = points.begin(); it != points.end(); ++it) {
+        for (BezierCPs::const_iterator it = guiPoints.begin(); it != guiPoints.end(); ++it) {
             if (it->get() == point) {
                 return *it;
             }
         }
-        for (BezierCPs::const_iterator it = featherPoints.begin(); it != featherPoints.end(); ++it) {
+        for (BezierCPs::const_iterator it = guiFeatherPoints.begin(); it != guiFeatherPoints.end(); ++it) {
             if (it->get() == point) {
                 return *it;
             }
@@ -550,11 +603,11 @@ struct BezierPrivate
     {
         // PRIVATE - should not lock
 
-        if ( ( index >= (int)points.size() ) || (index < 0) ) {
+        if ((index >= (int)guiPoints.size()) || (index < 0)) {
             throw std::out_of_range("RotoSpline::atIndex: non-existent control point");
         }
 
-        BezierCPs::const_iterator it = points.begin();
+        BezierCPs::const_iterator it = guiPoints.begin();
         std::advance(it, index);
 
         return it;
@@ -564,11 +617,11 @@ struct BezierPrivate
     {
         // PRIVATE - should not lock
 
-        if ( ( index >= (int)points.size() ) || (index < 0) ) {
+        if ((index >= (int)guiPoints.size()) || (index < 0)) {
             throw std::out_of_range("RotoSpline::atIndex: non-existent control point");
         }
 
-        BezierCPs::iterator it = points.begin();
+        BezierCPs::iterator it = guiPoints.begin();
         std::advance(it, index);
 
         return it;
@@ -585,11 +638,11 @@ struct BezierPrivate
         // PRIVATE - should not lock
         int i = 0;
 
-        for (BezierCPs::const_iterator it = points.begin(); it != points.end(); ++it, ++i) {
+        for (BezierCPs::const_iterator it = guiPoints.begin(); it != guiPoints.end(); ++it, ++i) {
             Transform::Point3D p;
             p.z = 1;
             (*it)->getPositionAtTime(true, time, view, &p.x, &p.y);
-            p = Transform::matApply(transform, p);
+            p = Transform::matApplyProjected(transform, p);
             if ( ( p.x >= (x - acceptance) ) && ( p.x <= (x + acceptance) ) && ( p.y >= (y - acceptance) ) && ( p.y <= (y + acceptance) ) ) {
                 *index = i;
 
@@ -597,7 +650,7 @@ struct BezierPrivate
             }
         }
 
-        return points.end();
+        return guiPoints.end();
     }
 
     BezierCPs::const_iterator findFeatherPointNearby(double x,
@@ -611,11 +664,11 @@ struct BezierPrivate
         // PRIVATE - should not lock
         int i = 0;
 
-        for (BezierCPs::const_iterator it = featherPoints.begin(); it != featherPoints.end(); ++it, ++i) {
+        for (BezierCPs::const_iterator it = guiFeatherPoints.begin(); it != guiFeatherPoints.end(); ++it, ++i) {
             Transform::Point3D p;
             p.z = 1;
             (*it)->getPositionAtTime(true, time, view, &p.x, &p.y);
-            p = Transform::matApply(transform, p);
+            p = Transform::matApplyProjected(transform, p);
             if ( ( p.x >= (x - acceptance) ) && ( p.x <= (x + acceptance) ) && ( p.y >= (y - acceptance) ) && ( p.y <= (y + acceptance) ) ) {
                 *index = i;
 
@@ -623,7 +676,7 @@ struct BezierPrivate
             }
         }
 
-        return featherPoints.end();
+        return guiFeatherPoints.end();
     }
 };
 
@@ -671,15 +724,133 @@ struct RotoItemPrivate
 
 typedef std::list<RotoItemPtr> RotoItems;
 
+// The transform knob set shapes and layers share, so the node's proxies reach both by name.
+struct RotoTransformKnobs {
+    Q_DECLARE_TR_FUNCTIONS(RotoDrawableItem)
+
+public:
+    KnobDoublePtr translate;
+    KnobDoublePtr rotate;
+    KnobDoublePtr scale;
+    KnobBoolPtr scaleUniform;
+    KnobDoublePtr skewX;
+    KnobDoublePtr skewY;
+    KnobChoicePtr skewOrder;
+    KnobDoublePtr center;
+    KnobDoublePtr extraMatrix;
+
+    void create(std::list<KnobIPtr>* knobs)
+    {
+        translate = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemTranslateParamLabel), 2, true);
+        translate->setName(kRotoDrawableItemTranslateParam);
+        translate->setHintToolTip(tr(kRotoDrawableItemTranslateParamHint));
+        translate->populate();
+        knobs->push_back(translate);
+
+        rotate = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemRotateParamLabel), 1, true);
+        rotate->setName(kRotoDrawableItemRotateParam);
+        rotate->setHintToolTip(tr(kRotoDrawableItemRotateParamHint));
+        rotate->populate();
+        knobs->push_back(rotate);
+
+        scale = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemScaleParamLabel), 2, true);
+        scale->setName(kRotoDrawableItemScaleParam);
+        scale->setHintToolTip(tr(kRotoDrawableItemScaleParamHint));
+        scale->populate();
+        scale->setDefaultValue(1, 0);
+        scale->setDefaultValue(1, 1);
+        knobs->push_back(scale);
+
+        scaleUniform = std::make_shared<KnobBool>((KnobHolder*)NULL, tr(kRotoDrawableItemScaleUniformParamLabel), 1, true);
+        scaleUniform->setName(kRotoDrawableItemScaleUniformParam);
+        scaleUniform->setHintToolTip(tr(kRotoDrawableItemScaleUniformParamHint));
+        scaleUniform->populate();
+        scaleUniform->setDefaultValue(true);
+        knobs->push_back(scaleUniform);
+
+        skewX = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemSkewXParamLabel), 1, true);
+        skewX->setName(kRotoDrawableItemSkewXParam);
+        skewX->setHintToolTip(tr(kRotoDrawableItemSkewXParamHint));
+        skewX->populate();
+        knobs->push_back(skewX);
+
+        skewY = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemSkewYParamLabel), 1, true);
+        skewY->setName(kRotoDrawableItemSkewYParam);
+        skewY->setHintToolTip(tr(kRotoDrawableItemSkewYParamHint));
+        skewY->populate();
+        knobs->push_back(skewY);
+
+        skewOrder = std::make_shared<KnobChoice>((KnobHolder*)NULL, tr(kRotoDrawableItemSkewOrderParamLabel), 1, true);
+        skewOrder->setName(kRotoDrawableItemSkewOrderParam);
+        skewOrder->setHintToolTip(tr(kRotoDrawableItemSkewOrderParamHint));
+        skewOrder->populate();
+        knobs->push_back(skewOrder);
+        {
+            std::vector<ChoiceOption> choices;
+            choices.push_back(ChoiceOption("XY"));
+            choices.push_back(ChoiceOption("YX"));
+            skewOrder->populateChoices(choices);
+        }
+
+        center = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemCenterParamLabel), 2, true);
+        center->setName(kRotoDrawableItemCenterParam);
+        center->setHintToolTip(tr(kRotoDrawableItemCenterParamHint));
+        center->populate();
+        knobs->push_back(center);
+
+        extraMatrix = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemExtraMatrixParamLabel), 9, true);
+        extraMatrix->setName(kRotoDrawableItemExtraMatrixParam);
+        extraMatrix->setHintToolTip(tr(kRotoDrawableItemExtraMatrixParamHint));
+        extraMatrix->populate();
+        extraMatrix->setDefaultValue(1, 0);
+        extraMatrix->setDefaultValue(1, 4);
+        extraMatrix->setDefaultValue(1, 8);
+        knobs->push_back(extraMatrix);
+    }
+
+    void getMatrixAtTime(double time,
+                         Transform::Matrix3x3* matrix) const
+    {
+        double tx = translate->getValueAtTime(time, 0);
+        double ty = translate->getValueAtTime(time, 1);
+        double sx = scale->getValueAtTime(time, 0);
+        double sy = scaleUniform->getValueAtTime(time) ? sx : scale->getValueAtTime(time, 1);
+        double skx = skewX->getValueAtTime(time, 0);
+        double sky = skewY->getValueAtTime(time, 0);
+        double rot = Transform::toRadians(rotate->getValueAtTime(time, 0));
+        double centerX = center->getValueAtTime(time, 0);
+        double centerY = center->getValueAtTime(time, 1);
+        bool skewOrderYX = skewOrder->getValueAtTime(time) == 1;
+        *matrix = Transform::matTransformCanonical(tx, ty, sx, sy, skx, sky, skewOrderYX, rot, centerX, centerY);
+
+        Transform::Matrix3x3 extraMat;
+        extraMat.a = extraMatrix->getValueAtTime(time, 0);
+        extraMat.b = extraMatrix->getValueAtTime(time, 1);
+        extraMat.c = extraMatrix->getValueAtTime(time, 2);
+        extraMat.d = extraMatrix->getValueAtTime(time, 3);
+        extraMat.e = extraMatrix->getValueAtTime(time, 4);
+        extraMat.f = extraMatrix->getValueAtTime(time, 5);
+        extraMat.g = extraMatrix->getValueAtTime(time, 6);
+        extraMat.h = extraMatrix->getValueAtTime(time, 7);
+        extraMat.i = extraMatrix->getValueAtTime(time, 8);
+        *matrix = Transform::matMul(*matrix, extraMat);
+    }
+};
+
 struct RotoLayerPrivate
 {
     RotoItems items;
+    RotoTransformKnobs transform;
+    std::list<KnobIPtr> knobs;
     std::list<KnobIPtr> hostKnobs;
 
     RotoLayerPrivate()
         : items()
+        , transform()
+        , knobs()
         , hostKnobs()
     {
+        transform.create(&knobs);
     }
 };
 
@@ -1051,72 +1222,19 @@ public:
         compOperator->populate();
         knobs.push_back(compOperator);
 
-
-        translate = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemTranslateParamLabel), 2, true);
-        translate->setName(kRotoDrawableItemTranslateParam);
-        translate->setHintToolTip( tr(kRotoDrawableItemTranslateParamHint) );
-        translate->populate();
-        knobs.push_back(translate);
-
-        rotate = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemRotateParamLabel), 1, true);
-        rotate->setName(kRotoDrawableItemRotateParam);
-        rotate->setHintToolTip( tr(kRotoDrawableItemRotateParamHint) );
-        rotate->populate();
-        knobs.push_back(rotate);
-
-        scale = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemScaleParamLabel), 2, true);
-        scale->setName(kRotoDrawableItemScaleParam);
-        scale->setHintToolTip( tr(kRotoDrawableItemScaleParamHint) );
-        scale->populate();
-        scale->setDefaultValue(1, 0);
-        scale->setDefaultValue(1, 1);
-        knobs.push_back(scale);
-
-        scaleUniform = std::make_shared<KnobBool>((KnobHolder*)NULL, tr(kRotoDrawableItemScaleUniformParamLabel), 1, true);
-        scaleUniform->setName(kRotoDrawableItemScaleUniformParam);
-        scaleUniform->setHintToolTip( tr(kRotoDrawableItemScaleUniformParamHint) );
-        scaleUniform->populate();
-        scaleUniform->setDefaultValue(true);
-        knobs.push_back(scaleUniform);
-
-        skewX = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemSkewXParamLabel), 1, true);
-        skewX->setName(kRotoDrawableItemSkewXParam);
-        skewX->setHintToolTip( tr(kRotoDrawableItemSkewXParamHint) );
-        skewX->populate();
-        knobs.push_back(skewX);
-
-        skewY = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemSkewYParamLabel), 1, true);
-        skewY->setName(kRotoDrawableItemSkewYParam);
-        skewY->setHintToolTip( tr(kRotoDrawableItemSkewYParamHint) );
-        skewY->populate();
-        knobs.push_back(skewY);
-
-        skewOrder = std::make_shared<KnobChoice>((KnobHolder*)NULL, tr(kRotoDrawableItemSkewOrderParamLabel), 1, true);
-        skewOrder->setName(kRotoDrawableItemSkewOrderParam);
-        skewOrder->setHintToolTip( tr(kRotoDrawableItemSkewOrderParamHint) );
-        skewOrder->populate();
-        knobs.push_back(skewOrder);
         {
-            std::vector<ChoiceOption> choices;
-            choices.push_back(ChoiceOption("XY"));
-            choices.push_back(ChoiceOption("YX"));
-            skewOrder->populateChoices(choices);
+            RotoTransformKnobs transform;
+            transform.create(&knobs);
+            translate = transform.translate;
+            rotate = transform.rotate;
+            scale = transform.scale;
+            scaleUniform = transform.scaleUniform;
+            skewX = transform.skewX;
+            skewY = transform.skewY;
+            skewOrder = transform.skewOrder;
+            center = transform.center;
+            extraMatrix = transform.extraMatrix;
         }
-
-        center = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemCenterParamLabel), 2, true);
-        center->setName(kRotoDrawableItemCenterParam);
-        center->setHintToolTip( tr(kRotoDrawableItemCenterParamHint) );
-        center->populate();
-        knobs.push_back(center);
-
-        extraMatrix = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoDrawableItemExtraMatrixParamLabel), 9, true);
-        extraMatrix->setName(kRotoDrawableItemExtraMatrixParam);
-        extraMatrix->setHintToolTip( tr(kRotoDrawableItemExtraMatrixParamHint) );
-        extraMatrix->populate();
-        extraMatrix->setDefaultValue(1, 0);
-        extraMatrix->setDefaultValue(1, 4);
-        extraMatrix->setDefaultValue(1, 8);
-        knobs.push_back(extraMatrix);
 
         brushSize = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoBrushSizeParamLabel), 1, true);
         brushSize->setName(kRotoBrushSizeParam);
@@ -1434,6 +1552,15 @@ struct RotoStrokeItemPrivate
     }
 };
 
+/**
+ * @brief A node item knob's own state at one moment: its curves and raw static values.
+ **/
+struct RotoProxyKnobBaseline {
+    std::vector<std::shared_ptr<Curve>> curves;
+    std::vector<double> numbers;
+    std::vector<std::string> strings;
+};
+
 struct RotoContextPrivate
 {
     Q_DECLARE_TR_FUNCTIONS(RotoContext)
@@ -1521,9 +1648,25 @@ public:
     std::list<KnobIWPtr> shapeKnobs;
     // The knobs createTransformKnobs() made, empty when the host has no Transform page.
     std::list<KnobIWPtr> transformKnobs;
+    // The one selected item whose own transform knobs transformKnobs show and edit, if any.
+    RotoDrawableItemWPtr transformTiedItem;
+    // How many TransformTieSuspension objects are alive.
+    int transformTiesSuspended = 0;
 
-    ///This keeps track  of the items linked to the context knobs
     std::list<RotoItemPtr> selectedItems;
+    // Selected only because a layer holding them was: edits on the node's item knobs skip them.
+    std::list<RotoItemPtr> selectedThroughLayer;
+    // The selected item the node's item knobs show.
+    RotoDrawableItemWPtr mirroredItem;
+    // The selected layer the node's transform knobs show and edit instead, when it is the one
+    // transform tied to them and the layers own transforms.
+    RotoLayerWPtr mirroredLayer;
+    // Above zero while the node's item knobs are made to show an item or an edit on them is
+    // replayed on the selected items, so that neither echoes back.
+    int proxySyncDepth = 0;
+    // Each node item knob's state when it last showed an item or had an edit replayed: what an edit
+    // is told apart by.
+    std::map<const KnobI*, RotoProxyKnobBaseline> proxyBaselines;
     RotoItemPtr lastInsertedItem;
     RotoItemPtr lastLockedItem;
     mutable QMutex doingNeatRenderMutex;
@@ -1710,7 +1853,7 @@ public:
      * @brief Creates the Stroke, Clone and Transform pages of a paint context, after the knobs
      * of the constructor. Their order in the node is the one projects are saved in.
      **/
-    void createPaintKnobs()
+    void createPaintKnobs(const std::function<bool(double, Transform::Matrix3x3*)>& transformFrame)
     {
         EffectInstancePtr effect = node.lock()->getEffectInstance();
 
@@ -2064,7 +2207,7 @@ public:
 
         node.lock()->addTransformInteract(translateKnob.lock(), scaleKnob.lock(), scaleUniformKnob.lock(), rotateKnob.lock(),
                                           skewXKnob.lock(), skewYKnob.lock(), skewOrderKnob.lock(), centerKnob.lock(),
-                                          KnobBoolPtr() /*invert*/);
+                                          KnobBoolPtr() /*invert*/, transformFrame);
 
 #ifdef NATRON_ROTO_ENABLE_MOTION_BLUR
         KnobPagePtr mbPage = AppManager::createKnob<KnobPage>(effect.get(), tr("Motion Blur"), 1, true);

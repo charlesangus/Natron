@@ -29,21 +29,18 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 CacheEntryStorageInfo
-makeDummyStorageInfo()
+makeNoBufferStorageInfo()
 {
     CacheEntryStorageInfo info;
 
-    info.mode = eStorageModeRAM;
-    info.dataTypeSize = 1;
-    info.numComponents = 1;
-    info.bounds = RectI(0, 0, 1, 1);
+    info.mode = eStorageModeNone;
 
     return info;
 }
 }
 
 DeepImageParams::DeepImageParams()
-    : NonKeyParams(makeDummyStorageInfo())
+    : NonKeyParams(makeNoBufferStorageInfo())
     , _bounds()
 {
 }
@@ -55,7 +52,7 @@ DeepImageParams::DeepImageParams(const DeepImageParams& other)
 }
 
 DeepImageParams::DeepImageParams(const RectI& bounds)
-    : NonKeyParams(makeDummyStorageInfo())
+    : NonKeyParams(makeNoBufferStorageInfo())
     , _bounds(bounds)
 {
 }

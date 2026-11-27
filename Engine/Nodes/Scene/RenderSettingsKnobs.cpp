@@ -48,6 +48,7 @@
 #include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
+#include "Engine/Nodes/Scene/UtilitySettings.h"
 
 #include <pxr/base/gf/vec2d.h>
 #include <pxr/base/gf/vec2i.h>
@@ -576,9 +577,28 @@ RenderSettingsKnobs::curatedFor(const std::string& rendererId)
         return &CyclesSettings::curated();
     } else if (MoonRayAovs::isMoonRay(rendererId)) {
         return &MoonRaySettings::curated();
+    } else if (rendererId == kRenderDelegateUtilityId) {
+        return &UtilitySettings::curated();
     }
 
     return nullptr;
+}
+
+RenderSettingsKnobs::Values
+RenderSettingsKnobs::engineDefaults(const std::string& rendererId)
+{
+    Values out;
+    const Curated* curated = curatedFor(rendererId);
+
+    if (curated) {
+        for (const CuratedSetting& c : curated->settings) {
+            if (c.engineDefault) {
+                out[c.key] = c.defaultValue;
+            }
+        }
+    }
+
+    return out;
 }
 
 std::vector<std::string>
@@ -817,7 +837,7 @@ RenderSettingsKnobs::labelFromScriptName(const std::string& scriptName,
         }
         words.back() += c;
     }
-    static const char* const acronyms[] = { "AA", "AO", "BSDF", "BSSRDF", "FPS", "GI", "GPU", "ID", "MIS", "OIDN", "RDL" };
+    static const char* const acronyms[] = { "AA", "AO", "BSDF", "BSSRDF", "FPS", "GI", "GPU", "ID", "MIS", "OIDN", "RDL", "UDIM", "UV" };
     std::string label;
     for (const std::string& w : words) {
         std::string word = capitalized(w);
@@ -886,6 +906,7 @@ struct RenderSettingsKnobs::Impl {
         std::vector<Choice> choices;
         std::string follows;
         std::vector<EnabledBy> enabledBy;
+        bool inverted = false;
         KnobIWPtr knob;
     };
 
@@ -942,7 +963,7 @@ struct RenderSettingsKnobs::Impl {
         case eKindBool: {
             KnobBool* b = dynamic_cast<KnobBool*>(k.get());
 
-            return b ? VtValue(b->getValue()) : VtValue();
+            return b ? VtValue(b->getValue() != s.inverted) : VtValue();
         }
         case eKindInt:
         case eKindUInt: {
@@ -1029,7 +1050,7 @@ struct RenderSettingsKnobs::Impl {
         case eKindBool: {
             KnobBool* b = dynamic_cast<KnobBool*>(k.get());
             if (b) {
-                (void)b->setValue(value.UncheckedGet<bool>());
+                (void)b->setValue(value.UncheckedGet<bool>() != s.inverted);
             }
 
             return b != nullptr;
@@ -1092,8 +1113,8 @@ struct RenderSettingsKnobs::Impl {
         }
     } // setKnobValue
 
-    // Whether the knob of the setting named key, a bool or a number, satisfies the condition; a
-    // setting that is missing or neither leaves its dependents enabled.
+    // Whether the knob of the setting named key satisfies the condition; a setting that is
+    // missing, or neither a bool nor a number without equals, leaves its dependents enabled.
     bool conditionHolds(const std::string& renderer,
                         const EnabledBy& condition) const
     {
@@ -1103,7 +1124,9 @@ struct RenderSettingsKnobs::Impl {
         }
         const VtValue v = knobValue(*controller);
         bool on = true;
-        if (v.IsHolding<bool>()) {
+        if (!condition.equals.IsEmpty()) {
+            on = (v == condition.equals);
+        } else if (v.IsHolding<bool>()) {
             on = v.UncheckedGet<bool>();
         } else if (v.IsHolding<int>()) {
             on = v.UncheckedGet<int>() > 0;
@@ -1288,7 +1311,9 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
             scriptName = prefix + capitalized(camelCaseFromKey(key, true)) + std::to_string(n);
         }
         names.insert(scriptName);
-        KnobIPtr k = _imp->makeKnob(labelFromScriptName(scriptName, prefix), knobDefault, choices);
+        const bool inverted = range && range->inverted && knobDefault.IsHolding<bool>();
+        KnobIPtr k = _imp->makeKnob(labelFromScriptName(scriptName, prefix),
+                                    inverted ? VtValue(!knobDefault.UncheckedGet<bool>()) : knobDefault, choices);
         if (!k) {
             return;
         }
@@ -1340,6 +1365,7 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
         setting.delegateDefault = delegateDefault;
         setting.choices = choices;
         setting.follows = follows;
+        setting.inverted = inverted;
         if (range && disabledReason.empty()) {
             setting.enabledBy = range->enabledBy;
         }
@@ -1402,6 +1428,9 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
                 if ((d.key == c.key) && (kindOf(d.defaultValue) == kindOf(c.defaultValue))) {
                     delegateDefault = d.defaultValue;
                 }
+            }
+            if (c.engineDefault) {
+                delegateDefault = c.defaultValue;
             }
             VtValue knobDefault = c.overrideDefault ? c.defaultValue : delegateDefault;
             // A follower starts where its leader, listed before it, does.
@@ -1478,6 +1507,17 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
         addSetting(other, d.key, prefix + capitalized(camelCaseFromKey(d.key, false)), d.name, d.defaultValue, d.defaultValue,
                    std::vector<Choice>(), std::string(), (off == disabled.end()) ? std::string() : off->second, nullptr);
         handled.insert(d.key);
+    }
+    // The settings panel shows no tab for a page without knobs.
+    if (page->getChildren().empty()) {
+        KnobStringPtr note = AppManager::createKnob<KnobString>(_imp->holder, std::string());
+        note->setName(prefix + "NoSettings");
+        note->setDefaultValue(pageLabel + " has no settings.");
+        note->setAsLabel();
+        note->setAnimationEnabled(false);
+        note->setEvaluateOnChange(false);
+        note->setIsPersistent(false);
+        page->addKnob(note);
     }
     _imp->renderers.push_back(renderer);
     refreshEnabled();

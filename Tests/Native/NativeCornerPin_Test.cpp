@@ -46,6 +46,7 @@
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Image/EdgeModeKnob.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Transform/CornerPin.h"
 #include "Engine/Nodes/Transform/Transform.h"
@@ -178,6 +179,51 @@ expectPlanesNear(const RenderedPlane& a,
         maxDiff = std::max(maxDiff, (double)std::abs(a.pixels[i] - b.pixels[i]));
     }
     EXPECT_LE(maxDiff, tolerance) << what;
+}
+
+RectD
+regionOfDefinition(const NodePtr& node)
+{
+    EffectInstancePtr effect = node->getEffectInstance();
+    bool isProjectFormat = false;
+    RectD rod;
+    EXPECT_NE(eStatusFailed, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat));
+
+    return rod;
+}
+
+// A chain's region is the bounding box of each node's bounding box, looser than one resample's
+// region of the whole product. Under Stretch the band between them holds repeated edge pixels in
+// the chain and nothing in the single resample, so the two compare inside the tighter region.
+void
+expectChainMatchesSingleResample(const NodePtr& chain,
+                                 const NodePtr& single,
+                                 const RectI& window,
+                                 const char* what)
+{
+    const RectD chainRoD = regionOfDefinition(chain);
+    const RectD singleRoD = regionOfDefinition(single);
+    EXPECT_LE(chainRoD.x1, singleRoD.x1) << what;
+    EXPECT_LE(chainRoD.y1, singleRoD.y1) << what;
+    EXPECT_GE(chainRoD.x2, singleRoD.x2) << what;
+    EXPECT_GE(chainRoD.y2, singleRoD.y2) << what;
+
+    RenderedPlane chained, combined;
+    ASSERT_TRUE(renderRGBA(chain, window, &chained));
+    ASSERT_TRUE(renderRGBA(single, window, &combined));
+    ASSERT_EQ(chained.pixels.size(), combined.pixels.size()) << what;
+    const RectI inside = window.intersect(singleRoD.toPixelEnclosing(0, 1.));
+    ASSERT_FALSE(inside.isNull()) << what;
+    double maxDiff = 0.;
+    for (int y = inside.y1; y < inside.y2; ++y) {
+        for (int x = inside.x1; x < inside.x2; ++x) {
+            const std::size_t at = ((std::size_t)(y - window.y1) * window.width() + (x - window.x1)) * 4;
+            for (int c = 0; c < 4; ++c) {
+                maxDiff = std::max(maxDiff, (double)std::abs(chained.pixels[at + c] - combined.pixels[at + c]));
+            }
+        }
+    }
+    EXPECT_LE(maxDiff, kResamplingTolerance) << what;
 }
 
 bool
@@ -395,7 +441,7 @@ protected:
         return node;
     }
 
-    void expectBothSchedulerModesAgree(const NodePtr& node)
+    void expectDirectAndScheduledAgree(const NodePtr& node)
     {
         std::vector<int> poolSizes;
         poolSizes.push_back(1);
@@ -453,7 +499,7 @@ TEST_F(NativeCornerPinTest, KnobsUseTheSharedNames)
         kCornerPinNodeParamInvert,
         kCornerPinNodeParamFilter,
         kCornerPinNodeParamClamp,
-        kCornerPinNodeParamBlackOutside,
+        kEdgeModeParam,
         kCornerPinNodeParamMotionBlur,
         kCornerPinNodeParamShutter,
         kCornerPinNodeParamShutterOffset,
@@ -644,11 +690,7 @@ TEST_F(NativeCornerPinTest, ConcatenatesIntoAFollowingTransform)
     ASSERT_TRUE(cornerPin(pin)->getInverseMatrix(kTime, ViewIdx(0), &pinMatrix));
     NodePtr single = makeSingleResample(source, pinMatrix * TransformMath::inverseTransformCanonical(p, 1., false));
 
-    const RectI window(0, 0, 64, 48);
-    RenderedPlane chained, combined;
-    ASSERT_TRUE(renderRGBA(transform, window, &chained));
-    ASSERT_TRUE(renderRGBA(single, window, &combined));
-    expectPlanesNear(combined, chained, kResamplingTolerance, "CornerPin -> Transform against one resample");
+    expectChainMatchesSingleResample(transform, single, RectI(0, 0, 64, 48), "CornerPin -> Transform against one resample");
 }
 
 // A CornerPin after a Transform applies the upstream matrix too.
@@ -675,11 +717,7 @@ TEST_F(NativeCornerPinTest, AppliesAPrecedingTransform)
     ASSERT_TRUE(cornerPin(pin)->getInverseMatrix(kTime, ViewIdx(0), &pinMatrix));
     NodePtr single = makeSingleResample(source, TransformMath::inverseTransformCanonical(p, 1., false) * pinMatrix);
 
-    const RectI window(0, 0, 64, 48);
-    RenderedPlane chained, combined;
-    ASSERT_TRUE(renderRGBA(pin, window, &chained));
-    ASSERT_TRUE(renderRGBA(single, window, &combined));
-    expectPlanesNear(combined, chained, kResamplingTolerance, "Transform -> CornerPin against one resample");
+    expectChainMatchesSingleResample(pin, single, RectI(0, 0, 64, 48), "Transform -> CornerPin against one resample");
 }
 
 TEST_F(NativeCornerPinTest, MaskAndMixStopItOfferingItsMatrix)
@@ -710,11 +748,12 @@ TEST_F(NativeCornerPinTest, MaskAndMixStopItOfferingItsMatrix)
     EXPECT_EQ(0, inputs.front());
 
     ASSERT_TRUE(setKnobValues(pin, kOfxMixParamName, { 0.5 }));
-    expectBothSchedulerModesAgree(pin);
+    expectDirectAndScheduledAgree(pin);
 }
 
 // Without a mask, a mix below 1 blends in the source under the pixel, so the region of definition
-// keeps the source's even when the pin moves the image off it.
+// keeps the source's even when the pin moves the image off it. The Stretch source repeats its left
+// column into the moved image.
 TEST_F(NativeCornerPinTest, MixWithoutAMaskKeepsTheSourceRegion)
 {
     resetProject();
@@ -748,7 +787,8 @@ TEST_F(NativeCornerPinTest, MixWithoutAMaskKeepsTheSourceRegion)
     for (const auto& p : points) {
         const float* pixel = &plane.pixels[((std::size_t)(p[1] - window.y1) * window.width() + (p[0] - window.x1)) * 4];
         for (int c = 0; c < 4; ++c) {
-            EXPECT_NEAR(0.5 * paritySourceColorValue(c, p[0], p[1], kTime), pixel[c], 1e-6) << "pixel (" << p[0] << ", " << p[1] << "), channel " << c;
+            const double moved = paritySourceColorValue(c, 0, p[1], kTime);
+            EXPECT_NEAR(0.5 * (paritySourceColorValue(c, p[0], p[1], kTime) + moved), pixel[c], 1e-6) << "pixel (" << p[0] << ", " << p[1] << "), channel " << c;
         }
     }
 }
@@ -790,16 +830,16 @@ TEST_F(NativeCornerPinTest, MotionBlurOnAnAnimatedPin)
     ASSERT_TRUE(renderRGBA(pin, window, &blurredPin));
     ASSERT_TRUE(renderRGBA(transform, window, &blurredTransform));
     expectPlanesNear(blurredTransform, blurredPin, kMotionBlurTolerance, "animated pin against Transform");
-    expectBothSchedulerModesAgree(pin);
+    expectDirectAndScheduledAgree(pin);
 }
 
-TEST_F(NativeCornerPinTest, RendersTheSameInBothSchedulerModes)
+TEST_F(NativeCornerPinTest, RendersTheSameDirectAndScheduled)
 {
     resetProject();
     NodePtr pin = makeNode(kCornerPinID, kCornerPinMajor, makeSource());
     ASSERT_TRUE(bool(pin));
     ASSERT_TRUE(setPerspectivePin(pin));
-    expectBothSchedulerModesAgree(pin);
+    expectDirectAndScheduledAgree(pin);
 }
 
 TEST_F(NativeCornerPinTest, RegisteredIdentity)

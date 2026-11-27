@@ -45,6 +45,7 @@
 #include "Engine/RFV.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
+#include "Engine/ViewerInstance.h"
 
 #include "Gui/AboutWindow.h"
 #include "Gui/AutoHideToolBar.h"
@@ -123,6 +124,7 @@ Gui::setupUi()
     _imp->createScriptEditorGui();
     _imp->createProgressPanelGui();
     _imp->createSceneGraphPanelGui();
+    _imp->createGeoSpreadsheetPanelGui();
     ///Must be absolutely called once _nodeGraphArea has been initialized.
     _imp->createPropertiesBinGui();
 
@@ -137,7 +139,7 @@ Gui::setupUi()
     _imp->_errorLog->hide();
 
     createDefaultLayoutInternal(false);
-
+    noteDefaultLayout();
 
     initProjectGuiKnobs();
 
@@ -313,6 +315,7 @@ Gui::setActiveViewer(ViewerTab* viewer)
         return;
     }
     _imp->_activeViewer = viewer;
+    getApp()->setViewerActiveForRenders(viewer ? viewer->getInternalNode()->getNode().get() : NULL);
     Q_EMIT activeViewerChanged();
     // RFVRead lists what reaches it from the active viewer.
     RFV::scheduleReaderRefresh(getApp());

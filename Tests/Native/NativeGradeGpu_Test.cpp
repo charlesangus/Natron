@@ -614,6 +614,8 @@ TEST_F(NativeGradeGpuTest, WrapsMaskMixPremultAndChannelsAroundTheGrade)
             NodePtr maskSource = createNode(QString::fromUtf8(kTestPluginIDParitySource));
             ASSERT_TRUE(bool(maskSource));
             setParitySourceComponents(maskSource, c.maskKind == 1 ? "rgba" : "alpha");
+            // The reference takes the mask as 0 past its bounds.
+            setBlackOutside(maskSource, true);
             const int maskInput = grade->getMaskInput();
             ASSERT_GE(maskInput, 0);
             connectNodes(maskSource, node, maskInput, true);

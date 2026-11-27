@@ -666,7 +666,7 @@ TEST_F(USDTexturePaintTest, StrokeOnColorLeavesAnotherPlaneUntouched)
     EXPECT_TRUE(pixelAt(color, kRedU, 0.5).touched);
 
     const std::vector<std::string> channels = { "R", "G", "B" };
-    const ImageLayerDesc diffuse("diffuse", "diffuse", "RGB", channels);
+    const ImageLayerDesc diffuse("diffuse", channels);
     USDTexturePaint::SessionBuffer other;
     ASSERT_TRUE(render(paint, session, diffuse, &other));
     EXPECT_EQ(color.width, other.width);

@@ -8,7 +8,7 @@ depth (`/World//*`, `//*Card*`), `{isa:Mesh}` and the other predicates, and `+`,
 `&`, `-` and `~` to combine them. The result is a `faceVarying` primvar
 named by Primvar Name (`st` by default, which `UsdPreviewSurface` textures read),
 indexed per face vertex, authored as an over on each mesh. Texture it with a
-USDEmissiveMaterial, unlit as USDProject3D is, or a USDMaterial. The UVs are per vertex, so a projection onto coarse geometry warps
+USDEmissiveMaterial, unlit as USDProject3D is, or a USDPreviewSurface. The UVs are per vertex, so a projection onto coarse geometry warps
 between vertices; subdivide the mesh where that shows.
 
 The camera comes from the Camera input, read where it is wired, or from the Scene

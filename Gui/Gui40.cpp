@@ -475,10 +475,18 @@ Gui::getAvailablePaneName(const QString & baseName) const
 void
 Gui::setDraftRenderEnabled(bool b)
 {
+    bool changed;
     {
         QMutexLocker k(&_imp->_isInDraftModeMutex);
 
+        changed = _imp->_isInDraftMode != b;
         _imp->_isInDraftMode = b;
+    }
+    // Some callers re-enable draft on every move of a drag, which must not forget what the drag edits.
+    if (changed) {
+        if (const GuiAppInstancePtr app = getApp()) {
+            app->clearDraftEdits();
+        }
     }
     if (!b) {
         refreshAllTimeEvaluationParams(false);
@@ -536,6 +544,12 @@ SceneGraphPanel*
 Gui::getSceneGraphPanel() const
 {
     return _imp->_sceneGraphPanel;
+}
+
+GeoSpreadsheetPanel*
+Gui::getGeoSpreadsheetPanel() const
+{
+    return _imp->_geoSpreadsheetPanel;
 }
 
 PropertiesBinWrapper*

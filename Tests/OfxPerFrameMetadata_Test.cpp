@@ -86,7 +86,7 @@ int
 nCompsOf(const NodeMetadataConstPtr& metadata,
          int inputNb)
 {
-    if ((inputNb == -1) && (metadata->getOutputStorageNComps() > 0) && (metadata->getComponentsType(-1) == kNatronColorLayerID)) {
+    if ((inputNb == -1) && (metadata->getOutputStorageNComps() > 0) && (metadata->getComponentsType(-1) == eImageComponentsTypeColor)) {
         return metadata->getOutputStorageNComps();
     }
 
@@ -313,8 +313,7 @@ TEST_F(OfxPerFrameMetadataTest, TemporalReadMergesTheFramesItNeeds)
 
     std::vector<RenderedPlane> planes;
     std::string error;
-    ASSERT_TRUE(renderNodePlanesInMode(readWindow, 1, ViewIdx(0), 0, RectI(0, 0, 8, 8), std::list<ImageLayerDesc>(),
-                                       eRenderSchedulerModeTaskGraph, true, &planes, &error))
+    ASSERT_TRUE(renderNodePlanesScheduled(readWindow, 1, ViewIdx(0), 0, RectI(0, 0, 8, 8), true, &planes, &error))
         << error;
     const RenderedPlane* color = NULL;
     for (std::size_t p = 0; p < planes.size(); ++p) {

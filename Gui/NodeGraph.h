@@ -175,6 +175,9 @@ public:
      **/
     void scheduleLoopBlockRefresh(bool topology);
 
+    // Emits selectionChanged once control returns to the event loop.
+    void scheduleSelectionChanged();
+
     using PanelWidget::pushUndoCommand;
 
     /**
@@ -351,6 +354,10 @@ Q_SIGNALS:
      * nodes a loop's body holds.
      **/
     void topologyChanged();
+
+    // Emitted once for any number of nodes selected or deselected since the last return to the
+    // event loop.
+    void selectionChanged();
 
 public Q_SLOTS:
 
@@ -576,7 +583,7 @@ private:
     bool isDrawingLockedVeil() const;
 
     // A null viewPivot zooms about the view centre.
-    void wheelEventInternal(bool ctrlDown, double delta, const QPointF* viewPivot);
+    void wheelEventInternal(double delta, const QPointF* viewPivot);
 
     std::unique_ptr<NodeGraphPrivate> _imp;
 };

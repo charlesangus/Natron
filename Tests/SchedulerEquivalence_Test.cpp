@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <list>
 #include <map>
@@ -93,9 +94,9 @@ const int kLastFrame = 3;
 const int kFramesPerPass = kLastFrame - kFirstFrame + 1;
 const int kFormatSize = 256;
 
-// Passed as the expected unplanned pull count where only "some" can be asserted: how many
-// getImage calls go past the frame store depends on how the host splits the render across
-// threads, which varies with the pool size.
+// Passed as the expected unplanned pull count where only "some" can be asserted, across a pool's
+// frames rather than per frame: frames whose windows overlap serve each other from the cache, and
+// the order they run in, which varies with the pool size, decides which of them does the pulling.
 const int kSomeUnplannedPulls = -1;
 
 const std::vector<int>&
@@ -170,7 +171,7 @@ compareImages(const FlatExrImage& legacy,
             m.x = legacy.x1 + static_cast<int>(pixel % legacy.width);
             m.y = legacy.y1 + static_cast<int>(pixel / legacy.width);
             m.channel = legacy.channels[i % nComps];
-            m.legacy = legacy.pixels[i];
+            m.reference = legacy.pixels[i];
             m.taskGraph = taskGraph.pixels[i];
 
             return m;
@@ -180,20 +181,18 @@ compareImages(const FlatExrImage& legacy,
     return RenderMismatch();
 }
 
-// Restores the pool size and the mode the app was in, with empty caches, however a joint
+// Restores the pool size the app was in, with empty caches, however a joint
 // comparison exits, so a failed comparison cannot leak its state into later tests.
 class JointRenderGuard {
 public:
     JointRenderGuard()
         : _savedPoolSize(QThreadPool::globalInstance()->maxThreadCount())
-        , _savedMode(appPTR->getRenderSchedulerMode())
     {
     }
 
     ~JointRenderGuard()
     {
         QThreadPool::globalInstance()->setMaxThreadCount(_savedPoolSize);
-        appPTR->setRenderSchedulerMode(_savedMode);
         appPTR->clearAllCaches();
     }
 
@@ -202,7 +201,6 @@ public:
 
 private:
     int _savedPoolSize;
-    RenderSchedulerModeEnum _savedMode;
 };
 
 struct JointOutput {
@@ -258,10 +256,12 @@ renderJointly(const std::vector<JointOutput>& outputs,
     return RenderMismatch();
 }
 
-// renderBothWays() for several writers started together: one joint Legacy render, then one joint
-// Task graph render per pool size, every output frame of every writer compared bit for bit.
+// renderBothWays() for several writers started together: each writer rendered alone as the
+// reference, then one joint render per pool size, every output frame of every writer compared bit
+// for bit. `referenceRendered` runs between the reference renders and the joint ones.
 RenderMismatch
-renderJointlyBothWays(const std::vector<NodePtr>& writers)
+renderJointlyBothWays(const std::vector<NodePtr>& writers,
+                      const std::function<void()>& referenceRendered)
 {
     if (writers.empty()) {
         return failure("no writers", kFirstFrame);
@@ -292,23 +292,29 @@ renderJointlyBothWays(const std::vector<NodePtr>& writers)
     JointRenderGuard guard;
     GpuPlacementOffGuard cpuOnly;
 
-    appPTR->setRenderSchedulerMode(eRenderSchedulerModeLegacy);
     appPTR->clearAllCaches();
-    JointFrames legacy;
-    RenderMismatch m = renderJointly(outputs, viewNames, &legacy);
+    JointFrames separate;
+    RenderMismatch m;
+    for (std::size_t i = 0; i < outputs.size() && !m.any; ++i) {
+        JointFrames alone;
+        m = renderJointly(std::vector<JointOutput>(1, outputs[i]), viewNames, &alone);
+        for (JointFrames::const_iterator it = alone.begin(); it != alone.end(); ++it) {
+            separate[std::make_pair(i, it->first.second)] = it->second;
+        }
+    }
     if (m.any) {
-        m.error = "Legacy: " + m.error;
+        m.error = "Separate: " + m.error;
 
         return m;
     }
+    referenceRendered();
 
     for (std::size_t p = 0; p < poolSizes().size(); ++p) {
         QThreadPool::globalInstance()->setMaxThreadCount(poolSizes()[p]);
-        appPTR->setRenderSchedulerMode(eRenderSchedulerModeTaskGraph);
         appPTR->clearAllCaches();
         JointFrames taskGraph;
         m = renderJointly(outputs, viewNames, &taskGraph);
-        for (JointFrames::const_iterator it = legacy.begin(); !m.any && it != legacy.end(); ++it) {
+        for (JointFrames::const_iterator it = separate.begin(); !m.any && it != separate.end(); ++it) {
             const std::string path = SequenceParsing::generateFileNameFromPattern(outputs[it->first.first].pattern, viewNames, it->first.second, 0);
             m = compareImages(it->second, taskGraph[it->first], it->first.second, path);
         }
@@ -336,7 +342,7 @@ protected:
 
         std::shared_ptr<Observed> observed = _observed;
         DefaultScheduler::setFrameStatsObserverForTests([observed](int time, ViewIdx /*view*/, const RenderStatsPtr& stats) {
-            if (!stats || (appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph)) {
+            if (!stats) {
                 return;
             }
             ObservedFrame frame;
@@ -480,8 +486,8 @@ protected:
 
     // Checks the Task graph frames observed since clearObserved(): `passes` passes of every frame
     // per pool size, each run by the scheduler with no Legacy fallback and exactly
-    // `expectedUnplannedPulls` pulls past the frame store (or at least one with
-    // kSomeUnplannedPulls). Every frame's count is printed so the actual values are on record.
+    // `expectedUnplannedPulls` pulls past the frame store (or at least one per pool
+    // size with kSomeUnplannedPulls). Every frame's count is printed so the actual values are on record.
     void checkObserved(const char* label,
                        int passes,
                        int expectedUnplannedPulls,
@@ -491,16 +497,21 @@ protected:
         const std::size_t framesPerPool = static_cast<std::size_t>(passes) * framesPerPass;
         EXPECT_EQ(poolSizes().size() * framesPerPool, _observed->frames.size()) << label;
         std::ostringstream pulls;
+        std::map<int, int> pullsPerPool;
         for (std::size_t i = 0; i < _observed->frames.size(); ++i) {
             const ObservedFrame& frame = _observed->frames[i];
             const int pool = (i / framesPerPool < poolSizes().size()) ? poolSizes()[i / framesPerPool] : -1;
             pulls << " pool " << pool << " frame " << frame.time << ": " << frame.unplannedPulls << ";";
             EXPECT_GT(frame.tasksRun, 0) << label << ", pool " << pool << ", frame " << frame.time;
             EXPECT_EQ(0, frame.legacyFallbacks) << label << ", pool " << pool << ", frame " << frame.time << ": " << describeReasons(frame.fallbackReasons);
-            if (expectedUnplannedPulls == kSomeUnplannedPulls) {
-                EXPECT_GT(frame.unplannedPulls, 0) << label << ", pool " << pool << ", frame " << frame.time;
-            } else {
+            pullsPerPool[pool] += frame.unplannedPulls;
+            if (expectedUnplannedPulls != kSomeUnplannedPulls) {
                 EXPECT_EQ(expectedUnplannedPulls, frame.unplannedPulls) << label << ", pool " << pool << ", frame " << frame.time;
+            }
+        }
+        if (expectedUnplannedPulls == kSomeUnplannedPulls) {
+            for (const int pool : poolSizes()) {
+                EXPECT_GT(pullsPerPool[pool], 0) << label << ", pool " << pool;
             }
         }
         std::cout << "[ unplanned pulls ] " << label << ":" << pulls.str() << std::endl;
@@ -774,8 +785,7 @@ TEST_F(SchedulerEquivalence, TwoWritersOnTwoBranchesRenderedTogether)
     renderAndCheck(leftWriter);
     renderAndCheck(rightWriter);
 
-    clearObserved();
-    const RenderMismatch m = renderJointlyBothWays({ leftWriter, rightWriter });
+    const RenderMismatch m = renderJointlyBothWays({ leftWriter, rightWriter }, [this]() { clearObserved(); });
     EXPECT_FALSE(m.any) << describe(m);
     checkObserved("both writers", 2, 0);
 }

@@ -71,6 +71,17 @@ bool renderNodeImageIfAny(const NodePtr& node,
                           const AbortableRenderInfoPtr& abortInfo = AbortableRenderInfoPtr()) WARN_UNUSED_RETURN;
 
 /**
+ * @brief The node whose image node renders at time: node itself, or, for a disabled node, the first
+ * enabled node along its pass-through inputs, as the engine renders a disabled node. The render
+ * functions here decline a disabled node, so a caller rendering an input resolves it first.
+ *
+ * Returns null for a null node, or a disabled one with no pass-through input to fall back on, which
+ * the caller treats as a disconnected input.
+ **/
+NodePtr resolveDisabledNode(const NodePtr& node,
+                            double time);
+
+/**
  * @brief The part of node's image at time a texture of it holds, in full-scale pixel coordinates,
  * found without rendering: window receives its output format (its display window, the project
  * format when it has none) merged with its region of definition, whole. An infinite region is not merged,
@@ -96,6 +107,8 @@ bool getNodeImageWindow(const NodePtr& node,
  * would, so its upstream nodes render under the part of it each reads: under {udimTile: N} only
  * what reads RenderContextName::udimTile() renders per tile. A null or empty context renders as the
  * viewer does. Its actions, the region of definition included, answer under that context too.
+ *
+ * abortInfo stops the render as for renderNodeImage().
  **/
 bool renderNodeImageOverWindow(const NodePtr& node,
                                double time,
@@ -104,7 +117,8 @@ bool renderNodeImageOverWindow(const NodePtr& node,
                                const RectI& window,
                                ImagePtr* image,
                                RectI* renderedRect,
-                               const RenderContextPtr& context = RenderContextPtr());
+                               const RenderContextPtr& context = RenderContextPtr(),
+                               const AbortableRenderInfoPtr& abortInfo = AbortableRenderInfoPtr());
 
 /**
  * @brief Renders node's output over pixelRect, in pixel coordinates at mipmapLevel, synchronously on

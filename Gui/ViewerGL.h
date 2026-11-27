@@ -51,6 +51,8 @@
 
 NATRON_NAMESPACE_ENTER
 
+enum StaleCueStyleEnum : int;
+
 /**
  *@class ViewerGL
  *@brief The main viewport. This class is part of the ViewerTab GUI and handles all
@@ -65,6 +67,11 @@ GCC_DIAG_SUGGEST_OVERRIDE_ON
 // GUI test scripts map canonical coordinates to widget pixels with this: widget origin of the
 // canonical origin, then widget pixels per canonical unit in x and y (negative y: y points up).
 Q_PROPERTY(QVariantList natronCanonicalToWidget READ canonicalToWidget)
+// GUI test scripts read whether the stale cue is drawn, and whether the image it marks is out of
+// date, from these rather than from pixels.
+Q_PROPERTY(bool natronStaleCueVisible READ isStaleCueVisible)
+Q_PROPERTY(bool natronViewerStale READ isViewerImageStale)
+Q_PROPERTY(int natronViewerStaleTransitions READ staleTransitionCount)
 
 public:
     QVariantList canonicalToWidget() const;
@@ -126,6 +133,8 @@ public:
      **/
     double getZoomFactor() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    void stepZoomPresets(int steps, const QPointF& pivot);
+
     /**
      * @brief Returns the rectangle of the image displayed by the viewer
      **/
@@ -175,6 +184,7 @@ public:
                                             bool isPartialRect,
                                             bool isFirstTile,
                                             TexturePtr* texture) OVERRIDE FINAL;
+    virtual void setDisplayedEdgeMode(int textureIndex, EdgeMode mode) OVERRIDE FINAL;
     virtual void endTransferBufferFromRAMToGPU(int textureIndex,
                                                const TexturePtr& texture,
                                                const ImagePtr& image,
@@ -276,6 +286,13 @@ public Q_SLOTS:
 
     void toggleOverlays();
 
+    // Repaints only when the style or the visibility changed.
+    void setStaleCue(StaleCueStyleEnum style, bool visible);
+    bool isStaleCueVisible() const;
+    bool isViewerImageStale() const;
+    void noteStaleTransition();
+    int staleTransitionCount() const;
+
     void toggleWipe();
 
     void centerWipe();
@@ -308,6 +325,18 @@ public:
                             double b,
                             int flags = 0) OVERRIDE FINAL; //!< see http://doc.qt.io/qt-4.8/qpainter.html#drawText-10
 
+    virtual bool renderViewportText(double x,
+                                    double y,
+                                    const std::string& string,
+                                    double r,
+                                    double g,
+                                    double b,
+                                    int flags = 0) OVERRIDE FINAL;
+
+    virtual void drawInViewportSpace(const std::function<void()>& draw) OVERRIDE FINAL;
+
+    virtual void getCursorPositionInOverlay(double& x,
+                                            double& y) const OVERRIDE FINAL;
 
     void renderText(double x,
                     double y,
@@ -503,6 +532,8 @@ public:
 
     QPointF toZoomCoordinates(const QPointF& position) const;
 
+    QPointF toZoomCoordinatesAtPixelCentre(const QPointF& position) const;
+
     QPointF toWidgetCoordinates(const QPointF& position) const;
 
     void getTopLeftAndBottomRightInZoomCoords(QPointF* topLeft, QPointF* bottomRight) const;
@@ -677,12 +708,11 @@ private:
     void updateInfoWidgetColorPicker(const QPointF & imgPos,
                                      const QPoint & widgetPos);
 
-    void updateInfoWidgetColorPickerInternal(const QPointF & imgPos,
-                                             const QPoint & widgetPos,
+    void updateInfoWidgetColorPickerInternal(const QPointF& imgPos,
+                                             const QPoint& widgetPos,
                                              int width,
                                              int height,
-                                             const RectD & rod, // in canonical coordinates
-                                             const RectD & dispW, // in canonical coordinates
+                                             const RectD& dispW, // in canonical coordinates
                                              int texIndex);
     void updateRectangleColorPicker();
     void updateRectangleColorPickerInternal(bool pickOutput);
@@ -748,6 +778,8 @@ private:
     static double currentTimeForEvent(QInputEvent* e);
 
 private:
+    void onZoomStepped(double oldZoomFactor, double zoomFactor);
+
     struct Implementation;
     std::unique_ptr<Implementation> _imp; // PIMPL: hide implementation details
 };

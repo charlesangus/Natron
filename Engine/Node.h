@@ -306,6 +306,13 @@ public:
     EffectInstancePtr getEffectInstance() const;
 
     /**
+     * @brief Whether effect is this node's effect, or whether it still has one, without racing the
+     * teardown that detaches it. A node kept alive past its teardown no longer has one.
+     **/
+    bool hostsEffect(const EffectInstance* effect) const;
+    bool hasEffectAttached() const;
+
+    /**
      * @brief Returns true if the node is a multi-instance node, that is, holding several other nodes.
      * e.g: the Tracker node.
      **/
@@ -1122,6 +1129,8 @@ public:
 
     bool shouldCacheOutput(bool isFrameVaryingOrAnimated, double time, ViewIdx view, int visitsCount) const;
 
+    const CacheRetentionSignalsPtr& getRetentionSignals() const;
+
     /**
      * @brief Set the position of the node on the nodegraph. It is stored on the node and, in a
      * GUI session, forwarded to the node's GUI. getPosition() returns the stored value.
@@ -1315,6 +1324,13 @@ public:
      **/
     void destroyNode(bool blockingDestroy, bool autoReconnect);
 
+    /**
+     * @brief Tells the outputs deactivate() just disconnected from this node that it was deleted,
+     * through EffectInstance::onInputSourceDeleted(). Deactivating is not deleting: undoing a node's
+     * creation or moving it into a group deactivate it too, so the caller says which this is.
+     **/
+    void notifyOutputsOfDeletion();
+
 private:
 
     void doDestroyNodeInternalEnd(bool autoReconnect);
@@ -1364,6 +1380,11 @@ public:
      **/
     bool isActivated() const;
 
+    /**
+     * @brief Whether destroyNode() started on the node, after which its effect may be gone while
+     * work that holds the node, such as a scene worker's job, still runs. MT-safe
+     **/
+    bool isBeingDestroyed() const;
 
     /**
      * @brief Use this function to post a transient message to the user. It will be displayed using
@@ -1387,6 +1408,13 @@ public:
      * @param content The message you want to pass.
      **/
     void setPersistentMessage(MessageTypeEnum type, const std::string & content);
+
+    /**
+     * @brief Keeps content as an information message the user can read on the node, with no dialog
+     * and no warning or error marking in the node graph or on a viewer. A later message of any
+     * kind, or a clear, replaces it.
+     **/
+    void setQuietInfoMessage(const std::string& content);
 
     /**
      * @brief Clears any message posted previously by setPersistentMessage.
@@ -1470,17 +1498,51 @@ public:
 
     void purgeAllInstancesCaches();
 
-    bool notifyInputNIsRendering(int inputNb);
-
-    void notifyInputNIsFinishedRendering(int inputNb);
-
     bool notifyRenderingStarted();
 
     void notifyRenderingEnded();
 
-    int getIsInputNRenderingCounter(int inputNb) const;
-
     int getIsNodeRenderingCounter() const;
+
+    enum ExecutionDeviceEnum {
+        eExecutionDeviceCpu = 0,
+        eExecutionDeviceGpu = 1
+    };
+
+    /**
+     * @brief Records that this node's effect really ran count times on the device, whatever the render took from a
+     * store or a cache. Safe from any render thread; emits executionCountChanged() when the count leaves zero.
+     **/
+    void noteExecution(ExecutionDeviceEnum device, int count = 1);
+
+    /**
+     * @brief The executions on the device since the last call to this for it, which is then reset, so a render shorter
+     * than a reader's interval is still seen once. Whoever reads the counts owns them: two readers share the executions.
+     **/
+    int takeExecutionCount(ExecutionDeviceEnum device);
+
+    /**
+     * @brief Records that this node read input inputNb's output while the input's pixels were computed for the render
+     * rather than taken from a cache. Safe from any render thread; emits inputExecutionCountChanged() when the count of
+     * the input leaves zero.
+     **/
+    void noteInputExecution(int inputNb);
+
+    /**
+     * @brief Like takeExecutionCount(), for the reads noteInputExecution() recorded on input inputNb.
+     **/
+    int takeInputExecutionCount(int inputNb);
+
+    /**
+     * @brief Records key, made by FrameRenderContext from a frame, a time and a view, as one this node's output was
+     * computed for. Lock free, safe from any render thread.
+     **/
+    void stampFreshOutput(std::uint64_t key) const;
+
+    /**
+     * @brief Whether stampFreshOutput() recorded key and no other key took its place since. Lock free.
+     **/
+    bool hasFreshOutputStamp(std::uint64_t key) const;
 
     /**
      * @brief forwarded to the live instance
@@ -1770,9 +1832,11 @@ public:
 
     /**
      * @brief Fills keyframes with all different keyframes time that all parameters of this
-     * node have. Some keyframes might appear several times.
+     * node have. Some keyframes might appear several times. When accept is set, only the knobs it
+     * accepts contribute.
      **/
-    void getAllKnobsKeyframes(std::list<SequenceTime>* keyframes);
+    void getAllKnobsKeyframes(std::list<SequenceTime>* keyframes,
+                              const std::function<bool(const KnobIPtr&)>& accept = std::function<bool(const KnobIPtr&)>());
 
     bool hasAnimatedKnob() const;
 
@@ -1975,7 +2039,8 @@ public:
                               const KnobDoublePtr& skewY,
                               const KnobChoicePtr& skewOrder,
                               const KnobDoublePtr& center,
-                              const KnobBoolPtr& invert);
+                              const KnobBoolPtr& invert,
+                              const std::function<bool(double, Transform::Matrix3x3*)>& frame = std::function<bool(double, Transform::Matrix3x3*)>());
 
     /**
      * @brief The knobs of the transform interact that drives member, or of the first one the
@@ -2413,6 +2478,11 @@ public:
     void clearStreamWarning(StreamWarningEnum warning);
     void getStreamWarnings(std::map<StreamWarningEnum, QString>* warnings) const;
 
+    /**
+     * @brief The info page's readout for one input, or for the output when inputNumber is -1.
+     **/
+    std::string makeInfoForInput(int inputNumber) const;
+
 private:
 
     bool setStreamWarningInternal(StreamWarningEnum warning, const QString& message);
@@ -2518,6 +2588,8 @@ private:
     void markHashDirtyInternal(bool includeGroupContents,
                                const char* reason,
                                const KnobI* knob);
+
+    unsigned computeRetentionReasons(bool isFrameVaryingOrAnimated, double time, ViewIdx view) const;
 
     /**
      * @brief Marks the dependents of every node marked since the last flush. Any hash read
@@ -2749,11 +2821,11 @@ Q_SIGNALS:
 
     void previewRefreshRequested(double);
 
-    void inputNIsRendering(int inputNb);
-
-    void inputNIsFinishedRendering(int inputNb);
-
     void renderingStarted();
+
+    void executionCountChanged();
+
+    void inputExecutionCountChanged();
 
     void renderingEnded();
 
@@ -2800,7 +2872,6 @@ private:
     void declareTrackerPythonField();
 
     std::string makeCacheInfo() const;
-    std::string makeInfoForInput(int inputNumber) const;
 
     void setNodeIsRenderingInternal(std::list<NodeWPtr>& markedNodes);
 

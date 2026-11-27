@@ -60,6 +60,8 @@ CLANG_DIAG_ON(deprecated-declarations)
 NATRON_NAMESPACE_ENTER
 
 struct RotoContextPrivate;
+struct VectorFollowParams;
+struct VectorFollowReport;
 class ContentHasher;
 
 /**
@@ -159,7 +161,7 @@ public:
     RotoLayerPtr addLayer();
 
 private:
-    RotoLayerPtr addLayerInternal(bool declarePython);
+    RotoLayerPtr addLayerInternal(bool declarePython, bool selectLayer);
 
 public:
     /**
@@ -177,6 +179,13 @@ public:
     std::string generateUniqueName(const std::string& baseName);
 
     /**
+     * @brief Follows the given shapes along the vectors of a node, here and now: the keys are written
+     * on the main thread between reads of the source. The whole follow is one undo step, pushed on
+     * the node or handed over in undo when given. A refused source only sets the report's error.
+     **/
+    VectorFollowReport followVectors(const VectorFollowParams& params, UndoCommandPtr* undo = 0);
+
+    /**
      * @brief Called on every drawable item made for this context, by creation, copy or load,
      * before it is used. The paint context builds the item's render nodes here.
      * @param connectNodes False while loading: the render tree is connected once loading ends.
@@ -190,10 +199,23 @@ public:
     void onLayerCreated(const RotoLayerPtr& layer);
 
     /**
-     * @brief Registers a node knob that edits the per-item host knob of the same name: on
-     * selection it is slaved to the selected item's knob like the Shape page knobs.
+     * @brief Registers a node knob that edits the per-item host knob of the same name: like the
+     * Shape page knobs it shows the last-selected item's knob, and its edits reach every selected
+     * item's knob.
      **/
     void addHostItemKnob(const KnobIPtr& knob);
+
+    /**
+     * @brief True while the undo history undoes or redoes an entry: the entry restores the selected
+     * items' own knobs itself, so an edit it makes on the node's knobs is not forwarded.
+     **/
+    bool isReplayingUndo() const;
+
+    /**
+     * @brief Records the state of targets before an edit is forwarded to them, so that the undo step
+     * that records the edit on the node's knob restores each item's own knob.
+     **/
+    void recordForwardedEdit(const std::list<KnobIPtr>& targets) const;
 
     /**
      * @brief Copies a Bezier or stroke of this context under the given name, through onItemCreated(),
@@ -332,6 +354,27 @@ public:
     bool isTransformKnob(const KnobI* knob) const;
 
     /**
+     * @brief While one is alive no item's transform knobs are tied to the Transform page, so the
+     * page neither shows nor edits any item's transform. Main thread only.
+     **/
+    class TransformTieSuspension {
+    public:
+        explicit TransformTieSuspension(const RotoCurveContextPtr& context);
+        ~TransformTieSuspension();
+
+        TransformTieSuspension(const TransformTieSuspension&) = delete;
+        TransformTieSuspension& operator=(const TransformTieSuspension&) = delete;
+
+    private:
+        RotoCurveContextWPtr _context;
+    };
+
+    /**
+     * @brief The item whose transform knobs the Transform page shows and edits, or null.
+     **/
+    RotoDrawableItemPtr getTransformTiedItem() const;
+
+    /**
      * @brief Sets center to getDefaultTransformCenter(), or else to the centre of the selected
      * items' bounding box, at the current time.
      **/
@@ -362,21 +405,67 @@ public:
      **/
     virtual void composeItemTransform(const RotoDrawableItem& item, double time, const Transform::Matrix3x3& local, Transform::Matrix3x3* matrix) const;
 
-protected:
     /**
-     * @brief False when the Transform page must not edit item's own transform knobs, so selecting
-     * the item leaves them untied. See refreshTransformKnobTies().
+     * @brief Whether a layer's transform knobs move what is inside it, and the node's transform
+     * knobs edit a selected layer's. False for a host that keeps layer transforms of its own.
      **/
-    virtual bool tiesTransformKnobs(const RotoDrawableItem& /*item*/) const
+    virtual bool layersOwnTransforms() const
     {
         return true;
     }
 
     /**
-     * @brief Ties or unties a selected item's transform knobs after tiesTransformKnobs() changed
-     * for it. An item inside a selected layer ends up untied, so edits reach only the layer.
+     * @brief The frame item's own transform applies in: the transforms of its ancestor layers,
+     * outermost first. The identity when there are none or layersOwnTransforms() is false.
      **/
-    void refreshTransformKnobTies(const RotoDrawableItemPtr& item);
+    void getParentLayersTransformAtTime(const RotoItem& item, double time, Transform::Matrix3x3* matrix) const;
+
+    /**
+     * @brief The frame the node's transform knobs edit in: the ancestor layers' transform of the
+     * layer or item they show. Returns false, with the identity, when there is no such frame.
+     * Main thread.
+     **/
+    bool getTransformKnobsFrameAtTime(double time, Transform::Matrix3x3* matrix) const;
+
+    /**
+     * @brief Whether a follow's fit may key item's own transform knobs. They only move item while no
+     * other item's transform takes their place; when one does, the fit is keyed on item's points.
+     **/
+    virtual bool fitKeysOwnTransform(const RotoDrawableItem& /*item*/) const
+    {
+        return true;
+    }
+
+    /**
+     * @brief The other items whose own transform knobs make up item's transform, such as a
+     * transform link target. A follow keys them before item, so item's keys are converted through
+     * the transform they end up with.
+     **/
+    virtual std::list<RotoItemPtr> getTransformSources(const RotoDrawableItem& /*item*/) const
+    {
+        return std::list<RotoItemPtr>();
+    }
+
+protected:
+    /**
+     * @brief False when the Transform page must not edit owner's transform, so selecting owner
+     * leaves the page untied and disabled. See refreshTransformKnobTies().
+     **/
+    virtual bool pageEditsTransform(const RotoItem& /*owner*/) const
+    {
+        return true;
+    }
+
+    /**
+     * @brief Ties the Transform page to the selection's one transform: the node's transform knobs
+     * show the item's own knobs and edits on them reach those alone, when the selection holds
+     * exactly one transform and it is one that pageEditsTransform() allows. A selected layer is
+     * one transform, and an item inside it does not count. Where layersOwnTransforms(), a tied
+     * layer's own knobs are shown and edited; otherwise the host edits it through the page. With
+     * more than one transform selected, none, or one the page must not edit, nothing is tied and
+     * the page is disabled, which hides the transform handle too. Main thread only.
+     **/
+    void refreshTransformKnobTies();
 
     void resetTransformInternal(const KnobDoublePtr& translate,
                                 const KnobDoublePtr& scale,
@@ -391,7 +480,7 @@ protected:
     static void setCenterKnob(const KnobDoublePtr& center, double x, double y);
 
 protected:
-    void getItemsRegionOfDefinition(const std::list<RotoItemPtr>& items, double time, ViewIdx view, RectD* rod) const;
+    void getItemsRegionOfDefinition(const std::list<RotoItemPtr>& items, double time, ViewIdx view, bool useGuiCurves, RectD* rod) const;
 
 public:
     /**
@@ -670,9 +759,19 @@ public Q_SLOTS:
 
     void onRippleEditChanged(bool enabled);
 
-    void onSelectedKnobCurveChanged();
+    void onProxyKnobValueChanged(ViewSpec view, int dimension, int reason);
 
-    void onSelectedKnobValueChanged(ViewSpec view, int dimension, int reason);
+    void onProxyKeyFrameMoved(ViewSpec view, int dimension, double oldTime, double newTime);
+
+    void onProxyKeyFrameInterpolationChanged(double time, ViewSpec view, int dimension);
+
+    void onProxyDerivativeMoved(double time, ViewSpec view, int dimension);
+
+    void onProxyExpressionChanged(int dimension);
+
+    void onProxyCurveChanged();
+
+    void onMirroredItemKnobChanged();
 
     void onLifeTimeKnobValueChanged(ViewSpec, int, int);
 
@@ -683,10 +782,49 @@ private:
     // curves and re-renders.
     void updateTrackLinks(bool redraw);
 
-    void selectInternal(const RotoItemPtr& b, bool slaveKnobs = true);
+    /**
+     * @brief With forwardEdits false, as for the children of a selected layer, edits on the node's
+     * item knobs do not reach the item.
+     **/
+    void selectInternal(const RotoItemPtr& b, bool forwardEdits = true);
     void deselectInternal(RotoItemPtr b);
-    void tieItemKnob(const KnobIPtr& itemKnob, const KnobIPtr& contextKnob, bool slave);
-    void untieItemKnob(const KnobIPtr& itemKnob, bool copyState);
+
+    /**
+     * @brief Makes the node's item knobs show item's own knobs, and follow them while it stays the
+     * item they show. A null item stops the following.
+     **/
+    void mirrorItem(const RotoDrawableItemPtr& item);
+
+    /**
+     * @brief Makes the node's transform knobs show layer's, and follow them, instead of the
+     * mirrored item's. A null layer gives them back to the mirrored item.
+     **/
+    void mirrorLayer(const RotoLayerPtr& layer);
+    bool mirrorsKnob(const RotoDrawableItem& item, const KnobI* proxy) const;
+    bool forwardsKnob(const RotoDrawableItem& item, const KnobI* proxy) const;
+
+    /**
+     * @brief The own knobs, of the selected items, that an edit on the node's item knob proxy is
+     * replayed on.
+     **/
+    std::list<KnobIPtr> forwardTargets(const KnobIPtr& proxy) const;
+    KnobIPtr proxyKnobNamed(const std::string& name) const;
+    void connectProxyKnobs();
+    void snapshotProxy(const KnobIPtr& proxy);
+    void forwardDimensionEdit(const KnobIPtr& proxy, int dimension, ValueChangedReasonEnum reason, const std::list<KnobIPtr>& targets);
+    void forwardProxyChange(const KnobIPtr& proxy, int reason);
+    bool proxyDiffersFromBaseline(const KnobIPtr& proxy) const;
+
+    /**
+     * @brief Shows the mirrored item's knob in proxy again, then takes proxy's state as what has
+     * been forwarded.
+     **/
+    void remirrorProxy(const KnobIPtr& proxy);
+
+    /**
+     * @brief Enables, and marks dirty, the node's item knobs from every selected item.
+     **/
+    void refreshProxyKnobStates();
 
     void restoreSavedSelection(const std::list<std::string>& selectedItemNames);
 

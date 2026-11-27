@@ -32,6 +32,7 @@
 #include "Global/GlobalDefines.h"
 
 #include <QTreeWidget>
+#include <QVariant>
 
 #include <QOpenGLWidget>
 
@@ -159,6 +160,11 @@ public:
     virtual int getStringWidthForCurrentFont(const std::string& string) const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     void refreshSelectionBboxAndRedraw();
+
+    /**
+     * @brief The selected keys as "<parent row>/<row>@<time>", from the rows' labels, for GUI checks.
+     **/
+    Q_INVOKABLE QVariantList selectedKeyframeRows() const;
 
 public Q_SLOTS:
     void redraw() OVERRIDE FINAL;

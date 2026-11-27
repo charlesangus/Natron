@@ -28,6 +28,8 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cmath>
@@ -35,10 +37,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <list>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -47,36 +54,64 @@
 
 #include <dirent.h>
 #include <sys/resource.h>
+#include <unistd.h>
 
 #include <gtest/gtest.h>
 
+#include <OpenImageIO/imageio.h>
+
+#include <QDir>
+#include <QFileInfo>
 #include <QString>
 
 #include <pxr/base/plug/registry.h>
+#include <pxr/base/tf/diagnosticMgr.h>
+#include <pxr/usd/usdGeom/points.h>
 
 #include "BaseTest.h"
+
+#include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/Format.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Generator/CheckerBoard.h"
+#include "Engine/Nodes/Generator/Constant.h"
+#include "Engine/Nodes/Generator/Ramp.h"
+#include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/CyclesSettings.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/LiveTextureSharedMemory.h"
+#include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
+#include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/USDCamera.h"
+#include "Engine/Nodes/Scene/USDCard.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
+#include "Engine/Nodes/Scene/USDEmissiveMaterial.h"
+#include "Engine/Nodes/Scene/USDLight.h"
+#include "Engine/Nodes/Scene/USDMerge.h"
+#include "Engine/Nodes/Scene/USDPreviewSurface.h"
+#include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
+#include "Engine/Project.h"
+#include "Engine/SceneLoadSet.h"
 #include "Engine/ViewIdx.h"
+#include "ProjectionTestUtils.h"
 #include "RenderBothWays.h"
 #include "RenderSettingsTestUtils.h"
 #include "Tests/Native/NativeGolden.h"
+#include "Tests/Scene/LiveViewerRender.h"
 #include "ofxNatron.h"
 
 NATRON_NAMESPACE_USING
@@ -212,9 +247,9 @@ processCpuSeconds()
 ImageLayerDesc
 normalLayer()
 {
-    static const char* const channels[] = { "X", "Y", "Z" };
+    static const char* const channels[] = { "x", "y", "z" };
 
-    return ImageLayerDesc("normal", "normal", "", std::vector<std::string>(channels, channels + 3));
+    return ImageLayerDesc("normal", std::vector<std::string>(channels, channels + 3));
 }
 
 std::list<ImageLayerDesc>
@@ -222,8 +257,8 @@ allPlanes()
 {
     std::list<ImageLayerDesc> layers;
     layers.push_back(ImageLayerDesc::getRGBAComponents());
-    layers.push_back(ImageLayerDesc("depth", "depth", "", std::vector<std::string>(1, "Z")));
-    layers.push_back(ImageLayerDesc("primId", "primId", "", std::vector<std::string>(1, "id")));
+    layers.push_back(ImageLayerDesc("depth", std::vector<std::string>(1, "Z")));
+    layers.push_back(ImageLayerDesc("primId", std::vector<std::string>(1, "id")));
     layers.push_back(normalLayer());
 
     return layers;
@@ -366,7 +401,7 @@ protected:
 
             return false;
         }
-        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(request->scene, &error);
+        SceneQueryPool::Lease lease = SceneQueryPool::instance().borrow(request->scene, SceneLoadSet::everything(), &error);
         if (!lease.getStage()) {
             ADD_FAILURE() << error;
 
@@ -1092,6 +1127,11 @@ cyclesScriptNames()
         { "cycles:integrator:volume_ray_marching", "cyclesVolumeRayMarching" },
         { "cycles:integrator:volume_step_rate", "cyclesVolumeStepRate" },
         { "cycles:background:lightgroup", "cyclesLightgroup" },
+        { "natron:subdivisionSurfaces", "cyclesSubdivisionSurfaces" },
+        { "natron:dicingRate", "cyclesDicingRate" },
+        { "natron:maxSubdivisionLevel", "cyclesMaxSubdivisionLevel" },
+        { "natron:adaptiveSpace", "cyclesAdaptiveSpace" },
+        { "natron:dicingCamera", "cyclesDicingCamera" },
         { "cycles:background:transparent", "cyclesTransparent" },
         { "cycles:background:transparent_glass", "cyclesTransparentGlass" },
         { "cycles:background:transparent_roughness_threshold", "cyclesTransparentRoughnessThreshold" },
@@ -1129,7 +1169,7 @@ cyclesLayout()
 {
     static const std::vector<CyclesGroupLayout> layout = {
         { "cyclesSampling", "cycles", true, { "cyclesSamples", "cyclesUseAdaptiveSampling", "cyclesAdaptiveThreshold", "cyclesAdaptiveMinSamples", "cyclesTimeLimit", "cyclesSeed" } },
-        { "cyclesDenoise", "cycles", true, { "cyclesUseDenoise", "cyclesDenoiserType", "cyclesDenoiserQuality", "cyclesDenoiserPrefilter", "cyclesDenoiserPasses", "cyclesDenoiseStartSample", "cyclesDenoiserUpscaleFactor", "cyclesDenoiseUseGpu", "cyclesDenoisingPassFollowReflections", "cyclesDenoisingPassUseAlbedoRoughnessWeighting" } },
+        { "cyclesDenoise", "cycles", false, { "cyclesUseDenoise", "cyclesDenoiserType", "cyclesDenoiserQuality", "cyclesDenoiserPrefilter", "cyclesDenoiserPasses", "cyclesDenoiseStartSample", "cyclesDenoiserUpscaleFactor", "cyclesDenoiseUseGpu", "cyclesDenoisingPassFollowReflections", "cyclesDenoisingPassUseAlbedoRoughnessWeighting" } },
         { "cyclesLightPaths", "cycles", true, { "cyclesBounces", "cyclesClamping", "cyclesCaustics", "cyclesFastGi" } },
         { "cyclesBounces", "cyclesLightPaths", false, { "cyclesMaxBounce", "cyclesMaxDiffuseBounce", "cyclesMaxGlossyBounce", "cyclesMaxTransmissionBounce", "cyclesMaxVolumeBounce", "cyclesTransparentMaxBounce" } },
         { "cyclesClamping", "cyclesLightPaths", false, { "cyclesSampleClampDirect", "cyclesSampleClampIndirect" } },
@@ -1137,6 +1177,7 @@ cyclesLayout()
         { "cyclesFastGi", "cyclesLightPaths", false, { "cyclesAoBounces", "cyclesAoFactor", "cyclesAoDistance", "cyclesAoAdditiveFactor" } },
         { "cyclesLights", "cycles", false, { "cyclesUseLightTree", "cyclesLightSamplingThreshold" } },
         { "cyclesVolumes", "cycles", false, { "cyclesVolumeRayMarching", "cyclesVolumeMaxSteps", "cyclesVolumeStepRate" } },
+        { "cyclesSubdivision", "cycles", false, { "cyclesSubdivisionSurfaces", "cyclesDicingRate", "cyclesMaxSubdivisionLevel", "cyclesAdaptiveSpace", "cyclesDicingCamera" } },
         { "cyclesPathGuiding", "cycles", false, { "cyclesUseGuiding", "cyclesDeterministicGuiding", "cyclesUseSurfaceGuiding", "cyclesSurfaceGuidingProbability", "cyclesUseVolumeGuiding", "cyclesVolumeGuidingProbability", "cyclesGuidingTrainingSamples", "cyclesUseGuidingDirectLight", "cyclesUseGuidingMisWeights", "cyclesGuidingDistributionType", "cyclesGuidingDirectionalSamplingType", "cyclesGuidingRoughnessThreshold" } },
         { "cyclesLightContributions", "cycles", false, { "cyclesUseDirectLight", "cyclesUseIndirectLight", "cyclesUseDiffuse", "cyclesUseGlossy", "cyclesUseTransmission", "cyclesUseEmission" } },
         { "cyclesFilm", "cycles", false, { "cyclesExposure", "cyclesFilterType", "cyclesFilterWidth", "cyclesTransparent", "cyclesTransparentGlass", "cyclesTransparentRoughnessThreshold", "cyclesUseApproximateShadowCatcher" } },
@@ -1251,6 +1292,10 @@ TEST_F(USDRenderCyclesTest, MenusStartOnTheDeclaredDefault)
         { "cycles:film:filter_type", { 0, 1, 2 } },
     };
 
+    const std::map<std::string, std::vector<std::string>> tokenMenus = {
+        { "natron:adaptiveSpace", { "pixel", "object" } },
+    };
+
     for (const RenderSettingsKnobs::CuratedSetting& c : CyclesSettings::curated().settings) {
         ASSERT_EQ(1u, declared.count(c.key)) << c.key;
         const PXR_NS::VtValue& declaredDefault = declared[c.key];
@@ -1272,6 +1317,16 @@ TEST_F(USDRenderCyclesTest, MenusStartOnTheDeclaredDefault)
         EXPECT_EQ(index, choice->getValue()) << c.key;
         const PXR_NS::VtValue& entry = c.choices[index].value;
         EXPECT_EQ(declaredDefault, entry.IsEmpty() ? declaredDefault : entry) << c.key;
+        const std::map<std::string, std::vector<std::string>>::const_iterator tokens = tokenMenus.find(c.key);
+        if (tokens != tokenMenus.end()) {
+            std::vector<std::string> sent;
+            for (const RenderSettingsKnobs::Choice& e : c.choices) {
+                EXPECT_FALSE(e.label.empty()) << c.key;
+                sent.push_back(e.value.Get<PXR_NS::TfToken>().GetString());
+            }
+            EXPECT_EQ(tokens->second, sent) << c.key;
+            continue;
+        }
         const std::map<std::string, std::vector<int>>::const_iterator values = menus.find(c.key);
         if (values == menus.end()) {
             EXPECT_FALSE(c.disabledReason.empty()) << c.key << " is a menu the test does not list";
@@ -1345,6 +1400,8 @@ TEST_F(USDRenderCyclesTest, CuratedKnobsReachTheDelegate)
         // The denoising render below needs passes and a resolution it can run with.
         "cycles:integrator:denoiser_passes",
         "cycles:integrator:denoiser_upscale_factor",
+        // A camera path, which the nudge would make into one that names no camera.
+        "natron:dicingCamera",
     };
     std::vector<std::string> nudged;
     for (const RenderSettingsKnobs::CuratedSetting& c : CyclesSettings::curated().settings) {
@@ -1410,6 +1467,907 @@ TEST_F(USDRenderCyclesTest, EveryDeclaredSettingHasAKnob)
     }
     EXPECT_EQ(std::set<std::string>({ "cycles:film:display_pass", "cycles:film:show_active_pixels", "cycles:film:use_sample_count" }), setByNatron);
     EXPECT_EQ(cyclesScriptNames(), reached);
+}
+
+namespace {
+// Pixels of the cage of kSubdivisionCube's front face, a quad two units wide nine units from the
+// camera: (21, 21) is just inside its corner, which a Catmull-Clark limit surface pulls far inward.
+const int kCageCornerX = 21;
+const int kCageCornerY = 21;
+
+// Usda text for a mesh cube named name, two units wide times scale, at x on the x axis, of scheme,
+// with extra text in its body.
+std::string
+subdivisionCube(const char* name,
+                const char* scheme,
+                double scale = 1.,
+                double x = 0.,
+                const std::string& extra = std::string())
+{
+    const std::string s = std::to_string(scale);
+
+    return std::string("    def Mesh \"") + name + "\"\n    {\n"
+                                                   "        uniform token subdivisionScheme = \""
+        + scheme + "\"\n"
+                   "        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]\n"
+                   "        int[] faceVertexIndices = [0, 1, 3, 2, 2, 3, 5, 4, 4, 5, 7, 6, 6, 7, 1, 0, 1, 7, 5, 3, 6, 0, 2, 4]\n"
+                   "        point3f[] points = [(-"
+        + s + ", -" + s + ", " + s + "), (" + s + ", -" + s + ", " + s + "), (-" + s + ", " + s + ", " + s + "), (" + s + ", " + s + ", " + s + "), (-" + s + ", " + s + ", -" + s + "), (" + s + ", " + s + ", -" + s + "), (-" + s + ", -" + s + ", -" + s + "), (" + s + ", -" + s + ", -" + s + ")]\n"
+                                                                                                                                                                                                                                                                                                    "        color3f[] primvars:displayColor = [(0.8, 0.2, 0.1)]\n"
+                                                                                                                                                                                                                                                                                                    "        double3 xformOp:translate = ("
+        + std::to_string(x) + ", 0, 0)\n"
+                              "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+        + extra + "    }\n";
+}
+
+// Writes a stage of meshes, usda text, with kFixture's camera and a second one far behind it.
+bool
+writeSubdivisionStage(const QString& file,
+                      const std::string& meshes)
+{
+    const std::string text = std::string("#usda 1.0\n(\n    defaultPrim = \"World\"\n    upAxis = \"Y\"\n)\n\n"
+                                         "def Xform \"World\"\n{\n")
+        + meshes + "    def Camera \"Cam\"\n    {\n        float focalLength = 35\n"
+                   "        float horizontalAperture = 20.955\n        float verticalAperture = 20.955\n"
+                   "        double3 xformOp:translate = (0, 0, 10)\n        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n"
+                   "    def Camera \"FarCam\"\n    {\n        float focalLength = 35\n"
+                   "        float horizontalAperture = 20.955\n        float verticalAperture = 20.955\n"
+                   "        double3 xformOp:translate = (0, 0, 400)\n        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n"
+                   "}\n";
+    std::FILE* f = std::fopen(file.toStdString().c_str(), "w");
+    if (!f) {
+        return false;
+    }
+    const bool written = std::fwrite(text.data(), 1, text.size(), f) == text.size();
+
+    return (std::fclose(f) == 0) && written;
+}
+
+// The sum of the alpha of the pixels of rgba, kSize x kSize, in columns [x0, x1).
+double
+coverage(const std::vector<float>& rgba,
+         int x0 = 0,
+         int x1 = kSize)
+{
+    double sum = 0.;
+    for (int y = 0; y < kSize; ++y) {
+        for (int x = x0; x < x1; ++x) {
+            sum += rgba[pixelIndex(x, y) * 4 + 3];
+        }
+    }
+
+    return sum;
+}
+
+// Keeps the text of every warning posted while it is attached.
+class WarningCollector
+    : public PXR_NS::TfDiagnosticMgr::Delegate {
+public:
+    WarningCollector() { PXR_NS::TfDiagnosticMgr::GetInstance().AddDelegate(this); }
+    ~WarningCollector() override { PXR_NS::TfDiagnosticMgr::GetInstance().RemoveDelegate(this); }
+
+    void IssueError(const PXR_NS::TfError&) override { }
+    void IssueFatalError(const PXR_NS::TfCallContext&, const std::string&) override { }
+    void IssueStatus(const PXR_NS::TfStatus&) override { }
+    void IssueWarning(const PXR_NS::TfWarning& warning) override
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        messages.push_back(warning.GetCommentary());
+    }
+
+    bool any(const std::string& a,
+             const std::string& b)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        for (const std::string& m : messages) {
+            if ((m.find(a) != std::string::npos) && (m.find(b) != std::string::npos)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    std::mutex mutex;
+    std::vector<std::string> messages;
+};
+} // anon namespace
+
+class USDRenderCyclesSubdivisionTest
+    : public USDRenderCyclesTest {
+protected:
+    // Renders the stage of meshes with fixedSampling() and settings on Cycles' engine; false after
+    // a gtest failure.
+    bool renderStage(const std::string& meshes,
+                     const std::map<std::string, PXR_NS::VtValue>& settings,
+                     std::vector<float>* rgba)
+    {
+        std::map<std::string, PXR_NS::VtValue> all = fixedSampling(16);
+        all.insert(settings.begin(), settings.end());
+        HydraRender::setRendererSettings(kRenderDelegateCyclesId, all);
+        HydraRender::releaseAllCpuEngines();
+        const QString file = _dir.path() + QString::fromUtf8("/subdivision") + QString::number(_files++) + QString::fromUtf8(".usda");
+        if (!_dir.isValid() || !writeSubdivisionStage(file, meshes)) {
+            ADD_FAILURE() << "cannot write " << file.toStdString();
+
+            return false;
+        }
+        NodePtr node = createGraph(nullptr, file.toStdString().c_str());
+        if (!node) {
+            return false;
+        }
+        std::vector<RenderedPlane> planes;
+        if (!renderAll(node, &planes)) {
+            return false;
+        }
+        *rgba = planes[0].pixels;
+
+        return true;
+    }
+
+    static std::map<std::string, PXR_NS::VtValue> on(std::map<std::string, PXR_NS::VtValue> settings = std::map<std::string, PXR_NS::VtValue>())
+    {
+        settings["natron:subdivisionSurfaces"] = PXR_NS::VtValue(true);
+
+        return settings;
+    }
+
+    QTemporaryDir _dir;
+    int _files = 0;
+};
+
+// With Subdivision Surfaces on, a Catmull-Clark cube renders as its rounded limit surface; off, it
+// covers what its cage, a cube of scheme none, does, which renders the same either way. The cube of
+// scheme none is shaded flat and the other smooth, so only their alpha matches.
+TEST_F(USDRenderCyclesSubdivisionTest, SubdivisionSurfacesFollowTheScheme)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const std::string smooth = subdivisionCube("Cube", "catmullClark");
+    const std::string none = subdivisionCube("Cube", "none");
+    std::vector<float> smoothOff, smoothOn, noneOff, noneOn;
+    ASSERT_TRUE(renderStage(smooth, std::map<std::string, PXR_NS::VtValue>(), &smoothOff));
+    ASSERT_TRUE(renderStage(smooth, on(), &smoothOn));
+    ASSERT_TRUE(renderStage(none, std::map<std::string, PXR_NS::VtValue>(), &noneOff));
+    ASSERT_TRUE(renderStage(none, on(), &noneOn));
+
+    const std::size_t corner = pixelIndex(kCageCornerX, kCageCornerY);
+    const std::size_t centre = pixelIndex(kNearX, kNearY);
+    EXPECT_NEAR(1.f, smoothOff[corner * 4 + 3], 1e-3f);
+    EXPECT_LT(smoothOn[corner * 4 + 3], 0.5f);
+    EXPECT_NEAR(1.f, smoothOn[centre * 4 + 3], 1e-3f);
+    EXPECT_LT(coverage(smoothOn), 0.95 * coverage(smoothOff));
+
+    const std::size_t pixels = (std::size_t)kSize * (std::size_t)kSize;
+    std::size_t alphaDiffers = 0;
+    for (std::size_t p = 0; p < pixels; ++p) {
+        alphaDiffers += (std::fabs(smoothOff[p * 4 + 3] - noneOff[p * 4 + 3]) > kChannelTolerance) ? 1 : 0;
+    }
+    EXPECT_EQ(0u, alphaDiffers);
+    EXPECT_EQ(0u, differingPixels(noneOff, noneOn));
+    EXPECT_GT(differingPixels(smoothOff, smoothOn), (std::size_t)(kDifferingFraction * (double)pixels));
+}
+
+// A Loop mesh renders as Catmull-Clark, with a warning that names it. Cycles' warnings go to the
+// console only.
+TEST_F(USDRenderCyclesSubdivisionTest, LoopRendersAsCatmullClarkWithAWarning)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    std::vector<float> smooth, loop;
+    ASSERT_TRUE(renderStage(subdivisionCube("Cube", "catmullClark"), on(), &smooth));
+    WarningCollector warnings;
+    ASSERT_TRUE(renderStage(subdivisionCube("Cube", "loop"), on(), &loop));
+
+    EXPECT_TRUE(warnings.any("/World/Cube", "Loop"));
+    const std::size_t corner = pixelIndex(kCageCornerX, kCageCornerY);
+    EXPECT_LT(loop[corner * 4 + 3], 0.5f);
+    EXPECT_EQ(0u, differingPixels(smooth, loop));
+}
+
+// A coarse dicing rate renders the limit surface in fewer, larger facets than a fine one.
+TEST_F(USDRenderCyclesSubdivisionTest, DicingRateSetsTheFacetSize)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const std::string cube = subdivisionCube("Cube", "catmullClark");
+    std::map<std::string, PXR_NS::VtValue> fine, coarse;
+    fine["natron:dicingRate"] = PXR_NS::VtValue(0.5f);
+    coarse["natron:dicingRate"] = PXR_NS::VtValue(8.f);
+    std::vector<float> fineRgba, coarseRgba, defaultRgba;
+    ASSERT_TRUE(renderStage(cube, on(fine), &fineRgba));
+    ASSERT_TRUE(renderStage(cube, on(coarse), &coarseRgba));
+    ASSERT_TRUE(renderStage(cube, on(), &defaultRgba));
+
+    EXPECT_GT(differingPixels(fineRgba, coarseRgba), 0u);
+    // The coarse surface is a polygon inside the smooth one, so it covers less.
+    EXPECT_LT(coverage(coarseRgba), coverage(fineRgba));
+    EXPECT_LE(differingPixels(fineRgba, defaultRgba), differingPixels(coarseRgba, defaultRgba));
+}
+
+// A cycles:max_level primvar of 1 coarsens its own mesh only, and cycles:dicing_rate scales the
+// rate of its own mesh only.
+TEST_F(USDRenderCyclesSubdivisionTest, PrimvarsOverrideOneMesh)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const std::string left = subdivisionCube("Left", "catmullClark", 0.5, -1.2);
+    const std::string right = subdivisionCube("Right", "catmullClark", 0.5, 1.2);
+    const std::string capped = subdivisionCube("Right", "catmullClark", 0.5, 1.2, "        int primvars:cycles:max_level = 1 (\n            interpolation = \"constant\"\n        )\n");
+    const std::string scaled = subdivisionCube("Right", "catmullClark", 0.5, 1.2, "        float primvars:cycles:dicing_rate = 16 (\n            interpolation = \"constant\"\n        )\n");
+    std::vector<float> both, cappedRgba, scaledRgba;
+    ASSERT_TRUE(renderStage(left + right, on(), &both));
+    ASSERT_TRUE(renderStage(left + capped, on(), &cappedRgba));
+    ASSERT_TRUE(renderStage(left + scaled, on(), &scaledRgba));
+
+    const int half = kSize / 2;
+    for (const std::vector<float>* overridden : { &cappedRgba, &scaledRgba }) {
+        EXPECT_NEAR(coverage(both, 0, half), coverage(*overridden, 0, half), 0.5);
+        EXPECT_LT(coverage(*overridden, half, kSize), coverage(both, half, kSize) - 1.);
+    }
+}
+
+// Dicing as seen from a camera far behind the render camera coarsens what the render camera sees.
+TEST_F(USDRenderCyclesSubdivisionTest, AFarDicingCameraCoarsensTheMesh)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const std::string cube = subdivisionCube("Cube", "catmullClark");
+    std::map<std::string, PXR_NS::VtValue> far;
+    far["natron:dicingCamera"] = PXR_NS::VtValue(std::string("/World/FarCam"));
+    std::vector<float> nearRgba, farRgba;
+    ASSERT_TRUE(renderStage(cube, on(), &nearRgba));
+    ASSERT_TRUE(renderStage(cube, on(far), &farRgba));
+
+    EXPECT_GT(differingPixels(nearRgba, farRgba), 0u);
+    EXPECT_LT(coverage(farRgba), coverage(nearRgba));
+}
+
+// USDRender's Subdivision Surfaces knob subdivides a Catmull-Clark cube, and its Dicing Rate knob
+// changes the result.
+TEST_F(USDRenderCyclesSubdivisionTest, KnobsSubdivideAndDice)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const QString file = _dir.path() + QString::fromUtf8("/knobs.usda");
+    ASSERT_TRUE(_dir.isValid());
+    ASSERT_TRUE(writeSubdivisionStage(file, subdivisionCube("Cube", "catmullClark")));
+    NodePtr node = createGraph(nullptr, file.toStdString().c_str());
+    ASSERT_TRUE(bool(node));
+    const RenderSettingsKnobs* settings = cyclesSettingsOf(node);
+    ASSERT_TRUE(settings != nullptr);
+    KnobBool* subdivide = dynamic_cast<KnobBool*>(settings->knob(kRenderDelegateCyclesId, "natron:subdivisionSurfaces").get());
+    KnobDouble* rate = dynamic_cast<KnobDouble*>(settings->knob(kRenderDelegateCyclesId, "natron:dicingRate").get());
+    ASSERT_TRUE(subdivide != nullptr);
+    ASSERT_TRUE(rate != nullptr);
+    EXPECT_FALSE(subdivide->getValue());
+    EXPECT_FALSE(rate->isEnabled(0));
+
+    std::vector<RenderedPlane> cage, smooth, coarse;
+    ASSERT_TRUE(renderAll(node, &cage));
+    subdivide->setValue(true);
+    EXPECT_TRUE(rate->isEnabled(0));
+    ASSERT_TRUE(renderAll(node, &smooth));
+    rate->setValue(8.);
+    ASSERT_TRUE(renderAll(node, &coarse));
+
+    const std::size_t corner = pixelIndex(kCageCornerX, kCageCornerY);
+    EXPECT_NEAR(1.f, cage[0].pixels[corner * 4 + 3], 1e-3f);
+    EXPECT_LT(smooth[0].pixels[corner * 4 + 3], 0.5f);
+    EXPECT_GT(differingPixels(smooth[0].pixels, coarse[0].pixels), 0u);
+}
+
+namespace {
+// Two assets, each a payload holding a unit cube, left and right of the centre of /World/Cam's view.
+class PayloadPair {
+public:
+    PayloadPair()
+    {
+        static std::atomic<int> counter(0);
+
+        _dir = std::filesystem::temp_directory_path() / ("usdrender_payload_pair_" + std::to_string(::getpid()) + "_" + std::to_string(counter++));
+        std::filesystem::create_directories(_dir);
+        _dir = std::filesystem::canonical(_dir);
+        for (const char* side : { "left", "right" }) {
+            std::ofstream asset((_dir / (std::string(side) + ".usda")).string());
+            asset << "#usda 1.0\n(\n    defaultPrim = \"Asset\"\n)\ndef Xform \"Asset\"\n{\n    def Cube \"Geo\"\n    {\n        double size = 1\n    }\n}\n";
+        }
+        std::ofstream root(rootPath());
+        root << "#usda 1.0\n(\n    defaultPrim = \"World\"\n    metersPerUnit = 1\n    upAxis = \"Y\"\n)\ndef Xform \"World\"\n{\n"
+             << "    def Xform \"Left\" (\n        prepend payload = @./left.usda@\n    )\n    {\n"
+             << "        double3 xformOp:translate = (-1.5, 0, 0)\n        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n"
+             << "    def Xform \"Right\" (\n        prepend payload = @./right.usda@\n    )\n    {\n"
+             << "        double3 xformOp:translate = (1.5, 0, 0)\n        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n"
+             << "    def Camera \"Cam\"\n    {\n        float focalLength = 35\n        float horizontalAperture = 20.955\n"
+             << "        float verticalAperture = 20.955\n        double3 xformOp:translate = (0, 0, 10)\n"
+             << "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n    }\n}\n";
+    }
+
+    ~PayloadPair()
+    {
+        std::error_code ignored;
+        std::filesystem::remove_all(_dir, ignored);
+    }
+
+    std::string rootPath() const
+    {
+        return (_dir / "root.usda").string();
+    }
+
+private:
+    std::filesystem::path _dir;
+};
+
+ScenePayload
+evaluated(const NodePtr& node,
+          const SceneEvaluationContext& context = SceneEvaluationContext())
+{
+    ScenePayload payload;
+    std::string error;
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0), context), &payload, &error)) << error;
+
+    return payload;
+}
+
+// The prims a USDRender's primId plane shows, by the paths its metadata gives their ids.
+std::set<std::string>
+renderedPrims(const NodePtr& node,
+              const RenderedPlane& primId)
+{
+    std::set<std::string> paths;
+    NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
+    EXPECT_TRUE(effect != nullptr);
+    if (!effect) {
+        return paths;
+    }
+    const ImageMetadata metadata = effect->getOutputMetadata(1., ViewIdx(0));
+    std::set<std::uint32_t> ids;
+    for (float value : primId.pixels) {
+        if (bitsOf(value) != 0) {
+            ids.insert(bitsOf(value));
+        }
+    }
+    for (std::uint32_t id : ids) {
+        char key[32];
+        std::snprintf(key, sizeof(key), kUSDRenderMetadataPrimIdPrefix "%08x", id);
+        const std::optional<std::string> path = metadata.getString(key);
+        EXPECT_TRUE(path.has_value()) << key;
+        if (path) {
+            paths.insert(*path);
+        }
+    }
+
+    return paths;
+}
+
+// The planes differing in any bit, by name.
+std::vector<std::string>
+differingPlanes(const std::vector<RenderedPlane>& a,
+                const std::vector<RenderedPlane>& b)
+{
+    std::vector<std::string> names;
+    for (std::size_t p = 0; p < std::max(a.size(), b.size()); ++p) {
+        bool same = (p < a.size()) && (p < b.size()) && (a[p].pixels.size() == b[p].pixels.size());
+        for (std::size_t i = 0; same && (i < a[p].pixels.size()); ++i) {
+            same = bitsOf(a[p].pixels[i]) == bitsOf(b[p].pixels[i]);
+        }
+        if (!same) {
+            names.push_back((p < a.size()) ? a[p].layer.getLayerID() : std::to_string(p));
+        }
+    }
+
+    return names;
+}
+} // anon namespace
+
+// A viewer's Cycles render alive in the same process, its draw rules boxing the card and hiding
+// every light, leaves USDRender's planes bit for bit as they are with no viewer: the draw filter,
+// and the headlight that stands in for hidden lights, belong to the viewer's engine alone.
+TEST_F(USDRenderCyclesTest, AViewersDrawRulesLeaveTheRenderAsItIs)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr reader;
+    NodePtr node = createGraph(&reader, kNormalMapFixture);
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> alone;
+    ASSERT_TRUE(renderAll(node, &alone));
+    // The render beside the viewer builds its engine while the viewer's lives.
+    HydraRender::releaseAllCpuEngines();
+    ASSERT_EQ(0u, HydraRender::getCpuEngineCount());
+
+    LiveViewerRender viewer;
+    SceneDrawFilter::Rules rules;
+    rules[PXR_NS::SdfPath("/World/Card")] = SceneDrawFilter::eRuleHide;
+    rules[PXR_NS::SdfPath("/World/Sun")] = SceneDrawFilter::eRuleHidden;
+    ASSERT_TRUE(viewer.start(evaluated(reader), kCamera, kSize, rules));
+    ASSERT_TRUE(viewer.waitUntilDone());
+    EXPECT_TRUE(viewer.pickedPrims().empty()) << "the viewer's rules do not reach its render";
+
+    std::vector<RenderedPlane> beside;
+    ASSERT_TRUE(renderAll(node, &beside));
+    EXPECT_TRUE(viewer.render().getStatus().active);
+    const std::vector<std::string> differing = differingPlanes(alone, beside);
+    EXPECT_TRUE(differing.empty()) << differing.size() << " planes differ with a viewer alive, the first " << (differing.empty() ? std::string() : differing.front());
+    EXPECT_EQ(renderedPrims(node, alone[2]), (std::set<std::string> { "/World/Card" }));
+}
+
+// A viewer's stage with nothing loaded, then every payload loaded and Render Everything on, holds the
+// prims USDRender's stage of the default evaluation context does, and its Cycles render shows the
+// prims USDRender's does, although its rules box one asset and hide the other.
+TEST_F(USDRenderCyclesTest, RenderEverythingMatchesTheRender)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    PayloadPair assets;
+    NodePtr reader;
+    NodePtr node = createGraph(&reader, assets.rootPath().c_str());
+    ASSERT_TRUE(bool(node));
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderAll(node, &planes));
+    const std::set<std::string> rendered = renderedPrims(node, planes[2]);
+    EXPECT_EQ((std::set<std::string> { "/World/Left/Geo", "/World/Right/Geo" }), rendered);
+    const std::set<std::string> renderStage = LiveViewerRender::primsOf(SceneOps::compose(evaluated(reader)));
+    EXPECT_EQ(1u, renderStage.count("/World/Left/Geo"));
+
+    LiveViewerRender viewer(PXR_NS::UsdStage::LoadNone);
+    const U64 contextId = SceneEvaluationContext::makeId();
+    SceneDrawFilter::Rules rules;
+    rules[PXR_NS::SdfPath("/World/Left")] = SceneDrawFilter::eRuleHide;
+    rules[PXR_NS::SdfPath("/World/Right")] = SceneDrawFilter::eRuleHidden;
+    ASSERT_TRUE(viewer.start(evaluated(reader, SceneEvaluationContext(contextId, viewer.stage().getLoadSet())), kCamera, kSize, rules));
+    ASSERT_TRUE(viewer.waitUntilDone());
+    EXPECT_TRUE(viewer.pickedPrims().empty());
+    EXPECT_NE(renderStage, viewer.stagePrims()) << "the viewer's stage loaded payloads nobody asked for";
+
+    // Render Everything, as the viewer turns it on: every payload asked for, then drawn regardless.
+    const std::uint64_t restarts = viewer.render().getRestartCount();
+    viewer.stage().requestLoad({ PXR_NS::SdfPath::AbsoluteRootPath() }, true);
+    const SceneStage::LockedSection locked = [&viewer](const std::function<void()>& section) {
+        std::lock_guard<std::mutex> lock(viewer.stageLock());
+        section();
+    };
+    ASSERT_TRUE(viewer.stage().serviceLoads(locked, locked));
+    SceneLoadSetPtr loadSet;
+    {
+        std::lock_guard<std::mutex> lock(viewer.stageLock());
+        loadSet = viewer.stage().getLoadSet();
+    }
+    viewer.sync(evaluated(reader, SceneEvaluationContext(contextId, loadSet)));
+    viewer.render().setRenderEverything(true);
+    viewer.render().invalidate();
+    ASSERT_TRUE(viewer.waitUntilDone(restarts));
+
+    EXPECT_EQ(renderStage, viewer.stagePrims());
+    EXPECT_EQ(rendered, viewer.pickedPrims());
+}
+
+/*
+ * A Natron image on a card's material, through Cycles. Rendered off the main thread, where renders
+ * run outside the tests: LiveTextureStore::prepare refuses the main thread, which is what the case
+ * for a missing texture relies on. The project format keeps each image far below Docker's 64 MB
+ * /dev/shm.
+ */
+class USDRenderCyclesLiveTextureTest
+    : public USDRenderCyclesTest {
+protected:
+    virtual void SetUp() OVERRIDE
+    {
+        USDRenderCyclesTest::SetUp();
+        ProjectPtr project = getApp()->getProject();
+        project->setAutoSetProjectFormatEnabled(true);
+        project->setOrAddProjectFormat(Format(0, 0, kSize, kSize, "liveTexture", 1.));
+    }
+
+    virtual void TearDown() OVERRIDE
+    {
+        LiveTextureStore::instance().clear();
+        USDRenderCyclesTest::TearDown();
+    }
+
+    struct Graph {
+        NodePtr material;
+        NodePtr card;
+        NodePtr merge;
+        NodePtr render;
+    };
+
+    static void setPrimPath(const NodePtr& node,
+                            const char* path)
+    {
+        KnobString* k = knob<KnobString>(node, kSceneParamPrimPath);
+        if (k) {
+            k->setValue(std::string(path));
+        }
+    }
+
+    Graph createLiveTextureGraph(const NodePtr& source,
+                                 bool emissive)
+    {
+        Graph graph;
+        NodePtr material = createNode(QString::fromUtf8(emissive ? PLUGINID_NATRON_USDEMISSIVEMATERIAL : PLUGINID_NATRON_USDPREVIEWSURFACE));
+        NodePtr card = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+        NodePtr camera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCAMERA));
+        NodePtr light = createNode(QString::fromUtf8(PLUGINID_NATRON_USDLIGHT));
+        NodePtr merge = createNode(QString::fromUtf8(PLUGINID_NATRON_USDMERGE));
+        NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+        NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+        if (!source || !material || !card || !camera || !light || !merge || !settings || !render) {
+            ADD_FAILURE() << "a node is not registered";
+
+            return graph;
+        }
+        setPrimPath(material, "/Live");
+        setPrimPath(card, "/Card");
+        setPrimPath(camera, "/Cam");
+        setPrimPath(light, "/Key");
+        KnobDouble* translate = knob<KnobDouble>(camera, kSceneParamTranslate);
+        KnobChoice* renderer = knob<KnobChoice>(render, kUSDRenderParamRenderer);
+        if (!translate || !renderer) {
+            return graph;
+        }
+        translate->setValue(10., ViewSpec::all(), 2);
+        if (!selectRenderer(renderer, kRenderDelegateCyclesId)) {
+            ADD_FAILURE() << "the Renderer menu has no " << kRenderDelegateCyclesId;
+
+            return graph;
+        }
+        connectNodes(source, material, emissive ? kUSDEmissiveMaterialInputEmissive : kUSDPreviewSurfaceInputDiffuseColor, true);
+        connectNodes(material, card, 0, true);
+        connectNodes(card, merge, 0, true);
+        connectNodes(camera, merge, 1, true);
+        connectNodes(light, merge, 2, true);
+        connectNodes(merge, settings, 0, true);
+        connectNodes(settings, render, 0, true);
+        if (!RenderSettingsTestUtils::configure(settings, "/Cam", kSize, kSize)) {
+            return graph;
+        }
+        graph.material = material;
+        graph.card = card;
+        graph.merge = merge;
+        graph.render = render;
+
+        return graph;
+    }
+
+    NodePtr createConstant(double r,
+                           double g,
+                           double b,
+                           double a = 1.)
+    {
+        NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+        KnobColor* color = constant ? knob<KnobColor>(constant, kConstantParamColor) : nullptr;
+        if (color) {
+            color->setValue(r, ViewSpec::all(), 0);
+            color->setValue(g, ViewSpec::all(), 1);
+            color->setValue(b, ViewSpec::all(), 2);
+            color->setValue(a, ViewSpec::all(), 3);
+        }
+
+        return constant;
+    }
+
+    // Red at frame 1 and green at frame 10 over the whole image, with both of the ramp's colours keyed.
+    NodePtr createAnimatedRamp()
+    {
+        NodePtr ramp = createNode(QString::fromUtf8(PLUGINID_NATRON_RAMP));
+        if (!ramp) {
+            ADD_FAILURE() << "Ramp is not registered";
+
+            return ramp;
+        }
+        for (const char* name : { kRampParamColor0, kRampParamColor1 }) {
+            KnobColor* color = knob<KnobColor>(ramp, name);
+            if (!color) {
+                return NodePtr();
+            }
+            color->setValueAtTime(1., 1., ViewSpec::all(), 0);
+            color->setValueAtTime(10., 0., ViewSpec::all(), 0);
+            color->setValueAtTime(1., 0., ViewSpec::all(), 1);
+            color->setValueAtTime(10., 1., ViewSpec::all(), 1);
+            color->setValue(0., ViewSpec::all(), 2);
+            color->setValue(1., ViewSpec::all(), 3);
+        }
+
+        return ramp;
+    }
+
+    static std::list<ImageLayerDesc> colourPlane()
+    {
+        return std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents());
+    }
+
+    static bool renderOffMainThread(const NodePtr& render,
+                                    double frame,
+                                    std::vector<RenderedPlane>* planes)
+    {
+        bool rendered = false;
+        std::string error;
+
+        appPTR->clearAllCaches();
+        std::thread worker([&]() {
+            rendered = renderNodePlanesDirect(render, frame, ViewIdx(0), 0, RectI(0, 0, kSize, kSize), colourPlane(), planes, &error, false);
+        });
+        worker.join();
+        appPTR->clearAllCaches();
+        EXPECT_TRUE(rendered) << error;
+
+        return rendered && (planes->size() == 1u);
+    }
+
+    // The mean of the 5 by 5 pixels at the centre, which the card covers.
+    static std::array<double, 4> centreOf(const RenderedPlane& plane)
+    {
+        std::array<double, 4> mean = { 0., 0., 0., 0. };
+
+        for (int y = kSize / 2 - 2; y <= kSize / 2 + 2; ++y) {
+            for (int x = kSize / 2 - 2; x <= kSize / 2 + 2; ++x) {
+                const std::size_t i = std::size_t(y) * kSize + x;
+                for (int k = 0; k < 4; ++k) {
+                    mean[k] += plane.pixels[i * 4 + k] / 25.;
+                }
+            }
+        }
+
+        return mean;
+    }
+
+    static std::array<double, 4> centreAtFrame(const NodePtr& render,
+                                               double frame)
+    {
+        std::vector<RenderedPlane> planes;
+
+        if (!renderOffMainThread(render, frame, &planes)) {
+            return std::array<double, 4>();
+        }
+
+        return centreOf(planes[0]);
+    }
+
+    static std::string messageOf(const NodePtr& node)
+    {
+        QString message;
+        int type = 0;
+        node->getPersistentMessage(&message, &type, false);
+
+        return message.toStdString();
+    }
+};
+
+TEST_F(USDRenderCyclesLiveTextureTest, AConstantOnACardRendersItsColour)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const Graph graph = createLiveTextureGraph(createConstant(0., 0.5, 0.), true);
+    ASSERT_TRUE(bool(graph.render));
+
+    const std::array<double, 4> centre = centreAtFrame(graph.render, 1.);
+    EXPECT_NEAR(0.5, centre[1], 0.05);
+    EXPECT_LT(centre[0], 0.05);
+    EXPECT_LT(centre[2], 0.05);
+    EXPECT_FALSE(graph.render->hasPersistentMessage()) << messageOf(graph.render);
+    EXPECT_FALSE(graph.material->hasPersistentMessage()) << messageOf(graph.material);
+}
+
+TEST_F(USDRenderCyclesLiveTextureTest, AnAnimatedRampFollowsTheFrame)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const Graph graph = createLiveTextureGraph(createAnimatedRamp(), true);
+    ASSERT_TRUE(bool(graph.render));
+
+    const std::array<double, 4> first = centreAtFrame(graph.render, 1.);
+    const std::array<double, 4> tenth = centreAtFrame(graph.render, 10.);
+    EXPECT_GT(first[0], 5. * first[1]) << first[0] << ", " << first[1];
+    EXPECT_GT(tenth[1], 5. * tenth[0]) << tenth[0] << ", " << tenth[1];
+}
+
+// A source's texture is missing here because the main thread does not prepare it.
+TEST_F(USDRenderCyclesLiveTextureTest, AMissingTextureShowsMagentaAndWarnsOfItsSource)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const NodePtr constant = createConstant(0., 1., 0.);
+    const Graph graph = createLiveTextureGraph(constant, true);
+    ASSERT_TRUE(bool(graph.render));
+
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(graph.render, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), colourPlane(), &planes, &error, false)) << error;
+    ASSERT_EQ(1u, planes.size());
+    const std::array<double, 4> centre = centreOf(planes[0]);
+    EXPECT_NEAR(kLiveTextureMissingColour[0], centre[0], 0.1) << centre[0] << ", " << centre[1] << ", " << centre[2];
+    EXPECT_NEAR(kLiveTextureMissingColour[1], centre[1], 0.05);
+    EXPECT_NEAR(kLiveTextureMissingColour[2], centre[2], 0.1);
+    ASSERT_TRUE(graph.material->hasPersistentMessage());
+    EXPECT_NE(std::string::npos, messageOf(graph.material).find(constant->getFullyQualifiedName())) << messageOf(graph.material);
+}
+
+TEST_F(USDRenderCyclesLiveTextureTest, DeletingTheSourceShowsMagentaAndWarnsOfIt)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr constant = createConstant(0., 1., 0.);
+    const Graph graph = createLiveTextureGraph(constant, true);
+    ASSERT_TRUE(bool(graph.render));
+    const std::string name = constant->getFullyQualifiedName();
+    constant->destroyNode(true, false);
+    constant.reset();
+
+    const std::array<double, 4> centre = centreAtFrame(graph.render, 1.);
+    EXPECT_NEAR(kLiveTextureMissingColour[0], centre[0], 0.1) << centre[0] << ", " << centre[1] << ", " << centre[2];
+    EXPECT_NEAR(kLiveTextureMissingColour[1], centre[1], 0.05);
+    EXPECT_NEAR(kLiveTextureMissingColour[2], centre[2], 0.1);
+    ASSERT_TRUE(graph.material->hasPersistentMessage());
+    EXPECT_NE(std::string::npos, messageOf(graph.material).find(name)) << messageOf(graph.material);
+}
+
+TEST_F(USDRenderCyclesLiveTextureTest, UndoingTheDeletionRestoresTheTexture)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const NodePtr constant = createConstant(0., 1., 0.);
+    const Graph graph = createLiveTextureGraph(constant, true);
+    ASSERT_TRUE(bool(graph.render));
+
+    // What the delete commands' redo and undo do, with the same arguments.
+    const NodesList outputs(1, graph.material);
+    constant->deactivate(outputs, false, false, true, false);
+    constant->notifyOutputsOfDeletion();
+    const std::array<double, 4> missing = centreAtFrame(graph.render, 1.);
+    EXPECT_NEAR(kLiveTextureMissingColour[0], missing[0], 0.1) << missing[0] << ", " << missing[1] << ", " << missing[2];
+    EXPECT_NEAR(kLiveTextureMissingColour[1], missing[1], 0.05);
+
+    constant->activate(outputs, false, false);
+    const std::array<double, 4> restored = centreAtFrame(graph.render, 1.);
+    EXPECT_LT(restored[0], 0.05) << restored[0] << ", " << restored[1] << ", " << restored[2];
+    EXPECT_NEAR(1., restored[1], 0.1);
+    EXPECT_FALSE(graph.material->hasPersistentMessage()) << messageOf(graph.material);
+}
+
+// Disconnecting is not deleting: the input is cleared, and the material shows its own colour.
+TEST_F(USDRenderCyclesLiveTextureTest, DisconnectingTheSourceLeavesTheMaterialsOwnColour)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const NodePtr constant = createConstant(0., 1., 0.);
+    const Graph graph = createLiveTextureGraph(constant, true);
+    ASSERT_TRUE(bool(graph.render));
+    KnobColor* own = knob<KnobColor>(graph.material, kUSDEmissiveMaterialParamEmissiveColor);
+    ASSERT_TRUE(own != nullptr);
+    own->setValue(0.5, ViewSpec::all(), 0);
+    own->setValue(0., ViewSpec::all(), 1);
+    own->setValue(0., ViewSpec::all(), 2);
+    ignore_result(graph.material->disconnectInput(kUSDEmissiveMaterialInputEmissive));
+
+    const std::array<double, 4> centre = centreAtFrame(graph.render, 1.);
+    EXPECT_NEAR(0.5, centre[0], 0.05);
+    EXPECT_LT(centre[1], 0.05);
+    EXPECT_FALSE(graph.material->hasPersistentMessage()) << messageOf(graph.material);
+}
+
+// A half-covered texture's alpha reaches opacity, seen as a card behind showing through.
+TEST_F(USDRenderCyclesLiveTextureTest, ALiveTexturesAlphaIsTheOpacity)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const NodePtr constant = createConstant(0.5, 0., 0., 0.5);
+    const Graph graph = createLiveTextureGraph(constant, true);
+    ASSERT_TRUE(bool(graph.render));
+    NodePtr backMaterial = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEMISSIVEMATERIAL));
+    NodePtr backCard = createNode(QString::fromUtf8(PLUGINID_NATRON_USDCARD));
+    ASSERT_TRUE(backMaterial && backCard);
+    setPrimPath(backMaterial, "/Blue");
+    setPrimPath(backCard, "/Back");
+    KnobDouble* translate = knob<KnobDouble>(backCard, kSceneParamTranslate);
+    KnobColor* blue = knob<KnobColor>(backMaterial, kUSDEmissiveMaterialParamEmissiveColor);
+    ASSERT_TRUE(translate && blue);
+    translate->setValue(-1., ViewSpec::all(), 2);
+    blue->setValue(0., ViewSpec::all(), 0);
+    blue->setValue(0., ViewSpec::all(), 1);
+    blue->setValue(1., ViewSpec::all(), 2);
+    connectNodes(backMaterial, backCard, 0, true);
+    connectNodes(backCard, graph.merge, 3, true);
+
+    const std::array<double, 4> half = centreAtFrame(graph.render, 1.);
+    EXPECT_GT(half[0], 0.1);
+    EXPECT_GT(half[2], 0.2);
+
+    knob<KnobColor>(constant, kConstantParamColor)->setValue(1., ViewSpec::all(), 3);
+    const std::array<double, 4> opaque = centreAtFrame(graph.render, 1.);
+    EXPECT_LT(opaque[2], 0.05);
+}
+
+// With the alpha unused the colour is the texture's straight colour, as Storm shows it, not darkened by
+// the alpha.
+TEST_F(USDRenderCyclesLiveTextureTest, AnUnusedAlphaLeavesTheColourStraight)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const NodePtr constant = createConstant(0.5, 0., 0., 0.5);
+    const Graph graph = createLiveTextureGraph(constant, true);
+    ASSERT_TRUE(bool(graph.render));
+    KnobBool* useAlpha = knob<KnobBool>(graph.material, kUSDEmissiveMaterialParamUseAlpha);
+    ASSERT_TRUE(useAlpha != nullptr);
+    useAlpha->setValue(false);
+
+    const std::array<double, 4> half = centreAtFrame(graph.render, 1.);
+    KnobColor* color = knob<KnobColor>(constant, kConstantParamColor);
+    color->setValue(1., ViewSpec::all(), 0);
+    color->setValue(1., ViewSpec::all(), 3);
+    const std::array<double, 4> opaque = centreAtFrame(graph.render, 1.);
+    ASSERT_GT(opaque[0], 0.5);
+    EXPECT_NEAR(opaque[0], half[0], 0.05 * opaque[0]) << "half-covered " << half[0] << ", opaque " << opaque[0];
+    EXPECT_FALSE(graph.material->hasPersistentMessage()) << messageOf(graph.material);
+}
+
+TEST_F(USDRenderCyclesLiveTextureTest, ALiveNormalMapBendsTheLighting)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const NodePtr normal = createConstant(0.5, 0.5, 1.);
+    const Graph graph = createLiveTextureGraph(createConstant(1., 1., 1.), false);
+    ASSERT_TRUE(bool(graph.render));
+    connectNodes(normal, graph.material, kUSDPreviewSurfaceInputNormal, true);
+
+    const std::array<double, 4> flat = centreAtFrame(graph.render, 1.);
+    ASSERT_GT(flat[0], 0.05);
+
+    // Tipped most of the way off the camera's axis, and so off the default light's.
+    KnobColor* color = knob<KnobColor>(normal, kConstantParamColor);
+    color->setValue(1., ViewSpec::all(), 0);
+    color->setValue(0.5, ViewSpec::all(), 2);
+    const std::array<double, 4> bent = centreAtFrame(graph.render, 1.);
+    EXPECT_LT(bent[0], 0.8 * flat[0]) << "flat " << flat[0] << ", bent " << bent[0];
+}
+
+TEST_F(USDRenderCyclesLiveTextureTest, MatchesReferenceRender)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    NodePtr ramp = createNode(QString::fromUtf8(PLUGINID_NATRON_RAMP));
+    ASSERT_TRUE(bool(ramp));
+    KnobDouble* point0 = knob<KnobDouble>(ramp, kRampParamPoint0);
+    KnobDouble* point1 = knob<KnobDouble>(ramp, kRampParamPoint1);
+    KnobColor* color0 = knob<KnobColor>(ramp, kRampParamColor0);
+    KnobColor* color1 = knob<KnobColor>(ramp, kRampParamColor1);
+    ASSERT_TRUE(point0 && point1 && color0 && color1);
+    point0->setValue(0., ViewSpec::all(), 0);
+    point0->setValue(0., ViewSpec::all(), 1);
+    point1->setValue(double(kSize), ViewSpec::all(), 0);
+    point1->setValue(double(kSize), ViewSpec::all(), 1);
+    color0->setValue(1., ViewSpec::all(), 0);
+    color0->setValue(0., ViewSpec::all(), 1);
+    color0->setValue(0., ViewSpec::all(), 2);
+    color0->setValue(1., ViewSpec::all(), 3);
+    color1->setValue(0., ViewSpec::all(), 0);
+    color1->setValue(1., ViewSpec::all(), 1);
+    color1->setValue(0., ViewSpec::all(), 2);
+    color1->setValue(1., ViewSpec::all(), 3);
+    const Graph graph = createLiveTextureGraph(ramp, true);
+    ASSERT_TRUE(bool(graph.render));
+
+    std::vector<RenderedPlane> planes;
+    ASSERT_TRUE(renderOffMainThread(graph.render, 1., &planes));
+    matchGolden(planes[0], "CyclesLiveTexture");
 }
 
 // Film and background settings reach the delegate like the integrator ones, and it reports them back
@@ -1480,4 +2438,331 @@ TEST_F(USDRenderCyclesTest, TransparentBackgroundHidesTheDomeOnly)
             }
         }
     }
+}
+
+namespace {
+const char* const kGoldenCaseCyclesProject3D = "CyclesProject3DReference";
+} // anon namespace
+
+using namespace ProjectionTestUtils;
+
+class USDRenderCyclesProjectionTest
+    : public ProjectionFixture<USDRenderCyclesTest> {
+protected:
+    virtual const char* rendererId() const OVERRIDE
+    {
+        return kRenderDelegateCyclesId;
+    }
+};
+
+// Projected from the render camera, the plate reappears on the card pixel for pixel.
+TEST_F(USDRenderCyclesProjectionTest, APlateFromTheRenderCameraReproducesThePlate)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const Graph graph = createProjectionGraph();
+    ASSERT_TRUE(bool(graph.render));
+
+    RenderedPlane rgba;
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0.));
+    EXPECT_FALSE(graph.projector->hasPersistentMessage()) << messageOf(graph.projector);
+    EXPECT_FALSE(graph.render->hasPersistentMessage()) << messageOf(graph.render);
+    matchGoldenCrop(rgba, RectI(16, 8, 112, 56), kGoldenCaseCyclesProject3D);
+}
+
+// A plate larger than the format, projected from half the distance: Crop leaves the card around
+// the projector's frame transparent, and without it the plate's overscan covers that band.
+TEST_F(USDRenderCyclesProjectionTest, CropHidesThePlateBeyondTheFrame)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const Graph graph = createProjectionGraph();
+    ASSERT_TRUE(bool(graph.render));
+    KnobChoice* extent = knob<KnobChoice>(graph.plate, kNativeGeneratorParamExtent);
+    KnobDouble* bottomLeft = knob<KnobDouble>(graph.plate, kNativeGeneratorParamBottomLeft);
+    KnobDouble* size = knob<KnobDouble>(graph.plate, kNativeGeneratorParamSize);
+    KnobBool* crop = knob<KnobBool>(graph.projector, kUSDProject3DParamCrop);
+    ASSERT_TRUE(extent && bottomLeft && size && crop);
+    extent->setValue((int)ExtentKnobs::eExtentSize);
+    bottomLeft->setValue(-kProjectionWidth / 4., ViewSpec::all(), 0);
+    bottomLeft->setValue(-kProjectionHeight / 4., ViewSpec::all(), 1);
+    size->setValue(kProjectionWidth * 1.5, ViewSpec::all(), 0);
+    size->setValue(kProjectionHeight * 1.5, ViewSpec::all(), 1);
+    ASSERT_TRUE(setTriple(graph.projectorCamera, kSceneParamTranslate, 0., 0., kProjectionCameraZ / 2.));
+
+    // The frame covers render pixels 32..96 by 16..48 and the overscan 16..112 by 8..56.
+    const RectI frame(36, 20, 92, 44);
+    const RectI band(19, 20, 29, 44);
+    RenderedPlane cropped;
+    crop->setValue(true);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &cropped));
+    EXPECT_PROJECTS(checkProjection(cropped, kProjectionPlaneWidth / 2., 0.));
+    EXPECT_EQ(band.area(), countIn(cropped, band, eProjectedTransparent));
+
+    RenderedPlane uncropped;
+    crop->setValue(false);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &uncropped));
+    EXPECT_EQ(0, countIn(uncropped, band, eProjectedTransparent));
+    EXPECT_GT(countIn(uncropped, band, eProjectedRed) + countIn(uncropped, band, eProjectedBlue), band.area() / 2);
+    EXPECT_GT(countIn(uncropped, frame, eProjectedRed) + countIn(uncropped, frame, eProjectedBlue), frame.area() / 2);
+}
+
+// The card faces the projector: Front keeps the plate and Back shows the outside mode instead.
+TEST_F(USDRenderCyclesProjectionTest, ProjectOnPicksTheFacesThatShowThePlate)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const Graph graph = createProjectionGraph();
+    ASSERT_TRUE(bool(graph.render));
+    KnobChoice* projectOn = knob<KnobChoice>(graph.projector, kUSDProject3DParamProjectOn);
+    KnobChoice* outside = knob<KnobChoice>(graph.projector, kUSDProject3DParamOutside);
+    ASSERT_TRUE(projectOn && outside);
+
+    RenderedPlane rgba;
+    projectOn->setValue((int)USDProject3D::eProjectOnFront);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0.));
+
+    projectOn->setValue((int)USDProject3D::eProjectOnBack);
+    outside->setValue((int)USDProject3D::eOutsideBlack);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_EQ(kProjectionCardInterior.area(), countIn(rgba, kProjectionCardInterior, eProjectedBlack));
+
+    outside->setValue((int)USDProject3D::eOutsideTransparent);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_EQ(kProjectionCardInterior.area(), countIn(rgba, kProjectionCardInterior, eProjectedTransparent));
+}
+
+// The projector moves 2 units along x from frame 1 to frame 10, and the plate with it.
+TEST_F(USDRenderCyclesProjectionTest, AnAnimatedProjectorFollowsTheFrame)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const Graph graph = createProjectionGraph();
+    ASSERT_TRUE(bool(graph.render));
+    KnobDouble* translate = knob<KnobDouble>(graph.projectorCamera, kSceneParamTranslate);
+    ASSERT_TRUE(translate);
+    translate->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    translate->setValueAtTime(10., 2., ViewSpec::all(), 0);
+
+    RenderedPlane first, tenth;
+    ASSERT_TRUE(renderProjection(graph.render, 1., &first));
+    ASSERT_TRUE(renderProjection(graph.render, 10., &tenth));
+    EXPECT_PROJECTS(checkProjection(first, kProjectionPlaneWidth, 0.));
+    EXPECT_PROJECTS(checkProjection(tenth, kProjectionPlaneWidth, 2.));
+    int differing = 0;
+    for (int y = kProjectionCardInterior.y1; y < kProjectionCardInterior.y2; ++y) {
+        for (int x = kProjectionCardInterior.x1; x < kProjectionCardInterior.x2; ++x) {
+            differing += (classify(first, x, y) != classify(tenth, x, y)) ? 1 : 0;
+        }
+    }
+    EXPECT_GT(differing, kProjectionCardInterior.area() / 4);
+}
+
+// An orthographic projector's aperture sets the frame whatever its distance. The knob is in
+// millimetres and the stage in metres, so 20000 x 10000 spans the render camera's 20 x 10 units of
+// the card's plane from 10 units and from 40.
+TEST_F(USDRenderCyclesProjectionTest, AnOrthographicProjectorIgnoresItsDistance)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const Graph graph = createProjectionGraph();
+    ASSERT_TRUE(bool(graph.render));
+    KnobChoice* projection = knob<KnobChoice>(graph.projectorCamera, kUSDCameraParamProjection);
+    ASSERT_TRUE(projection);
+    ASSERT_TRUE(selectRenderer(projection, "orthographic"));
+    ASSERT_TRUE(setLens(graph.projectorCamera, 20000., 10000.));
+
+    RenderedPlane rgba;
+    for (double z : { kProjectionCameraZ, 4. * kProjectionCameraZ }) {
+        SCOPED_TRACE(z);
+        ASSERT_TRUE(setTriple(graph.projectorCamera, kSceneParamTranslate, 0., 0., z));
+        ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+        EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0.));
+    }
+}
+
+// The card is 10 units from the projector: a far clip of 5 or a near clip of 12 puts it outside.
+TEST_F(USDRenderCyclesProjectionTest, ClipNearFarPutsTheCardOutside)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const Graph graph = createProjectionGraph();
+    ASSERT_TRUE(bool(graph.render));
+    KnobBool* clip = knob<KnobBool>(graph.projector, kUSDProject3DParamClipNearFar);
+    KnobChoice* outside = knob<KnobChoice>(graph.projector, kUSDProject3DParamOutside);
+    KnobDouble* nearClip = knob<KnobDouble>(graph.projectorCamera, kUSDCameraParamNear);
+    KnobDouble* farClip = knob<KnobDouble>(graph.projectorCamera, kUSDCameraParamFar);
+    ASSERT_TRUE(clip && outside && nearClip && farClip);
+    outside->setValue((int)USDProject3D::eOutsideBlack);
+    nearClip->setValue(1.);
+    farClip->setValue(5.);
+
+    RenderedPlane rgba;
+    clip->setValue(false);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0.));
+
+    clip->setValue(true);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_EQ(kProjectionCardInterior.area(), countIn(rgba, kProjectionCardInterior, eProjectedBlack));
+
+    farClip->setValue(100.);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0.));
+
+    nearClip->setValue(12.);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_EQ(kProjectionCardInterior.area(), countIn(rgba, kProjectionCardInterior, eProjectedBlack));
+}
+
+// In Geometry space held at frame 1 the plate sticks to the card as it moves 2 units by frame 11;
+// in World space it stays where the projector puts it.
+TEST_F(USDRenderCyclesProjectionTest, GeometrySpaceHeldSticksToTheMovingCard)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    double first = 0., last = 0.;
+    getApp()->getFrameRange(&first, &last);
+    ASSERT_LE(first, 1.);
+    ASSERT_GE(last, 11.);
+    const Graph graph = createProjectionGraph();
+    ASSERT_TRUE(bool(graph.render));
+    KnobChoice* space = knob<KnobChoice>(graph.projector, kUSDProject3DParamProjectionSpace);
+    KnobBool* useHold = knob<KnobBool>(graph.projector, kUSDProject3DParamUseFrameHold);
+    KnobDouble* hold = knob<KnobDouble>(graph.projector, kUSDProject3DParamFrameHold);
+    KnobDouble* translate = knob<KnobDouble>(graph.card, kSceneParamTranslate);
+    ASSERT_TRUE(space && useHold && hold && translate);
+    const double shift = 2.;
+    translate->setValueAtTime(1., 0., ViewSpec::all(), 0);
+    translate->setValueAtTime(11., shift, ViewSpec::all(), 0);
+
+    RenderedPlane rgba;
+    ASSERT_TRUE(renderProjection(graph.render, 11., &rgba));
+    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0., shift, 0.));
+
+    space->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    useHold->setValue(true);
+    hold->setValue(1.);
+    ASSERT_TRUE(renderProjection(graph.render, 1., &rgba));
+    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0.));
+    ASSERT_TRUE(renderProjection(graph.render, 11., &rgba));
+    EXPECT_PROJECTS(checkProjection(rgba, kProjectionPlaneWidth, 0., shift, shift));
+}
+
+// One point 2 units wide at the world origin at the hold, frame 1, moved by its points to x 2.5
+// by frame 11. The projector is off by half a checker square, so the origin sees a red square's
+// middle and x 2.5 a blue one's: the point keeps the origin's red only if its reference point at
+// the origin is told apart from having none.
+TEST_F(USDRenderCyclesProjectionTest, AHeldPointAtTheOriginKeepsItsReferencePoint)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    double first = 0., last = 0.;
+    getApp()->getFrameRange(&first, &last);
+    ASSERT_LE(first, 1.);
+    ASSERT_GE(last, 11.);
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const QString file = tmp.path() + QString::fromUtf8("/point.usda");
+    const double moved = kProjectionBox * kProjectionUnitsPerPixel;
+    {
+        const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::CreateNew(file.toStdString());
+        ASSERT_TRUE(bool(stage));
+        PXR_NS::UsdGeomPoints points = PXR_NS::UsdGeomPoints::Define(stage, PXR_NS::SdfPath("/Card"));
+        points.CreatePointsAttr().Set(PXR_NS::VtVec3fArray(1, PXR_NS::GfVec3f(0.f)), PXR_NS::UsdTimeCode(1.));
+        points.CreatePointsAttr().Set(PXR_NS::VtVec3fArray(1, PXR_NS::GfVec3f((float)moved, 0.f, 0.f)), PXR_NS::UsdTimeCode(11.));
+        points.CreateWidthsAttr().Set(PXR_NS::VtFloatArray(1, 2.f));
+        points.SetWidthsInterpolation(PXR_NS::UsdGeomTokens->constant);
+        ASSERT_TRUE(stage->GetRootLayer()->Save());
+    }
+    const Graph graph = createProjectionGraph();
+    ASSERT_TRUE(bool(graph.render));
+    const double halfSquare = moved / 2.;
+    ASSERT_TRUE(setTriple(graph.projectorCamera, kSceneParamTranslate, halfSquare, halfSquare, kProjectionCameraZ));
+    KnobChoice* space = knob<KnobChoice>(graph.projector, kUSDProject3DParamProjectionSpace);
+    KnobBool* useHold = knob<KnobBool>(graph.projector, kUSDProject3DParamUseFrameHold);
+    KnobDouble* hold = knob<KnobDouble>(graph.projector, kUSDProject3DParamFrameHold);
+    ASSERT_TRUE(space && useHold && hold);
+    space->setValue((int)USDProject3D::eProjectionSpaceGeometry);
+    useHold->setValue(true);
+    hold->setValue(1.);
+    const NodePtr assign = replaceCardWithCurves(graph, file);
+    ASSERT_TRUE(bool(assign));
+
+    RenderedPlane rgba;
+    ASSERT_TRUE(renderProjection(graph.render, 11., &rgba));
+    EXPECT_FALSE(assign->hasPersistentMessage()) << messageOf(assign);
+    const int centreX = (int)std::lround(kProjectionWidth / 2. + moved / kProjectionUnitsPerPixel);
+    const int centreY = kProjectionHeight / 2;
+    const RectI middle(centreX - 2, centreY - 2, centreX + 2, centreY + 2);
+    EXPECT_EQ(16, countIn(rgba, middle, eProjectedRed)) << "blue where the point takes its own position for a missing reference point";
+}
+
+// Linear curves, not a mesh: held in Geometry space, the plate rides on the projection's frame
+// alone as the curves' transform carries them.
+TEST_F(USDRenderCyclesProjectionTest, GeometrySpaceHeldSticksToMovingCurvesWithoutReferencePoints)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    expectHeldCurvesCarryThePlate();
+}
+
+// A transform after the card carries the plate along in Geometry space, and a mirror there
+// mirrors it.
+TEST_F(USDRenderCyclesProjectionTest, GeometrySpaceFollowsATransformAfterTheCard)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    expectATransformAfterTheCardCarriesThePlate();
+}
+
+// Project On picks faces, and curves have none: they show the plate under Front and Back alike.
+TEST_F(USDRenderCyclesProjectionTest, ProjectOnLeavesCurvesShowingThePlate)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    expectCurvesShowThePlateOnEitherSide();
+}
+
+// Where the plate's colour is flat the card shows what Storm shows, in World space, held in
+// Geometry space and from a plate with overscan.
+TEST_F(USDRenderCyclesProjectionTest, Project3DMatchesStormsPlate)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    {
+        SCOPED_TRACE("World");
+        expectStormsWorldPlate(kStormMaxToleranceCycles);
+    }
+    {
+        SCOPED_TRACE("GeometryHeld");
+        expectStormsHeldPlate(kStormMaxToleranceCycles);
+    }
+    {
+        SCOPED_TRACE("Overscan");
+        expectStormsOverscanPlate(kStormMaxToleranceCycles);
+    }
+}
+
+// The plate's alpha is the card's opacity over what is behind it, its colour straight.
+TEST_F(USDRenderCyclesProjectionTest, AHalfAlphaPlateBlendsOverTheBackground)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    expectAHalfAlphaPlateOverTheBackground();
 }

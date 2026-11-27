@@ -34,6 +34,7 @@
 #include <map>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <QCoreApplication>
@@ -45,6 +46,7 @@
 #include "Global/GlobalDefines.h"
 
 #include "Engine/EngineFwd.h"
+#include "Engine/FrameArgsOverlay.h"
 #include "Engine/Image.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/OSGLContext.h"
@@ -384,32 +386,8 @@ public:
     ActionsCachePtr actionsCache;
 
 #if NATRON_ENABLE_TRIMAP
-    ///Store all images being rendered to avoid 2 threads rendering the same portion of an image
-    struct ImageBeingRendered
-    {
-        QWaitCondition cond;
-        QMutex lock;
-        int refCount;
-        bool failed;
-        bool retracted; //< failed because the image left the cache, not because its render failed
-
-        ImageBeingRendered()
-            : cond()
-            , lock()
-            , refCount(0)
-            , failed(false)
-            , retracted(false)
-        {
-        }
-    };
-
-    typedef std::shared_ptr<ImageBeingRendered> ImageBeingRenderedPtr;
-    typedef std::map<ImagePtr, ImageBeingRenderedPtr> ImageBeingRenderedMap;
-
-    // The images being rendered are tracked process-wide rather than per effect (see EffectInstancePrivate.cpp): a
-    // cached image is shared by every node whose content hash matches, not only by the clones of one node.
-    struct ImagesBeingRenderedRegistry;
-    static ImagesBeingRenderedRegistry& imagesBeingRenderedRegistry();
+    struct ImageReservationStripes;
+    static ImageReservationStripes& imageReservationStripes();
     static ImageBeingRenderedPtr acquireImageBeingRendered(const ImagePtr& img);
 #endif
 
@@ -550,6 +528,8 @@ public:
         std::bitset<4> processChannels;
         ImageLayersToRenderPtr layers;
         const FrameRenderContext* frameContext;
+        FrameArgsOverlayPtr frameArgsHead;
+        bool scheduledTask;
         const IsolatedJob* isolatedJob;
     };
 
@@ -631,6 +611,25 @@ public:
                        NodeMetadata& metadata);
 };
 
+/**
+ * @brief Publishes, when the renderRoI(), renderDeepRoI() or evaluateScene() holding it returns, what
+ * EffectInstance::takeLastPullFresh() reports: the pulls nested in the call finish first, so they
+ * cannot overwrite it.
+ **/
+class PullFreshRecorder {
+public:
+    PullFreshRecorder();
+
+    ~PullFreshRecorder();
+
+    void setFresh(bool fresh)
+    {
+        _fresh = fresh;
+    }
+
+private:
+    bool _fresh;
+};
 
 NATRON_NAMESPACE_EXIT
 

@@ -287,6 +287,8 @@ protected:
             return mask;
         }
         setParitySourceOrigin(mask, originX, originY);
+        // The expected pixels take the mask as zero past its region.
+        setBlackOutside(mask, true);
         const int maskInput = inputNamed(op, "Mask");
         EXPECT_GE(maskInput, 0);
         connectNodes(mask, op, maskInput, true);
@@ -551,19 +553,24 @@ TEST_F(StagedImageEffectTest, MixZeroAndAMissedMaskAreIdentities)
     EXPECT_TRUE(effect->isIdentity_public(false, 0, kTime, RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, &inputNb));
     EXPECT_EQ(0, inputNb);
 
+    // Under Stretch the far mask repeats its nearest edge over the window, so it does not miss it.
+    const int maskInput = inputNamed(op, "Mask");
+    ASSERT_GE(maskInput, 0);
+    setBlackOutside(op->getInput(maskInput), false);
+    EXPECT_FALSE(effect->isIdentity_public(false, 0, kTime, RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, &inputNb));
+    setBlackOutside(op->getInput(maskInput), true);
+
     ASSERT_TRUE(setKnobValues(op, kOfxMaskInvertParamName, std::vector<double>(1, 1.)));
     EXPECT_FALSE(effect->isIdentity_public(false, 0, kTime, RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, &inputNb));
 
     ASSERT_TRUE(setKnobValues(op, kOfxMaskInvertParamName, std::vector<double>(1, 0.)));
-    const int maskInput = inputNamed(op, "Mask");
-    ASSERT_GE(maskInput, 0);
     setParitySourceOrigin(op->getInput(maskInput), 8, 4);
     EXPECT_FALSE(effect->isIdentity_public(false, 0, kTime, RenderScale::identity, window, ViewIdx(0), &inputTime, &inputView, &inputNb));
 }
 
-// Legacy and Task graph renders agree bit for bit, and the scheduler plans every image the
+// Direct and Task graph renders agree bit for bit, and the scheduler plans every image the
 // render fetches: the mask layer and the divisor layer, here a layer other than colour.
-TEST_F(StagedImageEffectTest, BothSchedulerModesAgreeWithNoUnplannedPull)
+TEST_F(StagedImageEffectTest, DirectAndScheduledAgreeWithNoUnplannedPull)
 {
     NodePtr source = createSource();
     setParitySourceExtraLayer(source, true);
@@ -703,7 +710,7 @@ TEST_F(StagedImageEffectTest, AWindowSplitIntoBandsIsRenderedWhole)
     EXPECT_EQ(0, differing);
 }
 
-TEST_F(StagedImageEffectTest, BandsAgreeInBothSchedulerModesWithNoUnplannedPull)
+TEST_F(StagedImageEffectTest, BandsAgreeDirectAndScheduledWithNoUnplannedPull)
 {
     const int width = 512;
     const int height = 256;

@@ -27,7 +27,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <memory>
@@ -35,6 +40,7 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -51,8 +57,11 @@
 #include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/CacheDeviceTier.h"
+#include "Engine/CacheEntry.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/FrameRenderContext.h"
+#include "Engine/GpuContext.h"
 #include "Engine/GpuPlacement.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -68,6 +77,12 @@
 #include "Engine/TLSHolder.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
+
+#ifdef NATRON_HAVE_GPU
+#include "Engine/Gpu/GpuRuntime.h"
+
+#include "Gpu/GpuTestSelector.h"
+#endif
 
 NATRON_NAMESPACE_USING
 
@@ -141,6 +156,15 @@ struct RegionBodyState {
     // Returned once the first member rendered, instead of rendering the others; Ok renders every member.
     EffectInstance::RenderRoIRetCode stopWith = EffectInstance::eRenderRoIRetCodeOk;
     bool throwAfterFirst = false;
+
+    // Members the device did not run, as a member served from a store.
+    std::set<const Node*> notRunOnDevice;
+
+    // Members the device ran that report no device time, as on a device without timestamps.
+    std::set<const Node*> unmeasured;
+
+    // When set, the body reports falling back to the CPU after the device ran the members.
+    std::string cpuFallback;
 };
 
 // Shared with the render hook, like SiblingState.
@@ -363,7 +387,8 @@ protected:
                       double time,
                       bool canAbort,
                       FrameRun* run,
-                      std::string* error)
+                      std::string* error,
+                      bool pruneBehindCacheHits = false)
     {
         run->abortInfo = AbortableRenderInfo::create(canAbort, 0);
         run->stats = std::make_shared<RenderStats>(false);
@@ -403,6 +428,9 @@ protected:
                                                   run->stats);
         run->context->setRequest(request);
         run->graph = RenderScheduler::buildGraph(run->context, root, time, ViewIdx(0), 0 /*mipmapLevel*/);
+        if (pruneBehindCacheHits) {
+            RenderScheduler::pruneBehindCacheHits(run->graph, run->context);
+        }
         run->numTasks = run->graph.tasks.size();
         if (run->graph.tasks.empty()) {
             *error = "empty graph";
@@ -411,6 +439,119 @@ protected:
         }
 
         return true;
+    }
+
+    void renderFrame(const NodePtr& root,
+                     FrameRun* run,
+                     bool pruneBehindCacheHits)
+    {
+        std::string error;
+        ASSERT_TRUE(prepareFrame(root, 1., false, run, &error, pruneBehindCacheHits)) << error;
+        submit(run);
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run->future->wait());
+    }
+
+    float rootPixel(const FrameRun& run,
+                    int x,
+                    int y)
+    {
+        const std::map<ImageLayerDesc, ImagePtr> planes = run.future->getRootPlanes();
+        if (planes.empty() || !planes.begin()->second) {
+            ADD_FAILURE() << "the root has no image";
+
+            return -1.f;
+        }
+        Image::ReadAccess access = planes.begin()->second->getReadRights();
+        const float* pixel = (const float*)access.pixelAt(x, y);
+        if (!pixel) {
+            ADD_FAILURE() << "the root's image has no pixel at " << x << "," << y;
+
+            return -1.f;
+        }
+
+        return pixel[0];
+    }
+
+    void setValue(const NodePtr& node,
+                  double value)
+    {
+        KnobDouble* knob = dynamic_cast<KnobDouble*>(node->getKnobByName("value").get());
+
+        ASSERT_TRUE(knob != NULL);
+        knob->setValue(value);
+    }
+
+    const FrameGraph::Task* findTask(const FrameGraph& graph,
+                                     const NodePtr& node)
+    {
+        for (const FrameGraph::Task& task : graph.tasks) {
+            if (task.key.node == node) {
+                return &task;
+            }
+        }
+
+        return nullptr;
+    }
+
+    // The key renderRoI uses for node in a frame planned without pruning.
+    ImageKey outputKey(const NodePtr& node,
+                       const FrameRun& plan)
+    {
+        const FrameRequestMap& requests = *plan.context->getRequest();
+        const FrameRequestMap::const_iterator request = requests.find(NodeCtxKey(node, 0));
+        const FrameGraph::Task* task = findTask(plan.graph, node);
+        if ((request == requests.end()) || !task) {
+            ADD_FAILURE() << "the plan doesn't reach the node";
+
+            return ImageKey();
+        }
+
+        return node->getEffectInstance()->outputCacheKey(request->second->nodeHash, task->cacheKeyHasTime, task->key.time, task->key.view, false, 0);
+    }
+
+    ImagePtr peekOutput(const NodePtr& node,
+                        const FrameRun& plan)
+    {
+        ImagePtr found;
+        outputKey(node, plan).forEachServingKey(0, 0, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, [&found](const ImageKey& candidate) {
+            std::list<ImagePtr> images;
+            if (!appPTR->peekImage(candidate, &images)) {
+                return false;
+            }
+            found = images.front();
+
+            return true;
+        });
+
+        return found;
+    }
+
+    // An entry as an earlier render would leave it for node, its bitmap left to the caller.
+    ImagePtr storeOutput(const NodePtr& node,
+                         const FrameRun& plan,
+                         float value)
+    {
+        const ImageParamsPtr params = Image::makeParams(RectD(0., 0., kCountingTestSize, kCountingTestSize), 1., 0, false, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat, eImageFieldingOrderNone);
+        ImagePtr image;
+        appPTR->getImageOrCreate(outputKey(node, plan), params, &image);
+        if (!image) {
+            ADD_FAILURE() << "the cache made no image";
+
+            return image;
+        }
+        image->allocateMemory();
+        Image::WriteAccess access(image.get());
+        const int numChannels = (int)image->getComponentsCount();
+        for (int y = 0; y < kCountingTestSize; ++y) {
+            for (int x = 0; x < kCountingTestSize; ++x) {
+                float* pixel = (float*)access.pixelAt(x, y);
+                for (int c = 0; c < numChannels; ++c) {
+                    pixel[c] = value;
+                }
+            }
+        }
+
+        return image;
     }
 
     void submit(FrameRun* run)
@@ -638,7 +779,21 @@ protected:
                                           int region,
                                           const RenderScheduler::CpuFallbackLease& /*leaseCpu*/,
                                           std::map<ImageLayerDesc, ImagePtr>* rootPlanes,
-                                          RenderScheduler::RegionReport* /*report*/) {
+                                          RenderScheduler::RegionReport* report) {
+            const FrameGraph::Region& members = graph.regions[region];
+            report->memberNs.assign(members.members.size(), 1000);
+            report->memberRanOnDevice.assign(members.members.size(), 1);
+            for (std::size_t i = 0; i < members.members.size(); ++i) {
+                const Node* node = graph.tasks[members.members[i]].key.node.get();
+                if (state->unmeasured.count(node) || state->notRunOnDevice.count(node)) {
+                    report->memberNs[i] = 0;
+                }
+                if (state->notRunOnDevice.count(node)) {
+                    report->memberRanOnDevice[i] = 0;
+                }
+            }
+            report->cpuFallback = state->cpuFallback;
+
             return renderRegionOnCpu(*state, context, graph, region, rootPlanes);
         });
     }
@@ -925,6 +1080,176 @@ TEST_F(RenderSchedulerTest, AbortStopsTheFrame)
     }
 }
 
+// wait() returns once the frame is marked finished, which is before the callback runs, so tests wait for the callback
+// itself.
+struct CompletionLog {
+    std::mutex mutex;
+    std::condition_variable cond;
+    int calls = 0;
+    EffectInstance::RenderRoIRetCode retCode = EffectInstance::eRenderRoIRetCodeOk;
+    std::thread::id thread;
+
+    FrameFuture::CompletionCallback callback()
+    {
+        return [this](EffectInstance::RenderRoIRetCode code) {
+            std::lock_guard<std::mutex> k(mutex);
+            ++calls;
+            retCode = code;
+            thread = std::this_thread::get_id();
+            cond.notify_all();
+        };
+    }
+
+    bool waitForCall()
+    {
+        std::unique_lock<std::mutex> k(mutex);
+
+        return cond.wait_for(k, std::chrono::milliseconds(kFrameTimeoutMs), [this]() { return calls > 0; });
+    }
+};
+
+TEST_F(RenderSchedulerTest, CompletionCallbackRunsOnceAfterSuccess)
+{
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(10, &nodes));
+
+    for (std::size_t p = 0; p < sizeof(kPoolSizes) / sizeof(kPoolSizes[0]); ++p) {
+        SCOPED_TRACE("pool size " + std::to_string(kPoolSizes[p]));
+        PoolSizeGuard pool(kPoolSizes[p]);
+        CountingTestRegistry::reset();
+        setDelay(nodes.front(), kOverlapDelayMs);
+
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &run, &error)) << error;
+        CompletionLog log;
+        submit(&run);
+        run.future->onFinished(log.callback());
+        ASSERT_TRUE(log.waitForCall());
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+        std::lock_guard<std::mutex> k(log.mutex);
+        EXPECT_EQ(1, log.calls);
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, log.retCode);
+        EXPECT_NE(std::this_thread::get_id(), log.thread);
+    }
+}
+
+TEST_F(RenderSchedulerTest, CompletionCallbackRunsOnceAfterAbort)
+{
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(10, &nodes));
+
+    for (std::size_t p = 0; p < sizeof(kPoolSizes) / sizeof(kPoolSizes[0]); ++p) {
+        SCOPED_TRACE("pool size " + std::to_string(kPoolSizes[p]));
+        PoolSizeGuard pool(kPoolSizes[p]);
+        CountingTestRegistry::reset();
+
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(nodes.back(), 1., true, &run, &error)) << error;
+        const Node* first = nodes.front().get();
+        AbortableRenderInfoPtr abortInfo = run.abortInfo;
+        CountingTestRegistry::setRenderHook([first, abortInfo](const Node* node) {
+            if (node == first) {
+                abortInfo->setAborted();
+            }
+        });
+        CompletionLog log;
+        submit(&run);
+        run.future->onFinished(log.callback());
+        EXPECT_TRUE(log.waitForCall());
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, run.future->wait());
+        CountingTestRegistry::setRenderHook(CountingTestRegistry::RenderHook());
+        std::lock_guard<std::mutex> k(log.mutex);
+        EXPECT_EQ(1, log.calls);
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, log.retCode);
+    }
+}
+
+TEST_F(RenderSchedulerTest, CompletionCallbackRegisteredLateRunsAtOnceOnTheCaller)
+{
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(3, &nodes));
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &run, &error)) << error;
+    submit(&run);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+
+    CompletionLog log;
+    run.future->onFinished(log.callback());
+    std::lock_guard<std::mutex> k(log.mutex);
+    EXPECT_EQ(1, log.calls);
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, log.retCode);
+    EXPECT_EQ(std::this_thread::get_id(), log.thread);
+}
+
+// Frames are submitted, given their callback and aborted from several threads at once, so registration races the
+// frame ending on a pool thread and on an aborting thread.
+TEST_F(RenderSchedulerTest, CompletionCallbackRunsExactlyOnceUnderParallelStress)
+{
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(3, &nodes));
+    const int kFrames = 64;
+    const int kSubmitters = 4;
+    const int stressPools[] = { 2, 16 };
+
+    for (std::size_t p = 0; p < sizeof(stressPools) / sizeof(stressPools[0]); ++p) {
+        SCOPED_TRACE("pool size " + std::to_string(stressPools[p]));
+        PoolSizeGuard pool(stressPools[p]);
+        CountingTestRegistry::reset();
+
+        std::vector<FrameRun> runs(kFrames);
+        for (int i = 0; i < kFrames; ++i) {
+            std::string error;
+            ASSERT_TRUE(prepareFrame(nodes.back(), 1. + i, true, &runs[i], &error)) << error;
+        }
+        std::vector<std::atomic<int>> calls(kFrames);
+        for (int i = 0; i < kFrames; ++i) {
+            calls[i] = 0;
+        }
+        std::atomic<int> total(0);
+        std::vector<std::thread> submitters;
+        for (int t = 0; t < kSubmitters; ++t) {
+            submitters.emplace_back([&, t]() {
+                for (int i = t; i < kFrames; i += kSubmitters) {
+                    FrameRun& run = runs[i];
+                    run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Background);
+                    if (i % 3 == 0) {
+                        std::this_thread::yield();
+                    }
+                    run.future->onFinished([&calls, &total, i](EffectInstance::RenderRoIRetCode) {
+                        ++calls[i];
+                        ++total;
+                    });
+                    if (i % 2 == 1) {
+                        _scheduler->abort(run.abortInfo);
+                    }
+                }
+            });
+        }
+        for (std::thread& submitter : submitters) {
+            submitter.join();
+        }
+        for (int i = 0; i < kFrames; ++i) {
+            ASSERT_TRUE(bool(runs[i].future));
+            runs[i].future->wait();
+        }
+        QElapsedTimer timer;
+        timer.start();
+        while (total.load() < kFrames && timer.elapsed() < kFrameTimeoutMs) {
+            QThread::msleep(1);
+        }
+        // A second call, if any, would land shortly after the first.
+        QThread::msleep(50);
+        for (int i = 0; i < kFrames; ++i) {
+            EXPECT_EQ(1, calls[i].load()) << "frame " << i;
+        }
+        EXPECT_EQ(kFrames, total.load());
+    }
+}
+
 // A failed leaf aborts its frame: the leaves running beside it stop early instead of rendering in full, the queued ones
 // never start, and the frame finishes as failed rather than aborted.
 TEST_F(RenderSchedulerTest, FailedTaskStopsSiblings)
@@ -1005,6 +1330,503 @@ TEST_F(RenderSchedulerTest, FailedTaskStopsSiblings)
         EXPECT_GE(run.stats->getTasksPurged(), leaves - poolSize);
         expectRunnablesDrained();
     }
+}
+
+// The edit reaches the last node only, so the second-last node's entry answers for everything above it.
+TEST_F(RenderSchedulerTest, EditingTheLastNodeRunsNothingBehindTheCachedOutputBeforeIt)
+{
+    appPTR->clearAllCaches();
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(4, &nodes));
+    ASSERT_NO_FATAL_FAILURE(setBool(nodes[2], "cacheOutput", true));
+
+    FrameRun first;
+    ASSERT_NO_FATAL_FAILURE(renderFrame(nodes.back(), &first, true));
+    EXPECT_EQ(4u, first.numTasks);
+    EXPECT_FLOAT_EQ(4.f, rootPixel(first, 0, 0));
+
+    ASSERT_NO_FATAL_FAILURE(setValue(nodes.back(), 10.));
+    CountingTestRegistry::reset();
+
+    FrameRun second;
+    ASSERT_NO_FATAL_FAILURE(renderFrame(nodes.back(), &second, true));
+    EXPECT_EQ(2u, second.numTasks);
+    EXPECT_EQ(2, second.stats->getTasksRun());
+    EXPECT_EQ(0, second.stats->getUnplannedPulls());
+    EXPECT_EQ(0, CountingTestRegistry::renders(nodes[0]));
+    EXPECT_EQ(0, CountingTestRegistry::renders(nodes[1]));
+    EXPECT_EQ(0, CountingTestRegistry::renders(nodes[2]));
+    EXPECT_EQ(1, CountingTestRegistry::renders(nodes[3]));
+    EXPECT_FLOAT_EQ(13.f, rootPixel(second, 0, 0));
+}
+
+TEST_F(RenderSchedulerTest, AnInputLightsOnlyWhenItsUpstreamRan)
+{
+    appPTR->clearAllCaches();
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(3, &nodes));
+    ASSERT_NO_FATAL_FAILURE(setBool(nodes[1], "cacheOutput", true));
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        nodes[i]->takeExecutionCount(Node::eExecutionDeviceCpu);
+        nodes[i]->takeInputExecutionCount(0);
+    }
+
+    {
+        SCOPED_TRACE("nothing cached");
+        FrameRun first;
+        ASSERT_NO_FATAL_FAILURE(renderFrame(nodes.back(), &first, true));
+        EXPECT_FLOAT_EQ(3.f, rootPixel(first, 0, 0));
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            EXPECT_EQ(1, nodes[i]->takeExecutionCount(Node::eExecutionDeviceCpu)) << "node " << i;
+            EXPECT_EQ(0, nodes[i]->takeExecutionCount(Node::eExecutionDeviceGpu)) << "node " << i;
+        }
+        EXPECT_GT(nodes[1]->takeInputExecutionCount(0), 0) << "the first node ran";
+        EXPECT_GT(nodes[2]->takeInputExecutionCount(0), 0) << "the second node missed the cache and ran";
+    }
+
+    ASSERT_NO_FATAL_FAILURE(setValue(nodes.back(), 10.));
+    CountingTestRegistry::reset();
+
+    {
+        SCOPED_TRACE("the second node cached");
+        FrameRun second;
+        ASSERT_NO_FATAL_FAILURE(renderFrame(nodes.back(), &second, true));
+        EXPECT_FLOAT_EQ(12.f, rootPixel(second, 0, 0));
+        EXPECT_EQ(0, CountingTestRegistry::renders(nodes[1]));
+        EXPECT_EQ(1, CountingTestRegistry::renders(nodes[2]));
+        EXPECT_EQ(0, nodes[0]->takeExecutionCount(Node::eExecutionDeviceCpu));
+        EXPECT_EQ(0, nodes[1]->takeExecutionCount(Node::eExecutionDeviceCpu)) << "a cache hit is no execution";
+        EXPECT_EQ(1, nodes[2]->takeExecutionCount(Node::eExecutionDeviceCpu));
+        EXPECT_EQ(0, nodes[1]->takeInputExecutionCount(0)) << "the cached node read nothing";
+        EXPECT_EQ(0, nodes[2]->takeInputExecutionCount(0)) << "the input came from the cache";
+    }
+}
+
+// A cached pull at another time or view, or in another frame, must not light an edge a computed pull lit.
+TEST_F(RenderSchedulerTest, AFreshOutputIsKeyedByFrameTimeAndView)
+{
+    NodePtr node = createCounting(kTestPluginIDCounting, 1.);
+    NodePtr other = createCounting(kTestPluginIDCounting, 1.);
+    ASSERT_TRUE(node && other);
+    const auto makeContext = [&]() {
+        return FrameRenderContext::create(1., ViewIdx(0), false, false, AbortableRenderInfo::create(true, 0), node, 0,
+                                          getApp()->getTimeLine().get(), NodePtr(), false, false, RenderStatsPtr());
+    };
+    const FrameRenderContextPtr frame = makeContext();
+    const FrameRenderContextPtr later = makeContext();
+    ASSERT_TRUE(frame && later);
+
+    EXPECT_FALSE(frame->hasFreshOutput(node.get(), 1., ViewIdx(0)));
+    frame->noteFreshOutput(node.get(), 1., ViewIdx(0));
+    EXPECT_TRUE(frame->hasFreshOutput(node.get(), 1., ViewIdx(0)));
+    EXPECT_FALSE(frame->hasFreshOutput(node.get(), 2., ViewIdx(0))) << "another time";
+    EXPECT_FALSE(frame->hasFreshOutput(node.get(), 1.5, ViewIdx(0))) << "a sub-frame time";
+    EXPECT_FALSE(frame->hasFreshOutput(node.get(), 1., ViewIdx(1))) << "another view";
+    EXPECT_FALSE(frame->hasFreshOutput(other.get(), 1., ViewIdx(0))) << "another node";
+    EXPECT_FALSE(later->hasFreshOutput(node.get(), 1., ViewIdx(0))) << "another frame";
+    EXPECT_FALSE(frame->hasFreshOutput(nullptr, 1., ViewIdx(0)));
+
+    later->noteFreshOutput(node.get(), 2., ViewIdx(0));
+    EXPECT_TRUE(later->hasFreshOutput(node.get(), 2., ViewIdx(0)));
+    EXPECT_FALSE(frame->hasFreshOutput(node.get(), 2., ViewIdx(0))) << "the mark belongs to the later frame";
+}
+
+// Render threads mark inputs with no lock while the counts are read; every mark is taken exactly once.
+TEST_F(RenderSchedulerTest, InputExecutionCountsAreTakenOnceUnderConcurrentMarks)
+{
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(2, &nodes));
+    const NodePtr& node = nodes[1];
+    node->takeInputExecutionCount(0);
+    EXPECT_EQ(0, node->takeInputExecutionCount(-1));
+    EXPECT_EQ(0, node->takeInputExecutionCount(node->getNInputs() + 64));
+    node->noteInputExecution(node->getNInputs() + 64);
+
+    const int kThreads = 8;
+    const int kMarks = 2000;
+    std::atomic<int> taken(0);
+    std::atomic<bool> done(false);
+    std::thread reader([&]() {
+        while (!done.load()) {
+            taken += node->takeInputExecutionCount(0);
+        }
+    });
+    std::vector<std::thread> writers;
+    for (int t = 0; t < kThreads; ++t) {
+        writers.emplace_back([&]() {
+            for (int i = 0; i < kMarks; ++i) {
+                node->noteInputExecution(0);
+            }
+        });
+    }
+    for (std::thread& writer : writers) {
+        writer.join();
+    }
+    done = true;
+    reader.join();
+    taken += node->takeInputExecutionCount(0);
+    EXPECT_EQ(kThreads * kMarks, taken.load());
+}
+
+// The evicted entry makes the root pull its input inline, through an identity node reading a cached one.
+TEST_F(RenderSchedulerTest, AnIdentityPassingCachedPixelsInlineNeitherRunsNorLightsAnEdge)
+{
+    appPTR->clearAllCaches();
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(4, &nodes));
+    ASSERT_NO_FATAL_FAILURE(setBool(nodes[0], "cacheOutput", true));
+    ASSERT_NO_FATAL_FAILURE(setBool(nodes[2], "cacheOutput", true));
+    ASSERT_NO_FATAL_FAILURE(setBool(nodes[1], "identity", true));
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        nodes[i]->takeExecutionCount(Node::eExecutionDeviceCpu);
+        nodes[i]->takeInputExecutionCount(0);
+    }
+
+    {
+        SCOPED_TRACE("nothing cached");
+        FrameRun first;
+        ASSERT_NO_FATAL_FAILURE(renderFrame(nodes.back(), &first, true));
+        EXPECT_FLOAT_EQ(3.f, rootPixel(first, 0, 0));
+        EXPECT_EQ(0, nodes[1]->takeExecutionCount(Node::eExecutionDeviceCpu)) << "an identity computes nothing";
+        EXPECT_GT(nodes[2]->takeInputExecutionCount(0), 0) << "the identity passed through what the first node ran";
+    }
+
+    ASSERT_NO_FATAL_FAILURE(setValue(nodes.back(), 10.));
+    CountingTestRegistry::reset();
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        nodes[i]->takeExecutionCount(Node::eExecutionDeviceCpu);
+        nodes[i]->takeInputExecutionCount(0);
+    }
+
+    {
+        SCOPED_TRACE("the third node evicted after planning");
+        FrameRun second;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &second, &error, true)) << error;
+        nodes[2]->removeAllImagesFromCache(true);
+        submit(&second);
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, second.future->wait());
+        EXPECT_FLOAT_EQ(12.f, rootPixel(second, 0, 0));
+        EXPECT_EQ(0, CountingTestRegistry::renders(nodes[0]));
+        EXPECT_EQ(1, CountingTestRegistry::renders(nodes[2]));
+        EXPECT_EQ(0, nodes[0]->takeExecutionCount(Node::eExecutionDeviceCpu));
+        EXPECT_EQ(0, nodes[1]->takeExecutionCount(Node::eExecutionDeviceCpu)) << "an inline identity is no execution";
+        EXPECT_EQ(1, nodes[2]->takeExecutionCount(Node::eExecutionDeviceCpu));
+        EXPECT_EQ(1, nodes[3]->takeExecutionCount(Node::eExecutionDeviceCpu));
+        EXPECT_EQ(0, nodes[1]->takeInputExecutionCount(0)) << "the identity read a cached image";
+        EXPECT_EQ(0, nodes[2]->takeInputExecutionCount(0)) << "the identity passed cached pixels through";
+        EXPECT_GT(nodes[3]->takeInputExecutionCount(0), 0) << "the third node ran inline";
+    }
+}
+
+TEST_F(RenderSchedulerTest, APartialHitKeepsOnlyTheDependencyItsMissingPartReads)
+{
+    appPTR->clearAllCaches();
+    NodePtr left = createCounting(kTestPluginIDCounting, 1.);
+    NodePtr right = createCounting(kTestPluginIDCounting, 2.);
+    NodePtr split = createNode(QString::fromUtf8(kTestPluginIDSplitInputs));
+    ASSERT_TRUE(left && right && split);
+    connectNodes(left, split, 0, true);
+    connectNodes(right, split, 1, true);
+
+    FrameRun first;
+    ASSERT_NO_FATAL_FAILURE(renderFrame(split, &first, true));
+    EXPECT_EQ(3u, first.numTasks);
+
+    FrameRun probe;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(split, 1., false, &probe, &error)) << error;
+    const ImagePtr entry = peekOutput(split, probe);
+    ASSERT_TRUE(bool(entry));
+    entry->clearBitmap(RectI(kCountingTestSize / 2, 0, kCountingTestSize, kCountingTestSize));
+    CountingTestRegistry::reset();
+
+    FrameRun second;
+    ASSERT_TRUE(prepareFrame(split, 1., false, &second, &error, true)) << error;
+    EXPECT_EQ(2u, second.numTasks);
+    EXPECT_TRUE(findTask(second.graph, right) != nullptr);
+    EXPECT_TRUE(findTask(second.graph, left) == nullptr);
+    submit(&second);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, second.future->wait());
+
+    EXPECT_EQ(0, second.stats->getUnplannedPulls());
+    EXPECT_EQ(0, CountingTestRegistry::renders(left));
+    EXPECT_EQ(1, CountingTestRegistry::renders(right));
+    EXPECT_EQ(1, CountingTestRegistry::renders(split));
+    EXPECT_FLOAT_EQ(1.f, rootPixel(second, 0, 0));
+    EXPECT_FLOAT_EQ(2.f, rootPixel(second, kCountingTestSize - 1, 0));
+}
+
+// A plan counts on an entry it doesn't hold, so the render has to make up for losing it.
+TEST_F(RenderSchedulerTest, AnEntryEvictedBetweenPlanAndUseRendersByRecursion)
+{
+    appPTR->clearAllCaches();
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(3, &nodes));
+    ASSERT_NO_FATAL_FAILURE(setBool(nodes[1], "cacheOutput", true));
+
+    FrameRun first;
+    ASSERT_NO_FATAL_FAILURE(renderFrame(nodes.back(), &first, true));
+    ASSERT_NO_FATAL_FAILURE(setValue(nodes.back(), 10.));
+    CountingTestRegistry::reset();
+
+    FrameRun second;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &second, &error, true)) << error;
+    ASSERT_EQ(2u, second.numTasks);
+
+    nodes[1]->removeAllImagesFromCache(true);
+
+    submit(&second);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, second.future->wait());
+    EXPECT_GE(second.stats->getUnplannedPulls(), 1);
+    EXPECT_EQ(1, CountingTestRegistry::renders(nodes[0]));
+    EXPECT_EQ(1, CountingTestRegistry::renders(nodes[1]));
+    EXPECT_FLOAT_EQ(12.f, rootPixel(second, 0, 0));
+}
+
+TEST_F(RenderSchedulerTest, ADependencySharedWithAnUncachedBranchStaysPlanned)
+{
+    appPTR->clearAllCaches();
+    NodePtr source = createCounting(kTestPluginIDCounting, 1.);
+    NodePtr cached = createCounting(kTestPluginIDCounting, 1.);
+    NodePtr uncached = createCounting(kTestPluginIDCounting, 1.);
+    NodePtr merge = createCounting(kTestPluginIDCountingMerge, 1.);
+    ASSERT_TRUE(source && cached && uncached && merge);
+    ASSERT_NO_FATAL_FAILURE(setBool(cached, "cacheOutput", true));
+    connectNodes(source, cached, 0, true);
+    connectNodes(source, uncached, 0, true);
+    connectNodes(cached, merge, 0, true);
+    connectNodes(uncached, merge, 1, true);
+
+    FrameRun first;
+    ASSERT_NO_FATAL_FAILURE(renderFrame(merge, &first, true));
+    ASSERT_NO_FATAL_FAILURE(setValue(merge, 10.));
+    CountingTestRegistry::reset();
+
+    FrameRun second;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(merge, 1., false, &second, &error, true)) << error;
+    EXPECT_EQ(4u, second.numTasks);
+    const FrameGraph::Task* cachedTask = findTask(second.graph, cached);
+    const FrameGraph::Task* sourceTask = findTask(second.graph, source);
+    ASSERT_TRUE(cachedTask && sourceTask);
+    EXPECT_TRUE(cachedTask->dependencies.empty());
+    EXPECT_TRUE(cachedTask->servedFromCache);
+    EXPECT_EQ(1, sourceTask->consumers);
+    EXPECT_EQ(0, second.graph.tasks.front().consumers);
+    EXPECT_EQ(merge, second.graph.tasks.front().key.node);
+
+    submit(&second);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, second.future->wait());
+    EXPECT_EQ(0, second.stats->getUnplannedPulls());
+    EXPECT_EQ(1, CountingTestRegistry::renders(source));
+    EXPECT_EQ(0, CountingTestRegistry::renders(cached));
+    EXPECT_EQ(1, CountingTestRegistry::renders(uncached));
+    EXPECT_FLOAT_EQ(14.f, rootPixel(second, 0, 0));
+}
+
+// Whether a node stores its output now says nothing of an entry already there, which renderRoI takes anyway.
+TEST_F(RenderSchedulerTest, AnEarlierEntryServesATaskThatWouldNotStoreOne)
+{
+    appPTR->clearAllCaches();
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(3, &nodes));
+    CountingTestRegistry::reset();
+
+    FrameRun plan;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &plan, &error)) << error;
+    const ImagePtr entry = storeOutput(nodes[1], plan, 5.f);
+    ASSERT_TRUE(bool(entry));
+    entry->markForRendered(RectI(0, 0, kCountingTestSize, kCountingTestSize));
+
+    FrameRun run;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &run, &error, true)) << error;
+    ASSERT_EQ(2u, run.numTasks);
+    const FrameGraph::Task* task = findTask(run.graph, nodes[1]);
+    ASSERT_TRUE(task != nullptr);
+    EXPECT_FALSE(task->sharesCachedOutput);
+    EXPECT_TRUE(task->servedFromCache);
+
+    submit(&run);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+    EXPECT_EQ(0, CountingTestRegistry::renders(nodes[0]));
+    EXPECT_EQ(0, CountingTestRegistry::renders(nodes[1]));
+    EXPECT_FLOAT_EQ(6.f, rootPixel(run, 0, 0));
+}
+
+#if NATRON_ENABLE_TRIMAP
+// Another render's marker isn't a cached image: that render can still abort and leave the region to this one.
+TEST_F(RenderSchedulerTest, ARegionBeingRenderedElsewhereKeepsItsDependencies)
+{
+    appPTR->clearAllCaches();
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(3, &nodes));
+
+    FrameRun plan;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &plan, &error)) << error;
+    const ImagePtr entry = storeOutput(nodes[1], plan, 5.f);
+    ASSERT_TRUE(bool(entry));
+    entry->markForRendered(RectI(0, 0, kCountingTestSize, kCountingTestSize / 2));
+    entry->markForRendering(RectI(0, kCountingTestSize / 2, kCountingTestSize, kCountingTestSize));
+
+    FrameRun run;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &run, &error, true)) << error;
+    EXPECT_EQ(3u, run.numTasks);
+    const FrameGraph::Task* task = findTask(run.graph, nodes[1]);
+    ASSERT_TRUE(task != nullptr);
+    EXPECT_FALSE(task->servedFromCache);
+
+    appPTR->removeFromNodeCache(entry);
+}
+#endif
+
+#ifdef NATRON_HAVE_GPU
+// An entry only on the device serves its task, and the plan neither promotes it nor counts it as used. A device is
+// needed to hold the image, so without one the test is skipped, or fails when NATRON_TEST_REQUIRE_GPU=1.
+TEST_F(RenderSchedulerTest, AnEntryOnlyOnTheDeviceServesItsTask)
+{
+    appPTR->clearAllCaches();
+    GpuContext* gpuContext = appPTR->getGpuContext();
+    if (gpuContext) {
+        gpuContext->waitForInit(std::chrono::seconds(60));
+    }
+    // The application's context may refuse the device (Auto ignores CPU-type ones, such as lavapipe on CI), so a
+    // forced one stands in for the length of the test.
+    struct ForcedContext {
+        std::unique_ptr<GpuContext> previous;
+        bool installed = false;
+        ~ForcedContext()
+        {
+            if (installed) {
+                appPTR->clearAllCaches();
+                std::unique_ptr<GpuContext> forced = appPTR->swapGpuContextForTests(std::move(previous));
+                forced.reset();
+            }
+        }
+    } forcedContext;
+    std::string unavailableReason = "the application has no GPU context";
+    if (!gpuContext || !gpuContext->isAvailable()) {
+        GpuContextOptions options;
+        options.mode = GpuResolvedMode::Force;
+        options.device = gputest::cpuFallbackSelector();
+        std::shared_ptr<std::string> unavailable = std::make_shared<std::string>();
+        options.infoLog = [unavailable](const std::string& line) {
+            *unavailable = line;
+        };
+        std::unique_ptr<GpuContext> forced(new GpuContext(options));
+        if (forced->waitForInit(std::chrono::seconds(60)) && forced->isAvailable()) {
+            forcedContext.previous = appPTR->swapGpuContextForTests(std::move(forced));
+            forcedContext.installed = true;
+            gpuContext = appPTR->getGpuContext();
+        } else if (!unavailable->empty()) {
+            unavailableReason = *unavailable;
+        }
+    }
+    if (!gpuContext || !gpuContext->isAvailable()) {
+        const char* require = std::getenv("NATRON_TEST_REQUIRE_GPU");
+        if (require && (std::strcmp(require, "1") == 0)) {
+            ADD_FAILURE() << "NATRON_TEST_REQUIRE_GPU=1 but " << unavailableReason;
+        } else {
+            std::printf("[  SKIPPED ] %s\n", unavailableReason.c_str());
+        }
+
+        return;
+    }
+    const std::shared_ptr<void> hold = gpuContext->holdRuntime();
+    gpu::GpuRuntime* runtime = gpuContext->runtime();
+    const CacheDeviceTierPtr tier = appPTR->getDeviceCacheTier();
+    ASSERT_TRUE(runtime && tier);
+
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(3, &nodes));
+    FrameRun plan;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &plan, &error)) << error;
+    const RectI bounds(0, 0, kCountingTestSize, kCountingTestSize);
+
+    GpuImageLayout layout;
+    layout.layer = ImageLayerDesc::getRGBAComponents();
+    layout.rod = RectD(0., 0., kCountingTestSize, kCountingTestSize);
+    layout.bounds = bounds;
+    gpu::GpuBufferHandle handle;
+    gpu::GpuStatus status = runtime->acquire(layout.deviceBytes(), handle);
+    ASSERT_TRUE(bool(status)) << status.message;
+    std::vector<float> pixels((std::size_t)bounds.area() * 4, 5.f);
+    gpu::TimelineValue done;
+    status = runtime->upload({ pixels.data(), pixels.size() * sizeof(float) }, handle.buffer(), 0, done);
+    ASSERT_TRUE(bool(status)) << status.message;
+    ASSERT_TRUE(bool(runtime->wait(done)));
+    const GpuDeviceImagePtr image = GpuDeviceImage::create(*runtime, handle, layout, RenderStatsPtr());
+    ASSERT_TRUE(bool(image));
+
+    const CacheEntryHeaderPtr header = std::make_shared<CacheEntryHeader>();
+    header->bounds = bounds;
+    header->bitmap.initialize(bounds);
+    header->bitmap.setTo1();
+    const ImageKey key = outputKey(nodes[1], plan).forEntry(0, ImageLayerDesc::getRGBAComponents(), eImageBitDepthFloat);
+    ASSERT_TRUE(bool(tier->insert(key, image, header)));
+    header->lastUse.store(1);
+
+    FrameRun run;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &run, &error, true)) << error;
+    ASSERT_EQ(2u, run.numTasks);
+    const FrameGraph::Task* task = findTask(run.graph, nodes[1]);
+    ASSERT_TRUE(task != nullptr);
+    EXPECT_TRUE(task->servedFromCache);
+    EXPECT_TRUE(task->servedTier == EffectInstance::OutputCacheTier::Device);
+    EXPECT_TRUE(task->dependencies.empty());
+    EXPECT_TRUE(findTask(run.graph, nodes[0]) == nullptr);
+    EXPECT_EQ((U64)1, header->lastUse.load());
+    EXPECT_TRUE(image->isResident());
+
+    // Once the pixels are gone from the device the entry no longer counts.
+    ASSERT_TRUE(bool(image->downloadToRam()));
+    FrameRun after;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &after, &error, true)) << error;
+    EXPECT_EQ(3u, after.numTasks);
+    const FrameGraph::Task* notServed = findTask(after.graph, nodes[1]);
+    ASSERT_TRUE(notServed != nullptr);
+    EXPECT_FALSE(notServed->servedFromCache);
+
+    tier->clear();
+}
+#endif // NATRON_HAVE_GPU
+
+// Eviction scores read lastUse; a plan that bumped it would keep alive what it only looked at.
+TEST_F(RenderSchedulerTest, ProbingAnEntryDoesNotCountAsUsingIt)
+{
+    appPTR->clearAllCaches();
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(3, &nodes));
+    ASSERT_NO_FATAL_FAILURE(setBool(nodes[1], "cacheOutput", true));
+
+    FrameRun first;
+    ASSERT_NO_FATAL_FAILURE(renderFrame(nodes.back(), &first, true));
+
+    FrameRun plan;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &plan, &error)) << error;
+    const ImagePtr entry = peekOutput(nodes[1], plan);
+    ASSERT_TRUE(bool(entry));
+    const CacheEntryHeader* header = entry->evictionHeader();
+    ASSERT_TRUE(header != nullptr);
+    const U64 lastUse = header->lastUse.load();
+    const std::uint32_t reuseCount = header->reuseCount.load();
+
+    QThread::msleep(2);
+    FrameRun probed;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &probed, &error, true)) << error;
+    ASSERT_EQ(2u, probed.numTasks);
+    EXPECT_EQ(lastUse, header->lastUse.load());
+    EXPECT_EQ(reuseCount, header->reuseCount.load());
+
+    // Without this the checks above would also pass on a cache that records no use at all.
+    std::list<ImagePtr> images;
+    ASSERT_TRUE(appPTR->getImage(entry->getKey(), &images));
+    EXPECT_NE(lastUse, header->lastUse.load());
 }
 
 // Nothing varies with time, so the task of each caching node in the second frame renders the same cached image as the
@@ -1196,6 +2018,66 @@ TEST_F(RenderSchedulerTest, RegionRunsBetweenItsInputsAndItsConsumers)
             EXPECT_LT(positionOf(*log, nodes[i]), positionOf(*log, y)) << "node " << i;
         }
         EXPECT_EQ(2 * oneOutput, log->storeBytesAtRender[root.get()]);
+    }
+}
+
+// The members B, C and M run on the device and the others on the CPU; an input lights when the node feeding it ran.
+// Whether a member ran is what the region reports, not its device time, and a CPU fallback after the device ran
+// the members leaves them counted on the device.
+TEST_F(RenderSchedulerTest, RegionMembersThatRunCountOneGpuExecutionEach)
+{
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildRegionDiamond(&nodes));
+
+    enum Scenario {
+        eScenarioAllRun,
+        eScenarioServed,
+        eScenarioUnmeasured,
+        eScenarioFallbackAfterDevice,
+        eScenarioCount
+    };
+    const char* const names[eScenarioCount] = {
+        "every member runs", "one member served from a store", "one member ran with no device time",
+        "the region fell back to the CPU after the device ran it"
+    };
+    for (int scenario = 0; scenario < eScenarioCount; ++scenario) {
+        SCOPED_TRACE(names[scenario]);
+        appPTR->clearAllCaches();
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            nodes[i]->takeExecutionCount(Node::eExecutionDeviceGpu);
+            nodes[i]->takeExecutionCount(Node::eExecutionDeviceCpu);
+            for (int input = 0; input < nodes[i]->getNInputs(); ++input) {
+                nodes[i]->takeInputExecutionCount(input);
+            }
+        }
+        std::shared_ptr<RegionBodyState> state = std::make_shared<RegionBodyState>();
+        const bool served = scenario == eScenarioServed;
+        if (served) {
+            state->notRunOnDevice.insert(nodes[3].get());
+        } else if (scenario == eScenarioUnmeasured) {
+            state->unmeasured.insert(nodes[3].get());
+        } else if (scenario == eScenarioFallbackAfterDevice) {
+            state->cpuFallback = "out of device memory";
+        }
+        FrameRun run;
+        renderRegionDiamond(nodes, state, EffectInstance::eRenderRoIRetCodeOk, &run);
+        for (std::size_t i = 0; i < nodes.size(); ++i) {
+            const bool member = (i >= 1) && (i <= 3);
+            const int expected = (member && !(served && (i == 3))) ? 1 : 0;
+            EXPECT_EQ(expected, nodes[i]->takeExecutionCount(Node::eExecutionDeviceGpu)) << "node " << i;
+            EXPECT_EQ(member ? 0 : 1, nodes[i]->takeExecutionCount(Node::eExecutionDeviceCpu)) << "node " << i;
+            EXPECT_EQ(0, nodes[i]->takeExecutionCount(Node::eExecutionDeviceGpu)) << "latched counts are taken once, node " << i;
+        }
+        // M feeds X and Y and reads B and C; the served M ran nothing, so none of those four inputs lights.
+        const bool mRan = !served;
+        EXPECT_GT(nodes[1]->takeInputExecutionCount(0), 0) << "B reads A";
+        EXPECT_GT(nodes[2]->takeInputExecutionCount(0), 0) << "C reads A";
+        EXPECT_EQ(mRan, nodes[3]->takeInputExecutionCount(0) > 0) << "M reads B";
+        EXPECT_EQ(mRan, nodes[3]->takeInputExecutionCount(1) > 0) << "M reads C";
+        EXPECT_EQ(mRan, nodes[4]->takeInputExecutionCount(0) > 0) << "X reads M";
+        EXPECT_EQ(mRan, nodes[5]->takeInputExecutionCount(0) > 0) << "Y reads M";
+        EXPECT_GT(nodes[6]->takeInputExecutionCount(0), 0) << "the root reads X";
+        EXPECT_GT(nodes[6]->takeInputExecutionCount(1), 0) << "the root reads Y";
     }
 }
 

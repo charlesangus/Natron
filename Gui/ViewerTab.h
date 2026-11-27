@@ -137,7 +137,11 @@ public:
     bool claimShortcutOverride(QKeyEvent* e);
 
 private:
-    bool overlayTimeAndPosition(const NodePtr& node, const QPointF& pos, double* time, QPointF* transformPos);
+    // The overlay node's frame and position for a pointer event at pos; false when the event must not reach it.
+    bool overlayTimeAndPosition(const NodePtr& node, const QPointF& pos, double* time, QPointF* transformPos, bool keepBehind = false);
+
+    // The overlay node's frame for an event without a position; editable refuses a retimed overlay.
+    bool overlayTime(const NodePtr& node, bool editable, double* time);
 
     bool notifyOverlaysPenDown_internal(const NodePtr& node, const RenderScale & renderScale, PenType pen, const QPointF & viewportPos, const QPointF & pos, double pressure, double timestamp);
 
@@ -372,6 +376,9 @@ Q_SIGNALS:
     // The tab switched between the scene view and the 2D viewer.
     void sceneViewChanged();
 
+    // The scene view shows another node, or none, as its input was reconnected or disconnected.
+    void sceneViewedNodeChanged();
+
 public Q_SLOTS:
 
     // Shows the scene view or the 2D viewer, whichever the active input's data kind needs, and
@@ -406,6 +413,7 @@ public Q_SLOTS:
     void togglePlaybackMode();
     void onViewerChannelsChanged(int);
     void onFullFrameButtonToggle(bool);
+    void onAutoProxyButtonToggle(bool);
     void onClipToProjectButtonToggle(bool);
     void onTimeLineTimeChanged(SequenceTime time, int);
     void onCurrentTimeSpinBoxChanged(double);
@@ -475,6 +483,8 @@ public Q_SLOTS:
 
     void onCheckerboardButtonClicked();
 
+    void onMapSiblingOverlaysButtonClicked(bool mapped);
+
     void onPickerButtonClicked(bool);
 
     void onSpinboxFpsChanged(double fps);
@@ -483,6 +493,14 @@ public Q_SLOTS:
     void onEngineStarted(bool forward);
 
     void onSetDownPlaybackButtonsTimeout();
+
+    void onViewerStaleChanged(bool stale);
+    void onSceneOutOfDateChanged(bool outOfDate);
+    // Feeds the timing the viewer's staleness, or'ed with the 3D view's while it is shown.
+    void applyStaleCueInput();
+    void onStaleCueTimeout();
+    // Pushes the timing's visibility to the selected style and re-arms the timer at its next deadline.
+    void refreshStaleCue();
 
     void refreshViewerRenderingState();
 
@@ -535,6 +553,8 @@ private Q_SLOTS:
 
     void onRefinementPausedButtonClicked(bool paused);
 
+    void onRenderEverythingButtonClicked(bool on);
+
     // Shows the scene view's renderer row only for a progressive renderer.
     void refreshSceneRenderRow();
 
@@ -554,9 +574,18 @@ private:
     void refreshViewsMenuFromKnob();
     // Also hands Max Samples and Refinement Paused to the scene view.
     void refreshSceneRenderFromKnobs();
+    void refreshMapSiblingOverlaysFromKnob();
 
     // The fps playback runs at: the input's or the project's while the fps is locked.
     double getLockedFps() const;
+
+    /**
+     * @brief Hands the scene the viewer last evaluated for A to the scene view at @p frame. With
+     * @p onlyNewGeometry, geometry is handed over only when the viewer has geometry evaluated at
+     * @p frame it has not shown yet, so the frames playback evaluates ahead wait for the timeline.
+     **/
+    void showEvaluatedScene(int frame,
+                            bool onlyNewGeometry);
 
     void abortViewersAndRefresh();
 

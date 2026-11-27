@@ -363,7 +363,7 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
     PreRenderFrames framesToRender;
     collectPreRenderFrames(node, framesNeeded, reroutesMap, time, view, false /*includeRotoPaintTree*/, &framesToRender);
 
-    const ParallelRenderArgsPtr effectArgs = effect->getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr effectArgs = effect->getFrameArgs();
     const RenderContextPtr effectContext = effectArgs ? effectArgs->context : RenderContextPtr();
 
     for (PreRenderFrames::const_iterator it = framesToRender.begin(); it != framesToRender.end(); ++it) {
@@ -400,7 +400,7 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
         ///What region are we interested in for this input effect ? (This is in Canonical coords)
         RectD roi;
         bool roiIsInRequestPass = false;
-        ParallelRenderArgsPtr frameArgs = inputContext.args() ? inputContext.args() : inputEffect->getParallelRenderArgsTLS();
+        ParallelRenderArgsPtr frameArgs = inputContext.args() ? inputContext.args() : inputEffect->getFrameArgs();
         if (frameArgs && frameArgs->request) {
             roiIsInRequestPass = true;
         }
@@ -448,10 +448,7 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
         inputContext.install();
 
         {
-            ///Notify the node that we're going to render something with the input
-            EffectInstance::NotifyInputNRenderingStarted_RAIIPtr inputNIsRendering_RAII;
             assert(inputNb != -1); //< see getInputNumber
-            inputNIsRendering_RAII.reset(new EffectInstance::NotifyInputNRenderingStarted_RAII(node.get(), inputNb));
 
             ///For all views requested in input
             for (FrameRangesMap::const_iterator viewIt = it->second.begin(); viewIt != it->second.end(); ++viewIt) {
@@ -482,6 +479,15 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
                                 roi = (ownRoI != inputRois.end()) ? ownRoI->second : RectD();
                             }
 
+                            // The planned RoI is what every rect of the frame reads together, so the rect being rendered
+                            // has to be asked: its own RoI may not reach an input a plan left out for it.
+                            if (roiIsInRequestPass && !inputRois.empty()) {
+                                const FrameViewRequest* inputRequest = frameArgs->request->getFrameViewRequest(f, viewIt->first);
+                                if (inputRequest && inputRoIMissesRoD(inputRois, inputEffect, inputRequest->globalData.rod)) {
+                                    continue;
+                                }
+                            }
+
                             const unsigned int upstreamMipmapLevel = useScaleOneInputs ? 0 : originalMipmapLevel;
                             const RenderScale upstreamScale = useScaleOneInputs ? RenderScale::identity : RenderScale::fromMipmapLevel(originalMipmapLevel);
                             const RectI inputRoIPixelCoords = roi.toPixelEnclosing(upstreamMipmapLevel, inputPar);
@@ -504,9 +510,14 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
                                                                                    time /*callerRenderTime*/));
 
                                 EffectInstance::RenderRoIRetCode ret;
-                                ret = EffectInstance::renderInputOrTakeFromStore(inputEffect, inputNb, renderArgs.get(), &inputImgs, effect.get(), &inputContext); //< requested bitdepth
+                                bool freshInput = false;
+                                ret = EffectInstance::renderInputOrTakeFromStore(inputEffect, inputNb, renderArgs.get(), &inputImgs, effect.get(), &inputContext, &freshInput); //< requested bitdepth
                                 if (ret != EffectInstance::eRenderRoIRetCodeOk) {
                                     return ret;
+                                }
+                                // An input the cache served lights no edge: nothing ran upstream for this render.
+                                if (freshInput) {
+                                    node->noteInputExecution(inputNb);
                                 }
                             }
                             for (std::map<ImageLayerDesc, ImagePtr>::iterator it3 = inputImgs.begin(); it3 != inputImgs.end(); ++it3) {
@@ -526,7 +537,7 @@ EffectInstance::treeRecurseFunctor(const NodePtr& node,
                     }
                 } // for all ranges
             } // for all views
-        } // EffectInstance::NotifyInputNRenderingStarted_RAII
+        }
     } // for all inputs
     return EffectInstance::eRenderRoIRetCodeOk;
 } // EffectInstance::treeRecurseFunctor
@@ -751,7 +762,7 @@ passContextArgs(const EffectInstancePtr& effect,
     if (found != passArgs->end()) {
         return found->second;
     }
-    const ParallelRenderArgsPtr base = effect->getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr base = effect->getFrameArgs();
     if (!base) {
         return ParallelRenderArgsPtr();
     }
@@ -878,6 +889,34 @@ planDeferredContextRequests(const DeferredContextRequest& request,
     return eStatusOK;
 }
 
+// Appends to pieces up to four disjoint rectangles covering a less b.
+void
+appendRectDifference(const RectD& a,
+                     const RectD& b,
+                     std::vector<RectD>* pieces)
+{
+    if (a.isNull()) {
+        return;
+    }
+    const RectD cut = a.intersect(b);
+    if (cut.isNull()) {
+        pieces->push_back(a);
+
+        return;
+    }
+    const RectD candidates[] = {
+        RectD(a.x1, a.y1, a.x2, cut.y1),
+        RectD(a.x1, cut.y2, a.x2, a.y2),
+        RectD(a.x1, cut.y1, cut.x1, cut.y2),
+        RectD(cut.x2, cut.y1, a.x2, cut.y2),
+    };
+    for (const RectD& piece : candidates) {
+        if (!piece.isNull()) {
+            pieces->push_back(piece);
+        }
+    }
+}
+
 StatusEnum
 visitRequestPassItem(bool useTransforms,
                      const RequestPassItem& item,
@@ -885,7 +924,8 @@ visitRequestPassItem(bool useTransforms,
                      WarmedRoDSet* warmed,
                      ContextFrameArgsMap* passArgs,
                      DeferredContextRequests* deferred,
-                     std::vector<RequestPassItem>* stack)
+                     std::vector<RequestPassItem>* stack,
+                     std::vector<RequestPassNewWork>* newWork)
 {
     const NodePtr& node = item.node;
     const double time = item.time;
@@ -1043,10 +1083,30 @@ visitRequestPassItem(bool useTransforms,
         // Do not recurse if the roi did not add anything new to render
         return eStatusOK;
     }
+    const RectD previousFinalRoI = fvRequest->finalData.finalRoi;
     if (finalRoIEmpty) {
         fvRequest->finalData.finalRoi = canonicalRenderWindow;
     } else {
         fvRequest->finalData.finalRoi.merge(canonicalRenderWindow);
+    }
+    if (newWork) {
+        RequestPassNewWork added;
+        added.key = nodeKey;
+        added.time = time;
+        added.view = view;
+        if (finalRoIEmpty) {
+            added.roi = canonicalRenderWindow;
+            newWork->push_back(added);
+        } else {
+            // The final RoI is one bounding rectangle, so what the entry renders anew is the merged rectangle less the
+            // previous one, the corner fill of a merge included.
+            std::vector<RectD> pieces;
+            appendRectDifference(fvRequest->finalData.finalRoi, previousFinalRoI, &pieces);
+            for (const RectD& piece : pieces) {
+                added.roi = piece;
+                newWork->push_back(added);
+            }
+        }
     }
 
     if (fvRequest->globalData.identityInputNb == -2) {
@@ -1092,16 +1152,14 @@ visitRequestPassItem(bool useTransforms,
 
     ///Compute the regions of interest in input for this RoI
     FrameViewPerRequestData fvPerRequestData;
-    effect->getRegionsOfInterest_public(time, nodeRequest->mappedScale, fvRequest->globalData.rod, canonicalRenderWindow, view, &fvPerRequestData.inputsRoi);
-
-
     ///Transform Rois and get the reroutes map
-    if (useTransforms) {
-        if (fvRequest->globalData.transforms) {
-            fvRequest->globalData.reroutesMap.reset( new std::map<int, EffectInstancePtr>() );
-            EffectInstance::transformInputRois(effect.get(), fvRequest->globalData.transforms, par, nodeRequest->mappedScale, &fvPerRequestData.inputsRoi, fvRequest->globalData.reroutesMap.get());
-        }
+    InputMatrixMapPtr roiTransforms;
+    if (useTransforms && fvRequest->globalData.transforms) {
+        roiTransforms = fvRequest->globalData.transforms;
+        fvRequest->globalData.reroutesMap.reset(new std::map<int, EffectInstancePtr>());
     }
+    effect->getRegionsOfInterest_public(time, nodeRequest->mappedScale, fvRequest->globalData.rod, canonicalRenderWindow, view, &fvPerRequestData.inputsRoi,
+                                        roiTransforms, par, roiTransforms ? fvRequest->globalData.reroutesMap.get() : nullptr);
 
     EffectInstance::ComponentsNeededMap neededComps;
     {
@@ -1115,10 +1173,7 @@ visitRequestPassItem(bool useTransforms,
     }
 
     // Mirrors the choice renderRoI makes before renderInputImagesForRoI.
-    bool useScaleOneInputs = node->useScaleOneImagesWhenRenderScaleSupportIsDisabled();
-    if (!useScaleOneInputs && !effect->supportsMultiResolution()) {
-        useScaleOneInputs = true;
-    }
+    const bool useScaleOneInputs = effect->pullsInputsAtScaleOne();
     // Same level as treeRecurseFunctor picks for this input when rendering.
     const unsigned int upstreamMipmapLevel = useScaleOneInputs ? 0 : originalMipmapLevel;
 
@@ -1220,17 +1275,13 @@ visitRequestPassItem(bool useTransforms,
 
 } // namespace
 
+namespace {
+
 StatusEnum
-EffectInstance::getInputsRoIsFunctor(bool useTransforms,
-                                     double time,
-                                     ViewIdx view,
-                                     unsigned originalMipmapLevel,
-                                     const NodePtr& node,
-                                     const NodePtr& /*callerNode*/,
-                                     const NodePtr& /*treeRoot*/,
-                                     const RectD& canonicalRenderWindow,
-                                     FrameRequestMap& requests,
-                                     const RenderContextPtr& rootContext)
+runRequestPass(bool useTransforms,
+               const std::vector<RequestPassItem>& roots,
+               FrameRequestMap& requests,
+               std::vector<RequestPassNewWork>* newWork)
 {
     // An explicit stack rather than recursion: the walk is as deep as the longest upstream chain, and request passes
     // run on pool threads with default-sized stacks.
@@ -1246,7 +1297,8 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
 
     DeferredContextRequests deferred;
 
-    stack.push_back(makeVisitItem(node, rootContext, time, view, originalMipmapLevel, canonicalRenderWindow));
+    // Reversed, so that the roots are walked in their order.
+    stack.assign(roots.rbegin(), roots.rend());
 
     for (;;) {
         if (stack.empty()) {
@@ -1266,7 +1318,7 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
 
         switch (item.kind) {
         case RequestPassItem::eKindVisit:
-            if (visitRequestPassItem(useTransforms, item, requests, &warmed, &passArgs, &deferred, &stack) == eStatusFailed) {
+            if (visitRequestPassItem(useTransforms, item, requests, &warmed, &passArgs, &deferred, &stack, newWork) == eStatusFailed) {
                 return eStatusFailed;
             }
             break;
@@ -1295,6 +1347,26 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
     }
 
     return eStatusOK;
+} // runRequestPass
+
+} // namespace
+
+StatusEnum
+EffectInstance::getInputsRoIsFunctor(bool useTransforms,
+                                     double time,
+                                     ViewIdx view,
+                                     unsigned originalMipmapLevel,
+                                     const NodePtr& node,
+                                     const NodePtr& /*callerNode*/,
+                                     const NodePtr& /*treeRoot*/,
+                                     const RectD& canonicalRenderWindow,
+                                     FrameRequestMap& requests,
+                                     const RenderContextPtr& rootContext)
+{
+    // The root renders under rootContext, the empty context when null.
+    const std::vector<RequestPassItem> roots(1, makeVisitItem(node, rootContext, time, view, originalMipmapLevel, canonicalRenderWindow));
+
+    return runRequestPass(useTransforms, roots, requests, 0);
 } // EffectInstance::getInputsRoIsFunctor
 
 namespace {
@@ -1458,7 +1530,7 @@ reportContextCount(const NodePtr& treeRoot,
 
     U64 renderSequence = 0;
     const EffectInstancePtr rootEffect = treeRoot ? treeRoot->getEffectInstance() : EffectInstancePtr();
-    const ParallelRenderArgsPtr rootArgs = rootEffect ? rootEffect->getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
+    const ParallelRenderArgsPtr rootArgs = rootEffect ? rootEffect->getFrameArgs() : ParallelRenderArgsPtr();
     const AbortableRenderInfoPtr abortInfo = rootArgs ? rootArgs->abortInfo.lock() : AbortableRenderInfoPtr();
     if (abortInfo) {
         renderSequence = abortInfo->getRenderSequence();
@@ -1528,6 +1600,27 @@ EffectInstance::computeRequestPass(double time,
     }*/
 
     return eStatusOK;
+}
+
+StatusEnum
+EffectInstance::extendRequestPass(const std::vector<RequestPassRoot>& roots,
+                                  FrameRequestMap& request,
+                                  std::vector<RequestPassNewWork>* newWork)
+{
+    if (roots.empty()) {
+        return eStatusOK;
+    }
+    std::vector<RequestPassItem> items;
+    items.reserve(roots.size());
+    for (const RequestPassRoot& root : roots) {
+        if (!root.node || !root.node->getEffectInstance()) {
+            return eStatusFailed;
+        }
+        items.push_back(makeVisitItem(root.node, root.context, root.time, root.view, root.mipmapLevel, root.roi));
+    }
+    const bool doTransforms = appPTR->getCurrentSettings()->isTransformConcatenationEnabled();
+
+    return runRequestPass(doTransforms, items, request, newWork);
 }
 
 const FrameViewRequest*
@@ -1755,28 +1848,33 @@ InputContextScope::current(const EffectInstance* consumer,
     return false;
 }
 
+ParallelRenderArgsPtr
+copyFrameArgs(const ParallelRenderArgsPtr& args)
+{
+    ParallelRenderArgsPtr copy = std::make_shared<ParallelRenderArgs>(*args);
+    std::lock_guard<std::mutex> l(args->retainedMetadata.mutex);
+
+    copy->retainedMetadata.answers = args->retainedMetadata.answers;
+
+    return copy;
+}
+
 ContextFrameArgsScope::ContextFrameArgsScope(const EffectInstancePtr& effect,
                                              const ParallelRenderArgsPtr& args)
 {
     install(effect, args);
 }
 
-ContextFrameArgsScope::~ContextFrameArgsScope()
-{
-    if (_effect) {
-        _effect->popParallelRenderArgsTLS();
-    }
-}
+ContextFrameArgsScope::~ContextFrameArgsScope() = default;
 
 void
 ContextFrameArgsScope::install(const EffectInstancePtr& effect,
                                const ParallelRenderArgsPtr& args)
 {
-    if (_effect || !effect || !args) {
+    if (_token.isInstalled() || !effect || !args) {
         return;
     }
-    effect->setParallelRenderArgsTLS(args);
-    _effect = effect;
+    _token = FrameArgsToken(effect.get(), args);
     _actions.open(args->context);
 }
 
@@ -1792,7 +1890,7 @@ InputContextArgs::InputContextArgs(const EffectInstance* consumer,
     }
     RenderContextPtr context;
     const bool scoped = InputContextScope::current(consumer, &context);
-    const ParallelRenderArgsPtr consumerArgs = consumer->getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr consumerArgs = consumer->getFrameArgs();
     if (!scoped) {
         const RenderContextPtr consumerContext = consumerArgs ? consumerArgs->context : RenderContextPtr();
         // An input the consumer requests under one context of its own is pulled under it, as the
@@ -1824,7 +1922,7 @@ InputContextArgs::InputContextArgs(const EffectInstance* consumer,
     }
     // The request pass did not plan this pull: it renders under a copy of the input's own args with
     // no request.
-    const ParallelRenderArgsPtr base = input->getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr base = input->getFrameArgs();
     if (!base) {
         // Outside a frame render there are no args to give a context to.
         _contextKey = 0;
@@ -2058,12 +2156,12 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
 {
     assert(treeRoot);
 
-    // Ensure this thread gets an OpenGL context for the render of the frame
     OSGLContextPtr glContext;
-    try {
-        glContext = appPTR->getGPUContextPool()->attachGLContextToRender();
-    } catch (const std::exception& /*e*/) {
-
+    if (setUpstreamArgs) {
+        try {
+            glContext = appPTR->getGPUContextPool()->attachGLContextToRender();
+        } catch (const std::exception& /*e*/) {
+        }
     }
 
     _openGLContext = glContext;
@@ -2071,9 +2169,12 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(double time,
     ArgsInstallSequence installSequence;
     buildArgsMap(time, view, isRenderUserInteraction, isSequential, abortInfo, treeRoot, textureIndex, timeline,
                  activeRotoPaintNode, isAnalysis, draftMode, stats, setUpstreamArgs, glContext, &_installedArgs, &installSequence, &nodes);
+    FrameArgsToken::Pushes pushes;
+    pushes.reserve(installSequence.size());
     for (ArgsInstallSequence::const_iterator it = installSequence.begin(); it != installSequence.end(); ++it) {
-        it->first->getEffectInstance()->setParallelRenderArgsTLS(it->second);
+        pushes.push_back(std::make_pair(it->first->getEffectInstance().get(), it->second));
     }
+    _tokens.push_back(FrameArgsToken(pushes));
 }
 
 void
@@ -2209,25 +2310,39 @@ ParallelRenderArgsSetter::buildArgsMap(double time,
 void
 ParallelRenderArgsSetter::updateNodesRequest(const FrameRequestMap& request)
 {
-    for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        {
-            FrameRequestMap::const_iterator foundRequest = request.find(*it);
-            if ( foundRequest != request.end() ) {
-                (*it)->getEffectInstance()->setNodeRequestThreadLocal(foundRequest->second);
-            }
+    std::set<NodePtr> updated;
+    FrameArgsToken::Pushes pushes;
+    const auto update = [&](const NodePtr& node) {
+        FrameRequestMap::const_iterator foundRequest = request.find(node);
+        if ((foundRequest == request.end()) || !updated.insert(node).second) {
+            return;
         }
+        const EffectInstancePtr effect = node->getEffectInstance();
+        const ParallelRenderArgsPtr current = effect ? effect->getFrameArgs() : ParallelRenderArgsPtr();
+        if (!current) {
+            return;
+        }
+        ParallelRenderArgsPtr copy = copyFrameArgs(current);
+        copy->request = foundRequest->second;
+        // The map holds the args the constructor installed: args pushed over them since, like the viewer input's,
+        // take the request without entering it.
+        std::map<NodePtr, ParallelRenderArgsPtr>::iterator installed = _installedArgs.find(node);
+        if ((installed != _installedArgs.end()) && (installed->second == current)) {
+            installed->second = copy;
+        }
+        pushes.push_back(std::make_pair(effect.get(), copy));
+    };
+
+    for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
+        update(*it);
 
         NodesList rotoPaintNodes;
         RotoContextPtr roto = (*it)->getRotoContext();
         if (roto) {
             roto->getRotoPaintTreeNodes(&rotoPaintNodes);
         }
-
         for (NodesList::iterator it2 = rotoPaintNodes.begin(); it2 != rotoPaintNodes.end(); ++it2) {
-            FrameRequestMap::const_iterator foundRequest = request.find(*it2);
-            if ( foundRequest != request.end() ) {
-                (*it2)->getEffectInstance()->setNodeRequestThreadLocal(foundRequest->second);
-            }
+            update(*it2);
         }
 
         if ( (*it)->isMultiInstance() ) {
@@ -2236,18 +2351,18 @@ ParallelRenderArgsSetter::updateNodesRequest(const FrameRequestMap& request)
             NodesList children;
             (*it)->getChildrenMultiInstance(&children);
             for (NodesList::iterator it2 = children.begin(); it2 != children.end(); ++it2) {
-                FrameRequestMap::const_iterator foundRequest = request.find(*it2);
-                if ( foundRequest != request.end() ) {
-                    (*it2)->getEffectInstance()->setNodeRequestThreadLocal(foundRequest->second);
-                }
+                update(*it2);
             }
         }
+    }
+    if (!pushes.empty()) {
+        _tokens.push_back(FrameArgsToken(pushes));
     }
 
     request.installContextArgs([](const NodePtr& node) {
         const EffectInstancePtr effect = node->getEffectInstance();
 
-        return effect ? effect->getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
+        return effect ? effect->getFrameArgs() : ParallelRenderArgsPtr();
     });
 }
 
@@ -2264,41 +2379,27 @@ ParallelRenderArgsSetter::ParallelRenderArgsSetter(const std::shared_ptr<std::ma
     }
 
     if (args) {
+        FrameArgsToken::Pushes pushes;
+        pushes.reserve(argsMap->size());
         for (std::map<NodePtr, ParallelRenderArgsPtr>::iterator it = argsMap->begin(); it != argsMap->end(); ++it) {
             it->second->openGLContext = glContext;
-            it->first->getEffectInstance()->setParallelRenderArgsTLS(it->second);
+            pushes.push_back(std::make_pair(it->first->getEffectInstance().get(), it->second));
         }
+        _tokens.push_back(FrameArgsToken(pushes));
     }
+}
+
+void
+ParallelRenderArgsSetter::pushArgs(const EffectInstance* effect,
+                                   const ParallelRenderArgsPtr& args)
+{
+    _tokens.push_back(FrameArgsToken(effect, args));
 }
 
 ParallelRenderArgsSetter::~ParallelRenderArgsSetter()
 {
-    for (NodesList::iterator it = nodes.begin(); it != nodes.end(); ++it) {
-        if ( !(*it) || !(*it)->getEffectInstance() ) {
-            continue;
-        }
-        (*it)->getEffectInstance()->invalidateParallelRenderArgsTLS();
-
-        if ( (*it)->isMultiInstance() ) {
-            ///If the node has children, set the thread-local storage on them too, even if they do not render, it can be useful for expressions
-            ///on parameters.
-            NodesList children;
-            (*it)->getChildrenMultiInstance(&children);
-            for (NodesList::iterator it2 = children.begin(); it2 != children.end(); ++it2) {
-                (*it2)->getEffectInstance()->invalidateParallelRenderArgsTLS();
-            }
-        }
-
-        /* NodeGroup* isGrp = (*it)->isEffectGroup();
-           if (isGrp) {
-             isGrp->invalidateParallelRenderArgs();
-           }*/
-    }
-
-    if (argsMap) {
-        for (std::map<NodePtr, ParallelRenderArgsPtr>::iterator it = argsMap->begin(); it != argsMap->end(); ++it) {
-            it->first->getEffectInstance()->invalidateParallelRenderArgsTLS();
-        }
+    while (!_tokens.empty()) {
+        _tokens.pop_back();
     }
 
     OSGLContextPtr glContext = _openGLContext.lock();

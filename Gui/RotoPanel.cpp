@@ -25,8 +25,9 @@
 
 #include "RotoPanel.h"
 
-#include <stdexcept>
+#include <functional>
 #include <sstream> // stringstream
+#include <stdexcept>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
@@ -55,6 +56,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
+#include "Engine/Curve.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
@@ -355,14 +357,6 @@ struct TreeItem
 typedef std::list<TreeItem > TreeItems;
 typedef std::list<RotoItemPtr> SelectedItems;
 
-struct TimeLineKeys
-{
-    std::set<double> keys;
-    bool visible;
-};
-
-typedef std::map<RotoItemPtr, TimeLineKeys > ItemKeys;
-
 enum ColorDialogEditingEnum
 {
     eColorDialogEditingNothing = 0,
@@ -410,7 +404,14 @@ public:
     QTreeWidgetItem* lastRightClickedItem;
     QList<QTreeWidgetItem*> clipBoard;
 
-    ItemKeys keyframes; //< track of all keyframes for items
+    AppInstanceWPtr app;
+    std::set<BezierPtr> trackedBeziers;
+    std::set<RotoStrokeItemPtr> trackedStrokes;
+    std::set<RotoItemPtr> wiredItems;
+    std::weak_ptr<RotoStrokeItem> currentStroke;
+    std::weak_ptr<RotoStrokeItem> lastSeenActiveStroke;
+    bool markersEnabled;
+    bool markersRefreshQueued;
     ColorDialogEditingEnum dialogEdition;
     bool settingNameFromGui;
 
@@ -464,7 +465,14 @@ public:
         , editedItemName()
         , lastRightClickedItem(NULL)
         , clipBoard()
-        , keyframes()
+        , app(n->getNode()->getApp())
+        , trackedBeziers()
+        , trackedStrokes()
+        , wiredItems()
+        , currentStroke()
+        , lastSeenActiveStroke()
+        , markersEnabled(true)
+        , markersRefreshQueued(false)
         , dialogEdition(eColorDialogEditingNothing)
         , settingNameFromGui(false)
     {
@@ -507,22 +515,42 @@ public:
 
     void setChildrenLockedRecursively(bool locked, QTreeWidgetItem* item);
 
-    bool itemHasKey(const RotoItemPtr& item, double time) const;
-
-    void setItemKey(const RotoItemPtr& item, double time);
-
     // Every shape's keyframes are followed, selected or not, so the timeline shows current
     // keys as soon as a shape is selected.
     void trackBezierKeyframes(const BezierPtr& bezier);
     void untrackBezierKeyframes(const BezierPtr& bezier);
 
-    void removeItemKey(const RotoItemPtr& item, double time);
+    // A stroke's marker is its painted frame, which the Lifetime knobs can change at any time,
+    // on the item or through the context's proxies.
+    void trackItemRecursively(const RotoItemPtr& item);
+    void trackStrokeLifeTime(const RotoStrokeItemPtr& stroke);
+    void untrackStrokeLifeTime(const RotoStrokeItemPtr& stroke);
 
-    void removeItemAnimation(const RotoItemPtr& item);
+    // Keys on an item's own knobs (opacity, transform, ...) are timeline markers too, so edits
+    // from Python, the GUI and undo are all followed through the knobs' signals. Only the items
+    // that can show markers are wired, so a node with many strokes costs nothing extra.
+    void wireItem(const RotoItemPtr& item, bool connect);
+    void rewireMarkerSources(const std::set<RotoItemPtr>& wanted);
+    static void collectItemKnobKeyframes(const RotoItemPtr& item,
+                                         const std::function<bool(const KnobIPtr&)>& accept,
+                                         std::set<double>* times);
+
+    DockablePanel* hostPanel() const;
+    bool markersInView() const;
+
+    // An item knob is shown on the node's page of the same-named proxy knob.
+    bool isItemKnobOnVisiblePage(const KnobIPtr& itemKnob) const;
+
+    // The app remembers the last stroke painted until another is painted, across nodes, so it
+    // is adopted as this panel's current stroke only once per stroke and only for this node.
+    void syncActiveStroke(bool adopt);
+
+    // Selection, keyframe and item signals can arrive in bursts and in any order, so the
+    // published set is rebuilt once per event-loop turn rather than patched per signal.
+    void scheduleMarkerRefresh();
+    void publishMarkers();
 
     void insertItemInternal(int reason, double time, const RotoItemPtr& item, int indexInParentLayer);
-
-    void setVisibleItemKeyframes(const std::set<double>& keys, bool visible, bool emitSignal);
 };
 
 RotoPanel::RotoPanel(const NodeGuiPtr&  n,
@@ -535,7 +563,28 @@ RotoPanel::RotoPanel(const NodeGuiPtr&  n,
     QObject::connect( _imp->context.get(), SIGNAL(itemRemoved(RotoItemPtr,int)), this, SLOT(onItemRemoved(RotoItemPtr,int)) );
     QObject::connect( n->getNode()->getApp()->getTimeLine().get(), SIGNAL(frameChanged(SequenceTime,int)), this,
                       SLOT(onTimeChanged(SequenceTime,int)) );
+    {
+        const char* proxyNames[] = { kRotoDrawableItemLifeTimeParam, kRotoDrawableItemLifeTimeFrameParam };
+        for (std::size_t i = 0; i < sizeof(proxyNames) / sizeof(proxyNames[0]); ++i) {
+            KnobIPtr proxy = n->getNode()->getEffectInstance()->getKnobByName(proxyNames[i]);
+            if (proxy) {
+                QObject::connect(proxy->getSignalSlotHandler().get(), SIGNAL(valueChanged(ViewSpec, int, int)), this, SLOT(onStrokeLifeTimeChanged()));
+            }
+        }
+    }
     QObject::connect( n.get(), SIGNAL(settingsPanelClosed(bool)), this, SLOT(onSettingsPanelClosed(bool)) );
+    {
+        GuiAppInstancePtr guiApp = std::dynamic_pointer_cast<GuiAppInstance>(n->getNode()->getApp());
+        if (guiApp) {
+            QObject::connect(guiApp.get(), &GuiAppInstance::panelForegroundChanged, this, [this]() {
+                _imp->scheduleMarkerRefresh();
+            });
+        }
+    }
+    {
+        DockablePanel* panel = dynamic_cast<DockablePanel*>(parent);
+        _imp->markersEnabled = panel && !panel->isClosed();
+    }
     QObject::connect( _imp->context.get(), SIGNAL(itemScriptNameChanged(RotoItemPtr)), this, SLOT(onItemScriptNameChanged(RotoItemPtr)) );
     QObject::connect( _imp->context.get(), SIGNAL(itemLabelChanged(RotoItemPtr)), this, SLOT(onItemLabelChanged(RotoItemPtr)) );
     QObject::connect( _imp->context.get(), SIGNAL(itemLockedChanged(int)), this, SLOT(onItemLockChanged(int)) );
@@ -737,6 +786,10 @@ RotoPanel::RotoPanel(const NodeGuiPtr&  n,
 
 RotoPanel::~RotoPanel()
 {
+    AppInstancePtr app = _imp->app.lock();
+    if (app) {
+        app->clearPanelKeyframeIndicators(this);
+    }
 }
 
 RotoItemPtr RotoPanel::getRotoItemForTreeItem(QTreeWidgetItem* treeItem) const
@@ -795,35 +848,8 @@ RotoPanel::onRemoveKeyframeButtonClicked()
 void
 RotoPanel::onSelectionChangedInternal()
 {
-    ///disconnect previous selection
-    std::list<std::set<double> > toRemove;
-
-    for (SelectedItems::const_iterator it = _imp->selectedItems.begin(); it != _imp->selectedItems.end(); ++it) {
-        ItemKeys::iterator found = _imp->keyframes.find(*it);
-        if ( found != _imp->keyframes.end() ) {
-            toRemove.push_back(found->second.keys);
-            found->second.visible = false;
-        }
-    }
     _imp->selectedItems.clear();
 
-    ///Remove previous selection's keyframes
-    {
-        std::list<std::set<double> >::iterator next = toRemove.begin();
-        if ( next != toRemove.end() ) {
-            ++next;
-        }
-        for (std::list<std::set<double> >::iterator it = toRemove.begin(); it != toRemove.end(); ++it) {
-            _imp->setVisibleItemKeyframes( *it, false, next == toRemove.end() );
-            if ( next != toRemove.end() ) {
-                ++next;
-            }
-        }
-    }
-
-    ///connect new selection
-
-    std::list<std::set<double> > toAdd;
     int selectedBeziersCount = 0;
     const std::list<RotoItemPtr> & items = _imp->context->getSelectedItems();
     for (std::list<RotoItemPtr>::const_iterator it = items.begin(); it != items.end(); ++it) {
@@ -835,26 +861,8 @@ RotoPanel::onSelectionChangedInternal()
         } else if (isLayer && !isLayer->getItems().empty()) {
             ++selectedBeziersCount;
         }
-        ItemKeys::iterator found = _imp->keyframes.find(*it);
-        if ( found != _imp->keyframes.end() ) {
-            toAdd.push_back(found->second.keys);
-            found->second.visible = true;
-        }
     }
-
-    ///Add new selection keyframes
-    {
-        std::list<std::set<double> >::iterator next = toAdd.begin();
-        if ( next != toAdd.end() ) {
-            ++next;
-        }
-        for (std::list<std::set<double> >::iterator it = toAdd.begin(); it != toAdd.end(); ++it) {
-            _imp->setVisibleItemKeyframes( *it, true, next == toAdd.end() );
-            if ( next != toAdd.end() ) {
-                ++next;
-            }
-        }
-    }
+    _imp->scheduleMarkerRefresh();
 
     bool enabled = selectedBeziersCount > 0;
 
@@ -901,93 +909,28 @@ RotoPanel::onSelectionChanged(int reason)
 void
 RotoPanel::onSelectedBezierKeyframeSet(double time)
 {
-    Bezier* b = qobject_cast<Bezier*>( sender() );
-    BezierPtr isBezier;
-
-    if (b) {
-        isBezier = std::dynamic_pointer_cast<Bezier>( b->shared_from_this() );
-    }
     _imp->updateSplinesInfoGUI(time);
-    if (isBezier) {
-        _imp->setItemKey(isBezier, time);
-    }
+    _imp->scheduleMarkerRefresh();
 }
 
 void
 RotoPanel::onSelectedBezierKeyframeRemoved(double time)
 {
-    Bezier* b = qobject_cast<Bezier*>( sender() );
-    BezierPtr isBezier;
-
-    if (b) {
-        isBezier = std::dynamic_pointer_cast<Bezier>( b->shared_from_this() );
-    }
     _imp->updateSplinesInfoGUI(time);
-    if (isBezier) {
-        _imp->removeItemKey(isBezier, time);
-    }
+    _imp->scheduleMarkerRefresh();
 }
 
 void
 RotoPanel::onSelectedBezierAnimationRemoved()
 {
-    Bezier* b = qobject_cast<Bezier*>( sender() );
-    BezierPtr isBezier;
-
-    if (b) {
-        isBezier = std::dynamic_pointer_cast<Bezier>( b->shared_from_this() );
-    }
-
     _imp->updateSplinesInfoGUI( _imp->context->getTimelineCurrentTime() );
-    if (isBezier) {
-        _imp->removeItemAnimation(isBezier);
-    }
-}
-
-void
-RotoPanel::onSelectedBezierAboutToClone()
-{
-    Bezier* b = qobject_cast<Bezier*>( sender() );
-    BezierPtr isBezier;
-
-    if (b) {
-        isBezier = std::dynamic_pointer_cast<Bezier>( b->shared_from_this() );
-    }
-
-    if (isBezier) {
-        ItemKeys::iterator it = _imp->keyframes.find(isBezier);
-        if ( it != _imp->keyframes.end() ) {
-            if (it->second.visible) {
-                _imp->setVisibleItemKeyframes(it->second.keys, false, true);
-                ///Hack, making the visible flag to true, for the onSelectedBezierCloned() function
-                it->second.visible = true;
-            }
-        }
-    }
+    _imp->scheduleMarkerRefresh();
 }
 
 void
 RotoPanel::onSelectedBezierCloned()
 {
-    Bezier* b = qobject_cast<Bezier*>( sender() );
-    BezierPtr isBezier;
-
-    if (b) {
-        isBezier = std::dynamic_pointer_cast<Bezier>( b->shared_from_this() );
-    }
-
-    if (isBezier) {
-        ItemKeys::iterator it = _imp->keyframes.find(isBezier);
-        if ( it != _imp->keyframes.end() ) {
-            std::set<double> keys;
-            isBezier->getKeyframeTimes(&keys);
-            it->second.keys = keys;
-            if (it->second.visible) {
-                _imp->setVisibleItemKeyframes(it->second.keys, true, true);
-                it->second.visible = true;
-            }
-        }
-    }
+    _imp->scheduleMarkerRefresh();
 }
 
 static void
@@ -1247,14 +1190,11 @@ RotoPanelPrivate::insertItemRecursively(double time,
                           SLOT(onRotoItemCompOperatorChanged(ViewSpec,int,int)) );
         BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(item);
         if (isBezier) {
-            ItemKeys::iterator it = keyframes.find(isBezier);
-            if ( it == keyframes.end() ) {
-                TimeLineKeys keys;
-                isBezier->getKeyframeTimes(&keys.keys);
-                keys.visible = false;
-                keyframes.insert( std::make_pair(isBezier, keys) );
-            }
             trackBezierKeyframes(isBezier);
+        }
+        RotoStrokeItemPtr strokePtr = std::dynamic_pointer_cast<RotoStrokeItem>(item);
+        if (strokePtr) {
+            trackStrokeLifeTime(strokePtr);
         }
     } else if (layer) {
         treeItem->setIcon(0, iconLayer);
@@ -1348,19 +1288,9 @@ RotoPanelPrivate::insertItemInternal(int reason,
                                      const RotoItemPtr & item,
                                      int indexInParentLayer)
 {
-    BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(item);
-
-    if (isBezier) {
-        ItemKeys::iterator it = keyframes.find(isBezier);
-        if ( it == keyframes.end() ) {
-            TimeLineKeys keys;
-            isBezier->getKeyframeTimes(&keys.keys);
-            keys.visible = false;
-            keyframes.insert( std::make_pair(isBezier, keys) );
-        }
-        trackBezierKeyframes(isBezier);
-    }
     if ( (RotoItem::SelectionReasonEnum)reason == RotoItem::eSelectionReasonSettingsPanel ) {
+        // The context signals one insertion for a layer, though its removal signalled each child.
+        trackItemRecursively(item);
         RotoDrawableItemPtr drawable = std::dynamic_pointer_cast<RotoDrawableItem>(item);
         if (drawable) {
             publicInterface->makeCustomWidgetsForItem(drawable);
@@ -1380,15 +1310,10 @@ RotoPanel::onItemRemoved(const RotoItemPtr& item,
 
     if (isBezier) {
         _imp->untrackBezierKeyframes(isBezier);
-        ItemKeys::iterator it = _imp->keyframes.find(isBezier);
-        if ( it != _imp->keyframes.end() ) {
-            if (it->second.visible) {
-                for (std::set<double>::iterator it2 = it->second.keys.begin(); it2 != it->second.keys.end(); ++it2) {
-                    getNode()->getNode()->getApp()->removeKeyFrameIndicator(*it2);
-                }
-            }
-            _imp->keyframes.erase(it);
-        }
+    }
+    RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>(item);
+    if (isStroke) {
+        _imp->untrackStrokeLifeTime(isStroke);
     }
     if ( (RotoItem::SelectionReasonEnum)reason == RotoItem::eSelectionReasonSettingsPanel ) {
         return;
@@ -1850,37 +1775,10 @@ RotoPanelPrivate::insertSelectionRecursively(const RotoLayerPtr & layer)
 void
 RotoPanel::onItemSelectionChanged()
 {
-    ///disconnect previous selection
-    std::list<std::set<double> > toRemove;
-
-    for (SelectedItems::const_iterator it = _imp->selectedItems.begin(); it != _imp->selectedItems.end(); ++it) {
-        ItemKeys::iterator found = _imp->keyframes.find(*it);
-        if ( found != _imp->keyframes.end() ) {
-            toRemove.push_back(found->second.keys);
-            found->second.visible = false;
-        }
-    }
-
-    ///Remove previous selection's keyframes
-    {
-        std::list<std::set<double> >::iterator next = toRemove.begin();
-        if ( next != toRemove.end() ) {
-            ++next;
-        }
-        for (std::list<std::set<double> >::iterator it = toRemove.begin(); it != toRemove.end(); ++it) {
-            _imp->setVisibleItemKeyframes( *it, false, next == toRemove.end() );
-            if ( next != toRemove.end() ) {
-                ++next;
-            }
-        }
-    }
-
-
     _imp->context->deselect(_imp->selectedItems, RotoItem::eSelectionReasonSettingsPanel);
     _imp->selectedItems.clear();
 
     QList<QTreeWidgetItem*> selectedItems = _imp->tree->selectedItems();
-    std::list<std::set<double> > toAdd;
     int selectedBeziersCount = 0;
     for (int i = 0; i < selectedItems.size(); ++i) {
         TreeItems::iterator it = _imp->findItem(selectedItems[i]);
@@ -1909,28 +1807,9 @@ RotoPanel::onItemSelectionChanged()
             }
             _imp->insertSelectionRecursively(layer);
         }
-
-        ItemKeys::iterator found = _imp->keyframes.find(it->rotoItem);
-        if ( found != _imp->keyframes.end() ) {
-            toAdd.push_back(found->second.keys);
-            found->second.visible = true;
-        }
     }
 
-    ///Remove previous selection's keyframes
-    {
-        std::list<std::set<double> >::iterator next = toAdd.begin();
-        if ( next != toAdd.end() ) {
-            ++next;
-        }
-        for (std::list<std::set<double> >::iterator it = toAdd.begin(); it != toAdd.end(); ++it) {
-            _imp->setVisibleItemKeyframes( *it, true, next == toAdd.end() );
-            if ( next != toAdd.end() ) {
-                ++next;
-            }
-        }
-    }
-
+    _imp->scheduleMarkerRefresh();
 
     _imp->context->select(_imp->selectedItems, RotoItem::eSelectionReasonSettingsPanel);
 
@@ -2210,16 +2089,24 @@ TreeWidget::keyPressEvent(QKeyEvent* e)
 void
 RotoPanel::pushUndoCommand(QUndoCommand* cmd)
 {
-    NodeSettingsPanel* panel = getNode()->getSettingPanel();
+    NodeGuiPtr nodeGui = getNode();
+    NodeSettingsPanel* panel = nodeGui ? nodeGui->getSettingPanel() : NULL;
 
-    assert(panel);
+    if (!panel) {
+        delete cmd;
+
+        return;
+    }
     panel->pushUndoCommand(cmd);
 }
 
 std::string
 RotoPanel::getNodeName() const
 {
-    return getNode()->getNode()->getScriptName();
+    NodeGuiPtr nodeGui = getNode();
+    NodePtr node = nodeGui ? nodeGui->getNode() : NodePtr();
+
+    return node ? node->getScriptName() : std::string();
 }
 
 RotoCurveContextPtr
@@ -2476,185 +2363,338 @@ RotoPanel::selectAll()
     onItemSelectionChanged();
 }
 
-bool
-RotoPanelPrivate::itemHasKey(const RotoItemPtr& item,
-                             double time) const
-{
-    ItemKeys::const_iterator it = keyframes.find(item);
-
-    if ( it != keyframes.end() ) {
-        std::set<double>::const_iterator it2 = it->second.keys.find(time);
-        if ( it2 != it->second.keys.end() ) {
-            return true;
-        }
-    }
-
-    return false;
-}
-
 void
 RotoPanelPrivate::trackBezierKeyframes(const BezierPtr& bezier)
 {
+    trackedBeziers.insert(bezier);
+    scheduleMarkerRefresh();
     QObject::connect(bezier.get(), SIGNAL(keyframeSet(double)), publicInterface, SLOT(onSelectedBezierKeyframeSet(double)), Qt::UniqueConnection);
     QObject::connect(bezier.get(), SIGNAL(keyframeRemoved(double)), publicInterface, SLOT(onSelectedBezierKeyframeRemoved(double)), Qt::UniqueConnection);
     QObject::connect(bezier.get(), SIGNAL(animationRemoved()), publicInterface, SLOT(onSelectedBezierAnimationRemoved()), Qt::UniqueConnection);
-    QObject::connect(bezier.get(), SIGNAL(aboutToClone()), publicInterface, SLOT(onSelectedBezierAboutToClone()), Qt::UniqueConnection);
     QObject::connect(bezier.get(), SIGNAL(cloned()), publicInterface, SLOT(onSelectedBezierCloned()), Qt::UniqueConnection);
 }
 
 void
 RotoPanelPrivate::untrackBezierKeyframes(const BezierPtr& bezier)
 {
+    trackedBeziers.erase(bezier);
+    scheduleMarkerRefresh();
     QObject::disconnect(bezier.get(), SIGNAL(keyframeSet(double)), publicInterface, SLOT(onSelectedBezierKeyframeSet(double)));
     QObject::disconnect(bezier.get(), SIGNAL(keyframeRemoved(double)), publicInterface, SLOT(onSelectedBezierKeyframeRemoved(double)));
     QObject::disconnect(bezier.get(), SIGNAL(animationRemoved()), publicInterface, SLOT(onSelectedBezierAnimationRemoved()));
-    QObject::disconnect(bezier.get(), SIGNAL(aboutToClone()), publicInterface, SLOT(onSelectedBezierAboutToClone()));
     QObject::disconnect(bezier.get(), SIGNAL(cloned()), publicInterface, SLOT(onSelectedBezierCloned()));
 }
 
 void
-RotoPanelPrivate::setItemKey(const RotoItemPtr& item,
-                             double time)
+RotoPanelPrivate::trackItemRecursively(const RotoItemPtr& item)
 {
-    ItemKeys::iterator it = keyframes.find(item);
-
-    if ( it != keyframes.end() ) {
-        std::pair<std::set<double>::iterator, bool> ret = it->second.keys.insert(time);
-        if (ret.second && it->second.visible) {
-            node.lock()->getNode()->getApp()->addKeyframeIndicator(time);
+    BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(item);
+    if (isBezier) {
+        trackBezierKeyframes(isBezier);
+    }
+    RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>(item);
+    if (isStroke) {
+        trackStrokeLifeTime(isStroke);
+    }
+    RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>(item);
+    if (isLayer) {
+        const std::list<RotoItemPtr>& children = isLayer->getItems();
+        for (std::list<RotoItemPtr>::const_iterator it = children.begin(); it != children.end(); ++it) {
+            trackItemRecursively(*it);
         }
-    } else {
-        TimeLineKeys keys;
-        keys.keys.insert(time);
-        keys.visible = false;
-        keyframes.insert( std::make_pair(item, keys) );
     }
 }
 
 void
-RotoPanelPrivate::removeItemKey(const RotoItemPtr& item,
-                                double time)
+RotoPanelPrivate::trackStrokeLifeTime(const RotoStrokeItemPtr& stroke)
 {
-    ItemKeys::iterator it = keyframes.find(item);
+    trackedStrokes.insert(stroke);
+    scheduleMarkerRefresh();
+}
 
-    if ( it != keyframes.end() ) {
-        std::set<double>::iterator it2 = it->second.keys.find(time);
-        if ( it2 != it->second.keys.end() ) {
-            it->second.keys.erase(it2);
-            if (it->second.visible) {
-                node.lock()->getNode()->getApp()->removeKeyFrameIndicator(time);
+void
+RotoPanelPrivate::untrackStrokeLifeTime(const RotoStrokeItemPtr& stroke)
+{
+    trackedStrokes.erase(stroke);
+    scheduleMarkerRefresh();
+}
+
+void
+RotoPanelPrivate::wireItem(const RotoItemPtr& item,
+                           bool connect)
+{
+    const std::list<KnobIPtr>& knobs = item->getKnobs();
+    for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        if (!(*it)->canAnimate()) {
+            continue;
+        }
+        KnobSignalSlotHandler* handler = (*it)->getSignalSlotHandler().get();
+        if (!handler) {
+            continue;
+        }
+        if (connect) {
+            QObject::connect(handler, SIGNAL(keyFrameSet(double, ViewSpec, int, int, bool)), publicInterface, SLOT(onItemKnobKeysChanged()), Qt::UniqueConnection);
+            QObject::connect(handler, SIGNAL(keyFrameRemoved(double, ViewSpec, int, int)), publicInterface, SLOT(onItemKnobKeysChanged()), Qt::UniqueConnection);
+            QObject::connect(handler, SIGNAL(keyFrameMoved(ViewSpec, int, double, double)), publicInterface, SLOT(onItemKnobKeysChanged()), Qt::UniqueConnection);
+            QObject::connect(handler, SIGNAL(animationRemoved(ViewSpec, int)), publicInterface, SLOT(onItemKnobKeysChanged()), Qt::UniqueConnection);
+        } else {
+            QObject::disconnect(handler, SIGNAL(keyFrameSet(double, ViewSpec, int, int, bool)), publicInterface, SLOT(onItemKnobKeysChanged()));
+            QObject::disconnect(handler, SIGNAL(keyFrameRemoved(double, ViewSpec, int, int)), publicInterface, SLOT(onItemKnobKeysChanged()));
+            QObject::disconnect(handler, SIGNAL(keyFrameMoved(ViewSpec, int, double, double)), publicInterface, SLOT(onItemKnobKeysChanged()));
+            QObject::disconnect(handler, SIGNAL(animationRemoved(ViewSpec, int)), publicInterface, SLOT(onItemKnobKeysChanged()));
+        }
+    }
+    RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>(item);
+    if (!isStroke) {
+        return;
+    }
+    const char* names[] = { kRotoDrawableItemLifeTimeParam, kRotoDrawableItemLifeTimeFrameParam };
+    for (std::size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i) {
+        KnobIPtr knob = isStroke->getKnobByName(names[i]);
+        KnobSignalSlotHandler* handler = knob ? knob->getSignalSlotHandler().get() : NULL;
+        if (!handler) {
+            continue;
+        }
+        if (connect) {
+            QObject::connect(handler, SIGNAL(valueChanged(ViewSpec, int, int)), publicInterface, SLOT(onStrokeLifeTimeChanged()), Qt::UniqueConnection);
+        } else {
+            QObject::disconnect(handler, SIGNAL(valueChanged(ViewSpec, int, int)), publicInterface, SLOT(onStrokeLifeTimeChanged()));
+        }
+    }
+}
+
+void
+RotoPanelPrivate::rewireMarkerSources(const std::set<RotoItemPtr>& wanted)
+{
+    for (std::set<RotoItemPtr>::iterator it = wiredItems.begin(); it != wiredItems.end();) {
+        if (wanted.find(*it) == wanted.end()) {
+            wireItem(*it, false);
+            wiredItems.erase(it++);
+        } else {
+            ++it;
+        }
+    }
+    for (std::set<RotoItemPtr>::const_iterator it = wanted.begin(); it != wanted.end(); ++it) {
+        if (wiredItems.insert(*it).second) {
+            wireItem(*it, true);
+        }
+    }
+}
+
+// A selected item's knobs are slaved to the node's proxies, so the reads below bypass the master
+// link and go to the item's own value and curves.
+static int
+ownPaintedFrame(const RotoStrokeItemPtr& stroke)
+{
+    KnobIntPtr knob = stroke->getLifeTimeFrameKnob();
+
+    return knob ? knob->getValueAtTime(knob->getCurrentTime(), 0, ViewIdx(0), false, true) : 0;
+}
+
+void
+RotoPanelPrivate::collectItemKnobKeyframes(const RotoItemPtr& item,
+                                           const std::function<bool(const KnobIPtr&)>& accept,
+                                           std::set<double>* times)
+{
+    // The lifetime frame of a stroke is its painted frame, already published on its own.
+    RotoDrawableItem* isDrawable = dynamic_cast<RotoDrawableItem*>(item.get());
+    KnobIPtr lifeTimeFrame = isDrawable ? isDrawable->getLifeTimeFrameKnob() : KnobIPtr();
+    const std::list<KnobIPtr>& knobs = item->getKnobs();
+    for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        const KnobIPtr& knob = *it;
+        if (knob == lifeTimeFrame || !knob->canAnimate() || knob->getIsSecret() || !accept(knob)) {
+            continue;
+        }
+        for (int dim = 0; dim < knob->getDimension(); ++dim) {
+            CurvePtr curve = knob->getCurve(ViewIdx(0), dim, true);
+            if (!curve) {
+                continue;
+            }
+            const KeyFrameSet keys = curve->getKeyFrames_mt_safe();
+            for (KeyFrameSet::const_iterator k = keys.begin(); k != keys.end(); ++k) {
+                times->insert(k->getTime());
             }
         }
     }
 }
 
-void
-RotoPanelPrivate::removeItemAnimation(const RotoItemPtr& item)
+DockablePanel*
+RotoPanelPrivate::hostPanel() const
 {
-    ItemKeys::iterator it = keyframes.find(item);
+    NodeGuiPtr nodeGui = node.lock();
 
-    if ( it != keyframes.end() ) {
-        std::list<SequenceTime> toRemove;
+    return nodeGui ? nodeGui->getSettingPanel() : 0;
+}
 
-        for (std::set<double>::iterator it2 = it->second.keys.begin(); it2 != it->second.keys.end(); ++it2) {
-            toRemove.push_back(*it2);
-        }
-        it->second.keys.clear();
-        if (it->second.visible) {
-            node.lock()->getNode()->getApp()->removeMultipleKeyframeIndicator(toRemove, true);
-        }
+bool
+RotoPanelPrivate::markersInView() const
+{
+    DockablePanel* panel = hostPanel();
+
+    return panel && panel->isInForeground() && panel->isWidgetOnVisiblePage(publicInterface);
+}
+
+bool
+RotoPanelPrivate::isItemKnobOnVisiblePage(const KnobIPtr& itemKnob) const
+{
+    DockablePanel* panel = hostPanel();
+    NodeGuiPtr nodeGui = node.lock();
+    if (!panel || !nodeGui) {
+        return false;
+    }
+    KnobIPtr proxy = nodeGui->getNode()->getEffectInstance()->getKnobByName(itemKnob->getName());
+
+    return proxy && panel->isKnobOnVisiblePage(proxy);
+}
+
+void
+RotoPanelPrivate::syncActiveStroke(bool adopt)
+{
+    NodeGuiPtr nodeGui = node.lock();
+    NodePtr thisNode = nodeGui ? nodeGui->getNode() : NodePtr();
+    AppInstancePtr app = this->app.lock();
+    if (!app || !thisNode) {
+        return;
+    }
+    NodePtr activeNode;
+    RotoStrokeItemPtr activeStroke;
+    bool isPainting = false;
+    app->getActiveRotoDrawingStroke(&activeNode, &activeStroke, &isPainting);
+    if (!activeStroke) {
+        return;
+    }
+    const bool unchanged = !lastSeenActiveStroke.owner_before(activeStroke) && !activeStroke.owner_before(lastSeenActiveStroke);
+    if (unchanged) {
+        return;
+    }
+    lastSeenActiveStroke = activeStroke;
+    if (adopt && activeNode == thisNode) {
+        currentStroke = activeStroke;
     }
 }
 
 void
-RotoPanelPrivate::setVisibleItemKeyframes(const std::set<double>& keyframes,
-                                          bool visible,
-                                          bool emitSignal)
+RotoPanel::onStrokeLifeTimeChanged()
 {
-    std::list<SequenceTime> keys;
+    _imp->scheduleMarkerRefresh();
+}
 
-    for (std::set<double>::iterator it2 = keyframes.begin(); it2 != keyframes.end(); ++it2) {
-        keys.push_back(*it2);
+void
+RotoPanel::onItemKnobKeysChanged()
+{
+    _imp->scheduleMarkerRefresh();
+}
+
+void
+RotoPanelPrivate::scheduleMarkerRefresh()
+{
+    if (markersRefreshQueued) {
+        return;
     }
-    if (!visible) {
-        node.lock()->getNode()->getApp()->removeMultipleKeyframeIndicator(keys, emitSignal);
-    } else {
-        node.lock()->getNode()->getApp()->addMultipleKeyframeIndicatorsAdded(keys, emitSignal);
+    markersRefreshQueued = true;
+    QMetaObject::invokeMethod(publicInterface, [this]() {
+        markersRefreshQueued = false;
+        publishMarkers(); }, Qt::QueuedConnection);
+}
+
+void
+RotoPanelPrivate::publishMarkers()
+{
+    AppInstancePtr app = this->app.lock();
+    if (!markersEnabled || !markersInView()) {
+        rewireMarkerSources(std::set<RotoItemPtr>());
+        if (app) {
+            app->clearPanelKeyframeIndicators(publicInterface);
+        }
+
+        return;
     }
+    if (!app) {
+        return;
+    }
+    syncActiveStroke(true);
+    std::set<double> times;
+    std::set<RotoItemPtr> wanted;
+    const auto onVisiblePage = [this](const KnobIPtr& knob) { return isItemKnobOnVisiblePage(knob); };
+    const bool layersOwnTransforms = context && context->layersOwnTransforms();
+    std::set<RotoLayerPtr> selectedLayers;
+    if (layersOwnTransforms) {
+        for (SelectedItems::const_iterator it = selectedItems.begin(); it != selectedItems.end(); ++it) {
+            RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>(*it);
+            if (isLayer) {
+                selectedLayers.insert(isLayer);
+            }
+        }
+    }
+    const auto underSelectedLayer = [&selectedLayers](const RotoItemPtr& item) {
+        for (RotoLayerPtr layer = item->getParentLayer(); layer; layer = layer->getParentLayer()) {
+            if (selectedLayers.count(layer)) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+    // The node's transform knobs drive a selected layer, not the items selected along with it.
+    const auto onVisiblePageNotTransform = [this, &onVisiblePage](const KnobIPtr& knob) {
+        NodeGuiPtr nodeGui = node.lock();
+        KnobIPtr proxy = nodeGui ? nodeGui->getNode()->getEffectInstance()->getKnobByName(knob->getName()) : KnobIPtr();
+
+        return onVisiblePage(knob) && !(proxy && context->isTransformKnob(proxy.get()));
+    };
+    for (SelectedItems::const_iterator it = selectedItems.begin(); it != selectedItems.end(); ++it) {
+        RotoLayerPtr isLayer = std::dynamic_pointer_cast<RotoLayer>(*it);
+        if (isLayer && selectedLayers.count(isLayer)) {
+            collectItemKnobKeyframes(isLayer, onVisiblePage, &times);
+            wanted.insert(isLayer);
+            continue;
+        }
+        BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(*it);
+        RotoStrokeItemPtr isStroke = std::dynamic_pointer_cast<RotoStrokeItem>(*it);
+        const bool liveBezier = isBezier && trackedBeziers.find(isBezier) != trackedBeziers.end();
+        const bool liveStroke = isStroke && trackedStrokes.find(isStroke) != trackedStrokes.end();
+        if (liveBezier) {
+            isBezier->getKeyframeTimes(&times);
+        }
+        RotoDrawableItemPtr isDrawable = std::dynamic_pointer_cast<RotoDrawableItem>(*it);
+        if (isDrawable && (liveBezier || liveStroke)) {
+            if (underSelectedLayer(isDrawable)) {
+                collectItemKnobKeyframes(isDrawable, onVisiblePageNotTransform, &times);
+            } else {
+                collectItemKnobKeyframes(isDrawable, onVisiblePage, &times);
+            }
+            wanted.insert(isDrawable);
+        }
+        if (liveStroke) {
+            times.insert(ownPaintedFrame(isStroke));
+        }
+    }
+    RotoStrokeItemPtr current = currentStroke.lock();
+    if (current && trackedStrokes.find(current) != trackedStrokes.end()) {
+        times.insert(ownPaintedFrame(current));
+        wanted.insert(current);
+    }
+    rewireMarkerSources(wanted);
+    std::vector<SequenceTime> keys;
+    keys.reserve(times.size());
+    for (std::set<double>::const_iterator it = times.begin(); it != times.end(); ++it) {
+        keys.push_back(*it);
+    }
+    app->setPanelKeyframeIndicators(publicInterface, keys);
 }
 
 void
 RotoPanel::onSettingsPanelClosed(bool closed)
 {
-    TimeLinePtr timeline = getNode()->getNode()->getApp()->getTimeLine();
-
+    _imp->markersEnabled = !closed;
+    // Items stay tracked while the panel is closed, through its insert and remove signals.
     if (closed) {
-        ///remove all keyframes from the structure kept
-        std::set< std::set<double> > toRemove;
-
-        for (TreeItems::iterator it = _imp->items.begin(); it != _imp->items.end(); ++it) {
-            BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(it->rotoItem);
-            if (isBezier) {
-                ItemKeys::iterator it2 = _imp->keyframes.find(isBezier);
-                if ( ( it2 != _imp->keyframes.end() ) && it2->second.visible ) {
-                    it2->second.visible = false;
-                    toRemove.insert(it2->second.keys);
-                }
-            }
-        }
-
-        std::set<std::set<double> >::iterator next = toRemove.begin();
-        if ( next != toRemove.end() ) {
-            ++next;
-        }
-        for (std::set<std::set<double> >::iterator it = toRemove.begin(); it != toRemove.end(); ++it) {
-            _imp->setVisibleItemKeyframes( *it, false, next == toRemove.end() );
-            if ( next != toRemove.end() ) {
-                ++next;
-            }
-        }
-        _imp->keyframes.clear();
+        _imp->currentStroke.reset();
     } else {
-        ///rebuild all the keyframe structure
-        std::set< std::set<double> > toAdd;
-        for (TreeItems::iterator it = _imp->items.begin(); it != _imp->items.end(); ++it) {
-            BezierPtr isBezier = std::dynamic_pointer_cast<Bezier>(it->rotoItem);
-            if (isBezier) {
-                _imp->keyframes.erase(isBezier);
-                _imp->trackBezierKeyframes(isBezier);
-                TimeLineKeys keys;
-                isBezier->getKeyframeTimes(&keys.keys);
-                keys.visible = false;
-                std::list<SequenceTime> markers;
-                for (std::set<double>::iterator it3 = keys.keys.begin(); it3 != keys.keys.end(); ++it3) {
-                    markers.push_back(*it3);
-                }
-
-                std::pair<ItemKeys::iterator, bool> ret = _imp->keyframes.insert( std::make_pair(isBezier, keys) );
-                assert(ret.second);
-
-                ///If the item is selected, make its keyframes visible
-                for (SelectedItems::iterator it2 = _imp->selectedItems.begin(); it2 != _imp->selectedItems.end(); ++it2) {
-                    if ( it2->get() == isBezier.get() ) {
-                        toAdd.insert(keys.keys);
-                        ret.first->second.visible = true;
-                        break;
-                    }
-                }
-            }
-        }
-        std::set<std::set<double> >::iterator next = toAdd.begin();
-        if ( next != toAdd.end() ) {
-            ++next;
-        }
-        for (std::set<std::set<double> >::iterator it = toAdd.begin(); it != toAdd.end(); ++it) {
-            _imp->setVisibleItemKeyframes( *it, true, next == toAdd.end() );
-            if ( next != toAdd.end() ) {
-                ++next;
-            }
-        }
+        _imp->syncActiveStroke(false);
     }
-} // RotoPanel::onSettingsPanelClosed
+    _imp->publishMarkers();
+}
 
 void
 RotoPanel::onOperatorColMinimumSizeChanged(const QSize& size)

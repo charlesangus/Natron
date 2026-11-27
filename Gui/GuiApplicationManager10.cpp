@@ -52,6 +52,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QTimer>
 #include <QWidget>
 #include <QtGlobal> // for Q_OS_*
+#include <ofxImageEffect.h>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -974,6 +975,7 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionPauseViewerInputA, kShortcutDescActionPauseViewerInputA, Qt::NoModifier, Qt::Key_P);
 
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionProxyEnabled, kShortcutDescActionProxyEnabled, Qt::ControlModifier, Qt::Key_P);
+    registerKeybind(kShortcutGroupViewer, kShortcutIDActionAutoProxyScrubbing, kShortcutDescActionAutoProxyScrubbing, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_P);
     registerKeybindWithMask(kShortcutGroupViewer, kShortcutIDActionProxyLevel2, kShortcutDescActionProxyLevel2, Qt::AltModifier, Qt::Key_1,
                             Qt::ShiftModifier);
     registerKeybindWithMask(kShortcutGroupViewer, kShortcutIDActionProxyLevel4, kShortcutDescActionProxyLevel4, Qt::AltModifier, Qt::Key_2,
@@ -986,6 +988,7 @@ GuiApplicationManager::populateShortcuts()
                             Qt::ShiftModifier);
 
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionHideOverlays, kShortcutDescActionHideOverlays, Qt::NoModifier, Qt::Key_O);
+    registerKeybind(kShortcutGroupViewer, kShortcutIDActionMapSiblingOverlays, kShortcutDescActionMapSiblingOverlays, Qt::ShiftModifier, Qt::Key_O);
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionHidePlayer, kShortcutDescActionHidePlayer, Qt::NoModifier, (Qt::Key)0);
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionHideTimeline, kShortcutDescActionHideTimeline, Qt::NoModifier, (Qt::Key)0);
     registerKeybind(kShortcutGroupViewer, kShortcutIDActionHideLeft, kShortcutDescActionHideLeft, Qt::NoModifier, (Qt::Key)0);
@@ -1261,7 +1264,7 @@ GuiApplicationManager::clearLastRenderedTextures()
 }
 
 void
-GuiApplicationManager::releaseSceneViewEngines()
+GuiApplicationManager::releaseSceneViewEngines(bool keptOnly)
 {
     const AppInstanceVec& instances = getAppInstances();
 
@@ -1274,9 +1277,19 @@ GuiApplicationManager::releaseSceneViewEngines()
         const std::list<ViewerTab*> viewers = gui->getViewersList_mt_safe();
         for (ViewerTab* viewer : viewers) {
             SceneViewport* view = viewer->getSceneViewport();
-            // Other delegates hold host memory, not the GPU's.
-            if (view && RenderDelegates::isStorm(view->getRenderer().getActiveRendererId())) {
+            if (!view) {
+                continue;
+            }
+            const std::string renderer = view->getRenderer().getActiveRendererId();
+            // The delegates other than Storm and Natron Utility hold host memory, not the GPU's, but
+            // the Storm engine kept behind one does.
+            const bool storm = RenderDelegates::isStorm(renderer);
+            if ((!storm || !keptOnly) && (storm || view->getRenderer().hasEngine())) {
                 view->releaseEngine();
+            }
+            if (!keptOnly && (renderer == kRenderDelegateUtilityId)) {
+                // Its engine gives its GPU memory back on its own worker; the hand-off lives in this view's context.
+                view->releaseDeviceUpload();
             }
         }
     }

@@ -653,6 +653,20 @@ public:
         return _isToolButtonAction;
     }
 
+    /**
+     * @brief The Python script a user button runs when pressed, before the node's onParamChanged
+     * callback. Empty for none.
+     **/
+    void setScript(const std::string& script);
+
+    std::string getScript() const;
+
+    /**
+     * @brief Runs the script with thisNode, thisParam, thisGroup and app declared. A Python error
+     * goes to the Script Editor and the log. Returns false on error.
+     **/
+    bool runScript();
+
 private:
 
 
@@ -669,6 +683,8 @@ private:
     bool _triggeringCallbacksOnly;
     bool _checkable;
     bool _isToolButtonAction;
+    mutable QMutex _scriptMutex;
+    std::string _script;
 };
 
 /******************************KnobChoice**************************************/
@@ -767,6 +783,9 @@ public:
     int findEntry(const std::string& choice, ChoiceOption* matchedEntry) const;
 
     int getNumEntries() const;
+
+    // Whether entry index is a disabled option, which the GUI shows but never lets the user pick.
+    bool isEntryDisabled(int index) const;
 
     /// Can this type be animated?
     /// ChoiceParam animation may not be quite perfect yet,
@@ -868,6 +887,8 @@ private:
     virtual bool cloneExtraDataAndCheckIfChanged(KnobI* other, int dimension = -1, int otherDimension = -1) OVERRIDE FINAL;
     virtual void cloneExtraData(KnobI* other, double offset, const RangeD* range, int dimension = -1, int otherDimension = -1) OVERRIDE FINAL;
     virtual void appendExtraContentHash(ContentHasher& h, int dimension) const OVERRIDE FINAL;
+    // A disabled entry names nothing to choose.
+    virtual bool refusesValue(const int& v, int dimension) const OVERRIDE FINAL;
 
 private:
 
@@ -1104,9 +1125,9 @@ public:
 
     static const std::string & typeNameStatic();
 
-    void setAsMultiLine()
+    void setAsMultiLine(bool multiLine = true)
     {
-        _multiLine = true;
+        _multiLine = multiLine;
     }
 
     /**
@@ -1148,7 +1169,7 @@ public:
         return _customHtmlText;
     }
 
-    void setAsLabel();
+    void setAsLabel(bool isLabel = true);
 
     bool isLabel() const
     {
@@ -1261,7 +1282,7 @@ public:
 
     std::vector<KnobIPtr> getChildren() const;
 
-    void setAsTab();
+    void setAsTab(bool isTab = true);
 
     bool isTab() const;
 

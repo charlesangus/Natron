@@ -329,10 +329,14 @@ protected:
         return ids;
     }
 
-    // Compares the raster ids at time with the rays', away from the edges between triangles, where a texel
-    // centre on the edge may go either way. Fails unless at least minCompared texels hit something.
+    // Compares the raster ids at time with the rays', away from silhouettes, where the raster's top-left rule
+    // and the ray's watertight test may give a texel centre on the edge to either side. With silhouettesOnly
+    // the edges between one instance's triangles are compared too; without, they are also skipped, for shapes
+    // whose shared edges pass exactly through texel centres. Fails unless at least minCompared texels hit
+    // something.
     void expectRaysAgree(float time,
-                         std::size_t minCompared)
+                         std::size_t minCompared,
+                         bool silhouettesOnly = false)
     {
         const std::vector<Ids> raster = rasterIds(time);
         const std::vector<Ids> rays = rayIds(time);
@@ -343,6 +347,7 @@ protected:
         std::size_t covered = 0;
         std::size_t mismatches = 0;
         const int neighbours[4][2] = { { -1, 0 }, { 1, 0 }, { 0, -1 }, { 0, 1 } };
+        const auto differs = [silhouettesOnly](const Ids& a, const Ids& b) { return silhouettesOnly ? a[0] != b[0] : a != b; };
 
         for (std::uint32_t y = 0; y < kSize; ++y) {
             for (std::uint32_t x = 0; x < kSize; ++x) {
@@ -353,7 +358,7 @@ protected:
                     const int nx = int(x) + step[0];
                     const int ny = int(y) + step[1];
 
-                    if (nx >= 0 && ny >= 0 && nx < int(kSize) && ny < int(kSize) && rays[std::size_t(ny) * kSize + nx] != rays[i]) {
+                    if (nx >= 0 && ny >= 0 && nx < int(kSize) && ny < int(kSize) && differs(rays[std::size_t(ny) * kSize + nx], rays[i])) {
                         edge = true;
                     }
                 }
@@ -406,7 +411,7 @@ GPU_TEST_F(NatronUtilityRaster, StaticCubesMatchTheRaysIds)
     EXPECT_EQ(3u, raster->geometries[0].instanceCount + raster->geometries[1].instanceCount);
     EXPECT_EQ(12u, raster->geometries[0].triangleCount);
 
-    expectRaysAgree(0.5f, kSize * kSize / 8);
+    expectRaysAgree(0.5f, kSize * kSize / 8, true);
 }
 
 // At mid-shutter a quad that moves 4 to the right over it sits 2 along, which a ray at that time also sees.

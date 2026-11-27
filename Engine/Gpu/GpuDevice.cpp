@@ -136,6 +136,13 @@ namespace {
         return (fp.optimalTilingFeatures & need) == need;
     }
 
+    bool formatHasFeatures(VkPhysicalDevice pd, VkFormat format, VkFormatFeatureFlags need)
+    {
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(pd, format, &fp);
+        return (fp.optimalTilingFeatures & need) == need;
+    }
+
     bool meetsRequirements(VkPhysicalDevice pd, const VkPhysicalDeviceProperties& props)
     {
         if (props.apiVersion < VK_API_VERSION_1_3) {
@@ -671,6 +678,16 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
         && dev->info_.vertexPipelineStores && dev->info_.fragmentStores
         && formatBlendsAsAttachment(dev->physical_, VK_FORMAT_R32G32B32A32_SFLOAT)
         && formatBlendsAsAttachment(dev->physical_, VK_FORMAT_R32_SFLOAT);
+    dev->info_.geometryShader = avail.f2.features.geometryShader == VK_TRUE;
+    {
+        constexpr VkFormatFeatureFlags idTarget = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT
+            | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+        dev->info_.rasterVisibility = dev->info_.graphicsQueue && dev->info_.dynamicRendering
+            && dev->info_.vertexPipelineStores && dev->info_.fragmentStores && dev->info_.geometryShader
+            && formatHasFeatures(dev->physical_, VK_FORMAT_D32_SFLOAT, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
+            && formatHasFeatures(dev->physical_, VK_FORMAT_R32G32_UINT, idTarget)
+            && formatHasFeatures(dev->physical_, VK_FORMAT_R32G32B32A32_UINT, idTarget);
+    }
 
     Features want;
     want.f11.storageBuffer16BitAccess = VK_TRUE;
@@ -690,6 +707,7 @@ GpuDevice::create(const GpuDeviceOptions& options, std::unique_ptr<GpuDevice>& o
     want.f2.features.multiDrawIndirect = avail.f2.features.multiDrawIndirect;
     want.f2.features.vertexPipelineStoresAndAtomics = avail.f2.features.vertexPipelineStoresAndAtomics;
     want.f2.features.fragmentStoresAndAtomics = avail.f2.features.fragmentStoresAndAtomics;
+    want.f2.features.geometryShader = avail.f2.features.geometryShader;
 
     const float prios[3] = { 1.0f, 1.0f, 1.0f };
     std::vector<VkDeviceQueueCreateInfo> qcis;

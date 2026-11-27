@@ -50,7 +50,8 @@ namespace {
     }
 
     void memoryBarrier(VkCommandBuffer cmd, VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
-                       VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess, const VkImageMemoryBarrier2* image = nullptr)
+                       VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess, const VkImageMemoryBarrier2* image = nullptr,
+                       uint32_t imageCount = 1)
     {
         VkMemoryBarrier2 mb { VK_STRUCTURE_TYPE_MEMORY_BARRIER_2 };
         mb.srcStageMask = srcStage;
@@ -61,7 +62,7 @@ namespace {
         dep.memoryBarrierCount = 1;
         dep.pMemoryBarriers = &mb;
         if (image) {
-            dep.imageMemoryBarrierCount = 1;
+            dep.imageMemoryBarrierCount = imageCount;
             dep.pImageMemoryBarriers = image;
         }
         vkCmdPipelineBarrier2(cmd, &dep);
@@ -81,7 +82,8 @@ namespace {
         ib.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         ib.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         ib.image = texture.image();
-        ib.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+        ib.subresourceRange = { VkImageAspectFlags(texture.isDepth() ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT),
+                                0, 1, 0, 1 };
         return ib;
     }
 
@@ -101,8 +103,9 @@ GpuStatus
 GpuRecordContext::createRaster(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out,
                                GpuBufferPool* pool, GpuPipelineCache* pipelines, GpuTextureCache* textures)
 {
-    if (!registry.device().info().rasterFloatBlend) {
-        return { VK_ERROR_FEATURE_NOT_PRESENT, "GpuRecordContext::createRaster: the device has no graphics queue that can blend float colour attachments" };
+    const GpuDeviceInfo& info = registry.device().info();
+    if (!info.rasterFloatBlend && !info.rasterVisibility) {
+        return { VK_ERROR_FEATURE_NOT_PRESENT, "GpuRecordContext::createRaster: the device has no graphics queue that can blend float colour attachments or raster uint ids" };
     }
     return createOn(QueueKind::Graphics, registry, out, pool, pipelines, textures);
 }
@@ -627,50 +630,104 @@ GpuRecordContext::drawable(const char* where)
 }
 
 GpuStatus
-GpuRecordContext::beginRaster(const GpuTexture& attachment, const std::array<float, 4>& clear)
+GpuRecordContext::beginRaster(const GpuTexture& attachment, const std::array<float, 4>& clear, const GpuTexture* depth,
+                              float depthClear)
+{
+    const char* where = "GpuRecordContext::beginRaster";
+    if (attachment.isAttachment() && GpuRasterPipeline::isUintFormat(attachment.format())) {
+        return { VK_ERROR_INITIALIZATION_FAILED, std::string(where) + ": a uint attachment needs beginRasterUint()" };
+    }
+    VkClearColorValue value {};
+    for (size_t i = 0; i < 4; ++i) {
+        value.float32[i] = clear[i];
+    }
+    return openRaster(where, attachment, value, depth, depthClear);
+}
+
+GpuStatus
+GpuRecordContext::beginRasterUint(const GpuTexture& attachment, const std::array<uint32_t, 4>& clear,
+                                  const GpuTexture* depth, float depthClear)
+{
+    const char* where = "GpuRecordContext::beginRasterUint";
+    if (attachment.isAttachment() && !GpuRasterPipeline::isUintFormat(attachment.format())) {
+        return { VK_ERROR_INITIALIZATION_FAILED, std::string(where) + ": a float attachment needs beginRaster()" };
+    }
+    VkClearColorValue value {};
+    for (size_t i = 0; i < 4; ++i) {
+        value.uint32[i] = clear[i];
+    }
+    return openRaster(where, attachment, value, depth, depthClear);
+}
+
+GpuStatus
+GpuRecordContext::openRaster(const char* where, const GpuTexture& attachment, const VkClearColorValue& clear,
+                             const GpuTexture* depth, float depthClear)
 {
     if (!isRaster()) {
-        return { VK_ERROR_FEATURE_NOT_PRESENT, "GpuRecordContext::beginRaster: not a raster context" };
+        return { VK_ERROR_FEATURE_NOT_PRESENT, std::string(where) + ": not a raster context" };
     }
-    if (GpuStatus s = recordable("GpuRecordContext::beginRaster"); !s) {
+    if (GpuStatus s = recordable(where); !s) {
         return s;
     }
     if (!attachment.isAttachment()) {
-        return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext::beginRaster: the texture is not a colour attachment" };
+        return { VK_ERROR_INITIALIZATION_FAILED, std::string(where) + ": the texture is not a colour attachment" };
+    }
+    const uint32_t width = attachment.desc().width;
+    const uint32_t height = attachment.desc().height;
+    if (depth && (!depth->isDepth() || depth->desc().width != width || depth->desc().height != height)) {
+        return { VK_ERROR_INITIALIZATION_FAILED, std::string(where) + ": the depth texture is not a depth attachment of the colour attachment's extent" };
     }
 
-    // The draws read vertex, index and indirect data that earlier dispatches and copies wrote. The attachment's
-    // old texels are discarded, so a copy of an earlier pass need only finish first.
-    const VkImageMemoryBarrier2 toAttachment = attachmentBarrier(
-        attachment, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
-        VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
-        VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
-        VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
-        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    // The draws read vertex, index and indirect data that earlier dispatches and copies wrote. The attachments'
+    // old texels are discarded, so an earlier pass's writes and copies need only finish first.
+    VkImageMemoryBarrier2 toAttachment[2] = {
+        attachmentBarrier(attachment, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
+                          VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+                          VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+                          VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+        {},
+    };
+    constexpr VkPipelineStageFlags2 depthStages = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT
+        | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+    if (depth) {
+        toAttachment[1] = attachmentBarrier(*depth, depthStages, VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                                            VK_IMAGE_LAYOUT_UNDEFINED, depthStages,
+                                            VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT
+                                                | VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                                            VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL);
+    }
     memoryBarrier(cmd_,
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT | kDrawStages,
                   VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT, kDrawStages,
                   VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT | VK_ACCESS_2_INDEX_READ_BIT
                       | VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-                  &toAttachment);
+                  toAttachment, depth ? 2u : 1u);
 
-    const uint32_t width = attachment.desc().width;
-    const uint32_t height = attachment.desc().height;
     VkRenderingAttachmentInfo colour { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
     colour.imageView = attachment.view();
     colour.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     colour.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     colour.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    for (size_t i = 0; i < 4; ++i) {
-        colour.clearValue.color.float32[i] = clear[i];
+    colour.clearValue.color = clear;
+    // Nothing reads the depth after the pass, so it need not be stored.
+    VkRenderingAttachmentInfo depthInfo { VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO };
+    if (depth) {
+        depthInfo.imageView = depth->view();
+        depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+        depthInfo.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+        depthInfo.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        depthInfo.clearValue.depthStencil = { depthClear, 0 };
     }
     VkRenderingInfo ri { VK_STRUCTURE_TYPE_RENDERING_INFO };
     ri.renderArea = { { 0, 0 }, { width, height } };
     ri.layerCount = 1;
     ri.colorAttachmentCount = 1;
     ri.pColorAttachments = &colour;
+    ri.pDepthAttachment = depth ? &depthInfo : nullptr;
     vkCmdBeginRendering(cmd_, &ri);
     rasterTarget_ = &attachment;
+    rasterDepth_ = depth;
     rendered_ = nullptr;
     return {};
 }
@@ -680,8 +737,9 @@ GpuRecordContext::rasterPipeline(GpuRasterId raster, GpuRasterBlend blend, std::
 {
     out.reset();
     const VkFormat format = rasterTarget_->format();
+    const GpuRasterDepth depth = rasterDepth_ ? GpuRasterDepth::Less : GpuRasterDepth::None;
     if (pipelines_) {
-        if (GpuStatus s = pipelines_->raster(registry_, raster, format, blend, out); !s) {
+        if (GpuStatus s = pipelines_->raster(registry_, raster, format, blend, out, depth); !s) {
             return s;
         }
         if (std::find(rasterPipelines_.begin(), rasterPipelines_.end(), out) == rasterPipelines_.end()) {
@@ -689,7 +747,7 @@ GpuRecordContext::rasterPipeline(GpuRasterId raster, GpuRasterBlend blend, std::
         }
         return {};
     }
-    const auto key = std::make_tuple(static_cast<uint32_t>(raster), format, blend);
+    const auto key = std::make_tuple(static_cast<uint32_t>(raster), format, blend, depth);
     if (auto it = ownRasters_.find(key); it != ownRasters_.end()) {
         out = it->second;
         return {};
@@ -699,7 +757,7 @@ GpuRecordContext::rasterPipeline(GpuRasterId raster, GpuRasterBlend blend, std::
         return { VK_ERROR_INITIALIZATION_FAILED, "GpuRecordContext: unknown raster id " + std::to_string(static_cast<uint32_t>(raster)) };
     }
     std::unique_ptr<GpuRasterPipeline> created;
-    if (GpuStatus s = GpuRasterPipeline::create(registry_.device(), *desc, format, blend, created); !s) {
+    if (GpuStatus s = GpuRasterPipeline::create(registry_.device(), *desc, format, blend, depth, created); !s) {
         return s;
     }
     out = std::shared_ptr<GpuRasterPipeline>(std::move(created));
@@ -826,7 +884,8 @@ GpuRecordContext::draw(GpuRasterId raster, GpuRasterBlend blend, std::span<const
 GpuStatus
 GpuRecordContext::drawIndexedIndirect(GpuRasterId raster, GpuRasterBlend blend,
                                       std::span<const GpuBuffer* const> buffers, std::span<const std::byte> push,
-                                      const GpuBuffer& indexBuffer, const GpuBuffer& indirectBuffer, uint32_t drawCount)
+                                      const GpuBuffer& indexBuffer, const GpuBuffer& indirectBuffer, uint32_t drawCount,
+                                      uint32_t firstCommand)
 {
     const char* where = "GpuRecordContext::drawIndexedIndirect";
     if (GpuStatus s = drawable(where); !s) {
@@ -836,8 +895,8 @@ GpuRecordContext::drawIndexedIndirect(GpuRasterId raster, GpuRasterBlend blend,
         return { VK_ERROR_INITIALIZATION_FAILED, std::string(where) + ": empty index or indirect buffer" };
     }
     constexpr VkDeviceSize stride = sizeof(VkDrawIndexedIndirectCommand);
-    if (VkDeviceSize(drawCount) * stride > indirectBuffer.size()) {
-        return { VK_ERROR_INITIALIZATION_FAILED, std::string(where) + ": " + std::to_string(drawCount) + " commands overrun the " + std::to_string(indirectBuffer.size()) + "-byte indirect buffer" };
+    if ((VkDeviceSize(firstCommand) + drawCount) * stride > indirectBuffer.size()) {
+        return { VK_ERROR_INITIALIZATION_FAILED, std::string(where) + ": " + std::to_string(drawCount) + " commands from " + std::to_string(firstCommand) + " overrun the " + std::to_string(indirectBuffer.size()) + "-byte indirect buffer" };
     }
     if (drawCount == 0) {
         return {};
@@ -855,7 +914,7 @@ GpuRecordContext::drawIndexedIndirect(GpuRasterId raster, GpuRasterBlend blend,
             return abortedStatus(where);
         }
         const uint32_t count = std::min(perDraw, drawCount - first);
-        vkCmdDrawIndexedIndirect(cmd_, indirectBuffer.buffer(), VkDeviceSize(first) * stride, count,
+        vkCmdDrawIndexedIndirect(cmd_, indirectBuffer.buffer(), (VkDeviceSize(firstCommand) + first) * stride, count,
                                  static_cast<uint32_t>(stride));
     }
     return {};
@@ -882,6 +941,7 @@ GpuRecordContext::endRaster()
                   &toCopy);
     rendered_ = rasterTarget_;
     rasterTarget_ = nullptr;
+    rasterDepth_ = nullptr;
     return {};
 }
 

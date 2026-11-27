@@ -48,23 +48,40 @@ public:
     // work as a compute context's. When the graphics family is not the compute family, textures stay with the
     // compute family where they are uploaded: such a context refuses texture(), cachedTexture() and texture
     // bindings, as it refuses acquireFromTransfer(). Fails with VK_ERROR_FEATURE_NOT_PRESENT when the device
-    // lacks GpuDeviceInfo::rasterFloatBlend. Without a pipeline cache the context builds its own raster pipelines.
+    // lacks both GpuDeviceInfo::rasterFloatBlend and GpuDeviceInfo::rasterVisibility. Without a pipeline cache
+    // the context builds its own raster pipelines.
     static GpuStatus createRaster(GpuKernelRegistry& registry, std::unique_ptr<GpuRecordContext>& out,
                                   GpuBufferPool* pool = nullptr, GpuPipelineCache* pipelines = nullptr,
                                   GpuTextureCache* textures = nullptr);
 
     bool isRaster() const { return queue_ == QueueKind::Graphics; }
 
+    // The registry the context's kernel and raster ids are looked up in.
+    GpuKernelRegistry& registry() const { return registry_; }
+
+    // The colour and depth attachments of the pass open between beginRaster() and endRaster(); null outside one,
+    // and the depth one also in a pass without depth.
+    const GpuTexture* rasterAttachment() const { return rasterTarget_; }
+    const GpuTexture* rasterDepthAttachment() const { return rasterDepth_; }
+
     // Makes every later dispatch and draw, and every chunk of an indirect draw, first call `aborted`, and fail
     // with GpuStatus::aborted set once it returns true; from then on the context records nothing, and submit()
     // and submitAndWait() run none of its commands and fail with GpuStatus::aborted set. Empty removes the check.
     void setAbortCheck(std::function<bool()> aborted);
 
-    // Starts rendering into `attachment`, a GpuTexture::createAttachment() texture that outlives the
-    // context's work, cleared to `clear` (one value per channel, the first for R32_SFLOAT). Storage and
-    // transfer writes recorded before it are visible to the draws. Until endRaster() the context records only
-    // draws. Raster contexts only.
-    GpuStatus beginRaster(const GpuTexture& attachment, const std::array<float, 4>& clear);
+    // Starts rendering into `attachment`, a float GpuTexture::createAttachment() texture that outlives the
+    // context's work, cleared to `clear` (one value per channel, the first for R32_SFLOAT). With `depth`, a
+    // GpuTexture::createDepthAttachment() texture of the same extent that also outlives the work, cleared to
+    // `depthClear`, the pass's draws test and write depth with GpuRasterDepth::Less; without, they test none.
+    // Storage and transfer writes recorded before it are visible to the draws. Until endRaster() the context
+    // records only draws. Raster contexts only.
+    GpuStatus beginRaster(const GpuTexture& attachment, const std::array<float, 4>& clear,
+                          const GpuTexture* depth = nullptr, float depthClear = 1.0f);
+
+    // The same for a uint attachment (R32G32_UINT or R32G32B32A32_UINT), whose texels are ids rather than
+    // values, cleared to `clear`. A separate name, since a braced clear would otherwise fit either.
+    GpuStatus beginRasterUint(const GpuTexture& attachment, const std::array<uint32_t, 4>& clear,
+                              const GpuTexture* depth = nullptr, float depthClear = 1.0f);
 
     // Draws vertexCount vertices of instanceCount instances of `raster` with `blend`. `buffers` holds one
     // entry per storage binding of the raster and `push` is exactly its push-constant block.
@@ -78,23 +95,24 @@ public:
                     vertexCount, instanceCount);
     }
 
-    // Draws the drawCount VkDrawIndexedIndirectCommand of `indirectBuffer`, tightly packed from its start, with
-    // the 32-bit indices of `indexBuffer`. The commands may come from a dispatch recorded before beginRaster().
+    // Draws the drawCount VkDrawIndexedIndirectCommand of `indirectBuffer`, tightly packed from its command
+    // firstCommand on, with the 32-bit indices of `indexBuffer`. The commands may come from a dispatch recorded before beginRaster().
     // indirectBuffer needs VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT and indexBuffer VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
-    // drawCount commands must fit in indirectBuffer, which is checked. Nothing bounds what the commands read:
+    // the commands must fit in indirectBuffer, which is checked. Nothing bounds what the commands read:
     // robust buffer access is not enabled, so the caller keeps every command's index range inside indexBuffer
     // and every index inside the vertex data the raster pulls. Recorded as one indirect draw per
     // maxDrawIndirectCount() commands.
     GpuStatus drawIndexedIndirect(GpuRasterId raster, GpuRasterBlend blend, std::span<const GpuBuffer* const> buffers,
                                   std::span<const std::byte> push, const GpuBuffer& indexBuffer,
-                                  const GpuBuffer& indirectBuffer, uint32_t drawCount);
+                                  const GpuBuffer& indirectBuffer, uint32_t drawCount, uint32_t firstCommand = 0);
 
     GpuStatus drawIndexedIndirect(GpuRasterId raster, GpuRasterBlend blend,
                                   std::initializer_list<const GpuBuffer*> buffers, std::span<const std::byte> push,
-                                  const GpuBuffer& indexBuffer, const GpuBuffer& indirectBuffer, uint32_t drawCount)
+                                  const GpuBuffer& indexBuffer, const GpuBuffer& indirectBuffer, uint32_t drawCount,
+                                  uint32_t firstCommand = 0)
     {
         return drawIndexedIndirect(raster, blend, std::span<const GpuBuffer* const>(buffers.begin(), buffers.size()),
-                                   push, indexBuffer, indirectBuffer, drawCount);
+                                   push, indexBuffer, indirectBuffer, drawCount, firstCommand);
     }
 
     // Ends rendering. Storage writes of the draws are visible to later dispatches and copies.
@@ -326,6 +344,8 @@ private:
     GpuStatus bindRaster(const char* where, GpuRasterId raster, GpuRasterBlend blend,
                          std::span<const GpuBuffer* const> buffers, std::span<const std::byte> push);
     GpuStatus rasterPipeline(GpuRasterId raster, GpuRasterBlend blend, std::shared_ptr<GpuRasterPipeline>& out);
+    GpuStatus openRaster(const char* where, const GpuTexture& attachment, const VkClearColorValue& clear,
+                         const GpuTexture* depth, float depthClear);
     GpuStatus rasterDescriptorSet(VkDescriptorSetLayout layout, uint32_t storageBuffers, VkDescriptorSet& out);
     void ownershipBarrier(const GpuBuffer& buffer, VkDeviceSize offset, VkDeviceSize bytes, bool release);
 
@@ -369,9 +389,12 @@ private:
     std::function<bool()> abortCheck_;
     bool aborted_ = false;
     const GpuTexture* rasterTarget_ = nullptr;
+    // The open pass's depth attachment, which makes its draws use GpuRasterDepth::Less.
+    const GpuTexture* rasterDepth_ = nullptr;
     const GpuTexture* rendered_ = nullptr;
     std::vector<std::shared_ptr<GpuRasterPipeline>> rasterPipelines_;
-    std::map<std::tuple<uint32_t, VkFormat, GpuRasterBlend>, std::shared_ptr<GpuRasterPipeline>> ownRasters_;
+    std::map<std::tuple<uint32_t, VkFormat, GpuRasterBlend, GpuRasterDepth>, std::shared_ptr<GpuRasterPipeline>>
+        ownRasters_;
     PFN_vkCmdPushDescriptorSetKHR pushDescriptorFn_ = nullptr;
     std::vector<VkDescriptorPool> descriptorPools_;
 };

@@ -49,6 +49,24 @@ enum KernelRayMapping : std::uint32_t {
     eKernelRayMappingUvUnwrap = 3,
 };
 
+// Mirrors VisibilityParams in Kernels/RasterVisibility.slang, whose comments say what each field holds.
+struct KernelVisibilityParams {
+    float viewProjection[4][4];
+    float jitter[2];
+    float time;
+    std::uint32_t pointCount;
+    std::uint32_t pointsLow;
+    std::uint32_t pointsHigh;
+    std::uint32_t instancesLow;
+    std::uint32_t instancesHigh;
+    std::uint32_t rowsLow;
+    std::uint32_t rowsHigh;
+    std::uint32_t pointSteps;
+    std::uint32_t unused;
+};
+
+static_assert(sizeof(KernelVisibilityParams) == 112, "KernelVisibilityParams must match VisibilityParams");
+
 // Mirrors RayGenParams in Kernels/RayGen.slang, where each position is a float3 with the scalar after
 // it in the same 16 bytes.
 struct KernelRayGenParams {

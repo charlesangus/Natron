@@ -52,11 +52,12 @@ public:
                   std::shared_ptr<GpuKernel>& out);
 
     // The graphics pipeline of `raster`, a raster of `registry`, for a colour attachment of `colourFormat`
-    // blended with `blend`. Built on first request; concurrent requests for one combination share the build,
+    // blended with `blend`, with the depth test `depth`. Built on first request; concurrent requests for one combination share the build,
     // and a failed build is not kept, so the next request retries. Pipelines stay in memory until
     // clearMemory(), never on disk. `registry` must be for this cache's device.
     GpuStatus raster(const GpuKernelRegistry& registry, GpuRasterId raster, VkFormat colourFormat,
-                     GpuRasterBlend blend, std::shared_ptr<GpuRasterPipeline>& out);
+                     GpuRasterBlend blend, std::shared_ptr<GpuRasterPipeline>& out,
+                     GpuRasterDepth depth = GpuRasterDepth::None);
 
     // Drops every in-memory kernel and raster pipeline; the disk entries stay.
     void clearMemory();
@@ -108,9 +109,9 @@ private:
         GpuStatus status;
         std::shared_ptr<GpuRasterPipeline> pipeline;
     };
-    // (registry serial, raster id, format, blend). Ids past GpuRasterId::Count are registered per registry, so
+    // (registry serial, raster id, format, blend, depth). Ids past GpuRasterId::Count are registered per registry, so
     // they are keyed by its serial; generated ids name one table in every registry and use serial 0.
-    using RasterKey = std::tuple<uint64_t, uint32_t, VkFormat, GpuRasterBlend>;
+    using RasterKey = std::tuple<uint64_t, uint32_t, VkFormat, GpuRasterBlend, GpuRasterDepth>;
     std::map<RasterKey, std::shared_ptr<GpuRasterPipeline>> rasters_;
     std::map<RasterKey, std::shared_future<RasterResult>> rasterInflight_;
     Stats stats_;

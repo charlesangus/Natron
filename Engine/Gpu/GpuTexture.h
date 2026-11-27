@@ -56,6 +56,18 @@ public:
     static GpuStatus createAttachment(GpuDevice& device, uint32_t width, uint32_t height, uint32_t channels,
                                       std::unique_ptr<GpuTexture>& out);
 
+    // The same in `format`: R32_SFLOAT or R32G32B32A32_SFLOAT, which must also blend, or R32G32_UINT or
+    // R32G32B32A32_UINT, which hold ids and so need not. GpuDeviceInfo::rasterVisibility tells beforehand
+    // whether both uint formats are supported. Its desc().channels is the format's component count.
+    static GpuStatus createAttachment(GpuDevice& device, uint32_t width, uint32_t height, VkFormat format,
+                                      std::unique_ptr<GpuTexture>& out);
+
+    // A 2D D32_SFLOAT depth attachment, in VK_IMAGE_LAYOUT_UNDEFINED and cleared by the raster pass that
+    // uses it. Fails with VK_ERROR_FORMAT_NOT_SUPPORTED when the device cannot use the format as one at
+    // that extent; GpuDeviceInfo::rasterVisibility tells beforehand.
+    static GpuStatus createDepthAttachment(GpuDevice& device, uint32_t width, uint32_t height,
+                                           std::unique_ptr<GpuTexture>& out);
+
     ~GpuTexture();
     GpuTexture(const GpuTexture&) = delete;
     GpuTexture& operator=(const GpuTexture&) = delete;
@@ -66,7 +78,10 @@ public:
     VkImageView view() const { return view_; }
     VkSampler sampler() const { return sampler_; }
     VkImageViewType viewType() const;
+    // Whether it is a colour attachment, from createAttachment().
     bool isAttachment() const { return attachment_; }
+    // Whether it is a depth attachment, from createDepthAttachment().
+    bool isDepth() const { return depthAttachment_; }
     // Bytes of the tightly packed texels, as a copy into a buffer writes them.
     VkDeviceSize packedBytes() const;
 
@@ -79,6 +94,9 @@ private:
 
     GpuStatus upload(std::span<const float> texels);
 
+    static GpuStatus createTarget(GpuDevice& device, uint32_t width, uint32_t height, VkFormat format,
+                                  uint32_t channels, bool depth, std::unique_ptr<GpuTexture>& out);
+
     GpuDevice& device_;
     GpuTextureDesc desc_;
     VkFormat format_ = VK_FORMAT_UNDEFINED;
@@ -87,6 +105,7 @@ private:
     VkImageView view_ = VK_NULL_HANDLE;
     VkSampler sampler_ = VK_NULL_HANDLE;
     bool attachment_ = false;
+    bool depthAttachment_ = false;
 };
 
 // Device textures kept under a caller's key, so that texels many dispatches sample unchanged, such

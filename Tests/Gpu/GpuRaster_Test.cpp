@@ -1000,4 +1000,270 @@ GPU_TEST_F(GpuRasterTest, ComputeResultsCrossIntoARasterContext)
     }
 }
 
+bool
+formatHas(VkPhysicalDevice pd, VkFormat format, VkFormatFeatureFlags need)
+{
+    VkFormatProperties fp;
+    vkGetPhysicalDeviceFormatProperties(pd, format, &fp);
+    return (fp.optimalTilingFeatures & need) == need;
+}
+
+GPU_TEST_F(GpuRasterTest, VisibilityCapabilityIsReported)
+{
+    const GpuDeviceInfo& info = dev_->info();
+    const VkPhysicalDevice pd = dev_->physicalDevice();
+    const VkFormatFeatureFlags idTarget = VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT | VK_FORMAT_FEATURE_TRANSFER_SRC_BIT
+        | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    const bool depth = formatHas(pd, VK_FORMAT_D32_SFLOAT, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+    const bool rg = formatHas(pd, VK_FORMAT_R32G32_UINT, idTarget);
+    const bool rgba = formatHas(pd, VK_FORMAT_R32G32B32A32_UINT, idTarget);
+    std::printf("raster: rasterVisibility=%d (D32F depth=%d, RG32UI=%d, RGBA32UI=%d, geometryShader=%d, graphics "
+                "queue=%d, vertexPipelineStoresAndAtomics=%d, fragmentStoresAndAtomics=%d)\n",
+                int(info.rasterVisibility), int(depth), int(rg), int(rgba), int(info.geometryShader),
+                int(info.graphicsQueue), int(info.vertexPipelineStores), int(info.fragmentStores));
+    EXPECT_EQ(info.rasterVisibility, info.graphicsQueue && info.dynamicRendering && info.vertexPipelineStores && info.fragmentStores && info.geometryShader && depth && rg && rgba);
+}
+
+GPU_TEST_F(GpuRasterTest, UintAttachmentsClearAndCopyBackExactly)
+{
+    if (!dev_->info().rasterVisibility) {
+        GPUTEST_SKIP_TEST() << "the device cannot raster uint ids with a depth test";
+    }
+    constexpr uint32_t kW = 13;
+    constexpr uint32_t kH = 5;
+    const std::array<uint32_t, 4> clear { 7u, 0xffffffffu, 0x80000001u, 9u };
+    for (VkFormat format : { VK_FORMAT_R32G32_UINT, VK_FORMAT_R32G32B32A32_UINT }) {
+        const uint32_t channels = format == VK_FORMAT_R32G32_UINT ? 2 : 4;
+        SCOPED_TRACE(std::to_string(channels) + " channels");
+        GpuKernelRegistry registry(*dev_);
+        std::unique_ptr<GpuRecordContext> ctx;
+        GpuStatus s = GpuRecordContext::createRaster(registry, ctx);
+        ASSERT_TRUE(s.ok()) << s.message;
+        std::unique_ptr<GpuTexture> texture;
+        s = GpuTexture::createAttachment(*dev_, kW, kH, format, texture);
+        ASSERT_TRUE(s.ok()) << s.message;
+        EXPECT_TRUE(texture->isAttachment());
+        EXPECT_FALSE(texture->isDepth());
+        EXPECT_EQ(texture->format(), format);
+        EXPECT_EQ(texture->packedBytes(), VkDeviceSize(kW) * kH * channels * sizeof(uint32_t));
+        std::unique_ptr<GpuTexture> depth;
+        s = GpuTexture::createDepthAttachment(*dev_, kW, kH, depth);
+        ASSERT_TRUE(s.ok()) << s.message;
+        EXPECT_TRUE(depth->isDepth());
+        EXPECT_FALSE(depth->isAttachment());
+        GpuBuffer readback;
+        s = GpuBuffer::createStaging(*dev_, texture->packedBytes(), kGpuBufferDefaultUsage, readback);
+        ASSERT_TRUE(s.ok()) << s.message;
+
+        s = ctx->beginRasterUint(*texture, clear, depth.get());
+        ASSERT_TRUE(s.ok()) << s.message;
+        s = ctx->endRaster();
+        ASSERT_TRUE(s.ok()) << s.message;
+        s = ctx->copyToImage(readback);
+        ASSERT_TRUE(s.ok()) << s.message;
+        s = ctx->submitAndWait();
+        ASSERT_TRUE(s.ok()) << s.message;
+
+        const uint32_t* texels = static_cast<const uint32_t*>(readback.mapped());
+        size_t mismatches = 0;
+        for (size_t i = 0; i < size_t(kW) * kH * channels; ++i) {
+            if (texels[i] != clear[i % channels]) {
+                ++mismatches;
+            }
+        }
+        EXPECT_EQ(mismatches, 0u);
+    }
+}
+
+// A triangle over the whole attachment and a nearer one over part of it, drawn in one call so that their
+// primitive ids are their places in the buffer. With the depth test the nearer one's ids win wherever it
+// covers a pixel centre, whichever comes first; without it the later one wins everywhere it covers.
+GPU_TEST_F(GpuRasterTest, DepthKeepsTheNearerTrianglesIdsInEitherDrawOrder)
+{
+    if (!dev_->info().rasterVisibility) {
+        GPUTEST_SKIP_TEST() << "the device cannot raster uint ids with a depth test";
+    }
+    constexpr uint32_t kW = 9;
+    constexpr uint32_t kH = 8;
+    constexpr uint32_t kFarTag = 100;
+    constexpr uint32_t kNearTag = 200;
+    // x + y = 7.2 passes through no pixel centre, whose coordinates sum to a whole number.
+    const std::vector<float> nearTriangle { 1.0f, 1.0f, 0.25f, 7.2f, 1.0f, 0.25f, 1.0f, 7.2f, 0.25f };
+    const std::vector<float> farTriangle { -1.0f, -1.0f, 0.75f, 3.0f * kW, -1.0f, 0.75f, -1.0f, 3.0f * kH, 0.75f };
+    const auto insideNear = [](float cx, float cy) { return cx > 1.0f && cy > 1.0f && cx + cy < 7.2f; };
+
+    struct RasterIdsParams {
+        float viewport[2];
+        float pad[2];
+    };
+    const RasterIdsParams params { { float(kW), float(kH) }, { 0.0f, 0.0f } };
+    const std::span<const std::byte> push = std::as_bytes(std::span(&params, 1));
+
+    for (const bool nearFirst : { false, true }) {
+        for (const bool depthTest : { true, false }) {
+            SCOPED_TRACE(std::string(nearFirst ? "near first" : "far first") + (depthTest ? ", depth" : ", no depth"));
+            std::vector<float> vertices = nearFirst ? nearTriangle : farTriangle;
+            const std::vector<float>& second = nearFirst ? farTriangle : nearTriangle;
+            vertices.insert(vertices.end(), second.begin(), second.end());
+            // float3 is a 16-byte element in a structured buffer.
+            std::vector<float> padded;
+            for (size_t v = 0; v < 6; ++v) {
+                padded.insert(padded.end(), { vertices[3 * v], vertices[3 * v + 1], vertices[3 * v + 2], 0.0f });
+            }
+            const std::vector<uint32_t> tags = nearFirst ? std::vector<uint32_t> { kNearTag, kFarTag }
+                                                         : std::vector<uint32_t> { kFarTag, kNearTag };
+
+            GpuKernelRegistry registry(*dev_);
+            std::unique_ptr<GpuRecordContext> ctx;
+            GpuStatus s = GpuRecordContext::createRaster(registry, ctx);
+            ASSERT_TRUE(s.ok()) << s.message;
+            std::unique_ptr<GpuTexture> ids;
+            s = GpuTexture::createAttachment(*dev_, kW, kH, VK_FORMAT_R32G32_UINT, ids);
+            ASSERT_TRUE(s.ok()) << s.message;
+            std::unique_ptr<GpuTexture> depth;
+            s = GpuTexture::createDepthAttachment(*dev_, kW, kH, depth);
+            ASSERT_TRUE(s.ok()) << s.message;
+            GpuBuffer vertexBuffer;
+            GpuBuffer tagBuffer;
+            hostBuffer(padded, kGpuBufferDefaultUsage, vertexBuffer);
+            hostBuffer(tags, kGpuBufferDefaultUsage, tagBuffer);
+            GpuBuffer readback;
+            s = GpuBuffer::createStaging(*dev_, ids->packedBytes(), kGpuBufferDefaultUsage, readback);
+            ASSERT_TRUE(s.ok()) << s.message;
+            if (HasFatalFailure()) {
+                return;
+            }
+
+            s = ctx->beginRasterUint(*ids, { 0xffffffffu, 0xffffffffu, 0u, 0u }, depthTest ? depth.get() : nullptr);
+            ASSERT_TRUE(s.ok()) << s.message;
+            s = ctx->draw(GpuRasterId::raster_test_ids, GpuRasterBlend::Replace, { &vertexBuffer, &tagBuffer }, push, 6);
+            ASSERT_TRUE(s.ok()) << s.message;
+            s = ctx->endRaster();
+            ASSERT_TRUE(s.ok()) << s.message;
+            s = ctx->copyToImage(readback);
+            ASSERT_TRUE(s.ok()) << s.message;
+            s = ctx->submitAndWait();
+            ASSERT_TRUE(s.ok()) << s.message;
+
+            const uint32_t nearPrimitive = nearFirst ? 0 : 1;
+            const uint32_t* texels = static_cast<const uint32_t*>(readback.mapped());
+            size_t mismatches = 0;
+            size_t nearPixels = 0;
+            for (uint32_t y = 0; y < kH; ++y) {
+                for (uint32_t x = 0; x < kW; ++x) {
+                    const bool near = insideNear(x + 0.5f, y + 0.5f);
+                    nearPixels += near ? 1 : 0;
+                    const bool nearWins = near && (depthTest || !nearFirst);
+                    const uint32_t tag = nearWins ? kNearTag : kFarTag;
+                    const uint32_t primitive = nearWins ? nearPrimitive : 1 - nearPrimitive;
+                    const uint32_t* got = texels + 2 * (size_t(y) * kW + x);
+                    if (got[0] != tag || got[1] != primitive) {
+                        ADD_FAILURE() << "pixel (" << x << ", " << y << "): (" << got[0] << ", " << got[1]
+                                      << "), expected (" << tag << ", " << primitive << ")";
+                        ++mismatches;
+                    }
+                }
+            }
+            EXPECT_EQ(mismatches, 0u);
+            EXPECT_GT(nearPixels, 10u);
+        }
+    }
+}
+
+GPU_TEST_F(GpuRasterTest, VisibilityPassesRefuseMismatchedTargets)
+{
+    if (!dev_->info().rasterVisibility) {
+        GPUTEST_SKIP_TEST() << "the device cannot raster uint ids with a depth test";
+    }
+    GpuKernelRegistry registry(*dev_);
+    std::unique_ptr<GpuRecordContext> ctx;
+    GpuStatus s = GpuRecordContext::createRaster(registry, ctx);
+    ASSERT_TRUE(s.ok()) << s.message;
+    std::unique_ptr<GpuTexture> ids;
+    s = GpuTexture::createAttachment(*dev_, 4, 4, VK_FORMAT_R32G32_UINT, ids);
+    ASSERT_TRUE(s.ok()) << s.message;
+    std::unique_ptr<GpuTexture> depth;
+    s = GpuTexture::createDepthAttachment(*dev_, 4, 4, depth);
+    ASSERT_TRUE(s.ok()) << s.message;
+    std::unique_ptr<GpuTexture> smallDepth;
+    s = GpuTexture::createDepthAttachment(*dev_, 2, 4, smallDepth);
+    ASSERT_TRUE(s.ok()) << s.message;
+    std::unique_ptr<GpuTexture> unsupported;
+    EXPECT_FALSE(GpuTexture::createAttachment(*dev_, 4, 4, VK_FORMAT_R32G32_SFLOAT, unsupported).ok());
+    EXPECT_FALSE(GpuTexture::createDepthAttachment(*dev_, 0, 4, unsupported).ok());
+    EXPECT_EQ(unsupported, nullptr);
+
+    EXPECT_FALSE(ctx->beginRaster(*ids, { 0.0f, 0.0f, 0.0f, 0.0f }).ok()) << "a uint attachment takes uint clears";
+    EXPECT_FALSE(ctx->beginRasterUint(*depth, { 0u, 0u, 0u, 0u }).ok()) << "a depth texture is no colour attachment";
+    EXPECT_FALSE(ctx->beginRasterUint(*ids, { 0u, 0u, 0u, 0u }, ids.get()).ok()) << "ids are no depth";
+    EXPECT_FALSE(ctx->beginRasterUint(*ids, { 0u, 0u, 0u, 0u }, smallDepth.get()).ok()) << "the extents differ";
+    if (dev_->info().rasterFloatBlend) {
+        std::unique_ptr<GpuTexture> values;
+        s = GpuTexture::createAttachment(*dev_, 4, 4, 1, values);
+        ASSERT_TRUE(s.ok()) << s.message;
+        EXPECT_FALSE(ctx->beginRasterUint(*values, { 0u, 0u, 0u, 0u }).ok()) << "a float attachment takes float clears";
+    }
+
+    GpuBuffer vertexBuffer;
+    GpuBuffer tagBuffer;
+    hostBuffer(std::vector<float>(24, 0.0f), kGpuBufferDefaultUsage, vertexBuffer);
+    hostBuffer(std::vector<uint32_t>(2, 0u), kGpuBufferDefaultUsage, tagBuffer);
+    if (HasFatalFailure()) {
+        return;
+    }
+    const float params[4] = { 4.0f, 4.0f, 0.0f, 0.0f };
+    const std::span<const std::byte> push = std::as_bytes(std::span(params));
+    s = ctx->beginRasterUint(*ids, { 0u, 0u, 0u, 0u }, depth.get());
+    ASSERT_TRUE(s.ok()) << s.message;
+    EXPECT_FALSE(ctx->draw(GpuRasterId::raster_test_ids, GpuRasterBlend::Additive, { &vertexBuffer, &tagBuffer }, push, 3)
+                     .ok())
+        << "ids cannot blend";
+    s = ctx->draw(GpuRasterId::raster_test_ids, GpuRasterBlend::Replace, { &vertexBuffer, &tagBuffer }, push, 3);
+    EXPECT_TRUE(s.ok()) << s.message;
+    s = ctx->endRaster();
+    ASSERT_TRUE(s.ok()) << s.message;
+    s = ctx->submitAndWait();
+    EXPECT_TRUE(s.ok()) << s.message;
+}
+
+GPU_TEST_F(GpuRasterTest, PipelineCacheKeysTheDepthTest)
+{
+    if (!dev_->info().rasterVisibility) {
+        GPUTEST_SKIP_TEST() << "the device cannot raster uint ids with a depth test";
+    }
+    const fs::path dir = fs::temp_directory_path() / ("natron-gpu-raster-depth-test-" + std::to_string(::getpid()));
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    {
+        GpuKernelRegistry registry(*dev_);
+        GpuPipelineCacheOptions o;
+        o.directory = dir.string();
+        GpuPipelineCache cache(*dev_, o);
+        std::shared_ptr<GpuRasterPipeline> plain;
+        std::shared_ptr<GpuRasterPipeline> tested;
+        std::shared_ptr<GpuRasterPipeline> again;
+        GpuStatus s = cache.raster(registry, GpuRasterId::raster_test_ids, VK_FORMAT_R32G32_UINT, GpuRasterBlend::Replace,
+                                   plain);
+        ASSERT_TRUE(s.ok()) << s.message;
+        s = cache.raster(registry, GpuRasterId::raster_test_ids, VK_FORMAT_R32G32_UINT, GpuRasterBlend::Replace, tested,
+                         GpuRasterDepth::Less);
+        ASSERT_TRUE(s.ok()) << s.message;
+        s = cache.raster(registry, GpuRasterId::raster_test_ids, VK_FORMAT_R32G32_UINT, GpuRasterBlend::Replace, again,
+                         GpuRasterDepth::Less);
+        ASSERT_TRUE(s.ok()) << s.message;
+        EXPECT_NE(plain, tested);
+        EXPECT_EQ(tested, again);
+        EXPECT_EQ(plain->depth(), GpuRasterDepth::None);
+        EXPECT_EQ(tested->depth(), GpuRasterDepth::Less);
+        EXPECT_EQ(cache.stats().rasterBuilds, 2u);
+        std::shared_ptr<GpuRasterPipeline> refused;
+        EXPECT_EQ(cache.raster(registry, GpuRasterId::raster_test_ids, VK_FORMAT_R32G32B32A32_UINT,
+                               GpuRasterBlend::Additive, refused, GpuRasterDepth::Less)
+                      .result,
+                  VK_ERROR_FORMAT_NOT_SUPPORTED);
+        EXPECT_EQ(refused, nullptr);
+    }
+    fs::remove_all(dir, ec);
+}
+
 } // namespace

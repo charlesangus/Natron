@@ -146,6 +146,15 @@ struct GpuDeviceInfo {
     // R32G32B32A32_SFLOAT and R32_SFLOAT. The stores are required because a raster's storage buffers are bound
     // to both stages and may be written from either. Raster users take their CPU path when it is false.
     bool rasterFloatBlend = false;
+    // The geometryShader feature, enabled whenever the device offers it. A fragment shader reads the id of its
+    // triangle through the Geometry capability, which needs it.
+    bool geometryShader = false;
+    // graphicsQueue, dynamicRendering, vertexPipelineStores, fragmentStores and geometryShader, plus D32_SFLOAT as
+    // a depth attachment and R32G32_UINT and R32G32B32A32_UINT as colour attachments that can be cleared and
+    // copied from: what a visibility buffer of instance and triangle ids behind a depth test needs. The uint
+    // formats are never blended, so it does not imply rasterFloatBlend. Raster users take their CPU path when it
+    // is false.
+    bool rasterVisibility = false;
     // Without it an indirect draw of several commands is recorded as one draw per command.
     bool multiDrawIndirect = false;
     uint32_t maxDrawIndirectCount = 1;

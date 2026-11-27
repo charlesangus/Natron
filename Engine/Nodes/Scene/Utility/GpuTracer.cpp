@@ -55,11 +55,14 @@
 #include "Engine/Gpu/GpuBufferPool.h"
 #include "Engine/Gpu/GpuKernel.h"
 #include "Engine/Gpu/GpuKernelRegistry.h"
+#include "Engine/Gpu/GpuRaster.h"
 #include "Engine/Gpu/GpuRecord.h"
 #include "Engine/Nodes/Scene/Utility/UtilityGpuLimits.h"
+#include "Engine/Nodes/Scene/Utility/UtilityKernels.h"
 
 #include "utility_intersect_spirv.h"
 #include "utility_occluded_spirv.h"
+#include "utility_raster_visibility_spirv.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -277,6 +280,15 @@ sameGeometries(const std::vector<Placement>& a,
         && std::equal(a.begin(), a.end(), b.begin(), [](const Placement& x, const Placement& y) { return x.geometry == y.geometry; });
 }
 
+// A RasterScene and what it points into: its own tables, and the geometry it draws, which a later update may
+// replace in the tracer while a context still holds this.
+struct RasterTables : GpuTracer::RasterScene {
+    gpu::GpuBuffer instanceTable;
+    gpu::GpuBuffer transformTable;
+    gpu::GpuBuffer commandTable;
+    std::vector<GeometryEntryPtr> drawn;
+};
+
 // What a trace reads. Contexts that record traces hold it, so an update can replace it under them.
 struct SceneState {
     std::vector<gpu::GpuTlas> structures;
@@ -299,6 +311,10 @@ struct SceneState {
     gpu::GpuBuffer moverFirst;
     // One-instance structures over the rigid geometries that movers place.
     std::vector<gpu::GpuTlas> rigidScenes;
+    // The scene as raster passes draw it, built on the first request: an update that keeps this state keeps
+    // every drawn placement and geometry, so the tables stay right for as long as the state does.
+    mutable std::mutex rasterMutex;
+    mutable std::shared_ptr<const RasterTables> raster;
 
     bool traces() const { return !structures.empty() || segments != 0; }
 };
@@ -605,6 +621,9 @@ struct GpuTracer::Implementation {
                                const gpu::GpuBuffer& ids,
                                const DeviceFilter& filter = DeviceFilter()) const;
 
+    // The raster tables of the current scene, from its placements. Called with the state's rasterMutex held.
+    gpu::GpuStatus buildRasterTables(std::shared_ptr<const RasterTables>& out) const;
+
     // Sweeps the movers into the state's per-segment structures. False, with the failure recorded, when it
     // cannot or is stopped.
     bool buildMovers(const UtilityScene::Snapshot& snapshot,
@@ -660,6 +679,9 @@ struct GpuTracer::Implementation {
     gpu::GpuDevice& device;
     std::shared_ptr<gpu::GpuKernel> intersectKernel;
     std::shared_ptr<gpu::GpuKernel> occludedKernel;
+    // Registered with registry when the device has GpuDeviceInfo::rasterVisibility.
+    gpu::GpuRasterId visibilityRaster {};
+    bool rasterizes = false;
     bool usable = false;
     std::size_t maxInstancesPerStructure = 0;
     mutable std::atomic<std::size_t> raysPerSubmit { kMaxRaysPerSubmit };
@@ -1313,6 +1335,16 @@ GpuTracer::GpuTracer(gpu::GpuKernelRegistry& registry,
 
         return;
     }
+    if (imp.device.info().rasterVisibility) {
+        const gpu::GpuRasterDesc visibilityDesc {
+            utility_raster_visibility_vertex_spirv, utility_raster_visibility_vertex_spirv_words,
+            utility_raster_visibility_fragment_spirv, utility_raster_visibility_fragment_spirv_words,
+            utility_raster_visibility_entry, utility_raster_visibility_storage_buffers, utility_raster_visibility_push_bytes
+        };
+
+        imp.visibilityRaster = imp.registry.registerRaster(visibilityDesc);
+        imp.rasterizes = true;
+    }
     imp.usable = true;
 }
 
@@ -1470,7 +1502,8 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
                                                          + source.path.GetString(),
                                                      s));
             }
-            if (gpu::GpuStatus s = gpu::GpuBuffer::createStaging(imp.device, indexBytes, gpu::kGpuAccelInputUsage, entry->indices); !s) {
+            // Raster passes draw with the very indices the triangle structure is built from.
+            if (gpu::GpuStatus s = gpu::GpuBuffer::createStaging(imp.device, indexBytes, gpu::kGpuAccelInputUsage | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, entry->indices); !s) {
                 return imp.abandonUpdate(imp.failure("GpuTracer could not hold the " + std::to_string(indexBytes) + " bytes of triangles of "
                                                          + source.path.GetString(),
                                                      s));
@@ -1868,6 +1901,197 @@ GpuTracer::recordOccludedFiltered(gpu::GpuRecordContext& ctx,
                                   std::uint32_t maskOffset) const
 {
     return _imp->recordTrace(ctx, Entry::Occluded, _imp->scene, rays, count, blocked, blocked, DeviceFilter { &rayLights, &casterMasks, maskStride, maskOffset });
+}
+
+static_assert(sizeof(KernelVisibilityParams) == utility_raster_visibility_push_bytes, "KernelVisibilityParams must match VisibilityParams in Kernels/RasterVisibility.slang");
+
+gpu::GpuStatus
+GpuTracer::Implementation::buildRasterTables(std::shared_ptr<const RasterTables>& out) const
+{
+    auto tables = std::make_shared<RasterTables>();
+    // The drawn placements of each geometry, in the order the geometries first appear.
+    std::vector<std::pair<GeometryEntryPtr, std::vector<std::uint32_t>>> groups;
+    std::map<const GeometryEntry*, std::size_t> groupOf;
+
+    for (std::size_t i = 0; i < placements.size(); ++i) {
+        const auto it = geometries.find(placements[i].geometry);
+
+        if (it == geometries.end() || !it->second->draws()) {
+            continue;
+        }
+
+        const auto group = groupOf.emplace(it->second.get(), groups.size());
+
+        if (group.second) {
+            groups.emplace_back(it->second, std::vector<std::uint32_t>());
+        }
+        groups[group.first->second].second.push_back(static_cast<std::uint32_t>(i));
+    }
+
+    std::vector<std::uint32_t> instances;
+    std::vector<float> rows;
+    std::vector<VkDrawIndexedIndirectCommand> commands;
+
+    for (const auto& group : groups) {
+        const GeometryEntry& entry = *group.first;
+        // The vertex stage addresses each float of the points with 32 bits, and a draw counts its indices in 32.
+        const std::size_t floats = 3 * entry.pointSteps * entry.pointCount;
+
+        if (floats > std::numeric_limits<std::uint32_t>::max() || 3 * entry.triangleCount > std::numeric_limits<std::uint32_t>::max()) {
+            return { VK_ERROR_OUT_OF_DEVICE_MEMORY, "GpuTracer: a geometry of " + std::to_string(entry.pointCount) + " points and " + std::to_string(entry.triangleCount) + " triangles is past what a raster draw addresses" };
+        }
+
+        GpuTracer::RasterGeometry geometry;
+
+        geometry.points = &entry.vertices;
+        geometry.indices = &entry.indices;
+        geometry.pointCount = static_cast<std::uint32_t>(entry.pointCount);
+        geometry.triangleCount = static_cast<std::uint32_t>(entry.triangleCount);
+        geometry.pointSteps = static_cast<std::uint32_t>(entry.pointSteps);
+        geometry.firstInstance = static_cast<std::uint32_t>(instances.size() / 2);
+        geometry.instanceCount = static_cast<std::uint32_t>(group.second.size());
+        for (std::uint32_t i : group.second) {
+            const Placement& placement = placements[i];
+
+            instances.push_back(i);
+            instances.push_back(static_cast<std::uint32_t>(rows.size() / 4));
+            appendWords(rows, static_cast<std::uint32_t>(placement.steps.size()), 0u, 0u, 0u);
+            if (placement.steps.empty()) {
+                for (int row = 0; row < 4; ++row) {
+                    for (int column = 0; column < 4; ++column) {
+                        rows.push_back(static_cast<float>(placement.transform[row][column]));
+                    }
+                }
+            } else {
+                for (const UtilityScene::Decomposition& step : placement.steps) {
+                    appendStep(rows, step);
+                }
+            }
+        }
+
+        VkDrawIndexedIndirectCommand command {};
+
+        command.indexCount = 3 * geometry.triangleCount;
+        command.instanceCount = geometry.instanceCount;
+        command.firstInstance = geometry.firstInstance;
+        commands.push_back(command);
+        tables->geometries.push_back(geometry);
+        tables->drawn.push_back(group.first);
+    }
+    if (rows.size() / 4 > std::numeric_limits<std::uint32_t>::max()) {
+        return { VK_ERROR_OUT_OF_DEVICE_MEMORY, "GpuTracer: the transforms of " + std::to_string(instances.size() / 2) + " instances are past what a raster draw addresses" };
+    }
+    if (!commands.empty()) {
+        if (gpu::GpuStatus s = stageWith(device, instances.data(), instances.size() * sizeof(std::uint32_t), kAddressedUsage, tables->instanceTable); !s) {
+            return { s.result, "GpuTracer could not hold the instance table of its raster scene: " + s.message };
+        }
+        if (gpu::GpuStatus s = stageWith(device, rows.data(), rows.size() * sizeof(float), kAddressedUsage, tables->transformTable); !s) {
+            return { s.result, "GpuTracer could not hold the transforms of its raster scene: " + s.message };
+        }
+        if (gpu::GpuStatus s = stageWith(device, commands.data(), commands.size() * sizeof(VkDrawIndexedIndirectCommand), gpu::kGpuBufferDefaultUsage | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, tables->commandTable); !s) {
+            return { s.result, "GpuTracer could not hold the draws of its raster scene: " + s.message };
+        }
+        tables->instances = &tables->instanceTable;
+        tables->transforms = &tables->transformTable;
+        tables->commands = &tables->commandTable;
+    }
+    out = std::move(tables);
+
+    return {};
+}
+
+gpu::GpuStatus
+GpuTracer::rasterScene(std::shared_ptr<const RasterScene>& out) const
+{
+    const Implementation& imp = *_imp;
+
+    out.reset();
+    if (!imp.usable) {
+        return { VK_ERROR_FEATURE_NOT_PRESENT, imp.outcome.message };
+    }
+    if (!imp.scene) {
+        out = std::make_shared<const RasterScene>();
+
+        return {};
+    }
+
+    std::lock_guard<std::mutex> lock(imp.scene->rasterMutex);
+
+    if (!imp.scene->raster) {
+        if (gpu::GpuStatus s = imp.buildRasterTables(imp.scene->raster); !s) {
+            return s;
+        }
+    }
+    out = imp.scene->raster;
+
+    return {};
+}
+
+gpu::GpuStatus
+GpuTracer::recordVisibility(gpu::GpuRecordContext& ctx,
+                            const VisibilityPass& pass) const
+{
+    const Implementation& imp = *_imp;
+
+    if (!imp.usable) {
+        return { VK_ERROR_FEATURE_NOT_PRESENT, imp.outcome.message };
+    }
+    if (!imp.rasterizes) {
+        return { VK_ERROR_FEATURE_NOT_PRESENT, "GpuTracer: the GPU cannot draw a visibility buffer" };
+    }
+    if (&ctx.registry() != &imp.registry) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuTracer::recordVisibility needs a context of the tracer's own kernel registry" };
+    }
+
+    const gpu::GpuTexture* attachment = ctx.rasterAttachment();
+
+    // Without depth the last triangle drawn would win rather than the nearest, so the ids would be wrong.
+    if (!attachment || attachment->format() != VK_FORMAT_R32G32_UINT || !ctx.rasterDepthAttachment()) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuTracer::recordVisibility needs an open raster pass into an R32G32_UINT attachment with depth" };
+    }
+
+    std::shared_ptr<const RasterScene> scene;
+
+    if (gpu::GpuStatus s = rasterScene(scene); !s) {
+        return s;
+    }
+    if (scene->geometries.empty()) {
+        return {};
+    }
+    ctx.hold(std::const_pointer_cast<RasterScene>(scene));
+
+    KernelVisibilityParams params {};
+
+    std::memcpy(params.viewProjection, pass.viewProjection, sizeof(params.viewProjection));
+    params.jitter[0] = 2.f * pass.jitter[0] / static_cast<float>(attachment->desc().width);
+    params.jitter[1] = 2.f * pass.jitter[1] / static_cast<float>(attachment->desc().height);
+    params.time = pass.time;
+
+    const VkDeviceAddress instances = scene->instances->deviceAddress(imp.device);
+    const VkDeviceAddress transforms = scene->transforms->deviceAddress(imp.device);
+
+    params.instancesLow = static_cast<std::uint32_t>(instances & 0xffffffffull);
+    params.instancesHigh = static_cast<std::uint32_t>(instances >> 32);
+    params.rowsLow = static_cast<std::uint32_t>(transforms & 0xffffffffull);
+    params.rowsHigh = static_cast<std::uint32_t>(transforms >> 32);
+
+    const std::span<const std::byte> push(reinterpret_cast<const std::byte*>(&params), sizeof(params));
+
+    for (std::size_t g = 0; g < scene->geometries.size(); ++g) {
+        const RasterGeometry& geometry = scene->geometries[g];
+        const VkDeviceAddress points = geometry.points->deviceAddress(imp.device);
+
+        params.pointCount = geometry.pointCount;
+        params.pointSteps = geometry.pointSteps;
+        params.pointsLow = static_cast<std::uint32_t>(points & 0xffffffffull);
+        params.pointsHigh = static_cast<std::uint32_t>(points >> 32);
+        // The context's abort check runs before each draw, so a cancelled render stops between geometries.
+        if (gpu::GpuStatus s = ctx.drawIndexedIndirect(imp.visibilityRaster, gpu::GpuRasterBlend::Replace, std::span<const gpu::GpuBuffer* const>(), push, *geometry.indices, *scene->commands, 1, static_cast<std::uint32_t>(g)); !s) {
+            return s;
+        }
+    }
+
+    return {};
 }
 
 NATRON_NAMESPACE_EXIT

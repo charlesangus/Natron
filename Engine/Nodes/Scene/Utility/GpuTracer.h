@@ -125,6 +125,69 @@ public:
                                           std::uint32_t maskStride,
                                           std::uint32_t maskOffset) const;
 
+    /**
+     * @brief One drawn geometry of a RasterScene. points and indices are the very buffers its triangle
+     * structure was built from, read through their device addresses: pointSteps steps of pointCount points
+     * (three floats each, one after another), above one step only for a deforming geometry, and three uint32
+     * indices per triangle, which can also be bound as an index buffer. Its instances are the instanceCount
+     * entries of RasterScene::instances from firstInstance on.
+     **/
+    struct RasterGeometry {
+        const gpu::GpuBuffer* points = nullptr;
+        const gpu::GpuBuffer* indices = nullptr;
+        std::uint32_t pointCount = 0;
+        std::uint32_t triangleCount = 0;
+        std::uint32_t pointSteps = 1;
+        std::uint32_t firstInstance = 0;
+        std::uint32_t instanceCount = 0;
+    };
+
+    /**
+     * @brief The last update's scene as a raster pass draws it, grouped by geometry. Only the instance tables
+     * are new; the points and triangles are the tracer's own. instances holds two uint32 per drawn instance:
+     * the placement a hit reports as its instance, and the first float4 row of its transform in transforms.
+     * There the first row holds the step count in x as a uint32: 0 for an instance that holds still, followed
+     * by the four rows of its row-vector object-to-world matrix, or two or more, followed by that many steps
+     * as UtilityTypes.slang's stepAtTime() reads them. commands holds one VkDrawIndexedIndirectCommand per
+     * geometry, drawing its triangles for its instances. All three are read through device addresses or as an
+     * indirect buffer, and live as long as the scene the shared pointer holds.
+     **/
+    struct RasterScene {
+        std::vector<RasterGeometry> geometries;
+        const gpu::GpuBuffer* instances = nullptr;
+        const gpu::GpuBuffer* transforms = nullptr;
+        const gpu::GpuBuffer* commands = nullptr;
+    };
+
+    /**
+     * @brief The raster form of the last update's scene, built on the first request after it. Null, with
+     * a status that says why, when the tracer cannot run or the tables cannot be held; an empty scene has
+     * no geometries. No update() may run while it is in use.
+     **/
+    gpu::GpuStatus rasterScene(std::shared_ptr<const RasterScene>& out) const;
+
+    // What recordVisibility() draws with.
+    struct VisibilityPass {
+        // The rows of the row-vector view-projection, from world space into Vulkan's clip space: y runs down
+        // the attachment and depth from 0 at w = near to w at far.
+        float viewProjection[4][4] = { { 1.f, 0.f, 0.f, 0.f }, { 0.f, 1.f, 0.f, 0.f }, { 0.f, 0.f, 1.f, 0.f }, { 0.f, 0.f, 0.f, 1.f } };
+        // The pass's sub-pixel offset in texels of the pass's attachment, applied after the projection.
+        float jitter[2] = { 0.f, 0.f };
+        // The pass's time, from 0 at the shutter's opening to 1 at its closing, as a ray's: points are
+        // interpolated linearly, translation and stretch linearly and rotation by slerp.
+        float time = 0.5f;
+    };
+
+    /**
+     * @brief Records into the raster pass open on ctx, a raster context's whose colour attachment is
+     * R32G32_UINT and that has a depth attachment, each drawn instance at the pass's time: every texel a
+     * triangle covers nearest gets the instance and primitive ids a ray through its centre would hit, and
+     * the others keep the pass's clear value. One indirect draw per geometry; the context's abort check runs
+     * before each. The context keeps the scene alive until it is destroyed; no update() may run before then.
+     **/
+    gpu::GpuStatus recordVisibility(gpu::GpuRecordContext& ctx,
+                                    const VisibilityPass& pass) const;
+
     // Lowers the instances one top-level structure takes, so that tests split small scenes. Never raises it.
     void limitInstancesPerStructure(std::size_t count);
 

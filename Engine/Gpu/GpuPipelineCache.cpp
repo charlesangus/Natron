@@ -272,7 +272,7 @@ GpuPipelineCache::clearMemory()
 
 GpuStatus
 GpuPipelineCache::raster(const GpuKernelRegistry& registry, GpuRasterId raster, VkFormat colourFormat,
-                         GpuRasterBlend blend, std::shared_ptr<GpuRasterPipeline>& out)
+                         GpuRasterBlend blend, std::shared_ptr<GpuRasterPipeline>& out, GpuRasterDepth depth)
 {
     out.reset();
     if (&registry.device() != &device_) {
@@ -284,7 +284,7 @@ GpuPipelineCache::raster(const GpuKernelRegistry& registry, GpuRasterId raster, 
     }
     const uint32_t id = static_cast<uint32_t>(raster);
     const uint64_t registrySerial = id < static_cast<uint32_t>(GpuRasterId::Count) ? 0 : registry.serial();
-    const RasterKey key { registrySerial, id, colourFormat, blend };
+    const RasterKey key { registrySerial, id, colourFormat, blend, depth };
 
     std::shared_future<RasterResult> future;
     std::promise<RasterResult> promise;
@@ -309,7 +309,7 @@ GpuPipelineCache::raster(const GpuKernelRegistry& registry, GpuRasterId raster, 
     if (owner) {
         RasterResult result;
         std::unique_ptr<GpuRasterPipeline> built;
-        result.status = GpuRasterPipeline::create(device_, *desc, colourFormat, blend, built);
+        result.status = GpuRasterPipeline::create(device_, *desc, colourFormat, blend, depth, built);
         result.pipeline = std::move(built);
         {
             std::lock_guard<std::mutex> lock(mutex_);

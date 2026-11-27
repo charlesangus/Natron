@@ -33,22 +33,31 @@ namespace {
 
 GpuStatus
 GpuRasterPipeline::create(GpuDevice& device, const GpuRasterDesc& desc, VkFormat colourFormat, GpuRasterBlend blend,
-                          std::unique_ptr<GpuRasterPipeline>& out, VkPipelineCache pipelineCache)
+                          GpuRasterDepth depth, std::unique_ptr<GpuRasterPipeline>& out, VkPipelineCache pipelineCache)
 {
     if (device.isLost()) {
         return fail(VK_ERROR_DEVICE_LOST, "GpuRasterPipeline::create: device lost");
     }
-    if (!device.info().rasterFloatBlend) {
+    const bool uintFormat = isUintFormat(colourFormat);
+    if (!uintFormat && colourFormat != VK_FORMAT_R32_SFLOAT && colourFormat != VK_FORMAT_R32G32B32A32_SFLOAT) {
+        return fail(VK_ERROR_FORMAT_NOT_SUPPORTED, "GpuRasterPipeline::create: the attachment must be R32_SFLOAT, "
+                                                   "R32G32B32A32_SFLOAT, R32G32_UINT or R32G32B32A32_UINT");
+    }
+    if (uintFormat && blend != GpuRasterBlend::Replace) {
+        return fail(VK_ERROR_FORMAT_NOT_SUPPORTED, "GpuRasterPipeline::create: uint attachments cannot blend");
+    }
+    if (!uintFormat && !device.info().rasterFloatBlend) {
         return fail(VK_ERROR_FEATURE_NOT_PRESENT, "GpuRasterPipeline::create: the device cannot blend float colour attachments");
     }
-    if (colourFormat != VK_FORMAT_R32_SFLOAT && colourFormat != VK_FORMAT_R32G32B32A32_SFLOAT) {
-        return fail(VK_ERROR_FORMAT_NOT_SUPPORTED, "GpuRasterPipeline::create: the attachment must be R32_SFLOAT or R32G32B32A32_SFLOAT");
+    if ((uintFormat || depth != GpuRasterDepth::None) && !device.info().rasterVisibility) {
+        return fail(VK_ERROR_FEATURE_NOT_PRESENT,
+                    "GpuRasterPipeline::create: the device cannot raster uint ids with a depth test");
     }
     if (!desc.vertexSpirv || desc.vertexSpirvWords == 0 || !desc.fragmentSpirv || desc.fragmentSpirvWords == 0
         || !desc.entry || desc.pushConstantBytes > kMaxPushConstantBytes || desc.pushConstantBytes % 4 != 0) {
         return fail(VK_ERROR_INITIALIZATION_FAILED, "GpuRasterPipeline::create: invalid raster description");
     }
-    std::unique_ptr<GpuRasterPipeline> p(new GpuRasterPipeline(device, desc, colourFormat, blend));
+    std::unique_ptr<GpuRasterPipeline> p(new GpuRasterPipeline(device, desc, colourFormat, blend, depth));
     // As for compute kernels: pipelines are built on render threads, where debug builds trap the
     // floating-point exceptions Mesa's compilers raise of their own doing.
     std::fenv_t env;
@@ -135,10 +144,19 @@ GpuRasterPipeline::createPipeline(VkPipelineCache pipelineCache)
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
     VkPipelineColorBlendAttachmentState attachment {};
-    attachment.colorWriteMask = (format_ == VK_FORMAT_R32_SFLOAT)
-        ? VkColorComponentFlags(VK_COLOR_COMPONENT_R_BIT)
-        : VkColorComponentFlags(VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT
-                                | VK_COLOR_COMPONENT_A_BIT);
+    // The mask names exactly the format's components: one that it lacks is invalid to write.
+    switch (format_) {
+    case VK_FORMAT_R32_SFLOAT:
+        attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT;
+        break;
+    case VK_FORMAT_R32G32_UINT:
+        attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT;
+        break;
+    default:
+        attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT
+            | VK_COLOR_COMPONENT_A_BIT;
+        break;
+    }
     if (blend_ == GpuRasterBlend::Additive) {
         attachment.blendEnable = VK_TRUE;
         attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
@@ -157,9 +175,19 @@ GpuRasterPipeline::createPipeline(VkPipelineCache pipelineCache)
     dynamic.dynamicStateCount = 2;
     dynamic.pDynamicStates = dynamicStates;
 
+    VkPipelineDepthStencilStateCreateInfo depthState { VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+    depthState.depthTestEnable = depth_ == GpuRasterDepth::Less ? VK_TRUE : VK_FALSE;
+    depthState.depthWriteEnable = depthState.depthTestEnable;
+    depthState.depthCompareOp = VK_COMPARE_OP_LESS;
+    depthState.minDepthBounds = 0.0f;
+    depthState.maxDepthBounds = 1.0f;
+
     VkPipelineRenderingCreateInfo rendering { VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO };
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachmentFormats = &format_;
+    if (depth_ != GpuRasterDepth::None) {
+        rendering.depthAttachmentFormat = kDepthFormat;
+    }
 
     VkGraphicsPipelineCreateInfo gpi { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
     gpi.pNext = &rendering;
@@ -171,6 +199,9 @@ GpuRasterPipeline::createPipeline(VkPipelineCache pipelineCache)
     gpi.pRasterizationState = &raster;
     gpi.pMultisampleState = &multisample;
     gpi.pColorBlendState = &colourBlend;
+    if (depth_ != GpuRasterDepth::None) {
+        gpi.pDepthStencilState = &depthState;
+    }
     gpi.pDynamicState = &dynamic;
     gpi.layout = pipelineLayout_;
     return device_.check(vkCreateGraphicsPipelines(dev, pipelineCache, 1, &gpi, nullptr, &pipeline_),

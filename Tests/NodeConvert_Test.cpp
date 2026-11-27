@@ -45,6 +45,7 @@
 #include "Engine/Nodes/Deep/DeepToImage.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Filter/IBlur.h"
+#include "Engine/Nodes/Filter/MapInput.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
@@ -388,6 +389,75 @@ TEST_F(NodeConvertTest, ConvertKeepsUserKnobsTheirAnimationAndExpressions)
 
     toI->redo();
     EXPECT_TRUE(iblur->isActivated());
+    EXPECT_DOUBLE_EQ(6., whiteValue->getValueAtTime(10, 0));
+}
+
+// IBlur has a mapGamma knob of its own, which Blur does not.
+TEST_F(NodeConvertTest, ConvertRenamesUserKnobsNamedLikeTheReplacementsKnobs)
+{
+    const NodePtr blur = make(PLUGINID_NATRON_BLUR);
+    const NodePtr grade = make(PLUGINID_NATRON_GRADE);
+    ASSERT_TRUE(blur != nullptr);
+    ASSERT_TRUE(grade != nullptr);
+    ASSERT_EQ(nullptr, blur->getKnobByName(kMapInputParamGamma));
+
+    KnobDoublePtr gamma = addUserDouble(blur, kMapInputParamGamma, "My Gamma");
+    KnobDoublePtr twice = addUserDouble(blur, "twiceGamma", "Twice Gamma");
+    ASSERT_TRUE(gamma != nullptr);
+    ASSERT_TRUE(twice != nullptr);
+    blur->declarePythonFields();
+    gamma->setValueAtTime(0, 2., ViewSpec::all(), 0);
+    gamma->setValueAtTime(10, 4., ViewSpec::all(), 0);
+    ASSERT_NO_THROW(twice->setExpression(0, "thisNode." kMapInputParamGamma ".getValueAtTime(frame) * 2", false, true));
+
+    const KnobIPtr white = grade->getKnobByName(kGradeParamWhite);
+    ASSERT_TRUE(white != nullptr);
+    const std::string whiteExpression = blur->getScriptName() + "." kMapInputParamGamma ".getValueAtTime(frame)";
+    ASSERT_NO_THROW(white->setExpression(0, whiteExpression, false, true));
+    std::shared_ptr<Knob<double>> whiteValue = std::dynamic_pointer_cast<Knob<double>>(white);
+    ASSERT_TRUE(whiteValue != nullptr);
+    EXPECT_DOUBLE_EQ(4., whiteValue->getValueAtTime(10, 0));
+
+    std::string error;
+    std::shared_ptr<NodeConvertCommand> toI = NodeConvertCommand::toIVariant(blur, &error);
+    ASSERT_TRUE(toI != nullptr) << error;
+    toI->redo();
+    const NodePtr iblur = toI->getConverted();
+    ASSERT_TRUE(iblur != nullptr);
+
+    const KnobIPtr ownGamma = iblur->getKnobByName(kMapInputParamGamma);
+    ASSERT_TRUE(ownGamma != nullptr);
+    EXPECT_FALSE(ownGamma->isUserKnob());
+    KnobDoublePtr iGamma = userDouble(iblur, kMapInputParamGamma "2");
+    KnobDoublePtr iTwice = userDouble(iblur, "twiceGamma");
+    ASSERT_TRUE(iGamma != nullptr);
+    ASSERT_TRUE(iTwice != nullptr);
+    EXPECT_TRUE(iGamma->isUserKnob());
+    EXPECT_EQ(std::string("My Gamma"), iGamma->getLabel());
+    EXPECT_EQ(2, iGamma->getKeyFramesCount(ViewIdx(0), 0));
+    EXPECT_DOUBLE_EQ(3., iGamma->getValueAtTime(5, 0));
+    EXPECT_NE(std::string::npos, iTwice->getExpression(0).find(kMapInputParamGamma "2"));
+    EXPECT_TRUE(iTwice->isExpressionValid(0, nullptr));
+    EXPECT_DOUBLE_EQ(8., iTwice->getValueAtTime(10, 0));
+    EXPECT_NE(std::string::npos, white->getExpression(0).find(kMapInputParamGamma "2"));
+    EXPECT_TRUE(white->isExpressionValid(0, nullptr));
+    EXPECT_DOUBLE_EQ(4., whiteValue->getValueAtTime(10, 0));
+
+    iGamma->setValueAtTime(10, 6., ViewSpec::all(), 0);
+    EXPECT_DOUBLE_EQ(6., whiteValue->getValueAtTime(10, 0));
+    EXPECT_DOUBLE_EQ(12., iTwice->getValueAtTime(10, 0));
+
+    toI->undo();
+    EXPECT_TRUE(blur->isActivated());
+    EXPECT_EQ(gamma, userDouble(blur, kMapInputParamGamma));
+    EXPECT_EQ(whiteExpression, white->getExpression(0));
+    EXPECT_TRUE(white->isExpressionValid(0, nullptr));
+    EXPECT_DOUBLE_EQ(4., whiteValue->getValueAtTime(10, 0));
+    EXPECT_DOUBLE_EQ(8., twice->getValueAtTime(10, 0));
+
+    toI->redo();
+    EXPECT_TRUE(iblur->isActivated());
+    EXPECT_NE(std::string::npos, white->getExpression(0).find(kMapInputParamGamma "2"));
     EXPECT_DOUBLE_EQ(6., whiteValue->getValueAtTime(10, 0));
 }
 

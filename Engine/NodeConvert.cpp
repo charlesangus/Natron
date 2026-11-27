@@ -29,6 +29,7 @@
 #include <set>
 #include <stdexcept>
 
+#include <QtCore/QDateTime>
 #include <QtCore/QString>
 
 #include "Engine/AppInstance.h"
@@ -47,6 +48,7 @@
 #include "Engine/Nodes/Loop/LoopBegin.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/Project.h"
+#include "Engine/UserKnobEdit.h"
 #include "Serialization/NodeSerialization.h"
 
 #define kNodeConvertLoopNodeOffsetFromWrappedNodes 100.
@@ -274,9 +276,28 @@ struct NodeConvertCommand::Implementation {
         int dimension;
     };
 
+    // An expression of another node that named a renamed user knob, as it reads each node.
+    struct RewrittenExpression {
+        KnobIWPtr knob;
+        int dimension;
+        bool hasRet;
+        std::string original;
+        std::string renamed;
+    };
+
+    // The carried user knobs whose names the replacement's own knobs take: old name, new name.
+    std::vector<std::pair<std::string, std::string>> renamedKnobs;
+    std::vector<RewrittenExpression> rewrittenReaders;
+
     std::string targetKnobName(const KnobIPtr& knob) const
     {
         if (knob->isUserKnob()) {
+            for (std::size_t i = 0; i < renamedKnobs.size(); ++i) {
+                if (renamedKnobs[i].first == knob->getName()) {
+                    return renamedKnobs[i].second;
+                }
+            }
+
             return knob->getName();
         }
 
@@ -366,13 +387,76 @@ struct NodeConvertCommand::Implementation {
         if (hasUserKnobs) {
             toEffect->recreateUserKnobs(true);
         }
+        if (!renamedKnobs.empty()) {
+            renameInOwnCode(toEffect.get());
+        }
+    }
+
+    std::string withRenamedKnobs(KnobHolder* holder,
+                                 const KnobIPtr& listener,
+                                 const std::string& code) const
+    {
+        std::string ret = code;
+        for (std::size_t i = 0; i < renamedKnobs.size(); ++i) {
+            ret = renameUserKnobInExpression(holder, listener, ret, renamedKnobs[i].first, renamedKnobs[i].second);
+        }
+
+        return ret;
+    }
+
+    // The expressions and button scripts copied onto the replacement still name the renamed user
+    // knobs by their old names, which now are the replacement's own knobs.
+    void renameInOwnCode(EffectInstance* holder) const
+    {
+        const KnobsVec knobs = holder->getKnobs_mt_safe();
+        for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+            const KnobIPtr& knob = *it;
+            if (!knob) {
+                continue;
+            }
+            for (int d = 0; d < knob->getDimension(); ++d) {
+                const std::string expression = knob->getExpression(d);
+                if (expression.empty()) {
+                    continue;
+                }
+                const std::string renamed = withRenamedKnobs(holder, knob, expression);
+                if (renamed == expression) {
+                    continue;
+                }
+                try {
+                    knob->setExpression(d, renamed, knob->isExpressionUsingRetVariable(d), false);
+                } catch (...) {
+                }
+            }
+            KnobButton* isButton = dynamic_cast<KnobButton*>(knob.get());
+            if (isButton && isButton->isUserKnob() && !isButton->getScript().empty()) {
+                const std::string script = isButton->getScript();
+                const std::string renamed = withRenamedKnobs(holder, knob, script);
+                if (renamed != script) {
+                    isButton->setScript(renamed);
+                }
+            }
+        }
+    }
+
+    void reportRenamedKnobs(const NodePtr& to) const
+    {
+        if (renamedKnobs.empty() || !appPTR) {
+            return;
+        }
+        std::string message = "User knobs renamed because " + to->getPluginLabel() + " has knobs of the same name:";
+        for (std::size_t i = 0; i < renamedKnobs.size(); ++i) {
+            message += (i ? ", " : " ") + renamedKnobs[i].first + " -> " + renamedKnobs[i].second;
+        }
+        message += ".";
+        appPTR->writeToErrorLog_mt_safe(QString::fromUtf8(to->getLabel_mt_safe().c_str()), QDateTime::currentDateTime(), QString::fromUtf8(message.c_str()));
     }
 
     // Creates the user pages, groups and knobs of from on to, without their links and
     // expressions, which copyKnobs() moves with the other knobs. A user knob named like one of
-    // the knobs of to is left out rather than turn that knob into a user knob.
-    static bool copyUserKnobDefinitions(const NodePtr& from,
-                                        const NodePtr& to)
+    // the knobs of to is renamed rather than turn that knob into a user knob.
+    bool copyUserKnobDefinitions(const NodePtr& from,
+                                 const NodePtr& to)
     {
         Serialization::NodeSerialization serialization;
         from->toSerialization(&serialization, false);
@@ -382,28 +466,57 @@ struct NodeConvertCommand::Implementation {
         Serialization::NodeSerialization userPart;
         // The original's page order would also reorder the replacement's own pages, which differ.
         userPart.userPages = serialization.userPages;
+        std::set<std::string> carried;
+        const EffectInstancePtr fromEffect = from->getEffectInstance();
+        const KnobsVec fromKnobs = fromEffect ? fromEffect->getKnobs_mt_safe() : KnobsVec();
+        for (KnobsVec::const_iterator it = fromKnobs.begin(); it != fromKnobs.end(); ++it) {
+            if (*it) {
+                carried.insert((*it)->getName());
+            }
+        }
+        renamedKnobs.clear();
         for (std::list<Serialization::GroupKnobSerialization>::iterator it = userPart.userPages.begin(); it != userPart.userPages.end(); ++it) {
-            removeTakenNames(*to, &it->children);
+            renameTakenNames(*to, &carried, &it->children);
         }
         to->restoreUserKnobs(userPart);
 
         return true;
     }
 
-    static void removeTakenNames(const Node& node,
-                                 std::list<Serialization::GroupKnobChildSerialization>* children)
+    // name with the first number from 2 that neither a knob of node nor a carried knob has.
+    static std::string freeKnobName(const Node& node,
+                                    const std::set<std::string>& carried,
+                                    const std::string& name)
     {
-        for (std::list<Serialization::GroupKnobChildSerialization>::iterator it = children->begin(); it != children->end();) {
+        KnobHolder* holder = node.getEffectInstance().get();
+        for (int no = 2;; ++no) {
+            const std::string candidate = name + std::to_string(no);
+            if (!carried.count(candidate) && (uniqueKnobName(holder, candidate) == candidate)) {
+                return candidate;
+            }
+        }
+    }
+
+    void renameTakenNames(const Node& node,
+                          std::set<std::string>* carried,
+                          std::list<Serialization::GroupKnobChildSerialization>* children)
+    {
+        for (std::list<Serialization::GroupKnobChildSerialization>::iterator it = children->begin(); it != children->end(); ++it) {
             const std::string name = it->isGroup ? it->group.name : NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(it->knob.name);
             const KnobIPtr existing = node.getKnobByName(name);
             if (existing && !existing->isUserKnob()) {
-                it = children->erase(it);
-                continue;
+                const std::string renamed = freeKnobName(node, *carried, name);
+                carried->insert(renamed);
+                renamedKnobs.push_back(std::make_pair(name, renamed));
+                if (it->isGroup) {
+                    it->group.name = renamed;
+                } else {
+                    it->knob.name = renamed;
+                }
             }
             if (it->isGroup) {
-                removeTakenNames(node, &it->group.children);
+                renameTakenNames(node, carried, &it->group.children);
             }
-            ++it;
         }
     }
 
@@ -508,20 +621,43 @@ struct NodeConvertCommand::Implementation {
 
     // An expression that found the original's name while the replacement was still being filled
     // validates against the original's knobs and keeps listening to them. Setting it again reads
-    // the replacement's.
-    static void rebindExpressions(const std::vector<ExpressionReader>& readers)
+    // the replacement's, with the renamed user knobs under their new names.
+    void rebindExpressions(const std::vector<ExpressionReader>& readers,
+                           const NodePtr& replacement)
     {
+        KnobHolder* holder = replacement->getEffectInstance().get();
         for (std::size_t i = 0; i < readers.size(); ++i) {
             const KnobIPtr knob = readers[i].knob.lock();
             if (!knob) {
                 continue;
             }
-            const std::string expression = knob->getExpression(readers[i].dimension);
+            const int dimension = readers[i].dimension;
+            const std::string expression = knob->getExpression(dimension);
             if (expression.empty()) {
                 continue;
             }
+            const bool hasRet = knob->isExpressionUsingRetVariable(dimension);
+            const std::string renamed = renamedKnobs.empty() ? expression : withRenamedKnobs(holder, knob, expression);
+            if (renamed != expression) {
+                rewrittenReaders.push_back(RewrittenExpression { knob, dimension, hasRet, expression, renamed });
+            }
             try {
-                knob->setExpression(readers[i].dimension, expression, knob->isExpressionUsingRetVariable(readers[i].dimension), false);
+                knob->setExpression(dimension, renamed, hasRet, false);
+            } catch (...) {
+            }
+        }
+    }
+
+    void setRewrittenReaders(bool renamed) const
+    {
+        for (std::size_t i = 0; i < rewrittenReaders.size(); ++i) {
+            const RewrittenExpression& reader = rewrittenReaders[i];
+            const KnobIPtr knob = reader.knob.lock();
+            if (!knob) {
+                continue;
+            }
+            try {
+                knob->setExpression(reader.dimension, renamed ? reader.renamed : reader.original, reader.hasRet, false);
             } catch (...) {
             }
         }
@@ -565,6 +701,7 @@ struct NodeConvertCommand::Implementation {
         converted = replacement;
 
         copyKnobs(node, replacement);
+        reportRenamedKnobs(replacement);
 
         for (std::size_t i = 0; i < inputs.size(); ++i) {
             const int inputNb = inputWithLabel(replacement, inputs[i].first);
@@ -579,7 +716,7 @@ struct NodeConvertCommand::Implementation {
             }
         }
         recheckExpressionsNaming(replacement);
-        rebindExpressions(expressionReaders);
+        rebindExpressions(expressionReaders, replacement);
     }
 };
 
@@ -657,6 +794,7 @@ NodeConvertCommand::redo()
     _imp->attachConvertedAliases();
     deactivateNode(original);
     activateNode(converted);
+    _imp->setRewrittenReaders(true);
     _imp->done = true;
 }
 
@@ -674,6 +812,7 @@ NodeConvertCommand::undo()
     _imp->attachOriginalAliases();
     deactivateNode(converted);
     activateNode(original);
+    _imp->setRewrittenReaders(false);
     _imp->done = false;
 }
 

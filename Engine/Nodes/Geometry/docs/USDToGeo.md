@@ -15,7 +15,7 @@ USDToGeo turns prims of its scene input into geometry. Each prim becomes either 
 
 Only the outermost prim of the chosen sort is taken below a matched prim, never one inside it, and a prim matched twice is read once.
 
-**Purpose** lists the purposes read, separated by spaces: any of `default`, `render`, `proxy` and `guide`. The default reads everything but guides. A prim whose purpose is not listed is not read, and neither is anything below it. An unknown purpose is an error.
+**Purpose** lists the purposes read, separated by spaces: any of `default`, `render`, `proxy` and `guide`. The default reads everything but guides. A prim whose purpose is `render`, `proxy` or `guide` and not listed is not read, and neither is anything below it. A `default`-purpose prim is not read unless `default` is listed, but the prims below it are still searched, so `render` alone still finds render prims under a default-purpose Xform. An unknown purpose, or an empty list, is an error.
 
 **Exclude Inactive Primitives** leaves inactive prims out. Off, they are read too, and the `usdactive` primitive attribute is 1 on the geometry of active prims and 0 on that of inactive ones. The attribute only exists when an inactive prim was read.
 

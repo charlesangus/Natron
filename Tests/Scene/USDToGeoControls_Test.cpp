@@ -40,6 +40,7 @@
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
+#include "CacheMemoryPressureGuard.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/EffectInstance.h"
@@ -50,8 +51,10 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Geometry/GeoUsdConvert.h"
 #include "Engine/Nodes/Geometry/USDToGeo.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/USDRead.h"
+#include "Engine/Nodes/Scene/USDXformPrim.h"
 #include "Engine/Project.h"
 #include "Engine/ViewIdx.h"
 
@@ -146,6 +149,37 @@ const char* const kInstancerScene = "#usda 1.0\n"
                                     "        }\n"
                                     "    }\n"
                                     "}\n";
+
+// One instance of a prototype outside the instancer, the prototype moving from X 0 at frame 1 to
+// X 19 at frame 20.
+const char* const kOutsidePrototypeScene = "#usda 1.0\n"
+                                           "(\n"
+                                           "    metersPerUnit = 0.01\n"
+                                           "    upAxis = \"Y\"\n"
+                                           "    timeCodesPerSecond = 24\n"
+                                           "    startTimeCode = 1\n"
+                                           "    endTimeCode = 20\n"
+                                           ")\n"
+                                           "\n"
+                                           "def Scope \"Protos\"\n"
+                                           "{\n"
+                                           "    def Sphere \"Ball\"\n"
+                                           "    {\n"
+                                           "        double radius = 1\n"
+                                           "        double3 xformOp:translate.timeSamples = {\n"
+                                           "            1: (0, 0, 0),\n"
+                                           "            20: (19, 0, 0),\n"
+                                           "        }\n"
+                                           "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+                                           "    }\n"
+                                           "}\n"
+                                           "\n"
+                                           "def PointInstancer \"Inst\"\n"
+                                           "{\n"
+                                           "    rel prototypes = [</Protos/Ball>]\n"
+                                           "    int[] protoIndices = [0]\n"
+                                           "    point3f[] positions = [(0, 0, 0)]\n"
+                                           "}\n";
 
 // /Anim moves from X 0 at frame 1 to X 19 at frame 20, one unit a frame; /Still is the unit
 // quad translated by 10 in X.
@@ -339,6 +373,29 @@ protected:
         return toGeo;
     }
 
+    // USDXformPrim(/Anim, translate keyed from X 0 at frame 1 to X 19 at frame 20) -> USDToGeo(/Anim).
+    NodePtr animatedXformChain()
+    {
+        NodePtr xform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDXFORMPRIM));
+        NodePtr toGeo = createNode(QString::fromUtf8(PLUGINID_NATRON_USDTOGEO));
+
+        EXPECT_TRUE(xform && toGeo);
+        if (!xform || !toGeo) {
+            return NodePtr();
+        }
+        _nodes.push_back(toGeo);
+        _nodes.push_back(xform);
+        setString(xform, kSceneParamPrimPath, "/Anim");
+        if (KnobDouble* translate = knob<KnobDouble>(xform, kSceneParamTranslate)) {
+            translate->setValueAtTime(1., 0., ViewSpec::all(), 0);
+            translate->setValueAtTime(20., 19., ViewSpec::all(), 0);
+        }
+        setString(toGeo, kUSDToGeoParamPrimPattern, "/Anim");
+        connectNodes(xform, toGeo, 0, true);
+
+        return toGeo;
+    }
+
     template <typename K>
     static K* knob(const NodePtr& node,
                    const char* name)
@@ -451,6 +508,19 @@ TEST_F(USDToGeoControlsTest, AnUnknownPurposeIsAnError)
     EXPECT_NE(EffectInstance::eRenderRoIRetCodeOk, toGeo->getEffectInstance()->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(1., ViewIdx(0)), &detail, &error));
 }
 
+TEST_F(USDToGeoControlsTest, AnEmptyPurposeListIsAnError)
+{
+    const NodePtr toGeo = chain(kHierarchyScene, "/World/*");
+    ASSERT_TRUE(toGeo != nullptr);
+    for (const char* blank : { "", " , " }) {
+        SCOPED_TRACE(blank);
+        setString(toGeo, kUSDToGeoParamPurpose, blank);
+        GeoDetailConstPtr detail;
+        std::string error;
+        EXPECT_NE(EffectInstance::eRenderRoIRetCodeOk, toGeo->getEffectInstance()->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(1., ViewIdx(0)), &detail, &error));
+    }
+}
+
 TEST_F(USDToGeoControlsTest, NameAttributeHoldsEachPrimsName)
 {
     const NodePtr toGeo = chain(kHierarchyScene, "/World/Chair/*");
@@ -533,6 +603,26 @@ TEST_F(USDToGeoControlsTest, ImportPointInstancesGivesOnePackedPrimitivePerInsta
     EXPECT_EQ(stringAt(*detail, eGeoAttribClassPrimitive, "usdvisibility", 1), "invisible");
 }
 
+TEST_F(USDToGeoControlsTest, AnAnimatedPrototypeOutsideTheInstancerMakesTheInstancesVary)
+{
+    // A stale frame-1 entry must still be there to be served at frame 20.
+    DisableUnreachableRAMPurging noPurging;
+    const NodePtr toGeo = chain(kOutsidePrototypeScene, "/Inst");
+    ASSERT_TRUE(toGeo != nullptr);
+    setBool(toGeo, kUSDToGeoParamImportPointInstances, true);
+    setChoice(toGeo, kUSDToGeoParamPivotLocation, (int)eUSDToGeoPivotLocationOrigin);
+    const GeoDetailConstPtr first = evaluate(toGeo, 1.);
+    ASSERT_TRUE(first != nullptr);
+    ASSERT_EQ(first->primitiveCount(), GeoIndex(1));
+    expectNear({ 0., 0., 0. }, pivotOf(*first, 0));
+    EXPECT_TRUE(toGeo->getEffectInstance()->isFrameVaryingOrAnimated_Recursive());
+
+    const GeoDetailConstPtr last = evaluate(toGeo, 20.);
+    ASSERT_TRUE(last != nullptr);
+    ASSERT_EQ(last->primitiveCount(), GeoIndex(1));
+    expectNear({ 19., 0., 0. }, pivotOf(*last, 0));
+}
+
 TEST_F(USDToGeoControlsTest, AStaticSampleReadsTheImportFrameAtEveryFrame)
 {
     const NodePtr toGeo = chain(kTimeScene, "/Anim");
@@ -565,6 +655,34 @@ TEST_F(USDToGeoControlsTest, AStaticSampleReadsTheImportFrameAtEveryFrame)
         expectNear(unpackedFirst->pointPosition(unpackedFirst->pointMap().offsetFromIndex(i)), unpackedLast->pointPosition(unpackedLast->pointMap().offsetFromIndex(i)));
     }
     expectNear({ 9., 0., 0. }, unpackedFirst->pointPosition(unpackedFirst->pointMap().offsetFromIndex(0)));
+}
+
+TEST_F(USDToGeoControlsTest, AStaticSampleIsTimeInvariantBelowAnAnimatedInput)
+{
+    // The cache-hit check needs the frame-1 entry to still be there.
+    DisableUnreachableRAMPurging noPurging;
+    const NodePtr animated = animatedXformChain();
+    ASSERT_TRUE(animated != nullptr);
+    setChoice(animated, kUSDToGeoParamPivotLocation, (int)eUSDToGeoPivotLocationOrigin);
+    const GeoDetailConstPtr atFrame20 = evaluate(animated, 20.);
+    ASSERT_TRUE(atFrame20 != nullptr);
+    ASSERT_EQ(atFrame20->primitiveCount(), GeoIndex(1));
+    expectNear({ 19., 0., 0. }, pivotOf(*atFrame20, 0));
+    EXPECT_TRUE(animated->getEffectInstance()->isFrameVaryingOrAnimated_Recursive());
+
+    setChoice(animated, kUSDToGeoParamTimeSample, (int)eUSDToGeoTimeSampleStatic);
+    setDouble(animated, kUSDToGeoParamImportFrame, 10.);
+    EXPECT_FALSE(animated->getEffectInstance()->isFrameVaryingOrAnimated_Recursive());
+    const GeoDetailConstPtr first = evaluate(animated, 1.);
+    const GeoDetailConstPtr last = evaluate(animated, 20.);
+    ASSERT_TRUE(first && last);
+    ASSERT_EQ(first->primitiveCount(), GeoIndex(1));
+    const NodePtr xform = animated->getInput(0);
+    ASSERT_TRUE(xform != nullptr);
+    KnobDouble* translate = knob<KnobDouble>(xform, kSceneParamTranslate);
+    ASSERT_TRUE(translate != NULL);
+    expectNear({ translate->getValueAtTime(10., 0), 0., 0. }, pivotOf(*first, 0));
+    EXPECT_EQ(first.get(), last.get());
 }
 
 TEST_F(USDToGeoControlsTest, PivotLocationPutsThePointAtTheCentroidOrTheOrigin)

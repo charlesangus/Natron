@@ -143,6 +143,30 @@ packedMightVary(const PXR_NS::UsdPrim& prim)
     return false;
 }
 
+// Whether an instancer read one packed primitive per instance may change over time: each
+// instance takes its bounds from its prototype, which may lie anywhere on the stage.
+bool
+pointInstancesMightVary(const PXR_NS::UsdGeomPointInstancer& instancer)
+{
+    const PXR_NS::UsdPrim prim = instancer.GetPrim();
+    if (packedMightVary(prim)) {
+        return true;
+    }
+    PXR_NS::SdfPathVector prototypes;
+    instancer.GetPrototypesRel().GetForwardedTargets(&prototypes);
+    for (const PXR_NS::SdfPath& path : prototypes) {
+        if (path.HasPrefix(prim.GetPath())) {
+            continue;
+        }
+        const PXR_NS::UsdPrim prototype = prim.GetStage()->GetPrimAtPath(path);
+        if (prototype && packedMightVary(prototype)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 // Whether what geoUsdReadPrim() reads from the prim may change over time: its attributes and its
 // GeomSubsets', its world transform when that is baked in or recorded, and the primvars it
 // inherits when those are read.
@@ -215,7 +239,16 @@ parsePurposes(const std::string& text,
         }
     }
 
-    return flush();
+    if (!flush()) {
+        return false;
+    }
+    if (purposes->empty()) {
+        *errorMessage = QObject::tr("Purpose: no purpose is listed; list at least one of default, render, proxy or guide.").toStdString();
+
+        return false;
+    }
+
+    return true;
 }
 
 bool
@@ -243,11 +276,24 @@ struct TraversalWalk {
     std::vector<PXR_NS::UsdPrim>* out = nullptr;
     std::unordered_set<PXR_NS::SdfPath, PXR_NS::SdfPath::Hash> seen;
 
-    PXR_NS::TfToken purposeOf(const PXR_NS::UsdPrim& prim) const
+    // A prim that is not imageable has no purpose of its own and hands its parent's down.
+    static PXR_NS::UsdGeomImageable::PurposeInfo purposeInfoOf(const PXR_NS::UsdPrim& prim,
+                                                               const PXR_NS::UsdGeomImageable::PurposeInfo& parent)
     {
         const PXR_NS::UsdGeomImageable imageable(prim);
 
-        return imageable ? imageable.ComputePurpose() : PXR_NS::UsdGeomTokens->default_;
+        return imageable ? imageable.ComputePurposeInfo(parent) : parent;
+    }
+
+    static PXR_NS::UsdGeomImageable::PurposeInfo inheritedPurposeInfo(const PXR_NS::UsdPrim& prim)
+    {
+        for (PXR_NS::UsdPrim ancestor = prim.GetParent(); ancestor && !ancestor.IsPseudoRoot(); ancestor = ancestor.GetParent()) {
+            if (const PXR_NS::UsdGeomImageable imageable = PXR_NS::UsdGeomImageable(ancestor)) {
+                return imageable.ComputePurposeInfo();
+            }
+        }
+
+        return PXR_NS::UsdGeomImageable::PurposeInfo();
     }
 
     bool allowed(const PXR_NS::TfToken& purpose) const
@@ -277,13 +323,20 @@ struct TraversalWalk {
     // through its ancestor.
     void visit(const PXR_NS::UsdPrim& prim)
     {
+        visit(prim, inheritedPurposeInfo(prim));
+    }
+
+    void visit(const PXR_NS::UsdPrim& prim,
+               const PXR_NS::UsdGeomImageable::PurposeInfo& parentPurpose)
+    {
         if (!includeInactive && !prim.IsActive()) {
             return;
         }
         // A purpose other than default is inherited by the whole subtree, so a prim with one
         // that is not read hides everything below it; a default-purpose group may still hold
         // render or proxy prims, and is walked into whatever is read.
-        const PXR_NS::TfToken purpose = purposeOf(prim);
+        const PXR_NS::UsdGeomImageable::PurposeInfo purposeInfo = purposeInfoOf(prim, parentPurpose);
+        const PXR_NS::TfToken purpose = PXR_NS::UsdGeomImageable(prim) && purposeInfo ? purposeInfo.purpose : PXR_NS::UsdGeomTokens->default_;
         const bool purposeRead = allowed(purpose);
         if (!purposeRead && purpose != PXR_NS::UsdGeomTokens->default_) {
             return;
@@ -296,7 +349,7 @@ struct TraversalWalk {
             return;
         }
         for (const PXR_NS::UsdPrim& child : prim.GetFilteredChildren(readPredicate(includeInactive))) {
-            visit(child);
+            visit(child, purposeInfo);
         }
     }
 };
@@ -337,7 +390,7 @@ writePackedRecords(GeoDetailBuilder& builder,
     }
     if (std::any_of(records.begin(), records.end(), [](const PackedRecord& r) { return r.invisible; })) {
         GeoAttributeDesc desc;
-        desc.name = "usdvisibility";
+        desc.name = kGeoUsdVisibilityAttr;
         desc.storage = eGeoStorageString;
         GeoAttribute& attribute = builder.addAttribute(eGeoAttribClassPrimitive, desc);
         for (const PackedRecord& record : records) {
@@ -534,8 +587,10 @@ USDToGeo::initializeKnobs()
 
     KnobStringPtr purpose = createKnob<KnobString>(tr("Purpose"));
     purpose->setName(kUSDToGeoParamPurpose);
-    purpose->setHintToolTip(tr("The purposes read, separated by spaces: any of default, render, proxy and guide. A prim "
-                               "whose computed purpose is not listed is not read, nor is anything below it.")
+    purpose->setHintToolTip(tr("The purposes read, separated by spaces: at least one of default, render, proxy and guide. "
+                               "A prim whose computed purpose is render, proxy or guide and not listed is not read, nor is "
+                               "anything below it. A default-purpose prim is not read unless default is listed, but the "
+                               "prims below it are still searched.")
                                 .toStdString());
     purpose->setDefaultValue("default render proxy");
     purpose->setAnimationEnabled(false);
@@ -743,6 +798,12 @@ bool
 USDToGeo::isStatic() const
 {
     return choiceOf(_timeSample) == (int)eUSDToGeoTimeSampleStatic;
+}
+
+bool
+USDToGeo::isOutputTimeInvariantWhateverInputs() const
+{
+    return isStatic();
 }
 
 void
@@ -962,11 +1023,12 @@ USDToGeo::renderGeometry(const GeoRenderActionArgs& args,
                     skipped.push_back(prim.GetPath().GetString());
                     continue;
                 }
-                varying = varying || packedMightVary(prim);
                 if (pointInstances && prim.IsA<PXR_NS::UsdGeomPointInstancer>()) {
+                    varying = varying || pointInstancesMightVary(PXR_NS::UsdGeomPointInstancer(prim));
                     appendPointInstances(context, PXR_NS::UsdGeomPointInstancer(prim), includeInactive, readOptions, &dropped, &warnings);
                     continue;
                 }
+                varying = varying || packedMightVary(prim);
                 bool resetsXformStack = false;
                 const PXR_NS::GfMatrix4d local = xforms.GetLocalTransformation(prim, &resetsXformStack);
                 const PXR_NS::GfMatrix4d parentWorld = resetsXformStack ? PXR_NS::GfMatrix4d(1.) : xforms.GetParentToWorldTransform(prim);

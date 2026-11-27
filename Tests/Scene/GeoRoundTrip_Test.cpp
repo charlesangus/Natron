@@ -25,6 +25,7 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usdGeom/primvarsAPI.h>
 #include <pxr/usd/usdShade/materialBindingAPI.h>
 
@@ -43,8 +44,8 @@
 #include "BaseTest.h"
 
 #include "Engine/AppInstance.h"
-#include "Engine/ChoiceOption.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/GeoDetail.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -125,6 +126,37 @@ const char* const kScene = "#usda 1.0\n"
                            "        }\n"
                            "    }\n"
                            "}\n";
+
+// A mesh, a points prim and an inactive mesh, the three read by their names alone.
+const char* const kNamedScene = "#usda 1.0\n"
+                                "(\n"
+                                "    metersPerUnit = 0.01\n"
+                                "    upAxis = \"Y\"\n"
+                                ")\n"
+                                "\n"
+                                "def Xform \"World\"\n"
+                                "{\n"
+                                "    def Mesh \"Body\"\n"
+                                "    {\n"
+                                "        int[] faceVertexCounts = [4]\n"
+                                "        int[] faceVertexIndices = [0, 1, 2, 3]\n"
+                                "        point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]\n"
+                                "    }\n"
+                                "\n"
+                                "    def Points \"Cloud\"\n"
+                                "    {\n"
+                                "        point3f[] points = [(0, 0, 0), (1, 0, 0), (2, 0, 0)]\n"
+                                "    }\n"
+                                "\n"
+                                "    def Mesh \"Off\" (\n"
+                                "        active = false\n"
+                                "    )\n"
+                                "    {\n"
+                                "        int[] faceVertexCounts = [4]\n"
+                                "        int[] faceVertexIndices = [0, 1, 2, 3]\n"
+                                "        point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]\n"
+                                "    }\n"
+                                "}\n";
 
 const char* const kBody = "/World/Group/Body";
 const char* const kSubset = "/World/Group/Body/second";
@@ -222,13 +254,13 @@ protected:
     }
 
     // USDRead -> USDToGeo(unpack) -> GeoToUSD, whose Scene input is the reader.
-    void build()
+    void build(const char* scene = kScene)
     {
         const std::string path = _dir.path().toStdString() + "/roundtrip.usda";
         {
             QFile f(QString::fromStdString(path));
             ASSERT_TRUE(f.open(QIODevice::WriteOnly | QIODevice::Truncate));
-            f.write(kScene);
+            f.write(scene);
         }
         _reader = make(PLUGINID_NATRON_USDREAD);
         _toGeo = make(PLUGINID_NATRON_USDTOGEO);
@@ -247,18 +279,6 @@ protected:
         KnobBool* unpack = dynamic_cast<KnobBool*>(_toGeo->getKnobByName(kUSDToGeoParamUnpack).get());
         ASSERT_TRUE(unpack != NULL);
         unpack->setValue(true);
-
-        // The geometry is the input's own prims, so the output must override them rather than
-        // define new ones. Overriding is what GeoToUSD does for geometry read from USD until its
-        // Other Primitives control exists; once it does, Overlay is the setting that asks for it.
-        if (KnobChoice* other = dynamic_cast<KnobChoice*>(_toUSD->getKnobByName("otherPrimitives").get())) {
-            const std::vector<ChoiceOption> entries = other->getEntries_mt_safe();
-            for (std::size_t i = 0; i < entries.size(); ++i) {
-                if (entries[i].label == "Overlay") {
-                    other->setValue((int)i);
-                }
-            }
-        }
 
         connectNodes(_reader, _toGeo, 0, true);
         connectNodes(_toGeo, _toUSD, kGeoToUSDInputGeometry, true);
@@ -293,6 +313,26 @@ protected:
         KnobBool* k = dynamic_cast<KnobBool*>(_toGeo->getKnobByName(name).get());
         ASSERT_TRUE(k != NULL) << name;
         k->setValue(value);
+    }
+
+    void setString(const char* name,
+                   const std::string& value)
+    {
+        KnobString* k = dynamic_cast<KnobString*>(_toGeo->getKnobByName(name).get());
+        ASSERT_TRUE(k != NULL) << name;
+        k->setValue(value);
+    }
+
+    GeoDetailConstPtr geometry() const
+    {
+        GeoDetailConstPtr detail;
+        std::string error;
+
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+                  _toGeo->getEffectInstance()->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(1., ViewIdx(0)), &detail, &error))
+            << error;
+
+        return detail;
     }
 
     // Checks that the output scene is the input scene in everything the round trip carries.
@@ -349,4 +389,35 @@ TEST_F(GeoRoundTripTest, AFlattenedRoundTripWithTheInverseAppliedKeepsTheSame)
     setBool(kUSDToGeoParamFlattenTransforms, true);
     setBool(kUSDToGeoParamApplyInverseUsdTransform, true);
     expectRoundTripIsTheIdentity();
+}
+
+TEST_F(GeoRoundTripTest, PrimsReadByNameAloneArePlacedByThatNameAndCarryNoReaderRecords)
+{
+    build(kNamedScene);
+    setString(kUSDToGeoParamPathAttribute, std::string());
+    setString(kUSDToGeoParamNameAttribute, "name");
+    setBool(kUSDToGeoParamExcludeInactivePrimitives, false);
+
+    const GeoDetailConstPtr detail = geometry();
+    ASSERT_TRUE(detail != nullptr);
+    EXPECT_TRUE(detail->findAttribute(eGeoAttribClassPrimitive, "path") == nullptr);
+    EXPECT_TRUE(detail->findAttribute(eGeoAttribClassPrimitive, "name") != nullptr);
+    EXPECT_TRUE(detail->findAttribute(eGeoAttribClassPoint, "name") != nullptr);
+    EXPECT_TRUE(detail->findAttribute(eGeoAttribClassPrimitive, kGeoUsdActiveAttr) != nullptr);
+
+    const ScenePayload result = evaluate(_toUSD);
+    SceneQueryPool::Lease resultLease;
+    const PXR_NS::UsdStageRefPtr after = stageOf(result, &resultLease);
+    ASSERT_TRUE(after);
+
+    KnobString* rootPath = dynamic_cast<KnobString*>(_toUSD->getKnobByName(kGeoToUSDParamRootPath).get());
+    ASSERT_TRUE(rootPath != NULL);
+    const PXR_NS::UsdPrim body = after->GetPrimAtPath(PXR_NS::SdfPath(rootPath->getValue() + "/Body"));
+    EXPECT_TRUE(body && body.IsA<PXR_NS::UsdGeomMesh>());
+    for (const PXR_NS::UsdPrim& prim : after->Traverse(PXR_NS::UsdPrimAllPrimsPredicate)) {
+        const PXR_NS::UsdGeomPrimvarsAPI primvars(prim);
+        for (const char* recorded : { "name", kGeoUsdActiveAttr }) {
+            EXPECT_FALSE(primvars.HasPrimvar(PXR_NS::TfToken(recorded))) << prim.GetPath() << " " << recorded;
+        }
+    }
 }

@@ -1628,6 +1628,16 @@ public:
      **/
     bool isFrameVaryingOrAnimated_Recursive(std::map<const EffectInstance*, bool>* memo) const;
 
+    /**
+     * @brief Whether the output stays the same at every frame however the inputs vary, because
+     * the effect reads its inputs at a fixed frame. isFrameVaryingOrAnimated_Recursive() then
+     * looks at this node's own animation and metadata only, not at its inputs.
+     **/
+    virtual bool isOutputTimeInvariantWhateverInputs() const
+    {
+        return false;
+    }
+
     ///////////////////////End Metadatas related////////////////////////
 
 

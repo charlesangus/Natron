@@ -1213,11 +1213,12 @@ GeoUsdConvert::planProperties(Partition& p)
             if (cls == eGeoAttribClassPrimitive && (name == "path" || name == "name" || isPackedIntrinsic(name))) {
                 continue;
             }
-            if ((cls == eGeoAttribClassPoint && name == "path") || (cls == eGeoAttribClassDetail && name == kGeoUsdWorldSpaceAttr) || ((cls == eGeoAttribClassPoint || cls == eGeoAttribClassPrimitive) && name == kGeoUsdSourceAttr)) {
+            if ((cls == eGeoAttribClassPoint && (name == "path" || name == "name")) || (cls == eGeoAttribClassDetail && name == kGeoUsdWorldSpaceAttr) || ((cls == eGeoAttribClassPoint || cls == eGeoAttribClassPrimitive) && name == kGeoUsdSourceAttr)) {
                 continue;
             }
-            // Records of where geometry was read from, which a primvar would only shadow.
-            if ((cls == eGeoAttribClassPoint || cls == eGeoAttribClassPrimitive) && (name == kGeoUsdXformAttr || name == kGeoUsdMaterialPathAttr)) {
+            // Records of where geometry was read from and of the prim's state, which a primvar
+            // would only shadow.
+            if ((cls == eGeoAttribClassPoint || cls == eGeoAttribClassPrimitive) && (name == kGeoUsdXformAttr || name == kGeoUsdMaterialPathAttr || name == kGeoUsdActiveAttr || name == kGeoUsdVisibilityAttr)) {
                 continue;
             }
             if (a.isArray()) {

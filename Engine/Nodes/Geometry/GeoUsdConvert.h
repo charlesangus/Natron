@@ -71,9 +71,16 @@ inline constexpr const char* kGeoUsdMaterialPathAttr = "usdmaterialpath";
 
 /**
  * @brief A primitive int attribute, a point one for points prims, 0 on geometry read from an
- * inactive prim and 1 on the rest, present once an inactive prim has been read.
+ * inactive prim and 1 on the rest, present once an inactive prim has been read. Not exported
+ * as a primvar.
  **/
 inline constexpr const char* kGeoUsdActiveAttr = "usdactive";
+
+/**
+ * @brief A primitive string attribute, "invisible" on a point instance its instancer hides by
+ * id and "inherited" on the rest, present once a hidden instance has been read.
+ **/
+inline constexpr const char* kGeoUsdVisibilityAttr = "usdvisibility";
 
 /** @brief How packed geometry primitives become USD prims. */
 enum GeoUsdPackedModeEnum {

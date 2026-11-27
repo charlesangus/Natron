@@ -7802,7 +7802,7 @@ isFrameVaryingOrAnimated_impl(const EffectInstance* node,
     // Inserted as false before recursing so a node reached again while its inputs are still being walked does not loop.
     std::map<const EffectInstance*, bool>::iterator slot = memo.insert(std::make_pair(node, false)).first;
     bool ret = const_cast<EffectInstance*>(node)->getTimeInvariantMetadata()->getIsFrameVarying() || node->getHasAnimation() || node->getNode()->getCurveContext();
-    if (!ret) {
+    if (!ret && !node->isOutputTimeInvariantWhateverInputs()) {
         int maxInputs = node->getNInputs();
         for (int i = 0; i < maxInputs; ++i) {
             EffectInstancePtr input = node->getInput(i);

@@ -97,7 +97,7 @@ Known suspects, unmeasured as to their split (M399's samples are gone):
 
 ## Phase 431.3: Remove the incremental build
 
-- [ ] M431.P3.T1 — Delete the deferred panel build
+- [x] M431.P3.T1 — Delete the deferred panel build
   - files: `Gui/KnobGuiContainerHelper.cpp`/`.h` (`PendingKnobBuild`, `PendingKnobPage`, `PendingKnobFrame`, `initializeKnobsIncrementally`, `createPendingPages`, `buildNextPendingKnob`, `buildPendingPage`, `runKnobBuildStep`, `ensureKnobGuisCreated`, `finishKnobBuild`, `dropPendingKnob`, `isKnobBuildPending`, `cancelKnobBuild`, `deferChildrenOf`), `Gui/DockablePanel.cpp`/`.h` (`onKnobBuildStarted`), `Gui/NodeGui.cpp`/`.h` (`startPanelBuild(incremental)`, `dockPendingPanel`, `dropUnbuiltPanel`, `_panelDockPending`, `_panelTail*`), callers on the creation and undo paths
   - approach: Only once P2's tasks meet the target (P1.T2's real-display numbers, a typical panel under 16 ms): interactive creation builds the panel synchronously after the node's first paint, in the same deferred slot it uses now for docking, so the node still paints first. Remove every incremental-only branch and member; undo and close destroy a complete panel. Keep the panel-tail work (Roto/Tracker panels, `onKnobsInitialized`) inside the one build so it is shown with the rest.
   - verify: build and full ctest pass; `git grep` finds none of the removed names; M399 - Node Creation Keys And Speed's GUI scripts and benches still pass, with `create_by_shortcut` node-paint latency not worse.

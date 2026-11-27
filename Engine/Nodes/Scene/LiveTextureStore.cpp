@@ -36,6 +36,7 @@
 #include <future>
 #include <iterator>
 #include <limits>
+#include <list>
 #include <new>
 #include <stdexcept>
 #include <thread>
@@ -73,6 +74,7 @@ copyRow(const Image::ReadAccess& access,
         int y,
         int numComps,
         float scale,
+        bool premultiplied,
         float* row)
 {
     for (int x = rect.x1; x < rect.x2; ++x, row += 4) {
@@ -83,8 +85,10 @@ copyRow(const Image::ReadAccess& access,
         }
         switch (numComps) {
         case 1:
-            // An alpha-only image: its one channel is the first, which scalar inputs read.
-            row[0] = row[1] = row[2] = row[3] = pix[0] * scale;
+            // An alpha-only image: its one channel is the first, which scalar inputs read. A
+            // premultiplied delivery is composited by its alpha, and a plane without one covers fully.
+            row[0] = row[1] = row[2] = pix[0] * scale;
+            row[3] = premultiplied ? 1.f : row[0];
             break;
         case 2:
             row[0] = pix[0] * scale;
@@ -103,7 +107,7 @@ copyRow(const Image::ReadAccess& access,
             // colour by the alpha the material's opacity reads, so it is divided out here.
             const float alpha = pix[3] * scale;
             // The reciprocal of a subnormal alpha is infinite, and would turn a zero colour to NaN.
-            const float unpremult = (alpha >= std::numeric_limits<float>::min()) ? (1.f / alpha) : 1.f;
+            const float unpremult = (!premultiplied && (alpha >= std::numeric_limits<float>::min())) ? (1.f / alpha) : 1.f;
             row[0] = pix[0] * scale * unpremult;
             row[1] = pix[1] * scale * unpremult;
             row[2] = pix[2] * scale * unpremult;
@@ -325,7 +329,24 @@ renderSource(const LiveTextureSource& source,
     *format = window.format;
     RectI rect;
     ImagePtr image;
-    const bool rendered = renderNodeImageOverWindow(node, frame, view, ImageLayerDesc::getRGBAComponents(), window.window, &image, &rect, context, abortInfo);
+    ImageLayerDesc plane = ImageLayerDesc::getRGBAComponents();
+    if (!source.layer.empty() && (source.layer != plane.getLayerID())) {
+        std::list<ImageLayerDesc> available;
+        {
+            ActionContextScope underTile((bool)context, context);
+            node->getEffectInstance()->getAvailableLayers(frame, view, -1, &available);
+        }
+        const std::list<ImageLayerDesc>::const_iterator found = std::find_if(available.begin(), available.end(), [&source](const ImageLayerDesc& candidate) {
+            return candidate.getLayerID() == source.layer;
+        });
+        if (found == available.end()) {
+            *failure = what + " has no plane " + source.layer;
+
+            return LiveTextureBufferConstPtr();
+        }
+        plane = *found;
+    }
+    const bool rendered = renderNodeImageOverWindow(node, frame, view, plane, window.window, &image, &rect, context, abortInfo);
     if (!rendered || (image && rect.isNull())) {
         *failure = what + " could not be rendered";
 
@@ -346,13 +367,13 @@ renderSource(const LiveTextureSource& source,
         float* row = buffer->getRow(y - window.window.y1) + std::size_t(rect.x1 - window.window.x1) * 4;
         switch (image->getBitDepth()) {
         case eImageBitDepthByte:
-            copyRow<unsigned char>(access, rect, y, numComps, 1.f / 255.f, row);
+            copyRow<unsigned char>(access, rect, y, numComps, 1.f / 255.f, source.premultiplied, row);
             break;
         case eImageBitDepthShort:
-            copyRow<unsigned short>(access, rect, y, numComps, 1.f / 65535.f, row);
+            copyRow<unsigned short>(access, rect, y, numComps, 1.f / 65535.f, source.premultiplied, row);
             break;
         case eImageBitDepthFloat:
-            copyRow<float>(access, rect, y, numComps, 1.f, row);
+            copyRow<float>(access, rect, y, numComps, 1.f, source.premultiplied, row);
             break;
         default:
             *failure = "the image of " + what + " has a bit depth live textures do not read";
@@ -361,7 +382,7 @@ renderSource(const LiveTextureSource& source,
         }
     }
     // Only RGBA colour is unpremultiplied, and an alpha-only image's colour is its alpha.
-    if (numComps >= 4) {
+    if ((numComps >= 4) && !source.premultiplied) {
         fillTransparentColour(*buffer);
     }
 
@@ -444,6 +465,7 @@ makeTileKey(const PrepareJob& job,
     ContentHasher h;
     h.appendString(source.nodeName);
     h.appendString(source.layer);
+    h.appendBool(source.premultiplied);
     h.appendI64(job.tile);
     // A frame-varying image changes with the frame where its version does not.
     h.appendDouble(source.varying ? sourceFrame : 0.);
@@ -580,14 +602,14 @@ LiveTextureSource::getVersion(double frame) const
 std::string
 LiveTextureSource::getUri(double frame) const
 {
-    return makeUri(nodeName, tiles.empty() ? layer : layer + "." kLiveTextureUdimToken, getVersion(frame));
+    return makeUri(nodeName, tiles.empty() ? layer : layer + "." kLiveTextureUdimToken, getVersion(frame), premultiplied);
 }
 
 std::string
 LiveTextureSource::getTileUri(double frame,
                               int tile) const
 {
-    return makeUri(nodeName, layer + "." + std::to_string(tile), getVersion(frame));
+    return makeUri(nodeName, layer + "." + std::to_string(tile), getVersion(frame), premultiplied);
 }
 
 const std::vector<int>&
@@ -660,12 +682,14 @@ LiveTextureWindow::getUvTransform(double scale[2],
 std::string
 LiveTextureSource::makeUri(const std::string& nodeName,
                            const std::string& layer,
-                           U64 version)
+                           U64 version,
+                           bool premultiplied)
 {
     char hex[17];
     std::snprintf(hex, sizeof(hex), "%016llx", (unsigned long long)version);
 
-    return std::string(kLiveTextureScheme "://") + nodeName + "/" + layer + "?v=" + hex;
+    // The same image served both ways is two textures, which the store and Storm key by URI.
+    return std::string(kLiveTextureScheme "://") + nodeName + "/" + layer + "?v=" + hex + (premultiplied ? "&premultiplied=1" : "");
 }
 
 LiveTextureStore::LiveTextureStore()

@@ -76,11 +76,15 @@
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobLayerSelect.h"
+#include "Engine/KnobShuffleMap.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/LayerRegistry.h"
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/NodeColorSampler.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Channel/Shuffle.h"
 #include "Engine/Nodes/Color/Invert.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Image/ExtentKnobs.h"
@@ -538,6 +542,176 @@ TEST_F(LiveTextureTest, ASubnormalAlphaLeavesTheColourFinite)
         EXPECT_TRUE(std::isfinite(center[channel])) << channel;
         EXPECT_LE(center[channel], 1.f) << channel;
     }
+}
+
+// A premultiplied delivery serves the colour as rendered, under its own URI, beside the default one.
+TEST_F(LiveTextureTest, APremultipliedDeliveryKeepsTheRenderedColour)
+{
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    ASSERT_TRUE(bool(constant));
+    KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName(kConstantParamColor).get());
+    ASSERT_TRUE(color != NULL);
+    color->setValue(0.4, ViewSpec::all(), 0);
+    color->setValue(0.2, ViewSpec::all(), 1);
+    color->setValue(0.1, ViewSpec::all(), 2);
+    color->setValue(0.5, ViewSpec::all(), 3);
+
+    LiveTextureSource straight;
+    straight.node = constant;
+    straight.nodeName = constant->getFullyQualifiedName();
+    straight.layer = "rgba";
+    straight.contentHash = constant->getEffectInstance()->getHash();
+    straight.firstFrame = 1.;
+    straight.lastFrame = 1.;
+    LiveTextureSource premultiplied = straight;
+    premultiplied.premultiplied = true;
+    ASSERT_NE(straight.getUri(1.), premultiplied.getUri(1.));
+
+    LiveTextureSourceList sources;
+    sources.push_back(straight);
+    sources.push_back(premultiplied);
+    ASSERT_EQ(0, prepareOffMainThread(sources, 1.)) << LiveTextureStore::instance().getFailure(premultiplied.getUri(1.));
+    const LiveTextureBufferConstPtr buffer = LiveTextureStore::instance().find(premultiplied.getUri(1.));
+    ASSERT_TRUE(bool(buffer));
+    const float* center = buffer->getRow(buffer->getHeight() / 2) + 4 * (buffer->getWidth() / 2);
+    EXPECT_NEAR(0.4, center[0], 1e-5);
+    EXPECT_NEAR(0.2, center[1], 1e-5);
+    EXPECT_NEAR(0.1, center[2], 1e-5);
+    EXPECT_NEAR(0.5, center[3], 1e-5);
+    const LiveTextureBufferConstPtr straightBuffer = LiveTextureStore::instance().find(straight.getUri(1.));
+    ASSERT_TRUE(bool(straightBuffer));
+    const float* straightCenter = straightBuffer->getRow(straightBuffer->getHeight() / 2) + 4 * (straightBuffer->getWidth() / 2);
+    EXPECT_NEAR(0.8, straightCenter[0], 1e-5);
+}
+
+// A source naming a plane other than rgba is served that plane, not the node's colour.
+TEST_F(LiveTextureTest, ANamedPlaneIsRenderedInsteadOfTheColour)
+{
+    std::string error;
+    const std::vector<std::string> channels = { "R", "G", "B", "A" };
+    ASSERT_EQ(LayerRegistry::eAddResultAdded, getApp()->getProject()->addLayer(ImageLayerDesc("paint", channels), LayerRegistryEntry::eOriginUser, &error)) << error;
+
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    ASSERT_TRUE(bool(constant));
+    KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName(kConstantParamColor).get());
+    ASSERT_TRUE(color != NULL);
+    color->setValue(0.4, ViewSpec::all(), 0);
+    color->setValue(0.2, ViewSpec::all(), 1);
+    color->setValue(0.1, ViewSpec::all(), 2);
+    color->setValue(1., ViewSpec::all(), 3);
+    NodePtr shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+    ASSERT_TRUE(bool(shuffle));
+    connectNodes(constant, shuffle, Shuffle::eInputMain, true);
+    KnobLayerSelectPtr out = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(kShuffleParamOut1));
+    ASSERT_TRUE(bool(out));
+    out->setLayer("paint");
+    KnobShuffleMapPtr mapping = std::dynamic_pointer_cast<KnobShuffleMap>(shuffle->getKnobByName(kShuffleParamMapping));
+    ASSERT_TRUE(bool(mapping));
+    mapping->setSource(1, 0, ShuffleSource::makeZero());
+    mapping->setSource(1, 1, ShuffleSource::makeOne());
+    mapping->setSource(1, 2, ShuffleSource::makeOne());
+    mapping->setSource(1, 3, ShuffleSource::makeOne());
+
+    LiveTextureSource source;
+    source.node = shuffle;
+    source.nodeName = shuffle->getFullyQualifiedName();
+    source.layer = "paint";
+    source.contentHash = shuffle->getEffectInstance()->getHash();
+    source.firstFrame = 1.;
+    source.lastFrame = 1.;
+    LiveTextureSource colour = source;
+    colour.layer = "rgba";
+    ASSERT_NE(source.getUri(1.), colour.getUri(1.));
+
+    LiveTextureSourceList sources;
+    sources.push_back(source);
+    sources.push_back(colour);
+    ASSERT_EQ(0, prepareOffMainThread(sources, 1.)) << LiveTextureStore::instance().getFailure(source.getUri(1.));
+    const LiveTextureBufferConstPtr buffer = LiveTextureStore::instance().find(source.getUri(1.));
+    ASSERT_TRUE(bool(buffer));
+    const float* center = buffer->getRow(buffer->getHeight() / 2) + 4 * (buffer->getWidth() / 2);
+    EXPECT_NEAR(0., center[0], 1e-5);
+    EXPECT_NEAR(1., center[1], 1e-5);
+    EXPECT_NEAR(1., center[2], 1e-5);
+    EXPECT_NEAR(1., center[3], 1e-5);
+    const LiveTextureBufferConstPtr colourBuffer = LiveTextureStore::instance().find(colour.getUri(1.));
+    ASSERT_TRUE(bool(colourBuffer));
+    const float* colourCenter = colourBuffer->getRow(colourBuffer->getHeight() / 2) + 4 * (colourBuffer->getWidth() / 2);
+    EXPECT_NEAR(0.4, colourCenter[0], 1e-5);
+    EXPECT_NEAR(0.2, colourCenter[1], 1e-5);
+    EXPECT_NEAR(0.1, colourCenter[2], 1e-5);
+}
+
+// A one-channel plane delivered premultiplied has no alpha, so it covers fully; delivered straight,
+// its one channel is also its alpha.
+TEST_F(LiveTextureTest, APremultipliedOneChannelPlaneIsOpaque)
+{
+    std::string error;
+    ASSERT_EQ(LayerRegistry::eAddResultAdded,
+              getApp()->getProject()->addLayer(ImageLayerDesc("mask", std::vector<std::string>(1, "A")), LayerRegistryEntry::eOriginUser, &error))
+        << error;
+
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    ASSERT_TRUE(bool(constant));
+    KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName(kConstantParamColor).get());
+    ASSERT_TRUE(color != NULL);
+    color->setValue(0.4, ViewSpec::all(), 0);
+    color->setValue(0.2, ViewSpec::all(), 1);
+    color->setValue(0.1, ViewSpec::all(), 2);
+    color->setValue(1., ViewSpec::all(), 3);
+    NodePtr shuffle = createNode(QString::fromUtf8(PLUGINID_NATRON_SHUFFLE));
+    ASSERT_TRUE(bool(shuffle));
+    connectNodes(constant, shuffle, Shuffle::eInputMain, true);
+    KnobLayerSelectPtr out = std::dynamic_pointer_cast<KnobLayerSelect>(shuffle->getKnobByName(kShuffleParamOut1));
+    ASSERT_TRUE(bool(out));
+    out->setLayer("mask");
+
+    LiveTextureSource straight;
+    straight.node = shuffle;
+    straight.nodeName = shuffle->getFullyQualifiedName();
+    straight.layer = "mask";
+    straight.contentHash = shuffle->getEffectInstance()->getHash();
+    straight.firstFrame = 1.;
+    straight.lastFrame = 1.;
+    LiveTextureSource premultiplied = straight;
+    premultiplied.premultiplied = true;
+
+    LiveTextureSourceList sources;
+    sources.push_back(straight);
+    sources.push_back(premultiplied);
+    ASSERT_EQ(0, prepareOffMainThread(sources, 1.)) << LiveTextureStore::instance().getFailure(premultiplied.getUri(1.));
+    const LiveTextureBufferConstPtr buffer = LiveTextureStore::instance().find(premultiplied.getUri(1.));
+    ASSERT_TRUE(bool(buffer));
+    const float* center = buffer->getRow(buffer->getHeight() / 2) + 4 * (buffer->getWidth() / 2);
+    for (int channel = 0; channel < 3; ++channel) {
+        EXPECT_NEAR(0.4, center[channel], 1e-5) << channel;
+    }
+    EXPECT_NEAR(1., center[3], 1e-5);
+    const LiveTextureBufferConstPtr straightBuffer = LiveTextureStore::instance().find(straight.getUri(1.));
+    ASSERT_TRUE(bool(straightBuffer));
+    const float* straightCenter = straightBuffer->getRow(straightBuffer->getHeight() / 2) + 4 * (straightBuffer->getWidth() / 2);
+    for (int channel = 0; channel < 4; ++channel) {
+        EXPECT_NEAR(0.4, straightCenter[channel], 1e-5) << channel;
+    }
+}
+
+// A plane the node does not have fails, naming the plane, rather than serving another.
+TEST_F(LiveTextureTest, AMissingPlaneFailsNamingIt)
+{
+    NodePtr constant = createNode(QString::fromUtf8(PLUGINID_NATRON_CONSTANT));
+    ASSERT_TRUE(bool(constant));
+
+    LiveTextureSource source;
+    source.node = constant;
+    source.nodeName = constant->getFullyQualifiedName();
+    source.layer = "noSuchPlane";
+    source.contentHash = constant->getEffectInstance()->getHash();
+    source.firstFrame = 1.;
+    source.lastFrame = 1.;
+
+    EXPECT_EQ(1, prepareOffMainThread(LiveTextureSourceList(1, source), 1.));
+    EXPECT_FALSE(LiveTextureStore::instance().contains(source.getUri(1.)));
+    EXPECT_NE(std::string::npos, LiveTextureStore::instance().getFailure(source.getUri(1.)).find("has no plane noSuchPlane"));
 }
 
 // Going over budget costs memory; dropping a texture of the frame shows the fallback.

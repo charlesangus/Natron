@@ -29,6 +29,18 @@ Controls:
   finer strokes when zoomed in close.
 - Texture Mode: Static paints one texture set for every frame; Animated keeps a
   texture set per frame.
+- Output Mode: Over Base (the default) paints over the look of the meshes and
+  outputs the painted texture. Paint Only paints over transparent black: every
+  session's view is transparent, so the output's alpha is the strokes' coverage
+  and its colour is premultiplied by it, ready to be layered over a material as
+  `original * (1 - alpha) + paint`. Brushes that read the texture under them
+  (Blur, Smear, Clone, Dodge, Burn) see nothing there in this mode. A Bake Output
+  in Paint Only writes the paint alone beside the Bake Output Path files, with
+  `paint` before the tile token (`usdTexturePaint_output.paint.<UDIM>.exr`), and
+  the Bake Output Path files as that paint laid over the Bake Inputs base. The
+  sessions it freezes live only in the files of the mode they were baked in, so
+  Output Mode is locked while a Bake Output is in effect: undo the bake to change
+  it.
 - Bake Inputs Path: the files the input scene's look is baked into, one per tile,
   with a `<UDIM>` token for the tile number. They are the base strokes are
   painted over. The default is `[Project]/textures/usdTexturePaint_inputs.<UDIM>.exr`.

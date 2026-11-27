@@ -50,6 +50,7 @@
 #define kUSDTexturePaintViewParamUvPrimvar "uvPrimvar"
 #define kUSDTexturePaintViewParamBaseFiles "baseFiles"
 #define kUSDTexturePaintViewParamBaseResolution "baseResolution"
+#define kUSDTexturePaintViewParamPaintOnly "paintOnly"
 
 NATRON_NAMESPACE_ENTER
 
@@ -64,7 +65,7 @@ struct ExplicitCamera;
  * names one for the tile; otherwise the constant diffuseColor of the mesh's bound
  * UsdPreviewSurface with alpha 1, or a neutral grey when that colour is missing or comes from a
  * texture. Pixels with no mesh, or whose mesh has no usable UV there, are transparent black. Only
- * the colour plane is produced.
+ * the colour plane is produced. With Paint Only set, the whole view is transparent black.
  *
  * The image spans the paint space: kPaintSpaceSize on the view's longer side, the shorter side
  * following the camera's aspect. Strokes are stored in it, and a paint buffer of Buffer Resolution
@@ -159,6 +160,8 @@ public:
      * resampled to resolution when of another size.
      **/
     void setBase(const std::string& files, int resolution);
+    // Whether the view is transparent black, for the strokes of a Paint Only output.
+    void setPaintOnly(bool paintOnly);
 
     double getAspect() const WARN_UNUSED_RETURN;
 
@@ -182,6 +185,7 @@ private:
     KnobStringWPtr _uvPrimvar;
     KnobStringWPtr _baseFiles;
     KnobIntWPtr _baseResolution;
+    KnobBoolWPtr _paintOnly;
 };
 
 NATRON_NAMESPACE_EXIT

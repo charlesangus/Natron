@@ -73,7 +73,7 @@ Shared design: `PLAN/DECISIONS/2026-11-12-geometry-simulation-expansion.md`.
   - **Copies:** CopyToPoints/packed volume copies export as one Volume prototype under a UsdGeomPointInstancer, so there is one file per prototype. User: "prefer instancing, fall back to a Volume prim per copy if not feasible or extensive upstream work". The research found that Storm (shader), Cycles (`geometry.inl` instancer path) and hdMoonray (`Volume.cc` `_UpdateInstancer`) all apply instancer transforms to volumes. MoonRay gives instanced volumes no transform motion blur; document that.
   - **Task:** M417.P9.T1 below.
 
-- [ ] M417.P9.T1 — Solaris-style volume export: grouping, one file per Volume, instanced copies
+- [x] M417.P9.T1 — Solaris-style volume export: grouping, one file per Volume, instanced copies
   - files: Engine/Nodes/Geometry/GeoUsdConvert.cpp, GeoCopyToPoints.cpp, Engine/Geo/GeoVDB.cpp, Tests/Scene/GeoVDBBridge_Test.cpp
   - approach: per the decision above; a multi-copy fixture rendered in Storm, Cycles and MoonRay, plus a 500-copy case writing one file
   - verify: ctest GeoVDBBridge + GeoVDB; GUI or headless render check that every copy draws

@@ -250,6 +250,22 @@ withKey(const ScenePayload& base)
     return SceneOps::appendLayer(base, layer, 0x6b65790aULL);
 }
 
+// base with a grey dome light, /World/Dome, which the camera sees wherever nothing covers it.
+ScenePayload
+withDome(const ScenePayload& base)
+{
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("ProgressiveRenderTestDome");
+    PXR_NS::SdfPrimSpecHandle prim = PXR_NS::SdfCreatePrimInLayer(layer, PXR_NS::SdfPath("/World/Dome"));
+    prim->SetSpecifier(PXR_NS::SdfSpecifierDef);
+    prim->SetTypeName("DomeLight");
+    PXR_NS::SdfAttributeSpecHandle intensity = PXR_NS::SdfAttributeSpec::New(prim, "inputs:intensity", PXR_NS::SdfValueTypeNames->Float);
+    intensity->SetDefaultValue(PXR_NS::VtValue(1.f));
+    PXR_NS::SdfAttributeSpecHandle color = PXR_NS::SdfAttributeSpec::New(prim, "inputs:color", PXR_NS::SdfValueTypeNames->Color3f);
+    color->SetDefaultValue(PXR_NS::VtValue(PXR_NS::GfVec3f(0.5f, 0.5f, 0.5f)));
+
+    return SceneOps::appendLayer(base, layer, 0x646f6d65ULL);
+}
+
 // A linear value as an 8-bit sRGB level, clamped to [0, 255].
 double
 levelOf(float linear)
@@ -933,6 +949,25 @@ TEST_F(ProgressiveRenderTest, FramesAreSceneLinearWithTheirAlpha)
     EXPECT_NEAR(0.f, corner[3], 1e-3f);
     for (int c = 0; c < 3; ++c) {
         EXPECT_NEAR(0.f, corner[c], 1e-3f) << "channel " << c;
+    }
+}
+
+// A dome the camera sees where nothing was rendered reaches the frame as light, whatever alpha the
+// delegate gives it there: the viewer's grade adds light at alpha 0 to the background.
+TEST_F(ProgressiveRenderTest, ADomeSeenWhereNothingCoversReachesTheFrame)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start(std::map<std::string, PXR_NS::VtValue>(), kRenderDelegateCyclesId, kEmissionFixture));
+    sync(withDome(emittingGrey(_base, 4.f, 0x4e3a12ULL)));
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    ASSERT_FALSE(frames.empty());
+    const PXR_NS::GfVec4f corner = pixelOf(*frames.back(), 0, 0);
+    std::printf("[          ] the corner under the dome: %g %g %g, alpha %g\n", corner[0], corner[1], corner[2], corner[3]);
+    for (int c = 0; c < 3; ++c) {
+        EXPECT_GT(corner[c], 0.1f) << "channel " << c << ": the dome does not reach the frame";
     }
 }
 

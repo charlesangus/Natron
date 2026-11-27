@@ -3966,6 +3966,7 @@ TEST_F(USDTexturePaintTest, PaintOnlyBakeOutputKeepsThePaintAndLocksTheMode)
     std::vector<std::string> files;
     UndoCommandPtr command = bakeOutput(paint, &files);
     ASSERT_TRUE(bool(command));
+    command->redo();
     EXPECT_NE(files.end(), std::find(files.begin(), files.end(), paintPath));
     EXPECT_NE(files.end(), std::find(files.begin(), files.end(), overBasePath));
     EXPECT_EQ(files, getUSDTexturePaint(paint)->getBakedOutputFiles());

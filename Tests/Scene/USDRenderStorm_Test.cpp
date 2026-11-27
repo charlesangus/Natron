@@ -103,6 +103,7 @@
 #include "Engine/Nodes/Transform/Crop.h"
 #include "Engine/Nodes/Transform/Transform.h"
 #include "Engine/Project.h"
+#include "Engine/Settings.h"
 #include "Engine/ViewIdx.h"
 #include "RenderBothWays.h"
 #include "RenderSettingsTestUtils.h"
@@ -3280,10 +3281,40 @@ protected:
         NodePtr merge = render->getInput(0)->getInput(0);
         merge->disconnectInput(0);
         connectNodes(reader, merge, 0, true);
-        renderColour(render, layer, &rgba);
+        {
+            // Software GL reports a few MB free, under the automatic budget's headroom, so that
+            // budget would load no file texture and every layer would read the texture's fallback.
+            const FixedTextureBudget budget(256);
+            renderColour(render, layer, &rgba);
+        }
 
         return rgba;
     }
+
+private:
+    class FixedTextureBudget {
+    public:
+        explicit FixedTextureBudget(int megabytes)
+            : _knob(appPTR->getCurrentSettings()->getKnobByNameAndType<KnobInt>("gpuTextureBudget"))
+            , _previous(_knob ? _knob->getValue() : 0)
+        {
+            EXPECT_TRUE(_knob != nullptr) << "the settings have no gpuTextureBudget";
+            if (_knob) {
+                _knob->setValue(megabytes);
+            }
+        }
+
+        ~FixedTextureBudget()
+        {
+            if (_knob) {
+                _knob->setValue(_previous);
+            }
+        }
+
+    private:
+        KnobIntPtr _knob;
+        int _previous;
+    };
 };
 
 // The universal surface is plain red: green on the left proves Storm renders the glslfx surface,

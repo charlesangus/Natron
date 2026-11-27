@@ -70,7 +70,7 @@ A raster render mode in Natron Utility that is faster on simple setups, mostly p
   - size: L
 
 ## Phase 514.2: Hits and passes
-- [ ] M514.P2.T1 — Rebuild hits from the visibility buffer
+- [x] M514.P2.T1 — Rebuild hits from the visibility buffer
   - files: `Kernels/RasterHits.slang` (new), `.cmake` (new), `WavefrontGpu.cpp`
   - approach:
     - For each batch pixel, generate the jittered camera ray at the pass time, as RayGen does, into the same ray arrays, including its time.
@@ -81,7 +81,7 @@ A raster render mode in Natron Utility that is faster on simple setups, mostly p
     - colour, depth and the id AOVs from raster match Ray mode within 1e-4;
     - the ids match exactly.
   - size: L
-- [ ] M514.P2.T2 — Pass schedule: one time and one jitter per pass
+- [x] M514.P2.T2 — Pass schedule: one time and one jitter per pass
   - files: `Wavefront.{h,cpp}` (`WavefrontFrame` gains `raster` and the pass fields), `WavefrontGpu.cpp`
   - approach:
     - Pass i of N gets a jitter from scrambled Halton (2, 3) under `seed`.
@@ -93,7 +93,7 @@ A raster render mode in Natron Utility that is faster on simple setups, mostly p
     - A closed shutter equals the static render.
     - A frame larger than a forced small band limit equals the single-band render.
   - size: M
-- [ ] M514.P2.T3 — Render Mode and Raster Samples settings, with fallback
+- [x] M514.P2.T3 — Render Mode and Raster Samples settings, with fallback
   - files: `Engine/Nodes/Scene/UtilitySettings.cpp`, `UtilityRenderDelegate.h`, `UtilityRenderPass.cpp`, `Tests/Scene/NatronUtilityRaster_Test.cpp` (new)
   - approach:
     - New knobs, both hashed:
@@ -106,7 +106,7 @@ A raster render mode in Natron Utility that is faster on simple setups, mostly p
   - size: M
 
 ## Phase 514.3: Hardening
-- [ ] M514.P3.T1 — Cancel and secondary-effect tests
+- [x] M514.P3.T1 — Cancel and secondary-effect tests
   - files: `Tests/Scene/NatronUtilityRaster_Test.cpp`, `Tests/Scene/NatronUtilityCancel_Test.cpp`
   - approach:
     - Cancel mid-pass and mid-draw on a 4096-wide frame; it must stop within the existing cancel budget.

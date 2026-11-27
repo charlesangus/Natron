@@ -407,7 +407,7 @@ TEST_F(NativeColorLookupTest, NonPersistentColoursAndBackgroundControls)
     EXPECT_FALSE(update->isEnabled(0));
 }
 
-TEST_F(NativeColorLookupTest, BothSchedulerModesAgreeWithNoUnplannedPull)
+TEST_F(NativeColorLookupTest, DirectAndScheduledAgreeWithNoUnplannedPull)
 {
     ParityPair pair = makePair(true);
     ASSERT_TRUE(bool(pair.native));

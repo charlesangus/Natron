@@ -482,6 +482,12 @@ public:
      **/
     virtual void composeItemTransform(const RotoDrawableItem& item, double time, const Transform::Matrix3x3& local, Transform::Matrix3x3* matrix) const OVERRIDE;
 
+    // The warp keeps layer transforms in its own table: see getLayerTransform().
+    virtual bool layersOwnTransforms() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
     /**
      * @brief False for a transform-linked item: its own transform is unused, and its link target's
      * belongs to that target and every other item linked to it.
@@ -523,11 +529,6 @@ protected:
      * target's is shared with every item linked to it.
      **/
     virtual bool pageEditsTransform(const RotoItem& owner) const OVERRIDE;
-
-    virtual bool layersOwnTransforms() const OVERRIDE
-    {
-        return true;
-    }
 
 private:
     bool ownsCurve(const BezierPtr& curve) const;

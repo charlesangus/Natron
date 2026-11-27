@@ -56,6 +56,7 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 class SceneBreadcrumbBar;
+class GeoDisplayBar;
 class SceneViewport;
 
 struct ViewerTabPrivate
@@ -89,13 +90,16 @@ struct ViewerTabPrivate
     /*Viewer Settings*/
     QWidget* firstSettingsRow, *secondSettingsRow;
     QHBoxLayout* firstRowLayout, *secondRowLayout;
-    // The progressive render's controls, shown while the scene view renders with other than Storm.
+    // The progressive render's controls, shown with the scene view and enabled while it renders with
+    // other than Storm.
     QWidget* sceneRenderRow;
     QHBoxLayout* sceneRenderRowLayout;
     SpinBox* maxSamplesBox;
     Button* refinementPausedButton;
     Button* renderEverythingButton;
     Label* refineSamplesLabel;
+    // The geometry display toggles, shown while the scene view shows geometry.
+    GeoDisplayBar* geoDisplayRow;
 
     /*1st row*/
     //ComboBox* viewerLayers;
@@ -178,6 +182,10 @@ struct ViewerTabPrivate
     QTimer mustSetUpPlaybackButtonsTimer;
 
     ViewerStaleCueTiming staleCueTiming;
+    // The inputs applyStaleCueInput() combines: the viewer node's last staleChanged() and the 3D
+    // view's last outOfDateChanged().
+    bool viewerNodeStale = false;
+    bool sceneOutOfDate = false;
     // Fires at the timing's next deadline; never runs while the stale cue style is Off.
     QTimer staleCueTimer;
     QElapsedTimer staleCueClock;

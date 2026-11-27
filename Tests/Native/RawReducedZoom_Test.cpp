@@ -99,7 +99,6 @@ protected:
     static bool renderColour(const NodePtr& node,
                              unsigned mipmapLevel,
                              const RectI& window,
-                             RenderSchedulerModeEnum mode,
                              RenderedPlane* plane,
                              std::string* error)
     {
@@ -118,7 +117,7 @@ protected:
             return false;
         }
         std::vector<RenderedPlane> planes;
-        if (!renderNodePlanesInMode(node, 1., ViewIdx(0), mipmapLevel, window, colour, mode, true /*byPassCache*/, &planes, error)) {
+        if (!renderNodePlanesScheduled(node, 1., ViewIdx(0), mipmapLevel, window, true /*byPassCache*/, &planes, error)) {
             return false;
         }
         for (std::vector<RenderedPlane>::const_iterator it = planes.begin(); it != planes.end(); ++it) {
@@ -208,8 +207,7 @@ protected:
         return diff;
     }
 
-    void compareFullWithDownscaledFullScale(RenderSchedulerModeEnum mode,
-                                            const char* name)
+    void compareFullWithDownscaledFullScale(const char* name)
     {
         ZoomedOutDemosaicScope full(true);
         const RawReference::CropSite site = RawReference::cr2Site();
@@ -222,10 +220,10 @@ protected:
 
         std::string error;
         RenderedPlane fine;
-        ASSERT_TRUE(renderColour(output, 0, window, mode, &fine, &error)) << name << ": " << error;
+        ASSERT_TRUE(renderColour(output, 0, window, &fine, &error)) << name << ": " << error;
         ASSERT_GE(fine.channels.size(), 3u) << name;
         RenderedPlane coarse;
-        ASSERT_TRUE(renderColour(output, 1, half, mode, &coarse, &error)) << name << ": " << error;
+        ASSERT_TRUE(renderColour(output, 1, half, &coarse, &error)) << name << ": " << error;
         ASSERT_GE(coarse.channels.size(), 3u) << name;
         ASSERT_TRUE(half == coarse.window) << name;
 
@@ -267,7 +265,6 @@ protected:
     // 2x2 footprint and has footprints with no red or blue at all, so its mean error is
     // about twice Bayer's.
     void compareFastWithFull(const RawReference::CropSite& site,
-                             RenderSchedulerModeEnum mode,
                              double maxRelMean,
                              const char* name)
     {
@@ -280,7 +277,7 @@ protected:
             ASSERT_TRUE(chain.complete()) << name;
             const RectI half = halfOf(fullScaleWindow(site, regionOfDefinition(chain.inputColor)));
             RenderedPlane* plane = (pass == 0) ? &fast : &full;
-            ASSERT_TRUE(renderColour(chain.inputColor, 1, half, mode, plane, &error)) << name << ": " << error;
+            ASSERT_TRUE(renderColour(chain.inputColor, 1, half, plane, &error)) << name << ": " << error;
             ASSERT_GE(plane->channels.size(), 3u) << name;
             ASSERT_TRUE(half == plane->window) << name;
         }
@@ -338,32 +335,17 @@ TEST_F(RawReducedZoomTest, PreferenceSetsDemosaicRenderScaleSupport)
     EXPECT_EQ(fastHash, chain.demosaic->getHashValue());
 }
 
-TEST_F(RawReducedZoomTest, Cr2FullLevelOneMatchesDownscaledLevelZeroLegacy)
+TEST_F(RawReducedZoomTest, Cr2FullLevelOneMatchesDownscaledLevelZero)
 {
-    compareFullWithDownscaledFullScale(eRenderSchedulerModeLegacy, "CR2 Full Legacy");
+    compareFullWithDownscaledFullScale("CR2 Full");
 }
 
-TEST_F(RawReducedZoomTest, Cr2FullLevelOneMatchesDownscaledLevelZeroTaskGraph)
+TEST_F(RawReducedZoomTest, Cr2FastMatchesFullAtLevelOne)
 {
-    compareFullWithDownscaledFullScale(eRenderSchedulerModeTaskGraph, "CR2 Full Task graph");
+    compareFastWithFull(RawReference::cr2Site(), 5e-2, "CR2");
 }
 
-TEST_F(RawReducedZoomTest, Cr2FastMatchesFullAtLevelOneLegacy)
+TEST_F(RawReducedZoomTest, RafFastMatchesFullAtLevelOne)
 {
-    compareFastWithFull(RawReference::cr2Site(), eRenderSchedulerModeLegacy, 5e-2, "CR2 Legacy");
-}
-
-TEST_F(RawReducedZoomTest, Cr2FastMatchesFullAtLevelOneTaskGraph)
-{
-    compareFastWithFull(RawReference::cr2Site(), eRenderSchedulerModeTaskGraph, 5e-2, "CR2 Task graph");
-}
-
-TEST_F(RawReducedZoomTest, RafFastMatchesFullAtLevelOneLegacy)
-{
-    compareFastWithFull(RawReference::rafSite(), eRenderSchedulerModeLegacy, 1e-1, "RAF Legacy");
-}
-
-TEST_F(RawReducedZoomTest, RafFastMatchesFullAtLevelOneTaskGraph)
-{
-    compareFastWithFull(RawReference::rafSite(), eRenderSchedulerModeTaskGraph, 1e-1, "RAF Task graph");
+    compareFastWithFull(RawReference::rafSite(), 1e-1, "RAF");
 }

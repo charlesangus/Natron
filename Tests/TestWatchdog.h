@@ -27,11 +27,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <fstream>
 #include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include <dirent.h>
 #include <execinfo.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -54,6 +56,9 @@
 // - one stack dump, the process left running, when it has not finished exiting some time after
 //   the last test, for a hang in process teardown (NATRON_TEST_EXIT_WATCHDOG_S, default 60,
 //   0 disables).
+// A stall, its dump before ctest's timeout or a slow exit also dumps the stacks of this process's
+// execComp children, MoonRay's render processes, within the same budget; where ptrace on them is
+// refused, each of their threads' state and kernel wait channel instead.
 // In a gtest death-test child only the crashing thread's backtrace is printed: the dump tools take
 // seconds each, and the suites' death tests crash on purpose.
 class TestWatchdog {
@@ -374,7 +379,9 @@ private:
         char line[512];
         const int n = std::snprintf(line, sizeof(line), "watchdog: %s still running %d s after the process started, phase '%s'; stack dump follows, then the process goes on\n", currentTestName().c_str(), seconds, phase().load());
         writeStderr(line, n);
-        dumpStacks();
+        const long deadline = monotonicMilliseconds() + kDumpBudgetSeconds * 1000L;
+        dumpStacks(deadline);
+        dumpRenderProcessStacks(deadline);
         writeStderr("watchdog: stall dump done\n");
     }
 
@@ -383,7 +390,9 @@ private:
         char line[512];
         const int n = std::snprintf(line, sizeof(line), "watchdog: process exit still running %d s after the last test, phase '%s'; stack dump follows, then the process goes on\n", seconds, phase().load());
         writeStderr(line, n);
-        dumpStacks();
+        const long deadline = monotonicMilliseconds() + kDumpBudgetSeconds * 1000L;
+        dumpStacks(deadline);
+        dumpRenderProcessStacks(deadline);
         writeStderr("watchdog: exit dump done\n");
     }
 
@@ -495,6 +504,11 @@ private:
     // hang the dump until kCrashDumpAlarmSeconds ends it.
     static void dumpStacks()
     {
+        dumpStacks(monotonicMilliseconds() + kDumpBudgetSeconds * 1000L);
+    }
+
+    static void dumpStacks(long deadline)
+    {
         if (::testing::internal::InDeathTestChild()) {
             writeStderr("watchdog: gtest death-test child, stack dump tools skipped\n");
 
@@ -502,14 +516,125 @@ private:
         }
         Line pid;
         pid.addNumber(static_cast<long>(getpid()));
-        const char* const pidText = pid.c_str();
-        const long deadline = monotonicMilliseconds() + kDumpBudgetSeconds * 1000L;
+        (void)dumpStacksOf(pid.c_str(), deadline);
+    }
+
+    // True if eu-stack or gdb printed pidText's stacks before deadline.
+    static bool dumpStacksOf(const char* pidText,
+                             long deadline)
+    {
         const char* const euStack[] = { "eu-stack", "-p", pidText, nullptr };
-        if (!run(toolPaths.euStack, euStack, deadline)) {
-            writeStderr("watchdog: eu-stack unavailable or failed, trying gdb\n");
-            const char* const gdb[] = { "gdb", "-p", pidText, "-batch", "-ex", "thread apply all bt", nullptr };
-            if (!run(toolPaths.gdb, gdb, deadline)) {
-                writeStderr("watchdog: no stack dump tool worked\n");
+        if (run(toolPaths.euStack, euStack, deadline)) {
+            return true;
+        }
+        writeStderr("watchdog: eu-stack unavailable or failed, trying gdb\n");
+        const char* const gdb[] = { "gdb", "-p", pidText, "-batch", "-ex", "thread apply all bt", nullptr };
+        if (run(toolPaths.gdb, gdb, deadline)) {
+            return true;
+        }
+        writeStderr("watchdog: no stack dump tool worked\n");
+
+        return false;
+    }
+
+    static std::string readFirstLine(const std::string& path)
+    {
+        std::ifstream file(path);
+        std::string line;
+        std::getline(file, line);
+
+        return line;
+    }
+
+    // The pids of this process's live children named execComp: the render processes of MoonRay's
+    // Arras sessions. Allocates, so never called from the fatal-signal handler.
+    static std::vector<std::string> renderProcesses()
+    {
+        std::vector<std::string> pids;
+        DIR* proc = opendir("/proc");
+        if (!proc) {
+            return pids;
+        }
+        const long self = static_cast<long>(getpid());
+        while (const struct dirent* entry = readdir(proc)) {
+            char* end = nullptr;
+            const long pid = std::strtol(entry->d_name, &end, 10);
+            if (pid <= 0 || !end || *end != '\0') {
+                continue;
+            }
+            // pid (comm) state ppid ...: comm may hold spaces and parentheses.
+            const std::string stat = readFirstLine(std::string("/proc/") + entry->d_name + "/stat");
+            const std::string::size_type open = stat.find('(');
+            const std::string::size_type close = stat.rfind(')');
+            if (open == std::string::npos || close == std::string::npos || close < open) {
+                continue;
+            }
+            char state = 0;
+            long ppid = 0;
+            if (std::sscanf(stat.c_str() + close + 1, " %c %ld", &state, &ppid) != 2) {
+                continue;
+            }
+            if (ppid == self && state != 'Z' && state != 'X' && stat.compare(open + 1, close - open - 1, "execComp") == 0) {
+                pids.push_back(entry->d_name);
+            }
+        }
+        closedir(proc);
+
+        return pids;
+    }
+
+    // Each thread's name, state and kernel wait channel, which need no ptrace.
+    static void dumpThreadStates(const std::string& pid)
+    {
+        const std::string tasks = "/proc/" + pid + "/task";
+        DIR* dir = opendir(tasks.c_str());
+        if (!dir) {
+            writeStderr("watchdog: its threads cannot be listed\n");
+
+            return;
+        }
+        while (const struct dirent* entry = readdir(dir)) {
+            if (entry->d_name[0] == '.') {
+                continue;
+            }
+            const std::string task = tasks + "/" + entry->d_name;
+            const std::string stat = readFirstLine(task + "/stat");
+            const std::string::size_type close = stat.rfind(')');
+            char state = '?';
+            if (close != std::string::npos) {
+                (void)std::sscanf(stat.c_str() + close + 1, " %c", &state);
+            }
+            const std::string text = "TID " + std::string(entry->d_name) + " (" + readFirstLine(task + "/comm") + ") state " + state + " wchan " + readFirstLine(task + "/wchan") + "\n";
+            writeStderr(text.c_str(), static_cast<int>(text.size()));
+        }
+        closedir(dir);
+    }
+
+    // A stalled MoonRay render may be waiting on its render process: its stacks, in whatever of
+    // the dump's budget the test process's own left. Under Yama's default ptrace scope a sibling
+    // tool cannot attach to them without CAP_SYS_PTRACE, so their thread states stand in.
+    static void dumpRenderProcessStacks(long deadline)
+    {
+        if (::testing::internal::InDeathTestChild()) {
+            return;
+        }
+        for (const std::string& pid : renderProcesses()) {
+            const std::string state = readFirstLine("/proc/" + pid + "/stat");
+            const std::string::size_type close = state.rfind(')');
+            char code = '?';
+            if (close != std::string::npos) {
+                (void)std::sscanf(state.c_str() + close + 1, " %c", &code);
+            }
+            const std::string header = "watchdog: execComp render process " + pid + ", state " + code + "; stack dump follows\n";
+            writeStderr(header.c_str(), static_cast<int>(header.size()));
+            if (monotonicMilliseconds() >= deadline) {
+                writeStderr("watchdog: the dump budget is spent; thread states only\n");
+                dumpThreadStates(pid);
+                continue;
+            }
+            if (!dumpStacksOf(pid.c_str(), deadline)) {
+                writeStderr("watchdog: no stacks for it (ptrace refused, or no tool); thread states instead\n");
+                dumpThreadStates(pid);
             }
         }
     }
@@ -621,7 +746,9 @@ private:
     {
         std::fprintf(stderr, "watchdog: %s stalled for %d s in phase '%s'; stack dump follows\n", what, limit, phase().load());
         if (claimDump()) {
-            dumpStacks();
+            const long deadline = monotonicMilliseconds() + kDumpBudgetSeconds * 1000L;
+            dumpStacks(deadline);
+            dumpRenderProcessStacks(deadline);
             dumpDone().store(true);
         }
         std::abort();

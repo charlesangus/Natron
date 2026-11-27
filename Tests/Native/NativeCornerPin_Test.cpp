@@ -441,7 +441,7 @@ protected:
         return node;
     }
 
-    void expectBothSchedulerModesAgree(const NodePtr& node)
+    void expectDirectAndScheduledAgree(const NodePtr& node)
     {
         std::vector<int> poolSizes;
         poolSizes.push_back(1);
@@ -748,7 +748,7 @@ TEST_F(NativeCornerPinTest, MaskAndMixStopItOfferingItsMatrix)
     EXPECT_EQ(0, inputs.front());
 
     ASSERT_TRUE(setKnobValues(pin, kOfxMixParamName, { 0.5 }));
-    expectBothSchedulerModesAgree(pin);
+    expectDirectAndScheduledAgree(pin);
 }
 
 // Without a mask, a mix below 1 blends in the source under the pixel, so the region of definition
@@ -830,16 +830,16 @@ TEST_F(NativeCornerPinTest, MotionBlurOnAnAnimatedPin)
     ASSERT_TRUE(renderRGBA(pin, window, &blurredPin));
     ASSERT_TRUE(renderRGBA(transform, window, &blurredTransform));
     expectPlanesNear(blurredTransform, blurredPin, kMotionBlurTolerance, "animated pin against Transform");
-    expectBothSchedulerModesAgree(pin);
+    expectDirectAndScheduledAgree(pin);
 }
 
-TEST_F(NativeCornerPinTest, RendersTheSameInBothSchedulerModes)
+TEST_F(NativeCornerPinTest, RendersTheSameDirectAndScheduled)
 {
     resetProject();
     NodePtr pin = makeNode(kCornerPinID, kCornerPinMajor, makeSource());
     ASSERT_TRUE(bool(pin));
     ASSERT_TRUE(setPerspectivePin(pin));
-    expectBothSchedulerModesAgree(pin);
+    expectDirectAndScheduledAgree(pin);
 }
 
 TEST_F(NativeCornerPinTest, RegisteredIdentity)

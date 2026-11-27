@@ -461,6 +461,8 @@ dataKindKey(DataKindEnum kind)
         return QString::fromUtf8("polymorphic");
     case eDataKindRaw:
         return QString::fromUtf8("raw");
+    case eDataKindGeometry:
+        return QString::fromUtf8("geometry");
     case eDataKindNetwork:
         return QString::fromUtf8("network");
     }

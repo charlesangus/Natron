@@ -644,7 +644,6 @@ Node::setLastPaintStrokeDataNoRotopaint()
         _imp->strokeBitmapCleared = false;
         _imp->duringPaintStrokeCreation = true;
     }
-    _imp->effect->setDuringPaintStrokeCreationThreadLocal(true);
 }
 
 void
@@ -2763,17 +2762,18 @@ isRegisteredAdapter(DataKindEnum from,
     return (from == eDataKindDeep) && (to == eDataKindImage);
 }
 
-// Raw and scene reach an image input only at the Viewer, which feeds nothing downstream: it shows
-// raw values as they are for display (RawDisplay) and hands a scene to its 3D view instead of
-// rendering it as an image. They are kept out of the table above so that no other image input,
-// whatever its virtual answers, can take raw without a RawToImage, or a scene at all. Network has
-// a row in neither: a network node joins network inputs only, and a Viewer never shows one.
+// Raw, scene and geometry reach an image input only at the Viewer, which feeds nothing downstream:
+// it shows raw values as they are for display (RawDisplay) and hands a scene or geometry to its 3D
+// view instead of rendering it as an image. They are kept out of the table above so that no other
+// image input, whatever its virtual answers, can take raw without a RawToImage, or a scene or
+// geometry at all. Network has a row in neither: a network node joins network inputs only, and a
+// Viewer never shows one.
 static bool
 isViewerOnlyAdapter(const EffectInstancePtr& effect,
                     DataKindEnum from,
                     DataKindEnum to)
 {
-    return ((from == eDataKindRaw) || (from == eDataKindScene)) && (to == eDataKindImage) && dynamic_cast<const ViewerInstance*>(effect.get());
+    return ((from == eDataKindRaw) || (from == eDataKindScene) || (from == eDataKindGeometry)) && (to == eDataKindImage) && dynamic_cast<const ViewerInstance*>(effect.get());
 }
 
 static bool
@@ -6856,6 +6856,11 @@ Node::domainCategoryFromGrouping(const std::list<std::string>& grouping,
 
         return true;
     }
+    if (major == PLUGIN_GROUP_GEOMETRY) {
+        *category = eNodeCategoryNative3D;
+
+        return true;
+    }
     if (major == PLUGIN_GROUP_3D) {
         std::list<std::string>::const_iterator minor = grouping.begin();
         ++minor;
@@ -9667,7 +9672,8 @@ Node::hasAnimatedKnob() const
 }
 
 void
-Node::getAllKnobsKeyframes(std::list<SequenceTime>* keyframes)
+Node::getAllKnobsKeyframes(std::list<SequenceTime>* keyframes,
+                           const std::function<bool(const KnobIPtr&)>& accept)
 {
     assert(keyframes);
     const KnobsVec & knobs = getKnobs();
@@ -9677,6 +9683,9 @@ Node::getAllKnobsKeyframes(std::list<SequenceTime>* keyframes)
             continue;
         }
         if ( !knobs[i]->canAnimate() ) {
+            continue;
+        }
+        if (accept && !accept(knobs[i])) {
             continue;
         }
         int dim = knobs[i]->getDimension();
@@ -9782,7 +9791,8 @@ Node::setNodeIsRenderingInternal(std::list<NodeWPtr>& markedNodes)
         QMutexLocker k(&_imp->nodeIsDequeuingMutex);
         if (QThread::currentThread() != qApp->thread()) {
             while ((_imp->nodeIsDequeuing || (_imp->renderStartsHeldByEdits > 0)) && !aborted()) {
-                _imp->nodeIsDequeuingCond.wait(k.mutex());
+                // Nothing wakes this condition on an abort, so the wait must time out to notice one.
+                _imp->nodeIsDequeuingCond.wait(k.mutex(), 10);
             }
         }
         QMutexLocker nrLocker(&_imp->nodeIsRenderingMutex);
@@ -10030,7 +10040,7 @@ addIdentityNodesRecursively(const Node* caller,
 
 
     if (caller != node) {
-        ParallelRenderArgsPtr inputFrameArgs = node->getEffectInstance()->getParallelRenderArgsTLS();
+        ParallelRenderArgsPtr inputFrameArgs = node->getEffectInstance()->getFrameArgs();
         const FrameViewRequest* request = 0;
         bool isIdentity = false;
         if (inputFrameArgs && inputFrameArgs->request) {

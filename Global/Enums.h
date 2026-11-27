@@ -517,6 +517,7 @@ enum DataKindEnum {
     eDataKindScene,
     eDataKindPolymorphic,
     eDataKindRaw,
+    eDataKindGeometry,
     // A node of a port network (shaders, kernels, channels): it joins other network nodes only,
     // and is never rendered, viewed or cached.
     eDataKindNetwork,
@@ -547,11 +548,6 @@ enum RenderSafetyEnum
     eRenderSafetyInstanceSafe = 1,
     eRenderSafetyFullySafe = 2,
     eRenderSafetyFullySafeFrame = 3,
-};
-
-enum RenderSchedulerModeEnum {
-    eRenderSchedulerModeLegacy = 0,
-    eRenderSchedulerModeTaskGraph = 1,
 };
 
 enum GpuComputeModeEnum {

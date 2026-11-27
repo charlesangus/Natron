@@ -479,7 +479,7 @@ TEST_F(NativeColorspaceTest, IdentityWhenInIsOut)
     }
 }
 
-TEST_F(NativeColorspaceTest, BothSchedulerModesAgreeWithNoUnplannedPull)
+TEST_F(NativeColorspaceTest, DirectAndScheduledAgreeWithNoUnplannedPull)
 {
     NodePtr source = makeSource();
     NodePtr mask = makeSource();

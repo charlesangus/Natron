@@ -363,7 +363,8 @@ public:
 
     /**
      * @brief Marks the rows at paths, which the caller gives with their ancestors. Rows read later
-     * are marked too, so the set stays small however large the stage is.
+     * are marked too, so the set stays small however large the stage is. Like
+     * refreshDrawStates(), it announces the change on the top-level rows only.
      **/
     void setChangedHere(const QSet<QString>& paths);
 
@@ -376,7 +377,12 @@ public:
      **/
     void setDrawStateAccess(const DrawStatesReader& reader, const DrawStateWriter& writer);
 
-    // The linked viewer's draw states changed: the column reads them again.
+    /**
+     * @brief The linked viewer's draw states changed: the column reads them again. The one
+     * dataChanged() it emits spans the top-level rows, though rows at every depth may change: a
+     * signal per parent cost a view a header layout each, quadratic in the rows open. A view of
+     * this model repaints its whole viewport on a top-level dataChanged().
+     **/
     void refreshDrawStates();
 
     int getChangedHereCount() const;

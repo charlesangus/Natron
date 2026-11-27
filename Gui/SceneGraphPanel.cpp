@@ -2537,6 +2537,13 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
         QObject::connect(view->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this]() { _imp->bulkRefresh.start(); });
     }
     QObject::connect(_imp->model, &QAbstractItemModel::dataChanged, this, [this]() { _imp->bulkRefresh.start(); });
+    // The model announces draw-state and changed-here updates on the top-level rows only, so that
+    // thousands of open rows don't cost a header layout each; the rows below repaint from this.
+    QObject::connect(_imp->model, &QAbstractItemModel::dataChanged, this, [this](const QModelIndex& topLeft) {
+        if (!topLeft.parent().isValid()) {
+            _imp->tree->viewport()->update();
+        }
+    });
     QObject::connect(_imp->model, &QAbstractItemModel::modelReset, this, [this]() { _imp->bulkRefresh.start(); });
     QObject::connect(_imp->tree->selectionModel(), &QItemSelectionModel::currentChanged, this, &SceneGraphPanel::onCurrentChanged);
     QObject::connect(_imp->results->selectionModel(), &QItemSelectionModel::selectionChanged, this, &SceneGraphPanel::onResultsSelectionChanged);

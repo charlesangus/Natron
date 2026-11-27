@@ -473,13 +473,13 @@ future core work has solid ground to build on.
 | M309 | Roto Feather Falloff Banding | done | M224 | | E6 | | | [M309-roto-feather-falloff-banding.md](PLAN/MILESTONES/M309-roto-feather-falloff-banding.md) |
 | M310 | Device-Switch Shader Test Fix | done | - | bosley-native-nodes | E14 | | | [M310-device-switch-shader-test-fix.md](PLAN/MILESTONES/M310-device-switch-shader-test-fix.md) |
 | M311 | UDIM Live Textures | done | M233 | bosley-native-nodes | E9 | F11 | | [M311-udim-live-textures.md](PLAN/MILESTONES/M311-udim-live-textures.md) |
-| M312 | USDLayerMaterial Node | todo | M53 |  | E9 | F11 | | [M312-usdlayermaterial-node.md](PLAN/MILESTONES/M312-usdlayermaterial-node.md) |
+| M312 | USDLayerMaterial Node | doing | M53 | bosley-executor | E9 | F11 | | [M312-usdlayermaterial-node.md](PLAN/MILESTONES/M312-usdlayermaterial-node.md) |
 | M313 | USDBakeTextures Node | todo | M53, M234 |  | E9 | F11 | | [M313-usdbaketextures-node.md](PLAN/MILESTONES/M313-usdbaketextures-node.md) |
 | M314 | Paint-Through Inputs | todo | M53, M234 |  | E9 | F11 | | [M314-paint-through-inputs.md](PLAN/MILESTONES/M314-paint-through-inputs.md) |
-| M315 | Direct Texel Painting | todo | M53 |  | E9 | F11 | | [M315-direct-texel-painting.md](PLAN/MILESTONES/M315-direct-texel-painting.md) |
+| M315 | Direct Texel Painting | doing | M53 | bosley-executor | E9 | F11 | | [M315-direct-texel-painting.md](PLAN/MILESTONES/M315-direct-texel-painting.md) |
 | M316 | Delegate UV Baking | todo | M313, M251 |  | E9 | | | [M316-delegate-uv-baking.md](PLAN/MILESTONES/M316-delegate-uv-baking.md) |
 | M427 | Native Geometry Texture Painting | todo | M53, M358, M376, M428 |  | E9 | F11 | | [M427-native-geometry-texture-painting.md](PLAN/MILESTONES/M427-native-geometry-texture-painting.md) |
-| M428 | Native UV Operators | todo | M359 |  | E9 | F11 | | [M428-native-uv-operators.md](PLAN/MILESTONES/M428-native-uv-operators.md) |
+| M428 | Native UV Operators | doing | M359 | bosley-executor | E9 | F11 | | [M428-native-uv-operators.md](PLAN/MILESTONES/M428-native-uv-operators.md) |
 | M429 | GeoAttribPaint Node | todo | M53, M359, M376 |  | E9 | F11 | | [M429-geoattribpaint-node.md](PLAN/MILESTONES/M429-geoattribpaint-node.md) |
 | M430 | Viewer 2D/3D Switch | todo | M53, M376 |  | E9 | F11 | | [M430-viewer-2d-3d-switch.md](PLAN/MILESTONES/M430-viewer-2d-3d-switch.md) |
 | M431 | Fast Panel Build | doing | - | bosley-executor | E10 |  |  | [M431-fast-panel-build.md](PLAN/MILESTONES/M431-fast-panel-build.md) |
@@ -593,7 +593,7 @@ future core work has solid ground to build on.
 | M499 | Scene Lens In Projection Nodes | todo | M497, M437 |  | E9 | F34 | | [M499-scene-lens-in-projection-nodes.md](PLAN/MILESTONES/M499-scene-lens-in-projection-nodes.md) |
 | M500 | USDProject3D Lens Maps | todo | M497 |  | E9 | F34 | | [M500-usdproject3d-lens-maps.md](PLAN/MILESTONES/M500-usdproject3d-lens-maps.md) |
 | M501 | Lens Maps In The Scene | todo | M497, M499, M500, M433 |  | E9 | F34 | | [M501-lens-maps-in-the-scene.md](PLAN/MILESTONES/M501-lens-maps-in-the-scene.md) |
-| M514 | Utility Raster Mode | todo | M283, M472 |  | E19 |  | | [M514-utility-raster-mode.md](PLAN/MILESTONES/M514-utility-raster-mode.md) |
+| M514 | Utility Raster Mode | doing | M283, M472 | bosley-executor | E19 |  | | [M514-utility-raster-mode.md](PLAN/MILESTONES/M514-utility-raster-mode.md) |
 | M515 | Storm Oversample And Motion Blur | todo | - |  | E9 |  | | [M515-storm-oversample-and-motion-blur.md](PLAN/MILESTONES/M515-storm-oversample-and-motion-blur.md) |
 | M516 | Port Groups And Folding | todo | M351 |  | E9 | F2 | | [M516-port-groups-and-folding.md](PLAN/MILESTONES/M516-port-groups-and-folding.md) |
 | M517 | Storm Translucent Prim Ids | done | - | | E9 |  |  | [M517-storm-translucent-prim-ids.md](PLAN/MILESTONES/M517-storm-translucent-prim-ids.md) |
@@ -619,7 +619,7 @@ future core work has solid ground to build on.
 | M557 | Scene Graph Purpose Column | done | - | | E9 | F37 | | [M557-scene-graph-purpose-column.md](PLAN/MILESTONES/M557-scene-graph-purpose-column.md) |
 | M558 | Scene Graph Expand Commands | doing | M556 | bosley-executor | E9 | F37 | | [M558-scene-graph-expand-commands.md](PLAN/MILESTONES/M558-scene-graph-expand-commands.md) |
 | M559 | Native Geometry UAT Round 1 | done | - | | E9 | F15 | | [M559-native-geometry-uat-round-1.md](PLAN/MILESTONES/M559-native-geometry-uat-round-1.md) |
-| M560 | USDMerge Opinion Order | todo | - |  | E9 | | | [M560-usdmerge-opinion-order.md](PLAN/MILESTONES/M560-usdmerge-opinion-order.md) |
+| M560 | USDMerge Opinion Order | doing | - | bosley-executor | E9 | | | [M560-usdmerge-opinion-order.md](PLAN/MILESTONES/M560-usdmerge-opinion-order.md) |
 | M561 | Live Session Personal Viewers | todo | M106 |  | E11 | F5 | | [M561-live-session-personal-viewers.md](PLAN/MILESTONES/M561-live-session-personal-viewers.md) |
 | M562 | USDEditPrim Relationship Knobs | todo | - |  | E27 | F38 | | [M562-usdeditprim-relationship-knobs.md](PLAN/MILESTONES/M562-usdeditprim-relationship-knobs.md) |
 | M563 | USDSetAttribute Tweak Modes | todo | - |  | E27 | F38 | | [M563-usdsetattribute-tweak-modes.md](PLAN/MILESTONES/M563-usdsetattribute-tweak-modes.md) |
@@ -665,24 +665,24 @@ future core work has solid ground to build on.
 | M618 | ~~Native Geometry Viewer Flash Measurement~~ | cancelled | M617 |  | E9 | | | [M618-native-geometry-viewer-flash-measurement.md](PLAN/MILESTONES/M618-native-geometry-viewer-flash-measurement.md) |
 | M619 | ~~Native Geometry Viewer Flash Fixes~~ | cancelled | M618 |  | E9 | | | [M619-native-geometry-viewer-flash-fixes.md](PLAN/MILESTONES/M619-native-geometry-viewer-flash-fixes.md) |
 | M620 | ~~Native Geometry Points Scene Index Prototype~~ | cancelled | M619 |  | E9 | | | [M620-native-geometry-points-scene-index-prototype.md](PLAN/MILESTONES/M620-native-geometry-points-scene-index-prototype.md) |
-| M622 | Native Geometry Scene Index Core | todo | M600 |  | E9 | F41 | | [M622-native-geometry-scene-index-core.md](PLAN/MILESTONES/M622-native-geometry-scene-index-core.md) |
+| M622 | Native Geometry Scene Index Core | doing | M600 | bosley-executor | E9 | F41 | | [M622-native-geometry-scene-index-core.md](PLAN/MILESTONES/M622-native-geometry-scene-index-core.md) |
 | M623 | Native Geometry Scene Index Instancing | todo | M622 |  | E9 | F41 | | [M623-native-geometry-scene-index-instancing.md](PLAN/MILESTONES/M623-native-geometry-scene-index-instancing.md) |
 | M624 | Native Geometry Viewer Cutover | todo | M622, M623 |  | E9 | F41 | | [M624-native-geometry-viewer-cutover.md](PLAN/MILESTONES/M624-native-geometry-viewer-cutover.md) |
 | M625 | Native Geometry Viewer Stage Readers | todo | M622 |  | E9 | F41 | | [M625-native-geometry-viewer-stage-readers.md](PLAN/MILESTONES/M625-native-geometry-viewer-stage-readers.md) |
 | M626 | Native Geometry Viewer Bench And Checks | todo | M624, M625 |  | E9 | F41 | | [M626-native-geometry-viewer-bench-and-checks.md](PLAN/MILESTONES/M626-native-geometry-viewer-bench-and-checks.md) |
 | M627 | Native Geometry Viewer Cook Fixes | todo | M600 |  | E9 | | | [M627-native-geometry-viewer-cook-fixes.md](PLAN/MILESTONES/M627-native-geometry-viewer-cook-fixes.md) |
 | M601 | Every Render A Scheduler Task | todo | M199 |  | E14 | | | [M601-every-render-a-scheduler-task.md](PLAN/MILESTONES/M601-every-render-a-scheduler-task.md) |
-| M602 | 3D Viewer Toolbars | todo | M376, M361 |  | E28 | F40 | | [M602-3d-viewer-toolbars.md](PLAN/MILESTONES/M602-3d-viewer-toolbars.md) |
+| M602 | 3D Viewer Toolbars | doing | M376, M361 | bosley-executor | E28 | F40 | | [M602-3d-viewer-toolbars.md](PLAN/MILESTONES/M602-3d-viewer-toolbars.md) |
 | M603 | Combined Transform Handle | todo | M602 |  | E28 | F40 | | [M603-combined-transform-handle.md](PLAN/MILESTONES/M603-combined-transform-handle.md) |
 | M604 | GeoTransform Viewer Handles | todo | M603 |  | E28 | F40 | | [M604-geotransform-viewer-handles.md](PLAN/MILESTONES/M604-geotransform-viewer-handles.md) |
 | M605 | GeoEdit Component Transforms | todo | M603 |  | E28 | F40 | | [M605-geoedit-component-transforms.md](PLAN/MILESTONES/M605-geoedit-component-transforms.md) |
 | M606 | Viewer Snapping | todo | M603 |  | E28 | F40 | | [M606-viewer-snapping.md](PLAN/MILESTONES/M606-viewer-snapping.md) |
 | M607 | Geometry Marker Controls | todo | M602 |  | E28 | F40 | | [M607-geometry-marker-controls.md](PLAN/MILESTONES/M607-geometry-marker-controls.md) |
 | M608 | Geometry Group Picker | todo | M602, M359 |  | E28 | F40 | | [M608-geometry-group-picker.md](PLAN/MILESTONES/M608-geometry-group-picker.md) |
-| M609 | GeoToUSD Path And Placement | todo | M358 |  | E9 |  | | [M609-geotousd-path-and-placement.md](PLAN/MILESTONES/M609-geotousd-path-and-placement.md) |
-| M610 | GeoToUSD Attribute And Material Controls | todo | M609 |  | E9 |  | | [M610-geotousd-attribute-and-material-controls.md](PLAN/MILESTONES/M610-geotousd-attribute-and-material-controls.md) |
-| M611 | USDToGeo Source Controls | todo | M358 |  | E9 |  | | [M611-usdtogeo-source-controls.md](PLAN/MILESTONES/M611-usdtogeo-source-controls.md) |
-| M612 | USDGeoModify Node | todo | M609, M610, M611, M159 |  | E9 |  | | [M612-usdgeomodify-node.md](PLAN/MILESTONES/M612-usdgeomodify-node.md) |
+| M609 | GeoToUSD Path And Placement | doing | M358 | bosley-executor | E9 | F42 | | [M609-geotousd-path-and-placement.md](PLAN/MILESTONES/M609-geotousd-path-and-placement.md) |
+| M610 | GeoToUSD Attribute And Material Controls | todo | M609 |  | E9 | F42 | | [M610-geotousd-attribute-and-material-controls.md](PLAN/MILESTONES/M610-geotousd-attribute-and-material-controls.md) |
+| M611 | USDToGeo Source Controls | doing | M358 | bosley-executor | E9 | F42 | | [M611-usdtogeo-source-controls.md](PLAN/MILESTONES/M611-usdtogeo-source-controls.md) |
+| M612 | USDGeoModify Node | todo | M609, M610, M611, M159 |  | E9 | F42 | | [M612-usdgeomodify-node.md](PLAN/MILESTONES/M612-usdgeomodify-node.md) |
 | M613 | Geometry Node Handles Rollout | todo | M604 |  | E28 |  | | [M613-geometry-node-handles-rollout.md](PLAN/MILESTONES/M613-geometry-node-handles-rollout.md) |
 
 # Epics
@@ -732,7 +732,7 @@ future core work has solid ground to build on.
 | F8 | Motion Vectors | landed | | | feature/f8-motion-vectors | Generate dense motion vectors classically, on the GPU and with a neural model, and move Roto and SplineWarp curves along them. |
 | F9 | Delegate Projection | landed | bosley-native-nodes |  | feature/f9-delegate-projection | Live textures and camera projection in Cycles and MoonRay, with per-placement and deforming-geometry projection. |
 | F10 | Viewer Polish | landed | bosley-native-nodes |  | feature/f10-viewer-polish | Ship a batch of small viewer and properties-panel fixes on one build and one UAT. |
-| F11 | Texture Painting | open |  |  | feature/f11-texture-painting | Paint directly on meshes in the 3D view with UDIM textures, layering over existing materials, baking and paint-through inputs, including painting native geometry with its own UV operators, attribute painting, and a Viewer 2D/3D switch. |
+| F11 | Texture Painting | open | bosley-executor |  | feature/f11-texture-painting | Paint directly on meshes in the 3D view with UDIM textures, layering over existing materials, baking and paint-through inputs, including painting native geometry with its own UV operators, attribute painting, and a Viewer 2D/3D switch. |
 | F12 | Expression Speed | open | bosley-executor |  | feature/f12-expression-speed | Benchmark Python knob expressions and make them cheap on large graphs, through a lighter interpreter path, a result cache and a native evaluator. |
 | F13 | ZDefocus Rework | open | bosley-executor |  | feature/f13-zdefocus-rework | Measure ZDefocus against ground truth, add traced lenses and debug outputs, match or exceed Higx Optics' traced bokeh, and revisit its engine from the results. |
 | F14 | Map Blend I-Nodes | shipping | bosley-executor |  | feature/f14-map-blend-i-nodes | Turn any subgraph into a Map-driven I-node through LoopEnd's Map blend and one Make I-Node action. |
@@ -761,8 +761,9 @@ future core work has solid ground to build on.
 | F37 | Scene Graph Bulk Ops | open |  |  | feature/f37-scene-graph-bulk-ops | Load, draw and expand whole Scene Graph branches in one action, by row or down to a kind, with a Purpose column. |
 | F38 | Scene Authoring And Lighting | open |  |  | feature/f38-scene-authoring-and-lighting | The survey-driven scene authoring and lighting set (M562–M581): relationship, tweak, metadata and layer editing, collections, light linking and mixing, render attributes and regions, catalogue, restructure, instances, constraints, queries, inspection and load masks. |
 | F39 | Edge Extend Family | open |  |  | feature/f39-edge-extend-family | Native edge-extend nodes (EdgePush, EdgeClamp, EdgeSmear, EdgePushVector, EdgeDistort) on a shared fill kit, plus EdgeDetail for restoring detail. |
-| F40 | 3D Viewer Tools | open |  |  | feature/f40-3d-viewer-tools | Three-bar 3D viewer toolbars, a combined transform handle, geometry handles and component transforms, snapping, marker controls and group pickers, accepted in one UAT. |
-| F41 | Native Geometry Scene Index | open |  |  | feature/f41-native-geometry-scene-index | Storm draws native geometry from a Hydra scene index built from GeoUsdConvert, with no USD staging in the viewer, no flash frames and faster drags on heavy geometry. Waits for F15 - Native Geometry to land. |
+| F40 | 3D Viewer Tools | open | bosley-executor |  | feature/f40-3d-viewer-tools | Three-bar 3D viewer toolbars, a combined transform handle, geometry handles and component transforms, snapping, marker controls and group pickers, accepted in one UAT. |
+| F41 | Native Geometry Scene Index | open | bosley-executor |  | feature/f41-native-geometry-scene-index | Storm draws native geometry from a Hydra scene index built from GeoUsdConvert, with no USD staging in the viewer, no flash frames and faster drags on heavy geometry. Waits for F15 - Native Geometry to land. |
+| F42 | Geometry USD Bridge Controls | open | bosley-executor |  | feature/f42-geometry-usd-bridge-controls | GeoToUSD path, placement, attribute and material controls, USDToGeo source controls and a USDGeoModify node, accepted in one UAT. |
 
 # Open questions
 - **M104 - Merge Resolution UI (2026-11-22):** Keep Both Keys puts theirs' key one frame after mine, or halfway to the next key when that's closer. Confirm, or give the rule you want.

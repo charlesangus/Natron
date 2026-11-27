@@ -2007,11 +2007,15 @@ try:
             check(make_tab_current(editors[0]), "brought the curve editor's tab to the front")
             yield ("sleep", SETTLE_MS)
             tree, knob_index = size_knob_index()
-            if check(knob_index is not None and tree.model().rowCount(knob_index) == 2, "found the size knob's two component rows"):
+            # The knob row also holds a hidden row per loop driver end and component, so only the
+            # rows the tree shows are the component curves.
+            shown = [] if knob_index is None else [k for k in range(tree.model().rowCount(knob_index))
+                                                   if not tree.isRowHidden(k, knob_index)]
+            if check(len(shown) == 2, "found the size knob's two component rows (got %d shown)" % len(shown)):
                 # Only X is selected, so the curve widget shows X's curve alone and the drag cannot
                 # land on Y's key, which sits on the same spot.
                 tree.clearSelection()
-                tree.selectionModel().select(tree.model().index(0, 0, knob_index),
+                tree.selectionModel().select(tree.model().index(shown[0], 0, knob_index),
                                              QItemSelectionModel.ClearAndSelect | QItemSelectionModel.Rows)
                 QApplication.processEvents()
                 visible_cws = [w for w in gt.widgets_of("CurveWidget") if w.isVisible()]

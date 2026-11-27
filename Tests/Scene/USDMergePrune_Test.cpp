@@ -571,11 +571,14 @@ TEST_F(USDMergePruneTest, ChangingTheOpinionOrderRecooksToADifferentStage)
     ASSERT_TRUE(bool(node));
 
     const ScenePayload higher = evaluate(node);
+    const U64 higherHash = node->getEffectInstance()->getHash();
     setOpinionOrder(node, "lower");
     const ScenePayload lower = evaluate(node);
     EXPECT_NE(higher.getStackHash(), lower.getStackHash());
+    EXPECT_NE(higherHash, node->getEffectInstance()->getHash());
     setOpinionOrder(node, "higher");
     EXPECT_EQ(higher.getStackHash(), evaluate(node).getStackHash());
+    EXPECT_EQ(higherHash, node->getEffectInstance()->getHash());
 }
 
 TEST_F(USDMergePruneTest, PrunedPrimsAreInactiveOnTheComposedStage)

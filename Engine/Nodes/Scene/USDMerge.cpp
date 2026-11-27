@@ -61,8 +61,7 @@ USDMerge::mergeStacks(const std::vector<ScenePayload>& inputs,
     std::vector<SceneLayerEntry> merged;
     std::unordered_set<const PXR_NS::SdfLayer*> seen;
     const ScenePayload* first = NULL;
-    // Walking from the last input to the first makes input 0 the strongest, with the same
-    // weakest-position rule, so a shared source still sits under every branch's edits.
+    // Reversed walk makes input 0 the strongest; the weakest-position dedup is unchanged.
     const std::size_t count = inputs.size();
     for (std::size_t n = 0; n < count; ++n) {
         const ScenePayload& input = inputs[lowerWins ? count - 1 - n : n];

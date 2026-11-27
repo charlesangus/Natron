@@ -26,17 +26,17 @@ Background: `PLAN/DESIGN/2026-11-26-m617-research/` (bypass-feasibility.md §0-�
 
 ## Phase 622.1: Scene index
 
-- [ ] M622.P1.T1 — Build GeoSceneIndex prims and data sources from GeoUsdConvert
+- [x] M622.P1.T1 — Build GeoSceneIndex prims and data sources from GeoUsdConvert
   - files: new `Engine/Nodes/Geometry/GeoSceneIndex.h/.cpp`, `Engine/Nodes/Geometry/GeoUsdConvert.h` (expose partition iteration and values if not already public), the Engine CMake source list, new `Tests/Scene/GeoSceneIndex_Test.cpp`
   - approach: follow `GeoUsdConvert`'s partitioning, paths and attribute→primvar mapping (`GeoUsdConvert.cpp` ~1170-1530 and 1237-1246 for displayColor and widths). Serve the values copy-free from `partitionValues()`. Flatten `xformOp:transform` into `HdXformSchema` with `resetXformStack`. Author `purpose`, `visibility`, `extent` and `HdPrimOriginSchema` (scenePath = own path). Prims sit under a caller-supplied prefix. Mesh, basisCurves and points only: instancing partitions are skipped, because M623 owns them. Build data sources with the USD 26.08 Hd schema builders (`HdMeshSchema`, `HdPrimvarsSchema`, …; headers are in the dev image), not hand-rolled containers.
   - verify: GeoSceneIndex_Test builds the scene index from a Box, a GeoScatter-style points detail, a curves detail and a detail with primitive groups. It checks prim types, paths, points, topology, primvar interpolation, xform, extent, subsets and primOrigin through `GetPrim`. The test is registered in ctest.
   - size: L
-- [ ] M622.P1.T2 — Diff successive details into exact Hydra notices
+- [x] M622.P1.T2 — Diff successive details into exact Hydra notices
   - files: `Engine/Nodes/Geometry/GeoSceneIndex.h/.cpp`, `Tests/Scene/GeoSceneIndex_Test.cpp`
   - approach: `update(convert)` compares against the previous convert using `adoptUnchangedPartitions` and `partitionSignature` (the logic `GeoLayers::refresh` uses today, `GeoSdfFileFormat.cpp` ~437-455 and 591-735). It sends PrimsAdded, PrimsRemoved and PrimsDirtied with the narrowest locator. Swap in the new data atomically, so a Hydra sync never sees half an update. Hydra syncs under the stage lock, as `SceneDrawFilter.h` ~95-100 documents for the draw filter.
   - verify: a recording observer in GeoSceneIndex_Test sees only `primvars/points` dirtied for a transform-only change, only `primvars/widths` for a pscale change, a topology locator for a point-count change, and remove+add only for a path change. No notices are sent for an identical detail.
   - size: M
-- [ ] M622.P1.T3 — Parity oracle against UsdImaging over the natrongeo layer
+- [x] M622.P1.T3 — Parity oracle against UsdImaging over the natrongeo layer
   - files: new `Tests/Scene/GeoSceneIndexParity_Test.cpp`, ctest registration
   - approach: for each fixture detail, open the `natrongeo` layer in a UsdStage and build UsdImaging's stage scene index over it (`UsdImagingCreateSceneIndices` or `UsdImagingStageSceneIndex`, whichever 26.08 exposes). Walk both trees and compare prim by prim: type, path, points, topology, primvars with interpolation, world xform, extent and subsets. The comparison helper is reused by M623 for instancing fixtures.
   - verify: the parity test passes on the M622.P1.T1 fixtures. A deliberately mismatched primvar (temporary local edit, not committed) makes it fail with the prim path and field in the message.

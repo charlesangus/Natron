@@ -113,6 +113,10 @@ Known suspects, unmeasured as to their split (M399's samples are gone):
 
 ## Decisions
 
+- 2026-11-26 (user): node and panel may appear in the same frame; the panel is built in the creation pass and the node no longer has to paint first (supersedes P3.T1's "the node still paints first").
+- 2026-11-26 (user): the app stylesheet may be replaced on knob rows by something faster (a QStyle/QProxyStyle or palette) that keeps the look.
+- 2026-11-26 (user): no vsync or swap-interval changes; the user's display settings are not ours to control.
+
 - 2026-11-14 — Fix the build cost, don't hide it (user): building the deferred panel hidden and revealing it once was rejected as papering over a build that is far slower than a few dozen widget rows should be.
 - 2026-11-14 — Target (user): a typical panel builds within one frame (under 16 ms) on the user's real display; a few frames is acceptable for very heavy nodes.
 - 2026-11-14 — Remove the incremental build (user): once the target is met the deferred, time-sliced build is deleted outright, not kept as a fallback for big panels.

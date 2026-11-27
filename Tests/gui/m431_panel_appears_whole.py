@@ -42,7 +42,6 @@ import ctypes
 import os
 import re
 import sys
-import time
 import traceback
 
 sys.path.insert(0, os.path.join(os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd()), "Tests", "gui"))
@@ -684,8 +683,10 @@ try:
             button.click()
         return found
 
-    def unfold_fields(node, dim):
-        panel = panel_of(node)
+    def unfold_fields(panel, dim):
+        """The visible fields for dimension dim of the unfold parameter. PySide parents the wrappers
+        findChildren returns to panel's wrapper and invalidates them when that wrapper is freed, so
+        the caller holds panel for as long as it uses them."""
         tip = "<b>%s</b>" % UNFOLD_PARAM
         found = []
         for w in (panel.findChildren(QWidget) if panel is not None else []):
@@ -697,32 +698,25 @@ try:
                 continue
         return found
 
-    def unfold_switch_once(node, dims):
-        """The row's dimension switch: the checkable button, labelled with the dimension count, beside
-        dimension 0's field. Every intermediate widget stays referenced while it is walked, and a
-        wrapper that died with the widget under it raises RuntimeError."""
-        fields = unfold_fields(node, 0)
-        if len(fields) != 1:
-            return None
-        field = fields[0]
-        box = field.parentWidget()
+    def unfold_switch(panel, dims):
+        """The row's dimension switch: the checkable button, labelled with the dimension count, inside
+        the row that holds dimension 0's field. It is looked up from panel, not from the row, so its
+        wrapper lives as long as the caller's panel."""
+        fields = unfold_fields(panel, 0)
+        box = fields[0].parentWidget() if len(fields) == 1 else None
         row = box.parentWidget() if box is not None else None
-        buttons = row.findChildren(QAbstractButton) if row is not None else []
-        for b in buttons:
-            if b.isCheckable() and b.text() == str(dims) and b.isVisible():
+        if row is None:
+            return None
+        row_ptr = ptr(row)
+        for b in panel.findChildren(QAbstractButton):
+            if not (b.isCheckable() and b.text() == str(dims) and b.isVisible()):
+                continue
+            up = b.parentWidget()
+            while up is not None and ptr(up) != row_ptr:
+                up = up.parentWidget()
+            if up is not None:
                 return b
         return None
-
-    def unfold_switch(node, dims):
-        """unfold_switch_once, retried after a settle for as long as a wrapper turns up dead."""
-        deadline = time.time() + PANEL_TIMEOUT_S
-        while True:
-            try:
-                return unfold_switch_once(node, dims)
-            except RuntimeError:
-                if time.time() > deadline:
-                    raise
-            yield ("sleep", SETTLE_MS)
 
     def unfold_steps():
         tag = "unfold"
@@ -737,17 +731,19 @@ try:
         dims = param.getNumDimensions()
         ok = yield from open_panel(node)
         require(ok, "%s: the panel of %s opens" % (tag, node.getLabel()))
+        panel = panel_of(node)
+        require(panel is not None, "%s: the panel of %s is found" % (tag, node.getLabel()))
 
-        switch = yield from unfold_switch(node, dims)
+        switch = unfold_switch(panel, dims)
         require(switch is not None, "%s: %s has a dimension switch" % (tag, UNFOLD_PARAM))
         require(not switch.isChecked(), "%s: %s starts folded" % (tag, UNFOLD_PARAM))
-        check(not unfold_fields(node, 2), "%s: folded, %s shows no field for dimension 2" % (tag, UNFOLD_PARAM))
+        check(not unfold_fields(panel, 2), "%s: folded, %s shows no field for dimension 2" % (tag, UNFOLD_PARAM))
         switch.click()
         switch = None
         yield ("sleep", SETTLE_MS)
 
         values = [param.getValue(i) for i in range(dims)]
-        shown = [unfold_fields(node, i) for i in range(dims)]
+        shown = [unfold_fields(panel, i) for i in range(dims)]
         check(all(len(f) == 1 for f in shown), "%s: unfolded, %s shows one field per dimension (%r)" % (
             tag, UNFOLD_PARAM, [len(f) for f in shown]))
         if all(len(f) == 1 for f in shown):
@@ -771,10 +767,10 @@ try:
         check(all(abs(a - e) < 1e-6 for a, e in zip(after, expected)),
               "%s: typing %s into dimension 2's field sets that dimension alone (%r, expected %r)" % (
                   tag, UNFOLD_VALUE, after, expected))
-        fields = unfold_fields(node, 2)
+        fields = unfold_fields(panel, 2)
         check(len(fields) == 1 and abs(float(fields[0].text()) - UNFOLD_VALUE) < 1e-6,
               "%s: dimension 2's field shows %s" % (tag, UNFOLD_VALUE))
-        fields = None
+        fields = panel = None
 
     def hide_unmodified_steps():
         tag = "hide unmodified"

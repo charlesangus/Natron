@@ -39,11 +39,12 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief Draws one node's overlay draw list in a viewer's OpenGL context. The list is uploaded in
  * one vertex buffer and drawn twice, a one-pixel shadow pass then the colour pass, as the host
- * interacts are. The buffer is kept between draws: while the list, the pen state and the zoom
- * bucket are unchanged, a draw reuses it without converting or uploading anything. A list with
- * no pixel-sized geometry (dashes, arrowheads, anchored shapes) is reused across every zoom; one
- * with some keeps the geometry tessellated on entering the bucket, so its pixel sizes may be off
- * by up to an eighth of an octave until the zoom leaves it. One renderer belongs to one context
+ * interacts are. The buffer is kept between draws: while the list and the pen state are unchanged,
+ * a draw reuses it without converting or uploading anything. A list with no pixel-sized geometry
+ * (dashes, arrowheads, anchored shapes) is reused across every zoom and pan. One with some is
+ * re-tessellated whenever the exact pixel scale changes, so those parts keep their size in
+ * screen pixels at every zoom and match the hit-testing, which uses the live pixel scale;
+ * panning leaves the scale alone and so reuses the buffer. One renderer belongs to one context
  * and one list.
  **/
 class NodeOverlayRenderer {
@@ -103,8 +104,8 @@ private:
     unsigned long long _uploadedBuildId;
     OverlayDrawState _uploadedState;
     bool _uploadedScaleDependent;
-    int _uploadedZoomX;
-    int _uploadedZoomY;
+    double _uploadedPixelScaleX;
+    double _uploadedPixelScaleY;
     std::size_t _uploadedPositionBytes;
     std::size_t _uploadedColorBytes;
     std::vector<float> _positions;

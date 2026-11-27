@@ -381,6 +381,7 @@ set(GuiTests_SOURCES
     NodeGraphShake_Test.cpp
     NodeGraphSplice_Test.cpp
     NodeGraphStacking_Test.cpp
+    NodeOverlayRenderer_Test.cpp
     OverlayImageRenderer_Test.cpp
     PythonUndoStep_Test.cpp
     RenderDialogRange_Test.cpp

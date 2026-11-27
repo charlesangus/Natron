@@ -112,8 +112,8 @@ NodeOverlayRenderer::NodeOverlayRenderer()
     , _uploadedBuildId(0)
     , _uploadedState()
     , _uploadedScaleDependent(false)
-    , _uploadedZoomX(0)
-    , _uploadedZoomY(0)
+    , _uploadedPixelScaleX(0.)
+    , _uploadedPixelScaleY(0.)
     , _uploadedPositionBytes(0)
     , _uploadedColorBytes(0)
 {
@@ -226,9 +226,9 @@ NodeOverlayRenderer::isUploaded(const OverlayDrawList& list,
                                 double pixelScaleX,
                                 double pixelScaleY) const
 {
-    const bool sameZoom = !_uploadedScaleDependent || ((_uploadedZoomX == OverlayDrawList::zoomBucket(pixelScaleX)) && (_uploadedZoomY == OverlayDrawList::zoomBucket(pixelScaleY)));
+    const bool sameScale = !_uploadedScaleDependent || ((_uploadedPixelScaleX == pixelScaleX) && (_uploadedPixelScaleY == pixelScaleY));
 
-    return _uploaded && _vbo && (_uploadedBuildId == list.buildId()) && sameZoom && (_uploadedState.hoveredHandle == state.hoveredHandle) && (_uploadedState.pressedHandle == state.pressedHandle) && (_uploadedState.nodeR == state.nodeR) && (_uploadedState.nodeG == state.nodeG) && (_uploadedState.nodeB == state.nodeB);
+    return _uploaded && _vbo && (_uploadedBuildId == list.buildId()) && sameScale && (_uploadedState.hoveredHandle == state.hoveredHandle) && (_uploadedState.pressedHandle == state.pressedHandle) && (_uploadedState.nodeR == state.nodeR) && (_uploadedState.nodeG == state.nodeG) && (_uploadedState.nodeB == state.nodeB);
 }
 
 void
@@ -286,8 +286,8 @@ NodeOverlayRenderer::draw(const OverlayDrawList& list,
         _uploadedBuildId = list.buildId();
         _uploadedState = state;
         _uploadedScaleDependent = std::any_of(list.primitives().begin(), list.primitives().end(), OverlayDrawList::dependsOnPixelScale);
-        _uploadedZoomX = OverlayDrawList::zoomBucket(pixelScaleX);
-        _uploadedZoomY = OverlayDrawList::zoomBucket(pixelScaleY);
+        _uploadedPixelScaleX = pixelScaleX;
+        _uploadedPixelScaleY = pixelScaleY;
     }
 
     const bool hasVertices = (_uploadedPositionBytes > 0) && _vbo;

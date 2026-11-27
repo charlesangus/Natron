@@ -1105,6 +1105,24 @@ private:
      **/
     bool abortViewerRendersForInputEdit(std::list<ViewerInstance*>* viewersDownstream);
 
+public:
+    /**
+     * @brief For an edit of this node made while it renders, calls
+     * EffectInstance::abortCooksStaleAfterEdit() on it and on every node downstream of it, each
+     * once. Does nothing when the node does not render: the edit then applies at once and moves
+     * the hashes downstream. The walks of a removal batch share what they visited.
+     **/
+    void abortCooksStaleAfterEditDownstream();
+
+    /**
+     * @brief Does what abortCooksStaleAfterEditDownstream() does and appends to outputs what
+     * hasOutputNodesConnected() would, in one walk. Returns false, doing nothing, for a group, a
+     * paint tree's node or within a removal batch, as those walk from other nodes or share what
+     * they visited with other walks.
+     **/
+    bool abortCooksStaleAfterEditFindingOutputs(std::list<OutputEffectInstance*>* outputs);
+
+private:
     int disconnectInputInternal(Node* input, bool queueWhileRendering);
 
     /**

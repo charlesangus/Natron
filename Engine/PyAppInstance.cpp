@@ -38,6 +38,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Loop/LoopPair.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Project.h"
 #include "Engine/PyParameter.h"
@@ -215,6 +216,28 @@ App::createNodeInCollection(const QString& pluginID,
     } else {
         return NULL;
     }
+}
+
+std::list<Effect*>
+App::createLoopPair(const QString& kind,
+                    Group* group) const
+{
+    std::list<Effect*> created;
+    const LoopPairKind* pair = findLoopPairKind(kind.toStdString());
+    if (!pair) {
+        return created;
+    }
+    const AppInstancePtr app = getInternalApp();
+    const NodeCollectionPtr collection = getCollectionFromGroup(group);
+    LoopPairNodes nodes = NATRON_NAMESPACE::createLoopPair(app, *pair, [&app, &collection](CreateNodeArgs& args) {
+        makeCreateNodeArgs(app, QString(), -1, collection, NodeCreationPropertyMap(), false, &args);
+    });
+    if (nodes.begin && nodes.end) {
+        created.push_back(new Effect(nodes.begin));
+        created.push_back(new Effect(nodes.end));
+    }
+
+    return created;
 }
 
 Effect*

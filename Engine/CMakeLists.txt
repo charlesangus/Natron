@@ -32,6 +32,8 @@ find_package(OpenColorIO 2.5 REQUIRED)
 # CONFIG mode: OpenImageIO ships its own package config and no CMake FindOpenImageIO
 # module exists. Nodes/Deep/ reads and writes deep EXR through its DeepData.
 find_package(OpenImageIO CONFIG REQUIRED)
+# Geo/GeoFileFormat compresses geometry pages with the zstd OpenImageIO already links.
+find_package(zstd CONFIG REQUIRED)
 
 file(GLOB NatronEngine_HEADERS *.h)
 file(GLOB NatronEngine_SOURCES *.cpp)
@@ -282,6 +284,7 @@ target_link_libraries(NatronEngine
         # Nodes/Scene/VolumeFields reads VDB grid metadata; the same library USD's hioOpenVDB loads.
         OpenVDB::openvdb
         OpenSubdiv::osdCPU
+        zstd::libzstd_shared
 )
 
 # rawspeed's camera database, read at run time from <bin>/../Resources/rawspeed beside every

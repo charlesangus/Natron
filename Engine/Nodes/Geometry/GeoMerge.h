@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -85,6 +87,14 @@ public:
      **/
     static GeoDetail merge(std::span<const GeoDetailConstPtr> inputs,
                            std::vector<std::string>* warnings);
+
+    /**
+     * @brief merge() that asks @p cancelled before each input and returns nothing once it answers
+     * true.
+     **/
+    static std::optional<GeoDetail> merge(std::span<const GeoDetailConstPtr> inputs,
+                                          std::vector<std::string>* warnings,
+                                          const std::function<bool()>& cancelled);
 
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;

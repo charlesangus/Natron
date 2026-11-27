@@ -1497,6 +1497,9 @@ public:
      **/
     bool isDrawPolicyPending() const;
 
+    // unloadRows(), with *queued set to whether it asked for an unload.
+    QString unloadRows(const QStringList& paths, const QString& scope, bool* queued);
+
 public Q_SLOTS:
     // Replaces the selection. A slot, so that scripts reach it through the meta object.
     void selectPaths(const QStringList& paths);
@@ -1547,8 +1550,8 @@ public Q_SLOTS:
      * thread, each slice bounded by a time budget and letting go of the stage after it, and makes
      * its edits, as one, once the walk is done. The first slice runs at once: a walk it finishes
      * returns what it did, a longer one what it has found so far, and scopedDrawProgress() reports
-     * it from then on. A new call, cancelScopedDraw() or another stage stops the walk, which then
-     * has changed nothing.
+     * it from then on. A new call, cancelScopedDraw(), another stage or an edit to the stage stops the
+     * walk, which then has changed nothing. Loads between slices do not stop it.
      **/
     QString loadRows(const QStringList& paths, const QString& scope);
     QString unloadRows(const QStringList& paths, const QString& scope);

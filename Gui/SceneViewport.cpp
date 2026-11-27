@@ -8884,8 +8884,10 @@ struct SceneViewport::Implementation {
     // A kind-scoped draw state edit whose walk is under way.
     struct ScopedDraw {
         std::unique_ptr<SceneKindWalker> walker;
-        // The stage the walk started on, once a slice has read it; another one stops the walk.
+        // The stage the walk started on and its edit count, once a slice has read it; another
+        // stage, or an edit to it, stops the walk.
         PXR_NS::UsdStagePtr stage;
+        U64 editCount = 0;
         bool stageRead = false;
         bool clearBelow = false;
         SceneDrawStateEnum state = eSceneDrawStateFull;
@@ -11284,6 +11286,17 @@ QString
 SceneViewport::unloadRows(const QStringList& paths,
                           const QString& scope)
 {
+    return unloadRows(paths, scope, nullptr);
+}
+
+QString
+SceneViewport::unloadRows(const QStringList& paths,
+                          const QString& scope,
+                          bool* queued)
+{
+    if (queued) {
+        *queued = false;
+    }
     TfToken kind;
     const RowScopeEnum parsed = parseRowScope(scope, &kind);
     const std::vector<std::string> rows = drawStatePaths(paths);
@@ -11293,12 +11306,18 @@ SceneViewport::unloadRows(const QStringList& paths,
     }
     if (parsed == eRowScopeSelected) {
         requestUnload(paths);
+        if (queued) {
+            *queued = true;
+        }
 
         return SceneGraphModel::unloadingText(rows.size(), scope);
     }
     forgetRestoredLoads();
     if (!_imp->renderer.requestStageUnloadBelowKind(rows, kind.GetString())) {
         return tr("No scene to unload from yet");
+    }
+    if (queued) {
+        *queued = true;
     }
     {
         std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
@@ -11389,15 +11408,16 @@ SceneViewport::stepScopedDraw()
     bool done = false;
     const bool read = _imp->renderer.tryReadStage([&](const SceneStage* stage) {
         const UsdStageRefPtr shown = stage ? stage->getStage() : UsdStageRefPtr();
+        const U64 editCount = shown ? stage->getEditCount() : 0;
         if (!run->stageRead) {
             run->stageRead = true;
             run->stage = shown;
-        } else if (!shown || (get_pointer(shown) != get_pointer(run->stage))) {
+            run->editCount = editCount;
+        } else if (!shown || (get_pointer(shown) != get_pointer(run->stage)) || (editCount != run->editCount)) {
             otherStage = true;
 
             return;
         }
-        // No scene shown: nothing to walk.
         if (!shown) {
             done = true;
 

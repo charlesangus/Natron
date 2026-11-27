@@ -160,7 +160,9 @@ SceneKindWalker::SceneKindWalker(const PXR_NS::SdfPathVector& roots,
 {
     const PXR_NS::SdfPathVector kept = outermostRoots(roots);
 
-    _pending.assign(kept.rbegin(), kept.rend());
+    for (PXR_NS::SdfPathVector::const_reverse_iterator it = kept.rbegin(); it != kept.rend(); ++it) {
+        _pending.push_back(Pending { *it, false });
+    }
 }
 
 bool
@@ -174,33 +176,27 @@ SceneKindWalker::walk(const PXR_NS::UsdStageRefPtr& stage,
         return true;
     }
     const PXR_NS::Usd_PrimFlagsPredicate predicate = walkPredicate();
-    // The prims below the last pending path taken, the next one last; they all come before the
-    // pending paths, so a stop puts them back after those.
-    std::vector<PXR_NS::UsdPrim> below;
     std::size_t sincePoll = 0;
 
     pollEvery = std::max<std::size_t>(1, pollEvery);
-    while (!below.empty() || !_pending.empty()) {
+    while (!_pending.empty()) {
         if (stop && (sincePoll >= pollEvery)) {
             sincePoll = 0;
             if (stop()) {
-                for (const PXR_NS::UsdPrim& prim : below) {
-                    _pending.push_back(prim.GetPath());
-                }
-
                 return false;
             }
         }
         ++sincePoll;
-        PXR_NS::UsdPrim prim;
-        if (!below.empty()) {
-            prim = below.back();
-            below.pop_back();
-        } else {
-            prim = stage->GetPrimAtPath(_pending.back());
-            _pending.pop_back();
-            if (!prim || !predicate(prim)) {
-                continue;
+        const Pending next = _pending.back();
+        _pending.pop_back();
+        const PXR_NS::UsdPrim prim = stage->GetPrimAtPath(next.path);
+        if (!prim || !predicate(prim)) {
+            continue;
+        }
+        if (next.siblings) {
+            const PXR_NS::UsdPrim sibling = prim.GetFilteredNextSibling(predicate);
+            if (sibling) {
+                _pending.push_back(Pending { sibling.GetPath(), true });
             }
         }
         ++_visited;
@@ -214,11 +210,10 @@ SceneKindWalker::walk(const PXR_NS::UsdStageRefPtr& stage,
         if (isUnloadedPayload(prim)) {
             _result.unloadedPassThrough.push_back(prim.GetPath());
         }
-        const std::size_t first = below.size();
-        for (const PXR_NS::UsdPrim& child : prim.GetFilteredChildren(predicate)) {
-            below.push_back(child);
+        const PXR_NS::UsdPrimSiblingRange children = prim.GetFilteredChildren(predicate);
+        if (children.begin() != children.end()) {
+            _pending.push_back(Pending { children.begin()->GetPath(), true });
         }
-        std::reverse(below.begin() + first, below.end());
     }
 
     return true;

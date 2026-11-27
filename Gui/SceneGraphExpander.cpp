@@ -891,8 +891,8 @@ SceneGraphExpander::progressText(const Progress& progress)
                     .arg(groupedCountText(progress.unloaded, QT_TRANSLATE_NOOP("SceneGraphExpander", "1 unloaded payload"), QT_TRANSLATE_NOOP("SceneGraphExpander", "%1 unloaded payloads")));
     }
     if ((progress.mode != eModeCollapseBelow) && (progress.loading > 0)) {
-        text += trExpander(QT_TRANSLATE_NOOP("SceneGraphExpander", "; %1 not expanded"))
-                    .arg(groupedCountText(progress.loading, QT_TRANSLATE_NOOP("SceneGraphExpander", "1 loading payload"), QT_TRANSLATE_NOOP("SceneGraphExpander", "%1 loading payloads")));
+        text += trExpander(QT_TRANSLATE_NOOP("SceneGraphExpander", "; %1 still loading, not walked below"))
+                    .arg(groupedCountText(progress.loading, QT_TRANSLATE_NOOP("SceneGraphExpander", "1 payload"), QT_TRANSLATE_NOOP("SceneGraphExpander", "%1 payloads")));
     }
     if (progress.cancelled) {
         text = trExpander(QT_TRANSLATE_NOOP("SceneGraphExpander", "Stopped. %1")).arg(text);

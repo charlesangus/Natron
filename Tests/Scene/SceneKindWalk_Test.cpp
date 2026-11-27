@@ -368,6 +368,34 @@ TEST(SceneKindWalk, AWalkerResumedAtEveryPrimFindsWhatOneWalkDoes)
     }
 }
 
+TEST(SceneKindWalk, AWalkerStopsPartwayThroughAWideChildList)
+{
+    std::string body = "def Xform \"World\"\n{\n";
+
+    for (int i = 0; i < 2000; ++i) {
+        body += "    def Xform \"P" + std::to_string(i) + "\" (kind = \"component\")\n    {\n    }\n";
+    }
+    body += "}\n";
+    PXR_NS::UsdStageRefPtr stage = openStage(body);
+    SceneKindWalker walker(paths({ "/World" }), PXR_NS::KindTokens->component);
+    std::size_t parts = 0;
+    std::size_t visited = 0;
+    bool done = false;
+
+    while (!done) {
+        done = walker.walk(stage, []() { return true; }, 16);
+        EXPECT_LE(walker.getVisitedCount() - visited, 16u);
+        visited = walker.getVisitedCount();
+        ++parts;
+        ASSERT_LT(parts, 1000u);
+    }
+    EXPECT_GT(parts, 100u);
+    EXPECT_EQ(2001u, walker.getVisitedCount());
+    ASSERT_EQ(2000u, walker.getResult().matches.size());
+    EXPECT_EQ(std::string("/World/P0"), walker.getResult().matches.front().GetString());
+    EXPECT_EQ(std::string("/World/P1999"), walker.getResult().matches.back().GetString());
+}
+
 TEST(SceneKindWalk, APrimGoneBetweenPartsIsPassedOver)
 {
     PXR_NS::UsdStageRefPtr stage = openStage(kWorld);

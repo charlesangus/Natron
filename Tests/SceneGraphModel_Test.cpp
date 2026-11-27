@@ -2141,7 +2141,7 @@ TEST(SceneGraphExpander, ALoadingPayloadRowOpensAndIsCountedApartFromUnloadedOne
     EXPECT_FALSE(tree.isExpanded(fixture.row(kB2)));
     const QString text = SceneGraphExpander::progressText(progress);
     EXPECT_TRUE(text.contains(QString::fromUtf8("2 unloaded payloads not expanded"))) << text.toStdString();
-    EXPECT_TRUE(text.contains(QString::fromUtf8("1 loading payload not expanded"))) << text.toStdString();
+    EXPECT_TRUE(text.contains(QString::fromUtf8("1 payload still loading, not walked below"))) << text.toStdString();
     EXPECT_EQ(SceneGraphModel::ePayloadStateUnloaded, fixture.model.getPayloadState(kB1));
     EXPECT_EQ(SceneGraphModel::ePayloadStateUnloaded, fixture.model.getPayloadState(kB2));
 

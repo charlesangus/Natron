@@ -1023,6 +1023,8 @@ struct SceneGraphPanel::Implementation {
             return;
         }
         if (viewport) {
+            // Unlinked, its walk would go on unseen and out of Esc's reach.
+            viewport->cancelScopedDraw();
             QObject::disconnect(viewport, nullptr, panel, nullptr);
         }
         viewport = newViewport;
@@ -1183,8 +1185,8 @@ struct SceneGraphPanel::Implementation {
     /**
      * @brief Closes, as requestUnload() does, the remembered open rows an Unload Below kind at roots
      * unloads, and every row below them: the payload rows below a row the walk to kind matches,
-     * which the rows' Kind column tells by walkToKind()'s stop rule. Rows already read are enough:
-     * a remembered open row's ancestors are open, so read.
+     * which the rows' Kind column tells by walkToKind()'s stop rule. Rows not read are below an
+     * unloaded payload, which this unload leaves alone.
      **/
     void closeRowsUnloadedBelowKind(const QStringList& roots,
                                     const QString& kind)
@@ -1435,8 +1437,11 @@ struct SceneGraphPanel::Implementation {
                     requestUnload(paths);
                     summary = SceneGraphModel::unloadingText(paths.size(), scope);
                 } else if (showsViewerStage()) {
-                    closeRowsUnloadedBelowKind(paths, scope);
-                    summary = viewport->unloadRows(paths, scope);
+                    bool queued = false;
+                    summary = viewport->unloadRows(paths, scope, &queued);
+                    if (queued) {
+                        closeRowsUnloadedBelowKind(paths, scope);
+                    }
                 } else if (pinned && (model->getSource() == pinned)) {
                     closeRowsUnloadedBelowKind(paths, scope);
                     pinned->requestUnloadBelowKind(paths, scope.toStdString());
@@ -1496,6 +1501,9 @@ struct SceneGraphPanel::Implementation {
             return;
         }
         leaveExpansionNode();
+        if (viewport && viewport->isScopedDrawRunning()) {
+            viewport->cancelScopedDraw();
+        }
         if (collapse) {
             expander->start(SceneGraphExpander::eModeCollapseBelow, paths);
         } else if ((scope == QString::fromUtf8("selected")) || (scope == QString::fromUtf8("below"))) {

@@ -82,13 +82,13 @@ struct SceneKindWalkResult {
     bool cancelled = false;
 };
 
-// Whether prim has a payload authored that is not loaded.
 bool isUnloadedPayload(const PXR_NS::UsdPrim& prim);
 
 /**
  * @brief walkToKind() a part at a time: each walk() goes on from where the last one stopped, so
- * that a walk can let go of the stage between parts. Only paths are kept between parts. A prim
- * gone meanwhile is passed over; one that appeared under a prim already walked is not seen.
+ * that a walk can let go of the stage between parts, and a part can end partway through one
+ * prim's children. Only paths are kept between parts. A prim gone meanwhile is passed over with
+ * the siblings after it; one that appeared under a prim already walked is not seen.
  **/
 class SceneKindWalker {
 public:
@@ -108,13 +108,19 @@ public:
     // What the walk found so far; cancelled is never set here.
     const SceneKindWalkResult& getResult() const;
 
-    // The prims walked so far.
     std::size_t getVisitedCount() const;
 
 private:
+    struct Pending {
+        PXR_NS::SdfPath path;
+        // A child stands for itself and the siblings after it, so that a wide child list is
+        // neither copied nor walked past at once.
+        bool siblings = false;
+    };
+
     PXR_NS::TfToken _target;
-    // The prims still to visit, the next one last.
-    PXR_NS::SdfPathVector _pending;
+    // The next one last.
+    std::vector<Pending> _pending;
     SceneKindWalkResult _result;
     std::size_t _visited = 0;
 };

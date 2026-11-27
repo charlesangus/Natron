@@ -206,7 +206,7 @@ public:
     const Progress& getProgress() const;
 
     // What progress says for the status line: "Expanded 4,210 rows; 37 unloaded payloads not
-    // expanded; 2 loading payloads not expanded".
+    // expanded; 2 payloads still loading, not walked below".
     static QString progressText(const Progress& progress);
 
     /**

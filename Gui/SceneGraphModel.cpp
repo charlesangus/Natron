@@ -3196,7 +3196,7 @@ filterPredicateLibrary()
                 return false;
             }
 
-            return loaded ? prim.IsLoaded() : (prim.HasAuthoredPayloads() && !prim.IsLoaded());
+            return loaded ? prim.IsLoaded() : isUnloadedPayload(prim);
         };
         auto isActive = [](const UsdObject& object, bool active) {
             const UsdPrim prim = object.GetPrim();
@@ -3366,7 +3366,7 @@ SceneGraphPrimWalk::step(const SceneStage* stage,
             } else if (matches(QString::fromStdString(prim.GetName().GetString()))) {
                 *found << QString::fromStdString(prim.GetPath().GetString());
             }
-            if (descend && prim.HasAuthoredPayloads() && !prim.IsLoaded()) {
+            if (descend && isUnloadedPayload(prim)) {
                 ++_imp->unloadedBranches;
                 _imp->unloadedPaths << QString::fromStdString(prim.GetPath().GetString());
             }

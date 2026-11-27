@@ -45,7 +45,7 @@ A raster render mode in Natron Utility that is faster on simple setups, mostly p
 - Unconfirmed: GpuTracer can share its device end-point buffers with raster without copying. P1.T2 assumes it.
 
 ## Phase 514.1: Visibility raster
-- [ ] M514.P1.T1 — Depth attachments and uint colour attachments in the raster layer
+- [x] M514.P1.T1 — Depth attachments and uint colour attachments in the raster layer
   - files: `Engine/Gpu/GpuRaster.{h,cpp}`, `Engine/Gpu/GpuTexture.{h,cpp}`, `Engine/Gpu/GpuRecord.{h,cpp}`, `Engine/Gpu/GpuDevice.{h,cpp}`, `Tests/Gpu/GpuRaster_Test.cpp`
   - approach:
     - Add a `GpuRasterDepth { None, Less }` pipeline option using a D32_SFLOAT attachment. `beginRaster` takes an optional depth texture and clear value.
@@ -57,7 +57,7 @@ A raster render mode in Natron Utility that is faster on simple setups, mostly p
     - The capability is logged.
     - The existing raster tests are unchanged.
   - size: L
-- [ ] M514.P1.T2 — Device tables and visibility kernel for raster scenes
+- [x] M514.P1.T2 — Device tables and visibility kernel for raster scenes
   - files: `Engine/Nodes/Scene/Utility/GpuTracer.{h,cpp}`, `Engine/Nodes/Scene/Utility/Kernels/RasterVisibility.slang` (new), `RasterVisibility.cmake` (new), `UtilityKernels.{h,cpp}`
   - approach:
     - GpuTracer exposes its device end-point point arrays, indices and per-instance end-point transforms, without copying.
@@ -140,3 +140,4 @@ A raster render mode in Natron Utility that is faster on simple setups, mostly p
 - 2026-11-26 — Visibility buffer from a depth attachment plus uint id attachments added to M472's raster layer (user). Deep output stays on the ray path in M286 - Utility Renderer Deep Output and covers both modes. A raster A-buffer for deep is a possible later follow-up reusing M286's compaction library.
 - 2026-11-26 — A separate Raster Samples knob, default 32, shown only in Raster mode (user).
 - 2026-11-26 — Secondary rays keep M283's swept motion structures; no per-pass rebuild (user).
+- 2026-11-26 (PM) — P1.T1/T2 deviations: rasterVisibility also needs the geometryShader feature (SV_PrimitiveID), enabled when present; uint attachments open through beginRasterUint(); GpuPipelineCache carries the depth mode in its key; drawIndexedIndirect takes firstCommand for one draw per geometry; RasterVisibility is registered in Engine/Nodes/Scene/Utility/CMakeLists.txt (no per-kernel .cmake there); UtilityKernels.cpp unchanged (CPU raster is out of scope); NatronUtilityRaster_Test.cpp created in P1 rather than P2.T3.

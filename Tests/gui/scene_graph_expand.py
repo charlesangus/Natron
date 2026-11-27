@@ -704,15 +704,19 @@ try:
             reported = int(match.group(1).replace(",", "")) if match else -1
             open_rows = []
             pending = [find(WIDE, False)]
+            # tree() and rows() scan every widget of the application; once per row of the wide
+            # stage that outlasts the script's timeout.
+            t = tree()
+            m = model()
             while pending:
                 index = pending.pop()
                 if not index.isValid():
                     continue
                 # Only open rows are read into: a payload row is never fetched, and an open row
                 # under a closed one goes uncounted here while it is still remembered.
-                if tree().isExpanded(index):
+                if t.isExpanded(index):
                     open_rows.append(path_of(index))
-                    pending.extend(rows(index, False))
+                    pending.extend(m.index(r, 0, index) for r in range(m.rowCount(index)))
             check(0 < reported <= WIDE_OPENED and len(open_rows) == reported,
                   "the rows open after Esc are the %d the run reported opening (%d open)" % (reported, len(open_rows)))
             check(not opened(payloads), "the wide stage's payload rows stay closed after Esc (open %r)" % opened(payloads))

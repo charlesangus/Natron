@@ -2096,6 +2096,9 @@ TEST(SceneGraphExpander, CollapseAllBelowClosesTheRememberedRowsBelowTheRoot)
     std::vector<QString> closed;
     QObject::connect(&tree, &QTreeView::collapsed, &tree, [&](const QModelIndex& index) { closed.push_back(model.pathOf(index)); });
 
+    // A run starts from rows the tree shows, as a selection's are; the model reads /R on demand.
+    ASSERT_TRUE(processEventsUntil([&]() { return model.indexOfPath(QString::fromUtf8("/R"), true).isValid(); }));
+
     SceneGraphExpander expander(&tree, &model, &remembered);
     expander.start(SceneGraphExpander::eModeExpandBelow, QStringList({ QString::fromUtf8("/R") }));
     ASSERT_TRUE(processEventsUntil([&]() { return !expander.isRunning(); }));

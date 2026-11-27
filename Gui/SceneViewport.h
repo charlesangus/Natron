@@ -501,6 +501,31 @@ public:
 
     bool hasPendingStageLoads() const;
 
+    enum LoadHoldEnum {
+        eLoadHoldNone,
+        eLoadHoldBudget,
+        eLoadHoldMemory
+    };
+
+    /**
+     * @brief The faces loaded past which the stage holds the chunks a load with descendants still
+     * asks for, 0 for no limit. A new limit makes the held chunks pending again. Returns whether
+     * the limit is new. Any thread.
+     **/
+    bool setLoadFaceLimit(U64 faces);
+
+    // Why chunks are held, eLoadHoldNone while none is. Any thread.
+    LoadHoldEnum getStageLoadHold() const;
+
+    // The faces the committed loads brought in, as countCommittedStageLoads() last counted them.
+    U64 getLoadedFaces() const;
+
+    /**
+     * @brief Counts the faces the loads committed since the last call brought in, one load at a
+     * time under the lock shared, and forgets those of the unloaded. The load thread.
+     **/
+    void countCommittedStageLoads(const std::function<bool()>& cancelled);
+
     // Whether a load request waits, before the stage exists too, or a batch is being serviced.
     bool hasOutstandingStageLoads() const;
 

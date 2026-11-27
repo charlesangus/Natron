@@ -16,11 +16,17 @@ natronSceneBoxes lists the budget boxes drawn while natronSceneRecordBoxes is se
   - a row set to Full is demoted like any other;
   - moving the camera holds the applied budget, which changes once the camera rests;
   - the Polygon Budget submenu edits the Viewer's knobs, and Edit > Undo takes an edit back;
-  - turning the budget off restores every unit and hides the HUD line.
+  - turning the budget off restores every unit and hides the HUD line;
+  - on a second scene, pruned to an instanceable prim whose payload holds a mesh and two point
+    instancers, Load All then Hidden on each part of the instance hides that part alone, with no
+    instance masked, and clearing the rows gives back the first image exactly;
+  - on a third scene of many payloads, Load All under a Polygon Limit the first chunk reaches
+    stops loading, says so on the HUD, and a limit high enough loads the rest.
 
 Screenshots for sign-off: scene-budget-none, scene-budget-boxes-box-wire,
 scene-budget-boxes-box-shaded, scene-budget-boxes-marker, scene-budget-boxes-off,
-scene-budget-menu, scene-budget-off.
+scene-budget-menu, scene-budget-off, scene-budget-instance-shown, scene-budget-instance-xg-hidden,
+scene-budget-loading-stopped.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -55,10 +61,12 @@ BUDGET_BOXES = [("box-wire", 0), ("box-shaded", 1), ("marker", 2), ("off", 3)]
 
 try:
     from PySide6.QtCore import Q_ARG, QEvent, QMetaObject, QPoint, QPointF, Qt, QTimer
-    from PySide6.QtGui import QContextMenuEvent, QMouseEvent, QWheelEvent
+    from PySide6.QtGui import QContextMenuEvent, QGuiApplication, QImage, QMouseEvent, QWheelEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QMainWindow, QSpinBox, QWidgetAction
     from pxr import Gf, Sdf, Usd, UsdGeom, Vt
+
+    import NatronEngine
 
     from guitest import (OUT, check, class_name, finish, menu_of, plugin_problem, report, require, run, section, shot,
                          viewer_up, widgets_of)
@@ -109,6 +117,49 @@ try:
     instancer.CreatePrototypesRel().SetTargets([Sdf.Path(PROTOTYPE)])
     instancer.CreateProtoIndicesAttr(Vt.IntArray([0] * INSTANCES))
     instancer.CreatePositionsAttr(Vt.Vec3fArray([Gf.Vec3f(*CENTRES["%s[%d]" % (INSTANCER, k)]) for k in range(INSTANCES)]))
+    stage.GetRootLayer().Save()
+    stage = None
+
+    # /World/Island/Mountain is instanceable and loads its geometry through a payload, so its parts
+    # are instance proxies that Hydra draws under a prototype, not at their own paths.
+    MOUNTAIN = "/World/Island/Mountain"
+    MOUNTAIN_PARTS = ["%s/geometry/%s" % (MOUNTAIN, name) for name in ("main", "xgFoliage", "xgPalms")]
+    instance_scene_path = os.path.join(fixture_dir, "budget_instance_scene.usda")
+    stage = Usd.Stage.CreateNew(instance_scene_path)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+    stage.CreateClassPrim("/MountainAsset")
+    UsdGeom.Xform.Define(stage, "/MountainAsset/geometry")
+    plane(stage, "/MountainAsset/geometry/main", 4)
+    for name, x in (("xgFoliage", -4.0), ("xgPalms", 4.0)):
+        bundle = UsdGeom.PointInstancer.Define(stage, "/MountainAsset/geometry/" + name)
+        leaf = "/MountainAsset/geometry/%s/Protos/Leaf" % name
+        plane(stage, leaf, 2)
+        bundle.CreatePrototypesRel().SetTargets([Sdf.Path(leaf)])
+        bundle.CreateProtoIndicesAttr(Vt.IntArray([0, 0]))
+        bundle.CreatePositionsAttr(Vt.Vec3fArray([Gf.Vec3f(x, 0.0, 0.0), Gf.Vec3f(x, 0.0, -3.0)]))
+    UsdGeom.Xform.Define(stage, "/World")
+    UsdGeom.Xform.Define(stage, "/World/Island")
+    mountain = UsdGeom.Xform.Define(stage, MOUNTAIN).GetPrim()
+    mountain.GetPayloads().AddInternalPayload(Sdf.Path("/MountainAsset"))
+    mountain.SetInstanceable(True)
+    plane(stage, "/World/Elsewhere", 4).AddTranslateOp().Set(Gf.Vec3d(0.0, 0.0, 20.0))
+    stage.GetRootLayer().Save()
+    stage = None
+
+    # More payloads than one load chunk takes, so that a low limit stops Load All part way.
+    TOWN_HOUSES = 48
+    HOUSE_FACES = 16
+    town_scene_path = os.path.join(fixture_dir, "budget_town_scene.usda")
+    stage = Usd.Stage.CreateNew(town_scene_path)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+    stage.CreateClassPrim("/House")
+    plane(stage, "/House/Geo", 4)
+    UsdGeom.Xform.Define(stage, "/World")
+    UsdGeom.Xform.Define(stage, "/World/Town")
+    for k in range(TOWN_HOUSES):
+        house = UsdGeom.Xform.Define(stage, "/World/Town/H%d" % k)
+        house.AddTranslateOp().Set(Gf.Vec3d(3.0 * (k % 8), 0.0, 3.0 * (k // 8)))
+        house.GetPrim().GetPayloads().AddInternalPayload(Sdf.Path("/House"))
     stage.GetRootLayer().Save()
     stage = None
 
@@ -596,6 +647,134 @@ try:
         check(budget_boxes() == [], "no budget box is drawn (%r)" % budget_boxes()[:3])
         check(hud() == "", "the HUD line is hidden (%r)" % hud())
         save("scene-budget-off")
+
+        section("rows inside a native instance")
+
+        def draw_stats():
+            v = view()
+            stats = v.property("natronSceneDrawStats") if v is not None else None
+            return dict(stats) if stats else {}
+
+        def presented():
+            v = view()
+            return int(v.property("natronSceneDrawPresented") or 0) if v is not None else 0
+
+        def grab():
+            v = view()
+            if v is None:
+                return QImage()
+            QApplication.processEvents()
+            top_left = v.mapToGlobal(v.rect().topLeft())
+            image = QGuiApplication.primaryScreen().grabWindow(0).toImage()
+            return image.copy(top_left.x(), top_left.y(), v.width(), v.height()).convertToFormat(QImage.Format_RGBX8888)
+
+        def changed_pixels(first, second):
+            if first.isNull() or first.size() != second.size():
+                return None
+            a = bytes(first.constBits())[:first.sizeInBytes()]
+            b = bytes(second.constBits())[:second.sizeInBytes()]
+            if a == b:
+                return 0
+            return sum(1 for i in range(0, len(a), 4) if a[i:i + 3] != b[i:i + 3])
+
+        def draw_edit(label, method, *args):
+            """Calls a draw-state slot and waits until the frame that shows it is presented."""
+            before = int(draw_stats().get("posted", 0))
+            require(QMetaObject.invokeMethod(view(), method, *args), "%s: the scene view has %s" % (label, method))
+            posted = int(draw_stats().get("posted", 0))
+            if not check(posted > before, "%s: the draw state changed something" % label):
+                return
+            ok = yield ("until", lambda: presented() >= posted, POLL_TIMEOUT_S)
+            check(ok, "%s: reached the screen" % label)
+            yield ("sleep", 2 * SETTLE_MS)
+
+        props = {"CreateNodeArgsPropSettingsOpened": NatronEngine.BoolNodeCreationProperty(True)}
+        prune = app.createNode("USDPrune", -1, None, props)
+        require(prune is not None, "create USDPrune", plugin_problem("USDPrune"))
+        prune.setPosition(0, 100)
+        prune.getParam("primPattern").setValue("/World/Elsewhere")
+        require(prune.connectInput(0, usd), "connect the USDPrune to the USDRead")
+        require(viewer.connectInput(0, prune), "connect the Viewer to the USDPrune")
+        usd.getParam("filename").setValue(instance_scene_path)
+        yield settle()
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        require(ok, "the scene view shows %s" % instance_scene_path)
+        yield from draw_edit("Load All on /World/Island", "setDrawState", Q_ARG("QString", "/World/Island"),
+                             Q_ARG("QString", "loadAll"))
+        ok = yield ("until", lambda: scene_drawn() and int(view().property("natronSceneLoadsPending") or 0) == 0,
+                    POLL_TIMEOUT_S)
+        check(ok, "Load All on /World/Island loads the mountain's payload")
+        frame_all()
+        yield ("sleep", 2 * SETTLE_MS)
+        shot("scene-budget-instance-shown.png")
+        base = grab()
+        changes = {}
+        for part in MOUNTAIN_PARTS:
+            yield from draw_edit("Hidden on %s" % part, "setDrawState", Q_ARG("QString", part), Q_ARG("QString", "hidden"))
+            changes[part] = changed_pixels(base, grab())
+            check(bool(changes[part]), "Hidden on %s changes the image (%r)" % (part, changes[part]))
+            check(int(draw_stats().get("maskedInstances", -1)) == 0,
+                  "Hidden on %s masks no instance (%r)" % (part, draw_stats().get("maskedInstances")))
+            if part.endswith("xgPalms"):
+                shot("scene-budget-instance-xg-hidden.png")
+            yield from draw_edit("Full on %s" % part, "setDrawState", Q_ARG("QString", part), Q_ARG("QString", "full"))
+            restored = changed_pixels(base, grab())
+            check(restored == 0, "Full on %s gives back the first image (%r pixels differ)" % (part, restored))
+            QMetaObject.invokeMethod(view(), "clearDrawState", Q_ARG("QString", part))
+            yield settle()
+        report("NOTE pixels each hidden part changed: %r" % changes)
+        for part in MOUNTAIN_PARTS:
+            yield from draw_edit("Hidden on %s" % part, "setDrawState", Q_ARG("QString", part), Q_ARG("QString", "hidden"))
+        everything = changed_pixels(base, grab())
+        check(everything is not None and everything > max(v or 0 for v in changes.values()),
+              "Hidden on every part hides more than any one part (%r)" % (everything,))
+        for part in MOUNTAIN_PARTS:
+            yield from draw_edit("clear %s" % part, "clearDrawState", Q_ARG("QString", part))
+        restored = changed_pixels(base, grab())
+        check(restored == 0, "clearing the parts gives back the first image (%r pixels differ)" % (restored,))
+
+        section("loading stops at the polygon limit")
+
+        def loads_held():
+            v = view()
+            return str(v.property("natronSceneLoadsHeld") or "") if v is not None else ""
+
+        def loaded_faces():
+            v = view()
+            return int(v.property("natronSceneLoadedFaces") or 0) if v is not None else 0
+
+        def loads_pending():
+            v = view()
+            return bool(v.property("natronSceneLoadsPending")) if v is not None else True
+
+        viewer.getParam("polygonBudget").setValue(True)
+        viewer.getParam("polygonLimit").setValue(HOUSE_FACES)
+        prune.getParam("primPattern").setValue("/World/Nothing")
+        usd.getParam("filename").setValue(town_scene_path)
+        yield settle()
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        require(ok, "the scene view shows %s" % town_scene_path)
+        QMetaObject.invokeMethod(view(), "setDrawState", Q_ARG("QString", "/World/Town"), Q_ARG("QString", "loadAll"))
+        ok = yield ("until", lambda: loads_held() == "budget" and not loads_pending(), POLL_TIMEOUT_S)
+        check(ok, "Load All past the Polygon Limit stops for the budget (%r)" % loads_held())
+        faces = loaded_faces()
+        check(HOUSE_FACES <= faces < TOWN_HOUSES * HOUSE_FACES,
+              "loading stopped with part of the town loaded (%d of %d faces)" % (faces, TOWN_HOUSES * HOUSE_FACES))
+        yield ("sleep", 2 * SETTLE_MS)
+        held_hud = str(view().property("natronSceneLoadsHeldHud") or "")
+        check(held_hud.startswith("Loading stopped") and str(faces) in held_hud,
+              "the HUD says loading stopped (%r)" % held_hud)
+        shot("scene-budget-loading-stopped.png")
+        yield ("sleep", 2 * SETTLE_MS)
+        check(loaded_faces() == faces and loads_held() == "budget", "held loads stay held (%d faces)" % loaded_faces())
+
+        viewer.getParam("polygonLimit").setValue(DEFAULT_LIMIT)
+        ok = yield ("until", lambda: loads_held() == "" and not loads_pending()
+                    and loaded_faces() == TOWN_HOUSES * HOUSE_FACES, POLL_TIMEOUT_S)
+        check(ok, "a higher Polygon Limit loads the rest (%d faces, %r)" % (loaded_faces(), loads_held()))
+        yield ("sleep", 2 * SETTLE_MS)
+        held_hud = str(view().property("natronSceneLoadsHeldHud") or "")
+        check(held_hud == "", "the HUD no longer says loading stopped (%r)" % held_hud)
 
     run(steps())
 except Exception:

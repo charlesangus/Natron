@@ -95,6 +95,14 @@ NATRON_NAMESPACE_ENTER
  * instanceLocations. So a row over an instance turns that instance off in the instancer's mask
  * (hd/instancerTopologySchema.h), and the instancer and its prototypes stay in Hydra, Hidden or not.
  *
+ * A row inside a native instance names an instance proxy, which Hydra never holds: the instance's
+ * prims draw from the instancer's one prototype, whose root stands for the instance's own prim. Such
+ * a row governs the matching prim of the prototype, nested instances in turn. A prototype is shared
+ * by every instance of the instancer, so where their rows disagree on a prim the one that draws least
+ * wins (Hidden, then BBox, then Children, then Full): one copy of a shared prototype cannot be hidden
+ * alone without touching the stage. A Children row on the instance itself then governs the
+ * prototype's root rather than turning the instance off.
+ *
  * A polygon budget lies over the rules as a layer of its own, bound on Storm's filter alone: it holds
  * the gprims it demotes or culls invisible, turns instances off in their instancer's mask, a
  * PointInstancer's by index and a native one's when any gprim below it goes, and omits a fractioned
@@ -321,7 +329,10 @@ public:
     // Whether the instancer's mask as this filter serves it turns the instance off.
     bool isInstanceMasked(const PXR_NS::SdfPath& instancer, std::size_t index) const;
 
-    const Rules& getRules() const { return _rules; }
+    // The rules as given, by stage path.
+    const Rules& getRules() const { return _stageRules; }
+    // The rules as they reach Hydra's prims, rows inside native instances moved onto their prototypes.
+    const Rules& getEffectiveRules() const { return _rules; }
     unsigned long long getInputAddedCount() const { return _inputAdded; }
     unsigned long long getInputRemovedCount() const { return _inputRemoved; }
     unsigned long long getInputDirtiedCount() const { return _inputDirtied; }
@@ -416,6 +427,25 @@ private:
     void setInstanceWaiting(const PXR_NS::SdfPath& instancer, Instancer& record, std::size_t index, bool waiting);
     void queueMaskChange(const PXR_NS::SdfPath& instancer, Instancer& record);
     void updateInstances(const std::vector<PXR_NS::SdfPath>& roots);
+    // An instancer whose instances all draw one prototype root, as a native instancer's do.
+    static bool hasOnePrototype(const Instancer& record) { return !record.locations.empty() && (record.prototypes.size() == 1); }
+    bool instanceOffBy(const Rules& rules, const Instancer& record, std::size_t index) const;
+    Rules effectiveRules(const Rules& stageRules) const;
+    /**
+     * @brief The prim of Hydra that draws a stage path, through every native instance it lies in:
+     * the path itself outside any. Empty where a prototype on the way draws more than one instance
+     * or an instancer has no single prototype, with *shared set to the outermost such instance.
+     */
+    PXR_NS::SdfPath prototypePathOf(const PXR_NS::SdfPath& path, std::pair<PXR_NS::SdfPath, std::size_t>* shared) const;
+    // Moves the filter to the effective rules, walking the changed rows. fromInput leaves a reveal
+    // and the load arrivals as they are, for a change the input's instancers made.
+    void applyRules(Rules effective,
+                    const std::set<PXR_NS::SdfPath>& roots,
+                    const std::vector<const SceneDrawDelta*>& deltas,
+                    std::size_t revealBatch,
+                    bool fromInput);
+    // The instancers changed what the rows inside native instances govern.
+    void refreshRules();
 
     bool isFiltering() const { return !_rules.empty() || _revealing || (_root->queuedBelow != 0) || (_waitingCount != 0); }
     bool queues(const Node& node) const { return _admitting && node.hideable && !node.light; }
@@ -447,7 +477,9 @@ private:
     void finishRevealIfDone();
     void sendChanges();
 
+    Rules _stageRules;
     Rules _rules;
+    bool _instancersChanged = false;
     // The rules before the last change, while its reveal runs.
     bool _revealing = false;
     bool _stepCut = false;

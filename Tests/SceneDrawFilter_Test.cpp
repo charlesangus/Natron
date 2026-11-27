@@ -64,6 +64,10 @@
 #include <pxr/imaging/hd/unitTestNullRenderDelegate.h>
 #include <pxr/imaging/hd/visibilitySchema.h>
 #include <pxr/imaging/hdsi/unboundMaterialPruningSceneIndex.h>
+#include <pxr/usd/sdf/layer.h>
+#include <pxr/usd/usd/stage.h>
+#include <pxr/usdImaging/usdImaging/sceneIndices.h>
+#include <pxr/usdImaging/usdImaging/stageSceneIndex.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
 #ifdef NATRON_SCENEDRAWFILTER_TEST_RESTORE_EMIT
 #undef NATRON_SCENEDRAWFILTER_TEST_RESTORE_EMIT
@@ -2860,4 +2864,326 @@ TEST(StormAddedPrimDedupeTest, AMaterialAPrimBatchBindsAddsOnceThroughStormsPrun
     scene->AddPrims({ { SdfPath("/World/g/late"), HdPrimTypeTokens->mesh, boundTo(material) } });
     filter->admit(SceneDrawFilter::Order(), 1);
     EXPECT_EQ(1u, fromDedupe.addsOf(material));
+}
+
+namespace {
+const char* const kOwnInstancer = "/UsdNiPropagatedPrototypes/Bindings/__Prototype_2/UsdNiInstancer";
+const char* const kOwnMain = "/UsdNiPropagatedPrototypes/Bindings/__Prototype_2/UsdNiInstancer/UsdNiPrototype/geometry/main";
+const char* const kOwnXg = "/UsdNiPropagatedPrototypes/Bindings/__Prototype_2/UsdNiInstancer/UsdNiPrototype/geometry/xg";
+const char* const kOwnLeaf = "/UsdNiPropagatedPrototypes/Bindings/__Prototype_2/UsdNiInstancer/UsdNiPrototype/geometry/xg/proto/leaf";
+const char* const kSharedInstancer = "/UsdNiPropagatedPrototypes/Bindings/__Prototype_3/UsdNiInstancer";
+const char* const kSharedMesh = "/UsdNiPropagatedPrototypes/Bindings/__Prototype_3/UsdNiInstancer/UsdNiPrototype/m";
+
+HdContainerDataSourceHandle
+prototypedInstancerData(const std::vector<std::string>& locations,
+                        const std::string& prototype)
+{
+    VtArray<SdfPath> paths;
+    for (const std::string& location : locations) {
+        paths.push_back(SdfPath(location));
+    }
+    HdInstancerTopologySchema::Builder builder;
+    builder.SetInstanceLocations(HdRetainedTypedSampledDataSource<VtArray<SdfPath>>::New(paths));
+    builder.SetPrototypes(HdRetainedTypedSampledDataSource<VtArray<SdfPath>>::New(VtArray<SdfPath> { SdfPath(prototype) }));
+
+    return HdRetainedContainerDataSource::New(HdInstancerTopologySchema::GetSchemaToken(), builder.Build());
+}
+
+// Native instances as usdImaging propagates them, each instancer naming its one prototype root:
+// /World/a/i1 alone draws kOwnInstancer's prototype, whose geometry holds a mesh and a point
+// instancer, and /World/b/s1 and /World/b/s2 share kSharedInstancer's. In one notice, with the
+// prototypes' prims ahead of their instancers, as a payload's load may bring them.
+void
+addPrototypedInstances(const HdRetainedSceneIndexRefPtr& scene)
+{
+    const TfToken xform("xform");
+    const std::string own = std::string(kOwnInstancer) + "/UsdNiPrototype";
+    const std::string shared = std::string(kSharedInstancer) + "/UsdNiPrototype";
+    HdRetainedSceneIndex::AddedPrimEntries entries;
+    const auto add = [&entries](const std::string& path, const TfToken& type, const HdContainerDataSourceHandle& data) {
+        entries.push_back({ SdfPath(path), type, data });
+    };
+    add("/World/a/i1", TfToken(), someData());
+    add("/World/b/s1", TfToken(), someData());
+    add("/World/b/s2", TfToken(), someData());
+    add("/UsdNiPropagatedPrototypes", TfToken(), someData());
+    add("/UsdNiPropagatedPrototypes/Bindings", TfToken(), someData());
+    add(own, xform, someData());
+    add(own + "/geometry", xform, someData());
+    add(kOwnMain, HdPrimTypeTokens->mesh, someData());
+    add(kOwnXg, HdPrimTypeTokens->instancer, someData());
+    add(std::string(kOwnXg) + "/proto", xform, someData());
+    add(kOwnLeaf, HdPrimTypeTokens->mesh, someData());
+    add(shared, xform, someData());
+    add(kSharedMesh, HdPrimTypeTokens->mesh, someData());
+    add(kOwnInstancer, HdPrimTypeTokens->instancer, prototypedInstancerData({ "/World/a/i1" }, own));
+    add(kSharedInstancer, HdPrimTypeTokens->instancer, prototypedInstancerData({ "/World/b/s1", "/World/b/s2" }, shared));
+    scene->AddPrims(entries);
+}
+
+bool
+drawnIn(const HdSceneIndexBase& index,
+        const SdfPath& path)
+{
+    const HdSceneIndexPrim prim = index.GetPrim(path);
+
+    return !prim.primType.IsEmpty() && visible(prim);
+}
+} // anon namespace
+
+TEST_F(SceneDrawFilterTest, AHiddenRowInsideANativeInstanceHidesWhatItsPrototypeDrawsThere)
+{
+    addPrototypedInstances(scene);
+    ASSERT_TRUE(drawn(kOwnLeaf));
+    recorder.reset();
+
+    filter->applyDelta(states.setState("/World/a/i1/geometry/xg", eSceneDrawStateHidden));
+
+    EXPECT_TRUE(filter->GetPrim(SdfPath(kOwnXg)).primType.IsEmpty());
+    EXPECT_TRUE(filter->GetPrim(SdfPath(kOwnLeaf)).primType.IsEmpty());
+    EXPECT_EQ(1u, recorder.leftHydra.count(kOwnLeaf));
+    EXPECT_TRUE(drawn(kOwnMain));
+    EXPECT_TRUE(drawn(kSharedMesh));
+    EXPECT_TRUE(maskOf(*filter, kOwnInstancer).empty());
+    EXPECT_EQ(1u, filter->getRules().count(SdfPath("/World/a/i1/geometry/xg")));
+
+    filter->applyDelta(states.setState("/World/a/i1/geometry/xg", eSceneDrawStateFull));
+
+    EXPECT_TRUE(drawn(kOwnLeaf));
+    EXPECT_EQ(HdPrimTypeTokens->instancer, filter->GetPrim(SdfPath(kOwnXg)).primType);
+    EXPECT_TRUE(drawn(kOwnMain));
+}
+
+TEST_F(SceneDrawFilterTest, ARowInsideANativeInstanceSetBeforeItLoadsGovernsItsPrototypeOnArrival)
+{
+    filter->applyDelta(states.setState("/World/a/i1/geometry/xg", eSceneDrawStateHidden));
+    filter->applyDelta(states.setState("/World/a/i1/geometry/main", eSceneDrawStateBBox));
+    recorder.reset();
+
+    addPrototypedInstances(scene);
+
+    EXPECT_TRUE(filter->GetPrim(SdfPath(kOwnLeaf)).primType.IsEmpty());
+    EXPECT_EQ(0u, recorder.shows.count(kOwnLeaf));
+    EXPECT_FALSE(drawn(kOwnMain));
+    EXPECT_EQ(0u, recorder.shows.count(kOwnMain));
+    EXPECT_TRUE(drawn(kSharedMesh));
+
+    filter->applyDelta(states.clearAllStates());
+
+    EXPECT_TRUE(drawn(kOwnLeaf));
+    EXPECT_TRUE(drawn(kOwnMain));
+}
+
+TEST_F(SceneDrawFilterTest, AFullRowBelowABoxedNativeInstanceDrawsOnlyThatPartOfIt)
+{
+    addPrototypedInstances(scene);
+
+    filter->applyDelta(states.setState("/World/a/i1", eSceneDrawStateBBox));
+
+    EXPECT_EQ((std::vector<bool> { false }), maskOf(*filter, kOwnInstancer));
+
+    filter->applyDelta(states.setState("/World/a/i1/geometry/main", eSceneDrawStateFull));
+
+    EXPECT_TRUE(maskOf(*filter, kOwnInstancer).empty());
+    EXPECT_TRUE(drawn(kOwnMain));
+    EXPECT_FALSE(drawn(kOwnLeaf));
+    EXPECT_FALSE(drawn(kOwnXg));
+}
+
+TEST_F(SceneDrawFilterTest, RowsOnInstancesOfASharedPrototypeThatDisagreeDrawTheLeast)
+{
+    addPrototypedInstances(scene);
+
+    filter->applyDelta(states.setState("/World/b/s1/m", eSceneDrawStateHidden));
+
+    EXPECT_TRUE(filter->GetPrim(SdfPath(kSharedMesh)).primType.IsEmpty());
+    EXPECT_TRUE(maskOf(*filter, kSharedInstancer).empty());
+    EXPECT_TRUE(drawn(kOwnMain));
+
+    filter->applyDelta(states.setState("/World/b/s2/m", eSceneDrawStateFull));
+
+    EXPECT_TRUE(filter->GetPrim(SdfPath(kSharedMesh)).primType.IsEmpty());
+
+    filter->applyDelta(states.clearState("/World/b/s1/m"));
+
+    EXPECT_TRUE(drawn(kSharedMesh));
+
+    filter->applyDelta(states.setState("/World/b/s1", eSceneDrawStateHidden));
+    filter->applyDelta(states.setState("/World/b/s2/m", eSceneDrawStateBBox));
+
+    // The instance turned off draws nothing, so the other's row alone decides.
+    EXPECT_EQ((std::vector<bool> { false, true }), maskOf(*filter, kSharedInstancer));
+    EXPECT_FALSE(drawn(kSharedMesh));
+    EXPECT_EQ(HdPrimTypeTokens->mesh, filter->GetPrim(SdfPath(kSharedMesh)).primType);
+}
+
+TEST_F(SceneDrawFilterTest, TheBudgetHidesAPrimOfAnUnsharedNativeInstanceAndMasksAnInstanceOfASharedOne)
+{
+    addPrototypedInstances(scene);
+    filter->setBudgetBound(true);
+    SceneDrawFilter::Budget budget;
+    budget.hidden.insert(SdfPath("/World/a/i1/geometry/main"));
+    budget.hidden.insert(SdfPath("/World/b/s2/m"));
+    budget.instances[SdfPath("/World/a/i1/geometry/xg")] = { false, true };
+
+    filter->applyBudget(budget);
+
+    EXPECT_FALSE(drawn(kOwnMain));
+    EXPECT_EQ(HdPrimTypeTokens->mesh, filter->GetPrim(SdfPath(kOwnMain)).primType);
+    EXPECT_TRUE(drawn(kOwnLeaf));
+    EXPECT_TRUE(maskOf(*filter, kOwnInstancer).empty());
+    EXPECT_EQ((std::vector<bool> { true, false }), maskOf(*filter, kOwnXg));
+    EXPECT_EQ((std::vector<bool> { true, false }), maskOf(*filter, kSharedInstancer));
+    EXPECT_TRUE(drawn(kSharedMesh));
+    EXPECT_EQ(1u, filter->getBudgetHiddenCount());
+
+    filter->clearBudget();
+
+    EXPECT_TRUE(drawn(kOwnMain));
+    EXPECT_TRUE(maskOf(*filter, kOwnXg).empty());
+    EXPECT_TRUE(maskOf(*filter, kSharedInstancer).empty());
+}
+
+namespace {
+// /World/root/a alone instances </Own>; /World/root/b and /World/root/c share </Shared>.
+const char* const kInstancedLayer = R"(#usda 1.0
+class Xform "Own"
+{
+    def Xform "geometry"
+    {
+        def Mesh "main"
+        {
+            int[] faceVertexCounts = [4]
+            int[] faceVertexIndices = [0, 1, 2, 3]
+            point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
+        }
+
+        def PointInstancer "xg"
+        {
+            point3f[] positions = [(0, 0, 0), (2, 0, 0)]
+            int[] protoIndices = [0, 0]
+            rel prototypes = </Own/geometry/xg/leaf>
+
+            def Mesh "leaf"
+            {
+                int[] faceVertexCounts = [3]
+                int[] faceVertexIndices = [0, 1, 2]
+                point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+            }
+        }
+    }
+}
+
+class Xform "Shared"
+{
+    def Mesh "m"
+    {
+        int[] faceVertexCounts = [3]
+        int[] faceVertexIndices = [0, 1, 2]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+    }
+}
+
+def Xform "World"
+{
+    def Xform "root"
+    {
+        def Xform "a" (
+            instanceable = true
+            prepend references = </Own>
+        )
+        {
+        }
+
+        def Xform "b" (
+            instanceable = true
+            prepend references = </Shared>
+        )
+        {
+        }
+
+        def Xform "c" (
+            instanceable = true
+            prepend references = </Shared>
+        )
+        {
+            double3 xformOp:translate = (5, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+    }
+}
+)";
+
+// The prototype root of the instancer that names location among its instances.
+SdfPath
+prototypeDrawing(const HdSceneIndexBase& index,
+                 const SdfPath& location)
+{
+    SdfPathVector stack { SdfPath::AbsoluteRootPath() };
+    while (!stack.empty()) {
+        const SdfPath path = stack.back();
+        stack.pop_back();
+        const HdSceneIndexPrim prim = index.GetPrim(path);
+        if (prim.primType == HdPrimTypeTokens->instancer) {
+            const HdInstancerTopologySchema topology = HdInstancerTopologySchema::GetFromParent(prim.dataSource);
+            const HdPathArrayDataSourceHandle locations = topology.GetInstanceLocations();
+            const HdPathArrayDataSourceHandle prototypes = topology.GetPrototypes();
+            if (locations && prototypes) {
+                const VtArray<SdfPath> named = locations->GetTypedValue(0.f);
+                const VtArray<SdfPath> roots = prototypes->GetTypedValue(0.f);
+                if ((roots.size() == 1) && (std::find(named.cbegin(), named.cend(), location) != named.cend())) {
+                    return roots[0];
+                }
+            }
+        }
+        const SdfPathVector children = index.GetChildPrimPaths(path);
+        stack.insert(stack.end(), children.begin(), children.end());
+    }
+
+    return SdfPath();
+}
+} // anon namespace
+
+TEST_F(SceneDrawFilterTest, RowsInsideUsdNativeInstancesGovernWhatTheirPrototypesDraw)
+{
+    const UsdStageRefPtr stage = UsdStage::CreateInMemory();
+    ASSERT_TRUE(stage->GetRootLayer()->ImportFromString(kInstancedLayer));
+    const UsdImagingSceneIndices indices = UsdImagingCreateSceneIndices(UsdImagingCreateSceneIndicesInfo());
+    const TfRefPtr<SceneDrawFilter> usdFilter = SceneDrawFilter::New(indices.finalSceneIndex);
+    indices.stageSceneIndex->SetStage(stage);
+    indices.stageSceneIndex->ApplyPendingUpdates();
+
+    const SdfPath own = prototypeDrawing(*usdFilter, SdfPath("/World/root/a"));
+    const SdfPath shared = prototypeDrawing(*usdFilter, SdfPath("/World/root/b"));
+    ASSERT_FALSE(own.IsEmpty());
+    ASSERT_FALSE(shared.IsEmpty());
+    EXPECT_NE(own, shared);
+    EXPECT_EQ(shared, prototypeDrawing(*usdFilter, SdfPath("/World/root/c")));
+    const SdfPath main = own.AppendPath(SdfPath("geometry/main"));
+    const SdfPath xg = own.AppendPath(SdfPath("geometry/xg"));
+    const SdfPath sharedMesh = shared.AppendChild(TfToken("m"));
+    ASSERT_TRUE(drawnIn(*usdFilter, main));
+    ASSERT_EQ(HdPrimTypeTokens->instancer, usdFilter->GetPrim(xg).primType);
+    ASSERT_TRUE(drawnIn(*usdFilter, sharedMesh));
+
+    SceneDrawStates usdStates;
+    usdFilter->applyDelta(usdStates.setState("/World/root/a/geometry/xg", eSceneDrawStateHidden));
+
+    EXPECT_TRUE(usdFilter->GetPrim(xg).primType.IsEmpty());
+    EXPECT_TRUE(drawnIn(*usdFilter, main));
+    EXPECT_TRUE(drawnIn(*usdFilter, sharedMesh));
+
+    usdFilter->applyDelta(usdStates.setState("/World/root/a/geometry/main", eSceneDrawStateBBox));
+
+    EXPECT_FALSE(drawnIn(*usdFilter, main));
+
+    usdFilter->applyDelta(usdStates.setState("/World/root/c/m", eSceneDrawStateHidden));
+
+    EXPECT_FALSE(drawnIn(*usdFilter, sharedMesh));
+
+    usdFilter->applyDelta(usdStates.clearAllStates());
+
+    EXPECT_EQ(HdPrimTypeTokens->instancer, usdFilter->GetPrim(xg).primType);
+    EXPECT_TRUE(drawnIn(*usdFilter, main));
+    EXPECT_TRUE(drawnIn(*usdFilter, sharedMesh));
 }

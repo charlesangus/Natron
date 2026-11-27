@@ -32,6 +32,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <deque>
+#include <fstream>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -229,6 +230,37 @@ const std::chrono::milliseconds kFenceWatchInterval(1);
 // The longest a frame waits after the paint that asked for it for the window's composition, which
 // a window not shown on screen never does.
 const int kFrameStartFallbackMs = 50;
+
+// The payloads a Load All brings in at a time: each chunk is one lock hold, a chance to draw what
+// came in and a point where the budget or low memory can stop the loading.
+const std::size_t kLoadChunkPayloads = 16;
+
+// Whether so little memory is left that another chunk of payloads could exhaust it: under a
+// sixteenth of the system's, or 1 GiB on a small machine.
+bool
+systemMemoryLow()
+{
+    std::ifstream meminfo("/proc/meminfo");
+    unsigned long long totalKiB = 0;
+    unsigned long long availableKiB = 0;
+    std::string key;
+    unsigned long long value = 0;
+    std::string unit;
+
+    while (meminfo >> key >> value) {
+        std::getline(meminfo, unit);
+        if (key == "MemTotal:") {
+            totalKiB = value;
+        } else if (key == "MemAvailable:") {
+            availableKiB = value;
+        }
+    }
+    if ((totalKiB == 0) || (availableKiB == 0)) {
+        return false;
+    }
+
+    return availableKiB < std::max(1024ull * 1024ull, totalKiB / 16);
+}
 // The longest a finished render holds the paints while the GPU completes it. A paint before then
 // shows the frame before, and its composition takes the vertical blank the new frame needed.
 const std::chrono::milliseconds kPresentHoldLimit(50);
@@ -948,6 +980,32 @@ struct SceneViewportRenderer::Implementation {
     // orders them against loadStage being set, so that none falls between.
     std::mutex earlyLoadsMutex;
     std::vector<SceneDrawLoadRequest> earlyLoads;
+    // The faces each committed load brought in, by the path it loaded. Load thread.
+    std::map<SdfPath, U64> facesByLoad;
+    // The stage's edit count facesByLoad was last checked against.
+    U64 facesEditCount = 0;
+    std::atomic<U64> loadedFaces { 0 };
+    // 0 for none.
+    std::atomic<U64> loadFaceLimit { 0 };
+    std::atomic<int> loadHold { SceneViewportRenderer::eLoadHoldNone };
+
+    bool admitChunk()
+    {
+        const U64 limit = loadFaceLimit;
+        if ((limit != 0) && (loadedFaces >= limit)) {
+            loadHold = SceneViewportRenderer::eLoadHoldBudget;
+
+            return false;
+        }
+        if (systemMemoryLow()) {
+            loadHold = SceneViewportRenderer::eLoadHoldMemory;
+
+            return false;
+        }
+        loadHold = SceneViewportRenderer::eLoadHoldNone;
+
+        return true;
+    }
     // The stage's load rules as its last load commit left them, for saving without the stage lock.
     std::mutex loadRulesMutex;
     SceneLoadRules loadRules;
@@ -4822,6 +4880,8 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
         if (!_imp->sceneStage) {
             // The viewer shows what was asked for: nothing loads until a load is requested.
             _imp->sceneStage.reset(new SceneStage(UsdStage::LoadNone));
+            _imp->sceneStage->setLoadChunk(kLoadChunkPayloads);
+            _imp->sceneStage->setLoadAdmission([imp = _imp.get()]() { return imp->admitChunk(); });
             const std::shared_ptr<Implementation::LoadsWakeGate> gate = _imp->loadsWakeGate;
             _imp->sceneStage->setLoadsWake([gate]() {
                 std::lock_guard<std::mutex> lock(gate->mutex);
@@ -5645,6 +5705,98 @@ SceneViewportRenderer::cancelStageLoads(const std::vector<std::string>& paths)
         }
     }
     stage->cancelPendingLoads(toSdfPaths(paths));
+}
+
+bool
+SceneViewportRenderer::setLoadFaceLimit(U64 faces)
+{
+    if (_imp->loadFaceLimit.exchange(faces) == faces) {
+        return false;
+    }
+    SceneStage* stage = _imp->loadStage;
+    if (stage) {
+        stage->releaseHeldLoads();
+    }
+
+    return true;
+}
+
+SceneViewportRenderer::LoadHoldEnum
+SceneViewportRenderer::getStageLoadHold() const
+{
+    const SceneStage* stage = _imp->loadStage;
+
+    if (!stage || !stage->hasHeldLoads()) {
+        return eLoadHoldNone;
+    }
+
+    return LoadHoldEnum(_imp->loadHold.load());
+}
+
+U64
+SceneViewportRenderer::getLoadedFaces() const
+{
+    return _imp->loadedFaces;
+}
+
+void
+SceneViewportRenderer::countCommittedStageLoads(const std::function<bool()>& cancelled)
+{
+    SceneStage* stage = _imp->loadStage;
+
+    if (!stage) {
+        return;
+    }
+    SdfPathVector loaded;
+    SdfPathVector unloaded;
+    stage->takeCommittedLoads(&loaded, &unloaded);
+    std::map<SdfPath, U64>& faces = _imp->facesByLoad;
+    const U64 editCount = stage->getEditCount();
+    const bool edited = editCount != _imp->facesEditCount;
+    if (!edited && loaded.empty() && unloaded.empty()) {
+        return;
+    }
+    if (edited) {
+        // Another scene, or an edit of this one, may have taken away what was loaded.
+        _imp->facesEditCount = editCount;
+        SceneWriteBarrier::ReadScope read;
+        std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
+        const UsdStageRefPtr usdStage = stage->getStage();
+        for (std::map<SdfPath, U64>::iterator it = faces.begin(); it != faces.end();) {
+            const UsdPrim prim = usdStage ? usdStage->GetPrimAtPath(it->first) : UsdPrim();
+            if (prim && prim.IsLoaded()) {
+                ++it;
+            } else {
+                it = faces.erase(it);
+            }
+        }
+    }
+    for (const SdfPath& path : unloaded) {
+        for (std::map<SdfPath, U64>::iterator it = faces.lower_bound(path); (it != faces.end()) && it->first.HasPrefix(path);) {
+            it = faces.erase(it);
+        }
+    }
+    std::map<SdfPath, U64> prototypes;
+    for (const SdfPath& path : loaded) {
+        if (cancelled && cancelled()) {
+            break;
+        }
+        // One path at a time, so that a commit waiting for the lock waits for one walk at most.
+        SceneWriteBarrier::ReadScope read;
+        std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
+        const UsdStageRefPtr usdStage = stage->getStage();
+        const UsdPrim prim = usdStage ? usdStage->GetPrimAtPath(path) : UsdPrim();
+        if (prim && prim.IsLoaded()) {
+            faces[path] = sceneFacesUnder(prim, &prototypes, cancelled);
+        } else {
+            faces.erase(path);
+        }
+    }
+    U64 total = 0;
+    for (const std::pair<const SdfPath, U64>& entry : faces) {
+        total += entry.second;
+    }
+    _imp->loadedFaces = total;
 }
 
 bool
@@ -10372,6 +10524,7 @@ SceneViewport::SceneViewport(QWidget* parent)
             if (imp->loadQuit) {
                 return;
             }
+            imp->renderer.countCommittedStageLoads([imp]() { return imp->loadQuit.load(); });
             {
                 SceneDrawRules rules;
                 U64 generation = 0;
@@ -12136,6 +12289,14 @@ SceneViewport::publishState()
     // The payload loads: whether requests wait, how many commits edited the stage, how long the last
     // batch held the viewer lock, and each failed prim's path and error.
     setProperty("natronSceneLoadsPending", _imp->renderer.hasPendingStageLoads());
+    const SceneViewportRenderer::LoadHoldEnum hold = _imp->renderer.getStageLoadHold();
+    const char* const holdNames[] = { "", "budget", "memory" };
+    const QString held = QString::fromUtf8(holdNames[hold]);
+    if (property("natronSceneLoadsHeld").toString() != held) {
+        setProperty("natronSceneLoadsHeld", held);
+        update();
+    }
+    setProperty("natronSceneLoadedFaces", QVariant::fromValue<qulonglong>(_imp->renderer.getLoadedFaces()));
     setProperty("natronSceneLoadEdits", QVariant::fromValue<qulonglong>(_imp->renderer.getStageLoadEditCount()));
     setProperty("natronSceneLoadedLayers", QVariant::fromValue<qulonglong>(_imp->loadedLayerCount));
     setProperty("natronSceneLoadHoldMs", _imp->renderer.getLastStageLoadHoldMs());
@@ -13362,6 +13523,14 @@ SceneViewport::refreshPolygonBudget()
         _imp->cameraIdleTimer->stop();
         _imp->renderer.stopBudget();
     }
+    if (_imp->renderer.setLoadFaceLimit(knobs.on ? U64(knobs.settings.limit) : U64(0))) {
+        // Taking the mutex keeps the wake-up from falling between the thread's check and its wait.
+        {
+            std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
+        }
+        _imp->loadWake.notify_one();
+        publishState();
+    }
     update();
 }
 
@@ -14379,9 +14548,29 @@ SceneViewport::paintGL()
         if (property("natronSceneBudgetHud").toString() != budgetHud) {
             setProperty("natronSceneBudgetHud", budgetHud);
         }
+        int hudLines = 1;
         if (!budgetHud.isEmpty()) {
             painter.setPen(QColor(217, 115, 242));
             painter.drawText(rect().adjusted(8, 6 + painter.fontMetrics().height(), -8, -6), Qt::AlignLeft | Qt::AlignTop, budgetHud);
+            ++hudLines;
+        }
+        QString heldHud;
+        switch (_imp->renderer.getStageLoadHold()) {
+        case SceneViewportRenderer::eLoadHoldBudget:
+            heldHud = tr("Loading stopped: %1 polys loaded reach the Polygon Limit").arg(_imp->renderer.getLoadedFaces());
+            break;
+        case SceneViewportRenderer::eLoadHoldMemory:
+            heldHud = tr("Loading stopped: system memory is low");
+            break;
+        case SceneViewportRenderer::eLoadHoldNone:
+            break;
+        }
+        if (property("natronSceneLoadsHeldHud").toString() != heldHud) {
+            setProperty("natronSceneLoadsHeldHud", heldHud);
+        }
+        if (!heldHud.isEmpty()) {
+            painter.setPen(QColor(230, 160, 80));
+            painter.drawText(rect().adjusted(8, 6 + hudLines * painter.fontMetrics().height(), -8, -6), Qt::AlignLeft | Qt::AlignTop, heldHud);
         }
         if (!_imp->lockMessage.isEmpty()) {
             painter.setPen(QColor(230, 160, 80));

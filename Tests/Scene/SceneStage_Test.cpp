@@ -1012,3 +1012,201 @@ TEST(SceneStageLoads, ExclusionsLeaveOutOnlyTheirOwnSubtrees)
 
     EXPECT_EQ(city.loadedBuildings(), std::vector<std::string>({ "b0_1.usda", "b2_0.usda" }));
 }
+
+namespace {
+// Services the stage until nothing is pending, at most rounds times; returns the rounds it took.
+int
+serviceUntilSettled(SceneStage& stage,
+                    int rounds)
+{
+    int round = 0;
+
+    while (stage.hasPendingLoads() && (round < rounds)) {
+        stage.serviceLoads(kNoLock, kNoLock);
+        ++round;
+    }
+
+    return round;
+}
+} // anonymous namespace
+
+TEST(SceneStageLoads, AChunkedLoadWithDescendantsCommitsAChunkAtATime)
+{
+    PayloadCity city(2, 3);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+    stage.setLoadChunk(2);
+
+    stage.requestLoad({ PXR_NS::SdfPath("/World") }, true);
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+    EXPECT_EQ(city.loadedBuildings(), std::vector<std::string>({ "b0_0.usda", "b0_1.usda" }));
+    EXPECT_EQ(stage.getLoadEditCount(), U64(1));
+    EXPECT_TRUE(stage.hasPendingLoads());
+    PXR_NS::SdfPathVector loaded;
+    PXR_NS::SdfPathVector unloaded;
+    stage.takeCommittedLoads(&loaded, &unloaded);
+    std::sort(loaded.begin(), loaded.end());
+    EXPECT_EQ(loaded, PXR_NS::SdfPathVector({ building(0, 0), building(0, 1) }));
+    EXPECT_TRUE(unloaded.empty());
+    stage.takeCommittedLoads(&loaded, &unloaded);
+    EXPECT_TRUE(loaded.empty());
+
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+    EXPECT_EQ(city.loadedBuildings().size(), std::size_t(4));
+    EXPECT_LT(serviceUntilSettled(stage, 20), 20);
+    EXPECT_EQ(city.loadedBuildings().size(), std::size_t(6));
+    EXPECT_GE(stage.getLoadEditCount(), U64(3));
+    EXPECT_FALSE(stage.hasHeldLoads());
+}
+
+TEST(SceneStageLoads, AChunkedLoadReachesNestedPayloads)
+{
+    PayloadCity city(1, 1);
+    writeNestedBuilding(city);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+    stage.setLoadChunk(1);
+
+    stage.requestLoad({ PXR_NS::SdfPath("/World") }, true);
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+    EXPECT_EQ(city.loadedBuildings(), std::vector<std::string>({ "b0_0.usda" }));
+    EXPECT_LT(serviceUntilSettled(stage, 20), 20);
+
+    EXPECT_EQ(city.loadedBuildings(), std::vector<std::string>({ "b0_0.usda", "keep.usda", "skip.usda" }));
+}
+
+TEST(SceneStageLoads, AChunkTheAdmissionRefusesIsHeldUntilReleased)
+{
+    PayloadCity city(2, 3);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+    stage.setLoadChunk(2);
+    bool admit = false;
+    int asked = 0;
+    stage.setLoadAdmission([&admit, &asked]() {
+        ++asked;
+
+        return admit;
+    });
+
+    stage.requestLoad({ PXR_NS::SdfPath("/World") }, true);
+    // A request of its own is not a follow-up, so it is serviced without asking.
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+    EXPECT_EQ(asked, 0);
+    EXPECT_EQ(city.loadedBuildings().size(), std::size_t(2));
+
+    EXPECT_FALSE(stage.serviceLoads(kNoLock, kNoLock));
+    EXPECT_EQ(asked, 1);
+    EXPECT_EQ(city.loadedBuildings().size(), std::size_t(2));
+    EXPECT_FALSE(stage.hasPendingLoads());
+    EXPECT_FALSE(stage.hasOutstandingLoads());
+    EXPECT_TRUE(stage.hasHeldLoads());
+
+    // A request made while chunks are held is serviced, and makes them pending again.
+    stage.requestLoad({ building(1, 2) }, false);
+    EXPECT_FALSE(stage.hasHeldLoads());
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+    EXPECT_TRUE(stage.getStage()->GetPrimAtPath(building(1, 2)).IsLoaded());
+    EXPECT_EQ(city.loadedBuildings().size(), std::size_t(3));
+    EXPECT_TRUE(stage.hasHeldLoads());
+
+    admit = true;
+    stage.releaseHeldLoads();
+    EXPECT_FALSE(stage.hasHeldLoads());
+    EXPECT_TRUE(stage.hasPendingLoads());
+    EXPECT_LT(serviceUntilSettled(stage, 20), 20);
+    EXPECT_EQ(city.loadedBuildings().size(), std::size_t(6));
+}
+
+TEST(SceneStageLoads, CancellingAChunkedLoadCancelsItsFollowUpsHeldOrPending)
+{
+    PayloadCity city(2, 3);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+    stage.setLoadChunk(2);
+
+    stage.requestLoad({ PXR_NS::SdfPath("/World") }, true);
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+    stage.requestLoad({ PXR_NS::SdfPath("/World/Block_1") }, true);
+    stage.cancelPendingLoads({ PXR_NS::SdfPath("/World") });
+    EXPECT_TRUE(stage.hasPendingLoads());
+    EXPECT_LT(serviceUntilSettled(stage, 20), 20);
+    EXPECT_EQ(city.loadedBuildings(), std::vector<std::string>({ "b0_0.usda", "b0_1.usda", "b1_0.usda", "b1_1.usda", "b1_2.usda" }));
+
+    stage.setLoadAdmission([]() { return false; });
+    stage.requestLoad({ PXR_NS::SdfPath("/World/Block_0") }, true);
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+    EXPECT_EQ(city.loadedBuildings().size(), std::size_t(6));
+    stage.serviceLoads(kNoLock, kNoLock);
+    stage.cancelPendingLoads({ PXR_NS::SdfPath("/World/Block_0") });
+    EXPECT_FALSE(stage.hasHeldLoads());
+    EXPECT_FALSE(stage.hasPendingLoads());
+}
+
+TEST(SceneStageLoads, ACancelDuringAChunkAsksForNoMoreChunks)
+{
+    PayloadCity city(2, 3);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+    stage.setLoadChunk(2);
+
+    stage.requestLoad({ PXR_NS::SdfPath("/World") }, true);
+    const SceneStage::LockedSection writeLocked = [&stage](const std::function<void()>& section) {
+        stage.cancelPendingLoads({ PXR_NS::SdfPath("/World") });
+        section();
+    };
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, writeLocked));
+
+    EXPECT_EQ(city.loadedBuildings().size(), std::size_t(2));
+    EXPECT_FALSE(stage.hasPendingLoads());
+    EXPECT_FALSE(stage.hasHeldLoads());
+}
+
+TEST(SceneStageFaces, MeshesInstancesAndPointInstancersCountTheirFaces)
+{
+    const PXR_NS::SdfLayerRefPtr layer = makeLayer(
+        "class Xform \"Asset\"\n{\n"
+        "    def Mesh \"Geo\"\n    {\n        int[] faceVertexCounts = [4, 4, 4]\n    }\n"
+        "}\n"
+        "def Xform \"World\"\n{\n"
+        "    def Mesh \"Plane\"\n    {\n        int[] faceVertexCounts = [3, 3]\n    }\n"
+        "    def Xform \"A\" (\n        instanceable = true\n        prepend references = </Asset>\n    )\n    {\n    }\n"
+        "    def Xform \"B\" (\n        instanceable = true\n        prepend references = </Asset>\n    )\n    {\n    }\n"
+        "    def PointInstancer \"Scatter\"\n    {\n"
+        "        int[] protoIndices = [0, 0, 1, 0]\n"
+        "        rel prototypes = [</World/Scatter/Protos/Big>, </World/Scatter/Protos/Small>]\n"
+        "        def Xform \"Protos\"\n        {\n"
+        "            def Mesh \"Big\"\n            {\n                int[] faceVertexCounts = [4, 4, 4, 4, 4]\n            }\n"
+        "            def Mesh \"Small\"\n            {\n                int[] faceVertexCounts = [3]\n            }\n"
+        "        }\n"
+        "    }\n"
+        "    def Mesh \"Off\" (\n        active = false\n    )\n    {\n        int[] faceVertexCounts = [4, 4, 4, 4, 4, 4, 4]\n    }\n"
+        "}\n");
+    const PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(layer);
+    ASSERT_TRUE(bool(stage));
+    std::map<PXR_NS::SdfPath, U64> prototypes;
+
+    EXPECT_EQ(sceneFacesUnder(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Plane")), &prototypes), U64(2));
+    EXPECT_EQ(sceneFacesUnder(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/A")), &prototypes), U64(3));
+    EXPECT_EQ(sceneFacesUnder(stage->GetPrimAtPath(PXR_NS::SdfPath("/World/Scatter")), &prototypes), U64(3 * 5 + 1));
+    EXPECT_EQ(sceneFacesUnder(stage->GetPrimAtPath(PXR_NS::SdfPath("/World")), &prototypes), U64(2 + 3 + 3 + 16));
+    EXPECT_EQ(sceneFacesUnder(stage->GetPrimAtPath(PXR_NS::SdfPath("/World")), &prototypes, []() { return true; }) <= U64(24), true);
+}
+
+TEST(SceneStageLoads, ASyncToAnotherSceneDropsTheHeldLoadsItNoLongerHas)
+{
+    PayloadCity city(2, 3);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+    stage.setLoadChunk(2);
+    stage.setLoadAdmission([]() { return false; });
+    stage.requestLoad({ PXR_NS::SdfPath("/World") }, true);
+    stage.serviceLoads(kNoLock, kNoLock);
+    stage.serviceLoads(kNoLock, kNoLock);
+    ASSERT_TRUE(stage.hasHeldLoads());
+
+    ASSERT_TRUE(stage.sync(stack({ makeLayer("def Xform \"Other\"\n{\n}\n") })));
+
+    EXPECT_FALSE(stage.hasHeldLoads());
+    EXPECT_FALSE(stage.hasPendingLoads());
+}

@@ -42,6 +42,8 @@
 #include <pxr/usd/sdf/variantSetSpec.h>
 #include <pxr/usd/sdf/variantSpec.h>
 #include <pxr/usd/usd/primRange.h>
+#include <pxr/usd/usdGeom/mesh.h>
+#include <pxr/usd/usdGeom/pointInstancer.h>
 
 #include "Engine/FileStampRegistry.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -265,6 +267,85 @@ getPayloadAssets(const PXR_NS::UsdPrim& prim)
 
     return assets;
 }
+// Deep enough for any real nesting of instances, short of a prototype that instances itself.
+constexpr int kMaxFaceCountNesting = 16;
+constexpr std::size_t kFaceCountPollPrims = 4096;
+
+U64
+facesUnder(const PXR_NS::UsdPrim& root,
+           std::map<PXR_NS::SdfPath, U64>* prototypes,
+           const std::function<bool()>& cancelled,
+           int nesting);
+
+U64
+prototypeFaces(const PXR_NS::UsdPrim& prototype,
+               std::map<PXR_NS::SdfPath, U64>* prototypes,
+               const std::function<bool()>& cancelled,
+               int nesting)
+{
+    if (!prototype || (nesting >= kMaxFaceCountNesting)) {
+        return 0;
+    }
+    const std::map<PXR_NS::SdfPath, U64>::const_iterator found = prototypes->find(prototype.GetPath());
+    if (found != prototypes->end()) {
+        return found->second;
+    }
+    const U64 faces = facesUnder(prototype, prototypes, cancelled, nesting + 1);
+    if (!(cancelled && cancelled())) {
+        (*prototypes)[prototype.GetPath()] = faces;
+    }
+
+    return faces;
+}
+
+U64
+facesUnder(const PXR_NS::UsdPrim& root,
+           std::map<PXR_NS::SdfPath, U64>* prototypes,
+           const std::function<bool()>& cancelled,
+           int nesting)
+{
+    U64 faces = 0;
+    std::size_t visited = 0;
+    const PXR_NS::UsdPrimRange range(root, PXR_NS::UsdPrimDefaultPredicate);
+
+    for (PXR_NS::UsdPrimRange::const_iterator it = range.begin(); it != range.end(); ++it) {
+        if (((++visited % kFaceCountPollPrims) == 0) && cancelled && cancelled()) {
+            return faces;
+        }
+        const PXR_NS::UsdPrim& prim = *it;
+        if (prim.IsInstance()) {
+            faces += prototypeFaces(prim.GetPrototype(), prototypes, cancelled, nesting);
+            continue;
+        }
+        if (prim.IsA<PXR_NS::UsdGeomMesh>()) {
+            faces += PXR_NS::UsdGeomMesh(prim).GetFaceCount();
+            continue;
+        }
+        if (!prim.IsA<PXR_NS::UsdGeomPointInstancer>()) {
+            continue;
+        }
+        const PXR_NS::UsdGeomPointInstancer instancer(prim);
+        PXR_NS::VtIntArray indices;
+        PXR_NS::SdfPathVector targets;
+        instancer.GetProtoIndicesAttr().Get(&indices);
+        instancer.GetPrototypesRel().GetForwardedTargets(&targets);
+        std::vector<U64> instances(targets.size(), 0);
+        for (const int index : indices) {
+            if ((index >= 0) && (std::size_t(index) < instances.size())) {
+                ++instances[index];
+            }
+        }
+        for (std::size_t k = 0; k < targets.size(); ++k) {
+            if (instances[k] != 0) {
+                faces += instances[k] * prototypeFaces(prim.GetStage()->GetPrimAtPath(targets[k]), prototypes, cancelled, nesting);
+            }
+        }
+        // Its prototypes draw only as its instances.
+        it.PruneChildren();
+    }
+
+    return faces;
+}
 } // anonymous namespace
 
 // What the callback SceneTeardown runs once idle shares with the stage.
@@ -366,6 +447,19 @@ SceneStage::sync(const ScenePayload& payload)
     _metadata = metadata;
     syncProjections();
     ++_editCount;
+    {
+        // Held loads of prims the new stack no longer composes would keep loading reported stopped.
+        std::lock_guard<std::mutex> lock(_loadMutex);
+        for (std::map<PXR_NS::SdfPath, PendingLoadEnum>::iterator it = _heldLoads.begin(); it != _heldLoads.end();) {
+            if (_stage->GetPrimAtPath(it->first)) {
+                ++it;
+            } else {
+                _heldExclusions.erase(it->first);
+                _loadOrigins.erase(it->first);
+                it = _heldLoads.erase(it);
+            }
+        }
+    }
 
     return true;
 }
@@ -556,6 +650,9 @@ SceneStage::requestLoad(const PXR_NS::SdfPathVector& paths,
         if (path.IsAbsoluteRootOrPrimPath()) {
             _deferredLoads.erase(path);
             _deferredExclusions.erase(path);
+            _loadOrigins.erase(path);
+            _heldLoads.erase(path);
+            _heldExclusions.erase(path);
             _pendingLoads[path] = withDescendants ? ePendingLoadWithDescendants : ePendingLoadOwn;
             if (withDescendants && !excluded.empty()) {
                 _pendingExclusions[path] = PXR_NS::SdfPathSet(excluded.begin(), excluded.end());
@@ -565,6 +662,8 @@ SceneStage::requestLoad(const PXR_NS::SdfPathVector& paths,
             _loadFailures.erase(path);
         }
     }
+    // The admission decides again with what the request changes.
+    releaseHeldLoadsLocked();
 }
 
 void
@@ -576,6 +675,9 @@ SceneStage::requestUnload(const PXR_NS::SdfPathVector& paths)
         if (path.IsAbsoluteRootOrPrimPath()) {
             _deferredLoads.erase(path);
             _deferredExclusions.erase(path);
+            _loadOrigins.erase(path);
+            _heldLoads.erase(path);
+            _heldExclusions.erase(path);
             _pendingLoads[path] = ePendingUnload;
             _pendingExclusions.erase(path);
             _loadFailures.erase(path);
@@ -592,6 +694,9 @@ SceneStage::cancelPendingLoads()
     _pendingExclusions.clear();
     _deferredLoads.clear();
     _deferredExclusions.clear();
+    _loadOrigins.clear();
+    _heldLoads.clear();
+    _heldExclusions.clear();
     if (_servicingLoads) {
         _allCancelledWhileServicing = true;
     }
@@ -614,6 +719,78 @@ SceneStage::cancelPendingLoads(const PXR_NS::SdfPathVector& paths)
             _cancelledWhileServicing.insert(path);
         }
     }
+    const PXR_NS::SdfPathSet cancelled(paths.begin(), paths.end());
+    for (std::map<PXR_NS::SdfPath, PXR_NS::SdfPath>::iterator it = _loadOrigins.begin(); it != _loadOrigins.end();) {
+        if (cancelled.count(it->second) == 0) {
+            ++it;
+            continue;
+        }
+        _pendingLoads.erase(it->first);
+        _pendingExclusions.erase(it->first);
+        _heldLoads.erase(it->first);
+        _heldExclusions.erase(it->first);
+        it = _loadOrigins.erase(it);
+    }
+}
+
+void
+SceneStage::setLoadChunk(std::size_t payloads)
+{
+    std::lock_guard<std::mutex> lock(_loadMutex);
+
+    _loadChunk = payloads;
+}
+
+void
+SceneStage::setLoadAdmission(const std::function<bool()>& admit)
+{
+    std::lock_guard<std::mutex> lock(_loadMutex);
+
+    _loadAdmission = admit;
+}
+
+void
+SceneStage::releaseHeldLoads()
+{
+    std::lock_guard<std::mutex> lock(_loadMutex);
+
+    releaseHeldLoadsLocked();
+}
+
+void
+SceneStage::releaseHeldLoadsLocked()
+{
+    for (const std::pair<const PXR_NS::SdfPath, PendingLoadEnum>& load : _heldLoads) {
+        if (!_pendingLoads.insert(load).second) {
+            continue;
+        }
+        const std::map<PXR_NS::SdfPath, PXR_NS::SdfPathSet>::const_iterator excluded = _heldExclusions.find(load.first);
+        if (excluded != _heldExclusions.end()) {
+            _pendingExclusions[load.first] = excluded->second;
+        }
+    }
+    _heldLoads.clear();
+    _heldExclusions.clear();
+}
+
+bool
+SceneStage::hasHeldLoads() const
+{
+    std::lock_guard<std::mutex> lock(_loadMutex);
+
+    return !_heldLoads.empty();
+}
+
+void
+SceneStage::takeCommittedLoads(PXR_NS::SdfPathVector* loaded,
+                               PXR_NS::SdfPathVector* unloaded)
+{
+    std::lock_guard<std::mutex> lock(_loadMutex);
+
+    loaded->clear();
+    unloaded->clear();
+    loaded->swap(_committedLoads);
+    unloaded->swap(_committedUnloads);
 }
 
 bool
@@ -675,14 +852,55 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
 {
     std::map<PXR_NS::SdfPath, PendingLoadEnum> batch;
     std::map<PXR_NS::SdfPath, PXR_NS::SdfPathSet> exclusions;
+    // The request each request of the batch came from, itself for one made with requestLoad().
+    std::map<PXR_NS::SdfPath, PXR_NS::SdfPath> origins;
+    std::size_t chunk = 0;
+    std::function<bool()> admit;
+    bool followUpsPending = false;
+    {
+        std::lock_guard<std::mutex> lock(_loadMutex);
+        admit = _loadAdmission;
+        for (const std::pair<const PXR_NS::SdfPath, PXR_NS::SdfPath>& origin : _loadOrigins) {
+            if (_pendingLoads.count(origin.first) != 0) {
+                followUpsPending = true;
+                break;
+            }
+        }
+    }
+    const bool admitted = !followUpsPending || !admit || admit();
     {
         std::lock_guard<std::mutex> lock(_loadMutex);
         takeReadyDeferredLoads();
+        if (!admitted) {
+            for (const std::pair<const PXR_NS::SdfPath, PXR_NS::SdfPath>& origin : _loadOrigins) {
+                const std::map<PXR_NS::SdfPath, PendingLoadEnum>::iterator pending = _pendingLoads.find(origin.first);
+                if (pending == _pendingLoads.end()) {
+                    continue;
+                }
+                _heldLoads[origin.first] = pending->second;
+                _pendingLoads.erase(pending);
+                const std::map<PXR_NS::SdfPath, PXR_NS::SdfPathSet>::iterator excluded = _pendingExclusions.find(origin.first);
+                if (excluded != _pendingExclusions.end()) {
+                    _heldExclusions[origin.first] = std::move(excluded->second);
+                    _pendingExclusions.erase(excluded);
+                }
+            }
+        }
         if (_pendingLoads.empty()) {
             return false;
         }
         batch.swap(_pendingLoads);
         exclusions.swap(_pendingExclusions);
+        for (const std::pair<const PXR_NS::SdfPath, PendingLoadEnum>& request : batch) {
+            const std::map<PXR_NS::SdfPath, PXR_NS::SdfPath>::iterator origin = _loadOrigins.find(request.first);
+            if (origin == _loadOrigins.end()) {
+                origins[request.first] = request.first;
+            } else {
+                origins[request.first] = origin->second;
+                _loadOrigins.erase(origin);
+            }
+        }
+        chunk = _loadChunk;
         _cancelledWhileServicing.clear();
         _allCancelledWhileServicing = false;
         _servicingLoads = true;
@@ -718,6 +936,14 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
     std::map<PXR_NS::SdfPath, SplitLoad> splitLoads;
     // The request whose walk found each payload a load with descendants names.
     std::map<PXR_NS::SdfPath, PXR_NS::SdfPath> foundBy;
+    // The payloads found past the chunk, asked for with their descendants once the walk is done.
+    std::map<PXR_NS::SdfPath, SplitLoad> pastChunk;
+    std::size_t taken = 0;
+    const auto originOf = [&origins](const PXR_NS::SdfPath& request) {
+        const std::map<PXR_NS::SdfPath, PXR_NS::SdfPath>::const_iterator found = origins.find(request);
+
+        return (found != origins.end()) ? found->second : request;
+    };
     U64 composition = 0;
     bool walkCancelled = false;
     PXR_NS::UsdStageLoadRules rules;
@@ -737,6 +963,7 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
             case ePendingLoadOwn:
                 if (isUnloadedPayload(prim)) {
                     opened.ownLoads[request.first] = getPayloadAssets(prim);
+                    ++taken;
                 }
                 break;
             case ePendingLoadWithDescendants: {
@@ -763,7 +990,15 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
                             below.insert(*candidate);
                         }
                         foundBy[path] = request.first;
-                        if (below.empty()) {
+                        if (chunk != 0) {
+                            if (taken < chunk) {
+                                ++taken;
+                                opened.ownLoads[path] = getPayloadAssets(*it);
+                                splitLoads[path] = SplitLoad { request.first, std::move(below) };
+                            } else {
+                                pastChunk[path] = SplitLoad { request.first, std::move(below) };
+                            }
+                        } else if (below.empty()) {
                             opened.descendantLoads[path] = getPayloadAssets(*it);
                         } else {
                             // Loading its nested payloads would load the excluded ones too.
@@ -781,6 +1016,24 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
     });
     if (walkCancelled) {
         return true;
+    }
+    if (!pastChunk.empty()) {
+        std::lock_guard<std::mutex> lock(_loadMutex);
+        if (!_allCancelledWhileServicing) {
+            for (std::pair<const PXR_NS::SdfPath, SplitLoad>& past : pastChunk) {
+                const PXR_NS::SdfPath origin = originOf(past.second.request);
+                if ((_cancelledWhileServicing.count(origin) != 0) || (_cancelledWhileServicing.count(past.second.request) != 0) || (_pendingLoads.count(past.first) != 0)) {
+                    continue;
+                }
+                _pendingLoads[past.first] = ePendingLoadWithDescendants;
+                if (past.second.excluded.empty()) {
+                    _pendingExclusions.erase(past.first);
+                } else {
+                    _pendingExclusions[past.first] = std::move(past.second.excluded);
+                }
+                _loadOrigins[past.first] = origin;
+            }
+        }
     }
 
     if (!cancelled) {
@@ -921,6 +1174,12 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
         }
         _lastLoadHoldMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
     });
+    if (!requeue) {
+        std::lock_guard<std::mutex> lock(_loadMutex);
+        _committedLoads.insert(_committedLoads.end(), descendantPaths.begin(), descendantPaths.end());
+        _committedLoads.insert(_committedLoads.end(), ownPaths.begin(), ownPaths.end());
+        _committedUnloads.insert(_committedUnloads.end(), unloads.begin(), unloads.end());
+    }
     if (requeue) {
         std::lock_guard<std::mutex> lock(_loadMutex);
         if (!_allCancelledWhileServicing) {
@@ -937,6 +1196,10 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
                 if (excluded != exclusions.end()) {
                     _pendingExclusions[request.first] = excluded->second;
                 }
+                const PXR_NS::SdfPath origin = originOf(request.first);
+                if (origin != request.first) {
+                    _loadOrigins[request.first] = origin;
+                }
             }
         }
     } else if (!splitLoads.empty()) {
@@ -946,12 +1209,20 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
                 // A load that failed or went, a cancel of the payload or of the request that found it,
                 // or a newer request for either, says otherwise. A newer request for the one that
                 // found it walks again, past the payload now loaded, with its own exclusions.
+                const PXR_NS::SdfPath origin = originOf(split.second.request);
                 if ((ownPaths.count(split.first) == 0) || (_cancelledWhileServicing.count(split.first) != 0) || (_cancelledWhileServicing.count(split.second.request) != 0)
-                    || (_pendingLoads.count(split.first) != 0) || (_pendingLoads.count(split.second.request) != 0)) {
+                    || (_cancelledWhileServicing.count(origin) != 0) || (_pendingLoads.count(split.first) != 0) || (_pendingLoads.count(split.second.request) != 0)) {
                     continue;
                 }
                 _pendingLoads[split.first] = ePendingLoadWithDescendants;
-                _pendingExclusions[split.first] = std::move(split.second.excluded);
+                if (split.second.excluded.empty()) {
+                    _pendingExclusions.erase(split.first);
+                } else {
+                    _pendingExclusions[split.first] = std::move(split.second.excluded);
+                }
+                if (origin != split.first) {
+                    _loadOrigins[split.first] = origin;
+                }
             }
         }
     }
@@ -1053,6 +1324,14 @@ SceneStage::syncTo(const SceneStageSnapshot& snapshot)
     }
 
     return edited;
+}
+
+U64
+sceneFacesUnder(const PXR_NS::UsdPrim& root,
+                std::map<PXR_NS::SdfPath, U64>* prototypes,
+                const std::function<bool()>& cancelled)
+{
+    return root ? facesUnder(root, prototypes, cancelled, 0) : 0;
 }
 
 NATRON_NAMESPACE_EXIT

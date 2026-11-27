@@ -300,6 +300,56 @@ instanceHiddenBy(RulePtr rule)
 {
     return geometryHiddenBelow(rule);
 }
+
+// How little a rule draws, for the rows of a shared prototype's instances that disagree.
+int
+ruleStrength(SceneDrawFilter::RuleEnum rule)
+{
+    switch (rule) {
+    case SceneDrawFilter::eRuleShow:
+        return 0;
+    case SceneDrawFilter::eRuleExpand:
+        return 1;
+    case SceneDrawFilter::eRuleHide:
+        return 2;
+    case SceneDrawFilter::eRuleHidden:
+        return 3;
+    }
+
+    return 0;
+}
+
+const SceneDrawFilter::RuleEnum kRulesByStrength[] = {
+    SceneDrawFilter::eRuleShow, SceneDrawFilter::eRuleExpand, SceneDrawFilter::eRuleHide, SceneDrawFilter::eRuleHidden
+};
+
+// Paths whose rule differs between a and b, either way.
+void
+addDifferences(const SceneDrawFilter::Rules& a,
+               const SceneDrawFilter::Rules& b,
+               std::set<SdfPath>* roots)
+{
+    auto i = a.begin();
+    auto j = b.begin();
+    while ((i != a.end()) || (j != b.end())) {
+        if ((j == b.end()) || ((i != a.end()) && (i->first < j->first))) {
+            roots->insert(i->first);
+            ++i;
+        } else if ((i == a.end()) || (j->first < i->first)) {
+            roots->insert(j->first);
+            ++j;
+        } else {
+            if (i->second != j->second) {
+                roots->insert(i->first);
+            }
+            ++i;
+            ++j;
+        }
+    }
+}
+
+// Bounds the passes over nested native instances, so a cyclic input cannot loop.
+const int kMaxInstanceNesting = 16;
 } // anon namespace
 
 void
@@ -634,6 +684,7 @@ SceneDrawFilter::readInstancer(const SdfPath& path,
         return;
     }
     record.locations.assign(locations.cbegin(), locations.cend());
+    _instancersChanged = true;
     record.hidden.assign(record.locations.size(), false);
     record.waiting.assign(record.locations.size(), false);
     // The notice this came with carries the mask, so none is queued.
@@ -643,7 +694,7 @@ SceneDrawFilter::readInstancer(const SdfPath& path,
         _locations.emplace(location, std::make_pair(path, i));
         _scannedTo.clear();
         if (!_rules.empty()) {
-            setInstanceHidden(path, record, i, instanceHiddenBy(governing(_rules, location)));
+            setInstanceHidden(path, record, i, instanceOffBy(_rules, record, i));
         }
         if (_admitting && !record.hidden[i]) {
             const auto before = waited.find(location);
@@ -660,6 +711,9 @@ SceneDrawFilter::forgetInstancer(const SdfPath& path)
     const auto found = _instancers.find(path);
     if (found == _instancers.end()) {
         return;
+    }
+    if (!found->second.locations.empty()) {
+        _instancersChanged = true;
     }
     for (const SdfPath& location : found->second.locations) {
         const auto range = _locations.equal_range(location);
@@ -743,9 +797,145 @@ SceneDrawFilter::updateInstances(const std::vector<SdfPath>& roots)
         for (auto it = _locations.lower_bound(root); (it != _locations.end()) && it->first.HasPrefix(root); ++it) {
             const auto record = _instancers.find(it->second.first);
             if (record != _instancers.end()) {
-                setInstanceHidden(it->second.first, record->second, it->second.second, instanceHiddenBy(governing(_rules, it->first)));
+                setInstanceHidden(it->second.first, record->second, it->second.second, instanceOffBy(_rules, record->second, it->second.second));
             }
         }
+    }
+}
+
+bool
+SceneDrawFilter::instanceOffBy(const Rules& rules,
+                               const Instancer& record,
+                               std::size_t index) const
+{
+    const SdfPath& location = record.locations[index];
+    const RulePtr rule = governing(rules, location);
+    if (rule && (rule->second == eRuleExpand) && (rule->first == location) && hasOnePrototype(record)) {
+        return false;
+    }
+
+    return instanceHiddenBy(rule);
+}
+
+SceneDrawFilter::Rules
+SceneDrawFilter::effectiveRules(const Rules& stageRules) const
+{
+    if (stageRules.empty() || _locations.empty()) {
+        return stageRules;
+    }
+    Rules effective = stageRules;
+    std::vector<SdfPath> pending;
+    pending.reserve(stageRules.size());
+    for (const Rules::value_type& rule : stageRules) {
+        pending.push_back(rule.first);
+    }
+    const SdfPath& self = SdfPath::ReflexiveRelativePath();
+    // Each pass moves the rows one level of nested instances further in.
+    for (int depth = 0; !pending.empty() && (depth < kMaxInstanceNesting); ++depth) {
+        struct Inside {
+            std::set<SdfPath> relative;
+            std::set<std::size_t> instances;
+        };
+        std::map<SdfPath, Inside> byInstancer;
+        for (const SdfPath& path : pending) {
+            const std::pair<SdfPath, std::size_t>* instance = nativeInstanceOf(path);
+            if (!instance) {
+                continue;
+            }
+            const auto record = _instancers.find(instance->first);
+            if ((record == _instancers.end()) || !hasOnePrototype(record->second)) {
+                continue;
+            }
+            const SdfPath& location = record->second.locations[instance->second];
+            // Any other row on the instance itself turns it off in the mask.
+            if (path == location) {
+                const Rules::const_iterator own = effective.find(path);
+                if ((own == effective.end()) || (own->second != eRuleExpand)) {
+                    continue;
+                }
+            }
+            Inside& inside = byInstancer[instance->first];
+            inside.relative.insert(path.MakeRelativePath(location));
+            inside.instances.insert(instance->second);
+        }
+        pending.clear();
+        for (const auto& entry : byInstancer) {
+            const Instancer& record = _instancers.find(entry.first)->second;
+            const SdfPath& prototype = record.prototypes.front();
+            for (const SdfPath& relative : entry.second.relative) {
+                int strongest = -1;
+                for (const std::size_t index : entry.second.instances) {
+                    if (instanceOffBy(effective, record, index)) {
+                        continue;
+                    }
+                    const SdfPath& location = record.locations[index];
+                    const SdfPath at = (relative == self) ? location : location.AppendPath(relative);
+                    const RulePtr rule = governing(effective, at);
+                    // A row above the instance reaches it through the mask alone.
+                    if (!rule || !rule->first.HasPrefix(location)) {
+                        continue;
+                    }
+                    RuleEnum value = rule->second;
+                    if ((value == eRuleExpand) && (rule->first != at)) {
+                        value = eRuleHide;
+                    }
+                    strongest = (std::max)(strongest, ruleStrength(value));
+                }
+                if (strongest < 0) {
+                    continue;
+                }
+                const SdfPath target = (relative == self) ? prototype : prototype.AppendPath(relative);
+                effective[target] = kRulesByStrength[strongest];
+                pending.push_back(target);
+            }
+        }
+    }
+
+    return effective;
+} // SceneDrawFilter::effectiveRules
+
+SdfPath
+SceneDrawFilter::prototypePathOf(const SdfPath& path,
+                                 std::pair<SdfPath, std::size_t>* shared) const
+{
+    *shared = std::pair<SdfPath, std::size_t>();
+    SdfPath at = path;
+    for (int depth = 0; depth < kMaxInstanceNesting; ++depth) {
+        const std::pair<SdfPath, std::size_t>* instance = nativeInstanceOf(at);
+        if (!instance) {
+            break;
+        }
+        const auto record = _instancers.find(instance->first);
+        if (record == _instancers.end()) {
+            break;
+        }
+        const SdfPath& location = record->second.locations[instance->second];
+        if (location == at) {
+            break;
+        }
+        if (!hasOnePrototype(record->second) || (record->second.locations.size() > 1)) {
+            *shared = *instance;
+
+            return SdfPath();
+        }
+        at = at.ReplacePrefix(location, record->second.prototypes.front());
+    }
+
+    return at;
+}
+
+void
+SceneDrawFilter::refreshRules()
+{
+    _instancersChanged = false;
+    if (_stageRules.empty()) {
+        return;
+    }
+    Rules effective = effectiveRules(_stageRules);
+    std::set<SdfPath> roots;
+    addDifferences(_rules, effective, &roots);
+    if (!roots.empty()) {
+        applyRules(std::move(effective), roots, std::vector<const SceneDrawDelta*>(), 0, true);
     }
 }
 
@@ -907,7 +1097,9 @@ SceneDrawFilter::GetChildPrimPaths(const SdfPath& primPath) const
 void
 SceneDrawFilter::seedRules(const Rules& rules)
 {
-    _rules = rules;
+    _stageRules = rules;
+    _rules = effectiveRules(rules);
+    _instancersChanged = false;
     _revealStack.clear();
     _arrivalRoots.clear();
     finishRevealIfDone();
@@ -1191,18 +1383,18 @@ SceneDrawFilter::applyDelta(const SceneDrawDelta& delta,
 void
 SceneDrawFilter::replaceRules(const Rules& rules)
 {
-    if (rules == _rules) {
+    if (rules == _stageRules) {
         return;
     }
     SceneDrawDelta delta;
-    for (const Rules::value_type& rule : _rules) {
+    for (const Rules::value_type& rule : _stageRules) {
         if (rules.find(rule.first) == rules.end()) {
             delta.cleared.push_back(rule.first.GetString());
         }
     }
     for (const Rules::value_type& rule : rules) {
-        const Rules::const_iterator current = _rules.find(rule.first);
-        if ((current != _rules.end()) && (current->second == rule.second)) {
+        const Rules::const_iterator current = _stageRules.find(rule.first);
+        if ((current != _stageRules.end()) && (current->second == rule.second)) {
             continue;
         }
         std::vector<std::string>* list = nullptr;
@@ -1229,12 +1421,7 @@ void
 SceneDrawFilter::applyDeltas(const std::vector<const SceneDrawDelta*>& deltas,
                              std::size_t revealBatch)
 {
-    if (_admitting) {
-        // What Hydra lacks waits to be admitted instead of being revealed.
-        revealBatch = 0;
-        _orderNext = 0;
-    }
-    Rules target = _rules;
+    Rules target = _stageRules;
     std::set<SdfPath> roots;
     for (const SceneDrawDelta* delta : deltas) {
         applyToRules(*delta, &target);
@@ -1244,8 +1431,32 @@ SceneDrawFilter::applyDeltas(const std::vector<const SceneDrawDelta*>& deltas,
         addPaths(delta->hidden, &roots);
         addPaths(delta->cleared, &roots);
     }
+    Rules effective = effectiveRules(target);
+    addDifferences(_rules, effective, &roots);
+    _stageRules = std::move(target);
+    _instancersChanged = false;
+    applyRules(std::move(effective), roots, deltas, revealBatch, false);
+}
+
+void
+SceneDrawFilter::applyRules(Rules effective,
+                            const std::set<SdfPath>& roots,
+                            const std::vector<const SceneDrawDelta*>& deltas,
+                            std::size_t revealBatch,
+                            bool fromInput)
+{
+    if (_admitting) {
+        // What Hydra lacks waits to be admitted instead of being revealed.
+        revealBatch = 0;
+        if (!fromInput) {
+            _orderNext = 0;
+        }
+    } else if (fromInput && _revealing) {
+        // A reveal under way keeps its pace over what the instancers moved.
+        revealBatch = 1;
+    }
     _revealFrom = std::move(_rules);
-    _rules = std::move(target);
+    _rules = std::move(effective);
     const std::vector<SdfPath> tops = topmost(roots);
 
     // A frontier at or below a changed row goes, the change's own frame there taking its place.
@@ -1300,7 +1511,9 @@ SceneDrawFilter::applyDeltas(const std::vector<const SceneDrawDelta*>& deltas,
         walk(&staging, eWalkStage, all, never);
         _revealStack.insert(_revealStack.end(), changed.begin(), changed.end());
     }
-    updateRevealRoots(deltas, tops, revealBatch);
+    if (!fromInput) {
+        updateRevealRoots(deltas, tops, revealBatch);
+    }
     // Masks change at once, reveal or not: an instance costs Hydra nothing to show.
     updateInstances(tops);
     _revealing = true;
@@ -1386,6 +1599,21 @@ SceneDrawFilter::_PrimsAdded(const HdSceneIndexBase& /*sender*/,
 {
     _inputAdded += entries.size();
     _lastInputAdded = Clock::now();
+    // Instancers first, so that the prims of a prototype in the same notice meet the rows that
+    // govern them through its instances.
+    for (const HdSceneIndexObserver::AddedPrimEntry& entry : entries) {
+        if (!entry.primPath.IsAbsolutePath()) {
+            continue;
+        }
+        if (entry.primType == HdPrimTypeTokens->instancer) {
+            readInstancer(entry.primPath, _GetInputSceneIndex()->GetPrim(entry.primPath));
+        } else if (!_instancers.empty()) {
+            forgetInstancer(entry.primPath);
+        }
+    }
+    if (_instancersChanged) {
+        refreshRules();
+    }
     HdSceneIndexObserver::AddedPrimEntries rewritten;
     std::vector<Node*> arrived;
     bool deferred = false;
@@ -1408,11 +1636,6 @@ SceneDrawFilter::_PrimsAdded(const HdSceneIndexBase& /*sender*/,
         if (arriving && !node->arriving) {
             node->arriving = true;
             arrived.push_back(node);
-        }
-        if (entry.primType == HdPrimTypeTokens->instancer) {
-            readInstancer(entry.primPath, _GetInputSceneIndex()->GetPrim(entry.primPath));
-        } else if (!_instancers.empty()) {
-            forgetInstancer(entry.primPath);
         }
         OutputEnum output = eOutputShown;
         if (node->hideable && !_rules.empty()) {
@@ -1482,6 +1705,9 @@ SceneDrawFilter::_PrimsRemoved(const HdSceneIndexBase& /*sender*/,
     }
     finishRevealIfDone();
     _SendPrimsRemoved(entries);
+    if (_instancersChanged) {
+        refreshRules();
+    }
 }
 
 void
@@ -1499,6 +1725,9 @@ SceneDrawFilter::_PrimsDirtied(const HdSceneIndexBase& /*sender*/,
     }
     if (!isFiltering()) {
         _SendPrimsDirtied(entries);
+        if (_instancersChanged) {
+            refreshRules();
+        }
 
         return;
     }
@@ -1513,6 +1742,9 @@ SceneDrawFilter::_PrimsDirtied(const HdSceneIndexBase& /*sender*/,
     }
     if (!kept.empty()) {
         _SendPrimsDirtied(kept);
+    }
+    if (_instancersChanged) {
+        refreshRules();
     }
 }
 
@@ -1614,37 +1846,41 @@ SceneDrawFilter::applyBudget(const Budget& budget)
         return (node != _nodes.end()) && (node->second.output == eOutputShown);
     };
 
-    // A gprim under a native instance is not in Hydra: its prototype draws through the instancer,
-    // so the whole instance goes.
+    // A prim inside native instances is not in Hydra under its own path: its prototype's prim draws
+    // it. Where no other instance draws that prototype, the prim itself goes; otherwise hiding it
+    // would take it from every instance, so the outermost instance whose prototype is shared goes.
     std::unordered_set<SdfPath, SdfPath::Hash> hidden;
     std::unordered_map<SdfPath, std::vector<bool>, SdfPath::Hash> masks;
     hidden.reserve(budget.hidden.size());
     for (const SdfPath& path : budget.hidden) {
-        const auto node = _nodes.find(path);
+        std::pair<SdfPath, std::size_t> instance;
+        const SdfPath drawnAt = prototypePathOf(path, &instance);
+        const auto node = drawnAt.IsEmpty() ? _nodes.end() : _nodes.find(drawnAt);
         if (node != _nodes.end()) {
             if (HdPrimTypeIsGprim(node->second.type)) {
-                hidden.insert(path);
+                hidden.insert(drawnAt);
             }
             continue;
         }
-        const std::pair<SdfPath, std::size_t>* instance = nativeInstanceOf(path);
-        if (!instance) {
+        if (instance.first.IsEmpty()) {
             continue;
         }
-        const auto record = _instancers.find(instance->first);
+        const auto record = _instancers.find(instance.first);
         if (record == _instancers.end()) {
             continue;
         }
-        std::vector<bool>& bits = masks[instance->first];
+        std::vector<bool>& bits = masks[instance.first];
         bits.resize(record->second.locations.size(), false);
-        bits[instance->second] = true;
+        bits[instance.second] = true;
     }
     for (const auto& entry : budget.instances) {
-        const auto node = _nodes.find(entry.first);
+        std::pair<SdfPath, std::size_t> instance;
+        const SdfPath drawnAt = prototypePathOf(entry.first, &instance);
+        const auto node = drawnAt.IsEmpty() ? _nodes.end() : _nodes.find(drawnAt);
         if ((node == _nodes.end()) || (node->second.type != HdPrimTypeTokens->instancer)) {
             continue;
         }
-        std::vector<bool>& bits = masks[entry.first];
+        std::vector<bool>& bits = masks[drawnAt];
         if (bits.empty()) {
             // A word at a time: an instancer may hold tens of millions.
             bits = entry.second;
@@ -1661,9 +1897,11 @@ SceneDrawFilter::applyBudget(const Budget& budget)
     }
     std::unordered_map<SdfPath, VtIntArray, SdfPath::Hash> faces;
     for (const auto& entry : budget.invisibleFaces) {
-        const auto node = _nodes.find(entry.first);
-        if (!entry.second.empty() && (node != _nodes.end()) && (node->second.type == HdPrimTypeTokens->mesh)) {
-            faces.emplace(entry.first, entry.second);
+        std::pair<SdfPath, std::size_t> instance;
+        const SdfPath drawnAt = entry.second.empty() ? SdfPath() : prototypePathOf(entry.first, &instance);
+        const auto node = drawnAt.IsEmpty() ? _nodes.end() : _nodes.find(drawnAt);
+        if ((node != _nodes.end()) && (node->second.type == HdPrimTypeTokens->mesh)) {
+            faces.emplace(drawnAt, entry.second);
         }
     }
 

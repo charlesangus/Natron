@@ -175,8 +175,38 @@ public:
      **/
     void setLoadsWake(const std::function<void()>& wake);
 
-    // Whether a request is still waiting or in a serviceLoads() that has not returned.
+    // Whether a request is still waiting or in a serviceLoads() that has not returned. Held loads
+    // do not count.
     bool hasOutstandingLoads() const;
+
+    /**
+     * @brief Makes loads with descendants come in a chunk at a time: a serviceLoads() loads at most
+     * payloads of the unloaded payloads its requests find, each on its own, and asks for the
+     * descendants of each, and for the payloads past the chunk, as follow-up loads that later calls
+     * take. Between chunks the stage is drawn and the loads can be cancelled or held. A follow-up
+     * load belongs to the request it came from: cancelling that path cancels it. 0, the default,
+     * loads every payload a batch finds with its descendants at once.
+     **/
+    void setLoadChunk(std::size_t payloads);
+
+    /**
+     * @brief Asked, with no lock held, before a serviceLoads() takes follow-up loads: while it returns
+     * false they are held instead, and only loads asked for with requestLoad() are serviced. A
+     * requestLoad() or releaseHeldLoads() makes the held loads pending again, and a cancel drops
+     * them as it drops pending ones.
+     **/
+    void setLoadAdmission(const std::function<bool()>& admit);
+
+    void releaseHeldLoads();
+
+    bool hasHeldLoads() const;
+
+    /**
+     * @brief The paths whose loads and unloads serviceLoads() committed since the last call, which
+     * forgets them. A path loaded on its own holds no payload below it that is loaded yet.
+     **/
+    void takeCommittedLoads(PXR_NS::SdfPathVector* loaded,
+                            PXR_NS::SdfPathVector* unloaded);
 
     // Runs its argument with the owner's lock held, shared with other readers or exclusively.
     using LockedSection = std::function<void(const std::function<void()>&)>;
@@ -267,6 +297,8 @@ private:
     // Under _loadMutex: moves the loads put off for a stale layer back to the pending ones once
     // SceneTeardown has gone idle. A newer request for a path wins.
     void takeReadyDeferredLoads();
+    // Under _loadMutex.
+    void releaseHeldLoadsLocked();
 
     enum PendingLoadEnum {
         ePendingLoadOwn,
@@ -311,6 +343,14 @@ private:
     // The loads put off for a stale layer, until SceneTeardown is idle.
     std::map<PXR_NS::SdfPath, PendingLoadEnum> _deferredLoads;
     std::map<PXR_NS::SdfPath, PXR_NS::SdfPathSet> _deferredExclusions;
+    // The request each follow-up load came from, by the follow-up's path, pending or held.
+    std::map<PXR_NS::SdfPath, PXR_NS::SdfPath> _loadOrigins;
+    std::map<PXR_NS::SdfPath, PendingLoadEnum> _heldLoads;
+    std::map<PXR_NS::SdfPath, PXR_NS::SdfPathSet> _heldExclusions;
+    std::function<bool()> _loadAdmission;
+    std::size_t _loadChunk = 0;
+    PXR_NS::SdfPathVector _committedLoads;
+    PXR_NS::SdfPathVector _committedUnloads;
     struct DeferredLoadsWake;
     // Shared with the callback SceneTeardown runs once idle, which may outlive the stage.
     std::shared_ptr<DeferredLoadsWake> _deferredWake;
@@ -320,6 +360,16 @@ private:
     std::vector<std::pair<std::string, PXR_NS::GfMatrix4d>> _previewDeltas;
     double _previewTimeCode = 0.;
 };
+
+/**
+ * @brief The faces of the meshes at and below root as the stage composes them, loaded and active:
+ * a native instance counts its prototype's and a point instancer each of its prototypes' once per
+ * instance. Prototypes counts each prototype's faces by path, across calls on the same composition.
+ * Stops early, with what it counted so far, once cancelled() turns true.
+ **/
+U64 sceneFacesUnder(const PXR_NS::UsdPrim& root,
+                    std::map<PXR_NS::SdfPath, U64>* prototypes,
+                    const std::function<bool()>& cancelled = std::function<bool()>());
 
 NATRON_NAMESPACE_EXIT
 

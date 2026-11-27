@@ -14380,11 +14380,16 @@ SceneViewport::keyReleaseEvent(QKeyEvent* e)
 void
 SceneViewport::focusOutEvent(QFocusEvent* e)
 {
-    // A release or key release that goes elsewhere never comes back.
-    if (_imp->handle != SceneGizmo::kNoHandle) {
-        endHandleDrag();
+    // A key release that goes elsewhere never comes back. A mouse release only goes elsewhere
+    // with another window or a popup; any other focus loss, such as a closing panel clearing
+    // the focus, leaves the press's mouse grab here, so the release still ends the drag.
+    const Qt::FocusReason reason = e->reason();
+    if ((reason == Qt::ActiveWindowFocusReason) || (reason == Qt::PopupFocusReason)) {
+        if (_imp->handle != SceneGizmo::kNoHandle) {
+            endHandleDrag();
+        }
+        clearGesture();
     }
-    clearGesture();
     _imp->spaceHeld = false;
     QOpenGLWidget::focusOutEvent(e);
 }

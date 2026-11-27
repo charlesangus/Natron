@@ -1,6 +1,6 @@
 """A progressive delegate's frames get the Viewer's gain, view and lighting mode, as Storm's do.
 
-Graph: USDRead of a stage the script writes into Viewer1, drawn with Cycles (picked from the view's
+Graph: USDRead (Initial Draw Full) of a stage the script writes into Viewer1, drawn with Cycles (picked from the view's
 Renderer submenu; the script reports SKIP and passes when this build has no Cycles). Guides and the
 grid are hidden. Max Samples is low so each render converges quickly.
 
@@ -180,6 +180,7 @@ try:
     usd = app.createNode("USDRead")
     require(usd is not None, "create USDRead", plugin_problem("USDRead"))
     usd.setPosition(0, 0)
+    usd.getParam("initialDraw").setValue(3)
     usd.getParam("filename").setValue(reference_path)
     viewer = app.getNode("Viewer1")
     if viewer is None:

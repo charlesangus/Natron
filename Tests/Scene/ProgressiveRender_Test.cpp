@@ -972,8 +972,8 @@ TEST_F(ProgressiveRenderTest, ADomeSeenWhereNothingCoversReachesTheFrame)
 }
 
 // The headlight lights the stage from the camera in place of its lights: a view asking for it
-// changes the lit cube's colour and the status says the engine has it, and a view without it
-// brings the colour back.
+// makes the engine again, changes the lit cube's colour and the status says the engine has it,
+// and a view without it makes the engine again and brings the colour back.
 TEST_F(ProgressiveRenderTest, TheHeadlightLightsFromTheCameraAndTheStatusSaysSo)
 {
     if (!cyclesOrSkip()) {
@@ -987,6 +987,7 @@ TEST_F(ProgressiveRenderTest, TheHeadlightLightsFromTheCameraAndTheStatusSaysSo)
     EXPECT_FALSE(_render->getStatus().headlightAsked);
     EXPECT_FALSE(_render->getStatus().headlight);
 
+    std::uint64_t builds = HydraRender::getEngineBuildCount();
     std::size_t mark = publishedCount();
     ProgressiveRender::View lit = _view;
     lit.headlight = true;
@@ -999,12 +1000,15 @@ TEST_F(ProgressiveRenderTest, TheHeadlightLightsFromTheCameraAndTheStatusSaysSo)
     EXPECT_GT(std::fabs(headlit - sceneLit), 0.1f * std::max(sceneLit, headlit)) << "the headlight changed nothing";
     EXPECT_TRUE(_render->getStatus().headlightAsked);
     EXPECT_TRUE(_render->getStatus().headlight);
+    EXPECT_GT(HydraRender::getEngineBuildCount(), builds) << "the headlight did not make the engine again";
 
+    builds = HydraRender::getEngineBuildCount();
     mark = publishedCount();
     _render->setView(_view);
     frames.clear();
     ASSERT_TRUE(collectUntilDone(mark, &frames));
     ASSERT_FALSE(frames.empty());
+    EXPECT_GT(HydraRender::getEngineBuildCount(), builds) << "turning the headlight off did not make the engine again";
     const float back = centreRed(*frames.back());
     EXPECT_NEAR(sceneLit, back, 0.1f * std::max(sceneLit, 0.01f));
     EXPECT_FALSE(_render->getStatus().headlightAsked);

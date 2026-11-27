@@ -3894,6 +3894,9 @@ struct ProgressiveRender::Implementation {
     // soon after the delegate starts for its counts to show it, which makes the engine again, and
     // so on without end on a loaded machine.
     bool carriedHeadlight = false;
+    // The view's headlight the engine rendered with, which decides its enableSceneLights.
+    bool engineViewHeadlight = false;
+    bool engineLightsKnown = false;
     bool paused = false;
     // StopRenderer() stopped the delegate's threads for an edit, or for stop() where it cannot
     // pause; the next pass restarts them.
@@ -3998,6 +4001,7 @@ struct ProgressiveRender::Implementation {
         }
         drawFilter = SceneDrawFilter::WeakPtr();
         headlit = false;
+        engineLightsKnown = false;
         engine.reset();
         engineRenderer.clear();
         samplesKey = TfToken();
@@ -4152,6 +4156,7 @@ struct ProgressiveRender::Implementation {
         drawFilter = filter;
         appliedDrawEdits = rulesEdits;
         headlit = false;
+        engineLightsKnown = false;
         engineRenderer = id;
         engineSettings = primSettings;
         depthAov = moonRay ? MoonRayAovs::depthAov() : HdAovTokens->depth;
@@ -4650,6 +4655,15 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             keepFrame = true;
             continue;
         }
+        if (engineLightsKnown && hasView && (headlightFor(engineRenderer, view.headlight) != engineViewHeadlight)) {
+            // Turning enableSceneLights back on for a live engine leaves a refining delegate's
+            // restored lights unlit: a change of the lighting mode makes the engine again.
+            lock.unlock();
+            dropEngine();
+            lock.lock();
+            keepFrame = true;
+            continue;
+        }
         status.active = true;
 
         if (stopped) {
@@ -4822,6 +4836,8 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                     engineHasView = true;
                 }
                 viewHeadlight = headlightFor(engineRenderer, v.headlight);
+                engineViewHeadlight = viewHeadlight;
+                engineLightsKnown = true;
                 UsdImagingGLRenderParams params;
                 params.frame = v.time;
                 params.drawMode = UsdImagingGLDrawMode::DRAW_SHADED_SMOOTH;

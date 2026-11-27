@@ -28,8 +28,10 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
@@ -61,12 +63,47 @@ Support probe(const std::string& rendererId) WARN_UNUSED_RETURN;
 /**
  * @brief The node's warning about what rendererName cannot render of stage, one line per kind:
  * per Hydra prim type it does not make, per shader id it does not build, and for materials with
- * no surface in its render contexts, each line naming the kind and its prims. Empty when it
- * renders everything.
+ * neither a surface nor a volume in its render contexts, each line naming the kind and its prims.
+ * Empty when it renders everything.
  **/
 std::string warningText(const PXR_NS::UsdStageRefPtr& stage,
                         const Support& support,
                         const std::string& rendererName) WARN_UNUSED_RETURN;
+
+// What a delegate takes of a volume's fields beyond OpenVDB files.
+struct VolumeLimits {
+    // All of a volume's fields must come from one file.
+    bool singleFile = false;
+    // The field names it renders; every name when empty.
+    PXR_NS::TfTokenVector fieldNames;
+
+    static VolumeLimits moonRay() WARN_UNUSED_RETURN;
+};
+
+/**
+ * @brief The stage's UsdVolVolume prims, found once per stage edit so a change of time alone does
+ * not walk the stage again. No walk at all when no layer the stage composes authors a prim of a
+ * Volume type. A volume in an instancing prototype is found once, by the path of its first
+ * instance's proxy. Partial once cancel is set, for the caller to drop.
+ **/
+std::vector<PXR_NS::SdfPath> volumePrims(const PXR_NS::UsdStageRefPtr& stage,
+                                         const std::atomic<bool>* cancel = nullptr) WARN_UNUSED_RETURN;
+
+/**
+ * @brief What of volumes' fields at time a delegate with limits cannot render, a line per problem,
+ * naming each volume and field: field prims or files missing, unreadable files, grids not in their
+ * file and fields outside limits. Each distinct file is read once, and only its grids' metadata.
+ * Partial once cancel is set, for the caller to drop.
+ **/
+std::string volumeWarningText(const PXR_NS::UsdStageRefPtr& stage,
+                              const std::vector<PXR_NS::SdfPath>& volumes,
+                              PXR_NS::UsdTimeCode time,
+                              const VolumeLimits& limits,
+                              const std::string& rendererName,
+                              const std::atomic<bool>* cancel = nullptr) WARN_UNUSED_RETURN;
+
+// Whether line is one volumeWarningText() writes, of any renderer.
+bool isVolumeWarningLine(const std::string& line) WARN_UNUSED_RETURN;
 } // namespace DelegateSupport
 
 NATRON_NAMESPACE_EXIT

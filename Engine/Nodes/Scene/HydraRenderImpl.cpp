@@ -235,6 +235,7 @@ public:
     // not rendered has no pixels from before, and a delegate that is not watched is trusted.
     void restart(bool seen)
     {
+        _fresh = false;
         _trusted = seen;
         _seen = seen;
         _converged = seen;
@@ -244,6 +245,17 @@ public:
         _inFlight = false;
         _busy = false;
         _overCap = false;
+    }
+
+    // An engine that has not rendered has no pixels from before, but its first render is not yet
+    // the one its buffers must show: a pass that finds its scene changed again, as one taken while
+    // the session loads its kernels may, resets it anew, and the render that reset cuts short still
+    // marks the buffers converged. Its buffers show the new render once one began at or after its
+    // last reset wrote them; until its first reset it is still syncing, and is restarting().
+    void restartFresh()
+    {
+        restart(false);
+        _fresh = true;
     }
 
     // A Cycles that counts no resets is trusted, as every delegate was before its counts were
@@ -270,6 +282,18 @@ public:
             return true;
         }
         const std::int64_t requested = countOf(stats, "resetsRequested");
+        if (_fresh) {
+            if (requested < 0) {
+                restart(true);
+
+                return true;
+            }
+            _inFlight = (requested == 0) || (countOf(stats, "resetsWritten") < requested);
+            _seen = !_inFlight;
+            _converged = _seen && (countOf(stats, "resetsConverged") >= requested);
+
+            return _seen;
+        }
         const bool asked = (_requestsAtRestart >= 0) && (requested > _requestsAtRestart);
         // More samples than the cap the restart set are the render of before: Cycles takes a lower
         // sample count only from a session it makes, and renders on to the count it had.
@@ -320,6 +344,7 @@ public:
     }
 
 private:
+    bool _fresh = false;
     bool _trusted = true;
     bool _seen = true;
     bool _converged = true;
@@ -551,6 +576,15 @@ struct EngineEntry {
     // found since the stage or the delegate last changed.
     std::string supportWarning;
     bool supportChecked = false;
+    // The stage's volumes, found once per stage edit, and what their fields at volumeTime and the
+    // write count volumeWrites lack; a field's file can change in time, so on a stage that may vary
+    // in time that is checked again at each new time.
+    std::vector<SdfPath> volumes;
+    std::string volumeWarning;
+    UsdTimeCode volumeTime = UsdTimeCode::Default();
+    U64 volumeWrites = 0;
+    bool volumeChecked = false;
+    bool volumesFound = false;
     // Whether the stage authors values that change in time, found at the stage edit and write
     // counts beside it; unknown until a render at another time asks.
     bool timeVarying = false;
@@ -573,6 +607,7 @@ struct EngineEntry {
     // log, and the errors it logged naming no prim of it; empty for a delegate that reports neither.
     std::string warning;
     std::string errors;
+    HydraRender::RenderTrace trace;
     UsdTimeCode time;
     GfMatrix4d view;
     GfMatrix4d projection;
@@ -1544,6 +1579,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     if (edited || rendererChanged) {
         entry.supportWarning.clear();
         entry.supportChecked = false;
+        entry.volumesFound = false;
     }
     std::optional<StormGLSection> section;
     enterGLSection(&section);
@@ -1581,20 +1617,37 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     if (entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height)) {
         return &entry;
     }
+    if (!entry.volumesFound) {
+        std::vector<SdfPath> volumes = DelegateSupport::volumePrims(stage, cancel);
+        if (cancel && cancel->load()) {
+            *error = "The " + entry.rendererName + " render was cancelled.";
+            // The stage may have been edited since that render.
+            entry.rendered = false;
+
+            return nullptr;
+        }
+        entry.volumes.swap(volumes);
+        entry.volumesFound = true;
+        entry.volumeChecked = false;
+    }
+    const auto timeVarying = [&]() {
+        const U64 edits = entry.stage->getEditCount();
+        if (!entry.timeVaryingKnown || (entry.timeVaryingEdits != edits) || (entry.timeVaryingWrites != writeCount)) {
+            entry.timeVarying = mayVaryInTime(stage);
+            entry.timeVaryingKnown = true;
+            entry.timeVaryingEdits = edits;
+            entry.timeVaryingWrites = writeCount;
+        }
+
+        return entry.timeVarying;
+    };
     // Cycles shows a restart in its progress only once a change reaches it: a request changing
     // nothing it sees would wait out kRestartUnseen for one, then make the engine again.
     bool watchRestart = false;
     if (!freshEngine && RestartWatch::watches(renderer)) {
         watchRestart = !entry.rendered || edited || (entry.writeCount != writeCount) || (entry.view != view) || (entry.projection != projection) || (entry.width != width) || (entry.height != height);
         if (!watchRestart && (entry.time != request.time)) {
-            const U64 edits = entry.stage->getEditCount();
-            if (!entry.timeVaryingKnown || (entry.timeVaryingEdits != edits) || (entry.timeVaryingWrites != writeCount)) {
-                entry.timeVarying = mayVaryInTime(stage);
-                entry.timeVaryingKnown = true;
-                entry.timeVaryingEdits = edits;
-                entry.timeVaryingWrites = writeCount;
-            }
-            watchRestart = entry.timeVarying;
+            watchRestart = timeVarying();
         }
     }
     entry.rendered = false;
@@ -1620,6 +1673,28 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
     params.highlight = false;
     std::string renderFailure;
+    // Reading the fields' files initialises OpenVDB for the whole process, so it waits until the
+    // delegate has read them: one that does not initialise the library itself then fails its own
+    // first read instead of passing on Natron's. False when cancelled.
+    const auto checkVolumes = [&]() {
+        if (!entry.volumeChecked || (entry.volumeWrites != writeCount) || ((entry.volumeTime != request.time) && !entry.volumes.empty() && timeVarying())) {
+            const DelegateSupport::VolumeLimits limits = MoonRayAovs::isMoonRay(renderer) ? DelegateSupport::VolumeLimits::moonRay() : DelegateSupport::VolumeLimits();
+            std::string warning = DelegateSupport::volumeWarningText(stage, entry.volumes, request.time, limits, entry.rendererName, cancel);
+            if (cancel && cancel->load()) {
+                return false;
+            }
+            entry.volumeWarning.swap(warning);
+            entry.volumeTime = request.time;
+            entry.volumeWrites = writeCount;
+            entry.volumeChecked = true;
+        }
+        entry.warning = entry.volumeWarning;
+
+        return true;
+    };
+    entry.warning.clear();
+    entry.errors.clear();
+    entry.trace = HydraRender::RenderTrace();
     if (_gl) {
         for (int pass = 0; pass < kMaxRenderPasses; ++pass) {
             if (cancel && cancel->load()) {
@@ -1639,6 +1714,11 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             // live texture through shared memory, so the next render goes on with it.
             return nullptr;
         }
+        if (!checkVolumes()) {
+            *error = "The " + entry.rendererName + " render was cancelled.";
+
+            return nullptr;
+        }
     } else {
         // A path tracer renders on threads of its own and converges when it is done; each Render()
         // syncs the stage's changes into it. MoonRay's log is taken off the console for the
@@ -1649,7 +1729,14 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         }
         std::chrono::steady_clock::time_point restarted = std::chrono::steady_clock::now();
         RestartWatch restartWatch;
-        restartWatch.restart(!watchRestart);
+        const bool watchFresh = freshEngine && RestartWatch::watches(renderer);
+        if (watchFresh) {
+            restartWatch.restartFresh();
+        } else {
+            restartWatch.restart(!watchRestart);
+        }
+        entry.trace.freshEngine = freshEngine;
+        entry.trace.watched = watchFresh || watchRestart;
         if (watchRestart) {
             VtDictionary stats = engine->GetRenderStats();
             while (!RestartWatch::idle(stats) && engine->IsConverged() && !(cancel && cancel->load()) && (std::chrono::steady_clock::now() - restarted < kIdleSettle)) {
@@ -1687,6 +1774,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
                 return nullptr;
             }
             passRan = true;
+            ++entry.trace.passes;
             if (!renderGuarded(engine, stage->GetPseudoRoot(), params, &renderFailure)) {
                 break;
             }
@@ -1696,7 +1784,13 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             // converged, it goes.
             const VtDictionary stats = engine->GetRenderStats();
             const bool restartSeen = restartWatch.after(stats, samplesOf(stats, 0));
-            if (restartSeen && restartWatch.converged() && engine->IsConverged() && !(cancel && cancel->load())) {
+            const bool converged = engine->IsConverged();
+            entry.trace.samples = samplesOf(stats, 0);
+            entry.trace.resetsRequested = countOf(stats, "resetsRequested");
+            entry.trace.resetsWritten = countOf(stats, "resetsWritten");
+            entry.trace.resetsConverged = countOf(stats, "resetsConverged");
+            entry.trace.converged = converged;
+            if (restartSeen && restartWatch.converged() && converged && !(cancel && cancel->load())) {
                 break;
             }
             // A MoonRay session that could not start or broke never converges.
@@ -1728,7 +1822,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
                     log.reset();
                     log.reset(new MoonRayAovs::LogCapture);
                 }
-                restartWatch.restart(true);
+                restartWatch.restartFresh();
+                ++entry.trace.remakes;
                 restarted = now;
                 passRan = false;
                 continue;
@@ -1736,13 +1831,19 @@ RenderThread::renderEngine(const HydraRender::Request& request,
             yieldToBarrier();
             std::this_thread::sleep_for(kConvergencePoll);
         }
+        if (!checkVolumes()) {
+            cancelled();
+
+            return nullptr;
+        }
         // Only Cycles is probed: making a delegate to ask it its types may start a render.
         if (!entry.supportChecked) {
             entry.supportWarning = CyclesAovs::isCycles(renderer) ? DelegateSupport::warningText(stage, CyclesAovs::support(), entry.rendererName) : std::string();
             entry.supportChecked = true;
         }
-        entry.warning = entry.supportWarning;
-        entry.errors.clear();
+        if (!entry.supportWarning.empty()) {
+            entry.warning = entry.supportWarning + (entry.warning.empty() ? std::string() : std::string("\n") + entry.warning);
+        }
         if (log) {
             const std::vector<MoonRayAovs::Notice> notices = log->notices();
             const std::string logged = MoonRayAovs::warningText(stage, MoonRayAovs::unsupportedLights(stage, MoonRayAovs::supportedPrimTypes()), notices);
@@ -1892,6 +1993,7 @@ RenderThread::cpuFrame(EngineEntry& entry,
 
     result->warning = entry.warning;
     result->errors = entry.errors;
+    result->trace = entry.trace;
 
     if (!decodeIds(entry, error)) {
         return false;
@@ -2084,6 +2186,9 @@ RenderThread::frame(EngineEntry& entry,
         return false;
     }
     result->primPaths = entry.primPaths;
+    result->warning = entry.warning;
+    result->errors = entry.errors;
+    result->trace = entry.trace;
 
     return true;
 }

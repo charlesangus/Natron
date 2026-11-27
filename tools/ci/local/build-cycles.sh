@@ -20,6 +20,11 @@
 # Required environment: NATRON_CYCLES_REPO (the GitHub repository's https URL, no trailing slash),
 # NATRON_CYCLES_COMMIT (a full commit SHA), NATRON_CYCLES_SHA256 (of the GitHub commit archive).
 # Optional: NATRON_CYCLES_OIDN (ON/OFF, default ON) for the OpenImageDenoise denoiser.
+#
+# NanoVDB is header-only and the image's OpenVDB install leaves its headers out, so they come from
+# the OpenVDB release the image's libopenvdb.so.13.0 was built from (Apache-2.0, like OpenVDB) and
+# are used for this build only. Cycles converts every volume grid to NanoVDB before it builds the
+# volume's bounding mesh, so without them a volume never renders.
 
 set -euo pipefail
 
@@ -28,6 +33,9 @@ commit="${NATRON_CYCLES_COMMIT:?}"
 sha256="${NATRON_CYCLES_SHA256:?}"
 oidn="${NATRON_CYCLES_OIDN:-ON}"
 url="${repo}/archive/${commit}.tar.gz"
+openvdb_version=13.0.0
+openvdb_url="https://github.com/AcademySoftwareFoundation/openvdb/archive/refs/tags/v${openvdb_version}.tar.gz"
+openvdb_sha256=4d6a91df5f347017496fe8d22c3dbb7c4b5d7289499d4eb4d53dd2c75bb454e1
 
 usd_prefix=/usr/local
 plugin_dir="${usd_prefix}/plugin/usd"
@@ -38,12 +46,28 @@ work="$(mktemp -d /tmp/cycles-build.XXXXXX)"
 src="${work}/src"
 build="${work}/build"
 helpers="${work}/cmake"
-mkdir -p "$src" "$build" "${helpers}/ocio" "${helpers}/no-epoxy"
+mkdir -p "$src" "$build" "${helpers}/ocio" "${helpers}/no-epoxy" "${helpers}/nanovdb/include"
 
 wget -q -O "${work}/cycles.tar.gz" "$url"
 echo "${sha256}  ${work}/cycles.tar.gz" | sha256sum -c -
 tar -xzf "${work}/cycles.tar.gz" -C "$src" --strip-components=1
 test -f "${src}/src/hydra/plugInfo.json"
+
+# NanoVDB's grid layout must match the libopenvdb the delegate links, so a base image with another
+# OpenVDB fails here rather than building against mismatched headers.
+openvdb_version_h=/usr/local/include/openvdb/version.h
+for part in MAJOR:${openvdb_version%%.*} MINOR:$(cut -d. -f2 <<<"$openvdb_version") PATCH:${openvdb_version##*.}; do
+    if ! grep -Eq "^#define OPENVDB_LIBRARY_${part%%:*}_VERSION_NUMBER ${part##*:}\b" "$openvdb_version_h"; then
+        echo "build-cycles: the image's OpenVDB is not ${openvdb_version}" >&2
+        exit 1
+    fi
+done
+wget -q -O "${work}/openvdb.tar.gz" "$openvdb_url"
+echo "${openvdb_sha256}  ${work}/openvdb.tar.gz" | sha256sum -c -
+tar -xzf "${work}/openvdb.tar.gz" -C "${helpers}/nanovdb/include" --strip-components=2 \
+    "openvdb-${openvdb_version}/nanovdb/nanovdb"
+test -f "${helpers}/nanovdb/include/nanovdb/NanoVDB.h"
+test -f "${helpers}/nanovdb/include/nanovdb/tools/CreateNanoGrid.h"
 
 # OpenUSD 26.08 (hd API 103, pxr/imaging/hd/version.h) dropped HdRendererPlugin::IsSupported(bool),
 # which Cycles v5.2.0 still marks override; the method is never called, so it just loses the
@@ -87,8 +111,12 @@ echo 'set(OpenColorIO_FOUND TRUE)' >"${helpers}/ocio/OpenColorIOConfig.cmake"
 #
 # WITH_CYCLES_NATIVE_ONLY stays off: the CPU kernels are built for every x86-64 level Cycles
 # supports and picked at run time, so the image's build host does not decide what users can run.
+#
+# The standalone build finds NanoVDB but never adds NANOVDB_INCLUDE_DIRS to any target, since
+# Blender's library bundle puts the headers on the OpenVDB include path, hence the -isystem.
 cmake -S "$src" -B "$build" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CXX_FLAGS="-isystem ${helpers}/nanovdb/include" \
     -DCMAKE_SHARED_LINKER_FLAGS=-Wl,--as-needed \
     -DPXR_ROOT="$usd_prefix" \
     "${dep_dirs[@]}" \
@@ -105,7 +133,8 @@ cmake -S "$src" -B "$build" -G Ninja \
     -DWITH_CYCLES_OPENIMAGEDENOISE="$oidn" \
     -DWITH_CYCLES_OPENSUBDIV=ON \
     -DWITH_CYCLES_OPENVDB=ON \
-    -DWITH_CYCLES_NANOVDB=OFF \
+    -DWITH_CYCLES_NANOVDB=ON \
+    -DNANOVDB_ROOT_DIR="${helpers}/nanovdb" \
     -DWITH_CYCLES_OSL=OFF \
     -DWITH_CYCLES_ALEMBIC=OFF \
     -DWITH_CYCLES_PUGIXML=OFF \
@@ -135,12 +164,18 @@ cmake --build "$build" --target hdCycles -j "$jobs"
 # device reads nothing from it.
 delegate="${plugin_dir}/hdCycles.so"
 install -m 0755 "${build}/src/hydra/hdCycles.so" "$delegate"
+if ! nm -C "$delegate" | grep -c 'openvdb_to_nanovdb' >/dev/null; then
+    echo "build-cycles: hdCycles.so was built without NanoVDB" >&2
+    exit 1
+fi
 install -d "${plugin_dir}/hdCycles/resources"
 install -m 0644 "${build}/src/hydra/resources/plugInfo.json" "${plugin_dir}/hdCycles/resources/plugInfo.json"
 install -m 0644 "${src}/LICENSE" "${plugin_dir}/hdCycles/LICENSE"
 cat >"${plugin_dir}/hdCycles/SOURCE" <<EOF
 hdCycles is built from ${repo}, commit ${commit}
 (${url}, SHA-256 ${sha256}), with the build-time patches in Natron's tools/ci/local/build-cycles.sh.
+It compiles in the NanoVDB headers of OpenVDB ${openvdb_version} (${openvdb_url},
+SHA-256 ${openvdb_sha256}), licensed under the Apache License 2.0.
 Cycles is licensed under the Apache License 2.0 (LICENSE). src/session/IMB_deep_sample.hh and
 src/session/IMB_deep_sample_merge.hh are Blender code under the GNU GPL version 2 or later.
 EOF

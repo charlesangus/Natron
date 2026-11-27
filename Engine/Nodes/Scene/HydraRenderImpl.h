@@ -148,6 +148,21 @@ struct Request {
     std::map<std::string, PXR_NS::VtValue> settings;
 };
 
+// How a path tracer's render ended: what its delegate reported when the render stopped waiting on
+// it. A count is -1 where the delegate reports none, as every delegate but Cycles. Diagnostics
+// only: tests read it to tell how a render converged, and no node or viewer acts on it.
+struct RenderTrace {
+    bool freshEngine = false;
+    bool watched = false; // the render waited on the delegate's reset counts
+    int passes = 0;
+    int remakes = 0; // engines made again after no restart showed
+    int samples = -1;
+    std::int64_t resetsRequested = -1;
+    std::int64_t resetsWritten = -1;
+    std::int64_t resetsConverged = -1;
+    bool converged = false;
+};
+
 // The AOVs, width x height pixels each, the bottom row first as Natron's images.
 struct Result {
     std::vector<float> rgba; // 4 per pixel, as Storm shades it, with no colour transform
@@ -157,11 +172,13 @@ struct Result {
     // 3 per pixel: the shading normal in camera space, 0 where nothing was hit. Empty when the
     // delegate renders no normal AOV, as Storm.
     std::vector<float> normal;
-    // What the delegate cannot render of the scene, one line per kind of prim, material or light,
-    // for the node's warning; empty if it renders everything or is not checked, as Storm.
+    // What the delegate cannot render of the scene, one line per kind of prim, material, light or
+    // volume field, for the node's warning; empty if it renders everything it is checked for.
     std::string warning;
     // The errors the delegate logged that name no prim of the scene, one per line; empty if none.
     std::string errors;
+    // Diagnostics for tests, as RenderTrace; default for Storm, which renders on the render thread.
+    RenderTrace trace;
 };
 
 /**

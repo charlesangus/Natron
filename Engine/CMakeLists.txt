@@ -235,6 +235,9 @@ target_link_libraries(NatronEngine
         lensfun::lensfun
         ${CMAKE_DL_LIBS}
         ${NATRON_USD_ENGINE_LIBRARIES}
+        usdVol
+        # Nodes/Scene/VolumeFields reads VDB grid metadata; the same library USD's hioOpenVDB loads.
+        OpenVDB::openvdb
 )
 
 # rawspeed's camera database, read at run time from <bin>/../Resources/rawspeed beside every

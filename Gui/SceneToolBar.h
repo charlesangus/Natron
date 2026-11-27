@@ -32,6 +32,7 @@
 #include <vector>
 
 #include <QPointer>
+#include <QString>
 #include <QWidget>
 
 class QButtonGroup;
@@ -42,8 +43,10 @@ NATRON_NAMESPACE_ENTER
 class SceneViewport;
 
 /**
- * @brief The 3D view's left bar: the transform tools, then the geometry pick modes. The hidden
- * transformToolSlot and snapSlot widgets hold the places of tools still to come.
+ * @brief The 3D view's left bar: the transform tools, the node handle tool, then the geometry pick
+ * modes. The node handle tool shows the handle the node being edited offers
+ * (NodeViewerContext::registerHandleTool()), and is disabled while there is none. The hidden
+ * snapSlot widget holds the place of a tool still to come.
  **/
 class SceneToolBar
     : public QWidget {
@@ -68,10 +71,14 @@ public:
 
 private:
     void refreshTools();
+    void refreshNodeHandle();
 
     QPointer<SceneViewport> _viewport;
     // In the order of the view's transform tool actions.
     std::vector<QToolButton*> _toolButtons;
+    QToolButton* _nodeHandle = nullptr;
+    // What _nodeHandle's tooltip says, to set it only when it changes.
+    QString _nodeHandleTip;
     QButtonGroup* _pickModes;
     std::function<void(int)> _pickModeCallback;
     bool _shown = false;

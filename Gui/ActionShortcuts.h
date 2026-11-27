@@ -440,6 +440,9 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionViewer3DScaleTool "scaleTool"
 #define kShortcutDescActionViewer3DScaleTool "Scale Tool"
 
+#define kShortcutIDActionViewer3DNodeHandleTool "nodeHandleTool"
+#define kShortcutDescActionViewer3DNodeHandleTool "Node Handle Tool"
+
 #define kShortcutIDActionViewer3DCycleTool "cycleTransformTool"
 #define kShortcutDescActionViewer3DCycleTool "Cycle Transform Tool"
 

@@ -1338,12 +1338,17 @@ public:
     GeoComponentSelection pickComponentsIn(const QRect& rect, bool* busy = nullptr);
 
     /**
-     * @brief Sets the function that names the node whose transform handles are drawn while the
-     * transform widget shows none on the selection: a USDEditTransform with its settings panel
-     * open, or null for none. Dragging a handle sets the node's Translate, Rotate or Scale once,
-     * at the release, as one undoable edit.
+     * @brief Sets the function that names the node being edited: the node, with its settings
+     * panel open, whose plug-in offers a handle tool (NodeViewerContext::registerHandleTool()),
+     * or null for none. Only the node handle tool (SceneTransform::eToolNodeHandle) draws that
+     * node's handle; it cannot be chosen while there is none, and gives way to Select when the
+     * node's panel closes. Dragging a USDEditTransform's handle sets the node's Translate, Rotate
+     * or Scale once, at the release, as one undoable edit.
      **/
     void setTransformNodeProvider(const std::function<NodePtr()>& provider);
+
+    // The node the provider names now, null for none.
+    NodePtr getHandleNode() const;
 
     /**
      * @brief Where drags of the transform widget on the selection are written. Without one, or
@@ -1582,7 +1587,8 @@ Q_SIGNALS:
 
     /**
      * @brief The draw mode, grid, purposes, lighting, transform tool, space or pivot, renderer,
-     * camera looked through, view mode, view lock or automatic clipping changed, by key, menu or bar.
+     * camera looked through, view mode, view lock or automatic clipping changed, by key, menu or
+     * bar, or the node being edited (getHandleNode()) changed.
      **/
     void displayStateChanged();
 

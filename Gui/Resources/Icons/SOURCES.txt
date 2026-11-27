@@ -115,12 +115,17 @@ natron/buildup.svg | Natron custom ("buildup", 3-2-1 pyramid of circles) | GPL-2
 natron/checkerboard.svg | Natron custom ("checkerboard", rounded frame split 2x2) | GPL-2.0-or-later
 natron/clear-anim-bw.svg | Natron custom ("clear-anim-bw", trash can with a left chevron) | GPL-2.0-or-later
 natron/clear-anim-fw.svg | Natron custom ("clear-anim-fw", trash can with a right chevron) | GPL-2.0-or-later
+natron/clipping.svg | Natron custom ("clipping", side-on view frustum from an eye point, cut by a near and a far plane, the part between them filled) | GPL-2.0-or-later
 natron/clone-stamp.svg | Natron custom ("clone-stamp", two overlapping stamps) | GPL-2.0-or-later
 natron/cusp-point.svg | Natron custom ("cusp-point", sharp corner with a filled square point) | GPL-2.0-or-later
 natron/deep.svg | Natron custom ("Deep v3", D in a rounded square, Lucide-grid) | GPL-2.0-or-later
+natron/draw-shaded.svg | Natron custom ("draw-shaded", oblique cube with three faces filled at different opacities) | GPL-2.0-or-later
+natron/draw-unshaded.svg | Natron custom ("draw-unshaded", oblique cube silhouette filled flat) | GPL-2.0-or-later
+natron/draw-wireframe.svg | Natron custom ("draw-wireframe", oblique cube drawn as its twelve edges) | GPL-2.0-or-later
 natron/ellipse-handles.svg | Natron custom ("ellipse-handles", circle with four corner handles) | GPL-2.0-or-later
 natron/filter.svg | Natron custom ("Filter v2", droplet with fins, after Phosphor drop-half) | GPL-2.0-or-later
 natron/gamma.svg | Natron custom ("gamma", Greek letter gamma as a single open stroke) | GPL-2.0-or-later
+natron/handle-transform.svg | Natron custom ("handle-transform", ring with up and right arrows and a solid scale box on a diagonal arm) | GPL-2.0-or-later
 natron/in-point.svg | Natron custom ("in-point", L with a filled corner triangle) | GPL-2.0-or-later
 natron/incr-next.svg | Natron custom ("incr-next", bounded jump bars with a right arrow) | GPL-2.0-or-later
 natron/incr-prev.svg | Natron custom ("incr-prev", bounded jump bars with a left arrow) | GPL-2.0-or-later
@@ -137,8 +142,12 @@ natron/key-next.svg | Natron custom ("key-next", outline diamond beside a right 
 natron/key-on-move.svg | Natron custom ("key-on-move", outline diamond at the centre of move's arrows) | GPL-2.0-or-later
 natron/key-prev.svg | Natron custom ("key-prev", left chevron beside an outline diamond) | GPL-2.0-or-later
 natron/layout-anchor.svg | Natron custom ("layout-anchor", layout-grid with the top-left cell filled) | GPL-2.0-or-later
+natron/lighting-auto.svg | Natron custom ("lighting-auto", light bulb with a stroked letter A) | GPL-2.0-or-later
+natron/lighting-headlight.svg | Natron custom ("lighting-headlight", headlamp with four horizontal beams) | GPL-2.0-or-later
+natron/lighting-scene.svg | Natron custom ("lighting-scene", light bulb) | GPL-2.0-or-later
 natron/link-cursor.svg | Natron custom ("link-cursor", arrow tip at the hotspot with a black halo) | GPL-2.0-or-later
 natron/link-mult-cursor.svg | Natron custom ("link-mult-cursor", link-cursor plus a small x) | GPL-2.0-or-later
+natron/look-through.svg | Natron custom ("look-through", eye at the top left over a movie camera at the bottom right) | GPL-2.0-or-later
 natron/marker-break.svg | Natron custom ("marker-break", four-point star key marker) | GPL-2.0-or-later
 natron/marker-c.svg | Natron custom ("marker-c", ring with a C inside) | GPL-2.0-or-later
 natron/marker-constant.svg | Natron custom ("marker-constant", square key marker) | GPL-2.0-or-later
@@ -159,16 +168,25 @@ natron/point-markers.svg | Natron custom ("point-markers", polyline with filled 
 natron/point-numbers.svg | Natron custom ("point-numbers", filled dot with a number sign) | GPL-2.0-or-later
 natron/pressure.svg | Natron custom ("pressure", tapered S-squiggle) | GPL-2.0-or-later
 natron/primitive-numbers.svg | Natron custom ("primitive-numbers", triangle with a number sign) | GPL-2.0-or-later
+natron/purpose-default.svg | Natron custom ("purpose-default", rounded tile with the letter D) | GPL-2.0-or-later
+natron/purpose-guide.svg | Natron custom ("purpose-guide", rounded tile with the letter G) | GPL-2.0-or-later
+natron/purpose-proxy.svg | Natron custom ("purpose-proxy", rounded tile with the letter P) | GPL-2.0-or-later
+natron/purpose-render.svg | Natron custom ("purpose-render", rounded tile with the letter R) | GPL-2.0-or-later
+natron/purpose-several.svg | Natron custom ("purpose-several", two stacked rounded tiles, the front one with a plus) | GPL-2.0-or-later
 natron/rectangle-handles.svg | Natron custom ("rectangle-handles", rectangle with corner handles) | GPL-2.0-or-later
 natron/remove-feather.svg | Natron custom ("remove-feather", pen nib, feather point and a minus) | GPL-2.0-or-later
 natron/remove-points.svg | Natron custom ("remove-points", pen-tool nib with a minus) | GPL-2.0-or-later
 natron/render-scale.svg | Natron custom ("render-scale", hollow square with an inset filled square) | GPL-2.0-or-later
+natron/renderer.svg | Natron custom ("renderer", film frame with sprocket holes down both sides and a dot in the middle) | GPL-2.0-or-later
 natron/rfv.svg | Natron custom ("rfv", italic lowercase x over a left-pointing arrow, Lucide-grid) | GPL-2.0-or-later
 natron/roi.svg | Natron custom ("roi", square with crop-style tick marks) | GPL-2.0-or-later
 natron/select-curves.svg | Natron custom ("select-curves", pointer arrow beside a Bezier arc) | GPL-2.0-or-later
 natron/select-feather.svg | Natron custom ("select-feather", pointer arrow with a dashed-outline point) | GPL-2.0-or-later
 natron/select-points.svg | Natron custom ("select-points", pointer arrow with a solid control point) | GPL-2.0-or-later
+natron/show-grid.svg | Natron custom ("show-grid", ground grid in perspective with heavy X, Y and Z axes from its centre) | GPL-2.0-or-later
 natron/smooth-s.svg | Natron custom ("smooth-s", a stroked letter S) | GPL-2.0-or-later
 natron/track-all-keys.svg | Natron custom ("track-all-keys", two keyframe diamonds in front of play triangles) | GPL-2.0-or-later
 natron/track-current-key.svg | Natron custom ("track-current-key", one keyframe diamond in front of play triangles) | GPL-2.0-or-later
 natron/track-range.svg | Natron custom ("track-range", play triangle with a closing bracket) | GPL-2.0-or-later
+natron/view-orthographic.svg | Natron custom ("view-orthographic", movie camera with three parallel lines ahead of its lens) | GPL-2.0-or-later
+natron/view-perspective.svg | Natron custom ("view-perspective", movie camera with a widening frustum ahead of its lens) | GPL-2.0-or-later

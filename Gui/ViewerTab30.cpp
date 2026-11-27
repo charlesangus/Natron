@@ -64,6 +64,7 @@
 #include "Gui/NodeViewerContext.h"
 #include "Gui/ScaleSliderQWidget.h"
 #include "Gui/SceneTopBar.h"
+#include "Gui/SceneViewport.h"
 #include "Gui/SpinBox.h"
 #include "Gui/TimeLineGui.h"
 #include "Gui/ViewerGL.h"
@@ -783,6 +784,10 @@ ViewerTab::removeNodeViewerInterface(const NodeGuiPtr& n,
             }
         }
         activeItemContainer->hide();
+    }
+    if (_imp->sceneViewport) {
+        // The view finds at its next paint that the node being edited went, and leaves its handle tool.
+        _imp->sceneViewport->update();
     }
 
     if (setAnotherFromSamePlugin && activeNodeForPlugin == n) {

@@ -60,11 +60,11 @@ SceneTopBar::SceneTopBar(QWidget* parent)
         QString tip;
         Populate populate;
     } menus[] = {
-        { "sceneRenderer", "lucide/aperture.svg", tr("Renderer: the render delegate that draws the 3D view."), &SceneViewport::populateRendererMenu },
-        { "sceneLookThrough", "lucide/eye.svg", tr("Look Through: the camera or light the 3D view looks through, or the viewer's own camera."),
+        { "sceneRenderer", "natron/renderer.svg", tr("Renderer: the render delegate that draws the 3D view."), &SceneViewport::populateRendererMenu },
+        { "sceneLookThrough", "natron/look-through.svg", tr("Look Through: the camera or light the 3D view looks through, or the viewer's own camera."),
           &SceneViewport::populateLookThroughMenu },
-        { "sceneView", "lucide/monitor.svg", tr("View: perspective or an orthographic view along an axis."), &SceneViewport::populateViewMenu },
-        { "sceneClipping", "lucide/scan.svg", tr("Clipping: the near and far clipping planes, or ones fitted to the scene."),
+        { "sceneView", "natron/view-perspective.svg", tr("View: perspective or an orthographic view along an axis. The button shows which."), &SceneViewport::populateViewMenu },
+        { "sceneClipping", "natron/clipping.svg", tr("Clipping: the near and far clipping planes, or ones fitted to the scene."),
           &SceneViewport::populateClippingMenu },
     };
     for (int i = 0; i < 4; ++i) {
@@ -142,7 +142,25 @@ SceneTopBar::SceneTopBar(QWidget* parent)
 void
 SceneTopBar::setViewport(SceneViewport* viewport)
 {
+    if (_viewport == viewport) {
+        return;
+    }
+    if (_viewport) {
+        QObject::disconnect(_viewport, nullptr, this, nullptr);
+    }
     _viewport = viewport;
+    if (_viewport) {
+        QObject::connect(_viewport, &SceneViewport::displayStateChanged, this, [this]() { refreshView(); });
+    }
+    refreshView();
+}
+
+void
+SceneTopBar::refreshView()
+{
+    const bool perspective = !_viewport || (_viewport->getRenderer().getViewMode() == SceneViewportRenderer::eViewModePerspective);
+
+    SceneBar::setIcon(_menus[2], perspective ? "natron/view-perspective.svg" : "natron/view-orthographic.svg");
 }
 
 void

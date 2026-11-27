@@ -425,6 +425,7 @@ protected:
         _viewport->setTransformNodeProvider([transform]() {
             return transform;
         });
+        _viewport->setTransformTool(SceneTransform::eToolNodeHandle);
         showScene();
         SceneViewportRenderer::FreeCamera camera;
         camera.distance = 10.;
@@ -542,6 +543,27 @@ TEST_F(SceneGizmoDragTest, DraggingAnArrowSetsTranslateAsOneUndoableEdit)
     EXPECT_NEAR(10. * kPixel, _translate->getValue(0), 0.1 * moved);
     _history.undo();
     EXPECT_NEAR(moved, _translate->getValue(0), 0.05 * moved);
+}
+
+TEST_F(SceneGizmoDragTest, OnlyTheNodeHandleToolDrawsTheNodesHandles)
+{
+    ASSERT_TRUE(_viewport->getRenderer().hasTransformHandles());
+    for (int tool : { SceneTransform::eToolSelect, SceneTransform::eToolTranslate, SceneTransform::eToolRotate, SceneTransform::eToolScale }) {
+        _viewport->setTransformTool(tool);
+        EXPECT_EQ(tool, _viewport->getTransformTool());
+        EXPECT_FALSE(_viewport->getRenderer().hasTransformHandles()) << "tool " << tool;
+    }
+    _viewport->setTransformTool(SceneTransform::eToolNodeHandle);
+    EXPECT_EQ(int(SceneTransform::eToolNodeHandle), _viewport->getTransformTool());
+    EXPECT_TRUE(_viewport->getRenderer().hasTransformHandles());
+
+    // Without a node being edited the tool cannot be chosen.
+    _viewport->setTransformTool(SceneTransform::eToolSelect);
+    _viewport->setTransformNodeProvider([]() {
+        return NodePtr();
+    });
+    _viewport->setTransformTool(SceneTransform::eToolNodeHandle);
+    EXPECT_EQ(int(SceneTransform::eToolSelect), _viewport->getTransformTool());
 }
 
 TEST_F(SceneGizmoDragTest, NoHandlesWithoutAMatchOrANode)

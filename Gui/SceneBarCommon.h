@@ -52,6 +52,10 @@ const int kBarSize = 28;
  **/
 QToolButton* makeIconButton(QWidget* parent, const char* name, const char* iconPath, bool checkable);
 
+// Replaces the icon of a button makeIconButton() made, if it shows another. The button's
+// natronIcon property holds the path shown, under the icon resources: "natron/renderer.svg".
+void setIcon(QToolButton* button, const char* iconPath);
+
 // A line between groups of buttons: horizontal in a vertical bar, vertical in a horizontal one.
 QFrame* makeSeparator(QWidget* parent, bool inVerticalBar);
 

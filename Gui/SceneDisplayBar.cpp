@@ -64,6 +64,73 @@ makeMenuButton(QWidget* parent,
     return button;
 }
 
+// The purposes shown, as the one tile of the only purpose drawn besides the default prims, the
+// default tile when none is, or the stacked tile when several are.
+const char*
+purposesIcon(const QList<QAction*>& actions)
+{
+    const char* const icons[][2] = {
+        { "proxy", "natron/purpose-proxy.svg" },
+        { "render", "natron/purpose-render.svg" },
+        { "guide", "natron/purpose-guide.svg" },
+    };
+    const char* icon = "natron/purpose-default.svg";
+    int shown = 0;
+
+    for (const QAction* action : actions) {
+        if (!action->isChecked()) {
+            continue;
+        }
+        ++shown;
+        for (const auto& entry : icons) {
+            if (action->objectName() == QLatin1String(entry[0])) {
+                icon = entry[1];
+            }
+        }
+    }
+
+    return (shown > 1) ? "natron/purpose-several.svg" : icon;
+}
+
+/**
+ * @brief Shows on button the icon of the checked one of actions, looked up by action name in
+ * icons (pairs of action name and icon path, ending with a null name); fallback when none matches.
+ **/
+void
+showCheckedIcon(QToolButton* button,
+                const QList<QAction*>& actions,
+                const char* const icons[][2],
+                const char* fallback)
+{
+    const char* icon = fallback;
+
+    for (const QAction* action : actions) {
+        if (!action->isChecked()) {
+            continue;
+        }
+        for (int i = 0; icons[i][0]; ++i) {
+            if (action->objectName() == QLatin1String(icons[i][0])) {
+                icon = icons[i][1];
+            }
+        }
+    }
+    SceneBar::setIcon(button, icon);
+}
+
+// The view's draw mode and lighting actions, by script name, and the icons showing them.
+const char* const kDrawModeIcons[][2] = {
+    { "unshaded", "natron/draw-unshaded.svg" },
+    { "shaded", "natron/draw-shaded.svg" },
+    { "wireframe", "natron/draw-wireframe.svg" },
+    { nullptr, nullptr },
+};
+const char* const kLightingIcons[][2] = {
+    { "auto", "natron/lighting-auto.svg" },
+    { "scene", "natron/lighting-scene.svg" },
+    { "headlight", "natron/lighting-headlight.svg" },
+    { nullptr, nullptr },
+};
+
 void
 fillMenu(QMenu* menu,
          const QList<QAction*>& actions)
@@ -83,13 +150,15 @@ SceneDisplayBar::SceneDisplayBar(QWidget* parent)
     layout->setContentsMargins(TO_DPIX(2), TO_DPIY(2), TO_DPIX(2), TO_DPIY(2));
     layout->setSpacing(TO_DPIY(NATRON_DENSITY_TOOLBAR_SPACING));
 
-    _drawMode = makeMenuButton(this, "sceneDrawMode", "lucide/shapes.svg",
+    _drawMode = makeMenuButton(this, "sceneDrawMode", "natron/draw-shaded.svg",
                                tr("Draw Mode: unshaded, shaded or wireframe."), &_drawModeMenu);
-    _purposes = makeMenuButton(this, "scenePurposes", "lucide/layers.svg",
-                               tr("Purposes: which of the proxy, render and guide prims the view draws."), &_purposesMenu);
-    _lighting = makeMenuButton(this, "sceneLighting", "lucide/sun.svg",
+    _purposes = makeMenuButton(this, "scenePurposes", "natron/purpose-default.svg",
+                               tr("Purposes: which of the proxy, render and guide prims the view draws besides the default ones. "
+                                  "The button shows the one drawn, D for the default prims alone, or stacked tiles for several."),
+                               &_purposesMenu);
+    _lighting = makeMenuButton(this, "sceneLighting", "natron/lighting-scene.svg",
                                tr("Lighting: the scene's lights, a headlight, or the scene's lights when it has any."), &_lightingMenu);
-    _showGrid = SceneBar::makeIconButton(this, "sceneShowGrid", "lucide/layout-grid.svg", true);
+    _showGrid = SceneBar::makeIconButton(this, "sceneShowGrid", "natron/show-grid.svg", true);
     setToolTipWithShortcut(kShortcutGroupViewer3D, kShortcutIDActionViewer3DShowGrid,
                            SceneBar::tipWithShortcut(tr("Show Grid: draws the ground grid.")), _showGrid);
     QObject::connect(_drawModeMenu, &QMenu::aboutToShow, this, [this]() {
@@ -246,6 +315,9 @@ void
 SceneDisplayBar::refreshDisplay()
 {
     SceneBar::showActionChecked(_showGrid, _viewport ? _viewport->getShowGridAction() : nullptr);
+    showCheckedIcon(_drawMode, _viewport ? _viewport->getDrawModeActions() : QList<QAction*>(), kDrawModeIcons, "natron/draw-shaded.svg");
+    SceneBar::setIcon(_purposes, purposesIcon(_viewport ? _viewport->getPurposeActions() : QList<QAction*>()));
+    showCheckedIcon(_lighting, _viewport ? _viewport->getLightingActions() : QList<QAction*>(), kLightingIcons, "natron/lighting-scene.svg");
 }
 
 GeoDisplayOptions

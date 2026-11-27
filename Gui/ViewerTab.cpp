@@ -50,7 +50,6 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneReparentNode.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
-#include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/OutputSchedulerThread.h" // RenderEngine
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
@@ -74,6 +73,7 @@
 #include "Gui/Label.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
+#include "Gui/NodeViewerContext.h"
 #include "Gui/ScaleSliderQWidget.h"
 #include "Gui/SceneBreadcrumbBar.h"
 #include "Gui/SceneDisplayBar.h"
@@ -1555,7 +1555,7 @@ ViewerTab::onActiveInputDataKindChanged()
         });
         _imp->viewerSubContainerLayout->insertWidget(index + 1, _imp->sceneBreadcrumbBar);
         _imp->viewerSubContainerLayout->insertWidget(index + 2, _imp->sceneViewport, 1);
-        // The USDEditTransform whose settings panel was opened last.
+        // The node offering a handle tool whose settings panel was opened last.
         const std::function<NodePtr()> openEditNode = [this]() -> NodePtr {
             Gui* gui = getGui();
             if (!gui) {
@@ -1566,7 +1566,7 @@ ViewerTab::onActiveInputDataKindChanged()
                 NodeSettingsPanel* panel = dynamic_cast<NodeSettingsPanel*>(dockable);
                 NodeGuiPtr nodeGui = panel ? panel->getNode() : NodeGuiPtr();
                 NodePtr panelNode = nodeGui ? nodeGui->getNode() : NodePtr();
-                if (panelNode && panelNode->isActivated() && (panelNode->getPluginID() == PLUGINID_NATRON_USDEDITTRANSFORM)) {
+                if (panelNode && panelNode->isActivated() && NodeViewerContext::findHandleTool(panelNode->getPluginID())) {
                     return panelNode;
                 }
             }

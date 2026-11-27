@@ -3162,7 +3162,7 @@ struct SceneViewportRenderer::Implementation {
     // The widget on the selection, while its tool shows handles. Needs stageMutex.
     bool computeSelectionFrame(SceneGizmo::Frame* frame) const
     {
-        if ((transformTool == SceneTransform::eToolSelect) || !currentStage()) {
+        if ((transformTool == SceneTransform::eToolSelect) || (transformTool == SceneTransform::eToolNodeHandle) || !currentStage()) {
             return false;
         }
 
@@ -3222,11 +3222,11 @@ struct SceneViewportRenderer::Implementation {
         return SceneGizmo::computeOpSpace(stage->GetPrimAtPath(path), opName, timeCode(), space);
     }
 
-    // Where an op's handles sit at the shown time, moved by a drag of them under way. Needs
-    // stageMutex.
+    // Where an op's handles sit at the shown time, moved by a drag of them under way; only the
+    // node handle tool shows them. Needs stageMutex.
     bool computeOpFrame(SceneGizmo::Frame* frame) const
     {
-        if (!hasHandles) {
+        if (!hasHandles || (transformTool != SceneTransform::eToolNodeHandle)) {
             return false;
         }
         const bool dragged = (dragHandle != SceneGizmo::kNoHandle) && !dragSelection;
@@ -5900,7 +5900,7 @@ SceneViewportRenderer::isComponentTransformDrag() const
 void
 SceneViewportRenderer::setTransformTool(int tool)
 {
-    _imp->transformTool = (SceneTransform::ToolEnum)std::max(0, std::min(tool, (int)SceneTransform::eToolScale));
+    _imp->transformTool = (SceneTransform::ToolEnum)std::max(0, std::min(tool, (int)SceneTransform::eToolNodeHandle));
 }
 
 int
@@ -7425,6 +7425,7 @@ const TransformToolEntry kTransformTools[] = {
     { SceneTransform::eToolTranslate, kShortcutIDActionViewer3DTranslateTool, "translate", kShortcutDescActionViewer3DTranslateTool },
     { SceneTransform::eToolRotate, kShortcutIDActionViewer3DRotateTool, "rotate", kShortcutDescActionViewer3DRotateTool },
     { SceneTransform::eToolScale, kShortcutIDActionViewer3DScaleTool, "scale", kShortcutDescActionViewer3DScaleTool },
+    { SceneTransform::eToolNodeHandle, kShortcutIDActionViewer3DNodeHandleTool, "nodeHandle", kShortcutDescActionViewer3DNodeHandleTool },
 };
 
 // The tool a key selects, -1 for none.
@@ -8482,6 +8483,8 @@ struct SceneViewport::Implementation {
     double framesPerSecond = 0.;
 
     std::function<NodePtr()> transformNodeProvider;
+    // The node transformNodeProvider named at the last paint, which the bars were told of.
+    const Node* shownHandleNode = nullptr;
     // The drag of a transform handle under way: the handle, the node whose op it moves (null
     // for the widget on the selection), and the last change it made. The renderer draws the
     // change as a preview; the release writes it once.
@@ -12593,6 +12596,12 @@ SceneViewport::setTransformNodeProvider(const std::function<NodePtr()>& provider
     update();
 }
 
+NodePtr
+SceneViewport::getHandleNode() const
+{
+    return _imp->transformNodeProvider ? _imp->transformNodeProvider() : NodePtr();
+}
+
 void
 SceneViewport::setTransformTarget(const std::shared_ptr<SceneTransformTarget>& target)
 {
@@ -12603,6 +12612,9 @@ void
 SceneViewport::setTransformTool(int tool)
 {
     if (_imp->handle != SceneGizmo::kNoHandle) {
+        return;
+    }
+    if ((tool == SceneTransform::eToolNodeHandle) && !getHandleNode()) {
         return;
     }
     _imp->renderer.setTransformTool(tool);
@@ -12622,7 +12634,7 @@ SceneViewport::cycleTransformTool()
 {
     const int tool = _imp->renderer.getTransformTool();
 
-    setTransformTool(((tool == SceneTransform::eToolSelect) || (tool == SceneTransform::eToolScale)) ? SceneTransform::eToolTranslate : tool + 1);
+    setTransformTool(((tool == SceneTransform::eToolTranslate) || (tool == SceneTransform::eToolRotate)) ? tool + 1 : SceneTransform::eToolTranslate);
 }
 
 void
@@ -13088,6 +13100,18 @@ SceneViewport::refreshTransformHandles()
     refreshComponentHandles();
     NodePtr node;
     USDEditTransform* effect = _imp->getTransformNode(&node);
+    if (node.get() != _imp->shownHandleNode) {
+        _imp->shownHandleNode = node.get();
+        // A panel opening or closing changes the node; this runs from paints, so the tool and the
+        // bars hear of it after.
+        const auto onHandleNodeChanged = [this]() {
+            if (!getHandleNode() && (_imp->renderer.getTransformTool() == SceneTransform::eToolNodeHandle)) {
+                setTransformTool(SceneTransform::eToolSelect);
+            }
+            syncDisplayActions(false);
+        };
+        QMetaObject::invokeMethod(this, onHandleNodeChanged, Qt::QueuedConnection);
+    }
     std::string primPath, opName;
 
     if (!effect || !effect->getHandleTarget(&primPath, &opName)) {
@@ -14463,8 +14487,12 @@ SceneViewport::syncDisplayActions(bool announce)
             action->setChecked(checked);
         }
     };
+    const NodePtr handleNode = getHandleNode();
     for (int i = 0; i < _imp->transformToolActions.size(); ++i) {
         check(_imp->transformToolActions[i], renderer.getTransformTool() == kTransformTools[i].tool);
+        if (kTransformTools[i].tool == SceneTransform::eToolNodeHandle) {
+            _imp->transformToolActions[i]->setEnabled(bool(handleNode));
+        }
     }
     for (int i = 0; i < _imp->drawModeActions.size(); ++i) {
         check(_imp->drawModeActions[i], renderer.getDrawMode() == kDrawModes[i].mode);
@@ -14493,6 +14521,7 @@ SceneViewport::syncDisplayActions(bool announce)
         QString::number(renderer.getViewMode()),
         QString::number(_imp->lockView),
         QString::number(renderer.getClipPlanes().automatic),
+        QString::number(quintptr(handleNode.get())),
     }
                                  .join(QLatin1Char('\n'));
     if (!announce && (snapshot == _imp->displaySnapshot)) {

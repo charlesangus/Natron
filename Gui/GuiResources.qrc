@@ -193,12 +193,17 @@
         <file>Resources/Icons/natron/checkerboard.svg</file>
         <file>Resources/Icons/natron/clear-anim-bw.svg</file>
         <file>Resources/Icons/natron/clear-anim-fw.svg</file>
+        <file>Resources/Icons/natron/clipping.svg</file>
         <file>Resources/Icons/natron/clone-stamp.svg</file>
         <file>Resources/Icons/natron/cusp-point.svg</file>
         <file>Resources/Icons/natron/deep.svg</file>
+        <file>Resources/Icons/natron/draw-shaded.svg</file>
+        <file>Resources/Icons/natron/draw-unshaded.svg</file>
+        <file>Resources/Icons/natron/draw-wireframe.svg</file>
         <file>Resources/Icons/natron/ellipse-handles.svg</file>
         <file>Resources/Icons/natron/filter.svg</file>
         <file>Resources/Icons/natron/gamma.svg</file>
+        <file>Resources/Icons/natron/handle-transform.svg</file>
         <file>Resources/Icons/natron/in-point.svg</file>
         <file>Resources/Icons/natron/incr-next.svg</file>
         <file>Resources/Icons/natron/incr-prev.svg</file>
@@ -215,8 +220,12 @@
         <file>Resources/Icons/natron/key-on-move.svg</file>
         <file>Resources/Icons/natron/key-prev.svg</file>
         <file>Resources/Icons/natron/layout-anchor.svg</file>
+        <file>Resources/Icons/natron/lighting-auto.svg</file>
+        <file>Resources/Icons/natron/lighting-headlight.svg</file>
+        <file>Resources/Icons/natron/lighting-scene.svg</file>
         <file>Resources/Icons/natron/link-cursor.svg</file>
         <file>Resources/Icons/natron/link-mult-cursor.svg</file>
+        <file>Resources/Icons/natron/look-through.svg</file>
         <file>Resources/Icons/natron/marker-break.svg</file>
         <file>Resources/Icons/natron/marker-c.svg</file>
         <file>Resources/Icons/natron/marker-constant.svg</file>
@@ -237,19 +246,28 @@
         <file>Resources/Icons/natron/point-numbers.svg</file>
         <file>Resources/Icons/natron/pressure.svg</file>
         <file>Resources/Icons/natron/primitive-numbers.svg</file>
+        <file>Resources/Icons/natron/purpose-default.svg</file>
+        <file>Resources/Icons/natron/purpose-guide.svg</file>
+        <file>Resources/Icons/natron/purpose-proxy.svg</file>
+        <file>Resources/Icons/natron/purpose-render.svg</file>
+        <file>Resources/Icons/natron/purpose-several.svg</file>
         <file>Resources/Icons/natron/rectangle-handles.svg</file>
         <file>Resources/Icons/natron/remove-feather.svg</file>
         <file>Resources/Icons/natron/remove-points.svg</file>
         <file>Resources/Icons/natron/render-scale.svg</file>
+        <file>Resources/Icons/natron/renderer.svg</file>
         <file>Resources/Icons/natron/rfv.svg</file>
         <file>Resources/Icons/natron/roi.svg</file>
         <file>Resources/Icons/natron/select-curves.svg</file>
         <file>Resources/Icons/natron/select-feather.svg</file>
         <file>Resources/Icons/natron/select-points.svg</file>
+        <file>Resources/Icons/natron/show-grid.svg</file>
         <file>Resources/Icons/natron/smooth-s.svg</file>
         <file>Resources/Icons/natron/track-all-keys.svg</file>
         <file>Resources/Icons/natron/track-current-key.svg</file>
         <file>Resources/Icons/natron/track-range.svg</file>
+        <file>Resources/Icons/natron/view-orthographic.svg</file>
+        <file>Resources/Icons/natron/view-perspective.svg</file>
         <file>Resources/Images/backdrop_icon.png</file>
         <file>Resources/Images/checkbox.png</file>
         <file>Resources/Images/checkbox_animation1_checked.png</file>

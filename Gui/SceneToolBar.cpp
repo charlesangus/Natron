@@ -27,19 +27,37 @@
 
 #include <QAction>
 #include <QButtonGroup>
+#include <QCoreApplication>
 #include <QFrame>
 #include <QSignalBlocker>
 #include <QToolButton>
 #include <QVBoxLayout>
 
 #include "Engine/AppManager.h"
+#include "Engine/Node.h"
 #include "Engine/Nodes/Geometry/GeoViewerLayer.h"
 #include "Gui/ActionShortcuts.h"
 #include "Gui/GuiDensity.h"
+#include "Gui/NodeViewerContext.h"
 #include "Gui/SceneBarCommon.h"
 #include "Gui/SceneViewport.h"
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+
+const char* const kNodeHandleIcon = "natron/handle-transform.svg";
+// The script name of the view's node handle tool action.
+const char* const kNodeHandleActionName = "nodeHandle";
+
+QString
+noNodeHandleTip()
+{
+    return QCoreApplication::translate("SceneToolBar", "Node Handle: draws the handle of the node being edited. "
+                                                       "No node with its settings panel open offers one.");
+}
+
+} // namespace
 
 SceneToolBar::SceneToolBar(QWidget* parent)
     : QWidget(parent)
@@ -81,10 +99,19 @@ SceneToolBar::SceneToolBar(QWidget* parent)
         _toolButtons.push_back(button);
         layout->addWidget(button, 0, Qt::AlignHCenter);
     }
-    QWidget* transformToolSlot = new QWidget(this);
-    transformToolSlot->setObjectName(QString::fromUtf8("transformToolSlot"));
-    transformToolSlot->hide();
-    layout->addWidget(transformToolSlot, 0, Qt::AlignHCenter);
+    _nodeHandle = SceneBar::makeIconButton(this, "sceneToolNodeHandle", kNodeHandleIcon, true);
+    setToolTipWithShortcut(kShortcutGroupViewer3D, kShortcutIDActionViewer3DNodeHandleTool, SceneBar::tipWithShortcut(noNodeHandleTip()), _nodeHandle);
+    QObject::connect(_nodeHandle, &QToolButton::clicked, this, [this]() {
+        if (_viewport) {
+            for (QAction* action : _viewport->getTransformToolActions()) {
+                if (action->objectName() == QLatin1String(kNodeHandleActionName)) {
+                    action->trigger();
+                }
+            }
+        }
+        refreshTools();
+    });
+    layout->addWidget(_nodeHandle, 0, Qt::AlignHCenter);
 
     layout->addWidget(SceneBar::makeSeparator(this, true));
 
@@ -178,8 +205,31 @@ void
 SceneToolBar::refreshTools()
 {
     const QList<QAction*> actions = _viewport ? _viewport->getTransformToolActions() : QList<QAction*>();
+    const QAction* nodeHandleAction = nullptr;
+    for (const QAction* action : actions) {
+        if (action->objectName() == QLatin1String(kNodeHandleActionName)) {
+            nodeHandleAction = action;
+        }
+    }
     for (std::size_t i = 0; i < _toolButtons.size(); ++i) {
         SceneBar::showActionChecked(_toolButtons[i], (int(i) < actions.size()) ? actions[int(i)] : nullptr);
+    }
+    SceneBar::showActionChecked(_nodeHandle, nodeHandleAction);
+    refreshNodeHandle();
+}
+
+void
+SceneToolBar::refreshNodeHandle()
+{
+    const NodePtr node = _viewport ? _viewport->getHandleNode() : NodePtr();
+    const NodeHandleTool* tool = node ? NodeViewerContext::findHandleTool(node->getPluginID()) : nullptr;
+
+    _nodeHandle->setEnabled(_shown && tool);
+    SceneBar::setIcon(_nodeHandle, tool ? tool->icon.toUtf8().constData() : kNodeHandleIcon);
+    const QString tip = QString::fromStdString(SceneBar::tipWithShortcut(tool ? (tool->label + QString::fromUtf8(": ") + tool->tip) : noNodeHandleTip()));
+    if (tip != _nodeHandleTip) {
+        _nodeHandleTip = tip;
+        _nodeHandle->setToolTip(tip);
     }
 }
 

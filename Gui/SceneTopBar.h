@@ -75,6 +75,8 @@ public:
 
 private:
     void refreshToolOptions();
+    // Shows on the View button whether the view is in perspective or orthographic.
+    void refreshView();
 
     QPointer<SceneViewport> _viewport;
     QToolButton* _menus[4];

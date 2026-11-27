@@ -48,7 +48,9 @@ enum ToolEnum {
     eToolSelect = 0,
     eToolTranslate,
     eToolRotate,
-    eToolScale
+    eToolScale,
+    // The handle of the node being edited, drawn in place of the transform widget on the selection.
+    eToolNodeHandle
 };
 
 // The frame the handles point along: the world's axes, or the current prim's.

@@ -52,10 +52,23 @@ makeIconButton(QWidget* parent,
     button->setToolButtonStyle(Qt::ToolButtonIconOnly);
     const int iconSize = TO_DPIX(18);
     button->setIconSize(QSize(iconSize, iconSize));
-    button->setIcon(ThemedIcon::icon(QString::fromUtf8(NATRON_ICONS_PATH) + QString::fromUtf8(iconPath), 18));
+    setIcon(button, iconPath);
     button->setFixedSize(TO_DPIX(kBarSize - 4), TO_DPIY(kBarSize - 4));
 
     return button;
+}
+
+void
+setIcon(QToolButton* button,
+        const char* iconPath)
+{
+    const QString path = QString::fromUtf8(iconPath);
+    // Bars call this on every state change; reloading the same icon would repaint for nothing.
+    if (button->property("natronIcon").toString() == path) {
+        return;
+    }
+    button->setProperty("natronIcon", path);
+    button->setIcon(ThemedIcon::icon(QString::fromUtf8(NATRON_ICONS_PATH) + path, 18));
 }
 
 QFrame*

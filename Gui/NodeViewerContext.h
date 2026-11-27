@@ -28,8 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include <string>
+
 CLANG_DIAG_OFF(deprecated)
 #include <QObject>
+#include <QString>
 CLANG_DIAG_ON(deprecated)
 
 #include "Engine/ViewIdx.h"
@@ -39,6 +42,23 @@ CLANG_DIAG_ON(deprecated)
 
 NATRON_NAMESPACE_ENTER
 
+/**
+ * @brief The handle a plug-in's nodes offer the 3D view's node handle tool: the button after
+ * Scale in the view's left tool bar, the Node Handle Tool shortcut and the Transform entry of the
+ * view's context menu. Choosing the tool sets SceneTransform::eToolNodeHandle; while it is set,
+ * the view draws the handle of the node being edited (SceneViewport::getHandleNode(), the node
+ * with its settings panel open whose plug-in registered a handle tool) in place of the transform
+ * widget on the selection. The code that draws a node's handle checks both. Without such a node
+ * the button is disabled and its tooltip says so.
+ **/
+struct NodeHandleTool {
+    // The tool's name, as the button's tooltip and the context menu show it: "Transform Handle".
+    QString label;
+    // The button's icon, under the icon resources: "natron/handle-transform.svg".
+    QString icon;
+    // What the handle does, after the label in the tooltip.
+    QString tip;
+};
 
 struct NodeViewerContextPrivate;
 class NodeViewerContext
@@ -97,6 +117,16 @@ public:
     }
 
     void onToolButtonShortcutPressed(const QString& roleID);
+
+    /**
+     * @brief Makes the nodes of pluginID offer tool to the 3D view's node handle tool, replacing
+     * what they offered. Call on the main thread, before the node's panel opens to see it at once.
+     * USDEditTransform offers its translate, rotate and scale handles together.
+     **/
+    static void registerHandleTool(const std::string& pluginID, const NodeHandleTool& tool);
+
+    // The handle tool the nodes of pluginID offer, null for none.
+    static const NodeHandleTool* findHandleTool(const std::string& pluginID);
 
 Q_SIGNALS:
 

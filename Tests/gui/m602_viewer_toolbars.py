@@ -14,8 +14,12 @@ Graph: GeoPrimitive -> Viewer1 (geometry), GeoPrimitive -> GeoToUSD -> USDEditTr
   - views GeoToUSD, a scene: the geometry toggles are disabled, not hidden;
   - picks the renderer and the free camera from the top bar's menus; on Storm the progressive
     controls are hidden and Render Everything shows;
-  - opens the USDEditTransform panel: its Mode shows in the top bar's tool options, which hide
-    once no panel is open;
+  - shows each purpose set from the Purposes menu and checks the button's tile (P, R, G, D for the
+    default prims alone, stacked for several); switches the view to Front and back and checks the
+    View button's camera (orthographic, perspective);
+  - opens the USDEditTransform panel: its Mode shows in the top bar's tool options; Select draws
+    none of its handles, the node handle tool draws them, and closing the panel hides the options
+    and switches back to Select;
   - views a Constant, an image: the bars hide by default;
   - hides the display bar, saves, resets and reopens: the display bar stays hidden, the tool bar
     shows, and the Display Bar action is unchecked.
@@ -36,6 +40,7 @@ STARTUP_TIMEOUT_S = 60.0
 STORM_ID = "HdStormRendererPlugin"
 BAR_WIDTH = 28
 CONSTANT_ID = "net.sf.openfx.ConstantPlugin"
+MESH = "/geo/mesh_0"
 
 try:
     from PySide6.QtCore import QEvent, QMetaObject, QPointF, Qt, QTimer
@@ -54,6 +59,7 @@ try:
     edit = app.createNode("USDEditTransform")
     require(edit is not None, "create USDEditTransform", plugin_problem("USDEditTransform"))
     require(edit.connectInput(0, to_usd), "connect the USDEditTransform to the GeoToUSD")
+    edit.getParam("primPattern").setValue(MESH)
     viewer = app.getNode("Viewer1")
     if viewer is None:
         viewer = app.createNode("Viewer")
@@ -110,6 +116,26 @@ try:
 
     def knob(name):
         return viewer.getParam(name).get()
+
+    def icon(bar_name, button_name):
+        """The icon a bar's button shows, as its path under the icon resources."""
+        button = control(bar_name, button_name)
+        value = button.property("natronIcon") if button is not None else None
+        return str(value) if value else None
+
+    def handles():
+        """The transform handles the view draws, by handle id."""
+        value = prop("natronSceneTransformHandles")
+        return [int(h[0]) for h in value] if value else []
+
+    def set_purposes(wanted):
+        """Shows exactly the purposes in wanted from the display bar's menu."""
+        for name in ("proxy", "render", "guide"):
+            action = bar_menu_action("sceneDisplayBar", "scenePurposes", name)
+            require(action is not None, "the purposes menu has %s" % name)
+            if action.isChecked() != (name in wanted):
+                action.trigger()
+                QApplication.processEvents()
 
     def settle():
         v = view()
@@ -232,9 +258,11 @@ try:
         for name in ("sceneToolBar", "sceneDisplayBar"):
             b = bar(name)
             check(b is not None and b.width() == BAR_WIDTH, "the %s is %d px wide (%r)" % (name, BAR_WIDTH, b.width() if b else None))
-        for name in ("transformToolSlot", "snapSlot"):
-            slot = control("sceneToolBar", name)
-            check(slot is not None and not slot.isVisible(), "the tool bar holds a hidden %s" % name)
+        slot = control("sceneToolBar", "snapSlot")
+        check(slot is not None and not slot.isVisible(), "the tool bar holds a hidden snapSlot")
+        node_handle = control("sceneToolBar", "sceneToolNodeHandle")
+        check(node_handle is not None and not node_handle.isEnabled() and "No node" in node_handle.toolTip(),
+              "the node handle tool is disabled and says why while no node offers a handle")
         shot("m602-geometry.png")
 
         section("transform tools")
@@ -288,6 +316,15 @@ try:
         if shaded is not None:
             shaded.trigger()
         check(len(bar_menu_texts("sceneDisplayBar", "scenePurposes")) == 3, "the purposes menu has the three purposes")
+        purposes_before = [n for n in ("proxy", "render", "guide")
+                           if bar_menu_action("sceneDisplayBar", "scenePurposes", n).isChecked()]
+        for wanted, tile in (([], "purpose-default"), (["proxy"], "purpose-proxy"), (["render"], "purpose-render"),
+                             (["guide"], "purpose-guide"), (["proxy", "guide"], "purpose-several")):
+            set_purposes(wanted)
+            expected = "natron/%s.svg" % tile
+            ok = yield ("until", lambda: icon("sceneDisplayBar", "scenePurposes") == expected, POLL_TIMEOUT_S)
+            check(ok, "showing %s puts %s on the Purposes button (%r)" % (wanted or "no purpose", tile, icon("sceneDisplayBar", "scenePurposes")))
+        set_purposes(purposes_before)
         check(len(bar_menu_texts("sceneDisplayBar", "sceneLighting")) == 3, "the lighting menu has the three modes")
 
         section("geometry display")
@@ -366,6 +403,22 @@ try:
         yield settle()
         check(not prop("natronSceneLookThrough"), "Free Camera looks through the viewer's camera (%r)" % (prop("natronSceneLookThrough"),))
         check(len(bar_menu_texts("sceneTopBar", "sceneView")) > 1, "the view menu lists the views")
+        check(icon("sceneTopBar", "sceneView") == "natron/view-perspective.svg",
+              "the View button shows perspective (%r)" % (icon("sceneTopBar", "sceneView"),))
+        views = bar_menu_texts("sceneTopBar", "sceneView")
+        front = bar_menu_action("sceneTopBar", "sceneView", views[1])
+        require(front is not None, "the view menu has an orthographic view")
+        front.trigger()
+        ok = yield ("until", lambda: icon("sceneTopBar", "sceneView") == "natron/view-orthographic.svg", POLL_TIMEOUT_S)
+        check(ok, "an orthographic view puts the orthographic camera on the View button (%r, %r)"
+              % (prop("natronSceneViewMode"), icon("sceneTopBar", "sceneView")))
+        shot("m602-orthographic.png")
+        back = bar_menu_action("sceneTopBar", "sceneView", views[0])
+        require(back is not None, "the view menu has the perspective view")
+        back.trigger()
+        ok = yield ("until", lambda: icon("sceneTopBar", "sceneView") == "natron/view-perspective.svg", POLL_TIMEOUT_S)
+        check(ok, "the perspective view puts the perspective camera back on the View button")
+        yield settle()
         check(len(bar_menu_texts("sceneTopBar", "sceneClipping")) >= 1, "the clipping menu has its entries")
 
         section("tool options")
@@ -384,10 +437,33 @@ try:
         check(ok, "opening the USDEditTransform panel shows its tool options in the top bar")
         mode = [w for w in options.findChildren(QWidget) if w.isVisible() and w.metaObject().className().split("::")[-1] == "ComboBox"]
         check(bool(mode), "the tool options show the Mode choice")
+        node_handle = control("sceneToolBar", "sceneToolNodeHandle")
+        ok = yield ("until", lambda: node_handle.isEnabled(), POLL_TIMEOUT_S)
+        check(ok, "the open USDEditTransform panel enables the node handle tool")
+        check("Transform Handle" in node_handle.toolTip(), "the node handle tool names the node's handle (%r)" % node_handle.toolTip())
+        check(prop("natronSceneTransformTool") == "select", "the Select tool is current (%r)" % (prop("natronSceneTransformTool"),))
+        yield settle()
+        yield settle()
+        check(handles() == [], "Select draws none of the node's handles (%r)" % (handles(),))
+        shot("m602-select-no-handles.png")
+        node_handle.click()
+        yield settle()
+        check(prop("natronSceneTransformTool") == "nodeHandle" and node_handle.isChecked(),
+              "clicking the node handle tool picks it (%r)" % (prop("natronSceneTransformTool"),))
+        ok = yield ("until", lambda: len(handles()) > 0, POLL_TIMEOUT_S)
+        check(ok, "the node handle tool draws the USDEditTransform's handles on %s" % MESH)
         shot("m602-tool-options.png")
         gt.close_all_panels()
         ok = yield ("until", lambda: not options.isVisible(), POLL_TIMEOUT_S)
         check(ok, "closing the panel clears the tool options")
+        ok = yield ("until", lambda: not node_handle.isEnabled(), POLL_TIMEOUT_S)
+        check(ok, "closing the panel disables the node handle tool")
+        select = control("sceneToolBar", "sceneToolSelect")
+        ok = yield ("until", lambda: prop("natronSceneTransformTool") == "select", POLL_TIMEOUT_S)
+        check(ok and select.isChecked() and not node_handle.isChecked(),
+              "closing the panel switches the node handle tool back to Select (%r)" % (prop("natronSceneTransformTool"),))
+        yield settle()
+        check(handles() == [], "and the node's handles are gone (%r)" % (handles(),))
 
         section("image view")
         constant = app.createNode(CONSTANT_ID)

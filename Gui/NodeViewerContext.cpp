@@ -25,7 +25,10 @@
 
 #include "NodeViewerContext.h"
 
+#include <map>
+
 #include <QAction>
+#include <QCoreApplication>
 #include <QFile>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -40,6 +43,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Plugin.h"
 
 #include "Gui/ActionShortcuts.h"
@@ -60,6 +64,38 @@
 #include "Gui/ViewerToolButton.h"
 
 NATRON_NAMESPACE_ENTER
+
+namespace {
+
+std::map<std::string, NodeHandleTool>&
+handleTools()
+{
+    static std::map<std::string, NodeHandleTool> tools = {
+        { PLUGINID_NATRON_USDEDITTRANSFORM,
+          { QCoreApplication::translate("NodeViewerContext", "Transform Handle"), QString::fromUtf8("natron/handle-transform.svg"),
+            QCoreApplication::translate("NodeViewerContext", "draws the node's translate arrows, rotate rings and scale boxes together on its prim, whatever is selected.") } },
+    };
+
+    return tools;
+}
+
+} // namespace
+
+void
+NodeViewerContext::registerHandleTool(const std::string& pluginID,
+                                      const NodeHandleTool& tool)
+{
+    handleTools()[pluginID] = tool;
+}
+
+const NodeHandleTool*
+NodeViewerContext::findHandleTool(const std::string& pluginID)
+{
+    const std::map<std::string, NodeHandleTool>& tools = handleTools();
+    const std::map<std::string, NodeHandleTool>::const_iterator found = tools.find(pluginID);
+
+    return (found != tools.end()) ? &found->second : nullptr;
+}
 
 typedef std::map<KnobIWPtr, KnobGuiPtr, std::owner_less<KnobIWPtr>> KnobIsMap;
 

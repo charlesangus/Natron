@@ -25,9 +25,11 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -53,6 +55,7 @@
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPoint.h"
 #include "Engine/RotoStrokeItem.h"
+#include "Engine/Transform.h"
 #include "Engine/UndoCommand.h"
 #include "Engine/UndoRecorder.h"
 #include "Engine/ViewIdx.h"
@@ -1006,4 +1009,257 @@ TEST_F(RotoSelectionProxyTest, DeselectingOneOfThreeKeepsTheKnobsEnabledAndDirty
     context->deselect(b, RotoItem::eSelectionReasonOther);
     EXPECT_FALSE(shown->isEnabled(0));
     EXPECT_FALSE(dirty);
+}
+
+// A key set on the node's translate while a shape is selected keys the shape's own translate, which
+// moves the shape at each keyed frame.
+TEST_F(RotoSelectionProxyTest, ANodeTranslateKeyMovesTheSelectedShapeAtItsFrame)
+{
+    RotoContextPtr context = makeContext(PLUGINID_NATRON_ROTO);
+    ASSERT_TRUE(bool(context));
+    BezierPtr shape = makeSquare(context, 0.);
+    BezierPtr other = makeSquare(context, 30.);
+    ASSERT_TRUE(shape && other);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    context->select(shape, RotoItem::eSelectionReasonOther);
+    KnobDoublePtr shown = proxy<KnobDouble>("translate");
+    ASSERT_TRUE(bool(shown));
+
+    shown->setValueAtTime(10., 0., ViewSpec::all(), 0);
+    shown->setValueAtTime(20., 50., ViewSpec::all(), 0);
+    KnobIPtr own = shape->getKnobByName("translate");
+    ASSERT_TRUE(own != nullptr);
+    EXPECT_TRUE(hasKey(own, 10.));
+    EXPECT_TRUE(hasKey(own, 20.));
+    EXPECT_FALSE(hasKey(other->getKnobByName("translate"), 10.));
+
+    Transform::Matrix3x3 at10, at20, otherAt20;
+    shape->getTransformAtTime(10., &at10);
+    shape->getTransformAtTime(20., &at20);
+    other->getTransformAtTime(20., &otherAt20);
+    EXPECT_NEAR(0., at10.c, 1e-9);
+    EXPECT_NEAR(50., at20.c, 1e-9);
+    EXPECT_NEAR(0., otherAt20.c, 1e-9);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+}
+
+// The node's item knobs are proxies, whose keys the timeline takes from the selected items instead:
+// once the selection is cleared, the proxy still holds the last item's keys.
+TEST_F(RotoSelectionProxyTest, TheItemKnobsAreProxiesThatKeepTheLastItemsKeys)
+{
+    RotoContextPtr context = makeContext(PLUGINID_NATRON_ROTO);
+    ASSERT_TRUE(bool(context));
+    BezierPtr shape = makeSquare(context, 0.);
+    ASSERT_TRUE(bool(shape));
+    shape->getOpacityKnob()->setValueAtTime(4., 0.3, ViewSpec::all(), 0);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    context->select(shape, RotoItem::eSelectionReasonOther);
+    KnobIPtr shown = _node->getKnobByName("opacity");
+    KnobIPtr translate = _node->getKnobByName("translate");
+    KnobIPtr disable = _node->getKnobByName(kDisableNodeKnobName);
+    ASSERT_TRUE(shown && translate && disable);
+    EXPECT_TRUE(context->isItemProxyKnob(shown));
+    EXPECT_TRUE(context->isItemProxyKnob(translate));
+    EXPECT_FALSE(context->isItemProxyKnob(disable));
+    EXPECT_TRUE(hasKey(shown, 4.));
+
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    EXPECT_TRUE(hasKey(shown, 4.));
+}
+
+namespace {
+
+KnobDoublePtr
+layerKnob(const RotoLayerPtr& layer,
+          const char* name)
+{
+    return std::dynamic_pointer_cast<KnobDouble>(layer->getKnobByName(name));
+}
+
+} // namespace
+
+// A shape inside nested layers moves by the outer layer's transform, then the inner one's, then
+// its own, and its bounding box follows.
+TEST_F(RotoSelectionProxyTest, NestedLayerTransformsComposeOverTheirShapes)
+{
+    RotoContextPtr context = makeContext(PLUGINID_NATRON_ROTO);
+    ASSERT_TRUE(bool(context));
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    RotoLayerPtr outer = context->addLayer();
+    RotoLayerPtr inner = context->addLayer();
+    ASSERT_TRUE(outer != nullptr && inner != nullptr);
+    ASSERT_EQ(outer, inner->getParentLayer());
+    BezierPtr shape = makeSquare(context, 0.);
+    ASSERT_TRUE(shape != nullptr);
+    ASSERT_EQ(inner, shape->getParentLayer());
+    const double time = context->getTimelineCurrentTime();
+    const RectD before = shape->getBoundingBox(time, false);
+
+    KnobDoublePtr outerTranslate = layerKnob(outer, "translate");
+    KnobDoublePtr innerScale = layerKnob(inner, "scale");
+    KnobDoublePtr innerCenter = layerKnob(inner, "center");
+    KnobDoublePtr shapeTranslate = std::dynamic_pointer_cast<KnobDouble>(shape->getKnobByName("translate"));
+    ASSERT_TRUE(outerTranslate != nullptr && innerScale != nullptr && innerCenter != nullptr && shapeTranslate != nullptr);
+    outerTranslate->setValue(10., ViewSpec::all(), 0);
+    innerCenter->setValue(0., ViewSpec::all(), 0);
+    innerCenter->setValue(0., ViewSpec::all(), 1);
+    innerScale->setValue(2., ViewSpec::all(), 0);
+    innerScale->setValue(2., ViewSpec::all(), 1);
+    shapeTranslate->setValue(5., ViewSpec::all(), 1);
+
+    Transform::Matrix3x3 m;
+    shape->getTransformAtTime(time, &m);
+    EXPECT_NEAR(2., m.a, 1e-9);
+    EXPECT_NEAR(0., m.b, 1e-9);
+    EXPECT_NEAR(10., m.c, 1e-9);
+    EXPECT_NEAR(0., m.d, 1e-9);
+    EXPECT_NEAR(2., m.e, 1e-9);
+    EXPECT_NEAR(10., m.f, 1e-9);
+
+    const RectD after = shape->getBoundingBox(time, false);
+    // The feather pads the box by a fixed distance on every side, so only its centre scales.
+    EXPECT_NEAR(2. * (before.x1 + before.x2) / 2. + 10., (after.x1 + after.x2) / 2., 1e-6);
+    EXPECT_NEAR(2. * (before.y1 + before.y2) / 2. + 10., (after.y1 + after.y2) / 2., 1e-6);
+    EXPECT_GT(after.x2 - after.x1, before.x2 - before.x1);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+}
+
+// Renders are cached by the node's hash, which must change with a layer's transform and come back
+// when the transform does.
+TEST_F(RotoSelectionProxyTest, ALayerTransformChangesTheRenderHash)
+{
+    RotoContextPtr context = makeContext(PLUGINID_NATRON_ROTO);
+    ASSERT_TRUE(bool(context));
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    RotoLayerPtr layer = context->addLayer();
+    ASSERT_TRUE(layer != nullptr);
+    BezierPtr shape = makeSquare(context, 0.);
+    ASSERT_TRUE(shape != nullptr);
+    KnobDoublePtr rotate = layerKnob(layer, "rotate");
+    ASSERT_TRUE(rotate != nullptr);
+
+    _node->refreshHashNow();
+    const U64 initial = _node->getContentHash();
+    rotate->setValue(30., ViewSpec::all(), 0);
+    _node->refreshHashNow();
+    EXPECT_NE(initial, _node->getContentHash());
+    rotate->setValue(0., ViewSpec::all(), 0);
+    _node->refreshHashNow();
+    EXPECT_EQ(initial, _node->getContentHash());
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+}
+
+// With a layer selected, a key on the node's translate keys the layer's own translate, and neither
+// the shapes inside it nor the undo of that edit keep any key.
+TEST_F(RotoSelectionProxyTest, ANodeTranslateKeyKeysTheSelectedLayer)
+{
+    RotoContextPtr context = makeContext(PLUGINID_NATRON_ROTO);
+    ASSERT_TRUE(bool(context));
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    RotoLayerPtr layer = context->addLayer();
+    ASSERT_TRUE(layer != nullptr);
+    BezierPtr shape = makeSquare(context, 0.);
+    ASSERT_TRUE(shape != nullptr);
+    ASSERT_EQ(layer, shape->getParentLayer());
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    context->select(layer, RotoItem::eSelectionReasonOther);
+    KnobDoublePtr shown = proxy<KnobDouble>("translate");
+    ASSERT_TRUE(shown != nullptr);
+    EXPECT_TRUE(shown->isEnabled(0));
+
+    installRecorder();
+    {
+        UndoStepGuard step(getApp(), "Set translate");
+        recordKnobEdit(shown);
+        shown->setValueAtTime(10., 0., ViewSpec::all(), 0);
+        shown->setValueAtTime(20., 40., ViewSpec::all(), 0);
+    }
+    KnobDoublePtr own = layerKnob(layer, "translate");
+    ASSERT_TRUE(own != nullptr);
+    EXPECT_TRUE(hasKey(own, 10.));
+    EXPECT_TRUE(hasKey(own, 20.));
+    EXPECT_FALSE(hasKey(shape->getKnobByName("translate"), 10.));
+    EXPECT_FALSE(hasKey(shape->getKnobByName("translate"), 20.));
+
+    Transform::Matrix3x3 at20;
+    shape->getTransformAtTime(20., &at20);
+    EXPECT_NEAR(40., at20.c, 1e-9);
+
+    undoRecorded();
+    EXPECT_FALSE(hasKey(own, 10.));
+    EXPECT_FALSE(hasKey(own, 20.));
+    redoRecorded();
+    EXPECT_TRUE(hasKey(own, 20.));
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+}
+
+// The viewer's transform handle edits the knobs of the last selected item or layer, inside the
+// layers that hold it: its frame is their composed transform, and the identity at the base layer.
+TEST_F(RotoSelectionProxyTest, TheTransformHandleFrameIsTheEditedItemsParentLayers)
+{
+    RotoContextPtr context = makeContext(PLUGINID_NATRON_ROTO);
+    ASSERT_TRUE(bool(context));
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    BezierPtr baseShape = makeSquare(context, 40.);
+    ASSERT_TRUE(baseShape != nullptr);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    RotoLayerPtr outer = context->addLayer();
+    RotoLayerPtr inner = context->addLayer();
+    ASSERT_TRUE(outer != nullptr && inner != nullptr);
+    BezierPtr shape = makeSquare(context, 0.);
+    ASSERT_TRUE(shape != nullptr);
+    ASSERT_EQ(inner, shape->getParentLayer());
+    layerKnob(outer, "translate")->setValue(7., ViewSpec::all(), 0);
+    layerKnob(inner, "translate")->setValue(3., ViewSpec::all(), 1);
+    const double time = context->getTimelineCurrentTime();
+    Transform::Matrix3x3 frame;
+
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    context->select(baseShape, RotoItem::eSelectionReasonOther);
+    EXPECT_FALSE(context->getTransformKnobsFrameAtTime(time, &frame));
+
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    context->select(shape, RotoItem::eSelectionReasonOther);
+    ASSERT_TRUE(context->getTransformKnobsFrameAtTime(time, &frame));
+    EXPECT_NEAR(7., frame.c, 1e-9);
+    EXPECT_NEAR(3., frame.f, 1e-9);
+
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    context->select(inner, RotoItem::eSelectionReasonOther);
+    ASSERT_TRUE(context->getTransformKnobsFrameAtTime(time, &frame));
+    EXPECT_NEAR(7., frame.c, 1e-9);
+    EXPECT_NEAR(0., frame.f, 1e-9);
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+}
+
+// The timeline and dope sheet read a layer's keys from its knobs, the same list the panel wires.
+TEST_F(RotoSelectionProxyTest, ALayerListsItsKeyedTransformKnobs)
+{
+    RotoContextPtr context = makeContext(PLUGINID_NATRON_ROTO);
+    ASSERT_TRUE(bool(context));
+    context->clearSelection(RotoItem::eSelectionReasonOther);
+    RotoLayerPtr layer = context->addLayer();
+    ASSERT_TRUE(layer != nullptr);
+    layerKnob(layer, "rotate")->setValueAtTime(4., 10., ViewSpec::all(), 0);
+    layerKnob(layer, "rotate")->setValueAtTime(12., 20., ViewSpec::all(), 0);
+
+    std::set<double> keyed;
+    std::set<std::string> names;
+    for (const KnobIPtr& knob : layer->getKnobs()) {
+        names.insert(knob->getName());
+        for (int dim = 0; dim < knob->getDimension(); ++dim) {
+            CurvePtr curve = knob->getCurve(ViewIdx(0), dim, true);
+            if (!curve) {
+                continue;
+            }
+            for (const KeyFrame& k : curve->getKeyFrames_mt_safe()) {
+                keyed.insert(k.getTime());
+            }
+        }
+    }
+    for (const char* name : { "translate", "rotate", "scale", "uniform", "skewx", "skewy", "skewOrder", "center", "extraMatrix" }) {
+        EXPECT_EQ(1u, names.count(name)) << name;
+    }
+    EXPECT_EQ((std::set<double> { 4., 12. }), keyed);
+    EXPECT_TRUE(std::find(context->getLayers().begin(), context->getLayers().end(), layer) != context->getLayers().end());
 }

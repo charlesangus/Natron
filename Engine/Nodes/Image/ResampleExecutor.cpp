@@ -529,10 +529,11 @@ runResampleCpu(EffectInstance& effect,
         }
         const int nComps = plane.nComps;
         if (plane.src) {
+            // Bounds read under the lock that pins the buffer, so the pointer below is into the buffer they describe.
+            plane.srcAccess = std::make_shared<Image::ReadAccess>(plane.src.get());
             plane.srcBounds = plane.src->getBounds();
             plane.readable = (!matrix && request.clipSourceToRoI) ? plane.srcBounds.intersect(plane.srcRoI) : plane.srcBounds;
             plane.srcNComps = (int)plane.src->getComponentsCount();
-            plane.srcAccess = std::make_shared<Image::ReadAccess>(plane.src.get());
             if (plane.srcNComps == nComps) {
                 plane.source = Resampler::SourceImage((const float*)plane.srcAccess->pixelAt(plane.srcBounds.x1, plane.srcBounds.y1), plane.srcBounds, nComps);
             } else {

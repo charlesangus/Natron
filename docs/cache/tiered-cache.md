@@ -839,7 +839,7 @@ stated.** Own wall time is the right quantity, and M300.P2.T2 records it in the 
   write a record. It stores no cost anywhere.
 - A task's wall time can include its inputs. An input that misses the frame store renders by recursion inside the consumer
   (`Engine/EffectInstance.cpp:1155-1158`, `:1625-1660`), and the pre-render path recurses (`Engine/EffectInstanceRenderRoI.cpp:1405`).
-- The legacy scheduler has no tasks, and renders inputs inside `renderRoI`.
+- A frame the task graph does not take has no tasks, and renders inputs inside `renderRoI`.
 - A hit's or a partial's time is not a recompute cost. A GPU region has no per-member time at all.
 
 Hence the accumulator in [Recompute cost](#recompute-cost). Wall time also varies with the thread budget

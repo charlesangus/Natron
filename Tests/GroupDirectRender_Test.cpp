@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstdio>
 #include <list>
 #include <string>
 #include <vector>
@@ -39,6 +40,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/FrameArgsOverlay.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
@@ -51,6 +53,11 @@ NATRON_NAMESPACE_USING
 class GroupDirectRender
     : public BaseTest {
 protected:
+    enum Pull {
+        ePullDirect,
+        ePullScheduled
+    };
+
     NodePtr createInside(const NodePtr& group,
                          const std::string& pluginID)
     {
@@ -162,12 +169,16 @@ protected:
     }
 
     static bool render(const NodePtr& node,
-                       RenderSchedulerModeEnum mode,
+                       Pull mode,
                        bool byPassCache,
                        std::vector<RenderedPlane>* planes,
                        std::string* error)
     {
-        return renderNodePlanesInMode(node, 1., ViewIdx(0), 0, window(), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), mode, byPassCache, planes, error);
+        if (mode == ePullScheduled) {
+            return renderNodePlanesScheduled(node, 1., ViewIdx(0), 0, window(), byPassCache, planes, error);
+        }
+
+        return renderNodePlanesDirect(node, 1., ViewIdx(0), 0, window(), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), planes, error, byPassCache);
     }
 
     static void expectSamePlanes(const std::vector<RenderedPlane>& expected,
@@ -181,9 +192,9 @@ protected:
         }
     }
 
-    static std::string modeName(RenderSchedulerModeEnum mode)
+    static std::string pullName(Pull mode)
     {
-        return (mode == eRenderSchedulerModeLegacy) ? "legacy" : "task graph";
+        return (mode == ePullDirect) ? "direct" : "scheduled";
     }
 
     struct PassThroughBelowAGroup {
@@ -217,9 +228,9 @@ protected:
     // inside the group feeding it would serve the previous image.
     static void expectPassThroughBelowAGroupFollowsAnEditInside(const PassThroughBelowAGroup& g,
                                                                 bool disabled,
-                                                                RenderSchedulerModeEnum mode)
+                                                                Pull mode)
     {
-        const std::string where = modeName(mode) + (disabled ? ", disabled" : "");
+        const std::string where = pullName(mode) + (disabled ? ", disabled" : "");
         appPTR->clearAllCaches();
         g.passThrough->setNodeDisabled(disabled);
         setSeed(g.fed, 80);
@@ -292,7 +303,7 @@ TEST_F(GroupDirectRender, HashIgnoresAnInnerNodeNotFeedingTheOutput)
 
 // Every run first renders the group in another colour through the caches, so a render of the
 // group that reused that image rather than its source's would differ from the Dot's.
-TEST_F(GroupDirectRender, DirectRenderMatchesADotBelowTheGroupInBothModes)
+TEST_F(GroupDirectRender, DirectRenderMatchesADotBelowTheGroupWithEachPull)
 {
     NodePtr group = createGroup();
     ASSERT_TRUE(group != nullptr);
@@ -304,9 +315,9 @@ TEST_F(GroupDirectRender, DirectRenderMatchesADotBelowTheGroupInBothModes)
     ASSERT_TRUE(dot != nullptr);
     ASSERT_TRUE(dot->connectInput(group, 0));
 
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+    for (Pull mode : { ePullDirect, ePullScheduled }) {
         for (int run = 0; run < 3; ++run) {
-            const std::string where = modeName(mode) + " run " + std::to_string(run);
+            const std::string where = pullName(mode) + " run " + std::to_string(run);
             const int seed = 10 + run;
             std::vector<RenderedPlane> other;
             std::string error;
@@ -331,7 +342,7 @@ TEST_F(GroupDirectRender, DirectRenderMatchesADotBelowTheGroupInBothModes)
 
 // The enabled group is rendered through the caches first, so a disabled render keyed like it
 // would serve the interior's image.
-TEST_F(GroupDirectRender, DisabledGroupRendersItsExternalInputInBothModes)
+TEST_F(GroupDirectRender, DisabledGroupRendersItsExternalInputWithEachPull)
 {
     NodePtr group = createGroup();
     ASSERT_TRUE(group != nullptr);
@@ -345,23 +356,23 @@ TEST_F(GroupDirectRender, DisabledGroupRendersItsExternalInputInBothModes)
     setSeed(source, 51);
     ASSERT_TRUE(group->connectInput(source, 0));
 
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+    for (Pull mode : { ePullDirect, ePullScheduled }) {
         appPTR->clearAllCaches();
         group->setNodeDisabled(false);
         std::vector<RenderedPlane> enabled;
         std::string error;
-        ASSERT_TRUE(render(group, mode, false, &enabled, &error)) << modeName(mode) << ": " << error;
-        ASSERT_FALSE(enabled.empty()) << modeName(mode);
+        ASSERT_TRUE(render(group, mode, false, &enabled, &error)) << pullName(mode) << ": " << error;
+        ASSERT_FALSE(enabled.empty()) << pullName(mode);
 
         group->setNodeDisabled(true);
         std::vector<RenderedPlane> disabled;
         std::vector<RenderedPlane> expected;
-        ASSERT_TRUE(render(group, mode, false, &disabled, &error)) << modeName(mode) << ": " << error;
-        ASSERT_TRUE(render(source, mode, true, &expected, &error)) << modeName(mode) << ": " << error;
-        ASSERT_FALSE(disabled.empty()) << modeName(mode);
+        ASSERT_TRUE(render(group, mode, false, &disabled, &error)) << pullName(mode) << ": " << error;
+        ASSERT_TRUE(render(source, mode, true, &expected, &error)) << pullName(mode) << ": " << error;
+        ASSERT_FALSE(disabled.empty()) << pullName(mode);
 
-        expectSamePlanes(expected, disabled, modeName(mode));
-        EXPECT_FALSE(enabled.front().pixels == disabled.front().pixels) << modeName(mode) << ": the interior and the external input render alike";
+        expectSamePlanes(expected, disabled, pullName(mode));
+        EXPECT_FALSE(enabled.front().pixels == disabled.front().pixels) << pullName(mode) << ": the interior and the external input render alike";
     }
     group->setNodeDisabled(false);
 }
@@ -398,12 +409,12 @@ TEST_F(GroupDirectRender, UnfedGroupRendersNoPlaneAndSucceeds)
     NodePtr output = createInside(group, PLUGINID_NATRON_OUTPUT);
     ASSERT_TRUE(fed && output);
 
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+    for (Pull mode : { ePullDirect, ePullScheduled }) {
         std::vector<RenderedPlane> planes;
         std::string error;
-        EXPECT_FALSE(render(group, mode, true, &planes, &error)) << modeName(mode);
-        EXPECT_EQ(std::string(kRenderProducedNoPlane), error) << modeName(mode);
-        EXPECT_TRUE(planes.empty()) << modeName(mode);
+        EXPECT_FALSE(render(group, mode, true, &planes, &error)) << pullName(mode);
+        EXPECT_EQ(std::string(kRenderProducedNoPlane), error) << pullName(mode);
+        EXPECT_TRUE(planes.empty()) << pullName(mode);
     }
 }
 
@@ -426,7 +437,7 @@ connectChain(const NodePtr& from,
 
 // A Dot below the outer group reads through both groups to the innermost source, so only the
 // direct renders take the groups' own path.
-TEST_F(GroupDirectRender, NestedGroupsMatchADotBelowTheOuterGroupInBothModes)
+TEST_F(GroupDirectRender, NestedGroupsMatchADotBelowTheOuterGroupWithEachPull)
 {
     NodePtr outer = createGroup();
     ASSERT_TRUE(outer != nullptr);
@@ -443,9 +454,9 @@ TEST_F(GroupDirectRender, NestedGroupsMatchADotBelowTheOuterGroupInBothModes)
     ASSERT_TRUE(dot != nullptr);
     ASSERT_TRUE(dot->connectInput(outer, 0));
 
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+    for (Pull mode : { ePullDirect, ePullScheduled }) {
         for (int run = 0; run < 2; ++run) {
-            const std::string where = modeName(mode) + " run " + std::to_string(run);
+            const std::string where = pullName(mode) + " run " + std::to_string(run);
             appPTR->clearAllCaches();
             setSeed(fed, 20 + run);
             std::vector<RenderedPlane> outerDirect;
@@ -464,7 +475,7 @@ TEST_F(GroupDirectRender, NestedGroupsMatchADotBelowTheOuterGroupInBothModes)
 
 // The caches are kept between the renders, so an outer group whose hash or region of definition
 // missed an edit two groups down would serve the previous image or region.
-TEST_F(GroupDirectRender, EditInsideANestedGroupReachesTheOuterGroupInBothModes)
+TEST_F(GroupDirectRender, EditInsideANestedGroupReachesTheOuterGroupWithEachPull)
 {
     NodePtr outer = createGroup();
     ASSERT_TRUE(outer != nullptr);
@@ -483,8 +494,8 @@ TEST_F(GroupDirectRender, EditInsideANestedGroupReachesTheOuterGroupInBothModes)
     ASSERT_TRUE(dot != nullptr);
     ASSERT_TRUE(dot->connectInput(outer, 0));
 
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
-        const std::string where = modeName(mode);
+    for (Pull mode : { ePullDirect, ePullScheduled }) {
+        const std::string where = pullName(mode);
         appPTR->clearAllCaches();
         setSeed(fed, 60);
         setCropRectangle(crop, 1., 1., 8., 5.);
@@ -520,7 +531,7 @@ TEST_F(GroupDirectRender, EditInsideANestedGroupReachesTheOuterGroupInBothModes)
     }
 }
 
-TEST_F(GroupDirectRender, LongChainInsideAGroupMatchesADotBelowTheGroupInBothModes)
+TEST_F(GroupDirectRender, LongChainInsideAGroupMatchesADotBelowTheGroupWithEachPull)
 {
     NodePtr group = createGroup();
     ASSERT_TRUE(group != nullptr);
@@ -539,19 +550,19 @@ TEST_F(GroupDirectRender, LongChainInsideAGroupMatchesADotBelowTheGroupInBothMod
     ASSERT_TRUE(dot != nullptr);
     ASSERT_TRUE(dot->connectInput(group, 0));
 
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+    for (Pull mode : { ePullDirect, ePullScheduled }) {
         appPTR->clearAllCaches();
         std::vector<RenderedPlane> direct;
         std::vector<RenderedPlane> throughDot;
         std::string error;
-        ASSERT_TRUE(render(group, mode, false, &direct, &error)) << modeName(mode) << ": " << error;
-        ASSERT_TRUE(render(dot, mode, true, &throughDot, &error)) << modeName(mode) << ": " << error;
-        ASSERT_FALSE(direct.empty()) << modeName(mode);
-        expectSamePlanes(throughDot, direct, modeName(mode));
+        ASSERT_TRUE(render(group, mode, false, &direct, &error)) << pullName(mode) << ": " << error;
+        ASSERT_TRUE(render(dot, mode, true, &throughDot, &error)) << pullName(mode) << ": " << error;
+        ASSERT_FALSE(direct.empty()) << pullName(mode);
+        expectSamePlanes(throughDot, direct, pullName(mode));
     }
 }
 
-TEST_F(GroupDirectRender, PassThroughGroupMatchesItsExternalInputAndADotBelowInBothModes)
+TEST_F(GroupDirectRender, PassThroughGroupMatchesItsExternalInputAndADotBelowWithEachPull)
 {
     NodePtr group = createGroup();
     ASSERT_TRUE(group != nullptr);
@@ -566,9 +577,9 @@ TEST_F(GroupDirectRender, PassThroughGroupMatchesItsExternalInputAndADotBelowInB
     ASSERT_TRUE(dot != nullptr);
     ASSERT_TRUE(dot->connectInput(group, 0));
 
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+    for (Pull mode : { ePullDirect, ePullScheduled }) {
         for (int run = 0; run < 2; ++run) {
-            const std::string where = modeName(mode) + " run " + std::to_string(run);
+            const std::string where = pullName(mode) + " run " + std::to_string(run);
             appPTR->clearAllCaches();
             setSeed(source, 30 + run);
             std::vector<RenderedPlane> direct;
@@ -587,7 +598,7 @@ TEST_F(GroupDirectRender, PassThroughGroupMatchesItsExternalInputAndADotBelowInB
 
 // The caches are kept between the two renders so that a stale hash or region of definition
 // would serve the first render's image.
-TEST_F(GroupDirectRender, InnerEditAfterARenderIsReflectedInTheNextRenderInBothModes)
+TEST_F(GroupDirectRender, InnerEditAfterARenderIsReflectedInTheNextRenderWithEachPull)
 {
     NodePtr group = createGroup();
     ASSERT_TRUE(group != nullptr);
@@ -603,40 +614,40 @@ TEST_F(GroupDirectRender, InnerEditAfterARenderIsReflectedInTheNextRenderInBothM
     ASSERT_TRUE(dot != nullptr);
     ASSERT_TRUE(dot->connectInput(group, 0));
 
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+    for (Pull mode : { ePullDirect, ePullScheduled }) {
         appPTR->clearAllCaches();
         setSeed(fed, 40);
         setCropRectangle(crop, 1., 1., 8., 5.);
         std::vector<RenderedPlane> first;
         std::string error;
-        ASSERT_TRUE(render(group, mode, false, &first, &error)) << modeName(mode) << ": " << error;
-        ASSERT_FALSE(first.empty()) << modeName(mode);
+        ASSERT_TRUE(render(group, mode, false, &first, &error)) << pullName(mode) << ": " << error;
+        ASSERT_FALSE(first.empty()) << pullName(mode);
 
         setSeed(fed, 41);
         std::vector<RenderedPlane> second;
         std::vector<RenderedPlane> throughDot;
-        ASSERT_TRUE(render(group, mode, false, &second, &error)) << modeName(mode) << ": " << error;
-        ASSERT_TRUE(render(dot, mode, true, &throughDot, &error)) << modeName(mode) << ": " << error;
-        ASSERT_FALSE(second.empty()) << modeName(mode);
+        ASSERT_TRUE(render(group, mode, false, &second, &error)) << pullName(mode) << ": " << error;
+        ASSERT_TRUE(render(dot, mode, true, &throughDot, &error)) << pullName(mode) << ": " << error;
+        ASSERT_FALSE(second.empty()) << pullName(mode);
 
-        expectSamePlanes(throughDot, second, modeName(mode));
-        EXPECT_FALSE(first.front().pixels == second.front().pixels) << modeName(mode) << ": the edit did not reach the second render";
+        expectSamePlanes(throughDot, second, pullName(mode));
+        EXPECT_FALSE(first.front().pixels == second.front().pixels) << pullName(mode) << ": the edit did not reach the second render";
 
-        const RectD before = regionOfDefinition(group, modeName(mode));
+        const RectD before = regionOfDefinition(group, pullName(mode));
         setCropRectangle(crop, 2., 1., 4., 3.);
-        const RectD after = regionOfDefinition(group, modeName(mode));
-        expectSameRegion(regionOfDefinition(dot, modeName(mode)), after, modeName(mode) + " after the crop edit");
-        EXPECT_FALSE(sameRegion(before, after)) << modeName(mode) << ": the crop edit did not move the group's region of definition";
+        const RectD after = regionOfDefinition(group, pullName(mode));
+        expectSameRegion(regionOfDefinition(dot, pullName(mode)), after, pullName(mode) + " after the crop edit");
+        EXPECT_FALSE(sameRegion(before, after)) << pullName(mode) << ": the crop edit did not move the group's region of definition";
         std::vector<RenderedPlane> third;
-        ASSERT_TRUE(render(group, mode, false, &third, &error)) << modeName(mode) << ": " << error;
-        ASSERT_TRUE(render(dot, mode, true, &throughDot, &error)) << modeName(mode) << ": " << error;
-        expectSamePlanes(throughDot, third, modeName(mode) + " after the crop edit");
+        ASSERT_TRUE(render(group, mode, false, &third, &error)) << pullName(mode) << ": " << error;
+        ASSERT_TRUE(render(dot, mode, true, &throughDot, &error)) << pullName(mode) << ": " << error;
+        expectSamePlanes(throughDot, third, pullName(mode) + " after the crop edit");
     }
 }
 
 // The caches are kept between the renders, so a group two or three levels up whose hash missed
 // the edit would serve the previous image.
-TEST_F(GroupDirectRender, EditThreeGroupsDownReachesEveryEnclosingGroupInBothModes)
+TEST_F(GroupDirectRender, EditThreeGroupsDownReachesEveryEnclosingGroupWithEachPull)
 {
     NodePtr outer = createGroup();
     ASSERT_TRUE(outer != nullptr);
@@ -657,8 +668,8 @@ TEST_F(GroupDirectRender, EditThreeGroupsDownReachesEveryEnclosingGroupInBothMod
     ASSERT_TRUE(dot->connectInput(outer, 0));
     const std::vector<NodePtr> groups = { outer, middle, inner };
 
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
-        const std::string where = modeName(mode);
+    for (Pull mode : { ePullDirect, ePullScheduled }) {
+        const std::string where = pullName(mode);
         appPTR->clearAllCaches();
         setSeed(fed, 70);
         std::vector<std::vector<RenderedPlane>> first(groups.size());
@@ -685,30 +696,30 @@ TEST_F(GroupDirectRender, EditThreeGroupsDownReachesEveryEnclosingGroupInBothMod
     }
 }
 
-TEST_F(GroupDirectRender, PassThroughGroupBelowAGroupFollowsAnEditInsideItInBothModes)
+TEST_F(GroupDirectRender, PassThroughGroupBelowAGroupFollowsAnEditInsideItWithEachPull)
 {
     PassThroughBelowAGroup g;
     ASSERT_NO_FATAL_FAILURE(buildPassThroughBelowAGroup(&g));
 
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+    for (Pull mode : { ePullDirect, ePullScheduled }) {
         ASSERT_NO_FATAL_FAILURE(expectPassThroughBelowAGroupFollowsAnEditInside(g, false, mode));
     }
 }
 
 // A disabled group renders its external input, here the group above it.
-TEST_F(GroupDirectRender, DisabledPassThroughGroupBelowAGroupFollowsAnEditInsideItInBothModes)
+TEST_F(GroupDirectRender, DisabledPassThroughGroupBelowAGroupFollowsAnEditInsideItWithEachPull)
 {
     PassThroughBelowAGroup g;
     ASSERT_NO_FATAL_FAILURE(buildPassThroughBelowAGroup(&g));
 
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+    for (Pull mode : { ePullDirect, ePullScheduled }) {
         ASSERT_NO_FATAL_FAILURE(expectPassThroughBelowAGroupFollowsAnEditInside(g, true, mode));
     }
 }
 
 // The outer group's GroupInput feeds the nested pass-through group directly, so an edit of the
 // external input reaches the nested group only through the outer one's redirections.
-TEST_F(GroupDirectRender, NestedPassThroughGroupFedByAGroupInputFollowsAnExternalEditInBothModes)
+TEST_F(GroupDirectRender, NestedPassThroughGroupFedByAGroupInputFollowsAnExternalEditWithEachPull)
 {
     NodePtr outer = createGroup();
     ASSERT_TRUE(outer != nullptr);
@@ -729,8 +740,8 @@ TEST_F(GroupDirectRender, NestedPassThroughGroupFedByAGroupInputFollowsAnExterna
     ASSERT_TRUE(dot != nullptr);
     ASSERT_TRUE(dot->connectInput(outer, 0));
 
-    for (RenderSchedulerModeEnum mode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
-        const std::string where = modeName(mode);
+    for (Pull mode : { ePullDirect, ePullScheduled }) {
+        const std::string where = pullName(mode);
         appPTR->clearAllCaches();
         setSeed(source, 90);
         std::vector<RenderedPlane> first;
@@ -806,5 +817,51 @@ TEST_F(GroupDirectRender, InnerAndExternalMarksInOneFlushReachTheGroupsConsumers
         for (std::size_t i = 0; i < expectedDirty.size(); ++i) {
             EXPECT_NE(before[i], expectedDirty[i]->getHashMarkCount()) << where << ": " << expectedDirty[i]->getScriptName_mt_safe() << " was not marked";
         }
+    }
+}
+
+TEST_F(GroupDirectRender, DeeplyNestedGroupsRecordTheFrameArgsChainDepthWithEachPull)
+{
+    const int kLevels = 8;
+    const int kDotsPerLevel = 2;
+
+    std::vector<NodePtr> groups;
+    groups.push_back(createGroup());
+    ASSERT_TRUE(groups.back() != nullptr);
+    for (int i = 1; i < kLevels; ++i) {
+        groups.push_back(createGroupInside(groups.back()));
+        ASSERT_TRUE(groups.back() != nullptr);
+    }
+    NodePtr upstream = createSourceInside(groups.back(), 90);
+    ASSERT_TRUE(upstream != nullptr);
+    for (int i = kLevels - 1; i >= 0; --i) {
+        for (int d = 0; d < kDotsPerLevel; ++d) {
+            NodePtr dot = createInside(groups[i], PLUGINID_NATRON_DOT);
+            ASSERT_TRUE(dot != nullptr);
+            ASSERT_TRUE(dot->connectInput(upstream, 0));
+            upstream = dot;
+        }
+        NodePtr output = createInside(groups[i], PLUGINID_NATRON_OUTPUT);
+        ASSERT_TRUE(output != nullptr);
+        ASSERT_TRUE(output->connectInput(upstream, 0));
+        upstream = groups[i];
+    }
+
+    for (Pull mode : { ePullDirect, ePullScheduled }) {
+        const std::string where = pullName(mode);
+        appPTR->clearAllCaches();
+        const FrameArgsOverlayPtr headBefore = FrameArgsOverlay::currentHead();
+        FrameArgsOverlay::resetStats();
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        const bool ok = render(groups.front(), mode, true, &planes, &error);
+        const FrameArgsOverlay::Stats stats = FrameArgsOverlay::stats();
+        std::printf("FRAMEARGS_DEPTH nested-groups-%d-%s maxDepth=%llu outOfOrderPops=%llu\n", kLevels, where.c_str(), (unsigned long long)stats.maxDepth, (unsigned long long)stats.outOfOrderPops);
+        std::fflush(stdout);
+
+        ASSERT_TRUE(ok) << where << ": " << error;
+        EXPECT_FALSE(planes.empty()) << where;
+        EXPECT_EQ(0u, stats.outOfOrderPops) << where;
+        EXPECT_EQ(headBefore.get(), FrameArgsOverlay::currentHead().get()) << where << ": the render left args on the thread";
     }
 }

@@ -39,8 +39,11 @@
 #endif
 #include <pxr/imaging/hd/rprimCollection.h>
 #include <pxr/imaging/hd/sceneIndex.h>
+#include <pxr/imaging/hd/selection.h>
+#include <pxr/imaging/hdx/pickTask.h>
 #include <pxr/imaging/hgi/texture.h>
 #include <pxr/usd/sdf/path.h>
+#include <pxr/usd/usd/prim.h>
 #include <pxr/usdImaging/usdImagingGL/engine.h>
 #include <pxr/usdImaging/usdImagingGL/renderParams.h>
 #ifdef NATRON_SELECTIONENGINE_RESTORE_EMIT
@@ -52,7 +55,8 @@ NATRON_NAMESPACE_ENTER
 
 /**
  * @brief A UsdImagingGLEngine that also draws the selected prims alone, for the scene view to
- * tint them after its own pass. Under Storm, the engine's render index holds the
+ * tint them after its own pass, and picks and highlights points, edges and faces: the base's
+ * intersection test always picks whole prims, and its selection is of whole prims. Under Storm, the engine's render index holds the
  * SceneSelectionTasks, so the pass draws the engine's own rprims, with their materials and their
  * depths, into a colour and a depth buffer of its own. Under any other renderer there is no pass.
  *
@@ -88,6 +92,19 @@ public:
 
     // Cleared to 1 where nothing selected was drawn.
     PXR_NS::HgiTextureHandle depthTexture() const;
+
+    // TestIntersection() with a pick target; the hits' object ids are render index paths.
+    bool testComponentIntersection(const PXR_NS::TfToken& pickTarget,
+                                   const PXR_NS::TfToken& resolveMode,
+                                   const PXR_NS::GfVec2i& resolution,
+                                   const PXR_NS::GfMatrix4d& viewMatrix,
+                                   const PXR_NS::GfMatrix4d& projectionMatrix,
+                                   const PXR_NS::UsdPrim& root,
+                                   const PXR_NS::UsdImagingGLRenderParams& params,
+                                   PXR_NS::HdxPickHitVector* hits);
+
+    // Highlighted by the engine's own highlight, which the render params' highlight turns on.
+    void setComponentSelection(const PXR_NS::HdSelectionSharedPtr& selection);
 
 private:
     SelectionEngine(SceneSelectionTasks::Arming&& arming,

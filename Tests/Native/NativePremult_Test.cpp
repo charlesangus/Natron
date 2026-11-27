@@ -300,7 +300,7 @@ TEST_F(NativePremultTest, IdentityConditions)
     }
 }
 
-TEST_F(NativePremultTest, BothSchedulerModesAgreeWithNoUnplannedPull)
+TEST_F(NativePremultTest, DirectAndScheduledAgreeWithNoUnplannedPull)
 {
     for (int divide = 0; divide < 2; ++divide) {
         NodePtr source = makeSource();

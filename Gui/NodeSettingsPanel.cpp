@@ -48,12 +48,13 @@
 #include "Gui/Gui.h"
 #include "Gui/GuiApplicationManager.h" // appPTR
 #include "Gui/GuiDefines.h"
+#include "Gui/KnobEditMode.h"
 #include "Gui/Menu.h"
 #include "Gui/MultiInstancePanel.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
-#include "Gui/TrackerPanel.h"
 #include "Gui/RotoPanel.h"
+#include "Gui/TrackerPanel.h"
 
 #include "Serialization/NodeSerialization.h"
 #include "Serialization/Yaml/PresetYaml.h"
@@ -188,10 +189,12 @@ NodeSettingsPanel::onSettingsButtonClicked()
     menu.addAction(exportAsPresets);
     menu.addSeparator();
 
-    QAction* manageUserParams = new QAction(tr("Manage user parameters..."), &menu);
-    QObject::connect( manageUserParams, SIGNAL(triggered()), this, SLOT(onManageUserParametersActionTriggered()) );
-    manageUserParams->setEnabled(node->getNode()->getEffectInstance()->getIsEditable());
-    menu.addAction(manageUserParams);
+    QAction* editParams = new QAction(tr("Edit parameters"), &menu);
+    editParams->setCheckable(true);
+    editParams->setChecked(getKnobEditMode() && getKnobEditMode()->isActive());
+    QObject::connect(editParams, SIGNAL(triggered()), this, SLOT(onEditParametersActionTriggered()));
+    editParams->setEnabled(canEditUserKnobs());
+    menu.addAction(editParams);
 
     menu.addSeparator();
 

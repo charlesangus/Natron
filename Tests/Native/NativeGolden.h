@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -69,12 +70,19 @@ RectI goldenWindow(unsigned mipmapLevel);
  *
  * In replay, a missing reference, a recorded plane the node no longer presents, a size mismatch
  * and any differing value are gtest failures. Returns whether the case passed.
+ *
+ * `planeAcceptance` replaces the comparison of the planes it names, by layer ID, with its
+ * predicate on (reference, rendered), in every configuration. Every other plane stays as above.
  **/
+typedef std::function<bool(float reference, float rendered)> GoldenValueAcceptance;
+typedef std::map<std::string, GoldenValueAcceptance> GoldenPlaneAcceptance;
+
 bool checkGolden(const NodePtr& node,
                  const std::string& group,
                  const std::string& caseName,
                  unsigned mipmapLevel,
-                 double time = 1.);
+                 double time = 1.,
+                 const GoldenPlaneAcceptance& planeAcceptance = GoldenPlaneAcceptance());
 
 /**
  * @brief A node under test. `name` prefixes every case and names its fixture directory. A

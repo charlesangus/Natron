@@ -199,7 +199,7 @@ TEST_F(NativeInvertTest, InvertingTwiceRestoresTheSource)
     }
 }
 
-TEST_F(NativeInvertTest, ChainRendersTheSameInBothSchedulerModesWithNoUnplannedPulls)
+TEST_F(NativeInvertTest, ChainRendersTheSameDirectAndScheduledWithNoUnplannedPulls)
 {
     getApp()->getProject()->reset(false, true);
     Format format(0, 0, 128, 96, "nativeInvertChainFormat", 1.);

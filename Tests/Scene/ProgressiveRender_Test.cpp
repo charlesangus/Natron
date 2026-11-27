@@ -76,12 +76,15 @@
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Tests/Scene/CyclesTestUtils.h"
+#include "Tests/Scene/MoonRayTestProcesses.h"
 #include "Tests/TestWatchdog.h"
 
 NATRON_NAMESPACE_USING
 
 using CyclesTestUtils::cyclesOrSkip;
 using CyclesTestUtils::fixedSampling;
+using MoonRayTestProcesses::RenderProcessStopper;
+using MoonRayTestProcesses::ScopedEnv;
 
 // Drives HydraRender::ProgressiveRender, the viewer's background refinement of a delegate other
 // than Storm, on Cycles over Tests/fixtures/scene-cycles.usda seen through /World/Cam: /World/Near,
@@ -859,6 +862,85 @@ TEST_F(ProgressiveRenderTest, RefinesToTheCapAndStops)
     _render.reset();
     EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
     EXPECT_EQ(liveBefore, ProgressiveRender::getLiveCount());
+}
+
+// A finished render's worker woken asks for its Cycles thread count without the render's lock. A
+// render destroyed while it asks still ends its worker: the destructor's wake-up comes before the
+// worker waits again.
+TEST_F(ProgressiveRenderTest, ARenderEndedWhileItsWorkerAsksForThreadsEndsItsWorker)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+
+    // Shared, as the worker holds the threads function past the test's end if it does not end.
+    struct Gate {
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool armed = true;
+        bool asking = false;
+        bool released = false;
+    };
+    const std::shared_ptr<Gate> gate = std::make_shared<Gate>();
+    const std::function<int()> threads = [gate]() {
+        std::unique_lock<std::mutex> lock(gate->mutex);
+        if (gate->armed) {
+            gate->armed = false;
+            gate->asking = true;
+            gate->changed.notify_all();
+            gate->changed.wait(lock, [&gate]() { return gate->released; });
+        }
+
+        return 2;
+    };
+    // setThreads wakes the worker; one woken before it waits again would miss a single call.
+    const std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now() + kTimeout;
+    bool asking = false;
+    while (!asking && (std::chrono::steady_clock::now() < end)) {
+        _render->setThreads(threads);
+        std::unique_lock<std::mutex> lock(gate->mutex);
+        asking = gate->changed.wait_for(lock, std::chrono::milliseconds(50), [&gate]() { return gate->asking; });
+    }
+    ASSERT_TRUE(asking) << "the worker never asked for its threads";
+
+    _listened = nullptr;
+    ProgressiveRender* ending = _render.release();
+    std::atomic<long> enderTid(0);
+    std::thread ender([ending, &enderTid]() {
+        enderTid.store(static_cast<long>(syscall(SYS_gettid)));
+        delete ending;
+    });
+    // The destructor sets quit at once, then waits for the threads function to return. Released
+    // early, the worker is waiting again when quit comes and the test passes without the race.
+    // Nothing else holds a lock the ender takes, so once it sleeps it waits on the threads
+    // function, past setting quit.
+    const std::chrono::steady_clock::time_point waitEnd = std::chrono::steady_clock::now() + kTimeout;
+    bool enderWaits = false;
+    while (!enderWaits && (std::chrono::steady_clock::now() < waitEnd)) {
+        const long tid = enderTid.load();
+        if (tid != 0) {
+            std::ifstream stat("/proc/self/task/" + std::to_string(tid) + "/stat");
+            std::string line;
+            if (std::getline(stat, line)) {
+                const std::string::size_type close = line.rfind(')');
+                enderWaits = (close != std::string::npos) && (close + 2 < line.size()) && (line[close + 2] == 'S');
+            }
+        }
+        if (!enderWaits) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+    EXPECT_TRUE(enderWaits) << "the destructor never waited for the threads function";
+    {
+        std::lock_guard<std::mutex> lock(gate->mutex);
+        gate->released = true;
+    }
+    gate->changed.notify_all();
+    ender.join();
+    EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
 }
 
 // Ten edits while the render refines restart it once, and no frame of the scene before them is
@@ -2034,6 +2116,59 @@ TEST_F(ProgressiveRenderTest, AMoonRayEditRestartsInPlace)
     const float still = windowDepth(_view.frustum, kNearDistance);
     const float depth = centreDepth(*after.back());
     EXPECT_LT(std::fabs(moved - depth), std::fabs(still - depth)) << "the last frame is of the scene before the edit";
+}
+
+// A MoonRay session whose render process stops answering mid-render is made again once, and when
+// the next one stops answering too the render fails and says why. A scene edit gives the render
+// back its one remaking: the session the edit's retry makes, stopped in turn, is made again
+// rather than failing at once. Each execComp is stopped once its session is rendering, and
+// continued at the end so that its session's shutdown can end it. The startup bound stays long:
+// a session slow to start on a loaded runner must not meet it before its process is stopped.
+TEST_F(ProgressiveRenderTest, AMoonRaySessionThatStopsAnsweringIsMadeAgainOnceThenFails)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const ScopedEnv stallBound("NATRON_DELEGATE_STALL_S", "3");
+    const ScopedEnv startupStallBound("NATRON_DELEGATE_STARTUP_STALL_S", "120");
+    const std::chrono::seconds kReapBound(15);
+    RenderProcessStopper stopper(kReapBound);
+    std::map<std::string, PXR_NS::VtValue> settings;
+    // Enough samples that the frame is still rendering when its process is stopped.
+    settings[MoonRaySettings::samplesKey()] = PXR_NS::VtValue(4096);
+    ASSERT_TRUE(start(settings, kMoonRayRendererId));
+
+    ASSERT_TRUE(waitUntil([this]() { return _render->getStatus().stallRemakes >= 1; }, "the first session's remaking"));
+    {
+        const ProgressiveRender::Status status = _render->getStatus();
+        EXPECT_EQ(1u, status.stallRemakes);
+        EXPECT_TRUE(status.error.empty()) << status.error;
+    }
+    ASSERT_TRUE(waitUntil([this]() { return !_render->getStatus().error.empty(); }, "the render's failure"));
+    {
+        const ProgressiveRender::Status status = _render->getStatus();
+        EXPECT_NE(std::string::npos, status.error.find("stopped answering")) << status.error;
+        EXPECT_EQ(1u, status.stallRemakes);
+    }
+
+    _render->invalidate();
+    ASSERT_TRUE(waitUntil([this]() { return _render->getStatus().stallRemakes >= 2; }, "the remaking after the edit"));
+    {
+        const ProgressiveRender::Status status = _render->getStatus();
+        EXPECT_EQ(2u, status.stallRemakes);
+        EXPECT_TRUE(status.error.empty()) << "the edit's session failed without being made again: " << status.error;
+    }
+    ASSERT_TRUE(waitUntil([this]() { return !_render->getStatus().error.empty(); }, "the render's failure after the edit"));
+    {
+        const ProgressiveRender::Status status = _render->getStatus();
+        EXPECT_NE(std::string::npos, status.error.find("stopped answering")) << status.error;
+        EXPECT_EQ(2u, status.stallRemakes);
+    }
+
+    // The first two sessions, then the edit's two.
+    EXPECT_EQ(4u, stopper.stopNoMore().size());
+    _watchdog.setPhase("stopped render processes exit");
+    EXPECT_TRUE(stopper.continueAndReap()) << "a stopped render process outlived its session";
 }
 
 // A pass waiting on a texture export stops waiting when a change makes its engine again, and the

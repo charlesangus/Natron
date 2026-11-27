@@ -890,8 +890,12 @@ TrackerNode::buildOverlay(double time,
             double x = centerKnob->getValueAtTime(time, 0);
             double y = centerKnob->getValueAtTime(time, 1);
 
-            // A black copy drawn at the same position, not a pen shadow: the shadow offset by a pixel
-            // would show as a second outline.
+            // The black copy sits 1/256 of a pixel right of and below the colour one, not a pen
+            // shadow a whole pixel off, which would show as a second outline. On the viewer's
+            // pixel-snapped projection the box and point edges land exactly on pixel centres, so
+            // that tiny shift still moves the black copy one pixel past the colour one at the right
+            // end of the horizontal bar and under the centre point, as the immediate-mode drawing
+            // did.
             pen.setShadow(false);
             pen.setSmoothPoints(false);
             pen.pointSize(POINT_SIZE);
@@ -900,16 +904,25 @@ TrackerNode::buildOverlay(double time,
             // and half a pixel longer at each end. Filled boxes keep that weight.
             const double crossHalfLength = CROSS_SIZE + 0.5;
             const double crossHalfWidth = (1.5 + 1.) / 2.;
-            for (int l = 0; l < 2; ++l) {
-                if (l == 0) {
-                    pen.color(0., 0., 0., 1.);
-                } else {
-                    pen.color(thisMarkerColor[0], thisMarkerColor[1], thisMarkerColor[2], 1.);
-                }
-                pen.point(x, y);
-                pen.anchoredShape(x, y, OverlayDrawList::AnchoredShape::filledBox(crossHalfLength, crossHalfWidth));
-                pen.anchoredShape(x, y, OverlayDrawList::AnchoredShape::filledBox(crossHalfWidth, crossHalfLength));
-            }
+            const double nudge = 1. / 256.;
+            const auto nudgedBox = [nudge](double halfWidth, double halfHeight) {
+                const std::vector<OverlayDrawList::Point> corners = {
+                    OverlayDrawList::Point { -halfWidth + nudge, -halfHeight - nudge },
+                    OverlayDrawList::Point { halfWidth + nudge, -halfHeight - nudge },
+                    OverlayDrawList::Point { halfWidth + nudge, halfHeight - nudge },
+                    OverlayDrawList::Point { -halfWidth + nudge, halfHeight - nudge },
+                };
+
+                return OverlayDrawList::AnchoredShape::glyphOf(corners, OverlayDrawList::eGlyphModePolygon);
+            };
+            pen.color(0., 0., 0., 1.);
+            pen.anchoredShape(x, y, nudgedBox(POINT_SIZE / 2., POINT_SIZE / 2.));
+            pen.anchoredShape(x, y, nudgedBox(crossHalfLength, crossHalfWidth));
+            pen.anchoredShape(x, y, nudgedBox(crossHalfWidth, crossHalfLength));
+            pen.color(thisMarkerColor[0], thisMarkerColor[1], thisMarkerColor[2], 1.);
+            pen.point(x, y);
+            pen.anchoredShape(x, y, OverlayDrawList::AnchoredShape::filledBox(crossHalfLength, crossHalfWidth));
+            pen.anchoredShape(x, y, OverlayDrawList::AnchoredShape::filledBox(crossHalfWidth, crossHalfLength));
         } else {
             const QPointF center(centerKnob->getValueAtTime(time, 0),
                                  centerKnob->getValueAtTime(time, 1));

@@ -686,6 +686,13 @@ future core work has solid ground to build on.
 | M611 | USDToGeo Source Controls | doing | M358 | bosley-executor | E9 | F42 | | [M611-usdtogeo-source-controls.md](PLAN/MILESTONES/M611-usdtogeo-source-controls.md) |
 | M612 | USDGeoModify Node | todo | M609, M610, M611, M159 |  | E9 | F42 | | [M612-usdgeomodify-node.md](PLAN/MILESTONES/M612-usdgeomodify-node.md) |
 | M613 | Geometry Node Handles Rollout | todo | M604 |  | E28 |  | | [M613-geometry-node-handles-rollout.md](PLAN/MILESTONES/M613-geometry-node-handles-rollout.md) |
+| M628 | Texture Budget For Small Devices | todo | - |  | E9 | M628-texture-budget-for-small-devices.md | | [automatic GPU texture budget](PLAN/MILESTONES/automatic GPU texture budget) |
+| M629 | Stable USDRead Placeholder Digest | todo | - |  | E9 | M629-stable-usdread-placeholder-digest.md | | [Caching by a USDRead](PLAN/MILESTONES/Caching by a USDRead) |
+| M630 | Headlight Toggle Relighting | todo | - |  | E9 | M630-headlight-toggle-relighting.md | | [Turning the per-pass headlight off](PLAN/MILESTONES/Turning the per-pass headlight off) |
+| M631 | Main GUI Check Failures | todo | - |  | E2 | M631-main-gui-check-failures.md | | [m52_layer_stack fails|m600_nodes_selection fails|GUI scripts failing on main](PLAN/MILESTONES/m52_layer_stack fails|m600_nodes_selection fails|GUI scripts failing on main) |
+| M632 | Linear Input Data Refresh | todo | M299 |  | E6 | M632-linear-input-data-refresh.md | | [Input-data refresh scales](PLAN/MILESTONES/Input-data refresh scales) |
+| M633 | Shared Geometry Group Selection | todo | - |  | E9 | M633-shared-geometry-group-selection.md | | [Shared geometry group selection](PLAN/MILESTONES/Shared geometry group selection) |
+| M634 | VDB Grids In Geometry Cache | todo | M417 |  | E22 | F22 | | [M634-vdb-grids-in-geometry-cache.md](PLAN/MILESTONES/M634-vdb-grids-in-geometry-cache.md) |
 
 # Epics
 

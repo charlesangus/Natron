@@ -734,6 +734,42 @@ TEST_F(RenderContinuation, ContinuationNodeStaysOnTheCpuAndProbes)
     expectPoolDrained();
 }
 
+// A node whose GPU path renders after its continuation is a GPU candidate, and placement keeps every task it
+// depends on out of its region, so they are rendered before the scheduler probes it.
+TEST_F(RenderContinuation, ContinuationNodeWithAGpuContinuationIsAGpuCandidate)
+{
+    ContinuationTestRegistry::setProbeClaimsGpu(true);
+    ContinuationTestRegistry::setProbeSupportsGpuContinuation(true);
+    NodePtr source, control, probe;
+    ASSERT_NO_FATAL_FAILURE(buildProbe(kSubsetMask, 0, &source, &control, &probe));
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(probe, true, &run, &error)) << error;
+    const PlacementInputs inputs = makeRenderPlacementInputs(run.context);
+    ASSERT_TRUE(bool(inputs.canRenderOnGpu));
+    int probeTask = -1;
+    for (std::size_t t = 0; t < run.graph.tasks.size(); ++t) {
+        const FrameGraph::Task& task = run.graph.tasks[t];
+        if (task.key.node != probe) {
+            continue;
+        }
+        probeTask = (int)t;
+        GpuRefusal refusal;
+        refusal.reason = FrameGraph::PlacementReason::None;
+        EXPECT_TRUE(inputs.canRenderOnGpu(task, &refusal)) << refusal.detail;
+    }
+    ASSERT_GE(probeTask, 0);
+
+    placeGraph(run.graph, inputs);
+    const FrameGraph::Task& placed = run.graph.tasks[probeTask];
+    if (placed.regionId >= 0) {
+        for (int dependency : placed.dependencies) {
+            EXPECT_NE(placed.regionId, run.graph.tasks[dependency].regionId) << "dependency " << dependency;
+        }
+    }
+}
+
 TEST_F(RenderContinuation, IncrementalRequestPassReportsOnlyTheUncoveredPartOfAnOverlap)
 {
     NodePtr leaf = createNode(QString::fromUtf8(kTestPluginIDCounting));

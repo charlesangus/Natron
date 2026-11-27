@@ -68,7 +68,14 @@ extern const char* const kMainLoopGlobalName;
 extern const char* const kMainLoopsGlobalName;
 
 /**
- * @brief Puts the rfv, loop and loops objects in __main__ under their global names unless they
+ * @brief The __main__ global holding the udim object, which KnobHelper's expression scope binds to
+ * the name udim. udim.tile is RenderContextName::udimTile() in the context loop reads from, None
+ * when unset.
+ **/
+extern const char* const kMainUdimGlobalName;
+
+/**
+ * @brief Puts the rfv, loop, loops and udim objects in __main__ under their global names unless they
  * are there. The GIL must be held.
  **/
 void ensureDeclared();
@@ -89,6 +96,12 @@ PyObject* getVariable(const std::string& name, std::vector<std::string>* choiceL
  **/
 PyObject* getLoopVariable(const std::string& loopName,
                           const std::string& variable);
+
+/**
+ * @brief The variable of the udim namespace as udim gives it to the expression being evaluated on
+ * this thread: a new reference, Py_None when unset. The GIL must be held.
+ **/
+PyObject* getUdimVariable(const std::string& variable);
 
 /**
  * @brief The context loop and loops read under for an expression of knob evaluated outside a

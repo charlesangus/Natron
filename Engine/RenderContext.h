@@ -44,8 +44,9 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief A variable name in a render context. Names in different namespaces never collide:
  * the loop namespace ("loop"), a named loop's ("loops.<name>"), the option labels of a Choice
- * variable ("choiceLabels", see RFV::overlayDeclaredVariables()) and plain variables (empty
- * namespace) keep `loop.t`, `loops.a.t`, `choiceLabels.t` and `t` apart.
+ * variable ("choiceLabels", see RFV::overlayDeclaredVariables()), the UDIM tile ("udim") and plain
+ * variables (empty namespace) keep `loop.t`, `loops.a.t`, `choiceLabels.t`, `udim.tile` and `t`
+ * apart.
  **/
 struct RenderContextName {
     std::string ns;
@@ -66,6 +67,11 @@ struct RenderContextName {
     // Set by a loop's end on its own output, never seen by the loop body.
     static RenderContextName loopFold(const std::string& name);
     static RenderContextName choiceLabels(const std::string& name);
+    /**
+     * @brief The UDIM tile a node renders for, an int64 tile number from 1001 (u = (tile - 1001) % 10,
+     * v = (tile - 1001) / 10). Unset outside a render for a tile. Expressions read it as udim.tile.
+     **/
+    static RenderContextName udimTile();
 
     bool operator<(const RenderContextName& other) const
     {

@@ -416,6 +416,17 @@ public:
     }
 
     /**
+     * @brief A version of what the node puts out for UDIM tile at time in view: it changes when an
+     * edit can change that tile, and stays put for edits that change only other tiles. The default
+     * is the node's content hash with each input folded in by its udimTileVersion() instead of its
+     * own hash, so a node that does not tell tiles apart moves every tile on its own edits and
+     * passes on its inputs' per-tile changes. A node that knows which tiles an edit touches, such as
+     * a painter keeping strokes per tile, overrides it; an override reads its inputs' versions
+     * through udimTileVersion(). Any thread.
+     **/
+    virtual U64 getUdimTileHash(int tile, double time, ViewIdx view) WARN_UNUSED_RETURN;
+
+    /**
      * @brief For an effect with hash-namespaced knobs (KnobI::setHashNamespace()): the path of the
      * render settings prim they author, the renderer it names and whether the node makes it the
      * stage's active one (HashNamespaces). False when the effect authors none. Any thread.
@@ -620,6 +631,35 @@ public:
     virtual CurveContextKindEnum getCurveContextKind() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief The node the bottom of a Paint host's stroke tree merges over: input 0 by default.
+     * A host painting over an image of its own overrides it. Null for no source.
+     **/
+    virtual NodePtr getPaintTreeSource() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The node the bottom of the tree holding item merges over, which an Eraser stroke
+     * restores: getPaintTreeSource() by default. A host whose strokes form several trees, each
+     * over its own image, overrides it along with isPaintTreeRoot().
+     **/
+    virtual NodePtr getPaintTreeSourceFor(const RotoDrawableItem& item) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The node a Clone or Reveal stroke reads when its Source is the host's input inputNb
+     * rather than the strokes below it: that input by default.
+     **/
+    virtual NodePtr getPaintTreeRevealSource(const RotoDrawableItem& item, int inputNb) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether the strokes under layer form a tree of their own, merged over
+     * getPaintTreeSourceFor(item) rather than over the strokes below layer. False by default: every
+     * stroke of the context is one tree.
+     **/
+    virtual bool isPaintTreeRoot(const RotoLayer& /*layer*/) const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
      * @brief The columns and context-menu actions a curve host adds to its panel's curve list, or
      * null for none. Owned by the effect. Only read when getCurveContextKind() is not None.
      **/
@@ -640,6 +680,15 @@ public:
      * are then saved, copied and hashed with the item's own. Main thread.
      **/
     virtual void onCurveItemCreated(const RotoDrawableItemPtr& /*item*/)
+    {
+    }
+
+    /**
+     * @brief Called by any curve context when a layer other than its base layer is built, before
+     * it is cloned or loaded into: the host may add per-layer knobs with RotoLayer::addHostKnob(),
+     * which are then saved, copied and hashed with the layer. Main thread.
+     **/
+    virtual void onCurveLayerCreated(const RotoLayerPtr& /*layer*/)
     {
     }
 
@@ -1230,23 +1279,26 @@ public:
                                            double time,
                                            ViewIdx view,
                                            unsigned originalMipmapLevel,
-                                           const NodePtr & node,
+                                           const NodePtr& node,
                                            const NodePtr& callerNode,
-                                           const NodePtr & treeRoot,
-                                           const RectD & canonicalRenderWindow,
-                                           FrameRequestMap & requests);
+                                           const NodePtr& treeRoot,
+                                           const RectD& canonicalRenderWindow,
+                                           FrameRequestMap& requests,
+                                           const RenderContextPtr& rootContext = RenderContextPtr());
 
     /**
      * @brief Visit recursively the compositing tree and computes required information about region of interests for each node and
      * for each frame/view pair. This helps to call render a single time per frame/view pair for a node.
+     * treeRoot is visited under rootContext restricted to what its output reads, the empty context when null.
      * Implem is in ParallelRenderArgs.cpp
      **/
     static StatusEnum computeRequestPass(double time,
                                          ViewIdx view,
                                          unsigned int mipmapLevel,
-                                         const RectD & renderWindow,
-                                         const NodePtr & treeRoot,
-                                         FrameRequestMap & request);
+                                         const RectD& renderWindow,
+                                         const NodePtr& treeRoot,
+                                         FrameRequestMap& request,
+                                         const RenderContextPtr& rootContext = RenderContextPtr());
 
     /**
      * @brief Runs the request pass from each of roots in turn against request, which may already hold a pass's
@@ -4308,6 +4360,14 @@ public:
     }
 };
 
+/**
+ * @brief node's EffectInstance::getUdimTileHash() for tile at time in view, 0 for a null node or
+ * effect. One top-level call memoizes every (node, tile, time, view) it reaches, so a subgraph
+ * shared by several paths is walked once; the nested calls an implementation of the hook makes
+ * on the same thread share that memo. A node reached again while its own version is computed,
+ * which only a cycle causes, answers with its stored content hash. Any thread.
+ **/
+U64 udimTileVersion(const NodePtr& node, int tile, double time, ViewIdx view) WARN_UNUSED_RETURN;
 
 /**
  * @typedef Any plug-in should have a static function called BuildEffect with the following signature.

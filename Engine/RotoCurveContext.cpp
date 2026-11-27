@@ -132,6 +132,17 @@ RotoCurveContext::onItemCreated(const RotoDrawableItemPtr& item,
 }
 
 void
+RotoCurveContext::onLayerCreated(const RotoLayerPtr& layer)
+{
+    NodePtr node = getNode();
+    EffectInstancePtr effect = node ? node->getEffectInstance() : EffectInstancePtr();
+
+    if (effect) {
+        effect->onCurveLayerCreated(layer);
+    }
+}
+
+void
 RotoCurveContext::addHostItemKnob(const KnobIPtr& knob)
 {
     if (knob) {
@@ -144,6 +155,7 @@ RotoCurveContext::makeLayerCopy(const RotoLayerPtr& source)
 {
     // clone() needs the layer owned by a shared_ptr, so it runs after construction.
     RotoLayerPtr copy(new RotoLayer(shared_from_this(), source->getScriptName(), RotoLayerPtr()));
+    onLayerCreated(copy);
     copy->clone(source.get());
 
     return copy;
@@ -258,6 +270,7 @@ RotoCurveContext::addLayerInternal(bool declarePython,
 
         item.reset(new RotoLayer(this_shared, name, RotoLayerPtr()));
         if (parentLayer) {
+            onLayerCreated(item);
             parentLayer->addItem(item, declarePython);
             indexInLayer = parentLayer->getItems().size() - 1;
         }
@@ -287,6 +300,8 @@ RotoCurveContext::addLayer()
 void
 RotoCurveContext::addLayer(const RotoLayerPtr& layer)
 {
+    // getBaseLayer() reads the list from render and bake threads.
+    QMutexLocker l(&_imp->rotoContextMutex);
     std::list<RotoLayerPtr>::iterator it = std::find(_imp->layers.begin(), _imp->layers.end(), layer);
 
     if (it == _imp->layers.end()) {
@@ -674,6 +689,14 @@ RotoCurveContext::getLayers() const
     assert(QThread::currentThread() == qApp->thread());
 
     return _imp->layers;
+}
+
+RotoLayerPtr
+RotoCurveContext::getBaseLayer() const
+{
+    QMutexLocker l(&_imp->rotoContextMutex);
+
+    return _imp->layers.empty() ? RotoLayerPtr() : _imp->layers.front();
 }
 
 BezierPtr
@@ -2847,13 +2870,7 @@ RotoCurveContext::getContentHash() const
 {
     // Renders walk the base layer only (getCurvesByRenderOrder()); the other entries of
     // _imp->layers are nested in it.
-    RotoLayerPtr base;
-    {
-        QMutexLocker l(&_imp->rotoContextMutex);
-        if (!_imp->layers.empty()) {
-            base = _imp->layers.front();
-        }
-    }
+    RotoLayerPtr base = getBaseLayer();
 
     ContentHasher h;
     h.appendBool(bool(base));
@@ -3487,6 +3504,7 @@ RotoCurveContext::pasteSerialization(const Serialization::RotoContextSerializati
             }
             case Serialization::eRotoLayerChildTypeLayer: {
                 RotoLayerPtr copy(new RotoLayer(thisShared, kRotoLayerBaseName, RotoLayerPtr()));
+                onLayerCreated(copy);
                 copy->fromSerialization(it->layer);
                 item = copy;
                 break;

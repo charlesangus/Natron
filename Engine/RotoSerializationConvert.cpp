@@ -327,6 +327,10 @@ RotoLayer::toSerialization(Serialization::RotoLayerSerialization* serialization)
         serialization->knobs.push_back(Serialization::KnobSerialization());
         knob->toSerialization(&serialization->knobs.back());
     }
+    for (const KnobIPtr& knob : _imp->hostKnobs) {
+        serialization->knobs.push_back(Serialization::KnobSerialization());
+        knob->toSerialization(&serialization->knobs.back());
+    }
 
     serialization->children.clear();
     for (RotoItems::const_iterator it = items.begin(); it != items.end(); ++it) {
@@ -359,18 +363,30 @@ RotoLayer::fromSerialization(const Serialization::RotoLayerSerialization& serial
     assert(thisLayer);
     RotoItem::fromSerialization(serialization);
     for (const Serialization::KnobSerialization& saved : serialization.knobs) {
-        for (const KnobIPtr& knob : _imp->knobs) {
-            if (knob->getName() != saved.name) {
-                continue;
+        KnobIPtr knob;
+        for (const KnobIPtr& transformKnob : _imp->knobs) {
+            if (transformKnob->getName() == saved.name) {
+                knob = transformKnob;
+                break;
             }
-            KnobIPtr savedKnob = createDetachedKnobFromSerialization(completeKnobSerializationForKnob(*knob, saved));
-            if (savedKnob) {
-                KnobSignalSlotHandlerPtr handler = knob->getSignalSlotHandler();
-                handler->blockSignals(true);
-                knob->clone(savedKnob.get());
-                handler->blockSignals(false);
-            }
-            break;
+        }
+        if (!knob) {
+            knob = getHostKnobByName(NATRON_PYTHON_NAMESPACE::makeNameScriptFriendly(saved.name));
+        }
+        if (!knob) {
+            continue;
+        }
+        KnobIPtr savedKnob = createDetachedKnobFromSerialization(completeKnobSerializationForKnob(*knob, saved));
+        if (!savedKnob) {
+            continue;
+        }
+        KnobSignalSlotHandlerPtr handler = knob->getSignalSlotHandler();
+        if (handler) {
+            handler->blockSignals(true);
+        }
+        knob->clone(savedKnob.get());
+        if (handler) {
+            handler->blockSignals(false);
         }
     }
     for (std::list<Serialization::RotoLayerChildSerialization>::const_iterator it = serialization.children.begin(); it != serialization.children.end(); ++it) {
@@ -399,6 +415,7 @@ RotoLayer::fromSerialization(const Serialization::RotoLayerSerialization& serial
         }
         case Serialization::eRotoLayerChildTypeLayer: {
             RotoLayerPtr layer(new RotoLayer(getContext(), kRotoLayerBaseName, thisLayer));
+            getContext()->onLayerCreated(layer);
             _imp->items.push_back(layer);
             getContext()->addLayer(layer);
             layer->fromSerialization(it->layer);

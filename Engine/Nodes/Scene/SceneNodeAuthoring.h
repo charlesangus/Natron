@@ -148,6 +148,14 @@ std::string getAnchoredFilePath(const KnobFilePtr& knob);
  * the project's frame range. False when nothing is connected. A node keys its layer on these (appendLiveTextureSource) and
  * authors them through recordLiveTexture().
  *
+ * With udimError not null, the source's tiles are read from the connected image's
+ * kNatronMetadataKeyUdimTiles metadata: a static image's at the consumer's current time held to
+ * the frame range, a varying image's at every frame of the range. A varying image is a UDIM set
+ * when any frame declares tiles; its frameTiles then hold each frame's, and its
+ * missingTilesWarning names the frames without. With no tiles, a declaration that does not parse
+ * leaves the source a single texture and sets udimError to the reason, empty otherwise. With
+ * udimError null, tiles are not read and the source is always a single texture.
+ *
  * An empty input whose source was deleted (recordDeletedTextureSource) has a source too, with a null
  * node and content hash 0, which no rendered image's URI has: it fails to render as any texture whose
  * node is gone does, so every renderer shows it as missing and the consumer warns, naming the node.
@@ -155,7 +163,8 @@ std::string getAnchoredFilePath(const KnobFilePtr& knob);
 bool getLiveTextureSource(const EffectInstance& consumer,
                           int inputNb,
                           const std::string& layer,
-                          LiveTextureSource* source);
+                          LiveTextureSource* source,
+                          std::string* udimError = nullptr);
 
 /**
  * @brief Why source, from getLiveTextureSource(), shows kLiveTextureMissingColour at time, or empty
@@ -190,10 +199,21 @@ void appendLiveTextureSource(const LiveTextureSource& source,
 /**
  * @brief Records source as authored in edit's layer, over edit's frames, and returns it as
  * recorded: its getUri(frame) is what the layer authors at frame, and its getWindow(frame) where
- * that texture lies over the image, found without rendering.
+ * that texture lies over the image, found without rendering. A varying UDIM source's
+ * getTiles(frame) is the set its image declares at frame, which can differ between frames.
  **/
 LiveTextureSource recordLiveTexture(const SceneLayerEdit& edit,
                                     const LiveTextureSource& source);
+
+/**
+ * @brief What a consumer of source says of its live texture at time, on every evaluation: the
+ * store's reason it could not be rendered, a UDIM set's failed tiles showing magenta, the tiles
+ * above what USD reads and the frames without tiles. time is held to the source's frames, as its
+ * URIs are. A consumer's LiveTextureStore::prepare() warns once, and an
+ * evaluation clears its messages, so the consumer repeats these.
+ **/
+std::vector<std::string> getLiveTextureWarnings(const LiveTextureSource& source,
+                                                double time);
 
 // True when the window of recorded changes over the frames it was recorded for.
 bool liveTextureWindowVaries(const LiveTextureSource& recorded);

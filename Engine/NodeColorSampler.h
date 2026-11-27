@@ -54,6 +54,23 @@ ImagePtr renderNodeImage(const NodePtr& node,
                          const AbortableRenderInfoPtr& abortInfo = AbortableRenderInfoPtr());
 
 /**
+ * @brief As renderNodeImage(), but telling an empty result from a failure: returns true with a
+ * null *image, and an empty renderedRect, when pixelRect misses the region of definition or the
+ * node has nothing to draw there, such as a layer it neither produces nor passes through, so that
+ * the pixels are all transparent black; false in the other cases renderNodeImage() returns NULL,
+ * an aborted render among them.
+ **/
+bool renderNodeImageIfAny(const NodePtr& node,
+                          double time,
+                          ViewIdx view,
+                          unsigned int mipmapLevel,
+                          const RectI& pixelRect,
+                          const ImageLayerDesc& layer,
+                          ImagePtr* image,
+                          RectI* renderedRect,
+                          const AbortableRenderInfoPtr& abortInfo = AbortableRenderInfoPtr()) WARN_UNUSED_RETURN;
+
+/**
  * @brief The node whose image node renders at time: node itself, or, for a disabled node, the first
  * enabled node along its pass-through inputs, as the engine renders a disabled node. The render
  * functions here decline a disabled node, so a caller rendering an input resolves it first.
@@ -84,8 +101,14 @@ bool getNodeImageWindow(const NodePtr& node,
  * rendered.
  *
  * Returns false in the cases sampleNodeColor() returns false. Returns true with a null image when the
- * region of definition misses window: it is then all transparent black. abortInfo stops the render as
- * for renderNodeImage().
+ * region of definition misses window: it is then all transparent black.
+ *
+ * node renders under context restricted to what its output reads, as an input pulled under it
+ * would, so its upstream nodes render under the part of it each reads: under {udimTile: N} only
+ * what reads RenderContextName::udimTile() renders per tile. A null or empty context renders as the
+ * viewer does. Its actions, the region of definition included, answer under that context too.
+ *
+ * abortInfo stops the render as for renderNodeImage().
  **/
 bool renderNodeImageOverWindow(const NodePtr& node,
                                double time,
@@ -94,6 +117,7 @@ bool renderNodeImageOverWindow(const NodePtr& node,
                                const RectI& window,
                                ImagePtr* image,
                                RectI* renderedRect,
+                               const RenderContextPtr& context = RenderContextPtr(),
                                const AbortableRenderInfoPtr& abortInfo = AbortableRenderInfoPtr());
 
 /**

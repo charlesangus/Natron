@@ -68,6 +68,9 @@
 #define kNatronMetadataKeyExposureTime "natron/exposuretime"
 #define kNatronMetadataKeySlateInfo "natron/slateinfo"
 #define kNatronMetadataKeyViewNames "natron/viewnames"
+// The UDIM tiles a texture source covers: an int, an int vector, or a string such as
+// "1001-1004,1011" (see parseUdimTiles()).
+#define kNatronMetadataKeyUdimTiles "natron/udimTiles"
 
 NATRON_NAMESPACE_ENTER
 
@@ -176,6 +179,15 @@ private:
 
     std::shared_ptr<Map> _data;
 };
+
+/**
+ * @brief Parses a kNatronMetadataKeyUdimTiles value into tiles, sorted and without duplicates.
+ * Accepts an int, an int vector, or a string of comma-separated tiles and inclusive ranges
+ * ("1001-1004,1011", blanks allowed around items), since MetadataModify sets no vectors. Every
+ * tile must be in [1001, 9999]. Returns false, leaving tiles empty and setting error when not
+ * null, for any other type, an empty declaration, a malformed item or a reversed range.
+ **/
+bool parseUdimTiles(const ImageMetadata::Value& value, std::vector<int>* tiles, std::string* error);
 
 NATRON_NAMESPACE_EXIT
 

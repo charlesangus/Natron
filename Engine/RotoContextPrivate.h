@@ -842,11 +842,13 @@ struct RotoLayerPrivate
     RotoItems items;
     RotoTransformKnobs transform;
     std::list<KnobIPtr> knobs;
+    std::list<KnobIPtr> hostKnobs;
 
     RotoLayerPrivate()
         : items()
         , transform()
         , knobs()
+        , hostKnobs()
     {
         transform.create(&knobs);
     }

@@ -4614,6 +4614,16 @@ Project::fixFilePath(const std::string& projectPathName,
          || ( filePath.substr( 1, projectPathName.size() ) != projectPathName) ) {
         return false;
     }
+    {
+        // Until the variable points somewhere, such as before a new project's first save, the
+        // path names no folder to keep: it stays relative to wherever the variable comes to point.
+        std::map<std::string, std::string> env;
+        getEnvironmentVariables(env);
+        const std::map<std::string, std::string>::const_iterator current = env.find(projectPathName);
+        if ((current == env.end()) || current->second.empty()) {
+            return false;
+        }
+    }
 
     canonicalizePath(filePath);
 

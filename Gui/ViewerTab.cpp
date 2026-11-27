@@ -50,6 +50,7 @@
 #include "Engine/Nodes/Scene/SceneReparentNode.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDEditTransform.h"
+#include "Engine/Nodes/Scene/USDTexturePaint.h"
 #include "Engine/OutputSchedulerThread.h" // RenderEngine
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
@@ -1593,6 +1594,24 @@ ViewerTab::onActiveInputDataKindChanged()
             return NodePtr();
         };
         _imp->sceneViewport->setTransformNodeProvider(openEditNode);
+        // The USDTexturePaint whose settings panel was opened last.
+        _imp->sceneViewport->setPaintNodeProvider([this]() -> NodePtr {
+            Gui* gui = getGui();
+            if (!gui) {
+                return NodePtr();
+            }
+            const std::list<DockablePanel*> panels = gui->getVisiblePanels_mt_safe();
+            for (DockablePanel* dockable : panels) {
+                NodeSettingsPanel* panel = dynamic_cast<NodeSettingsPanel*>(dockable);
+                NodeGuiPtr nodeGui = panel ? panel->getNode() : NodeGuiPtr();
+                NodePtr panelNode = nodeGui ? nodeGui->getNode() : NodePtr();
+                if (panelNode && panelNode->isActivated() && (panelNode->getPluginID() == PLUGINID_NATRON_USDTEXTUREPAINT)) {
+                    return panelNode;
+                }
+            }
+
+            return NodePtr();
+        });
         _imp->sceneViewport->setViewedNodeProvider([this]() -> NodePtr {
             return getSceneViewedNode();
         });

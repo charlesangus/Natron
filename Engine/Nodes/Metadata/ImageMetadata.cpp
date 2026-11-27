@@ -25,6 +25,7 @@
 
 #include "ImageMetadata.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 
@@ -406,6 +407,162 @@ bool
 ImageMetadata::sharesStorageWith(const ImageMetadata& other) const
 {
     return _data == other._data;
+}
+
+namespace {
+const long long kUdimTileMin = 1001;
+const long long kUdimTileMax = 9999;
+
+bool
+failUdimTiles(std::vector<int>* tiles,
+              std::string* error,
+              const std::string& message)
+{
+    tiles->clear();
+    if (error) {
+        *error = message;
+    }
+
+    return false;
+}
+
+bool
+isUdimBlank(char c)
+{
+    return (c == ' ') || (c == '\t') || (c == '\n') || (c == '\r');
+}
+
+void
+skipUdimBlanks(const std::string& text,
+               std::size_t* pos)
+{
+    while ((*pos < text.size()) && isUdimBlank(text[*pos])) {
+        ++*pos;
+    }
+}
+
+// Stops accumulating past the largest tile, so a long run of digits cannot overflow.
+bool
+readUdimNumber(const std::string& text,
+               std::size_t* pos,
+               long long* number)
+{
+    const std::size_t start = *pos;
+    long long n = 0;
+
+    while ((*pos < text.size()) && (text[*pos] >= '0') && (text[*pos] <= '9')) {
+        if (n <= kUdimTileMax) {
+            n = n * 10 + (text[*pos] - '0');
+        }
+        ++*pos;
+    }
+    *number = n;
+
+    return *pos > start;
+}
+
+bool
+isUdimTile(long long tile)
+{
+    return (tile >= kUdimTileMin) && (tile <= kUdimTileMax);
+}
+
+std::string
+udimTileRangeMessage(long long tile)
+{
+    return "UDIM tile " + std::to_string(tile) + " is outside [1001, 9999]";
+}
+
+bool
+parseUdimTileString(const std::string& text,
+                    std::vector<int>* tiles,
+                    std::string* error)
+{
+    std::size_t pos = 0;
+
+    for (;;) {
+        const std::size_t itemStart = pos;
+        std::size_t itemEnd = text.find(',', pos);
+        if (itemEnd == std::string::npos) {
+            itemEnd = text.size();
+        }
+        const std::string item = text.substr(itemStart, itemEnd - itemStart);
+        std::size_t at = 0;
+        long long first = 0;
+        long long last = 0;
+        skipUdimBlanks(item, &at);
+        if (!readUdimNumber(item, &at, &first)) {
+            return failUdimTiles(tiles, error, "malformed UDIM tile item \"" + item + "\"");
+        }
+        last = first;
+        skipUdimBlanks(item, &at);
+        if ((at < item.size()) && (item[at] == '-')) {
+            ++at;
+            skipUdimBlanks(item, &at);
+            if (!readUdimNumber(item, &at, &last)) {
+                return failUdimTiles(tiles, error, "malformed UDIM tile range \"" + item + "\"");
+            }
+            skipUdimBlanks(item, &at);
+        }
+        if (at != item.size()) {
+            return failUdimTiles(tiles, error, "malformed UDIM tile item \"" + item + "\"");
+        }
+        if (!isUdimTile(first)) {
+            return failUdimTiles(tiles, error, udimTileRangeMessage(first));
+        }
+        if (!isUdimTile(last)) {
+            return failUdimTiles(tiles, error, udimTileRangeMessage(last));
+        }
+        if (last < first) {
+            return failUdimTiles(tiles, error, "reversed UDIM tile range \"" + item + "\"");
+        }
+        for (long long tile = first; tile <= last; ++tile) {
+            tiles->push_back((int)tile);
+        }
+        if (itemEnd == text.size()) {
+            return true;
+        }
+        pos = itemEnd + 1;
+    }
+}
+} // anon
+
+bool
+parseUdimTiles(const ImageMetadata::Value& value,
+               std::vector<int>* tiles,
+               std::string* error)
+{
+    tiles->clear();
+    if (const int* tile = std::get_if<int>(&value)) {
+        tiles->push_back(*tile);
+    } else if (const std::vector<int>* list = std::get_if<std::vector<int>>(&value)) {
+        *tiles = *list;
+    } else if (const std::string* text = std::get_if<std::string>(&value)) {
+        bool blank = true;
+        for (char c : *text) {
+            blank = blank && isUdimBlank(c);
+        }
+        if (blank) {
+            return failUdimTiles(tiles, error, "the UDIM tile list is empty");
+        }
+        if (!parseUdimTileString(*text, tiles, error)) {
+            return false;
+        }
+    } else {
+        return failUdimTiles(tiles, error, "UDIM tiles must be an int, an int vector or a string");
+    }
+    if (tiles->empty()) {
+        return failUdimTiles(tiles, error, "the UDIM tile list is empty");
+    }
+    for (int tile : *tiles) {
+        if (!isUdimTile(tile)) {
+            return failUdimTiles(tiles, error, udimTileRangeMessage(tile));
+        }
+    }
+    std::sort(tiles->begin(), tiles->end());
+    tiles->erase(std::unique(tiles->begin(), tiles->end()), tiles->end());
+
+    return true;
 }
 
 NATRON_NAMESPACE_EXIT

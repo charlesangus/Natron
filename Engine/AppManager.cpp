@@ -171,6 +171,7 @@
 #include "Engine/Nodes/Scene/SceneCaches.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneTeardown.h"
+#include "Engine/Nodes/Scene/USDTexturePaintBaker.h"
 #include "Engine/Nodes/Test/OverlayImageGuiTestNode.h"
 #include "Engine/Nodes/Test/OverlayTestNode.h"
 
@@ -837,6 +838,12 @@ AppManager::~AppManager()
             appsEmpty = _imp->_appInstances.empty();
         }
     }
+
+    // No event loop deletes retired bakers or lands bakes any more: every USDTexturePaint bake is
+    // stopped and joined here, the files of those that never landed go back, and every file step
+    // runs whole, while the plug-ins and statics they use still exist.
+    setTeardownStage("stopping the texture paint bakers");
+    USDTexturePaintBaker::shutdownAll();
 
     // The nodes are gone, so every scene job is cancelled; they read the caches, Python and the
     // QApplication torn down below. Bounded: a job stuck past it is left to the process exit.

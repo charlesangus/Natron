@@ -844,14 +844,13 @@ RemoveCurveUndoCommand::redo()
 
 ////////////////////////////////
 
-
-AddStrokeUndoCommand::AddStrokeUndoCommand(const RotoPaintInteractPtr& roto,
+AddStrokeUndoCommand::AddStrokeUndoCommand(const RotoCurveInteractPtr& roto,
                                            const RotoStrokeItemPtr& item)
     : UndoCommand()
     , _roto(roto)
     , _firstRedoCalled(false)
     , _item(item)
-    , _layer( item->getParentLayer() )
+    , _layer(item->getParentLayer())
     , _indexInLayer(_layer ? _layer->getChildIndex(_item) : -1)
 {
     assert(_indexInLayer != -1);
@@ -865,7 +864,7 @@ AddStrokeUndoCommand::~AddStrokeUndoCommand()
 void
 AddStrokeUndoCommand::undo()
 {
-    RotoPaintInteractPtr roto = _roto.lock();
+    RotoCurveInteractPtr roto = _roto.lock();
 
     if (!roto) {
         return;
@@ -878,14 +877,14 @@ AddStrokeUndoCommand::undo()
 void
 AddStrokeUndoCommand::redo()
 {
-    RotoPaintInteractPtr roto = _roto.lock();
+    RotoCurveInteractPtr roto = _roto.lock();
 
     if (!roto) {
         return;
     }
 
     if (_firstRedoCalled) {
-        roto->getContext()->addItem(_layer, _indexInLayer, _item, RotoItem::eSelectionReasonOverlayInteract);
+        roto->getCurveContext()->addItem(_layer, _indexInLayer, _item, RotoItem::eSelectionReasonOverlayInteract);
     }
     if (_firstRedoCalled) {
         roto->evaluate(true);
@@ -893,13 +892,13 @@ AddStrokeUndoCommand::redo()
     _firstRedoCalled = true;
 }
 
-AddMultiStrokeUndoCommand::AddMultiStrokeUndoCommand(const RotoPaintInteractPtr& roto,
+AddMultiStrokeUndoCommand::AddMultiStrokeUndoCommand(const RotoCurveInteractPtr& roto,
                                                      const RotoStrokeItemPtr& item)
     : UndoCommand()
     , _roto(roto)
     , _firstRedoCalled(false)
     , _item(item)
-    , _layer( item->getParentLayer() )
+    , _layer(item->getParentLayer())
     , _indexInLayer(_layer ? _layer->getChildIndex(_item) : -1)
     , isRemoved(false)
 {
@@ -914,7 +913,7 @@ AddMultiStrokeUndoCommand::~AddMultiStrokeUndoCommand()
 void
 AddMultiStrokeUndoCommand::undo()
 {
-    RotoPaintInteractPtr roto = _roto.lock();
+    RotoCurveInteractPtr roto = _roto.lock();
 
     if (!roto) {
         return;
@@ -931,7 +930,7 @@ AddMultiStrokeUndoCommand::undo()
 void
 AddMultiStrokeUndoCommand::redo()
 {
-    RotoPaintInteractPtr roto = _roto.lock();
+    RotoCurveInteractPtr roto = _roto.lock();
 
     if (!roto) {
         return;
@@ -942,7 +941,7 @@ AddMultiStrokeUndoCommand::redo()
             _item->addStroke(_xCurve, _yCurve, _pCurve);
         }
         if (isRemoved) {
-            roto->getContext()->addItem(_layer, _indexInLayer, _item, RotoItem::eSelectionReasonOverlayInteract);
+            roto->getCurveContext()->addItem(_layer, _indexInLayer, _item, RotoItem::eSelectionReasonOverlayInteract);
         }
         roto->evaluate(true);
     }

@@ -27,6 +27,8 @@
 
 #include <algorithm>
 #include <list>
+#include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -45,6 +47,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/Ai/ModelDownloader.h"
 #include "Engine/Ai/ModelRegistry.h"
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
@@ -53,10 +56,14 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/LayerRegistry.h"
+#include "Engine/LibraryBinary.h"
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/NodeSpec.h"
 #include "Engine/OutputEffectInstance.h"
+#include "Engine/Plugin.h"
 #include "Engine/Project.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoLayer.h"
@@ -125,6 +132,84 @@ expectFixtureSpecular(const FlatExrImage& image)
     expectChannelEverywhere(image, "specular.R", 0.f);
     expectChannelEverywhere(image, "specular.G", 0.f);
     expectChannelEverywhere(image, "specular.B", 1.f);
+}
+
+#define kTestPluginIDPaintHost "test.natron.built-in.PaintHost"
+
+// A Paint host whose stroke tree merges over a node of its own, not over its input 0.
+class PaintHostTestEffect
+    : public NativeEffectBase {
+public:
+    static NodePtr& paintSource()
+    {
+        static NodePtr source;
+
+        return source;
+    }
+
+    static EffectInstance* BuildEffect(NodePtr n)
+    {
+        return new PaintHostTestEffect(n);
+    }
+
+    explicit PaintHostTestEffect(NodePtr n)
+        : NativeEffectBase(n)
+    {
+    }
+
+    virtual bool getMakeSettingsPanel() const OVERRIDE FINAL { return false; }
+
+    virtual CurveContextKindEnum getCurveContextKind() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return eCurveContextKindPaint;
+    }
+
+    virtual NodePtr getPaintTreeSource() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return paintSource();
+    }
+
+private:
+    static constexpr InputSpec kInputs[] = {
+        InputSpec { .label = "Source", .kind = eDataKindImage, .optional = true },
+    };
+
+    static constexpr NodeSpec kNodeSpec = {
+        .id = kTestPluginIDPaintHost,
+        .label = "Test Paint Host",
+        .outputKind = eDataKindImage,
+        .inputs = kInputs,
+    };
+
+    virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return staticNodeSpec<kNodeSpec>();
+    }
+};
+
+void
+registerPaintHostTestEffectOnce()
+{
+    static std::once_flag once;
+
+    std::call_once(once, []() {
+        EffectInstancePtr node(PaintHostTestEffect::BuildEffect(NodePtr()));
+        std::map<std::string, void (*)()> functions;
+
+        functions.insert(std::make_pair("BuildEffect", (void (*)())&PaintHostTestEffect::BuildEffect));
+        LibraryBinary* binary = new LibraryBinary(functions);
+
+        std::list<std::string> grouping;
+        node->getPluginGrouping(&grouping);
+        QStringList qgrouping;
+        for (std::list<std::string>::iterator it = grouping.begin(); it != grouping.end(); ++it) {
+            qgrouping.push_back(QString::fromUtf8(it->c_str()));
+        }
+
+        Plugin* p = appPTR->registerPlugin(QString(), qgrouping, QString::fromUtf8(node->getPluginID().c_str()), QString::fromUtf8(node->getPluginLabel().c_str()),
+                                           QString::fromUtf8(""), QStringList(), node->isReader(), node->isWriter(), binary, node->renderThreadSafety() == eRenderSafetyUnsafe, node->getMajorVersion(), node->getMinorVersion(), false);
+        p->setLabelWithoutSuffix(Plugin::makeLabelWithoutSuffix(p->getPluginLabel()));
+    });
 }
 
 } // namespace
@@ -990,5 +1075,44 @@ TEST_F(RotoLayerTest, NewCloneAndRevealStrokesCompositeOverWithoutChangingOtherT
     EXPECT_EQ(over, strokeOperator(unpaintedReveal));
     EXPECT_EQ(over, strokeMergeOperator(unpaintedReveal));
 
+    project->reset(false, true);
+}
+
+TEST_F(RotoLayerTest, PaintHostStrokeTreeMergesOverTheHostSuppliedSource)
+{
+    ProjectPtr project = getApp()->getProject();
+
+    project->reset(false, true);
+    registerPaintHostTestEffectOnce();
+
+    NodePtr hostSource = createNode(QString::fromUtf8("Constant"));
+    NodePtr inputZero = createNode(QString::fromUtf8("Constant"));
+    ASSERT_TRUE(hostSource && inputZero);
+    PaintHostTestEffect::paintSource() = hostSource;
+
+    NodePtr host = createNode(QString::fromUtf8(kTestPluginIDPaintHost));
+    ASSERT_TRUE(bool(host));
+    connectNodes(inputZero, host, 0, true);
+    RotoContextPtr paint = host->getRotoContext();
+    ASSERT_TRUE(bool(paint));
+
+    BezierPtr square = addSquare(host);
+    ASSERT_TRUE(bool(square));
+
+    NodePtr merge = paint->getRotoPaintBottomMergeNode();
+    ASSERT_TRUE(bool(merge));
+    int merges = 0;
+    while (merge && (merges < 8) && (merge->getPluginID() == PLUGINID_NATRON_NATIVE_MERGE)) {
+        merge = merge->getInput(0);
+        ++merges;
+    }
+    EXPECT_EQ(hostSource, merge);
+    EXPECT_NE(inputZero, merge);
+
+    NodePtr itemMerge = square->getMergeNode();
+    ASSERT_TRUE(bool(itemMerge));
+    EXPECT_NE(inputZero, itemMerge->getInput(0));
+
+    PaintHostTestEffect::paintSource().reset();
     project->reset(false, true);
 }

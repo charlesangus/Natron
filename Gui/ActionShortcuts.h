@@ -455,6 +455,9 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionViewer3DCreateFromSelection "createNodeFromSelection"
 #define kShortcutDescActionViewer3DCreateFromSelection "Create Node from Selection"
 
+#define kShortcutIDActionViewer3DBakePaint "bakePaint"
+#define kShortcutDescActionViewer3DBakePaint "Bake Paint"
+
 #define kShortcutIDActionViewer3DDrawChildren "drawStateChildren"
 #define kShortcutDescActionViewer3DDrawChildren "Draw Children"
 

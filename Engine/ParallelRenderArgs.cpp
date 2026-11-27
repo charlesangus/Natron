@@ -1360,10 +1360,11 @@ EffectInstance::getInputsRoIsFunctor(bool useTransforms,
                                      const NodePtr& /*callerNode*/,
                                      const NodePtr& /*treeRoot*/,
                                      const RectD& canonicalRenderWindow,
-                                     FrameRequestMap& requests)
+                                     FrameRequestMap& requests,
+                                     const RenderContextPtr& rootContext)
 {
-    // The root renders under the empty context.
-    const std::vector<RequestPassItem> roots(1, makeVisitItem(node, RenderContextPtr(), time, view, originalMipmapLevel, canonicalRenderWindow));
+    // The root renders under rootContext, the empty context when null.
+    const std::vector<RequestPassItem> roots(1, makeVisitItem(node, rootContext, time, view, originalMipmapLevel, canonicalRenderWindow));
 
     return runRequestPass(useTransforms, roots, requests, 0);
 } // EffectInstance::getInputsRoIsFunctor
@@ -1558,7 +1559,8 @@ EffectInstance::computeRequestPass(double time,
                                    unsigned int mipmapLevel,
                                    const RectD& renderWindow,
                                    const NodePtr& treeRoot,
-                                   FrameRequestMap& request)
+                                   FrameRequestMap& request,
+                                   const RenderContextPtr& rootContext)
 {
     bool doTransforms = appPTR->getCurrentSettings()->isTransformConcatenationEnabled();
     StatusEnum stat = getInputsRoIsFunctor(doTransforms,
@@ -1569,7 +1571,8 @@ EffectInstance::computeRequestPass(double time,
                                            treeRoot,
                                            treeRoot,
                                            renderWindow,
-                                           request);
+                                           request,
+                                           rootContext);
 
     if (stat == eStatusFailed) {
         return stat;

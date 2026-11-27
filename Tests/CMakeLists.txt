@@ -92,6 +92,11 @@ set(Tests_SOURCES
     GeoSpreadsheet_Test.cpp
     GeoSubdivide_Test.cpp
     GeoTransform_Test.cpp
+    GeoUVFlatten_Test.cpp
+    GeoUVFlattenSolver_Test.cpp
+    GeoUVIslands_Test.cpp
+    GeoUVLayout_Test.cpp
+    GeoUVPack_Test.cpp
     GeoUVProject_Test.cpp
     GeoWrangleParams_Test.cpp
     GeoWrangle_Test.cpp

@@ -3188,6 +3188,13 @@ KnobTable::removeRow(int index)
     setTable(table);
 }
 
+const std::string KnobRowTable::_typeNameStr("RowTable");
+const std::string&
+KnobRowTable::typeNameStatic()
+{
+    return _typeNameStr;
+}
+
 const std::string KnobLayers::_typeNameStr("Layers");
 const std::string&
 KnobLayers::typeNameStatic()

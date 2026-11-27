@@ -32,7 +32,8 @@ GEOMETRY_IDS = [
     "GeoGroup", "GeoImportOBJ", "GeoMerge",
     "GeoNormals", "GeoPrimitive", "GeoPython",
     "GeoScatter", "GeoSubdivide", "GeoToUSD",
-    "GeoTransform", "GeoUVProject", "GeoWrangle",
+    "GeoTransform", "GeoUVFlatten", "GeoUVLayout",
+    "GeoUVProject", "GeoWrangle",
     "USDToGeo",
 ]
 

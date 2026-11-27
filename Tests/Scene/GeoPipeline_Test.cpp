@@ -784,13 +784,13 @@ TEST_F(GeoPipelineTest, TheSpreadsheetListsTheUVsGeoUVProjectWrites)
     EXPECT_GT(source.rowCount(eGeoAttribClassVertex), 0);
 }
 
-// With Attribute Class on Point, the spreadsheet lists the uv on the points, and none on the vertices.
+// With Group/Attrib Type on Points, the spreadsheet lists the uv on the points, and none on the vertices.
 TEST_F(GeoPipelineTest, TheSpreadsheetListsGeoUVProjectPointUVsOnThePoints)
 {
     const NodePtr card = make(PLUGINID_NATRON_GEOPRIMITIVE);
     const NodePtr project = card ? after(card, PLUGINID_NATRON_GEOUVPROJECT) : NodePtr();
     ASSERT_TRUE(project != nullptr);
-    setChoice(project, kGeoUVProjectParamAttributeClass, "point");
+    setChoice(project, kGeoUVProjectParamGroupAttribType, "points");
 
     const GeoDetailConstPtr detail = pull(project);
     ASSERT_TRUE(detail != nullptr);
@@ -811,7 +811,7 @@ TEST_F(GeoPipelineTest, TheSpreadsheetListsGeoUVProjectPointUVsOnThePoints)
     EXPECT_EQ((std::int64_t)detail->pointCount(), source.rowCount(eGeoAttribClassPoint));
 }
 
-// GeoScatter makes points with no primitives; GeoUVProject on Point still gives each one a uv,
+// GeoScatter makes points with no primitives; GeoUVProject on Points still gives each one a uv,
 // which GeoDisplace samples its Image input at.
 TEST_F(GeoPipelineTest, GeoUVProjectWritesPointUVsOnScatteredPointsForGeoDisplace)
 {
@@ -824,7 +824,7 @@ TEST_F(GeoPipelineTest, GeoUVProjectWritesPointUVsOnScatteredPointsForGeoDisplac
     ASSERT_TRUE(constant != nullptr);
     setInt(scatter, kGeoScatterParamCount, 50);
     setBool(scatter, kGeoScatterParamTransferN, true);
-    setChoice(project, kGeoUVProjectParamAttributeClass, "point");
+    setChoice(project, kGeoUVProjectParamGroupAttribType, "points");
     wire(constant, displace, 1);
 
     const GeoDetailConstPtr points = pull(project);
@@ -852,7 +852,7 @@ TEST_F(GeoPipelineTest, ConnectingTheModeInputSwitchesTheMode)
     KnobChoice* displaceBy = knob<KnobChoice>(displace, kGeoDisplaceParamDisplaceBy);
     ASSERT_TRUE(projection != NULL);
     ASSERT_TRUE(displaceBy != NULL);
-    ASSERT_EQ((int)eGeoUVProjectionPlanar, projection->getValue());
+    ASSERT_EQ((int)eGeoUVProjectionOrthographic, projection->getValue());
     ASSERT_EQ((int)eGeoDisplaceByNoise, displaceBy->getValue());
 
     wire(scene, project, 1);
@@ -865,7 +865,7 @@ TEST_F(GeoPipelineTest, ConnectingTheModeInputSwitchesTheMode)
     EXPECT_EQ((int)eGeoUVProjectionCamera, projection->getValue());
     EXPECT_EQ((int)eGeoDisplaceByImage, displaceBy->getValue());
 
-    projection->setValue((int)eGeoUVProjectionPlanar);
+    projection->setValue((int)eGeoUVProjectionOrthographic);
     wire(scene, project, 1);
     EXPECT_EQ((int)eGeoUVProjectionCamera, projection->getValue());
 }

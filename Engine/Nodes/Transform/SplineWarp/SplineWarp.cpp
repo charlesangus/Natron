@@ -1046,27 +1046,11 @@ SplineWarp::refreshExtraStateAfterTimeChanged(bool isPlayback,
 }
 
 void
-SplineWarp::appendOverlayDrawListSignature(double time,
-                                           ViewIdx /*view*/,
-                                           ContentHasher* hasher)
-{
-    _ui->appendCurvesOverlaySignature(time, hasher);
-}
-
-void
-SplineWarp::buildOverlay(double time,
-                         const RenderScale& /*renderScale*/,
-                         ViewIdx /*view*/,
-                         OverlayDrawList* list)
-{
-    _ui->buildCurvesOverlayList(time, list);
-}
-
-void
 SplineWarp::drawOverlay(double time,
                         const RenderScale& /*renderScale*/,
                         ViewIdx /*view*/)
 {
+    _ui->drawCurvesOverlay(time);
     _ui->drawOverlay(time);
 }
 

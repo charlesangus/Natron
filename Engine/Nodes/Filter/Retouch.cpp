@@ -1429,27 +1429,11 @@ Retouch::pickBrush(double time,
 }
 
 void
-Retouch::appendOverlayDrawListSignature(double time,
-                                        ViewIdx /*view*/,
-                                        ContentHasher* hasher)
-{
-    _ui->appendCurvesOverlaySignature(time, hasher);
-}
-
-void
-Retouch::buildOverlay(double time,
-                      const RenderScale& /*renderScale*/,
-                      ViewIdx /*view*/,
-                      OverlayDrawList* list)
-{
-    _ui->buildCurvesOverlayList(time, list);
-}
-
-void
 Retouch::drawOverlay(double time,
                      const RenderScale& /*renderScale*/,
                      ViewIdx /*view*/)
 {
+    _ui->drawCurvesOverlay(time);
     _ui->drawOverlay(time);
 
     RotoCurveContextPtr context = getNode()->getCurveContext();

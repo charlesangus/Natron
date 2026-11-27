@@ -29,6 +29,8 @@
 #include "Global/GlobalDefines.h"
 #include "Global/Macros.h"
 
+#include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -221,6 +223,56 @@ private:
     OverlayDrawList _list;
     U64 _signature = 0;
     bool _valid = false;
+};
+
+/**
+ * @brief Cached lists drawn one after another, each with its own signature, so that a change to
+ * one part of an overlay rebuilds and re-uploads only that part's list. Each redraw walks the
+ * lists from the first with restart() then next(); trim() drops the lists past the last one
+ * walked. A list keeps its address until it is dropped, since viewers key their uploaded
+ * geometry on it.
+ **/
+class OverlayDrawListSequence {
+public:
+    void restart()
+    {
+        _next = 0;
+    }
+
+    // The cache of the next list, made empty on first use.
+    OverlayDrawListCache& next()
+    {
+        if (_next == _caches.size()) {
+            _caches.emplace_back(new OverlayDrawListCache());
+        }
+
+        return *_caches[_next++];
+    }
+
+    // How many lists next() has walked since restart().
+    std::size_t walked() const
+    {
+        return _next;
+    }
+
+    void trim()
+    {
+        _caches.resize(_next);
+    }
+
+    std::size_t size() const
+    {
+        return _caches.size();
+    }
+
+    const OverlayDrawList& list(std::size_t index) const
+    {
+        return _caches[index]->list();
+    }
+
+private:
+    std::vector<std::unique_ptr<OverlayDrawListCache>> _caches;
+    std::size_t _next = 0;
 };
 
 NATRON_NAMESPACE_EXIT

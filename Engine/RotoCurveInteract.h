@@ -528,15 +528,23 @@ public:
 private:
     EffectInstance* _host;
 
-    // What the host's cached curves list is built from, read by appendCurvesOverlaySignature()
-    // for buildCurvesOverlayList() to use when the host rebuilds right after it.
-    std::list<RotoDrawableItemPtr> _curvesOverlayDrawables;
-    bool _curvesOverlayFeatherVisible;
-    std::pair<double, double> _curvesOverlayPixelScale;
-    std::vector<BezierOverlayPolygonsConstPtr> _curvesOverlaySignedPolygons;
-    // The polygons the shown list was built from, held so that a set freed and reallocated at the
-    // same address cannot look unchanged.
-    std::vector<BezierOverlayPolygonsConstPtr> _curvesOverlayPolygons;
+    // What one of the curves lists was built from. The polygons are held so that a set freed and
+    // reallocated at the same address cannot look unchanged; an item that died invalidates the
+    // list, since another may since have taken its address.
+    struct CurvesOverlayRunHold {
+        std::vector<RotoDrawableItemWPtr> items;
+        std::vector<BezierOverlayPolygonsConstPtr> polygons;
+    };
+
+    // The curves in render order: a list per selected item, the only items a pen edit or a hover
+    // changes, and one per run of unselected items between them, so that dragging one shape
+    // neither rebuilds nor re-uploads the others.
+    OverlayDrawListSequence _curvesOverlay;
+    // Parallel to _curvesOverlay.
+    std::vector<CurvesOverlayRunHold> _curvesOverlayHolds;
+    // What the host draws over all the curves.
+    OverlayDrawListCache _curvesExtrasOverlay;
+    unsigned long long _curvesOverlayRebuilds;
     // What follows the pen and the viewport (tools, cursor, selection box).
     OverlayDrawListCache _toolsOverlay;
     // The tools' parts pinned to the viewport rather than to the image (the ripple border, the
@@ -769,18 +777,29 @@ public:
                          double x, double y,
                          const Transform::Matrix3x3& transform);
 
-    void appendCurvesSignature(double time,
-                               bool featherVisible,
-                               const std::list<RotoDrawableItemPtr>& drawables,
-                               const std::pair<double, double>& pixelScale,
-                               std::vector<BezierOverlayPolygonsConstPtr>* polygons,
-                               ContentHasher* hasher);
+    // Everything buildCurveItemOverlay() draws item from, appending the polygons it reads.
+    void appendCurveItemSignature(double time,
+                                  bool featherVisible,
+                                  const RotoDrawableItemPtr& item,
+                                  const std::pair<double, double>& pixelScale,
+                                  std::vector<BezierOverlayPolygonsConstPtr>* polygons,
+                                  ContentHasher* hasher) const;
 
-    void buildCurvesOverlay(double time,
-                            bool featherVisible,
-                            const std::list<RotoDrawableItemPtr>& drawables,
-                            const std::pair<double, double>& pixelScale,
-                            OverlayDrawList* list);
+    void buildCurveItemOverlay(double time,
+                               bool featherVisible,
+                               const RotoDrawableItemPtr& item,
+                               const std::pair<double, double>& pixelScale,
+                               OverlayDrawListPen& pen);
+
+    // Draws the items [first, last) as the next list of _curvesOverlay, rebuilding it only when
+    // their signature changed.
+    void drawCurvesOverlayRun(double time,
+                              bool featherVisible,
+                              const std::pair<double, double>& pixelScale,
+                              std::list<RotoDrawableItemPtr>::const_iterator first,
+                              std::list<RotoDrawableItemPtr>::const_iterator last,
+                              OverlaySupport* overlay,
+                              const OverlayDrawState& drawState);
 
     // Everything buildToolsOverlay() draws from, cheap enough to digest on every redraw.
     void appendToolsOverlaySignature(const std::pair<double, double>& pixelScale, ContentHasher* hasher) const;
@@ -881,20 +900,21 @@ public:
     virtual void removeCurve(const RotoDrawableItemPtr& curve);
 
     /**
-     * @brief Digest of everything the curves list draws from that the host's knobs do not cover,
-     * for the host's appendOverlayDrawListSignature(). Holds what it read for the
-     * buildCurvesOverlayList() that follows when the digest changed.
+     * @brief Draws the curves and the host's buildOverlayExtras(), in the passive overlay too, from
+     * cached lists. The host calls it from its drawOverlay(), before drawOverlay().
      **/
-    void appendCurvesOverlaySignature(double time, ContentHasher* hasher);
+    void drawCurvesOverlay(double time);
 
     /**
-     * @brief Fills list with the curves, for the host's cached buildOverlay(), from what the
-     * appendCurvesOverlaySignature() just before read.
+     * @brief How many of the curves lists drawCurvesOverlay() has rebuilt, for tests.
      **/
-    void buildCurvesOverlayList(double time, OverlayDrawList* list);
+    unsigned long long curvesOverlayRebuildCount() const
+    {
+        return _curvesOverlayRebuilds;
+    }
 
     // The host effect's overlay actions forward to these. drawOverlay() draws what goes over
-    // the curves list: the paint previews and the tools.
+    // the curves: the paint previews and the tools.
     void drawOverlay(double time);
     bool onOverlayPenDown(double time, const QPointF& pos, double pressure, double timestamp, PenType pen);
     /**
@@ -945,7 +965,7 @@ protected:
     // The colour the overlay draws an unlocked curve in.
     virtual void getCurveOverlayColor(const RotoDrawableItemPtr& item, double color[4]) const;
 
-    // Adds what the host draws over the curves, in the passive overlay too, to the cached curve list.
+    // Adds what the host draws over the curves, in the passive overlay too, to its cached list.
     virtual void buildOverlayExtras(double /*time*/, OverlayDrawListPen& /*pen*/) { }
 
     // Appends to hasher everything buildOverlayExtras() draws from, so that the cached list is

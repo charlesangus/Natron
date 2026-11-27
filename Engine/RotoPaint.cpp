@@ -1080,27 +1080,11 @@ RotoPaint::clearLastRenderedImage()
 }
 
 void
-RotoPaint::appendOverlayDrawListSignature(double time,
-                                          ViewIdx /*view*/,
-                                          ContentHasher* hasher)
-{
-    _imp->ui->appendCurvesOverlaySignature(time, hasher);
-}
-
-void
-RotoPaint::buildOverlay(double time,
-                        const RenderScale& /*renderScale*/,
-                        ViewIdx /*view*/,
-                        OverlayDrawList* list)
-{
-    _imp->ui->buildCurvesOverlayList(time, list);
-}
-
-void
 RotoPaint::drawOverlay(double time,
                        const RenderScale & /*renderScale*/,
                        ViewIdx /*view*/)
 {
+    _imp->ui->drawCurvesOverlay(time);
     _imp->ui->drawOverlay(time);
 }
 

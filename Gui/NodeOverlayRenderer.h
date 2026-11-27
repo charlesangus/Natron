@@ -104,6 +104,7 @@ private:
     unsigned long long _uploadedBuildId;
     OverlayDrawState _uploadedState;
     bool _uploadedScaleDependent;
+    bool _uploadedHasText;
     double _uploadedPixelScaleX;
     double _uploadedPixelScaleY;
     std::size_t _uploadedPositionBytes;

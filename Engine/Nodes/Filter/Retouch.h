@@ -293,8 +293,6 @@ private:
         return true;
     }
 
-    virtual void appendOverlayDrawListSignature(double time, ViewIdx view, ContentHasher* hasher) OVERRIDE FINAL;
-    virtual void buildOverlay(double time, const RenderScale& renderScale, ViewIdx view, OverlayDrawList* list) OVERRIDE FINAL;
     virtual bool onOverlayPenDown(double time,
                                   const RenderScale& renderScale,
                                   ViewIdx view,

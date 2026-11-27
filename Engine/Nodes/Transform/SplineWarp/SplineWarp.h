@@ -244,8 +244,6 @@ public:
         return true;
     }
 
-    virtual void appendOverlayDrawListSignature(double time, ViewIdx view, ContentHasher* hasher) OVERRIDE FINAL;
-    virtual void buildOverlay(double time, const RenderScale& renderScale, ViewIdx view, OverlayDrawList* list) OVERRIDE FINAL;
     virtual bool onOverlayPenDown(double time, const RenderScale& renderScale, ViewIdx view, const QPointF& viewportPos, const QPointF& pos, double pressure, double timestamp, PenType pen) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool onOverlayPenMotion(double time, const RenderScale& renderScale, ViewIdx view, const QPointF& viewportPos, const QPointF& pos, double pressure, double timestamp) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool onOverlayPenUp(double time, const RenderScale& renderScale, ViewIdx view, const QPointF& viewportPos, const QPointF& pos, double pressure, double timestamp) OVERRIDE FINAL WARN_UNUSED_RETURN;

@@ -112,6 +112,7 @@ NodeOverlayRenderer::NodeOverlayRenderer()
     , _uploadedBuildId(0)
     , _uploadedState()
     , _uploadedScaleDependent(false)
+    , _uploadedHasText(false)
     , _uploadedPixelScaleX(0.)
     , _uploadedPixelScaleY(0.)
     , _uploadedPositionBytes(0)
@@ -286,6 +287,9 @@ NodeOverlayRenderer::draw(const OverlayDrawList& list,
         _uploadedBuildId = list.buildId();
         _uploadedState = state;
         _uploadedScaleDependent = std::any_of(list.primitives().begin(), list.primitives().end(), OverlayDrawList::dependsOnPixelScale);
+        _uploadedHasText = std::any_of(list.primitives().begin(), list.primitives().end(), [](const OverlayDrawList::Primitive& p) {
+            return p.type == OverlayDrawList::ePrimitiveTypeText;
+        });
         _uploadedPixelScaleX = pixelScaleX;
         _uploadedPixelScaleY = pixelScaleY;
     }
@@ -304,7 +308,11 @@ NodeOverlayRenderer::draw(const OverlayDrawList& list,
 
     const std::vector<OverlayDrawList::Point>& pts = list.points();
     const std::vector<OverlayDrawList::Primitive>& primitives = list.primitives();
-    const std::vector<std::size_t> order = list.drawOrder();
+    // Overlays drawn as many small lists pay this sort on every redraw, though most hold no text.
+    std::vector<std::size_t> order;
+    if (_uploadedHasText) {
+        order = list.drawOrder();
+    }
 
     for (int l = 0; l < 2; ++l) {
         const bool shadowPass = (l == 0);

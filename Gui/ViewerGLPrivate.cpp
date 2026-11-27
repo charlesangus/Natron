@@ -47,6 +47,7 @@
 #include "Engine/Texture.h"
 #include "Engine/ViewerInstance.h"
 
+#include "Gui/ColorSpaceView.h"
 #include "Gui/GLContextLoss.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiApplicationManager.h" // appFont
@@ -115,6 +116,9 @@ releaseViewerGLResources(ViewerGLImpl& imp)
             imp.overlayRenderer->releaseGLResources();
         }
         imp.overlayImageRenderer.releaseGLResources();
+        if (imp.colorSpaceView) {
+            imp.colorSpaceView->releaseGL();
+        }
         glCheckError();
     }
 
@@ -198,6 +202,9 @@ ViewerGL::Implementation::Implementation(ViewerGL* this_,
     , isUpdatingTexture(false)
     , renderOnPenUp(false)
     , updateViewerPboIndex(0)
+    , colorSpaceView()
+    , colorSpaceViewActive(false)
+    , colorSpaceViewCapture(false)
 {
     infoViewer[0] = 0;
     infoViewer[1] = 0;

@@ -318,8 +318,11 @@ try:
         found.sort(key=lambda s: s.mapToGlobal(QPoint(0, 0)).y())
         return found[0] if found else None
 
+    pref_params = {n: NatronEngine.natron.getSettings().getParam(n)
+                   for n in ("colorTrackballFeedback", "colorTrackballWheelWidth")}
+
     def set_pref(name, value):
-        NatronEngine.natron.getSettings().getParam(name).set(value)
+        pref_params[name].set(value)
         QApplication.processEvents()
 
     def set_feedback(value):

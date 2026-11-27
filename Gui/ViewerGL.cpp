@@ -63,6 +63,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/NodeColorSampler.h"
 #include "Engine/NodeGuiI.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Color/ColorWarp/ColorWarp.h"
 #include "Engine/OfxOverlayInteract.h"
 #include "Engine/Project.h"
 #include "Engine/RotoLatencyProbe.h"
@@ -75,6 +76,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/ViewerInstance.h"
 
 #include "Gui/ActionShortcuts.h" // kShortcutGroupViewer ...
+#include "Gui/ColorSpaceView.h"
 #include "Gui/CurveWidget.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
@@ -124,6 +126,22 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
    Everything related to OpenGL will (almost always) be in this class */
 
 NATRON_NAMESPACE_ENTER
+
+// The colour space inset: 40% of the viewer's width within [240, 640] logical pixels, 4:3 unless
+// that is taller than 60% of the viewer, inset from the corner by a margin.
+static QRect
+colorSpaceInsetRect(int viewerWidth,
+                    int viewerHeight,
+                    ColorWarpViewCornerEnum corner)
+{
+    const int margin = 10;
+    const int width = std::max(1, std::min(viewerWidth - 2 * margin, std::clamp((int)std::lround(viewerWidth * 0.4), 240, 640)));
+    const int height = std::max(1, std::min((int)std::lround(width * 0.75), (int)std::lround(viewerHeight * 0.6)));
+    const bool left = (corner == eColorWarpViewCornerTopLeft) || (corner == eColorWarpViewCornerBottomLeft);
+    const bool top = (corner == eColorWarpViewCornerTopLeft) || (corner == eColorWarpViewCornerTopRight);
+
+    return QRect(left ? margin : (viewerWidth - margin - width), top ? margin : (viewerHeight - margin - height), width, height);
+}
 
 static bool
 resolvePickOutput(const Gui* gui,
@@ -609,6 +627,10 @@ ViewerGL::paintGL()
         }
         if (_imp->staleCueVisible) {
             drawStaleCue(_imp->staleCueStyle, _imp->glShadow, zoomLeft, zoomRight, zoomBottom, zoomTop);
+        }
+        refreshColorSpaceInset();
+        if (_imp->colorSpaceViewActive) {
+            _imp->colorSpaceView->paint(_imp->clearColor, *_imp->_textFont, _imp->textRenderer);
         }
         glCheckErrorAssert();
     } // GLProtectAttrib a(GL_TRANSFORM_BIT);
@@ -2281,6 +2303,14 @@ ViewerGL::mousePressEvent(QMouseEvent* e)
 
     _imp->viewerTab->onMousePressCalledInViewer();
 
+    if (isOverColorSpaceInset(e->position())) {
+        _imp->colorSpaceViewCapture = true;
+        _imp->colorSpaceView->mousePress(e);
+        e->accept();
+
+        return;
+    }
+
     _imp->hasMovedSincePress = false;
     _imp->pressureOnRelease = 1.;
     if ( (e->buttons() == Qt::LeftButton) && !(e->modifiers() &  Qt::MetaModifier) ) {
@@ -2572,6 +2602,18 @@ ViewerGL::mouseReleaseEvent(QMouseEvent* e)
         return;
     }
 
+    if (_imp->colorSpaceViewCapture) {
+        if (e->buttons() == Qt::NoButton) {
+            _imp->colorSpaceViewCapture = false;
+        }
+        if (_imp->colorSpaceView) {
+            _imp->colorSpaceView->mouseRelease(e);
+        }
+        e->accept();
+
+        return;
+    }
+
     _imp->pressureOnPress = 1;
     _imp->pointerTypeOnPress = ePenTypeLMB;
 
@@ -2662,6 +2704,12 @@ ViewerGL::mouseMoveEvent(QMouseEvent* e)
     if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
         probe->noteInputEvent();
     }
+    if (_imp->colorSpaceViewCapture && _imp->colorSpaceView) {
+        _imp->colorSpaceView->mouseMove(e);
+        e->accept();
+
+        return;
+    }
     if ( !penMotionInternal(e->position().x(), e->position().y(), /*pressure=*/ 1., currentTimeForEvent(e), e) ) {
         QOpenGLWidget::mouseMoveEvent(e);
     }
@@ -2672,6 +2720,12 @@ ViewerGL::tabletEvent(QTabletEvent* e)
 {
     if (RotoLatencyProbe* probe = RotoLatencyProbe::instance()) {
         probe->noteInputEvent();
+    }
+    if (_imp->colorSpaceViewCapture || isOverColorSpaceInset(e->position())) {
+        // Ignored, the event comes back as a mouse event, which the colour space view handles.
+        e->ignore();
+
+        return;
     }
     qreal pressure = e->pressure();
     if (pressure <= 0.) {
@@ -3099,6 +3153,11 @@ ViewerGL::penMotionInternal(int x,
 void
 ViewerGL::mouseDoubleClickEvent(QMouseEvent* e)
 {
+    if (isOverColorSpaceInset(e->position())) {
+        e->accept();
+
+        return;
+    }
     QPointF pos_opengl;
     {
         QMutexLocker l(&_imp->zoomCtxMutex);
@@ -3332,6 +3391,13 @@ ViewerGL::wheelEvent(QWheelEvent* e)
 
     if (!_imp->viewerTab) {
         return QOpenGLWidget::wheelEvent(e);
+    }
+    if (isOverColorSpaceInset(e->position())) {
+        if (!_imp->colorSpaceView->wheel(e)) {
+            e->ignore();
+        }
+
+        return;
     }
 
     // delta=120 is a standard wheel mouse click, but mice may be more accurate
@@ -3766,6 +3832,16 @@ ViewerGL::enterEvent(QEnterEvent* e)
 bool
 ViewerGL::event(QEvent* e)
 {
+    // Test the event type before touching _imp: the Implementation constructor parents its
+    // context menu to this widget, so a ChildAdded event arrives while _imp is still unset.
+    const QEvent::Type type = e->type();
+    // Space reaches the inset only while the pointer is over it or a drag in it runs, so that it
+    // keeps its viewer binding elsewhere; a release always does, to end a hold begun there.
+    const bool colorSpaceKeyDown = (type == QEvent::ShortcutOverride) || (type == QEvent::KeyPress);
+    const bool colorSpaceViewEvent = (type == QEvent::KeyRelease) || (type == QEvent::FocusOut) || (colorSpaceKeyDown && _imp && isColorSpaceInsetUnderPointer());
+    if (colorSpaceViewEvent && _imp && _imp->colorSpaceView && _imp->colorSpaceView->event(e)) {
+        return true;
+    }
     if ((e->type() == QEvent::ShortcutOverride) && _imp->viewerTab && _imp->viewerTab->claimShortcutOverride(static_cast<QKeyEvent*>(e))) {
         return true;
     }
@@ -3782,8 +3858,13 @@ ViewerGL::event(QEvent* e)
             }
         }
     }
+    const bool handled = QOpenGLWidget::event(e);
+    // Hiding the viewer's tab hides this widget too; the colour space view stops fetching for it.
+    if (((type == QEvent::Show) || (type == QEvent::Hide)) && _imp && _imp->colorSpaceView) {
+        _imp->colorSpaceView->onWidgetVisibilityChanged();
+    }
 
-    return QOpenGLWidget::event(e);
+    return handled;
 }
 
 void
@@ -4089,6 +4170,101 @@ ViewerGL::setProjection(double zoomLeft,
     QMutexLocker l(&_imp->zoomCtxMutex);
     _imp->zoomCtx.setZoom(zoomLeft, zoomBottom, zoomFactor, zoomAspectRatio);
     Q_EMIT zoomChanged(100 * zoomFactor);
+}
+
+void
+ViewerGL::refreshColorSpaceInset()
+{
+    // always running in the main thread
+    assert(qApp && qApp->thread() == QThread::currentThread());
+    NodePtr shown;
+    ColorWarp* colorWarp = nullptr;
+    Gui* gui = _imp->viewerTab ? _imp->viewerTab->getGui() : nullptr;
+    if (gui && _imp->overlay && !_imp->viewerTab->isShowingScene()) {
+        NodesList nodes;
+        gui->getNodesEntitledForOverlays(nodes);
+        for (const NodePtr& node : nodes) {
+            ColorWarp* cw = (node && node->isActivated()) ? dynamic_cast<ColorWarp*>(node->getEffectInstance().get()) : nullptr;
+            if (cw && cw->isShowing3DView()) {
+                shown = node;
+                colorWarp = cw;
+                break;
+            }
+        }
+    }
+    if (!shown) {
+        _imp->colorSpaceViewActive = false;
+        _imp->colorSpaceViewCapture = false;
+        if (_imp->colorSpaceView) {
+            _imp->colorSpaceView->setActive(false);
+        }
+
+        return;
+    }
+    if (!_imp->colorSpaceView) {
+        _imp->colorSpaceView.reset(new ColorSpaceView(this, [this]() -> ColorSpaceView::DisplayConverter {
+            const ProjectColorManagement::DisplayProcessorPtr processor = _imp->getDisplayProcessor();
+            if (!processor || !processor->cpu) {
+                return ColorSpaceView::DisplayConverter();
+            }
+
+            return [processor](float* rgba, int count) {
+                processor->applyForEightBitOutput(rgba, count);
+            }; }, [this]() { return getCurrentView(); }));
+    }
+    _imp->colorSpaceView->setViewportRect(colorSpaceInsetRect(width(), height(), colorWarp->get3DViewCorner()));
+    _imp->colorSpaceView->setNode(shown);
+    _imp->colorSpaceView->setShowOutput(colorWarp->is3DViewShowingOutput());
+    _imp->colorSpaceView->setActive(true);
+    _imp->colorSpaceViewActive = true;
+}
+
+bool
+ViewerGL::isOverColorSpaceInset(const QPointF& widgetPos) const
+{
+    return _imp->colorSpaceViewActive && _imp->colorSpaceView && _imp->colorSpaceView->contains(widgetPos);
+}
+
+bool
+ViewerGL::isColorSpaceInsetUnderPointer() const
+{
+    return _imp->colorSpaceViewCapture || isOverColorSpaceInset(mapFromGlobal(QCursor::pos()));
+}
+
+bool
+ViewerGL::frameColorSpaceViewUnderPointer()
+{
+    if (!isOverColorSpaceInset(mapFromGlobal(QCursor::pos()))) {
+        return false;
+    }
+    _imp->colorSpaceView->frameAll();
+    update();
+
+    return true;
+}
+
+QVariantMap
+ViewerGL::colorSpaceViewState() const
+{
+    return (_imp->colorSpaceViewActive && _imp->colorSpaceView) ? _imp->colorSpaceView->state() : QVariantMap();
+}
+
+QVariantMap
+ViewerGL::colorSpaceViewProbe(double r,
+                              double g,
+                              double b) const
+{
+    return (_imp->colorSpaceViewActive && _imp->colorSpaceView) ? _imp->colorSpaceView->probe(r, g, b) : QVariantMap();
+}
+
+QVariantList
+ViewerGL::viewProjection() const
+{
+    double left, bottom, factor, aspect;
+
+    getProjection(&left, &bottom, &factor, &aspect);
+
+    return QVariantList { left, bottom, factor, aspect };
 }
 
 RectD

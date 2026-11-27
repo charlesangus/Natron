@@ -52,6 +52,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobColorWarpPins.h"
 #include "Engine/KnobDriver.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
@@ -107,6 +108,8 @@ createDetachedKnob(const std::string& typeName,
         ret = std::make_shared<KnobChannelSelect>((KnobHolder*)NULL, std::string(), dimension, false);
     } else if (typeName == KnobShuffleMap::typeNameStatic()) {
         ret = std::make_shared<KnobShuffleMap>((KnobHolder*)NULL, std::string(), dimension, false);
+    } else if (typeName == KnobColorWarpPins::typeNameStatic()) {
+        ret = std::make_shared<KnobColorWarpPins>((KnobHolder*)NULL, std::string(), dimension, false);
     } else if (typeName == KnobFile::typeNameStatic()) {
         ret = std::make_shared<KnobFile>((KnobHolder*)NULL, std::string(), dimension, false);
     } else if (typeName == KnobOutputFile::typeNameStatic()) {
@@ -1111,6 +1114,8 @@ createUserKnobFromSerialization(KnobHolder* holder,
         knob = createOrReuseUserKnob<KnobChannelSelect>(holder, serialization, existingKnob);
     } else if (typeName == KnobShuffleMap::typeNameStatic()) {
         knob = createOrReuseUserKnob<KnobShuffleMap>(holder, serialization, existingKnob);
+    } else if (typeName == KnobColorWarpPins::typeNameStatic()) {
+        knob = createOrReuseUserKnob<KnobColorWarpPins>(holder, serialization, existingKnob);
     }
 
     if (!knob) {

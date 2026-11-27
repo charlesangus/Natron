@@ -30,6 +30,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -58,6 +59,8 @@ CLANG_DIAG_ON(uninitialized)
 #define MAX_MIP_MAP_LEVELS 20
 
 NATRON_NAMESPACE_ENTER
+
+class ColorSpaceView;
 
 /*This class is the the core of the viewer : what displays images, overlays, etc...
    Everything related to OpenGL will (almost always) be in this class */
@@ -294,6 +297,10 @@ struct ViewerGL::Implementation
     bool isUpdatingTexture;
     bool renderOnPenUp;
     int updateViewerPboIndex;  // always accessed in the main thread: initialized in the constructor, then always accessed and modified by updateViewer()
+    std::unique_ptr<ColorSpaceView> colorSpaceView;
+    bool colorSpaceViewActive;
+    // A press in the inset sends the moves and the release that follow it there too.
+    bool colorSpaceViewCapture;
 
 public:
 

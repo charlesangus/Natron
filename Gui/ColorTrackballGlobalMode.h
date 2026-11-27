@@ -49,6 +49,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/ColorWheelMath.h"
 #include "Engine/Settings.h"
 
+#include "Gui/ColorGlobalModeHook.h"
 #include "Gui/ColorTrackballTarget.h"
 #include "Gui/GlobalModeTarget.h"
 #include "Gui/GuiFwd.h"
@@ -334,16 +335,20 @@ private:
 };
 
 /**
- * @brief Global mode on one colour knob: C, S, T and V strokes through the knob's own edit
- * session, the four mode keys, the trackball HUD legend and the wheel or mode disc on the
- * reveal.
+ * @brief Global mode on one colour: C, S, T and V strokes through the colour's hook (a colour
+ * knob's own edit session, or a colour held in another knob's data), the four mode keys, the
+ * trackball HUD legend and the wheel or mode disc on the reveal.
  **/
 class ColorGlobalModeTarget
     : public GlobalModeTarget {
 public:
     explicit ColorGlobalModeTarget(const KnobGuiColorPtr& knob);
+    explicit ColorGlobalModeTarget(const std::shared_ptr<ColorGlobalModeHook>& hook);
     virtual ~ColorGlobalModeTarget() OVERRIDE;
 
+    /**
+     * @brief The colour knob the target drives, or null when it drives a hook of another kind.
+     **/
     KnobGuiColor* getColorKnobGui() const;
 
     virtual KnobGui* getKnobGui() const OVERRIDE FINAL;
@@ -390,8 +395,9 @@ public:
 private:
     QString strokeLabel() const;
 
-    std::weak_ptr<KnobGuiColor> _knob;
-    QPointer<KnobGuiColor> _knobObject;
+    ColorGlobalModeHook* getHook() const;
+
+    std::shared_ptr<ColorGlobalModeHook> _hook;
     ColorGlobalModeEnum _mode;
     TrackballRates _rates;
     double _rememberedHue;

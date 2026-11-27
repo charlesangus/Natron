@@ -37,6 +37,7 @@
 
 #include <QSize>
 #include <QVariantList>
+#include <QVariantMap>
 
 #include <QOpenGLWidget>
 
@@ -349,6 +350,38 @@ public:
 
     void setProjection(double zoomLeft, double zoomBottom, double zoomFactor, double zoomAspectRatio);
 
+    /**
+     * @brief Frames the colour space inset's cloud and pins when the pointer is over it; returns
+     * whether it was.
+     **/
+    bool frameColorSpaceViewUnderPointer();
+
+    /**
+     * @brief Whether keys belong to the colour space inset: the pointer is over it or a drag that
+     * started in it is running.
+     **/
+    bool isColorSpaceInsetUnderPointer() const;
+
+    /**
+     * @brief A read-only summary of the colour space inset for scripts (see ColorSpaceView::state()),
+     * empty while no inset is drawn.
+     **/
+    Q_INVOKABLE QVariantMap colorSpaceViewState() const;
+
+    /**
+     * @brief Where working-space colour (r, g, b) sits in the colour space view (see
+     * ColorSpaceView::probe()), empty while no inset is drawn.
+     **/
+    Q_INVOKABLE QVariantMap colorSpaceViewProbe(double r,
+                                                double g,
+                                                double b) const;
+
+    /**
+     * @brief The 2D pan and zoom as getProjection() gives them: left, bottom, factor and aspect
+     * ratio, for scripts.
+     **/
+    Q_INVOKABLE QVariantList viewProjection() const;
+
     // Shows or hides the RoI the viewer node's knobs enable; rendering follows the knobs.
     void setUserRoIEnabled(bool b);
 
@@ -583,6 +616,17 @@ private:
     virtual void leaveEvent(QEvent* e) OVERRIDE FINAL;
     virtual void tabletEvent(QTabletEvent* e) OVERRIDE FINAL;
     virtual bool event(QEvent* e) OVERRIDE FINAL;
+
+    /**
+     * @brief Points the colour space inset at the first ColorWarp, in overlay order, whose Show 3D
+     * View is on, and places it in that node's corner; hides it when there is none.
+     **/
+    void refreshColorSpaceInset();
+
+    /**
+     * @brief Whether the pointer at widgetPos, in logical pixels, is over the colour space inset.
+     **/
+    bool isOverColorSpaceInset(const QPointF& widgetPos) const;
 
     /**
      *@brief initializes OpenGL context related stuff. This is called once after widget creation.

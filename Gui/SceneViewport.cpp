@@ -7362,26 +7362,6 @@ guiManager()
     return dynamic_cast<GuiApplicationManager*>(AppManager::instance());
 }
 
-bool
-matchesMouseBinding(const char* actionID,
-                    Qt::KeyboardModifiers modifiers,
-                    Qt::MouseButton button)
-{
-    if (GuiApplicationManager* manager = guiManager()) {
-        return manager->matchesMouseShortcut(kShortcutGroupViewer3D, actionID, modifiers, button);
-    }
-    // Without the application, the default preset's bindings.
-    MouseAction action;
-    if (std::string(actionID) == kShortcutIDMouseViewer3DDollyWheel) {
-        action.gesture = eMouseGestureWheel;
-    }
-    std::vector<MouseBinding> bindings;
-    getViewer3DNavigationPresetBindings((int)Settings::eViewer3DNavigationNuke, QString::fromUtf8(actionID), &bindings);
-    action.setBindings(bindings);
-
-    return action.matches(modifiers, button);
-}
-
 // The 3D viewer's default key binding of actionID, for a process without the application.
 const Viewer3DKeyBinding*
 defaultKeyBinding(const char* actionID)
@@ -7484,33 +7464,6 @@ pickwalkForKey(Qt::KeyboardModifiers modifiers,
     }
 
     return -1;
-}
-
-// Whether a mouse binding of the 3D viewer needs Space held.
-bool
-bindingsUseSpace()
-{
-    GuiApplicationManager* manager = guiManager();
-    if (!manager) {
-        return false;
-    }
-    const AppShortcuts& shortcuts = manager->getAllShortcuts();
-    AppShortcuts::const_iterator group = shortcuts.find(QString::fromUtf8(kShortcutGroupViewer3D));
-    if (group == shortcuts.end()) {
-        return false;
-    }
-    for (GroupShortcuts::const_iterator it = group->second.begin(); it != group->second.end(); ++it) {
-        if (!dynamic_cast<const MouseAction*>(it->second)) {
-            continue;
-        }
-        for (std::list<Qt::KeyboardModifiers>::const_iterator m = it->second->modifiers.begin(); m != it->second->modifiers.end(); ++m) {
-            if (*m & kShortcutModifierSpace) {
-                return true;
-            }
-        }
-    }
-
-    return false;
 }
 
 QKeySequence
@@ -13605,22 +13558,22 @@ SceneViewport::mousePressEvent(QMouseEvent* e)
     const Qt::KeyboardModifiers modifiers = mouseBindingModifiers(e->modifiers(), _imp->spaceHeld);
     const Qt::MouseButton button = e->button();
     Implementation::DragRoleEnum role = Implementation::eDragRoleNone;
-    if (matchesMouseBinding(kShortcutIDMouseViewer3DTumble, modifiers, button)) {
+    if (viewer3DMatchesMouseBinding(kShortcutIDMouseViewer3DTumble, modifiers, button)) {
         role = Implementation::eDragRoleTumble;
-    } else if (matchesMouseBinding(kShortcutIDMouseViewer3DPan, modifiers, button)) {
+    } else if (viewer3DMatchesMouseBinding(kShortcutIDMouseViewer3DPan, modifiers, button)) {
         role = Implementation::eDragRolePan;
-    } else if (matchesMouseBinding(kShortcutIDMouseViewer3DDolly, modifiers, button)) {
+    } else if (viewer3DMatchesMouseBinding(kShortcutIDMouseViewer3DDolly, modifiers, button)) {
         role = Implementation::eDragRoleDolly;
-    } else if (matchesMouseBinding(kShortcutIDMouseViewer3DMarquee, modifiers, button)) {
+    } else if (viewer3DMatchesMouseBinding(kShortcutIDMouseViewer3DMarquee, modifiers, button)) {
         role = Implementation::eDragRoleMarquee;
     }
     bool clickSelects = true;
     SelectionModeEnum mode = eSelectionModeReplace;
-    if (matchesMouseBinding(kShortcutIDMouseViewer3DSelect, modifiers, button)) {
+    if (viewer3DMatchesMouseBinding(kShortcutIDMouseViewer3DSelect, modifiers, button)) {
         mode = eSelectionModeReplace;
-    } else if (matchesMouseBinding(kShortcutIDMouseViewer3DAddToSelection, modifiers, button)) {
+    } else if (viewer3DMatchesMouseBinding(kShortcutIDMouseViewer3DAddToSelection, modifiers, button)) {
         mode = eSelectionModeAdd;
-    } else if (matchesMouseBinding(kShortcutIDMouseViewer3DToggleSelection, modifiers, button)) {
+    } else if (viewer3DMatchesMouseBinding(kShortcutIDMouseViewer3DToggleSelection, modifiers, button)) {
         mode = eSelectionModeToggle;
     } else {
         clickSelects = false;
@@ -14075,7 +14028,7 @@ SceneViewport::wheelEvent(QWheelEvent* e)
     const QPoint angle = e->angleDelta();
     const double steps = ((angle.y() != 0) ? angle.y() : angle.x()) / 120.;
 
-    if ((steps == 0.) || !matchesMouseBinding(kShortcutIDMouseViewer3DDollyWheel, mouseBindingModifiers(e->modifiers(), _imp->spaceHeld), Qt::NoButton)) {
+    if ((steps == 0.) || !viewer3DMatchesMouseBinding(kShortcutIDMouseViewer3DDollyWheel, mouseBindingModifiers(e->modifiers(), _imp->spaceHeld), Qt::NoButton)) {
         e->ignore();
 
         return;
@@ -14116,7 +14069,7 @@ SceneViewport::event(QEvent* e)
             || (_imp->geometryContext && ((geoPickModeForKey(k->modifiers(), k->key()) >= 0) || (geoSelectionActionForKey(k->modifiers(), k->key()) >= 0)))
             || matchesKeyBinding(kShortcutIDActionViewer3DReselect, k->modifiers(), k->key())
             || (_imp->reselecting && isReselectKey(k->modifiers(), k->key()))
-            || ((k->key() == Qt::Key_Escape) && (_imp->handle != SceneGizmo::kNoHandle)) || ((k->key() == Qt::Key_Space) && bindingsUseSpace())) {
+            || ((k->key() == Qt::Key_Escape) && (_imp->handle != SceneGizmo::kNoHandle)) || ((k->key() == Qt::Key_Space) && viewer3DMouseBindingsUseSpace())) {
             e->accept();
 
             return true;
@@ -14159,7 +14112,7 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
 
         return;
     }
-    if ((e->key() == Qt::Key_Space) && bindingsUseSpace()) {
+    if ((e->key() == Qt::Key_Space) && viewer3DMouseBindingsUseSpace()) {
         _imp->spaceHeld = true;
         e->accept();
 

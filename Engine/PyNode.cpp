@@ -41,6 +41,7 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobChannelSelect.h"
 #include "Engine/KnobChannelSet.h"
+#include "Engine/KnobColorWarpPins.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobShuffleMap.h"
@@ -600,6 +601,7 @@ Effect::createParamWrapperForKnob(const KnobIPtr& knob)
     KnobLayerSelectPtr isLayerSelect = std::dynamic_pointer_cast<KnobLayerSelect>(knob);
     KnobChannelSelectPtr isChannelSelect = std::dynamic_pointer_cast<KnobChannelSelect>(knob);
     KnobShuffleMapPtr isShuffleMap = std::dynamic_pointer_cast<KnobShuffleMap>(knob);
+    KnobColorWarpPinsPtr isColorWarpPins = std::dynamic_pointer_cast<KnobColorWarpPins>(knob);
     KnobButtonPtr isButton = std::dynamic_pointer_cast<KnobButton>(knob);
     KnobGroupPtr isGroup = std::dynamic_pointer_cast<KnobGroup>(knob);
     KnobPagePtr isPage = std::dynamic_pointer_cast<KnobPage>(knob);
@@ -662,6 +664,8 @@ Effect::createParamWrapperForKnob(const KnobIPtr& knob)
         return new ChannelSelectParam(isChannelSelect);
     } else if (isShuffleMap) {
         return new ShuffleMapParam(isShuffleMap);
+    } else if (isColorWarpPins) {
+        return new ColorWarpPinsParam(isColorWarpPins);
     } else if (isGroup) {
         return new GroupParam(isGroup);
     } else if (isPage) {

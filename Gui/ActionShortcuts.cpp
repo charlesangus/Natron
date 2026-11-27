@@ -460,6 +460,52 @@ mouseBindingModifiers(Qt::KeyboardModifiers modifiers,
     return ret;
 }
 
+bool
+viewer3DMouseBindingsUseSpace()
+{
+    GuiApplicationManager* manager = dynamic_cast<GuiApplicationManager*>(AppManager::instance());
+    if (!manager) {
+        return false;
+    }
+    const AppShortcuts& shortcuts = manager->getAllShortcuts();
+    AppShortcuts::const_iterator group = shortcuts.find(QString::fromUtf8(kShortcutGroupViewer3D));
+    if (group == shortcuts.end()) {
+        return false;
+    }
+    for (GroupShortcuts::const_iterator it = group->second.begin(); it != group->second.end(); ++it) {
+        if (!dynamic_cast<const MouseAction*>(it->second)) {
+            continue;
+        }
+        for (std::list<Qt::KeyboardModifiers>::const_iterator m = it->second->modifiers.begin(); m != it->second->modifiers.end(); ++m) {
+            if (*m & kShortcutModifierSpace) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
+bool
+viewer3DMatchesMouseBinding(const char* actionID,
+                            Qt::KeyboardModifiers modifiers,
+                            Qt::MouseButton button)
+{
+    if (GuiApplicationManager* manager = dynamic_cast<GuiApplicationManager*>(AppManager::instance())) {
+        return manager->matchesMouseShortcut(kShortcutGroupViewer3D, actionID, modifiers, button);
+    }
+    MouseAction action;
+    if (std::string(actionID) == kShortcutIDMouseViewer3DDollyWheel) {
+        action.gesture = eMouseGestureWheel;
+    }
+    std::vector<MouseBinding> bindings;
+    // Preset 0 is the default navigation preset.
+    getViewer3DNavigationPresetBindings(0, QString::fromUtf8(actionID), &bindings);
+    action.setBindings(bindings);
+
+    return action.matches(modifiers, button);
+}
+
 QString
 mouseBindingToString(const MouseBinding& binding,
                      bool wheel)

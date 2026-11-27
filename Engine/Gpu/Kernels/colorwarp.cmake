@@ -1,0 +1,1 @@
+slang_add_kernel(colorwarp_wrapped Kernels/colorwarp.slang ENTRY colorwarp_wrapped REGISTRY NatronGpu)

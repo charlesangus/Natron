@@ -1047,6 +1047,19 @@ ColorTrackballGlobalMode::stepKnob(int direction)
         }
     }
 
+    if (GlobalModePartsProvider* parts = dynamic_cast<GlobalModePartsProvider*>(currentKnob)) {
+        const int part = target->getGlobalModePart() + direction;
+
+        if ((part >= 0) && (part < parts->getGlobalModePartCount())) {
+            if (std::shared_ptr<GlobalModeTarget> partTarget = parts->makeGlobalModePartTarget(part)) {
+                setTarget(partTarget);
+                Q_EMIT stateChanged();
+
+                return true;
+            }
+        }
+    }
+
     int next = stepColorKnobIndex(infos, current, direction);
 
     if (next < 0) {
@@ -1055,7 +1068,16 @@ ColorTrackballGlobalMode::stepKnob(int direction)
         return false;
     }
 
-    std::shared_ptr<GlobalModeTarget> nextTarget = makeGlobalModeTarget(knobs[next]);
+    std::shared_ptr<GlobalModeTarget> nextTarget;
+
+    if (GlobalModePartsProvider* parts = dynamic_cast<GlobalModePartsProvider*>(knobs[next])) {
+        if ((direction < 0) && (parts->getGlobalModePartCount() > 0)) {
+            nextTarget = parts->makeGlobalModePartTarget(parts->getGlobalModePartCount() - 1);
+        }
+    }
+    if (!nextTarget) {
+        nextTarget = makeGlobalModeTarget(knobs[next]);
+    }
 
     if (!nextTarget) {
         return false;
@@ -1683,9 +1705,145 @@ ColorTrackballGlobalMode::eventFilter(QObject* watched,
     return QObject::eventFilter(watched, event);
 } // ColorTrackballGlobalMode::eventFilter
 
+namespace {
+
+class KnobGuiColorGlobalModeHook
+    : public ColorGlobalModeHook {
+public:
+    explicit KnobGuiColorGlobalModeHook(const KnobGuiColorPtr& knob)
+        : _knob(knob)
+        , _knobObject(knob.get())
+    {
+    }
+
+    KnobGuiColor* getColorKnobGui() const
+    {
+        KnobGuiColorPtr knob = _knob.lock();
+
+        return (knob && _knobObject) ? knob.get() : 0;
+    }
+
+    virtual KnobGui* getKnobGui() const OVERRIDE FINAL
+    {
+        return getColorKnobGui();
+    }
+
+    virtual QString getLabel() const OVERRIDE FINAL
+    {
+        KnobGuiColor* knob = getColorKnobGui();
+        KnobIPtr k = knob ? knob->getKnob() : KnobIPtr();
+
+        return k ? QString::fromUtf8(k->getLabel().c_str()) : QString();
+    }
+
+    virtual bool isColorEditable() const OVERRIDE FINAL
+    {
+        KnobGuiColor* knob = getColorKnobGui();
+
+        return knob && knob->isColorEditable();
+    }
+
+    virtual ColorKnobRoleEnum getColorRole() const OVERRIDE FINAL
+    {
+        KnobGuiColor* knob = getColorKnobGui();
+
+        return knob ? knob->getColorRole() : eColorKnobRoleGain;
+    }
+
+    virtual LumaBasis getEditBasis() const OVERRIDE FINAL
+    {
+        KnobGuiColor* knob = getColorKnobGui();
+
+        return knob ? knob->getEditBasis() : ColorKnobEditSession::basisFor(ProjectColorManagementPtr());
+    }
+
+    virtual DisplayConverter getDisplayConverter() const OVERRIDE FINAL
+    {
+        KnobGuiColor* knob = getColorKnobGui();
+
+        return knob ? knob->getDisplayConverter() : DisplayConverter();
+    }
+
+    virtual KnobColorValue getCurrentColorValue() const OVERRIDE FINAL
+    {
+        KnobGuiColor* knob = getColorKnobGui();
+
+        return knob ? knob->getCurrentColorValue() : neutralValue();
+    }
+
+    virtual void attach() OVERRIDE FINAL
+    {
+        KnobGuiColor* knob = getColorKnobGui();
+
+        if (!knob) {
+            return;
+        }
+        knob->setGlobalModeHighlighted(true);
+        knob->setAdjustPanelExpanded(true);
+        knob->touchColorKnob();
+        // The whole column, not just the row: with the panel open and the HUD attached, the column
+        // has grown well past the row alone, and every part of it should land in view together.
+        revealKnobInPanel(dynamic_cast<DockablePanel*>(knob->getContainer()), knob->getKnob(), knob->getGlobalModeColumnWidget());
+    }
+
+    virtual void detach() OVERRIDE FINAL
+    {
+        if (KnobGuiColor* knob = getColorKnobGui()) {
+            knob->setGlobalModeHighlighted(false);
+        }
+    }
+
+    virtual void touch() OVERRIDE FINAL
+    {
+        if (KnobGuiColor* knob = getColorKnobGui()) {
+            knob->touchColorKnob();
+        }
+    }
+
+    virtual void beginEdit(const QString& label) OVERRIDE FINAL
+    {
+        if (KnobGuiColor* knob = getColorKnobGui()) {
+            knob->getEditSession()->begin(label);
+        }
+    }
+
+    virtual void moveEdit(const KnobColorValue& value,
+                          const QString& label) OVERRIDE FINAL
+    {
+        if (KnobGuiColor* knob = getColorKnobGui()) {
+            knob->getEditSession()->move(value, label);
+        }
+    }
+
+    virtual void endEdit(const KnobColorValue& value,
+                         const QString& label) OVERRIDE FINAL
+    {
+        if (KnobGuiColor* knob = getColorKnobGui()) {
+            knob->getEditSession()->end(value, label);
+        }
+    }
+
+    virtual void abandonEdit() OVERRIDE FINAL
+    {
+        if (KnobGuiColor* knob = getColorKnobGui()) {
+            knob->getEditSession()->abandon();
+        }
+    }
+
+private:
+    std::weak_ptr<KnobGuiColor> _knob;
+    QPointer<KnobGuiColor> _knobObject;
+};
+
+} // namespace
+
 ColorGlobalModeTarget::ColorGlobalModeTarget(const KnobGuiColorPtr& knob)
-    : _knob(knob)
-    , _knobObject(knob.get())
+    : ColorGlobalModeTarget(std::shared_ptr<ColorGlobalModeHook>(new KnobGuiColorGlobalModeHook(knob)))
+{
+}
+
+ColorGlobalModeTarget::ColorGlobalModeTarget(const std::shared_ptr<ColorGlobalModeHook>& hook)
+    : _hook(hook)
     , _mode(eColorGlobalModeC)
     , _rates()
     , _rememberedHue(0.0)
@@ -1704,18 +1862,26 @@ ColorGlobalModeTarget::~ColorGlobalModeTarget()
 {
 }
 
+ColorGlobalModeHook*
+ColorGlobalModeTarget::getHook() const
+{
+    return (_hook && _hook->getKnobGui()) ? _hook.get() : 0;
+}
+
 KnobGuiColor*
 ColorGlobalModeTarget::getColorKnobGui() const
 {
-    KnobGuiColorPtr knob = _knob.lock();
+    KnobGuiColorGlobalModeHook* hook = dynamic_cast<KnobGuiColorGlobalModeHook*>(_hook.get());
 
-    return (knob && _knobObject) ? knob.get() : 0;
+    return hook ? hook->getColorKnobGui() : 0;
 }
 
 KnobGui*
 ColorGlobalModeTarget::getKnobGui() const
 {
-    return getColorKnobGui();
+    ColorGlobalModeHook* hook = getHook();
+
+    return hook ? hook->getKnobGui() : 0;
 }
 
 std::vector<KnobGui*>
@@ -1723,7 +1889,7 @@ ColorGlobalModeTarget::getKnobGuis() const
 {
     std::vector<KnobGui*> knobs;
 
-    if (KnobGuiColor* knob = getColorKnobGui()) {
+    if (KnobGui* knob = getKnobGui()) {
         knobs.push_back(knob);
     }
 
@@ -1733,7 +1899,7 @@ ColorGlobalModeTarget::getKnobGuis() const
 DockablePanel*
 ColorGlobalModeTarget::getPanel() const
 {
-    KnobGuiColor* knob = getColorKnobGui();
+    KnobGui* knob = getKnobGui();
 
     return knob ? dynamic_cast<DockablePanel*>(knob->getContainer()) : 0;
 }
@@ -1741,24 +1907,16 @@ ColorGlobalModeTarget::getPanel() const
 void
 ColorGlobalModeTarget::attach()
 {
-    KnobGuiColor* knob = getColorKnobGui();
-
-    if (!knob) {
-        return;
+    if (ColorGlobalModeHook* hook = getHook()) {
+        hook->attach();
     }
-    knob->setGlobalModeHighlighted(true);
-    knob->setAdjustPanelExpanded(true);
-    knob->touchColorKnob();
-    // The whole column, not just the row: with the panel open and the HUD attached, the column
-    // has grown well past the row alone, and every part of it should land in view together.
-    revealKnobInPanel(getPanel(), knob->getKnob(), knob->getGlobalModeColumnWidget());
 }
 
 void
 ColorGlobalModeTarget::detach()
 {
-    if (KnobGuiColor* knob = getColorKnobGui()) {
-        knob->setGlobalModeHighlighted(false);
+    if (ColorGlobalModeHook* hook = getHook()) {
+        hook->detach();
     }
 }
 
@@ -1775,9 +1933,9 @@ ColorGlobalModeTarget::getLiveValue() const
         return _strokeValue;
     }
 
-    KnobGuiColor* knob = getColorKnobGui();
+    ColorGlobalModeHook* hook = getHook();
 
-    return knob ? knob->getCurrentColorValue() : neutralValue();
+    return hook ? hook->getCurrentColorValue() : neutralValue();
 }
 
 ColorTrackballRevealLabels
@@ -1805,19 +1963,19 @@ ColorGlobalModeTarget::setMode(ColorGlobalModeEnum mode)
 bool
 ColorGlobalModeTarget::beginStroke()
 {
-    KnobGuiColor* knob = getColorKnobGui();
+    ColorGlobalModeHook* hook = getHook();
 
-    if (!knob || !knob->isColorEditable()) {
+    if (!hook || !hook->isColorEditable()) {
         return false;
     }
-    knob->touchColorKnob();
-    _strokeRole = knob->getColorRole();
-    _strokeBasis = knob->getEditBasis();
+    hook->touch();
+    _strokeRole = hook->getColorRole();
+    _strokeBasis = hook->getEditBasis();
     _strokeMode = _mode;
-    _strokeValue = knob->getCurrentColorValue();
+    _strokeValue = hook->getCurrentColorValue();
     _stroke.begin(_strokeValue, _rememberedHue);
     _strokeActive = true;
-    knob->getEditSession()->begin(strokeLabel());
+    hook->beginEdit(strokeLabel());
 
     return true;
 }
@@ -1827,9 +1985,9 @@ ColorGlobalModeTarget::moveStroke(double dx,
                                   double dy,
                                   double gearFactor)
 {
-    KnobGuiColor* knob = getColorKnobGui();
+    ColorGlobalModeHook* hook = getHook();
 
-    if (!_strokeActive || !knob) {
+    if (!_strokeActive || !hook) {
         return;
     }
     _stroke.addMove(dx, dy, gearFactor);
@@ -1839,7 +1997,7 @@ ColorGlobalModeTarget::moveStroke(double dx,
     if (r.valid) {
         _strokeValue = r.value;
     }
-    knob->getEditSession()->move(_strokeValue, strokeLabel());
+    hook->moveEdit(_strokeValue, strokeLabel());
 }
 
 void
@@ -1851,8 +2009,8 @@ ColorGlobalModeTarget::endStroke()
     _strokeActive = false;
     _rememberedHue = _stroke.rememberedHueAfter(_strokeMode, _strokeRole, _strokeBasis, _strokeValue, _rates);
 
-    if (KnobGuiColor* knob = getColorKnobGui()) {
-        knob->getEditSession()->end(_strokeValue, ColorTrackballGlobalMode::tr("Global %1").arg(colorGlobalModeKeyName(_strokeMode)));
+    if (ColorGlobalModeHook* hook = getHook()) {
+        hook->endEdit(_strokeValue, ColorTrackballGlobalMode::tr("Global %1").arg(colorGlobalModeKeyName(_strokeMode)));
     }
 }
 
@@ -1863,8 +2021,8 @@ ColorGlobalModeTarget::abandonStroke()
         return;
     }
     _strokeActive = false;
-    if (KnobGuiColor* knob = getColorKnobGui()) {
-        knob->getEditSession()->abandon();
+    if (ColorGlobalModeHook* hook = getHook()) {
+        hook->abandonEdit();
     }
 }
 
@@ -1885,10 +2043,9 @@ ColorGlobalModeTarget::handleKey(int key,
 void
 ColorGlobalModeTarget::fillHudState(ColorTrackballHudState* state) const
 {
-    KnobGuiColor* knob = getColorKnobGui();
-    KnobIPtr k = knob ? knob->getKnob() : KnobIPtr();
+    ColorGlobalModeHook* hook = getHook();
 
-    state->knobLabel = k ? QString::fromUtf8(k->getLabel().c_str()) : QString();
+    state->knobLabel = hook ? hook->getLabel() : QString();
     state->mode = _mode;
 }
 
@@ -1896,18 +2053,18 @@ void
 ColorGlobalModeTarget::syncReveal(ColorTrackballReveal* reveal,
                                   bool strokeActive)
 {
-    KnobGuiColor* knob = getColorKnobGui();
+    ColorGlobalModeHook* hook = getHook();
 
-    if (!knob || !reveal) {
+    if (!hook || !reveal) {
         return;
     }
 
-    const ColorKnobRoleEnum role = knob->getColorRole();
+    const ColorKnobRoleEnum role = hook->getColorRole();
 
     // Configured once per target and role: setKnob() makes the mode disc forget the hue it
     // remembered, which a re-read on every refresh would do mid-stroke.
     if ((_revealConfigured.data() != reveal) || (_revealRole != role) || reveal->isShowingValueKind()) {
-        reveal->setKnob(role, knob->getEditBasis(), knob->getDisplayConverter(), _rates.wheelRim);
+        reveal->setKnob(role, hook->getEditBasis(), hook->getDisplayConverter(), _rates.wheelRim);
         _revealConfigured = reveal;
         _revealRole = role;
     }
@@ -1916,7 +2073,7 @@ ColorGlobalModeTarget::syncReveal(ColorTrackballReveal* reveal,
     if (strokeActive && _strokeActive) {
         reveal->setStroke(_stroke.getStart(), _strokeValue, _stroke.getTotalDx(), _stroke.getTotalDy(), _rates);
     } else {
-        const KnobColorValue value = knob->getCurrentColorValue();
+        const KnobColorValue value = hook->getCurrentColorValue();
 
         reveal->setStroke(value, value, 0.0, 0.0, _rates);
     }

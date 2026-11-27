@@ -170,6 +170,7 @@ set(Tests_SOURCES
     MemoryInfo_Test.cpp
     Metadata_Test.cpp
     NativeParity.cpp
+    Native/ColorWarpCompare.cpp
     Native/NativeGolden.cpp
     Native/NativeGpuParity.cpp
     Gpu/RawRegionGpu_Test.cpp

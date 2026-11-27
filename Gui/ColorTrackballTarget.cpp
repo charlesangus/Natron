@@ -48,6 +48,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Nodes/Color/ColorCorrect.h"
 #include "Engine/Nodes/Color/Grade.h"
 
+#include "Gui/ColorGlobalModeHook.h"
 #include "Gui/ColorTrackballGlobalMode.h"
 #include "Gui/DockablePanel.h"
 #include "Gui/Gui.h"
@@ -422,6 +423,9 @@ isGlobalModeKnob(KnobGui* knobGui)
 
     KnobIPtr knob = knobGui->getKnob();
 
+    if (ColorGlobalModeHookProvider* provider = dynamic_cast<ColorGlobalModeHookProvider*>(knobGui)) {
+        return knob && knob->isEnabled(0) && bool(provider->makeColorGlobalModeHook());
+    }
     if (!isGlobalModeKnobEditable(knob)) {
         return false;
     }
@@ -487,6 +491,11 @@ makeGlobalModeTarget(KnobGui* knobGui)
 
     if (!owner) {
         return std::shared_ptr<GlobalModeTarget>();
+    }
+    if (ColorGlobalModeHookProvider* provider = dynamic_cast<ColorGlobalModeHookProvider*>(owner.get())) {
+        std::shared_ptr<ColorGlobalModeHook> hook = provider->makeColorGlobalModeHook();
+
+        return hook ? std::make_shared<ColorGlobalModeTarget>(hook) : std::shared_ptr<GlobalModeTarget>();
     }
     if (KnobGuiColorPtr color = std::dynamic_pointer_cast<KnobGuiColor>(owner)) {
         if (!color->getAdjustPanel()) {

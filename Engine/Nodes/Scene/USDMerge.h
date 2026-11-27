@@ -40,12 +40,14 @@
 
 #define kUSDMergeInputCount 64
 
+#define kUSDMergeParamOpinionOrder "opinionOrder"
+
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief Unites the layer stacks of its scene inputs into one, authoring nothing itself. Inputs
- * stack in input order, so a later input's layers are stronger than an earlier one's and win
- * where both author the same opinion. A layer that arrives through more than one input (one
+ * @brief Unites the layer stacks of its scene inputs into one, authoring nothing itself. By
+ * default inputs stack in input order, so a later input's layers are stronger than an earlier
+ * one's and win where both author the same opinion; the Opinion Order knob reverses that. A layer that arrives through more than one input (one
  * source reaching the node along two branches) is kept once, at its weakest position, so that it
  * stays under every layer authored downstream of it.
  **/
@@ -59,9 +61,10 @@ public:
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_USDMERGE,
         .label = "USDMerge",
-        .description = "Unite the scenes of the inputs into one by stacking their layers. Later inputs are stronger: "
-                       "where two inputs author the same attribute, the higher-numbered input wins. A layer that "
-                       "reaches the node through more than one input is used once, under everything authored over it.",
+        .description = "Unite the scenes of the inputs into one by stacking their layers. By default later inputs are "
+                       "stronger: where two inputs author the same attribute, the higher-numbered input wins; Opinion "
+                       "Order can make the lower-numbered input win instead. A layer that reaches the node through "
+                       "more than one input is used once, under everything authored over it.",
         .grouping = PLUGIN_GROUP_3D_USD,
         .majorVersion = 1,
         .minorVersion = 0,
@@ -81,18 +84,23 @@ public:
     virtual ~USDMerge();
 
     /**
-     * @brief The union of inputs, given in order from weakest to strongest: each one's layers
-     * stacked over the ones before, each layer kept only at its first, weakest, position. A
-     * payload that holds every layer of the first non-empty input in order is built on that
-     * input's stack, so a single input passes through as it is.
+     * @brief The union of inputs, each one's layers stacked over the ones before, each layer kept
+     * only at its first, weakest, position. The inputs are taken from the first to the last, so
+     * that the last is strongest, or from the last to the first when lowerWins is set, so that
+     * input 0 is strongest. A payload that holds every layer of the first non-empty input taken
+     * is built on that input's stack, so a single input passes through as it is under both orders.
      **/
-    static ScenePayload mergeStacks(const std::vector<ScenePayload>& inputs);
+    static ScenePayload mergeStacks(const std::vector<ScenePayload>& inputs,
+                                    bool lowerWins = false);
 
 private:
+    virtual void initializeKnobs() OVERRIDE FINAL;
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual StatusEnum renderScene(const SceneRenderActionArgs& args,
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    KnobChoiceWPtr _opinionOrder;
 };
 
 NATRON_NAMESPACE_EXIT

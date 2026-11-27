@@ -83,6 +83,16 @@ setString(const NodePtr& node,
     knob->setValue(value);
 }
 
+void
+setOpinionOrder(const NodePtr& node,
+                const char* id)
+{
+    KnobChoice* knob = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDMergeParamOpinionOrder).get());
+
+    ASSERT_TRUE(knob != nullptr);
+    knob->setValueFromID(id, 0);
+}
+
 PXR_NS::GfVec3d
 worldTranslation(const PXR_NS::UsdStageRefPtr& stage,
                  const char* path)
@@ -403,6 +413,169 @@ TEST_F(USDMergePruneTest, OneInputPassesThroughAndNoneIsEmpty)
 
     EXPECT_TRUE(evaluate(merge({})).isEmpty());
     EXPECT_TRUE(USDMerge::mergeStacks({ ScenePayload(), ScenePayload() }).isEmpty());
+}
+
+// mergeStacks with lowerWins, called directly on evaluated payloads.
+TEST_F(USDMergePruneTest, LowerWinsTakesAConflictingAttributeFromInputZero)
+{
+    NodePtr left = prim("/Thing", PXR_NS::GfVec3d(1., 0., 0.));
+    NodePtr right = prim("/Thing", PXR_NS::GfVec3d(0., 2., 0.));
+    NodePtr other = prim("/Other", PXR_NS::GfVec3d(0., 0., 3.));
+    ASSERT_TRUE(left && right && other);
+    const std::vector<ScenePayload> inputs = { evaluate(left), evaluate(right), evaluate(other) };
+
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(USDMerge::mergeStacks(inputs, true));
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(PXR_NS::GfVec3d(1., 0., 0.), worldTranslation(stage, "/Thing"));
+    EXPECT_EQ(PXR_NS::GfVec3d(0., 0., 3.), worldTranslation(stage, "/Other"));
+
+    // The default is the higher input winning.
+    stage = SceneOps::compose(USDMerge::mergeStacks(inputs));
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(PXR_NS::GfVec3d(0., 2., 0.), worldTranslation(stage, "/Thing"));
+}
+
+TEST_F(USDMergePruneTest, LowerWinsKeepsADiamondsSharedLayerOnceUnderBothBranches)
+{
+    NodePtr source = prim("/World", PXR_NS::GfVec3d(100., 0., 0.), { prim("/Child", PXR_NS::GfVec3d(0.)) });
+    ASSERT_TRUE(bool(source));
+    auto move = [this, &source](const char* pattern, int dimension, double offset) {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
+        EXPECT_TRUE(bool(node));
+        if (node) {
+            setString(node, kUSDEditTransformParamPrimPattern, pattern);
+            getDoubleKnob(node, kSceneParamTranslate)->setValue(offset, ViewSpec::all(), dimension);
+            EXPECT_TRUE(node->connectInput(source, 0));
+        }
+
+        return node;
+    };
+    NodePtr lift = move("/World", 1, 5.);
+    NodePtr push = move("/World/Child", 2, 1.);
+    ASSERT_TRUE(lift && push);
+
+    const std::vector<PXR_NS::SdfLayer*> sourceLayers = layersOf(evaluate(source));
+    const std::size_t shared = sourceLayers.size();
+    ASSERT_LT(0u, shared);
+    const ScenePayload output = USDMerge::mergeStacks({ evaluate(lift), evaluate(push) }, true);
+    const std::vector<PXR_NS::SdfLayer*> layers = layersOf(output);
+    ASSERT_EQ(shared + 2, layers.size());
+    for (PXR_NS::SdfLayer* layer : sourceLayers) {
+        EXPECT_EQ(1, std::count(layers.begin(), layers.end(), layer));
+    }
+    // The walk starts at the last input, so its branch layer is the weaker of the two.
+    EXPECT_EQ(layersOf(evaluate(push)).back(), layers[shared]);
+    EXPECT_EQ(layersOf(evaluate(lift)).back(), layers[shared + 1]);
+
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(output);
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(PXR_NS::GfVec3d(100., 5., 0.), worldTranslation(stage, "/World"));
+    EXPECT_EQ(PXR_NS::GfVec3d(100., 5., 1.), worldTranslation(stage, "/World/Child"));
+}
+
+TEST_F(USDMergePruneTest, LowerWinsPassesASingleInputThrough)
+{
+    NodePtr source = prim("/Thing", PXR_NS::GfVec3d(1., 0., 0.));
+    ASSERT_TRUE(bool(source));
+    const ScenePayload input = evaluate(source);
+
+    for (const bool lowerWins : { false, true }) {
+        EXPECT_TRUE(USDMerge::mergeStacks({ input }, lowerWins).isSameStack(input)) << lowerWins;
+        EXPECT_TRUE(USDMerge::mergeStacks({ ScenePayload(), input, ScenePayload() }, lowerWins).isSameStack(input)) << lowerWins;
+        EXPECT_TRUE(USDMerge::mergeStacks({ input, input }, lowerWins).isSameStack(input)) << lowerWins;
+        EXPECT_TRUE(USDMerge::mergeStacks({ ScenePayload() }, lowerWins).isEmpty()) << lowerWins;
+    }
+}
+
+TEST_F(USDMergePruneTest, TheOpinionOrderKnobDefaultsToHigherInputsWinning)
+{
+    NodePtr node = merge({});
+    ASSERT_TRUE(bool(node));
+    KnobChoice* order = dynamic_cast<KnobChoice*>(node->getKnobByName(kUSDMergeParamOpinionOrder).get());
+    ASSERT_TRUE(order != nullptr);
+    EXPECT_EQ(0, order->getValue());
+    EXPECT_EQ("Opinion Order", order->getLabel());
+}
+
+// A branch brought back next to the scene it was taken from: the scene's xform on /Group beats
+// the branch's, and the branch's new prim still comes through.
+TEST_F(USDMergePruneTest, LowerInputsWinKeepsTheExistingXformAndTheNewPrims)
+{
+    NodePtr source = prim("/Group", PXR_NS::GfVec3d(1., 0., 0.));
+    NodePtr branch = prim("/Group", PXR_NS::GfVec3d(0., 5., 0.), { prim("/New", PXR_NS::GfVec3d(0., 0., 2.)) });
+    ASSERT_TRUE(source && branch);
+    NodePtr node = merge({ source, branch });
+    ASSERT_TRUE(bool(node));
+
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(evaluate(node));
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(PXR_NS::GfVec3d(0., 5., 0.), worldTranslation(stage, "/Group"));
+
+    setOpinionOrder(node, "lower");
+    stage = SceneOps::compose(evaluate(node));
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(PXR_NS::GfVec3d(1., 0., 0.), worldTranslation(stage, "/Group"));
+    EXPECT_TRUE(bool(stage->GetPrimAtPath(PXR_NS::SdfPath("/Group/New"))));
+    EXPECT_EQ(PXR_NS::GfVec3d(1., 0., 2.), worldTranslation(stage, "/Group/New"));
+}
+
+TEST_F(USDMergePruneTest, LowerInputsWinOrdersAnAppendTransformsOpsByTheNewStrength)
+{
+    NodePtr source = prim("/Thing", PXR_NS::GfVec3d(1., 0., 0.));
+    ASSERT_TRUE(bool(source));
+    auto transform = [this](const NodePtr& input, int dimension, double offset) {
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
+        EXPECT_TRUE(bool(node));
+        if (node) {
+            setString(node, kUSDEditTransformParamPrimPattern, "/Thing");
+            getDoubleKnob(node, kSceneParamTranslate)->setValue(offset, ViewSpec::all(), dimension);
+            EXPECT_TRUE(node->connectInput(input, 0));
+        }
+
+        return node;
+    };
+    NodePtr up = transform(source, 1, 2.);
+    NodePtr back = transform(source, 2, 3.);
+    ASSERT_TRUE(up && back);
+    NodePtr joined = merge({ up, back });
+    ASSERT_TRUE(bool(joined));
+    setOpinionOrder(joined, "lower");
+    NodePtr along = transform(joined, 0, 10.);
+    ASSERT_TRUE(bool(along));
+
+    PXR_NS::UsdStageRefPtr stage = SceneOps::compose(evaluate(along));
+    ASSERT_TRUE(bool(stage));
+    EXPECT_EQ(PXR_NS::GfVec3d(11., 2., 3.), worldTranslation(stage, "/Thing"));
+
+    PXR_NS::VtTokenArray order;
+    ASSERT_TRUE(PXR_NS::UsdGeomXformable(stage->GetPrimAtPath(PXR_NS::SdfPath("/Thing"))).GetXformOpOrderAttr().Get(&order));
+    const auto indexOf = [&order](const NodePtr& node) {
+        const PXR_NS::TfToken op("xformOp:transform:" + node->getScriptName_mt_safe());
+
+        return std::find(order.begin(), order.end(), op) - order.begin();
+    };
+    const std::ptrdiff_t size = (std::ptrdiff_t)order.size();
+    EXPECT_LT(indexOf(up), size);
+    EXPECT_LT(indexOf(back), size);
+    // Input 0 is now the strongest, so its op comes after the weaker input 1's.
+    EXPECT_LT(indexOf(back), indexOf(up));
+    EXPECT_EQ(size - 1, indexOf(along));
+}
+
+TEST_F(USDMergePruneTest, ChangingTheOpinionOrderRecooksToADifferentStage)
+{
+    NodePtr left = prim("/Thing", PXR_NS::GfVec3d(1., 0., 0.));
+    NodePtr right = prim("/Thing", PXR_NS::GfVec3d(0., 2., 0.));
+    ASSERT_TRUE(left && right);
+    NodePtr node = merge({ left, right });
+    ASSERT_TRUE(bool(node));
+
+    const ScenePayload higher = evaluate(node);
+    setOpinionOrder(node, "lower");
+    const ScenePayload lower = evaluate(node);
+    EXPECT_NE(higher.getStackHash(), lower.getStackHash());
+    setOpinionOrder(node, "higher");
+    EXPECT_EQ(higher.getStackHash(), evaluate(node).getStackHash());
 }
 
 TEST_F(USDMergePruneTest, PrunedPrimsAreInactiveOnTheComposedStage)

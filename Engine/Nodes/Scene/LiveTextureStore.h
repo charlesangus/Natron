@@ -64,7 +64,8 @@ constexpr float kLiveTextureMissingColour[4] = { 1.f, 0.f, 1.f, 1.f };
  * bottom-up as Natron renders them, after a small header, as LiveTextureFile.h lays them out. The colour is not premultiplied, as USD
  * textures are not: where an RGBA image's alpha is 0, within kTransparentFillBand texels of one
  * with an alpha, the colour is that of the nearest texels with an alpha, so filtering across its
- * edges blends in no black; farther out it is as rendered. The header and the pixels are one
+ * edges blends in no black; farther out it is as rendered. A source delivered premultiplied
+ * (LiveTextureSource::premultiplied) keeps the colour as rendered, which filters without the fill. The header and the pixels are one
  * buffer, which is what the natron:// asset serves without a copy.
  **/
 class LiveTextureBuffer {
@@ -179,6 +180,9 @@ struct LiveTextureSource {
     std::string nodeName;
     std::string layer;
     U64 contentHash = 0;
+    // Serves the colour as rendered, premultiplied by alpha, for a shader that composites it over
+    // another value itself and would otherwise have to premultiply it again.
+    bool premultiplied = false;
     // Whether the image changes over time; a static one has one URI at every frame.
     bool varying = false;
     // The frames the layer authors samples at, as SceneNodeAuthoring::getSampleFrames does.
@@ -233,7 +237,8 @@ struct LiveTextureSource {
 
     static std::string makeUri(const std::string& nodeName,
                                const std::string& layer,
-                               U64 version);
+                               U64 version,
+                               bool premultiplied = false);
 
 private:
     U64 getVersion(double frame) const;

@@ -2498,6 +2498,7 @@ appendLiveTextureSource(const LiveTextureSource& source,
 {
     h->appendString(source.nodeName);
     h->appendString(source.layer);
+    h->appendBool(source.premultiplied);
     h->appendU64(source.contentHash);
     h->appendBool(source.varying);
     h->appendU64(source.tiles.size());

@@ -44,6 +44,7 @@
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneRaster.h"
+#include "Engine/Nodes/Scene/USDLayerMaterial.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/RectI.h"
@@ -828,6 +829,13 @@ namespace {
             _warnings.insert(warning);
         }
 
+        // The premultiplied paint a USDLayerMaterial layer texture holds.
+        bool layerTexture(const PXR_NS::UsdShadeShader& shader,
+                          TextureOutput* out)
+        {
+            return textureOutput(shader, PXR_NS::TfToken("rgba"), out);
+        }
+
     private:
         static std::string describe(const PXR_NS::UsdShadeShader& shader)
         {
@@ -1002,12 +1010,43 @@ namespace {
         std::set<std::string> _warnings;
     };
 
+    PXR_NS::UsdShadeMaterial
+    boundMaterial(const PXR_NS::UsdPrim& prim)
+    {
+        return prim ? PXR_NS::UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial(PXR_NS::UsdShadeTokens->preview) : PXR_NS::UsdShadeMaterial();
+    }
+
     PXR_NS::UsdShadeShader
     boundSurface(const PXR_NS::UsdPrim& prim)
     {
-        const PXR_NS::UsdShadeMaterial material = PXR_NS::UsdShadeMaterialBindingAPI(prim).ComputeBoundMaterial(PXR_NS::UsdShadeTokens->preview);
+        const PXR_NS::UsdShadeMaterial material = boundMaterial(prim);
 
         return material ? material.ComputeSurfaceSource() : PXR_NS::UsdShadeShader();
+    }
+
+    // How many USDLayerMaterial layers material stacks over its original, 0 for none.
+    int
+    layerDepth(const PXR_NS::UsdShadeMaterial& material)
+    {
+        int depth = 0;
+        const PXR_NS::UsdAttribute attribute = material ? material.GetPrim().GetAttribute(PXR_NS::TfToken(kUSDLayerMaterialAttrLayerDepth)) : PXR_NS::UsdAttribute();
+
+        if (attribute) {
+            (void)attribute.Get(&depth);
+        }
+
+        return depth;
+    }
+
+    // The texture layer k of a layered material paints over input with, if any.
+    PXR_NS::UsdShadeShader
+    layerShader(const PXR_NS::UsdShadeMaterial& material,
+                int k,
+                const std::string& input)
+    {
+        const std::string name = std::string(kUSDLayerMaterialTexturePrefix) + std::to_string(k) + "_" + input;
+
+        return PXR_NS::UsdShadeShader(material.GetPrim().GetChild(PXR_NS::TfToken(name)));
     }
 
     bool
@@ -1024,14 +1063,21 @@ namespace {
                                  PXR_NS::UsdTimeCode /*time*/,
                                  std::set<std::string>* purposes) const OVERRIDE FINAL
         {
-            const PXR_NS::UsdShadeShader surface = boundSurface(stage ? stage->GetPrimAtPath(mesh) : PXR_NS::UsdPrim());
+            const PXR_NS::UsdPrim prim = stage ? stage->GetPrimAtPath(mesh) : PXR_NS::UsdPrim();
+            const PXR_NS::UsdShadeMaterial material = boundMaterial(prim);
+            const PXR_NS::UsdShadeShader surface = boundSurface(prim);
 
             if (!isPreviewSurface(surface)) {
                 return;
             }
+            const int depth = layerDepth(material);
             for (const std::string& purpose : optionalPurposes()) {
                 const PXR_NS::UsdShadeInput input = surface.GetInput(PXR_NS::TfToken(purpose));
-                if (input && (input.HasConnectedSource() || input.GetAttr().HasAuthoredValue())) {
+                bool painted = false;
+                for (int k = 1; !painted && (k <= depth); ++k) {
+                    painted = bool(layerShader(material, k, purpose));
+                }
+                if (painted || (input && (input.HasConnectedSource() || input.GetAttr().HasAuthoredValue()))) {
                     purposes->insert(purpose);
                 }
             }
@@ -1084,6 +1130,22 @@ namespace {
                 sources.push_back(source);
             }
 
+            // Each source's USDLayerMaterial paint, bottom layer first, as the layered surfaces lay it.
+            std::vector<std::vector<TextureOutput>> layers(sources.size());
+            if (preview || projection) {
+                const PXR_NS::UsdShadeMaterial material = boundMaterial(prim);
+                const int depth = layerDepth(material);
+                for (std::size_t p = 0; p < purposes.size(); ++p) {
+                    for (int k = 1; k <= depth; ++k) {
+                        const PXR_NS::UsdShadeShader shader = layerShader(material, k, purposes[p]);
+                        TextureOutput paint;
+                        if (shader && reader.layerTexture(shader, &paint)) {
+                            layers[p].push_back(paint);
+                        }
+                    }
+                }
+            }
+
             SceneRaster::BakeArgs bake;
             bake.primPath = args.mesh;
             bake.stName = args.stName;
@@ -1121,7 +1183,19 @@ namespace {
                     texel.position = PXR_NS::GfVec3d(buffers.worldPosition[i]);
                     texel.normal = PXR_NS::GfVec3d(buffers.worldNormal[i]);
                     for (std::size_t p = 0; p < sources.size(); ++p) {
-                        const PXR_NS::GfVec4f value = sources[p].at(texel);
+                        PXR_NS::GfVec4f value = sources[p].at(texel);
+                        for (const TextureOutput& layer : layers[p]) {
+                            const PXR_NS::GfVec4f paint = layer.at(texel);
+                            const float keep = 1.f - paint[3];
+                            if (sources[p].kind == Source::eKindProjection) {
+                                value = paint + value * keep;
+                            } else if (sources[p].colour) {
+                                value = PXR_NS::GfVec4f(value[0] * keep + paint[0], value[1] * keep + paint[1], value[2] * keep + paint[2], 1.f);
+                            } else {
+                                const float scalar = value[0] * keep + paint[0];
+                                value = PXR_NS::GfVec4f(scalar, scalar, scalar, 1.f);
+                            }
+                        }
                         float* out = (*planes)[p].data() + i * 4;
                         for (int c = 0; c < 4; ++c) {
                             out[c] = value[c];

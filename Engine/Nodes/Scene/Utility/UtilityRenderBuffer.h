@@ -244,14 +244,17 @@ public:
      * the frame's earlier calls, and fails if the film is gone. The host pixels are stale from here
      * until Map() or clear().
      *
-     * record gives the context to record the next `work` kernel threads into, having submitted and
-     * waited for what was recorded first when it asks to, or null when the frame was stopped or a
-     * submission failed; the clear then stops part way and the next call clears again. Each clear
-     * dispatch runs at most maxDispatchThreads threads, or the fewest rows the device's offset
-     * alignment lets a band start on, so that a stop never waits for the clear of a whole film.
+     * record gives the context to record the next `work` units of work into, a unit costing about
+     * one traced ray, having submitted and waited for what was recorded first when it asks to, or
+     * null when the frame was stopped or a submission failed. The film's clear, or its copy when
+     * another holder still has it, goes in pieces of at most maxWork units each, or the fewest rows
+     * the device's offset alignment lets a band start on, so that a stop never waits for a whole
+     * film. A frame stopped part way keeps the film as it was: the next call clears again, or
+     * copies the samples of the earlier calls again. The submissions run outside the buffer's lock,
+     * so that no reader waits on them; a clear() or release meanwhile fails the call.
      **/
     gpu::GpuStatus beginDeviceFrame(const std::function<gpu::GpuRecordContext*(std::uint64_t work)>& record,
-                                    std::uint64_t maxDispatchThreads,
+                                    std::uint64_t maxWork,
                                     gpu::GpuKernelRegistry& registry,
                                     gpu::GpuBufferPool& pool,
                                     const std::shared_ptr<const UtilityFilmKernels>& kernels,
@@ -304,6 +307,9 @@ private:
     std::vector<float> _sampleSums;
     std::vector<float> _sampleWeights;
     bool _deviceRestart = true;
+    // Counts clear(), release and deallocation, under _deviceMutex, for a frame starting outside the lock to see
+    // that the film it filled is no longer the one asked for.
+    std::uint64_t _deviceEpoch = 0;
     mutable std::mutex _deviceMutex;
 #ifdef NATRON_HAVE_GPU
     std::shared_ptr<UtilityDeviceFilm> _film;

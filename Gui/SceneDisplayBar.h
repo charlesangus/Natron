@@ -29,7 +29,6 @@
 #include "Global/Macros.h"
 
 #include <functional>
-#include <vector>
 
 #include <QList>
 #include <QPointer>
@@ -88,7 +87,6 @@ private:
     QMenu* _drawModeMenu;
     QMenu* _purposesMenu;
     QMenu* _lightingMenu;
-    std::vector<QToolButton*> _geometryButtons;
     QList<QAction*> _geometryToggles;
     QToolButton* _displayOptions;
     QDoubleSpinBox* _normalScale;

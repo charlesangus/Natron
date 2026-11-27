@@ -122,7 +122,6 @@ namespace YamlDetail {
             return view;
         }
 
-        // The flags in their declaration order, with the keys they are saved under.
         const std::pair<const char*, bool ViewerBarsSerialization::*> kViewerBarFlags[] = {
             { "toolBar2D", &ViewerBarsSerialization::toolBar2D },
             { "toolBar3D", &ViewerBarsSerialization::toolBar3D },

@@ -176,6 +176,7 @@
 #include "Gui/KnobGui.h"
 #include "Gui/KnobUndoCommand.h"
 #include "Gui/Menu.h"
+#include "Gui/NodeViewerContext.h"
 #include "Gui/SceneDrawBoxes.h"
 #include "Gui/SceneDrawStateQueue.h"
 #include "Gui/SceneDrawTiming.h"
@@ -11561,7 +11562,7 @@ SceneViewport::publishState()
     setProperty("natronSceneTransformSpace", QString::fromUtf8((_imp->renderer.getTransformSpace() == SceneTransform::eSpaceLocal) ? "local" : "world"));
     setProperty("natronSceneTransformPivot", QString::fromUtf8((_imp->renderer.getTransformPivot() == SceneTransform::ePivotCurrentPrim) ? "currentPrim" : "selectionCentre"));
     publishRefineState();
-    syncDisplayActions(false);
+    syncDisplayActions();
 }
 
 void
@@ -12602,6 +12603,12 @@ SceneViewport::getHandleNode() const
     return _imp->transformNodeProvider ? _imp->transformNodeProvider() : NodePtr();
 }
 
+bool
+SceneViewport::drawsHandleOf(const NodePtr& node)
+{
+    return node && dynamic_cast<USDEditTransform*>(node->getEffectInstance().get());
+}
+
 void
 SceneViewport::setTransformTarget(const std::shared_ptr<SceneTransformTarget>& target)
 {
@@ -12621,6 +12628,20 @@ SceneViewport::setTransformTool(int tool)
     _imp->renderer.setHighlightedTransformHandle(SceneGizmo::kNoHandle);
     publishState();
     update();
+}
+
+bool
+SceneViewport::offersTransformTool(int tool) const
+{
+    return (tool != SceneTransform::eToolNodeHandle) || bool(getHandleNode());
+}
+
+void
+SceneViewport::leaveNodeHandleToolWithoutNode()
+{
+    if ((_imp->renderer.getTransformTool() == SceneTransform::eToolNodeHandle) && !getHandleNode()) {
+        setTransformTool(SceneTransform::eToolSelect);
+    }
 }
 
 int
@@ -13105,10 +13126,8 @@ SceneViewport::refreshTransformHandles()
         // A panel opening or closing changes the node; this runs from paints, so the tool and the
         // bars hear of it after.
         const auto onHandleNodeChanged = [this]() {
-            if (!getHandleNode() && (_imp->renderer.getTransformTool() == SceneTransform::eToolNodeHandle)) {
-                setTransformTool(SceneTransform::eToolSelect);
-            }
-            syncDisplayActions(false);
+            leaveNodeHandleToolWithoutNode();
+            syncDisplayActions();
         };
         QMetaObject::invokeMethod(this, onHandleNodeChanged, Qt::QueuedConnection);
     }
@@ -14015,6 +14034,9 @@ SceneViewport::endHandleDrag()
     } else {
         _imp->clearPreview();
     }
+    // The switch to Select is refused while a drag is under way, so a panel closed mid-drag is
+    // only acted on here.
+    leaveNodeHandleToolWithoutNode();
     update();
 } // SceneViewport::endHandleDrag
 
@@ -14143,7 +14165,7 @@ SceneViewport::event(QEvent* e)
         if (matchesKeyBinding(kShortcutIDActionViewer3DFrameSelection, k->modifiers(), k->key()) || matchesKeyBinding(kShortcutIDActionViewer3DFrameAll, k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DLockView, k->modifiers(), k->key()) || (viewModeForKey(k->modifiers(), k->key()) >= 0)
             || (drawModeForKey(k->modifiers(), k->key()) >= 0) || matchesKeyBinding(kShortcutIDActionViewer3DShowGrid, k->modifiers(), k->key())
-            || matchesKeyBinding(kShortcutIDActionViewer3DShowGuides, k->modifiers(), k->key()) || isTransformKey(k->modifiers(), k->key())
+            || matchesKeyBinding(kShortcutIDActionViewer3DShowGuides, k->modifiers(), k->key()) || (isTransformKey(k->modifiers(), k->key()) && offersTransformTool(transformToolForKey(k->modifiers(), k->key())))
             || matchesKeyBinding(kShortcutIDActionViewer3DSetSelectionOnNode, k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DCreateFromSelection, k->modifiers(), k->key()) || drawKeyFor(k->modifiers(), k->key())
             || (pickwalkForKey(k->modifiers(), k->key()) >= 0)
@@ -14209,7 +14231,7 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
         return;
     }
     const int tool = transformToolForKey(e->modifiers(), e->key());
-    if (tool >= 0) {
+    if ((tool >= 0) && offersTransformTool(tool)) {
         setTransformTool(tool);
         e->accept();
 
@@ -14406,8 +14428,8 @@ SceneViewport::createDisplayActions()
         const int tool = entry.tool;
         QObject::connect(action, &QAction::triggered, this, [this, tool]() {
             setTransformTool(tool);
-            // A tool change refused mid-drag must not leave the action checked.
-            syncDisplayActions(true);
+            // A tool change refused mid-drag publishes nothing, and must not leave the action checked.
+            syncDisplayActions();
         });
         _imp->transformToolActions.push_back(action);
     }
@@ -14422,7 +14444,7 @@ SceneViewport::createDisplayActions()
         const SceneViewportRenderer::DrawModeEnum mode = item.mode;
         QObject::connect(action, &QAction::triggered, this, [this, mode]() {
             setDrawMode(mode);
-            syncDisplayActions(true);
+            syncDisplayActions();
         });
         _imp->drawModeActions.push_back(action);
     }
@@ -14446,7 +14468,7 @@ SceneViewport::createDisplayActions()
         QObject::connect(action, &QAction::toggled, this, [this]() {
             const QList<QAction*>& shown = _imp->purposeActions;
             setShowPurposes(shown[0]->isChecked(), shown[1]->isChecked(), shown[2]->isChecked());
-            syncDisplayActions(true);
+            syncDisplayActions();
         });
     }
 
@@ -14459,7 +14481,7 @@ SceneViewport::createDisplayActions()
         const SceneViewportRenderer::LightingModeEnum mode = entry.mode;
         QObject::connect(action, &QAction::triggered, this, [this, mode]() {
             setLightingMode(mode);
-            syncDisplayActions(true);
+            syncDisplayActions();
         });
         _imp->lightingActions.push_back(action);
     }
@@ -14470,12 +14492,27 @@ SceneViewport::createDisplayActions()
     _imp->showGridAction->setShortcutContext(Qt::WidgetShortcut);
     QObject::connect(_imp->showGridAction, &QAction::toggled, this, [this](bool show) {
         setShowGrid(show);
-        syncDisplayActions(true);
+        syncDisplayActions();
     });
+    refreshActionShortcuts();
 } // createDisplayActions
 
 void
-SceneViewport::syncDisplayActions(bool announce)
+SceneViewport::refreshActionShortcuts()
+{
+    for (int i = 0; i < _imp->transformToolActions.size(); ++i) {
+        _imp->transformToolActions[i]->setShortcut(keySequenceOf(kTransformTools[i].actionID));
+    }
+    for (int i = 0; i < _imp->drawModeActions.size(); ++i) {
+        _imp->drawModeActions[i]->setShortcut(keySequenceOf(kDrawModes[i].actionID));
+    }
+    if (_imp->showGridAction) {
+        _imp->showGridAction->setShortcut(keySequenceOf(kShortcutIDActionViewer3DShowGrid));
+    }
+}
+
+void
+SceneViewport::syncDisplayActions()
 {
     if (!_imp->showGridAction) {
         return;
@@ -14491,7 +14528,13 @@ SceneViewport::syncDisplayActions(bool announce)
     for (int i = 0; i < _imp->transformToolActions.size(); ++i) {
         check(_imp->transformToolActions[i], renderer.getTransformTool() == kTransformTools[i].tool);
         if (kTransformTools[i].tool == SceneTransform::eToolNodeHandle) {
-            _imp->transformToolActions[i]->setEnabled(bool(handleNode));
+            QAction* action = _imp->transformToolActions[i];
+            action->setEnabled(bool(handleNode));
+            const NodeHandleTool* handleTool = handleNode ? NodeViewerContext::findHandleTool(handleNode->getPluginID()) : nullptr;
+            const QString text = handleTool ? handleTool->label : shortcutText(kTransformTools[i].label);
+            if (action->text() != text) {
+                action->setText(text);
+            }
         }
     }
     for (int i = 0; i < _imp->drawModeActions.size(); ++i) {
@@ -14524,7 +14567,7 @@ SceneViewport::syncDisplayActions(bool announce)
         QString::number(quintptr(handleNode.get())),
     }
                                  .join(QLatin1Char('\n'));
-    if (!announce && (snapshot == _imp->displaySnapshot)) {
+    if (snapshot == _imp->displaySnapshot) {
         return;
     }
     _imp->displaySnapshot = snapshot;
@@ -14729,14 +14772,11 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
 {
     // The menu takes the release, so no drag may outlive it.
     clearGesture();
-    syncDisplayActions(false);
+    syncDisplayActions();
+    refreshActionShortcuts();
     Menu menu(this);
 
-    for (int i = 0; i < _imp->drawModeActions.size(); ++i) {
-        QAction* action = _imp->drawModeActions[i];
-        action->setShortcut(keySequenceOf(kDrawModes[i].actionID));
-        menu.addAction(action);
-    }
+    menu.addActions(_imp->drawModeActions);
 
     populateRendererMenu(menu.addMenu(tr("Renderer")));
 
@@ -14802,11 +14842,7 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
 
     // The transform widget's tool, frame and origin.
     QMenu* transform = menu.addMenu(tr("Transform"));
-    for (int i = 0; i < _imp->transformToolActions.size(); ++i) {
-        QAction* action = _imp->transformToolActions[i];
-        action->setShortcut(keySequenceOf(kTransformTools[i].actionID));
-        transform->addAction(action);
-    }
+    transform->addActions(_imp->transformToolActions);
     transform->addSeparator();
     QActionGroup* spaces = new QActionGroup(transform);
     const struct
@@ -14859,7 +14895,6 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
     QMenu* lighting = display->addMenu(tr("Lighting"));
     lighting->addActions(_imp->lightingActions);
     display->addSeparator();
-    _imp->showGridAction->setShortcut(keySequenceOf(kShortcutIDActionViewer3DShowGrid));
     display->addAction(_imp->showGridAction);
     QAction* guides = display->addAction(shortcutText(kShortcutDescActionViewer3DShowGuides));
     guides->setCheckable(true);
@@ -14870,7 +14905,6 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
     });
 
     if (_imp->geometryContext) {
-        // The pick modes of the tool bar.
         QMenu* pick = menu.addMenu(tr("Pick"));
         QActionGroup* pickModes = new QActionGroup(pick);
         const char* const pickLabels[] = {

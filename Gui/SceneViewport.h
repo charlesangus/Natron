@@ -1351,6 +1351,13 @@ public:
     NodePtr getHandleNode() const;
 
     /**
+     * @brief Whether the view can draw and drag @p node's handle, which a provider checks before
+     * naming it: a registered handle tool the view cannot draw would enable the node handle tool
+     * with nothing to show, and hide a node it can draw.
+     **/
+    static bool drawsHandleOf(const NodePtr& node);
+
+    /**
      * @brief Where drags of the transform widget on the selection are written. Without one, or
      * while the natronSceneTransformRecordOnly property is true, they are only recorded into the
      * natronSceneTransformDelta property.
@@ -1380,6 +1387,9 @@ public:
     const QList<QAction*>& getPurposeActions() const;
     const QList<QAction*>& getLightingActions() const;
     QAction* getShowGridAction() const;
+
+    // Gives the shared actions the keys bound to them now, for a menu about to show them.
+    void refreshActionShortcuts();
 
     /**
      * @brief Empties menu and fills it with the context menu's Renderer, Look Through, View or
@@ -1648,9 +1658,15 @@ private:
 
     /**
      * @brief Checks the shared actions from the view's state, and emits displayStateChanged() if
-     * that state differs from the last one announced, or always with @p announce.
+     * that state differs from the last one announced.
      **/
-    void syncDisplayActions(bool announce);
+    void syncDisplayActions();
+
+    // False for the node handle tool while no node offers a handle, so that its key passes on.
+    bool offersTransformTool(int tool) const;
+
+    // Gives the node handle tool way to Select once no node offers a handle and no drag holds it.
+    void leaveNodeHandleToolWithoutNode();
 
     /**
      * @brief Hands the pick mode and component selection to the view's guides and highlight, and

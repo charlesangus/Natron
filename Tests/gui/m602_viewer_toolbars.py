@@ -2,7 +2,9 @@
 bar on the right and top bar above it, their controls, and the per-viewer bar flags.
 
 Graph: GeoPrimitive -> Viewer1 (geometry), GeoPrimitive -> GeoToUSD -> USDEditTransform. Then it:
-  - checks the three bars show in the 3D view and the side bars are 28 px icon columns;
+  - checks the three bars show in the 3D view and the side bars are 28 px icon columns, that Hide
+    All hides them and Show All brings them back, and that the draw mode menu shows its keys
+    before any context menu has been opened;
   - clicks the Translate button (natronSceneTransformTool follows), presses Q and T in the view
     (the buttons follow) and checks the tool tooltips carry their shortcut;
   - clicks the Points pick button (natronGeoPickMode follows) and back to Objects;
@@ -20,6 +22,9 @@ Graph: GeoPrimitive -> Viewer1 (geometry), GeoPrimitive -> GeoToUSD -> USDEditTr
   - opens the USDEditTransform panel: its Mode shows in the top bar's tool options; Select draws
     none of its handles, the node handle tool draws them, and closing the panel hides the options
     and switches back to Select;
+  - with no panel open, Return passes on; with the panel open, the view takes it and it picks the
+    node handle tool, which the context menu names after the node's handle; a panel closed during
+    a handle drag switches back to Select at the release;
   - views a Constant, an image: the bars hide by default;
   - hides the display bar, saves, resets and reopens: the display bar stays hidden, the tool bar
     shows, and the Display Bar action is unchecked.
@@ -44,7 +49,7 @@ MESH = "/geo/mesh_0"
 
 try:
     from PySide6.QtCore import QEvent, QMetaObject, QPointF, Qt, QTimer
-    from PySide6.QtGui import QAction, QContextMenuEvent, QMouseEvent
+    from PySide6.QtGui import QAction, QContextMenuEvent, QKeyEvent, QMouseEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QDoubleSpinBox, QLineEdit, QWidget
 
@@ -127,6 +132,24 @@ try:
         """The transform handles the view draws, by handle id."""
         value = prop("natronSceneTransformHandles")
         return [int(h[0]) for h in value] if value else []
+
+    def handle_points():
+        """Where the view draws its transform handles, in widget coordinates."""
+        value = prop("natronSceneTransformHandles")
+        return [QPointF(float(h[1]), float(h[2])) for h in value] if value else []
+
+    def mouse(kind, pos, button, buttons):
+        v = view()
+        event = QMouseEvent(kind, QPointF(pos), v.mapToGlobal(QPointF(pos)), button, buttons, Qt.NoModifier)
+        QApplication.sendEvent(v, event)
+        QApplication.processEvents()
+
+    def override_accepted(k):
+        """Whether the view claims k over the window shortcuts around it."""
+        event = QKeyEvent(QEvent.ShortcutOverride, k, Qt.NoModifier)
+        event.ignore()
+        QApplication.sendEvent(view(), event)
+        return event.isAccepted()
 
     def set_purposes(wanted):
         """Shows exactly the purposes in wanted from the display bar's menu."""
@@ -226,6 +249,12 @@ try:
     def context_menu_state(path, name):
         """Steps that open the view's context menu and return whether the action named name in the
         submenu at path is checked, or None if it is missing."""
+        result = yield from context_menu_read(path, name, lambda action: action.isChecked())
+        return result
+
+    def context_menu_read(path, name, read):
+        """Steps that open the view's context menu and return read() of the action named name in
+        the submenu at path, or None if it is missing."""
         state = {}
         post_context_menu(state)
         ok = yield ("until", lambda: popup() is not None, POLL_TIMEOUT_S)
@@ -235,10 +264,19 @@ try:
             _held.append(menu)
             for action in menu_actions(menu, path):
                 if action.objectName() == name:
-                    result = action.isChecked()
+                    result = read(action)
         close_menus()
         yield ("until", lambda: state.get("closed", False), POLL_TIMEOUT_S)
         return result
+
+    def open_edit_panel():
+        """Opens only the USDEditTransform's settings panel."""
+        gt.close_all_panels()
+        app.clearSelection()
+        app.selectNode(edit, True)
+        graphs = [w for w in widgets_of("NodeGraph") if w.isVisible()]
+        require(graphs, "the node graph is on screen")
+        QMetaObject.invokeMethod(graphs[0], "showSelectedNodeSettingsPanel")
 
     def view_input(node, label):
         viewer.disconnectInput(0)
@@ -258,6 +296,17 @@ try:
         for name in ("sceneToolBar", "sceneDisplayBar"):
             b = bar(name)
             check(b is not None and b.width() == BAR_WIDTH, "the %s is %d px wide (%r)" % (name, BAR_WIDTH, b.width() if b else None))
+        QMetaObject.invokeMethod(tab(), "hideAllToolbars")
+        yield settle()
+        for name in ("sceneToolBar", "sceneDisplayBar", "sceneTopBar"):
+            check(not shown(name), "Hide All hides the %s" % name)
+        QMetaObject.invokeMethod(tab(), "showAllToolbars")
+        yield settle()
+        for name in ("sceneToolBar", "sceneDisplayBar", "sceneTopBar"):
+            check(shown(name), "Show All brings the %s back" % name)
+        wire = bar_menu_action("sceneDisplayBar", "sceneDrawMode", "wireframe")
+        check(wire is not None and wire.shortcut().toString() == "Ctrl+4",
+              "the draw mode menu shows Wireframe's key before any context menu (%r)" % (wire.shortcut().toString() if wire else None,))
         slot = control("sceneToolBar", "snapSlot")
         check(slot is not None and not slot.isVisible(), "the tool bar holds a hidden snapSlot")
         node_handle = control("sceneToolBar", "sceneToolNodeHandle")
@@ -427,12 +476,7 @@ try:
         check(not options.isVisible(), "the tool options take no room with no panel open")
         view_input(edit, "USDEditTransform")
         yield ("until", scene_drawn, POLL_TIMEOUT_S)
-        gt.close_all_panels()
-        app.clearSelection()
-        app.selectNode(edit, True)
-        graphs = [w for w in widgets_of("NodeGraph") if w.isVisible()]
-        require(graphs, "the node graph is on screen")
-        QMetaObject.invokeMethod(graphs[0], "showSelectedNodeSettingsPanel")
+        open_edit_panel()
         ok = yield ("until", lambda: options.isVisible(), POLL_TIMEOUT_S)
         check(ok, "opening the USDEditTransform panel shows its tool options in the top bar")
         mode = [w for w in options.findChildren(QWidget) if w.isVisible() and w.metaObject().className().split("::")[-1] == "ComboBox"]
@@ -464,6 +508,40 @@ try:
               "closing the panel switches the node handle tool back to Select (%r)" % (prop("natronSceneTransformTool"),))
         yield settle()
         check(handles() == [], "and the node's handles are gone (%r)" % (handles(),))
+
+        section("node handle tool key")
+        check(not override_accepted(Qt.Key_Return), "the view lets Return pass on while no node offers a handle")
+        key(Qt.Key_Return)
+        yield settle()
+        check(prop("natronSceneTransformTool") == "select", "Return keeps Select while no node offers a handle (%r)"
+              % (prop("natronSceneTransformTool"),))
+        open_edit_panel()
+        ok = yield ("until", lambda: node_handle.isEnabled(), POLL_TIMEOUT_S)
+        require(ok, "reopening the USDEditTransform panel enables the node handle tool")
+        check(override_accepted(Qt.Key_Return), "the view takes Return while the node offers a handle")
+        menu_text = yield from context_menu_read(["Transform"], "nodeHandle", lambda action: action.text().replace("&", ""))
+        check(menu_text == "Transform Handle", "the context menu names the node handle tool after the node's handle (%r)" % (menu_text,))
+        key(Qt.Key_Return)
+        ok = yield ("until", lambda: prop("natronSceneTransformTool") == "nodeHandle", POLL_TIMEOUT_S)
+        check(ok and node_handle.isChecked(), "Return picks the node handle tool (%r)" % (prop("natronSceneTransformTool"),))
+
+        section("panel closed mid-drag")
+        ok = yield ("until", lambda: len(handle_points()) > 0, POLL_TIMEOUT_S)
+        require(ok, "the node handle tool draws the handles to drag")
+        start = handle_points()[0]
+        mouse(QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton)
+        mouse(QEvent.MouseMove, start + QPointF(4, 0), Qt.NoButton, Qt.LeftButton)
+        mouse(QEvent.MouseMove, start + QPointF(8, 0), Qt.NoButton, Qt.LeftButton)
+        gt.close_all_panels()
+        ok = yield ("until", lambda: not node_handle.isEnabled(), POLL_TIMEOUT_S)
+        check(ok, "closing the panel mid-drag disables the node handle tool")
+        yield settle()
+        check(prop("natronSceneTransformTool") == "nodeHandle", "the drag under way keeps the node handle tool (%r)"
+              % (prop("natronSceneTransformTool"),))
+        mouse(QEvent.MouseButtonRelease, start + QPointF(8, 0), Qt.LeftButton, Qt.NoButton)
+        ok = yield ("until", lambda: prop("natronSceneTransformTool") == "select", POLL_TIMEOUT_S)
+        check(ok and select.isChecked() and not node_handle.isChecked(),
+              "releasing the drag switches back to Select (%r)" % (prop("natronSceneTransformTool"),))
 
         section("image view")
         constant = app.createNode(CONSTANT_ID)

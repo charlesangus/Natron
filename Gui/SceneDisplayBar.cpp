@@ -162,6 +162,9 @@ SceneDisplayBar::SceneDisplayBar(QWidget* parent)
     setToolTipWithShortcut(kShortcutGroupViewer3D, kShortcutIDActionViewer3DShowGrid,
                            SceneBar::tipWithShortcut(tr("Show Grid: draws the ground grid.")), _showGrid);
     QObject::connect(_drawModeMenu, &QMenu::aboutToShow, this, [this]() {
+        if (_viewport) {
+            _viewport->refreshActionShortcuts();
+        }
         fillMenu(_drawModeMenu, _viewport ? _viewport->getDrawModeActions() : QList<QAction*>());
     });
     QObject::connect(_purposesMenu, &QMenu::aboutToShow, this, [this]() {
@@ -206,7 +209,6 @@ SceneDisplayBar::SceneDisplayBar(QWidget* parent)
         button->setDefaultAction(action);
         QObject::connect(action, &QAction::triggered, this, [this]() { edited(); });
         _geometryToggles.push_back(action);
-        _geometryButtons.push_back(button);
         layout->addWidget(button, 0, Qt::AlignHCenter);
     }
 

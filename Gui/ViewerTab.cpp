@@ -1556,7 +1556,7 @@ ViewerTab::onActiveInputDataKindChanged()
         });
         _imp->viewerSubContainerLayout->insertWidget(index + 1, _imp->sceneBreadcrumbBar);
         _imp->viewerSubContainerLayout->insertWidget(index + 2, _imp->sceneViewport, 1);
-        // The node offering a handle tool whose settings panel was opened last.
+        // The node offering a handle tool the view draws whose settings panel was opened last.
         const std::function<NodePtr()> openEditNode = [this]() -> NodePtr {
             Gui* gui = getGui();
             if (!gui) {
@@ -1567,7 +1567,8 @@ ViewerTab::onActiveInputDataKindChanged()
                 NodeSettingsPanel* panel = dynamic_cast<NodeSettingsPanel*>(dockable);
                 NodeGuiPtr nodeGui = panel ? panel->getNode() : NodeGuiPtr();
                 NodePtr panelNode = nodeGui ? nodeGui->getNode() : NodePtr();
-                if (panelNode && panelNode->isActivated() && NodeViewerContext::findHandleTool(panelNode->getPluginID())) {
+                if (panelNode && panelNode->isActivated() && NodeViewerContext::findHandleTool(panelNode->getPluginID())
+                    && SceneViewport::drawsHandleOf(panelNode)) {
                     return panelNode;
                 }
             }
@@ -2061,17 +2062,19 @@ ViewerTab::refreshSceneRenderRow()
     if (!_imp->sceneTopBar) {
         return;
     }
-    bool topVisible;
+    bool topVisible, leftVisible, rightVisible;
     {
         QMutexLocker l(&_imp->visibleToolbarsMutex);
         topVisible = _imp->topToolbarVisible;
+        leftVisible = _imp->leftToolbarVisible;
+        rightVisible = _imp->rightToolbarVisible;
     }
     const bool scene = isShowingScene();
     const bool progressive = scene && (_imp->sceneViewport->getRenderer().getActiveRendererId() != kRenderDelegateStormId);
     const bool geometry = scene && _imp->viewerNode && (_imp->viewerNode->getActiveInputDataKind() == eDataKindGeometry);
     const Serialization::ViewerBarsSerialization& bars = _imp->bars;
-    const bool showTool = scene ? bars.toolBar3D : bars.toolBar2D;
-    const bool showDisplay = scene ? bars.displayBar3D : bars.displayBar2D;
+    const bool showTool = leftVisible && (scene ? bars.toolBar3D : bars.toolBar2D);
+    const bool showDisplay = rightVisible && (scene ? bars.displayBar3D : bars.displayBar2D);
     const bool showTop = topVisible && scene && bars.topBar3D;
 
     const bool toggled = (_imp->sceneTopBar->isVisibleTo(this) != showTop) || (_imp->sceneToolBar->isVisibleTo(this) != showTool)
@@ -2128,6 +2131,10 @@ ViewerTab::onViewerBarToggled()
     }
     if (_imp->viewerNode) {
         _imp->viewerNode->setViewerBars(bars);
+        // The flags are saved with the project but are no knob, so nothing else marks it changed.
+        if (Gui* gui = getGui()) {
+            gui->getApp()->triggerAutoSave();
+        }
     }
     refreshSceneRenderRow();
 }

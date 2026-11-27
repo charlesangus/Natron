@@ -47,8 +47,8 @@ NATRON_NAMESPACE_ENTER
  * Scale in the view's left tool bar, the Node Handle Tool shortcut and the Transform entry of the
  * view's context menu. Choosing the tool sets SceneTransform::eToolNodeHandle; while it is set,
  * the view draws the handle of the node being edited (SceneViewport::getHandleNode(), the node
- * with its settings panel open whose plug-in registered a handle tool) in place of the transform
- * widget on the selection. The code that draws a node's handle checks both. Without such a node
+ * with its settings panel open whose plug-in registered a handle tool and whose handle the view
+ * can draw, SceneViewport::drawsHandleOf()) in place of the transform widget on the selection. The code that draws a node's handle checks both. Without such a node
  * the button is disabled and its tooltip says so.
  **/
 struct NodeHandleTool {

@@ -38,7 +38,11 @@
 #include "Engine/Nodes/Geometry/GeoUsdConvert.h"
 #include "Tests/Scene/GeoSceneIndexParity.h"
 
+#include <pxr/imaging/hd/containerDataSourceEditor.h>
+#include <pxr/imaging/hd/primvarSchema.h>
+#include <pxr/imaging/hd/primvarsSchema.h>
 #include <pxr/imaging/hd/retainedDataSource.h>
+#include <pxr/imaging/hd/retainedSceneIndex.h>
 #include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usdImaging/usdImaging/sceneIndex.h>
@@ -225,6 +229,33 @@ expectParity(const char* key,
     EXPECT_FALSE(ours->GetChildPrimPaths(prefix).empty()) << key;
 }
 
+// Every prim of @p source, with @p locator set to @p value on the prim at @p edited.
+HdRetainedSceneIndexRefPtr
+copyWithEdit(const HdSceneIndexBase& source,
+             const SdfPath& edited,
+             const HdDataSourceLocator& locator,
+             const HdDataSourceBaseHandle& value)
+{
+    HdRetainedSceneIndex::AddedPrimEntries entries;
+    std::vector<SdfPath> stack { SdfPath::AbsoluteRootPath() };
+    while (!stack.empty()) {
+        const SdfPath path = stack.back();
+        stack.pop_back();
+        for (const SdfPath& child : source.GetChildPrimPaths(path)) {
+            HdSceneIndexPrim prim = source.GetPrim(child);
+            if (child == edited) {
+                prim.dataSource = HdContainerDataSourceEditor(prim.dataSource).Set(locator, value).Finish();
+            }
+            entries.push_back({ child, prim.primType, prim.dataSource });
+            stack.push_back(child);
+        }
+    }
+    const HdRetainedSceneIndexRefPtr copy = HdRetainedSceneIndex::New();
+    copy->AddPrims(entries);
+
+    return copy;
+}
+
 } // anonymous namespace
 
 TEST(GeoSceneIndexParity, ABoxMatchesUsdImaging)
@@ -259,4 +290,22 @@ TEST(GeoSceneIndexParity, AMismatchNamesThePrimAndTheField)
         named = named || m == "/geo/b: prim missing from ours";
     }
     EXPECT_TRUE(named) << joined(mismatches);
+}
+
+TEST(GeoSceneIndexParity, AMismatchedPrimvarNamesThePrimAndThePrimvar)
+{
+    const GeoDetailConstPtr detail = makePoints();
+    const Reference reference("parity-primvar-mismatch", detail);
+    const GeoSceneIndexRefPtr ours = GeoSceneIndex::New();
+    ours->update(std::make_shared<GeoUsdConvert>(detail, GeoUsdConvertOptions()));
+    ASSERT_TRUE(GeoSceneIndexParity::compare(*ours, reference.index()).empty());
+
+    const SdfPath path("/geo/points_0");
+    const TfToken displayColor("displayColor");
+    const HdDataSourceLocator locator = HdPrimvarsSchema::GetDefaultLocator().Append(displayColor).Append(HdPrimvarSchemaTokens->primvarValue);
+    const HdRetainedSceneIndexRefPtr edited = copyWithEdit(*ours, path, locator, HdRetainedTypedSampledDataSource<VtVec3fArray>::New(VtVec3fArray(4, GfVec3f(9.f))));
+    const std::vector<std::string> mismatches = GeoSceneIndexParity::compare(*edited, reference.index());
+    ASSERT_EQ(mismatches.size(), 1u) << joined(mismatches);
+    const std::string expected = "/geo/points_0: primvars/displayColor value differs";
+    EXPECT_EQ(mismatches[0].compare(0, expected.size(), expected), 0) << mismatches[0];
 }

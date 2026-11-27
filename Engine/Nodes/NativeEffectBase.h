@@ -209,6 +209,16 @@ public:
     virtual std::string getSublabel() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
+     * @brief Whether this node's output at a frame depends on its output at the previous frame,
+     * as a simulation's does, so that a geometry cache writing frames downstream of it must write
+     * them one at a time and in order.
+     **/
+    virtual bool needsOrderedFrames() const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
      * @brief The node's static description, which every query above answers from. A node
      * returns staticNodeSpec<kSpec>() of a constexpr spec, which rejects an invalid spec at
      * compile time. The spec must outlive the node and never change.

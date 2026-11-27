@@ -177,9 +177,7 @@ OutputEffectInstance::renderFullSequence(bool isBlocking,
         viewsToRender.push_back(mainView);
     }
 
-    KnobIPtr outputFileNameKnob = getKnobByName(kOfxImageEffectFileParamName);
-    KnobOutputFile* outputFileName = outputFileNameKnob ? dynamic_cast<KnobOutputFile*>( outputFileNameKnob.get() ) : 0;
-    std::string pattern = outputFileName ? outputFileName->getValue() : std::string();
+    std::string pattern = outputFilePattern();
 
     if (atOnce) {
         viewsToRender.clear();
@@ -327,24 +325,26 @@ OutputEffectInstance::launchRenderSequence(const RenderSequenceArgs& args)
                               eRenderDirectionForward);
 }
 
+std::string
+OutputEffectInstance::outputFilePattern()
+{
+    KnobIPtr outputFileNameKnob = getKnobByName(kOfxImageEffectFileParamName);
+    KnobStringBase* outputFileName = outputFileNameKnob ? dynamic_cast<KnobStringBase*>(outputFileNameKnob.get()) : 0;
+
+    return outputFileName ? outputFileName->getValue() : std::string();
+}
+
 void
 OutputEffectInstance::createWriterPath()
 {
     ///Make sure that the file path exists
-    KnobIPtr fileParam = getKnobByName(kOfxImageEffectFileParamName);
-
-    if (fileParam) {
-        KnobStringBase* isString = dynamic_cast<KnobStringBase*>( fileParam.get() );
-        if (isString) {
-            std::string pattern = isString->getValue();
-            std::string path = SequenceParsing::removePath(pattern);
-            std::map<std::string, std::string> env;
-            getApp()->getProject()->getEnvironmentVariables(env);
-            Project::expandVariable(env, path);
-            if ( !path.empty() ) {
-                QDir().mkpath( QString::fromUtf8( path.c_str() ) );
-            }
-        }
+    std::string pattern = outputFilePattern();
+    std::string path = SequenceParsing::removePath(pattern);
+    std::map<std::string, std::string> env;
+    getApp()->getProject()->getEnvironmentVariables(env);
+    Project::expandVariable(env, path);
+    if (!path.empty()) {
+        QDir().mkpath(QString::fromUtf8(path.c_str()));
     }
 }
 

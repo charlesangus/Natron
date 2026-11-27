@@ -29,6 +29,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "Engine/ChoiceOption.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
@@ -50,7 +52,8 @@ USDMerge::nodeSpec() const
 }
 
 ScenePayload
-USDMerge::mergeStacks(const std::vector<ScenePayload>& inputs)
+USDMerge::mergeStacks(const std::vector<ScenePayload>& inputs,
+                      bool lowerWins)
 {
     // A layer reached through several inputs is a common upstream of them: every layer stacked
     // over it in any input was authored downstream of it, over it. Keeping its weakest position
@@ -58,7 +61,10 @@ USDMerge::mergeStacks(const std::vector<ScenePayload>& inputs)
     std::vector<SceneLayerEntry> merged;
     std::unordered_set<const PXR_NS::SdfLayer*> seen;
     const ScenePayload* first = NULL;
-    for (const ScenePayload& input : inputs) {
+    // Reversed walk makes input 0 the strongest; the weakest-position dedup is unchanged.
+    const std::size_t count = inputs.size();
+    for (std::size_t n = 0; n < count; ++n) {
+        const ScenePayload& input = inputs[lowerWins ? count - 1 - n : n];
         if (input.isEmpty()) {
             continue;
         }
@@ -94,6 +100,29 @@ USDMerge::mergeStacks(const std::vector<ScenePayload>& inputs)
     return result;
 } // USDMerge::mergeStacks
 
+void
+USDMerge::initializeKnobs()
+{
+    KnobPagePtr page = createKnob<KnobPage>(tr("Controls"));
+
+    KnobChoicePtr order = createKnob<KnobChoice>(tr("Opinion Order"));
+    order->setName(kUSDMergeParamOpinionOrder);
+    order->setHintToolTip(tr("Which inputs win where their opinions conflict, such as two inputs setting the same attribute "
+                             "of the same prim. An opinion that only one input authors always comes through."));
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("higher", tr("Higher Inputs Win").toStdString(),
+                                       tr("The higher-numbered input's opinion wins.").toStdString()));
+        options.push_back(ChoiceOption("lower", tr("Lower Inputs Win").toStdString(),
+                                       tr("The lower-numbered input's opinion wins.").toStdString()));
+        order->populateChoices(options);
+    }
+    order->setDefaultValue(0);
+    order->setAnimationEnabled(false);
+    page->addKnob(order);
+    _opinionOrder = order;
+}
+
 StatusEnum
 USDMerge::renderScene(const SceneRenderActionArgs& args,
                       ScenePayload* outputScene,
@@ -103,7 +132,8 @@ USDMerge::renderScene(const SceneRenderActionArgs& args,
     for (int i = 0; i < kUSDMergeInputCount; ++i) {
         inputs.push_back(args.getInputScene(i));
     }
-    *outputScene = mergeStacks(inputs);
+    KnobChoicePtr order = _opinionOrder.lock();
+    *outputScene = mergeStacks(inputs, order && order->getValue() == 1);
 
     return eStatusOK;
 }

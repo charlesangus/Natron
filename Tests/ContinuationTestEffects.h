@@ -76,6 +76,7 @@ public:
         probes() = 0;
         continuations() = 0;
         claimsGpu() = false;
+        supportsGpuContinuation() = false;
         setContinuationCapture(CaptureFactory());
     }
 
@@ -88,6 +89,17 @@ public:
     static bool probeClaimsGpu()
     {
         return claimsGpu().load();
+    }
+
+    // Whether the probe also says its GPU path renders after its continuation; off by default.
+    static void setProbeSupportsGpuContinuation(bool supports)
+    {
+        supportsGpuContinuation() = supports;
+    }
+
+    static bool probeSupportsGpuContinuation()
+    {
+        return supportsGpuContinuation().load();
     }
 
     static void noteProbe()
@@ -143,6 +155,13 @@ private:
     }
 
     static std::atomic<bool>& claimsGpu()
+    {
+        static std::atomic<bool> b(false);
+
+        return b;
+    }
+
+    static std::atomic<bool>& supportsGpuContinuation()
     {
         static std::atomic<bool> b(false);
 
@@ -421,6 +440,11 @@ public:
     virtual bool canRenderOnGpu(const GpuQuery& /*query*/) const OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         return ContinuationTestRegistry::probeClaimsGpu();
+    }
+
+    virtual bool supportsRenderContinuationOnGpu() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return ContinuationTestRegistry::probeSupportsGpuContinuation();
     }
 
     virtual bool getRenderContinuation(const RenderContinuationArgs& args,

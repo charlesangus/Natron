@@ -169,6 +169,12 @@ isContractionAcyclic(const FrameGraph& graph,
     return visited == nPresent;
 }
 
+int
+readsOutsideGraph(const FrameGraph::Task& task)
+{
+    return std::max(0, task.consumers - (int)task.consumerTasks.size());
+}
+
 FrameGraph::Region
 describeRegion(const FrameGraph& graph,
                const std::vector<int>& members,
@@ -192,7 +198,9 @@ describeRegion(const FrameGraph& graph,
 
         FrameGraph::Region::Output output;
         output.task = m;
-        output.isRoot = task.consumerTasks.empty();
+        const int outsideReads = readsOutsideGraph(task);
+        output.isRoot = task.consumerTasks.empty() && (outsideReads == 0);
+        output.externalConsumers = outsideReads;
         for (int c : task.consumerTasks) {
             if (label[c] == regionLabel) {
                 ++output.internalConsumers;
@@ -334,7 +342,7 @@ regionTransfersAreFree(const FrameGraph& graph,
         }
     }
     for (const FrameGraph::Region::Output& output : region.outputs) {
-        if (output.isRoot && !rootOnDevice) {
+        if ((output.isRoot || (readsOutsideGraph(graph.tasks[output.task]) > 0)) && !rootOnDevice) {
             return false;
         }
         for (int c : graph.tasks[output.task].consumerTasks) {
@@ -387,6 +395,7 @@ placeGraph(FrameGraph& graph,
 
     std::vector<bool> candidate(n, false);
     std::vector<bool> cached(n, false);
+    std::vector<bool> continuation(n, false);
     for (int t : order) {
         FrameGraph::Task& task = graph.tasks[t];
         if (identity[t]) {
@@ -403,6 +412,11 @@ placeGraph(FrameGraph& graph,
         if (!candidate[t]) {
             task.placementReason = refusal.reason;
             task.placementDetail = std::move(refusal.detail);
+        } else if (inputs.offersContinuation) {
+            continuation[t] = inputs.offersContinuation(task);
+        } else {
+            const EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
+            continuation[t] = effect && effect->offersRenderContinuation();
         }
     }
     if (inputs.readsRaw) {
@@ -427,6 +441,7 @@ placeGraph(FrameGraph& graph,
     // Labels are working region ids; a merge empties the regions it absorbs.
     std::vector<int> label(n, -1);
     std::vector<std::vector<int>> regionMembers;
+    std::vector<bool> holdsContinuation;
 
     const auto tryAssign = [&](int task, const std::vector<int>& absorbed, int into) -> bool {
         std::vector<int> trial = label;
@@ -476,11 +491,17 @@ placeGraph(FrameGraph& graph,
             continue;
         }
 
-        if (!depRegions.empty()) {
-            if (tryAssign(t, depRegions, depRegions.front())) {
-                continue;
+        if (!depRegions.empty() && !continuation[t]) {
+            bool mergesContinuation = false;
+            for (int r : depRegions) {
+                mergesContinuation = mergesContinuation || holdsContinuation[r];
             }
-            task.placementReason = FrameGraph::PlacementReason::WouldFormCycle;
+            if (!mergesContinuation || (depRegions.size() == 1)) {
+                if (tryAssign(t, depRegions, depRegions.front())) {
+                    continue;
+                }
+                task.placementReason = FrameGraph::PlacementReason::WouldFormCycle;
+            }
             std::stable_sort(depRegions.begin(), depRegions.end(), [&](int a, int b) {
                 return regionMembers[a].size() > regionMembers[b].size();
             });
@@ -496,6 +517,7 @@ placeGraph(FrameGraph& graph,
             }
         }
         regionMembers.push_back(std::vector<int>());
+        holdsContinuation.push_back(continuation[t]);
         const int fresh = (int)regionMembers.size() - 1;
         label[t] = fresh;
         regionMembers[fresh].push_back(t);
@@ -1045,9 +1067,9 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
             return false;
         }
         const EffectInstancePtr effect = task.key.node ? task.key.node->getEffectInstance() : EffectInstancePtr();
-        if (effect && effect->offersRenderContinuation()) {
+        if (effect && effect->offersRenderContinuation() && !effect->supportsRenderContinuationOnGpu()) {
             refusal->reason = FrameGraph::PlacementReason::NoGpuPath;
-            refusal->detail = "the node offers a render continuation, which only CPU tasks are probed for";
+            refusal->detail = "the node offers a render continuation its GPU path cannot render after";
 
             return false;
         }
@@ -1079,7 +1101,7 @@ makeRenderPlacementInputs(const FrameRenderContextPtr& context)
 
     // A partial hit of the device tier stays a GPU candidate: a region renders what is missing into the cached image.
     inputs.isCached = [](const FrameGraph::Task& task) {
-        return task.servedFromCache && task.deviceMissingRoI.isNull();
+        return task.reusesStore || (task.servedFromCache && task.deviceMissingRoI.isNull());
     };
 
     return inputs;
@@ -1103,6 +1125,21 @@ placeRenderGraph(FrameGraph& graph,
     } else {
         placeGraph(graph, makeRenderPlacementInputs(context));
     }
+
+    return true;
+}
+
+bool
+placeExtensionGraph(FrameGraph& graph,
+                    const FrameRenderContextPtr& context,
+                    bool rootsReadOnDevice)
+{
+    if (!isGpuPlacementAvailable() || graph.tasks.empty() || !context) {
+        return false;
+    }
+    PlacementInputs inputs = makeRenderPlacementInputs(context);
+    inputs.rootOnDevice = rootsReadOnDevice;
+    placeGraph(graph, inputs);
 
     return true;
 }

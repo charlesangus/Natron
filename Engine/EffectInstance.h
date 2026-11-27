@@ -1083,6 +1083,9 @@ public:
         double time;
         ViewIdx view;
         bool byPassCache;
+        // When set, the effect evaluates under this context instead of the one the actions on
+        // this thread answer for, its inputs under what it requests of them in turn.
+        RenderContextPtr context;
 
         EvaluateGeometryArgs()
             : time(0)
@@ -1093,10 +1096,12 @@ public:
 
         EvaluateGeometryArgs(double time_,
                              ViewIdx view_,
-                             bool byPassCache_ = false)
+                             bool byPassCache_ = false,
+                             const RenderContextPtr& context_ = RenderContextPtr())
             : time(time_)
             , view(view_)
             , byPassCache(byPassCache_)
+            , context(context_)
         {
         }
     };
@@ -1111,6 +1116,11 @@ public:
      * input whose effective data kind is eDataKindGeometry is evaluated at each time
      * getFramesNeeded() asks for, the render's abort flag is checked between steps, and only
      * then is this effect's renderGeometry() called.
+     *
+     * The effect evaluates under the render context its knobs read, getCurrentRenderContext(),
+     * restricted to what its output reads: its detail is cached under its hash with that
+     * context's key mixed in, so a node whose upstream reads no context variable keeps one entry
+     * for every context, and one that does renders and caches once per distinct value.
      *
      * On eRenderRoIRetCodeOk, *outputDetail is non-NULL, possibly an empty detail. On any other
      * return code it is NULL; on eRenderRoIRetCodeFailed, *errorMessage (if given) carries the
@@ -1209,6 +1219,13 @@ public:
      * innermost AppTLS::FrameContextScope's), else none. A lock-free walk of the chain; it creates no thread-local data.
      **/
     ParallelRenderArgsPtr getFrameArgs() const;
+
+    /**
+     * @brief The hash of the frame args the calling thread renders this effect under that carry no
+     * render context: the one evaluateGeometry() mixes a context's key into for the cache key, and
+     * the one onNodeHashChanged() reports in. getHash() when the thread has no frame args.
+     **/
+    U64 getContextFreeRenderHash() const WARN_UNUSED_RETURN;
 
     /**
      * @brief Whether the calling thread renders this node: its frame args are installed and are not
@@ -2166,6 +2183,37 @@ public:
     bool aborted() const WARN_UNUSED_RETURN;
 
     /**
+     * @brief The render state aborted() decides from on this thread: the AbortableThread's, else
+     * this effect's frame args, else what an InheritedAbortScope lent the thread. False when
+     * none of those exists.
+     **/
+    bool getAbortState(bool* isRenderResponseToUserInteraction,
+                       AbortableRenderInfoPtr* abortInfo,
+                       EffectInstancePtr* treeRoot) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Lends a pool thread the abort state of the render it works for, read with
+     * getAbortState() on the thread running that render. A pool thread is no AbortableThread
+     * and the effects it evaluates have no frame args of that render on it, so without this
+     * aborted() there is false until the work returns, however long it runs.
+     **/
+    class InheritedAbortScope {
+    public:
+        InheritedAbortScope(bool isRenderResponseToUserInteraction,
+                            const AbortableRenderInfoPtr& abortInfo,
+                            const EffectInstancePtr& treeRoot);
+        ~InheritedAbortScope();
+
+        InheritedAbortScope(const InheritedAbortScope&) = delete;
+        InheritedAbortScope& operator=(const InheritedAbortScope&) = delete;
+
+    private:
+        bool _previousUserInteraction;
+        AbortableRenderInfoPtr _previousAbortInfo;
+        EffectInstancePtr _previousTreeRoot;
+    };
+
+    /**
      * @brief When the render running on this thread can be aborted and a newer request has
      * replaced it (AbortableRenderInfo::isSuperseded()), aborts it and returns true. For a wait
      * the render would spend on a result that the newer request asks for itself: the render
@@ -2593,9 +2641,21 @@ public:
 
     /**
      * @brief Whether getRenderContinuation() may return true for some frame. GPU placement keeps such an effect on the
-     * CPU, since only CPU tasks are probed and the answer depends on pixels placement cannot read.
+     * CPU unless supportsRenderContinuationOnGpu() says otherwise, since the answer depends on pixels placement cannot
+     * read.
      **/
     virtual bool offersRenderContinuation() const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief Whether the effect's GPU path renders after its render continuation: GPU placement then puts it in a region
+     * holding none of the tasks it depends on, the scheduler probes it on the CPU before the region runs, and renderGpu() reads
+     * the outputs the probe requested from GpuRenderArgs::continuationInputs. The probe still reads its inputs on the
+     * CPU, so an input rendered on the GPU is downloaded for it.
+     **/
+    virtual bool supportsRenderContinuationOnGpu() const WARN_UNUSED_RETURN
     {
         return false;
     }
@@ -2768,6 +2828,15 @@ public:
     virtual bool refreshFileDependencies(const std::vector<std::string>& /*paths*/)
     {
         return false;
+    }
+
+    /**
+     * @brief Called after files one of the effect's file knobs names were reloaded and their stamps
+     * dropped, once its caches are purged: one that lists the files, such as their frame range,
+     * lists them again. Main thread only.
+     **/
+    virtual void onFilesReloaded()
+    {
     }
     virtual void clearLastRenderedImage();
 
@@ -3064,6 +3133,15 @@ public:
      * it, after the hashes of its inputs and with no node lock held.
      **/
     virtual void onNodeHashChanged(U64 hash);
+
+    /**
+     * @brief Called for an edit of this node or of any node upstream of it made while that node
+     * renders (Node::abortCooksStaleAfterEditDownstream()). Such an edit is queued until the
+     * renders reading the edited node end, so it moves no hash while they run and
+     * onNodeHashChanged() does not hear of it. An effect whose own cooks outlast edits aborts the
+     * ones the edit leaves stale. Called on the editing thread, possibly while cooks run. MT-safe.
+     **/
+    virtual void abortCooksStaleAfterEdit() { }
 
     /**
      * @brief Drops every output metadata result this effect cached, its inputs' included, with no

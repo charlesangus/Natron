@@ -5,7 +5,10 @@ on:
   push:
     branches:
     - main
+  # A draft PR skips this workflow's build and test legs, and the "Build and test" check fails on
+  # purpose with a message; marking it ready (ready_for_review) starts the full run.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
     branches:
     - main
     - 'feature/**'
@@ -20,10 +23,13 @@ concurrency:
 
 permissions:
   contents: read
+  # tools/ci/ccache-restore-keys.sh reads the cache list and the run that saved an entry.
+  actions: read
 
 jobs:
   dev-image:
     name: Dev image
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     permissions:
       contents: read
       packages: write
@@ -33,6 +39,7 @@ jobs:
   build:
     name: Build · debug
     needs: dev-image
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     container:
       image: ${{ needs.dev-image.outputs.image }}
@@ -111,6 +118,9 @@ jobs:
       # created matching entry:
       #   1. ccache-linux-debug-<branch>-  -> this branch's own last run,
       #      so an Nth push to a PR reuses the previous push's warm cache.
+      #      tools/ci/ccache-restore-keys.sh swaps 1 and 2 when main was
+      #      merged in since that entry was built, since main's entry then
+      #      holds far more of the merged tree.
       #   2. ccache-linux-debug-main-      -> main's last run, so the first
       #      run on a brand-new branch starts warm instead of cold.
       #   3. ccache-linux-main-            -> the pre-preset main entries;
@@ -119,16 +129,23 @@ jobs:
       # which becomes the newest match for every later lookup -- that is
       # how main's cache refreshes without anything ever being explicitly
       # deleted.
+      - name: Order ccache restore keys
+        id: ccache_keys
+        env:
+          FAMILY: ccache-linux-debug
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXTRA_KEYS: ccache-linux-main-
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: tools/ci/ccache-restore-keys.sh
+
       - name: Restore ccache
         id: restore_ccache
         uses: actions/cache/restore@v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-linux-debug-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-linux-debug-${{ github.head_ref || github.ref_name }}-
-            ccache-linux-debug-main-
-            ccache-linux-main-
+          restore-keys: ${{ steps.ccache_keys.outputs.keys }}
 
       - name: Reset ccache statistics
         run: ccache -z
@@ -225,7 +242,7 @@ jobs:
 
       - name: Show ccache stats
         if: always()
-        run: ccache -s
+        run: tools/ci/ccache-stats-summary.sh
 
       - name: Job summary
         if: always()
@@ -244,6 +261,7 @@ jobs:
   build-release:
     name: Build · release
     needs: dev-image
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     container:
       image: ${{ needs.dev-image.outputs.image }}
@@ -282,15 +300,23 @@ jobs:
 
       # Same key scheme as the debug job's ccache, in the release family that
       # nightly.yml also writes: the branch's last entry, then main's.
+      - name: Order ccache restore keys
+        id: ccache_keys
+        env:
+          FAMILY: ccache-linux-release
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXTRA_KEYS: ''
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: tools/ci/ccache-restore-keys.sh
+
       - name: Restore ccache
         id: restore_ccache
         uses: actions/cache/restore@v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-linux-release-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-linux-release-${{ github.head_ref || github.ref_name }}-
-            ccache-linux-release-main-
+          restore-keys: ${{ steps.ccache_keys.outputs.keys }}
 
       - name: Reset ccache statistics
         run: ccache -z
@@ -328,7 +354,7 @@ jobs:
 
       - name: Show ccache stats
         if: always()
-        run: ccache -s
+        run: tools/ci/ccache-stats-summary.sh
 
       - name: Job summary
         if: always()
@@ -339,6 +365,7 @@ jobs:
   ctest:
     name: Test
     needs: [dev-image, build]
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     container:
       image: ${{ needs.dev-image.outputs.image }}
@@ -439,6 +466,14 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      # A skipped required check reads as passing, so on a draft, where every leg is skipped,
+      # this job runs and fails instead. Marking the PR ready starts a run that replaces it.
+      - name: Refuse to pass a draft PR
+        if: github.event_name == 'pull_request' && github.event.pull_request.draft
+        run: |
+          echo "::error::draft PR: CI runs once the PR is marked ready for review" >&2
+          exit 1
+
       - name: Require the release build to pass
         env:
           RESULT: ${{ needs.build-release.result }}

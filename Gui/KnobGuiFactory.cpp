@@ -132,7 +132,7 @@ KnobGuiFactory::createGuiForKnob(KnobIPtr knob,
     if (isDouble && isDouble->isRangeWidget()) {
         return KnobGuiTrapezoid::BuildKnobGui(knob, container);
     }
-    // LoopEnd's driven-knob table stands on a placeholder string knob.
+    // A loop block end's driven-knob table stands on a placeholder string knob.
     if (LoopDriverTable::isTableKnob(knob)) {
         return LoopDriverTable::BuildKnobGui(knob, container);
     }

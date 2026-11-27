@@ -322,6 +322,24 @@ movingStripe(UtilityScene& scene,
     }
 }
 
+// A white plane over x below edge, the whole frame along y, its edge moving by distance along x over the shutter.
+void
+movingEdge(UtilityScene& scene,
+           double edge,
+           double distance)
+{
+    const UtilityScene::GeometryId id = scene.addGeometry(SdfPath("/edge"), 1);
+    const float a = static_cast<float>(-2 * kFrameSize);
+    const float b = static_cast<float>(edge);
+    const float tall = static_cast<float>(kFrameSize);
+
+    scene.setTopology(id, VtVec3fArray { GfVec3f(a, -tall, 0.f), GfVec3f(b, -tall, 0.f), GfVec3f(b, tall, 0.f), GfVec3f(a, tall, 0.f) }, quadTriangles());
+    scene.setColors(id, UtilityScene::eColorBindingConstant, VtVec4fArray { GfVec4f(1.f, 1.f, 1.f, 1.f) });
+    scene.setInstances(id, { GfMatrix4d(1.) });
+    emitDisplayColor(scene, id);
+    moveInstance(scene, id, translation(0., 0., 0.), translation(distance, 0., 0.));
+}
+
 WavefrontMotion
 openShutter()
 {
@@ -1045,6 +1063,46 @@ GPU_TEST_F(NatronUtilityRaster, AStripeMovingOnePixelSmearsIntoABox)
     EXPECT_NEAR(1., total, 1. / passes);
 }
 
+// Under the default Blackman-Harris filter an edge moving two pixels a pass smears into an even ramp: every pass
+// adds a ninth of the edge's brightness, which the pixel filter's 1.5 pixels of jitter can move by a pixel but
+// never weigh up or down, so no pixel steps by more than about a pass's share and the ramp's mean sits where
+// the edge is at mid-shutter.
+GPU_TEST_F(NatronUtilityRaster, AnEdgeMovingUnderTheDefaultFilterSmearsEvenlyOverThePasses)
+{
+    const int passes = 9;
+    const double distance = 2. * passes;
+    UtilityScene scene;
+
+    movingEdge(scene, -distance / 2., distance);
+
+    WavefrontGpu executor(*_registry, *_pool, std::make_shared<int>(0));
+    WavefrontFrame frame = pixelFrame();
+    AovFilm film;
+
+    frame.raster = true;
+    frame.rasterSamples = passes;
+    frame.sampling.filter = eKernelPixelFilterBlackmanHarris;
+    frame.sampling.filterWidth = 1.5f;
+    ASSERT_TRUE(drawPasses(executor, scene, frame, openShutter(), film));
+
+    const int row = kFrameSize / 2;
+    std::vector<float> ramp(kFrameSize);
+    double total = 0.;
+    int partial = 0;
+
+    for (int x = 0; x < kFrameSize; ++x) {
+        ramp[x] = film.filtered(static_cast<std::size_t>(row) * kFrameSize + x)[0];
+        total += ramp[x];
+        partial += ramp[x] > 0.1f && ramp[x] < 0.9f ? 1 : 0;
+    }
+    for (int x = 0; x + 1 < kFrameSize; ++x) {
+        EXPECT_LE(std::fabs(ramp[x + 1] - ramp[x]), 1.5f / passes) << "between pixels " << x << " and " << x + 1;
+    }
+    // The pixels left of the frame's centre are white at mid-shutter.
+    EXPECT_NEAR(kFrameSize / 2., total, 0.5);
+    EXPECT_GE(partial, static_cast<int>(0.7 * distance));
+}
+
 // A closed shutter draws every pass at the frame's own time, which is the scene without its motion.
 GPU_TEST_F(NatronUtilityRaster, AClosedShutterEqualsTheStaticRender)
 {
@@ -1305,6 +1363,42 @@ GPU_TEST_F(NatronUtilityRaster, BenchAProjectedCardWithMotionBlurInRayAndRasterM
 #endif // NATRON_HAVE_GPU
 
 #ifdef NATRON_HAVE_GPU
+// Raster passes are the shutter's time samples too, so the pixel filter shapes where their jitter falls rather
+// than how much each weighs: under every filter each pass weighs 1 and its jitter stays within the filter's
+// width, and a filter that favours the centre draws jitter nearer it than Box does.
+TEST(NatronUtilityRasterPasses, WeighTheSameAndDrawTheirJitterFromTheFilter)
+{
+    const int passes = 64;
+    WavefrontSampling sampling;
+
+    sampling.filterWidth = 1.5f;
+    sampling.seed = 7;
+
+    double boxSpread = 0.;
+
+    for (const KernelPixelFilter filter : { eKernelPixelFilterBox, eKernelPixelFilterTriangle, eKernelPixelFilterGaussian, eKernelPixelFilterBlackmanHarris }) {
+        SCOPED_TRACE(static_cast<int>(filter));
+        sampling.filter = filter;
+
+        double spread = 0.;
+
+        for (int i = 0; i < passes; ++i) {
+            const WavefrontRasterPass pass = wavefrontRasterPass(sampling, i, passes);
+
+            EXPECT_EQ(1.f, pass.weight) << "pass " << i;
+            for (int axis = 0; axis < 2; ++axis) {
+                EXPECT_LE(std::fabs(pass.jitter[axis]), sampling.filterWidth / 2.f + 1e-5f) << "pass " << i;
+                spread += pass.jitter[axis] * pass.jitter[axis];
+            }
+        }
+        if (filter == eKernelPixelFilterBox) {
+            boxSpread = spread;
+        } else {
+            EXPECT_LT(spread, 0.75 * boxSpread);
+        }
+    }
+}
+
 TEST(NatronUtilityRasterSupport, NamesWhatTheGpuLacks)
 {
     gpu::GpuDeviceInfo info;

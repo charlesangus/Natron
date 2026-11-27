@@ -83,7 +83,8 @@ struct WavefrontSampling {
 };
 
 // The one sample of every pixel that a pass of Raster mode draws: its offset from the pixel's centre in pixels,
-// its filter weight, and its time, from 0 at the shutter's opening to 1 at its closing, as a ray's.
+// drawn from the pixel filter so that every pass weighs 1, and its time, from 0 at the shutter's opening to 1
+// at its closing, as a ray's.
 struct WavefrontRasterPass {
     float jitter[2] = { 0.f, 0.f };
     float weight = 1.f;
@@ -308,8 +309,8 @@ struct WavefrontMotion {
 
 /**
  * @brief Pass index of passes in Raster mode. Its jitter comes from the Halton sequence in bases 2 and 3, turned
- * by the seed, offset over the pixel filter's width and weighted by its filter, as Ray mode's samples are; one
- * pass alone sits at the pixel centre. Its time is the centre of one of passes equal spans of the shutter, a
+ * by the seed, then spread through the inverse of the pixel filter's cumulative weight over its width, so that
+ * every pass weighs the same and so does every time; one pass alone sits at the pixel centre. Its time is the centre of one of passes equal spans of the shutter, a
  * permutation under the seed choosing which, so that no jitter goes with the same time from frame to frame and
  * the spans, together, cover the shutter once.
  **/

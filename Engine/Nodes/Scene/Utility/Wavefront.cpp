@@ -26,6 +26,7 @@
 #include "Wavefront.h"
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -1300,6 +1301,29 @@ rotated(float value,
 
     return sum >= 1.f ? sum - 1.f : sum;
 }
+
+// Maps u in [0, 1) through the inverse of the filter's cumulative weight over [0, 1]. A pass's jitter is the same
+// for the whole frame and its pass is also its time sample, so weighting passes by the filter would weight the
+// shutter's times unevenly; drawing the jitter from the filter instead lets every pass count the same.
+float
+sampleFilter(float u,
+             KernelPixelFilter filter)
+{
+    constexpr int kSteps = 256;
+    std::array<float, kSteps + 1> cumulative;
+
+    cumulative[0] = 0.f;
+    for (int k = 0; k < kSteps; ++k) {
+        cumulative[k + 1] = cumulative[k] + filterWeight((k + 0.5f) / kSteps, filter);
+    }
+
+    const float target = u * cumulative[kSteps];
+    const int k = std::clamp(static_cast<int>(std::upper_bound(cumulative.begin() + 1, cumulative.end(), target) - cumulative.begin()) - 1, 0, kSteps - 1);
+    const float span = cumulative[k + 1] - cumulative[k];
+    const float within = span > 0.f ? std::clamp((target - cumulative[k]) / span, 0.f, 1.f) : 0.5f;
+
+    return (k + within) / kSteps;
+}
 } // anon namespace
 
 WavefrontRasterPass
@@ -1317,12 +1341,11 @@ wavefrontRasterPass(const WavefrontSampling& sampling,
         return pass;
     }
 
-    const float tx = rotated(radicalInverse(i, 2), unitFloat(pcgHash(seedHash ^ 0x68e31da4u)));
-    const float ty = rotated(radicalInverse(i, 3), unitFloat(pcgHash(seedHash ^ 0xb5297a4du)));
+    const float tx = sampleFilter(rotated(radicalInverse(i, 2), unitFloat(pcgHash(seedHash ^ 0x68e31da4u))), sampling.filter);
+    const float ty = sampleFilter(rotated(radicalInverse(i, 3), unitFloat(pcgHash(seedHash ^ 0xb5297a4du))), sampling.filter);
 
     pass.jitter[0] = (tx - 0.5f) * sampling.filterWidth;
     pass.jitter[1] = (ty - 0.5f) * sampling.filterWidth;
-    pass.weight = filterWeight(tx, sampling.filter) * filterWeight(ty, sampling.filter);
 
     return pass;
 }

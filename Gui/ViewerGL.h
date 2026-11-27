@@ -357,6 +357,12 @@ public:
     bool frameColorSpaceViewUnderPointer();
 
     /**
+     * @brief Whether keys belong to the colour space inset: the pointer is over it or a drag that
+     * started in it is running.
+     **/
+    bool isColorSpaceInsetUnderPointer() const;
+
+    /**
      * @brief A read-only summary of the colour space inset for scripts (see ColorSpaceView::state()),
      * empty while no inset is drawn.
      **/

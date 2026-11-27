@@ -759,8 +759,54 @@ ViewerTab::keyPressEvent(QKeyEvent* e)
     Qt::KeyboardModifiers modifiers = e->modifiers();
     Qt::Key key = (Qt::Key)Gui::handleNativeKeys( e->key(), e->nativeScanCode(), e->nativeVirtualKey() );
 
+    // Over the colour space inset, node overlays and the bindings that act on the 2D image
+    // (channels, zoom, wipe, region of interest...) would change things hidden behind it.
+    // Framing, playback and the panel layout still apply there.
+    const auto colorSpaceKeepsKey = [&]() {
+        static const char* const playerActions[] = {
+            kShortcutIDActionPlayerPrevious,
+            kShortcutIDActionPlayerBackward,
+            kShortcutIDActionPlayerStop,
+            kShortcutIDActionPlayerForward,
+            kShortcutIDActionPlayerNext,
+            kShortcutIDActionPlayerPrevIncr,
+            kShortcutIDActionPlayerNextIncr,
+            kShortcutIDActionPlayerFirst,
+            kShortcutIDActionPlayerLast,
+            kShortcutIDActionPlayerPlaybackIn,
+            kShortcutIDActionPlayerPlaybackOut,
+            kShortcutIDActionPlayerPrevKF,
+            kShortcutIDActionPlayerNextKF,
+        };
+        static const char* const viewerActions[] = {
+            kShortcutIDActionFitViewer,
+            kShortcutIDActionHideAll,
+            kShortcutIDActionShowAll,
+            kShortcutIDActionHidePlayer,
+            kShortcutIDActionHideTimeline,
+            kShortcutIDActionHideInfobar,
+            kShortcutIDActionHideLeft,
+            kShortcutIDActionHideRight,
+            kShortcutIDActionHideTop,
+        };
+        for (const char* id : playerActions) {
+            if (isKeybind(kShortcutGroupPlayer, id, modifiers, key)) {
+                return true;
+            }
+        }
+        for (const char* id : viewerActions) {
+            if (isKeybind(kShortcutGroupViewer, id, modifiers, key)) {
+                return true;
+            }
+        }
+
+        return false;
+    };
+
     const unsigned int mipmapLevel = _imp->viewer->getCurrentMipmapLevel();
-    if (e->isAutoRepeat() && notifyOverlaysKeyRepeat(RenderScale::fromMipmapLevel(mipmapLevel), e)) {
+    if (_imp->viewer->isColorSpaceInsetUnderPointer() && !colorSpaceKeepsKey()) {
+        accept = false;
+    } else if (e->isAutoRepeat() && notifyOverlaysKeyRepeat(RenderScale::fromMipmapLevel(mipmapLevel), e)) {
         update();
     } else if (notifyOverlaysKeyDown(RenderScale::fromMipmapLevel(mipmapLevel), e)) {
         update();

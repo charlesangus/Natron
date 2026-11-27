@@ -3838,7 +3838,7 @@ ViewerGL::event(QEvent* e)
     // Space reaches the inset only while the pointer is over it or a drag in it runs, so that it
     // keeps its viewer binding elsewhere; a release always does, to end a hold begun there.
     const bool colorSpaceKeyDown = (type == QEvent::ShortcutOverride) || (type == QEvent::KeyPress);
-    const bool colorSpaceViewEvent = (type == QEvent::KeyRelease) || (type == QEvent::FocusOut) || (colorSpaceKeyDown && _imp && (_imp->colorSpaceViewCapture || isOverColorSpaceInset(mapFromGlobal(QCursor::pos()))));
+    const bool colorSpaceViewEvent = (type == QEvent::KeyRelease) || (type == QEvent::FocusOut) || (colorSpaceKeyDown && _imp && isColorSpaceInsetUnderPointer());
     if (colorSpaceViewEvent && _imp && _imp->colorSpaceView && _imp->colorSpaceView->event(e)) {
         return true;
     }
@@ -4223,6 +4223,12 @@ bool
 ViewerGL::isOverColorSpaceInset(const QPointF& widgetPos) const
 {
     return _imp->colorSpaceViewActive && _imp->colorSpaceView && _imp->colorSpaceView->contains(widgetPos);
+}
+
+bool
+ViewerGL::isColorSpaceInsetUnderPointer() const
+{
+    return _imp->colorSpaceViewCapture || isOverColorSpaceInset(mapFromGlobal(QCursor::pos()));
 }
 
 bool

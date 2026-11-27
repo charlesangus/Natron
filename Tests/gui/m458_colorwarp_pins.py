@@ -162,10 +162,9 @@ try:
         return engaged()
 
     def hud_knob():
-        for name in ("ColorTrackballHudWindow", "ColorTrackballHudBlock"):
-            for w in gt.widgets_of(name):
-                if w.isVisible():
-                    return w.property("trackballHudKnob")
+        for w in gt.widgets_of("ColorTrackballHudBlock"):
+            if w.isVisible():
+                return w.property("trackballHudKnob")
         return None
 
     def stroke(dx, dy, steps=10):

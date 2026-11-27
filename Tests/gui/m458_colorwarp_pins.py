@@ -162,9 +162,12 @@ try:
         return engaged()
 
     def hud_knob():
-        for w in gt.widgets_of("ColorTrackballHudBlock"):
-            if w.isVisible():
-                return w.property("trackballHudKnob")
+        for w in QApplication.allWidgets():
+            try:
+                if w.objectName() == "ColorTrackballHudBlock" and w.isVisible():
+                    return w.property("trackballHudKnob")
+            except RuntimeError:
+                continue
         return None
 
     def stroke(dx, dy, steps=10):

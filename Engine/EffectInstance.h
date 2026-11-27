@@ -2593,9 +2593,21 @@ public:
 
     /**
      * @brief Whether getRenderContinuation() may return true for some frame. GPU placement keeps such an effect on the
-     * CPU, since only CPU tasks are probed and the answer depends on pixels placement cannot read.
+     * CPU unless supportsRenderContinuationOnGpu() says otherwise, since the answer depends on pixels placement cannot
+     * read.
      **/
     virtual bool offersRenderContinuation() const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief Whether the effect's GPU path renders after its render continuation: GPU placement then puts it in a region
+     * holding none of the tasks it depends on, the scheduler probes it on the CPU before the region runs, and renderGpu() reads
+     * the outputs the probe requested from GpuRenderArgs::continuationInputs. The probe still reads its inputs on the
+     * CPU, so an input rendered on the GPU is downloaded for it.
+     **/
+    virtual bool supportsRenderContinuationOnGpu() const WARN_UNUSED_RETURN
     {
         return false;
     }

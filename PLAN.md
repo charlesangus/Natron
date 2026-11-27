@@ -479,7 +479,7 @@ future core work has solid ground to build on.
 | M315 | Direct Texel Painting | todo | M53, M312 | bosley-executor | E9 | F11 | | [M315-direct-texel-painting.md](PLAN/MILESTONES/M315-direct-texel-painting.md) |
 | M316 | Delegate UV Baking | todo | M313, M251 |  | E9 | | | [M316-delegate-uv-baking.md](PLAN/MILESTONES/M316-delegate-uv-baking.md) |
 | M427 | Native Geometry Texture Painting | todo | M53, M358, M376, M428 |  | E9 | F11 | | [M427-native-geometry-texture-painting.md](PLAN/MILESTONES/M427-native-geometry-texture-painting.md) |
-| M428 | Native UV Operators | doing | M359 | bosley-executor | E9 | F11 | | [M428-native-uv-operators.md](PLAN/MILESTONES/M428-native-uv-operators.md) |
+| M428 | Native UV Operators | done | M359 | bosley-executor | E9 | F11 | | [M428-native-uv-operators.md](PLAN/MILESTONES/M428-native-uv-operators.md) |
 | M429 | GeoAttribPaint Node | todo | M53, M359, M376 |  | E9 | F11 | | [M429-geoattribpaint-node.md](PLAN/MILESTONES/M429-geoattribpaint-node.md) |
 | M430 | Viewer 2D/3D Switch | todo | M53, M376 |  | E9 | F11 | | [M430-viewer-2d-3d-switch.md](PLAN/MILESTONES/M430-viewer-2d-3d-switch.md) |
 | M431 | Fast Panel Build | doing | - | bosley-executor | E10 |  | uat | [M431-fast-panel-build.md](PLAN/MILESTONES/M431-fast-panel-build.md) |

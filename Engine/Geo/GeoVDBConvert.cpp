@@ -404,7 +404,7 @@ addGrid(GeoVDBConvertResult* result,
 {
     grid->setName(name);
     result->notes.push_back(geoVDBMemoryNote(name, *grid));
-    result->grids.push_back(GeoVDBNamedGrid { name, grid });
+    result->grids.push_back(GeoVDBConvertGrid { name, grid });
 }
 
 typedef openvdb::FloatGrid::ValueConverter<openvdb::Index32>::Type ParticleIndexGrid;
@@ -567,7 +567,7 @@ geoAppendVDBGrids(GeoDetailBuilder& builder,
                   const GeoVDBConvertResult& result)
 {
     GeoOffset first = GeoIndexMap::kInvalidOffset;
-    for (const GeoVDBNamedGrid& g : result.grids) {
+    for (const GeoVDBConvertGrid& g : result.grids) {
         const GeoOffset prim = geoAppendVDB(builder, g.grid, g.name);
         if (first == GeoIndexMap::kInvalidOffset) {
             first = prim;

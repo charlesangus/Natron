@@ -76,14 +76,15 @@ enum GeoVDBInterpolationEnum {
     eGeoVDBInterpolationQuadratic,
 };
 
-struct GeoVDBNamedGrid {
+// Owns its grid, unlike GeoVDBNamedGrid, because a result outlives the conversion that made it.
+struct GeoVDBConvertGrid {
     std::string name;
     GeoVDBGridBaseConstPtr grid;
 };
 
 struct GeoVDBConvertResult {
     // The distance or density grid first, then one grid per rasterised attribute.
-    std::vector<GeoVDBNamedGrid> grids;
+    std::vector<GeoVDBConvertGrid> grids;
     // What the node's info shows: what was skipped and why, and the memory the grids use.
     std::vector<std::string> notes;
 };

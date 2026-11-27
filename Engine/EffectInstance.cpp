@@ -817,42 +817,86 @@ EffectInstance::Implementation::aborted(bool isRenderResponseToUserInteraction,
     }
 }
 
+namespace {
+struct InheritedAbort {
+    bool isRenderResponseToUserInteraction = false;
+    AbortableRenderInfoPtr abortInfo;
+    EffectInstancePtr treeRoot;
+};
+
+thread_local InheritedAbort tInheritedAbort;
+} // anonymous namespace
+
+EffectInstance::InheritedAbortScope::InheritedAbortScope(bool isRenderResponseToUserInteraction,
+                                                         const AbortableRenderInfoPtr& abortInfo,
+                                                         const EffectInstancePtr& treeRoot)
+    : _previousUserInteraction(tInheritedAbort.isRenderResponseToUserInteraction)
+    , _previousAbortInfo(tInheritedAbort.abortInfo)
+    , _previousTreeRoot(tInheritedAbort.treeRoot)
+{
+    tInheritedAbort.isRenderResponseToUserInteraction = isRenderResponseToUserInteraction;
+    tInheritedAbort.abortInfo = abortInfo;
+    tInheritedAbort.treeRoot = treeRoot;
+}
+
+EffectInstance::InheritedAbortScope::~InheritedAbortScope()
+{
+    tInheritedAbort.isRenderResponseToUserInteraction = _previousUserInteraction;
+    tInheritedAbort.abortInfo = _previousAbortInfo;
+    tInheritedAbort.treeRoot = _previousTreeRoot;
+}
+
+bool
+EffectInstance::getAbortState(bool* isRenderResponseToUserInteraction,
+                              AbortableRenderInfoPtr* abortInfo,
+                              EffectInstancePtr* treeRoot) const
+{
+    /* If this thread is an AbortableThread, this function will be extremely fast*/
+    AbortableThread* isAbortableThread = dynamic_cast<AbortableThread*>(QThread::currentThread());
+
+    if (isAbortableThread && isAbortableThread->getAbortInfo(isRenderResponseToUserInteraction, abortInfo, treeRoot)) {
+        return true;
+    }
+
+    /**
+       Threads that start a render generally already have the AbortableThread::setAbortInfo function called on them, but
+       threads spawned from the thread pool may not: their info comes from this node's frame args, which
+       is cached on an AbortableThread.
+     **/
+    const ParallelRenderArgsPtr args = getFrameArgs();
+    AbortableRenderInfoPtr argsAbortInfo = args ? args->abortInfo.lock() : AbortableRenderInfoPtr();
+
+    // Frame args a direct evaluation made up on a pool thread know no render, or carry the lent
+    // one: it is answered without being cached on the thread, where it would outlive its scope.
+    if (tInheritedAbort.abortInfo && (!argsAbortInfo || (argsAbortInfo == tInheritedAbort.abortInfo))) {
+        *isRenderResponseToUserInteraction = tInheritedAbort.isRenderResponseToUserInteraction;
+        *abortInfo = tInheritedAbort.abortInfo;
+        *treeRoot = tInheritedAbort.treeRoot;
+
+        return true;
+    }
+    if (!args) {
+        return false;
+    }
+    *isRenderResponseToUserInteraction = args->isRenderResponseToUserInteraction;
+    *abortInfo = argsAbortInfo;
+    *treeRoot = args->treeRoot ? args->treeRoot->getEffectInstance() : EffectInstancePtr();
+    if (isAbortableThread) {
+        isAbortableThread->setAbortInfo(*isRenderResponseToUserInteraction, *abortInfo, *treeRoot);
+    }
+
+    return true;
+}
+
 bool
 EffectInstance::aborted() const
 {
-    QThread* thisThread = QThread::currentThread();
-
-    /* If this thread is an AbortableThread, this function will be extremely fast*/
-    AbortableThread* isAbortableThread = dynamic_cast<AbortableThread*>(thisThread);
-
-    /**
-       The solution here is to store per-render info on the thread that we retrieve.
-       These info contain an atomic integer determining whether this particular render was aborted or not.
-       If this thread does not have abort info yet on it, we retrieve them from the thread-local storage of this node
-       and set it.
-       Threads that start a render generally already have the AbortableThread::setAbortInfo function called on them, but
-       threads spawned from the thread pool may not.
-     **/
-    bool isRenderUserInteraction;
+    bool isRenderUserInteraction = false;
     AbortableRenderInfoPtr abortInfo;
     EffectInstancePtr treeRoot;
 
-
-    if ( !isAbortableThread || !isAbortableThread->getAbortInfo(&isRenderUserInteraction, &abortInfo, &treeRoot) ) {
-        // If this thread is not abortable or we did not set the abort info for this render yet, retrieve them from the TLS of this node.
-        const ParallelRenderArgsPtr args = getFrameArgs();
-        if (!args) {
-            return false;
-        }
-        isRenderUserInteraction = args->isRenderResponseToUserInteraction;
-        abortInfo = args->abortInfo.lock();
-        if (args->treeRoot) {
-            treeRoot = args->treeRoot->getEffectInstance();
-        }
-
-        if (isAbortableThread) {
-            isAbortableThread->setAbortInfo(isRenderUserInteraction, abortInfo, treeRoot);
-        }
+    if (!getAbortState(&isRenderUserInteraction, &abortInfo, &treeRoot)) {
+        return false;
     }
 
     // The internal function that given a AbortableRenderInfoPtr determines if a render was aborted or not
@@ -860,6 +904,33 @@ EffectInstance::aborted() const
                                    abortInfo,
                                    treeRoot);
 } // EffectInstance::aborted
+
+void
+adoptThreadAbortState(ParallelRenderArgs* args)
+{
+    AbortableThread* isAbortableThread = dynamic_cast<AbortableThread*>(QThread::currentThread());
+    bool isRenderUserInteraction = false;
+    AbortableRenderInfoPtr abortInfo;
+    EffectInstancePtr treeRoot;
+
+    if (!args || !isAbortableThread || !isAbortableThread->getAbortInfo(&isRenderUserInteraction, &abortInfo, &treeRoot) || !abortInfo) {
+        return;
+    }
+    args->isRenderResponseToUserInteraction = isRenderUserInteraction;
+    args->abortInfo = abortInfo;
+    args->treeRoot = treeRoot ? treeRoot->getNode() : NodePtr();
+}
+
+void
+adoptInheritedAbortState(ParallelRenderArgs* args)
+{
+    if (!args || !tInheritedAbort.abortInfo) {
+        return;
+    }
+    args->isRenderResponseToUserInteraction = tInheritedAbort.isRenderResponseToUserInteraction;
+    args->abortInfo = tInheritedAbort.abortInfo;
+    args->treeRoot = tInheritedAbort.treeRoot ? tInheritedAbort.treeRoot->getNode() : NodePtr();
+}
 
 bool
 EffectInstance::abortIfSuperseded() const
@@ -7590,8 +7661,12 @@ EffectInstance::abortViewerRendersForEdit()
     if (Node::deferViewerAbortToCascade(getNode())) {
         return;
     }
+    const NodePtr node = getNode();
     std::list<OutputEffectInstance*> outputNodes;
-    getDownstreamOutputs(&outputNodes);
+    if (node && !node->abortCooksStaleAfterEditFindingOutputs(&outputNodes)) {
+        node->abortCooksStaleAfterEditDownstream();
+        getDownstreamOutputs(&outputNodes);
+    }
     for (std::list<OutputEffectInstance*>::const_iterator it = outputNodes.begin(); it != outputNodes.end(); ++it) {
         // Only a viewer reads knob values while the user edits them. Any other render keeps going
         // on the values it started with, as nothing in the GUI can edit while it runs.

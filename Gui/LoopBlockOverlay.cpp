@@ -37,9 +37,9 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/Knob.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
-#include "Engine/Nodes/Loop/LoopBegin.h"
-#include "Engine/Nodes/Loop/LoopEnd.h"
+#include "Engine/Nodes/Loop/LoopBlock.h"
 
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
@@ -235,16 +235,17 @@ LoopBlockOverlay::bodyNodes(const NodePtr& end)
 {
     std::vector<NodePtr> nodes;
     std::set<Node*> members;
-    // Each node with the count of LoopEnds less LoopBegins between it and end. LoopEnd's own
+    // Each node with the count of block ends less block begins between it and end. The pairing
     // walk goes down from every node; walking up instead visits each node once per nesting level.
+    // An end's body is its first input: the others, a for-each's Piece, are outside its block.
     std::set<std::pair<Node*, int>> visited;
     std::vector<std::pair<NodePtr, int>> stack;
 
     if (!end) {
         return nodes;
     }
-    for (int i = 0; i < end->getNInputs(); ++i) {
-        stack.push_back(std::make_pair(end->getInput(i), 0));
+    if (end->getNInputs() > 0) {
+        stack.push_back(std::make_pair(end->getInput(0), 0));
     }
     while (!stack.empty()) {
         const NodePtr node = stack.back().first;
@@ -256,11 +257,18 @@ LoopBlockOverlay::bodyNodes(const NodePtr& end)
         if (members.insert(node.get()).second) {
             nodes.push_back(node);
         }
-        if (LoopEnd::isLoopEnd(node)) {
-            ++open;
-        } else if (LoopBegin::isLoopBegin(node)) {
-            // Nodes above a LoopBegin with no LoopEnd open below it feed that LoopBegin's loop
-            // from outside, so they are not in end's body.
+        if (LoopBlocks::isEnd(node)) {
+            for (int i = 1; i < node->getNInputs(); ++i) {
+                stack.push_back(std::make_pair(node->getInput(i), open));
+            }
+            if (node->getNInputs() > 0) {
+                stack.push_back(std::make_pair(node->getInput(0), open + 1));
+            }
+            continue;
+        }
+        if (LoopBlocks::isBegin(node)) {
+            // Nodes above a begin with no end open below it feed that begin's block from
+            // outside, so they are not in end's body.
             if (open == 0) {
                 continue;
             }
@@ -301,24 +309,21 @@ LoopBlockOverlay::recomputeMembership()
     const NodesGuiList& guis = _graph->getAllActiveNodes();
     for (NodesGuiList::const_iterator it = guis.begin(); it != guis.end(); ++it) {
         const NodePtr end = (*it)->getNode();
-        if (!LoopEnd::isLoopEnd(end)) {
-            continue;
-        }
-        LoopEnd* effect = dynamic_cast<LoopEnd*>(end->getEffectInstance().get());
-        const std::vector<NodePtr> begins = effect ? effect->getLoopBegins() : std::vector<NodePtr>();
+        const LoopBlockEnd* effect = LoopBlockEnd::of(end);
+        const std::vector<NodePtr> begins = effect ? effect->getBlockBegins() : std::vector<NodePtr>();
         if (begins.empty()) {
             continue;
         }
         Membership block;
         block.end = end;
-        block.name = effect->getLoopName();
+        block.name = effect->getBlockLoopName();
         if (block.name.empty()) {
             block.name = end->getScriptName_mt_safe();
         }
         for (const NodePtr& begin : begins) {
             block.begins.push_back(begin);
         }
-        const KnobIPtr nameKnob = end->getKnobByName(kLoopEndParamName);
+        const KnobIPtr nameKnob = effect->getBlockNameKnob();
         KnobHelper* helper = dynamic_cast<KnobHelper*>(nameKnob.get());
         if (helper && helper->getSignalSlotHandler()) {
             QObject::connect(helper->getSignalSlotHandler().get(), SIGNAL(valueChanged(ViewSpec, int, int)), this, SLOT(onLoopNameChanged()),

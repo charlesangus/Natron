@@ -48,7 +48,7 @@ class QTableWidget;
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The table on LoopEnd's panel of every driven knob dimension in the loop's body: its
+ * @brief The table on a loop block end's panel of every driven knob dimension in the block's body: its
  * node, parameter, variable, start, end and easing, edited in place through the same undoable
  * commands as the knob's own driver row, and its value at the loop's preview iteration.
  **/
@@ -66,7 +66,7 @@ public:
     }
 
     /**
-     * @brief Whether knob is the placeholder of a LoopEnd that the table shows for.
+     * @brief Whether knob is the placeholder of a loop block end that the table shows for.
      **/
     static bool isTableKnob(const KnobIPtr& knob);
 

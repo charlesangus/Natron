@@ -93,10 +93,14 @@ public:
     /**
      * @brief Serves @p next instead of the current convert. It first adopts the current convert's
      * unchanged partitions, so call it before any field query on @p next. Null serves nothing.
+     * A convert with an input scene authors overrides relative to that scene rather than the
+     * geometry itself, so it is a coding error and serves nothing. Partitions are only adopted, and
+     * only skipped by signature, when both converts have the same options.
      *
      * Notices: a prim whose path is new, or whose type changed, is removed (if it was there) and
      * added again; so is everything under a removed prim, since Hydra drops the whole subtree. A
-     * prim on the same path with the same type whose partition kept its signature sends nothing.
+     * prim on the same path with the same type whose partition kept its signature, under the same
+     * options, sends nothing.
      * Otherwise it is dirtied at the locators of what differs: primvars/<name> per primvar,
      * mesh/topology or basisCurves/topology for the topology, extent, geomSubset, and xform,
      * visibility or purpose when the flattened value moved. An identical detail sends nothing.

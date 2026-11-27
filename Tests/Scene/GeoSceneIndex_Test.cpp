@@ -30,7 +30,6 @@
 #include <map>
 #include <memory>
 #include <set>
-#include <span>
 #include <string>
 #include <vector>
 
@@ -39,7 +38,10 @@
 #include "Engine/Nodes/Geometry/GeoPrimitive.h"
 #include "Engine/Nodes/Geometry/GeoSceneIndex.h"
 #include "Engine/Nodes/Geometry/GeoUsdConvert.h"
+#include "Tests/Scene/GeoSceneIndexFixtures.h"
 
+#include <pxr/base/gf/matrix4d.h>
+#include <pxr/base/tf/errorMark.h>
 #include <pxr/imaging/hd/basisCurvesSchema.h>
 #include <pxr/imaging/hd/basisCurvesTopologySchema.h>
 #include <pxr/imaging/hd/extentSchema.h>
@@ -49,146 +51,23 @@
 #include <pxr/imaging/hd/primOriginSchema.h>
 #include <pxr/imaging/hd/primvarSchema.h>
 #include <pxr/imaging/hd/primvarsSchema.h>
+#include <pxr/imaging/hd/purposeSchema.h>
 #include <pxr/imaging/hd/sceneIndexObserver.h>
 #include <pxr/imaging/hd/tokens.h>
+#include <pxr/imaging/hd/visibilitySchema.h>
 #include <pxr/imaging/hd/xformSchema.h>
 #include <pxr/usd/usdGeom/tokens.h>
 
 PXR_NAMESPACE_USING_DIRECTIVE
 NATRON_NAMESPACE_USING
+using namespace GeoSceneIndexFixtures;
 
 namespace {
-
-GeoDetailConstPtr
-finish(GeoDetailBuilder& b)
-{
-    return std::make_shared<const GeoDetail>(b.finish());
-}
 
 std::shared_ptr<GeoUsdConvert>
 convertOf(const GeoDetailConstPtr& detail)
 {
     return std::make_shared<GeoUsdConvert>(detail, GeoUsdConvertOptions());
-}
-
-GeoAttribute&
-addPointColour(GeoDetailBuilder& b)
-{
-    GeoAttributeDesc desc;
-    desc.name = "Cd";
-    desc.storage = eGeoStorageFloat32;
-    desc.tupleSize = 3;
-    desc.typeInfo = eGeoTypeInfoColour;
-
-    return b.addAttribute(eGeoAttribClassPoint, desc);
-}
-
-// A unit quad at (x, y), its corner colours derived from where they are, so a quad built in
-// another order carries the same values.
-void
-addQuad(GeoDetailBuilder& b,
-        double x,
-        double y,
-        GeoAttribute* colour)
-{
-    const GeoOffset first = b.appendPoints(4);
-    const double corners[4][2] = { { x, y }, { x + 1., y }, { x + 1., y + 1. }, { x, y + 1. } };
-    GeoOffset offsets[4];
-    for (int i = 0; i < 4; ++i) {
-        offsets[i] = first + i;
-        b.setPointPosition(offsets[i], corners[i][0], corners[i][1], 0.);
-        if (colour) {
-            const float c[3] = { float(corners[i][0]) * 0.1f, float(corners[i][1]) * 0.1f, 0.5f };
-            colour->setTuple<float>(std::size_t(offsets[i]), std::span<const float>(c, 3));
-        }
-    }
-    b.appendPrimitive(eGeoPrimitivePolygon, offsets);
-}
-
-GeoDetailConstPtr
-makeCube()
-{
-    GeoShapeParams params;
-    params.shape = eGeoShapeCube;
-    GeoDetailBuilder b;
-    buildGeoShape(params, b);
-
-    return finish(b);
-}
-
-// Loose points with a colour and a pscale of @p pscale, 2 * @p pscale, ...
-GeoDetailConstPtr
-makePoints(float pscale,
-           double shift = 0.)
-{
-    GeoDetailBuilder b;
-    const GeoOffset first = b.appendPoints(3);
-    GeoAttribute& colour = addPointColour(b);
-    GeoAttributeDesc desc;
-    desc.name = "pscale";
-    desc.storage = eGeoStorageFloat32;
-    GeoAttribute& scale = b.addAttribute(eGeoAttribClassPoint, desc);
-    for (int i = 0; i < 3; ++i) {
-        b.setPointPosition(first + i, double(i) + shift, 0., 1.);
-        const float c[3] = { 0.25f * float(i), 0.5f, 0.75f };
-        colour.setTuple<float>(std::size_t(first + i), std::span<const float>(c, 3));
-        scale.set<float>(std::size_t(first + i), pscale * float(i + 1));
-    }
-
-    return finish(b);
-}
-
-GeoDetailConstPtr
-makeCurve()
-{
-    GeoDetailBuilder b;
-    const GeoOffset first = b.appendPoints(3);
-    for (int i = 0; i < 3; ++i) {
-        b.setPointPosition(first + i, double(i), double(i * i), -1.);
-    }
-    const GeoOffset points[] = { first, first + 1, first + 2 };
-    b.appendPrimitive(eGeoPrimitivePolyline, points);
-
-    return finish(b);
-}
-
-// Quads at /geo/a (x = 0) and /geo/<bName> (x = 5), "sel" holding the /geo/a quad. @p bFirst
-// builds the second quad first, so only the primitive order differs.
-GeoDetailConstPtr
-makeGrouped(const std::string& bName = "b",
-            bool bFirst = false)
-{
-    GeoDetailBuilder b;
-    GeoAttribute& colour = addPointColour(b);
-    addQuad(b, bFirst ? 5. : 0., 0., &colour);
-    addQuad(b, bFirst ? 0. : 5., 0., &colour);
-    GeoAttributeDesc pathDesc;
-    pathDesc.name = "path";
-    pathDesc.storage = eGeoStorageString;
-    GeoAttribute& path = b.addAttribute(eGeoAttribClassPrimitive, pathDesc);
-    path.setString(bFirst ? 1 : 0, "/geo/a");
-    path.setString(bFirst ? 0 : 1, "/geo/" + bName);
-    b.addGroup(eGeoAttribClassPrimitive, "sel").add(GeoOffset(bFirst ? 1 : 0));
-
-    return finish(b);
-}
-
-// One quad at (x, 0), plus a second one at (x, 3) when @p two.
-GeoDetailConstPtr
-makeQuads(double x,
-          bool two = false,
-          double insideMove = 0.)
-{
-    GeoDetailBuilder b;
-    addQuad(b, x, 0., nullptr);
-    if (insideMove != 0.) {
-        b.setPointPosition(0, x + insideMove, insideMove, 0.);
-    }
-    if (two) {
-        addQuad(b, x, 3., nullptr);
-    }
-
-    return finish(b);
 }
 
 GeoSceneIndexRefPtr
@@ -631,4 +510,104 @@ TEST(GeoSceneIndex, EmptyingTheDetailRemovesEverything)
     EXPECT_EQ(t.recorder.removed, std::vector<std::string>({ "/geo" }));
     EXPECT_TRUE(t.recorder.added.empty());
     EXPECT_TRUE(t.index->GetChildPrimPaths(SdfPath::AbsoluteRootPath()).empty());
+}
+
+TEST(GeoSceneIndex, AnAncestorTransformIsFlattenedIntoItsDescendants)
+{
+    const GeoSceneIndexRefPtr index = serve(makeTransformedParent(1., 2., 3.));
+    const std::map<SdfPath, TfToken> prims = pullAll(*index);
+    ASSERT_EQ(prims.count(SdfPath("/geo/xf")), 1u);
+    EXPECT_EQ(prims.at(SdfPath("/geo/xf")), TfToken());
+    ASSERT_EQ(prims.count(SdfPath("/geo/xf/m")), 1u);
+    EXPECT_EQ(prims.at(SdfPath("/geo/xf/m")), HdPrimTypeTokens->mesh);
+
+    GfMatrix4d expected(1.0);
+    expected.SetTranslate(GfVec3d(1., 2., 3.));
+    for (const char* path : { "/geo/xf", "/geo/xf/m" }) {
+        const HdSceneIndexPrim prim = index->GetPrim(SdfPath(path));
+        const HdXformSchema xform = HdXformSchema::GetFromParent(prim.dataSource);
+        EXPECT_EQ(typed<GfMatrix4d>(xform.GetMatrix()), expected) << path;
+        EXPECT_TRUE(typed<bool>(xform.GetResetXformStack())) << path;
+        EXPECT_TRUE(typed<bool>(HdVisibilitySchema::GetFromParent(prim.dataSource).GetVisibility())) << path;
+        EXPECT_EQ(typed<TfToken>(HdPurposeSchema::GetFromParent(prim.dataSource).GetPurpose()), HdRenderTagTokens->geometry) << path;
+    }
+    expectIdentityWorld(index->GetPrim(SdfPath("/geo")), "/geo");
+}
+
+TEST(GeoSceneIndex, AnAncestorTransformChangeDirtiesOnlyXforms)
+{
+    const Transition t(makeTransformedParent(1., 2., 3.), makeTransformedParent(4., 2., 3.));
+    EXPECT_TRUE(t.recorder.added.empty());
+    EXPECT_TRUE(t.recorder.removed.empty());
+    ASSERT_EQ(t.recorder.dirtied.size(), 2u);
+    for (const char* path : { "/geo/xf", "/geo/xf/m" }) {
+        ASSERT_EQ(t.recorder.dirtied.count(path), 1u) << path;
+        const HdDataSourceLocatorSet& dirty = t.recorder.dirtied.at(path);
+        EXPECT_EQ(dirty, locators({ HdXformSchema::GetDefaultLocator() })) << path << ": " << describe(dirty);
+    }
+    GfMatrix4d expected(1.0);
+    expected.SetTranslate(GfVec3d(4., 2., 3.));
+    EXPECT_EQ(typed<GfMatrix4d>(HdXformSchema::GetFromParent(t.index->GetPrim(SdfPath("/geo/xf/m")).dataSource).GetMatrix()), expected);
+}
+
+TEST(GeoSceneIndex, ATypeChangeOnTheSamePathRemovesAndAdds)
+{
+    const Transition toCurves(makeRetyped(false), makeRetyped(true));
+    EXPECT_EQ(toCurves.recorder.removed, std::vector<std::string>({ "/geo/a" }));
+    EXPECT_EQ(toCurves.recorder.added, std::vector<std::string>({ "/geo/a" }));
+    EXPECT_TRUE(toCurves.recorder.dirtied.empty()) << toCurves.recorder.dirtied.begin()->first;
+    EXPECT_EQ(toCurves.index->GetPrim(SdfPath("/geo/a")).primType, HdPrimTypeTokens->basisCurves);
+    EXPECT_EQ(toCurves.index->GetPrim(SdfPath("/geo/a/sel")).dataSource, nullptr);
+
+    const Transition toMesh(makeRetyped(true), makeRetyped(false));
+    EXPECT_EQ(toMesh.recorder.removed, std::vector<std::string>({ "/geo/a" }));
+    EXPECT_EQ(toMesh.recorder.added, std::vector<std::string>({ "/geo/a", "/geo/a/sel" }));
+    EXPECT_TRUE(toMesh.recorder.dirtied.empty()) << toMesh.recorder.dirtied.begin()->first;
+    EXPECT_EQ(toMesh.index->GetPrim(SdfPath("/geo/a/sel")).primType, HdPrimTypeTokens->geomSubset);
+}
+
+TEST(GeoSceneIndex, ARetypedPrimAddsItsSurvivingChildrenAgain)
+{
+    const Transition t(makeRetyped(false, true), makeRetyped(true, true));
+    EXPECT_EQ(t.recorder.removed, std::vector<std::string>({ "/geo/a" }));
+    EXPECT_EQ(t.recorder.added, std::vector<std::string>({ "/geo/a", "/geo/a/m" }));
+    EXPECT_TRUE(t.recorder.dirtied.empty()) << t.recorder.dirtied.begin()->first;
+    EXPECT_EQ(t.index->GetPrim(SdfPath("/geo/a/m")).primType, HdPrimTypeTokens->mesh);
+}
+
+TEST(GeoSceneIndex, NewOptionsOverTheSameDetailDirtyWhatTheyChange)
+{
+    const GeoDetailConstPtr detail = makePoints(0.f);
+    const SdfPath path("/geo/points_0");
+    Recorder recorder;
+    const GeoSceneIndexRefPtr index = GeoSceneIndex::New();
+    index->AddObserver(HdSceneIndexObserverPtr(&recorder));
+    index->update(convertOf(detail));
+    pullAll(*index);
+    EXPECT_EQ(primvarValue(index->GetPrim(path), HdPrimvarsSchemaTokens->widths), VtValue(VtFloatArray(1, 0.01f)));
+    recorder.clear();
+
+    GeoUsdConvertOptions wider;
+    wider.defaultPointWidth = 0.05;
+    index->update(std::make_shared<GeoUsdConvert>(detail, wider));
+    EXPECT_TRUE(recorder.added.empty());
+    EXPECT_TRUE(recorder.removed.empty());
+    ASSERT_EQ(recorder.dirtied.size(), 1u);
+    const HdDataSourceLocatorSet& dirty = recorder.dirtied.at(path.GetString());
+    EXPECT_EQ(dirty, locators({ HdPrimvarsSchema::GetWidthsLocator() })) << describe(dirty);
+    EXPECT_EQ(primvarValue(index->GetPrim(path), HdPrimvarsSchemaTokens->widths), VtValue(VtFloatArray(1, 0.05f)));
+    index->RemoveObserver(HdSceneIndexObserverPtr(&recorder));
+}
+
+TEST(GeoSceneIndex, AConvertOverAnInputSceneServesNothing)
+{
+    GeoUsdConvertOptions options;
+    options.inputScene = std::make_shared<const GeoUsdInputScene>();
+    const GeoSceneIndexRefPtr index = serve(makeCube());
+    TfErrorMark mark;
+    index->update(std::make_shared<GeoUsdConvert>(makeCube(), options));
+    EXPECT_FALSE(mark.IsClean());
+    mark.Clear();
+    EXPECT_EQ(index->convert(), nullptr);
+    EXPECT_TRUE(index->GetChildPrimPaths(SdfPath::AbsoluteRootPath()).empty());
 }

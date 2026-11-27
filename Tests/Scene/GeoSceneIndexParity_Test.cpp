@@ -26,7 +26,6 @@
 #include "Global/Macros.h"
 
 #include <memory>
-#include <span>
 #include <string>
 #include <vector>
 
@@ -36,6 +35,7 @@
 #include "Engine/Nodes/Geometry/GeoSceneIndex.h"
 #include "Engine/Nodes/Geometry/GeoSdfFileFormat.h"
 #include "Engine/Nodes/Geometry/GeoUsdConvert.h"
+#include "Tests/Scene/GeoSceneIndexFixtures.h"
 #include "Tests/Scene/GeoSceneIndexParity.h"
 
 #include <pxr/imaging/hd/containerDataSourceEditor.h>
@@ -49,120 +49,9 @@
 
 PXR_NAMESPACE_USING_DIRECTIVE
 NATRON_NAMESPACE_USING
+using namespace GeoSceneIndexFixtures;
 
 namespace {
-
-GeoDetailConstPtr
-finish(GeoDetailBuilder& b)
-{
-    return std::make_shared<const GeoDetail>(b.finish());
-}
-
-GeoAttribute&
-addAttribute(GeoDetailBuilder& b,
-             GeoAttribClassEnum cls,
-             const char* name,
-             int tupleSize,
-             GeoTypeInfoEnum typeInfo = eGeoTypeInfoNone)
-{
-    GeoAttributeDesc desc;
-    desc.name = name;
-    desc.storage = eGeoStorageFloat32;
-    desc.tupleSize = tupleSize;
-    desc.typeInfo = typeInfo;
-
-    return b.addAttribute(cls, desc);
-}
-
-void
-addQuad(GeoDetailBuilder& b,
-        double x,
-        GeoAttribute& colour)
-{
-    const GeoOffset first = b.appendPoints(4);
-    const double corners[4][2] = { { x, 0. }, { x + 1., 0. }, { x + 1., 1. }, { x, 1. } };
-    GeoOffset offsets[4];
-    for (int i = 0; i < 4; ++i) {
-        offsets[i] = first + i;
-        b.setPointPosition(offsets[i], corners[i][0], corners[i][1], 0.25);
-        const float c[3] = { float(corners[i][0]) * 0.1f, float(corners[i][1]), 0.5f };
-        colour.setTuple<float>(std::size_t(offsets[i]), std::span<const float>(c, 3));
-    }
-    b.appendPrimitive(eGeoPrimitivePolygon, offsets);
-}
-
-GeoDetailConstPtr
-makeCube()
-{
-    GeoShapeParams params;
-    params.shape = eGeoShapeCube;
-    GeoDetailBuilder b;
-    buildGeoShape(params, b);
-
-    return finish(b);
-}
-
-GeoDetailConstPtr
-makePoints()
-{
-    GeoDetailBuilder b;
-    const GeoOffset first = b.appendPoints(4);
-    GeoAttribute& colour = addAttribute(b, eGeoAttribClassPoint, "Cd", 3, eGeoTypeInfoColour);
-    GeoAttribute& scale = addAttribute(b, eGeoAttribClassPoint, "pscale", 1);
-    GeoAttribute& weight = addAttribute(b, eGeoAttribClassPoint, "weight", 1);
-    for (int i = 0; i < 4; ++i) {
-        b.setPointPosition(first + i, double(i), double(i % 2), -2.);
-        const float c[3] = { 0.2f * float(i), 0.1f, 0.9f };
-        colour.setTuple<float>(std::size_t(first + i), std::span<const float>(c, 3));
-        scale.set<float>(std::size_t(first + i), 0.1f * float(i + 1));
-        weight.set<float>(std::size_t(first + i), float(i) * 0.5f);
-    }
-
-    return finish(b);
-}
-
-GeoDetailConstPtr
-makeCurves()
-{
-    GeoDetailBuilder b;
-    GeoAttribute& width = addAttribute(b, eGeoAttribClassPrimitive, "tension", 1);
-    for (int c = 0; c < 2; ++c) {
-        const GeoOffset first = b.appendPoints(3 + c);
-        std::vector<GeoOffset> points;
-        for (int i = 0; i < 3 + c; ++i) {
-            b.setPointPosition(first + i, double(i), double(c), double(i * c));
-            points.push_back(first + i);
-        }
-        b.appendPrimitive(eGeoPrimitivePolyline, std::span<const GeoOffset>(points.data(), points.size()));
-        width.set<float>(std::size_t(c), 0.5f + float(c));
-    }
-
-    return finish(b);
-}
-
-GeoDetailConstPtr
-makeGrouped()
-{
-    GeoDetailBuilder b;
-    GeoAttribute& colour = addAttribute(b, eGeoAttribClassPoint, "Cd", 3, eGeoTypeInfoColour);
-    addQuad(b, 0., colour);
-    addQuad(b, 2., colour);
-    addQuad(b, 4., colour);
-    GeoAttributeDesc pathDesc;
-    pathDesc.name = "path";
-    pathDesc.storage = eGeoStorageString;
-    GeoAttribute& path = b.addAttribute(eGeoAttribClassPrimitive, pathDesc);
-    path.setString(0, "/geo/shapes/a");
-    path.setString(1, "/geo/shapes/a");
-    path.setString(2, "/geo/b");
-    b.addGroup(eGeoAttribClassPrimitive, "sel").add(GeoOffset(1));
-    auto& all = b.addGroup(eGeoAttribClassPrimitive, "all");
-    for (int i = 0; i < 3; ++i) {
-        all.add(GeoOffset(i));
-    }
-
-    return finish(b);
-}
 
 // UsdImaging's scene index over @p detail served through a natrongeo layer on a stage.
 class Reference {
@@ -273,9 +162,20 @@ TEST(GeoSceneIndexParity, CurvesMatchUsdImaging)
     expectParity("parity-curves", makeCurves());
 }
 
+TEST(GeoSceneIndexParity, ASingleCurveMatchesUsdImaging)
+{
+    expectParity("parity-curve", makeCurve());
+}
+
 TEST(GeoSceneIndexParity, PathsAndSubsetsMatchUsdImagingUnderAPrefix)
 {
     expectParity("parity-grouped", makeGrouped(), SdfPath("/viewer/geo"));
+    expectParity("parity-nested", makeNested(), SdfPath("/viewer/geo"));
+}
+
+TEST(GeoSceneIndexParity, AnAncestorTransformMatchesUsdImaging)
+{
+    expectParity("parity-xformed", makeTransformedParent(1., 2., 3.));
 }
 
 TEST(GeoSceneIndexParity, AMismatchNamesThePrimAndTheField)
@@ -303,7 +203,7 @@ TEST(GeoSceneIndexParity, AMismatchedPrimvarNamesThePrimAndThePrimvar)
     const SdfPath path("/geo/points_0");
     const TfToken displayColor("displayColor");
     const HdDataSourceLocator locator = HdPrimvarsSchema::GetDefaultLocator().Append(displayColor).Append(HdPrimvarSchemaTokens->primvarValue);
-    const HdRetainedSceneIndexRefPtr edited = copyWithEdit(*ours, path, locator, HdRetainedTypedSampledDataSource<VtVec3fArray>::New(VtVec3fArray(4, GfVec3f(9.f))));
+    const HdRetainedSceneIndexRefPtr edited = copyWithEdit(*ours, path, locator, HdRetainedTypedSampledDataSource<VtVec3fArray>::New(VtVec3fArray(3, GfVec3f(9.f))));
     const std::vector<std::string> mismatches = GeoSceneIndexParity::compare(*edited, reference.index());
     ASSERT_EQ(mismatches.size(), 1u) << joined(mismatches);
     const std::string expected = "/geo/points_0: primvars/displayColor value differs";

@@ -39,6 +39,7 @@
 #include <pxr/base/gf/matrix4d.h>
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/gf/vec3f.h>
+#include <pxr/base/tf/diagnostic.h>
 #include <pxr/base/tf/stringUtils.h>
 #include <pxr/base/vt/array.h>
 #include <pxr/imaging/hd/basisCurvesSchema.h>
@@ -72,35 +73,8 @@ NATRON_NAMESPACE_ENTER
 
 namespace {
 
-const TfToken&
-primvarsPrefix()
-{
-    static const TfToken t("primvars:");
-
-    return t;
-}
-
-const TfToken&
-indicesSuffix()
-{
-    static const TfToken t(":indices");
-
-    return t;
-}
-
-bool
-startsWith(const std::string& s,
-           const std::string& prefix)
-{
-    return s.size() >= prefix.size() && s.compare(0, prefix.size(), prefix) == 0;
-}
-
-bool
-endsWith(const std::string& s,
-         const std::string& suffix)
-{
-    return s.size() >= suffix.size() && s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0;
-}
+const std::string kPrimvarsPrefix("primvars:");
+const std::string kIndicesSuffix(":indices");
 
 // The Hydra prim type of a spec's typeName; empty for the prims only served as ancestors.
 TfToken
@@ -201,7 +175,7 @@ localTransform(const GeoUsdConvert& convert,
             continue;
         }
         std::string name = op.GetString();
-        const bool inverse = startsWith(name, invertPrefix);
+        const bool inverse = TfStringStartsWith(name, invertPrefix);
         if (inverse) {
             name.erase(0, invertPrefix.size());
         }
@@ -241,10 +215,10 @@ primvarOf(const TfToken& property,
         return true;
     }
     const std::string& s = property.GetString();
-    if (!startsWith(s, primvarsPrefix().GetString()) || endsWith(s, indicesSuffix().GetString())) {
+    if (!TfStringStartsWith(s, kPrimvarsPrefix) || TfStringEndsWith(s, kIndicesSuffix)) {
         return false;
     }
-    *primvar = TfToken(s.substr(primvarsPrefix().GetString().size()));
+    *primvar = TfToken(s.substr(kPrimvarsPrefix.size()));
     *fallbackInterpolation = UsdGeomTokens->constant;
 
     return true;
@@ -264,12 +238,12 @@ locatorOf(const TfToken& type,
 
         return true;
     }
-    if (startsWith(s, primvarsPrefix().GetString()) && endsWith(s, indicesSuffix().GetString())) {
-        *locator = primvarLocator(TfToken(s.substr(primvarsPrefix().GetString().size(), s.size() - primvarsPrefix().GetString().size() - indicesSuffix().GetString().size())));
+    if (TfStringStartsWith(s, kPrimvarsPrefix) && TfStringEndsWith(s, kIndicesSuffix)) {
+        *locator = primvarLocator(TfToken(s.substr(kPrimvarsPrefix.size(), s.size() - kPrimvarsPrefix.size() - kIndicesSuffix.size())));
 
         return true;
     }
-    if (property == UsdGeomTokens->xformOpOrder || startsWith(s, "xformOp:") || property == UsdGeomTokens->visibility || property == UsdGeomTokens->purpose || property == UsdGeomTokens->familyName || startsWith(s, "subsetFamily:")) {
+    if (property == UsdGeomTokens->xformOpOrder || TfStringStartsWith(s, "xformOp:") || property == UsdGeomTokens->visibility || property == UsdGeomTokens->purpose || property == UsdGeomTokens->familyName || TfStringStartsWith(s, "subsetFamily:")) {
         return false;
     }
     if (property == UsdGeomTokens->extent) {
@@ -364,6 +338,14 @@ sameAttribute(const GeoUsdConvert& a,
     return sameField(a, pa, b, pb, SdfFieldKeys->TypeName) && sameField(a, pa, b, pb, UsdGeomTokens->interpolation) && sameField(a, pa, b, pb, UsdGeomTokens->elementSize) && attributeValue(a, va, pa) == attributeValue(b, vb, pb);
 }
 
+// Whether two converts of the same detail author the same specs and values.
+bool
+sameOptions(const GeoUsdConvertOptions& a,
+            const GeoUsdConvertOptions& b)
+{
+    return a.rootPath == b.rootPath && a.packedMode == b.packedMode && a.defaultPointWidth == b.defaultPointWidth && a.inputScene == b.inputScene;
+}
+
 HdContainerDataSourceHandle
 primOriginSource(const SdfPath& source)
 {
@@ -428,7 +410,7 @@ GeoSceneIndex::Snapshot::buildPrimvars(const Prim& prim,
         const TfToken role = UsdImagingUsdToHdRole(SdfSchema::GetInstance().FindType(typeName).GetRole());
 
         HdPrimvarSchema::Builder builder;
-        const VtValue indices = attributeValue(c, values, prim.source.AppendProperty(TfToken(property.GetString() + indicesSuffix().GetString())));
+        const VtValue indices = attributeValue(c, values, prim.source.AppendProperty(TfToken(property.GetString() + kIndicesSuffix)));
         if (indices.IsHolding<VtIntArray>()) {
             builder.SetIndexedPrimvarValue(HdRetainedSampledDataSource::New(value))
                 .SetIndices(HdRetainedTypedSampledDataSource<VtIntArray>::New(indices.UncheckedGet<VtIntArray>()));
@@ -489,7 +471,7 @@ GeoSceneIndex::Snapshot::build(const Prim& prim) const
         return HdRetainedContainerDataSource::New(names.size(), names.data(), sources.data());
     }
 
-    // Holding the map keeps every array the data sources share alive with this snapshot.
+    // The data sources share the convert's arrays by VtArray refcount, so the map can go after this.
     const std::shared_ptr<const GeoUsdValueMap> values = c.partitionValues(std::size_t(prim.partition));
     const GeoUsdValueMap* v = values.get();
     auto path = [&](const TfToken& property) {
@@ -612,11 +594,17 @@ GeoSceneIndex::GetChildPrimPaths(const SdfPath& primPath) const
 void
 GeoSceneIndex::update(std::shared_ptr<GeoUsdConvert> next)
 {
+    if (next && next->options().inputScene) {
+        TF_CODING_ERROR("GeoSceneIndex cannot serve a convert authored over an input scene");
+        next.reset();
+    }
     const std::shared_ptr<const Snapshot> before = snapshot();
     if (next == before->convert) {
         return;
     }
-    if (next && before->convert) {
+    // Partition signatures hash the detail only, so they say nothing across differing options.
+    const bool sameSource = next && before->convert && sameOptions(next->options(), before->convert->options());
+    if (sameSource) {
         next->adoptUnchangedPartitions(*before->convert);
     }
 
@@ -669,10 +657,10 @@ GeoSceneIndex::update(std::shared_ptr<GeoUsdConvert> next)
             TfToken visibility;
             prim->visible = (!parent || parent->visible) && !(attributeAs(c, nullptr, source.AppendProperty(UsdGeomTokens->visibility), &visibility) && visibility == UsdGeomTokens->invisible);
             TfToken purpose;
-            if (attributeAs(c, nullptr, source.AppendProperty(UsdGeomTokens->purpose), &purpose) && !purpose.IsEmpty() && purpose != UsdGeomTokens->default_) {
-                prim->purpose = purpose;
-            } else {
+            if (attributeAs(c, nullptr, source.AppendProperty(UsdGeomTokens->purpose), &purpose) && !purpose.IsEmpty()) {
                 // Hydra names the default purpose after its render tag.
+                prim->purpose = purpose == UsdGeomTokens->default_ ? HdRenderTagTokens->geometry : purpose;
+            } else {
                 prim->purpose = (parent && !parent->purpose.IsEmpty()) ? parent->purpose : HdRenderTagTokens->geometry;
             }
             after->prims.emplace(path, std::move(prim));
@@ -689,12 +677,7 @@ GeoSceneIndex::update(std::shared_ptr<GeoUsdConvert> next)
     HdSceneIndexObserver::DirtiedPrimEntries dirtied;
     if (_IsObserved()) {
         auto retyped = [&](const Prim& a, const Prim& b) {
-            const bool aServed = a.partition >= 0, bServed = b.partition >= 0;
-            if (a.type != b.type || aServed != bServed || a.source.IsEmpty() != b.source.IsEmpty()) {
-                return true;
-            }
-
-            return aServed && before->convert->partitionKind(std::size_t(a.partition)) != next->partitionKind(std::size_t(b.partition));
+            return a.type != b.type || (a.partition >= 0) != (b.partition >= 0) || a.source.IsEmpty() != b.source.IsEmpty();
         };
         // Hydra drops the whole subtree under a removed prim, so its survivors are added again.
         SdfPath removedRoot;
@@ -741,7 +724,7 @@ GeoSceneIndex::update(std::shared_ptr<GeoUsdConvert> next)
                 const GeoUsdConvert& oc = *before->convert;
                 const GeoUsdConvert& nc = *next;
                 const std::size_t op = std::size_t(a->partition), np = std::size_t(b.partition);
-                if (oc.partitionSignature(op) != nc.partitionSignature(np)) {
+                if (!sameSource || oc.partitionSignature(op) != nc.partitionSignature(np)) {
                     if (!oc.isPartitionBuilt(op)) {
                         // Nothing read the old values, so there is nothing to compare them with.
                         locators.insert(partitionLocators(b.type));

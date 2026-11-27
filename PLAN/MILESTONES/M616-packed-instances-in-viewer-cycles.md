@@ -13,7 +13,7 @@ From the user's F15 - Native Geometry UAT (2026-11-26): GeoCopyToPoints with Pac
 
 ## Phase 616.1: Fix
 
-- [ ] M616.P1.T1 — Instance transforms reach viewer Cycles
+- [x] M616.P1.T1 — Instance transforms reach viewer Cycles
   - files: the native geometry → USD conversion of packed instances (GeoUsdConvert / PointInstancer authoring), the viewer render delegate path for Cycles (HydraRenderImpl, the Cycles delegate's instancer handling)
   - approach: build GeoCopyToPoints (pack + instance) on a few points; compare what the conversion authors (PointInstancer positions/orientations/scales or instance transforms) with what Storm, viewer Cycles and USDRender show; find where the transforms are dropped (unauthored attribute the Cycles delegate reads, instancer primvar names, a time-sample/default mismatch, nested instancer transforms, or the viewer's live scene index not forwarding instancer transforms to non-Storm delegates)
   - verify: ctest renders the setup with viewer Cycles (headless) and checks instance pixels land at the points; the same for USDRender
@@ -22,3 +22,4 @@ From the user's F15 - Native Geometry UAT (2026-11-26): GeoCopyToPoints with Pac
 **Verification gate:** gate green; the user sees instances in place in viewer Cycles.
 
 ## Decisions
+- 2026-11-27 — UAT approved (user); merged to main as d4d6acde2f (#393).

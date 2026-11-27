@@ -874,7 +874,10 @@ GPU_TEST_F(NatronUtilityRaster, StaticCubesMatchTheRaysIds)
 
     addCube(scene, cube);
     addCube(scene, other);
-    scene.setInstances(cube, { placed(GfVec3d(1., 1., 0.), 35., GfVec3d(-1., -0.5, 0.)), placed(GfVec3d(0., 1., 1.), 60., GfVec3d(0.2, 1.2, -1.5)) });
+    // A turn about (1, 1, 0) keeps x + y, so the first cube's edges along its z lie on x + y = a + b - 1.55 for
+    // corners (a, b). Texel centres sit on x + y = k / 6, so a translation summing to -1.5 would put centres on
+    // those edges, a tie between the faces either side.
+    scene.setInstances(cube, { placed(GfVec3d(1., 1., 0.), 35., GfVec3d(-1.05, -0.5, 0.)), placed(GfVec3d(0., 1., 1.), 60., GfVec3d(0.2, 1.2, -1.5)) });
     scene.setInstances(other, { placed(GfVec3d(1., 0., 1.), 20., GfVec3d(0.8, 0.3, 1.)) });
     ASSERT_TRUE(_tracer->update(scene.snapshot(), 2));
 
@@ -925,7 +928,9 @@ GPU_TEST_F(NatronUtilityRaster, ATranslatingQuadSitsAtItsInterpolatedPosition)
     EXPECT_EQ(36u, inside);
     EXPECT_EQ(0u, atOpen) << "the quad has left where the shutter opened";
     EXPECT_EQ(0u, elsewhere);
-    expectRaysAgree(0.5f, 36);
+    // The quad's diagonal runs through texel centres, so only texels at least two from it and one in from its
+    // sides are compared: three on each side of it.
+    expectRaysAgree(0.5f, 6);
 }
 
 // Rotation is slerped: half-way through a quarter turn the quad has turned 45 degrees and kept its size,
@@ -1109,10 +1114,14 @@ GPU_TEST_F(NatronUtilityRaster, AMirrorReflectionShowsAsInRayMode)
 
     mirrorAndBall(scene);
 
-    WavefrontFrame unreflected = pixelFrame();
+    WavefrontFrame reflected = pixelFrame();
+
+    reflected.maxRayDepth = kWavefrontDefaultMaxRayDepth;
+
+    WavefrontFrame unreflected = reflected;
 
     unreflected.maxRayDepth = 0;
-    expectRasterShowsTheEffect(scene, pixelFrame(), scene, unreflected);
+    expectRasterShowsTheEffect(scene, reflected, scene, unreflected);
 }
 
 GPU_TEST_F(NatronUtilityRaster, ARefractingBallShowsAsInRayMode)
@@ -1121,10 +1130,14 @@ GPU_TEST_F(NatronUtilityRaster, ARefractingBallShowsAsInRayMode)
 
     glassBallAndBackdrop(scene);
 
-    WavefrontFrame unrefracted = pixelFrame();
+    WavefrontFrame refracted = pixelFrame();
+
+    refracted.maxRayDepth = kWavefrontDefaultMaxRayDepth;
+
+    WavefrontFrame unrefracted = refracted;
 
     unrefracted.refractionDepth = 0;
-    expectRasterShowsTheEffect(scene, pixelFrame(), scene, unrefracted);
+    expectRasterShowsTheEffect(scene, refracted, scene, unrefracted);
 }
 
 namespace {

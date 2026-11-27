@@ -1087,10 +1087,10 @@ GPU_TEST_F(GpuRasterTest, DepthKeepsTheNearerTrianglesIdsInEitherDrawOrder)
     constexpr uint32_t kH = 8;
     constexpr uint32_t kFarTag = 100;
     constexpr uint32_t kNearTag = 200;
-    // x + y = 7.2 passes through no pixel centre, whose coordinates sum to a whole number.
+    // The long edge, x + y = 8.2, passes through no pixel centre, whose coordinates sum to a whole number.
     const std::vector<float> nearTriangle { 1.0f, 1.0f, 0.25f, 7.2f, 1.0f, 0.25f, 1.0f, 7.2f, 0.25f };
     const std::vector<float> farTriangle { -1.0f, -1.0f, 0.75f, 3.0f * kW, -1.0f, 0.75f, -1.0f, 3.0f * kH, 0.75f };
-    const auto insideNear = [](float cx, float cy) { return cx > 1.0f && cy > 1.0f && cx + cy < 7.2f; };
+    const auto insideNear = [](float cx, float cy) { return cx > 1.0f && cy > 1.0f && cx + cy < 8.2f; };
 
     struct RasterIdsParams {
         float viewport[2];

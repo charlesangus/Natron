@@ -330,6 +330,10 @@ try:
         key(v, Qt.Key_G, CTRL | SHIFT)
         yield settle()
         require(v.property("natronSceneShowGuides") is False, "Ctrl+Shift+G hides the guides")
+        # The grid's red X axis runs across the whole Front and Back views and would count as the cube.
+        key(v, Qt.Key_G, CTRL)
+        yield settle()
+        require(v.property("natronSceneShowGrid") is False, "Ctrl+G hides the grid")
         # The fixture has no lights, and the default Scene Lights draws a lightless stage black.
         key(v, Qt.Key_6, CTRL)
         yield settle()

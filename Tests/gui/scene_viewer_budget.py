@@ -694,6 +694,7 @@ try:
         prune.setPosition(0, 100)
         prune.getParam("primPattern").setValue("/World/Elsewhere")
         require(prune.connectInput(0, usd), "connect the USDPrune to the USDRead")
+        viewer.disconnectInput(0)
         require(viewer.connectInput(0, prune), "connect the Viewer to the USDPrune")
         usd.getParam("filename").setValue(instance_scene_path)
         yield settle()

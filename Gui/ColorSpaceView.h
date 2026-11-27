@@ -41,6 +41,8 @@ class QColor;
 class QEvent;
 class QFont;
 class QMouseEvent;
+class QPointF;
+class QRect;
 class QWheelEvent;
 class QWidget;
 
@@ -103,8 +105,8 @@ public:
     void frameAll();
 
     /**
-     * @brief Draws the view over the whole viewport; the caller's GL context is current. The text
-     * is drawn with font through text.
+     * @brief Draws the view, clearing it to background, in the viewport rect or else over the
+     * whole viewport; the caller's GL context is current. The text is drawn with font through text.
      **/
     void paint(const QColor& background,
                const QFont& font,
@@ -115,6 +117,23 @@ public:
      * current before its context goes away.
      **/
     void releaseGL();
+
+    /**
+     * @brief Where in the widget, in logical pixels with a top-left origin, paint() draws and the
+     * mouse handlers take positions from; an empty rect is the whole widget.
+     **/
+    void setViewportRect(const QRect& rect);
+    QRect getViewportRect() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether widgetPos, in logical pixels, is inside the viewport rect.
+     **/
+    bool contains(const QPointF& widgetPos) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether a mouse drag started by mousePress() is running.
+     **/
+    bool isDragging() const WARN_UNUSED_RETURN;
 
     bool mousePress(QMouseEvent* e);
     bool mouseMove(QMouseEvent* e);
@@ -130,8 +149,9 @@ public:
 
     /**
      * @brief A read-only summary for scripts: node, output, pointCount, arrowCount, holdCount,
-     * selectedPin, fetching, space, axes, a camera key, and per pin its id and the widget
-     * positions (logical pixels) of its source, target and, when selected, its axis handle ends.
+     * selectedPin, fetching, space, axes, a camera key, the viewport rect, and per pin its id, its
+     * falloff and the widget positions (logical pixels) of its source, target and, when selected,
+     * its axis handle ends and its falloff handle (Gaussian kernel only).
      **/
     QVariantMap state() const WARN_UNUSED_RETURN;
 

@@ -47,6 +47,7 @@
 #include <QMouseEvent>
 #include <QOpenGLContext>
 #include <QPointer>
+#include <QRect>
 #include <QTimer>
 #include <QVector3D>
 #include <QVector4D>
@@ -498,7 +499,8 @@ struct ColorSpaceView::Implementation {
         eDragTumble,
         eDragPan,
         eDragDolly,
-        eDragTarget
+        eDragTarget,
+        eDragFalloff
     };
 
     struct Pin {
@@ -550,8 +552,11 @@ struct ColorSpaceView::Implementation {
     double pitch = kDefaultPitch;
     double distance = 3.;
 
+    // Where the view is drawn in the widget, in logical pixels; empty for the whole widget.
+    QRect rect;
     DragEnum drag = eDragNone;
     bool spaceHeld = false;
+    QVector3D falloffDir;
     QPointF lastPos;
     int dragPinId = 0;
     int dragAxis = -1;
@@ -659,7 +664,43 @@ struct ColorSpaceView::Implementation {
 
     QSizeF logicalSize() const
     {
+        if (!rect.isEmpty()) {
+            return QSizeF(rect.width(), rect.height());
+        }
+
         return widget ? QSizeF(std::max(1, widget->width()), std::max(1, widget->height())) : QSizeF(1., 1.);
+    }
+
+    QPointF local(const QPointF& widgetPos) const
+    {
+        return rect.isEmpty() ? widgetPos : (widgetPos - QPointF(rect.topLeft()));
+    }
+
+    QPointF toWidget(const QPointF& localPos) const
+    {
+        return rect.isEmpty() ? localPos : (localPos + QPointF(rect.topLeft()));
+    }
+
+    // The falloff handle of the selected pin: on the ellipsoid's equator, to the right on screen.
+    bool falloffHandle(const Pin& p,
+                       QVector3D* at,
+                       QVector3D* dir) const
+    {
+        ColorWarp* cw = colorWarp();
+        if (!cw || (cw->getWarpKernel() != eColorWarpKernelGaussian)) {
+            return false;
+        }
+        QVector3D u, s, f;
+        lightnessFrame(&u, &s, &f);
+        const QVector3D forward = (target - eye()).normalized();
+        QVector3D right = QVector3D::crossProduct(forward, u);
+        if (right.lengthSquared() < 1e-12f) {
+            right = s;
+        }
+        *dir = right.normalized();
+        *at = toVec(p.source) + (float)(p.falloff * colorWarpFalloffScale(space())) * *dir;
+
+        return true;
     }
 
     QMatrix4x4 projection() const
@@ -1066,7 +1107,8 @@ struct ColorSpaceView::Implementation {
         }
     }
 
-    // The pin and part under pos: part 0 its target, 1 its source, 2 + k the target's axis handle k.
+    // The pin and part under pos: part 0 its target, 1 its source, 2 + k the target's axis handle k,
+    // 5 the selected pin's falloff handle.
     bool pick(const QPointF& pos,
               int* pinId,
               int* part) const
@@ -1111,6 +1153,22 @@ struct ColorSpaceView::Implementation {
                     *part = 2 + k;
                     found = true;
                 }
+            }
+        }
+        if (found) {
+            return true;
+        }
+        for (const Pin& p : all) {
+            QVector3D at, dir;
+            if ((p.id != selected) || !falloffHandle(p, &at, &dir) || !inFront(m, at)) {
+                continue;
+            }
+            const double d = pointDistance(pos, screenOf(m, at));
+            if (d <= best) {
+                best = d;
+                *pinId = p.id;
+                *part = 5;
+                found = true;
             }
         }
         if (found) {
@@ -1177,15 +1235,45 @@ struct ColorSpaceView::Implementation {
         knob->setPinSet(set);
     }
 
+    void dragFalloffTo(const QPointF& pos)
+    {
+        const KnobColorWarpPinsPtr knob = pinsKnob();
+        if (!knob || !dragBefore) {
+            return;
+        }
+        const QMatrix4x4 m = mvp();
+        const QVector3D nearP = unproject(m, pos - grabOffset, -1.);
+        const QVector3D farP = unproject(m, pos - grabOffset, 1.);
+        const QVector3D d = farP - nearP;
+        const QVector3D a = falloffDir;
+        const QVector3D w0 = grabStart - nearP;
+        const double b = QVector3D::dotProduct(a, d);
+        const double c = QVector3D::dotProduct(d, d);
+        const double denom = c - b * b;
+        const double scale = colorWarpFalloffScale(space());
+        if ((std::fabs(denom) < 1e-12) || !(scale > 0.)) {
+            return;
+        }
+        const double t = (b * QVector3D::dotProduct(d, w0) - c * QVector3D::dotProduct(a, w0)) / denom;
+        ColorWarpPinSet set = *dragBefore;
+        const int index = set.indexOf(dragPinId);
+        if (index < 0) {
+            return;
+        }
+        set.pins[index].falloff.set(currentTime(), colorWarpClampPinFalloff(std::fabs(t) / scale));
+        knob->setPinSet(set);
+    }
+
     void endDrag()
     {
-        if ((drag == eDragTarget) && dragBefore) {
+        if (((drag == eDragTarget) || (drag == eDragFalloff)) && dragBefore) {
             const ColorWarpPinSet before = *dragBefore;
             dragBefore.reset();
             if (const KnobColorWarpPinsPtr knob = pinsKnob()) {
                 const ColorWarpPinSet after = knob->getPinSet();
                 if (after != before) {
-                    knob->editPinSet(before, after, QCoreApplication::translate("ColorSpaceView", "Move Pin Target").toStdString());
+                    const QString label = (drag == eDragFalloff) ? QCoreApplication::translate("ColorSpaceView", "Change Pin Falloff") : QCoreApplication::translate("ColorSpaceView", "Move Pin Target");
+                    knob->editPinSet(before, after, label.toStdString());
                 }
             }
         }
@@ -1385,14 +1473,24 @@ ColorSpaceView::paint(const QColor& background,
 {
     GLProtectAttrib attribs(GL_ALL_ATTRIB_BITS);
     GLint viewport[4] = { 0, 0, 0, 0 };
+    const double dpr = _imp->widget ? _imp->widget->devicePixelRatioF() : 1.;
 
     glGetIntegerv(GL_VIEWPORT, viewport);
+    if (!_imp->rect.isEmpty() && _imp->widget) {
+        const QRect& r = _imp->rect;
+        viewport[0] = (GLint)std::lround(r.x() * dpr);
+        viewport[1] = (GLint)std::lround((_imp->widget->height() - r.y() - r.height()) * dpr);
+        viewport[2] = (GLint)std::lround(r.width() * dpr);
+        viewport[3] = (GLint)std::lround(r.height() * dpr);
+        glViewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        glScissor(viewport[0], viewport[1], viewport[2], viewport[3]);
+        glEnable(GL_SCISSOR_TEST);
+    }
     glClearColor(background.redF(), background.greenF(), background.blueF(), 1.f);
     glClear(GL_COLOR_BUFFER_BIT);
     if (!_imp->colorWarp() || (viewport[2] <= 0) || (viewport[3] <= 0)) {
         return;
     }
-    const double dpr = _imp->widget ? _imp->widget->devicePixelRatioF() : 1.;
     const ColorWarpSpaceEnum space = _imp->space();
     const ColorWarpSpaceBasis basis = _imp->basis();
     if (space != _imp->cloudSpace) {
@@ -1600,6 +1698,47 @@ ColorSpaceView::paint(const QColor& background,
         glEnd();
     }
 
+    for (const Implementation::Pin& p : pins) {
+        QVector3D at, dir;
+        if ((p.id != selected) || !_imp->falloffHandle(p, &at, &dir) || !_imp->inFront(m, at)) {
+            continue;
+        }
+        const QPointF h = device(_imp->screenOf(m, at));
+        const QPointF c = device(_imp->screenOf(m, toVec(p.source)));
+        const double half = 4.5 * dpr;
+        glLineWidth((float)dpr);
+        glColor4f(1.f, 0.75f, 0.3f, 0.8f);
+        glBegin(GL_LINES);
+        glVertex2d(c.x(), c.y());
+        glVertex2d(h.x(), h.y());
+        glEnd();
+        glColor4f(1.f, 0.75f, 0.3f, 1.f);
+        glBegin(GL_QUADS);
+        glVertex2d(h.x() - half, h.y() - half);
+        glVertex2d(h.x() + half, h.y() - half);
+        glVertex2d(h.x() + half, h.y() + half);
+        glVertex2d(h.x() - half, h.y() + half);
+        glEnd();
+        glColor4f(0.f, 0.f, 0.f, 1.f);
+        glBegin(GL_LINE_LOOP);
+        glVertex2d(h.x() - half, h.y() - half);
+        glVertex2d(h.x() + half, h.y() - half);
+        glVertex2d(h.x() + half, h.y() + half);
+        glVertex2d(h.x() - half, h.y() + half);
+        glEnd();
+    }
+    if (!_imp->rect.isEmpty()) {
+        const double inset = 0.5 * dpr;
+        glLineWidth((float)dpr);
+        glColor4f(0.6f, 0.6f, 0.6f, 1.f);
+        glBegin(GL_LINE_LOOP);
+        glVertex2d(inset, inset);
+        glVertex2d(viewport[2] - inset, inset);
+        glVertex2d(viewport[2] - inset, viewport[3] - inset);
+        glVertex2d(inset, viewport[3] - inset);
+        glEnd();
+    }
+
     const char* names[3];
     axisNames(space, names);
     const QVector3D lo = _imp->boundsMin;
@@ -1622,6 +1761,30 @@ ColorSpaceView::paint(const QColor& background,
 } // ColorSpaceView::paint
 
 void
+ColorSpaceView::setViewportRect(const QRect& rect)
+{
+    _imp->rect = rect;
+}
+
+QRect
+ColorSpaceView::getViewportRect() const
+{
+    return _imp->rect;
+}
+
+bool
+ColorSpaceView::contains(const QPointF& widgetPos) const
+{
+    return _imp->rect.isEmpty() || QRectF(_imp->rect).contains(widgetPos);
+}
+
+bool
+ColorSpaceView::isDragging() const
+{
+    return _imp->drag != Implementation::eDragNone;
+}
+
+void
 ColorSpaceView::releaseGL()
 {
     if (_imp->vbo && (_imp->vboContext == QOpenGLContext::currentContext())) {
@@ -1638,7 +1801,7 @@ ColorSpaceView::mousePress(QMouseEvent* e)
     if (!_imp->colorWarp()) {
         return false;
     }
-    const QPointF pos = e->position();
+    const QPointF pos = _imp->local(e->position());
     _imp->lastPos = pos;
     const Qt::KeyboardModifiers modifiers = mouseBindingModifiers(e->modifiers(), _imp->spaceHeld);
     if (viewer3DMatchesMouseBinding(kShortcutIDMouseViewer3DTumble, modifiers, e->button())) {
@@ -1653,7 +1816,20 @@ ColorSpaceView::mousePress(QMouseEvent* e)
         if (_imp->pick(pos, &pinId, &part)) {
             if (const KnobColorWarpPinsPtr knob = _imp->pinsKnob()) {
                 knob->setSelectedPinId(pinId);
-                if (part != 1) {
+                if (part == 5) {
+                    for (const Implementation::Pin& p : _imp->pins()) {
+                        QVector3D at, dir;
+                        if ((p.id == pinId) && _imp->falloffHandle(p, &at, &dir)) {
+                            _imp->drag = Implementation::eDragFalloff;
+                            _imp->dragPinId = pinId;
+                            _imp->grabStart = toVec(p.source);
+                            _imp->falloffDir = dir;
+                            _imp->grabOffset = pos - _imp->screenOf(_imp->mvp(), at);
+                            _imp->dragBefore = knob->getPinSet();
+                            break;
+                        }
+                    }
+                } else if (part != 1) {
                     for (const Implementation::Pin& p : _imp->pins()) {
                         if (p.id == pinId) {
                             const QMatrix4x4 m = _imp->mvp();
@@ -1698,7 +1874,7 @@ ColorSpaceView::mousePress(QMouseEvent* e)
 bool
 ColorSpaceView::mouseMove(QMouseEvent* e)
 {
-    const QPointF pos = e->position();
+    const QPointF pos = _imp->local(e->position());
     const QPointF delta = pos - _imp->lastPos;
 
     _imp->lastPos = pos;
@@ -1725,6 +1901,9 @@ ColorSpaceView::mouseMove(QMouseEvent* e)
         break;
     case Implementation::eDragTarget:
         _imp->dragTargetTo(pos);
+        break;
+    case Implementation::eDragFalloff:
+        _imp->dragFalloffTo(pos);
         break;
     }
     _imp->redraw();
@@ -1826,8 +2005,10 @@ ColorSpaceView::state() const
     int arrows = 0;
     int holds = 0;
     QVariantList pinList;
-    auto point = [](const QPointF& p) {
-        return QVariantList { p.x(), p.y() };
+    auto point = [this](const QPointF& p) {
+        const QPointF w = _imp->toWidget(p);
+
+        return QVariantList { w.x(), w.y() };
     };
     for (const Implementation::Pin& p : pins) {
         if (p.hold) {
@@ -1841,16 +2022,22 @@ ColorSpaceView::state() const
         entry[QString::fromUtf8("source")] = point(_imp->screenOf(m, toVec(p.source)));
         entry[QString::fromUtf8("target")] = point(_imp->screenOf(m, toVec(p.target)));
         entry[QString::fromUtf8("targetWarp")] = QVariantList { p.target[0], p.target[1], p.target[2] };
+        entry[QString::fromUtf8("falloff")] = p.falloff;
         if (p.id == selected) {
             QVector3D ends[3];
             _imp->handleAxes(toVec(p.target), ends);
             entry[QString::fromUtf8("handles")] = QVariantList { point(_imp->screenOf(m, ends[0])), point(_imp->screenOf(m, ends[1])), point(_imp->screenOf(m, ends[2])) };
+            QVector3D at, dir;
+            if (_imp->falloffHandle(p, &at, &dir)) {
+                entry[QString::fromUtf8("falloffHandle")] = point(_imp->screenOf(m, at));
+            }
         }
         pinList.push_back(entry);
     }
     map[QString::fromUtf8("arrowCount")] = arrows;
     map[QString::fromUtf8("holdCount")] = holds;
     map[QString::fromUtf8("pins")] = pinList;
+    map[QString::fromUtf8("rect")] = QVariantList { _imp->rect.x(), _imp->rect.y(), _imp->rect.width(), _imp->rect.height() };
 
     return map;
 } // ColorSpaceView::state
@@ -1871,7 +2058,7 @@ ColorSpaceView::probe(double r,
         const QVector3D q(_imp->cloudWarp[i], _imp->cloudWarp[i + 1], _imp->cloudWarp[i + 2]);
         best = std::min(best, (double)(q - p).length());
     }
-    const QPointF screen = _imp->screenOf(_imp->mvp(), p);
+    const QPointF screen = _imp->toWidget(_imp->screenOf(_imp->mvp(), p));
     map[QString::fromUtf8("warp")] = QVariantList { w[0], w[1], w[2] };
     map[QString::fromUtf8("screen")] = QVariantList { screen.x(), screen.y() };
     map[QString::fromUtf8("nearest")] = std::isfinite(best) ? best : -1.;

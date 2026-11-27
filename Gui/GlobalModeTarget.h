@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <memory>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -137,6 +138,32 @@ public:
      * direction.
      **/
     virtual ColorTrackballRevealLabels directionLabels() const = 0;
+
+    /**
+     * @brief Which part of its knob the target drives, for a knob that offers several (see
+     * GlobalModePartsProvider); 0 otherwise.
+     **/
+    virtual int getGlobalModePart() const
+    {
+        return 0;
+    }
+};
+
+/**
+ * @brief A KnobGui the global mode drives in several parts, one target each: stepping to the next
+ * or previous knob goes through its parts in order first, and coming back to it from the knob
+ * after it lands on its last part.
+ **/
+class GlobalModePartsProvider {
+public:
+    virtual ~GlobalModePartsProvider() { }
+
+    virtual int getGlobalModePartCount() const = 0;
+
+    /**
+     * @brief The target for part, null when that part has nothing to drive right now.
+     **/
+    virtual std::shared_ptr<GlobalModeTarget> makeGlobalModePartTarget(int part) = 0;
 };
 
 NATRON_NAMESPACE_EXIT

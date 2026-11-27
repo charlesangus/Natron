@@ -144,8 +144,6 @@ struct ViewerTabPrivate
     int configChangedCallbackId;
     Button* checkerboardButton;
     Button* mapSiblingOverlaysButton;
-    Button* colorSpaceViewButton;
-    Button* colorSpaceOutputButton;
     Button* pickerButton;
     ComboBox* viewsComboBox;
     /*Info*/

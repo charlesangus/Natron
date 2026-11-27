@@ -88,7 +88,6 @@ ViewerTab::onInputChanged(int inputNb)
         _imp->inputNamesMap.erase(inputNb);
     }
     rebuildInputMenus();
-    refreshColorSpaceView();
 } // ViewerTab::onInputChanged
 
 void

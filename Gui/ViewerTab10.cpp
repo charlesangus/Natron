@@ -647,9 +647,7 @@ ViewerTab::onCurrentTimeSpinBoxChanged(double time)
 void
 ViewerTab::centerViewer()
 {
-    if (_imp->viewer->isColorSpaceViewActive()) {
-        _imp->viewer->frameColorSpaceView();
-
+    if (_imp->viewer->frameColorSpaceViewUnderPointer()) {
         return;
     }
     _imp->viewer->fitImageToFormat();
@@ -761,57 +759,10 @@ ViewerTab::keyPressEvent(QKeyEvent* e)
     Qt::KeyboardModifiers modifiers = e->modifiers();
     Qt::Key key = (Qt::Key)Gui::handleNativeKeys( e->key(), e->nativeScanCode(), e->nativeVirtualKey() );
 
-    // The colour space view hides the image: node overlays and the bindings that act on the 2D
-    // image (channels, zoom, wipe, region of interest...) would change things nobody can see.
-    // Framing, playback and the panel layout still apply to it.
-    const bool colorSpace = _imp->viewer->isColorSpaceViewActive();
-    const auto colorSpaceKeepsKey = [&]() {
-        static const char* const playerActions[] = {
-            kShortcutIDActionPlayerPrevious,
-            kShortcutIDActionPlayerBackward,
-            kShortcutIDActionPlayerStop,
-            kShortcutIDActionPlayerForward,
-            kShortcutIDActionPlayerNext,
-            kShortcutIDActionPlayerPrevIncr,
-            kShortcutIDActionPlayerNextIncr,
-            kShortcutIDActionPlayerFirst,
-            kShortcutIDActionPlayerLast,
-            kShortcutIDActionPlayerPlaybackIn,
-            kShortcutIDActionPlayerPlaybackOut,
-            kShortcutIDActionPlayerPrevKF,
-            kShortcutIDActionPlayerNextKF,
-        };
-        static const char* const viewerActions[] = {
-            kShortcutIDActionFitViewer,
-            kShortcutIDActionHideAll,
-            kShortcutIDActionShowAll,
-            kShortcutIDActionHidePlayer,
-            kShortcutIDActionHideTimeline,
-            kShortcutIDActionHideInfobar,
-            kShortcutIDActionHideLeft,
-            kShortcutIDActionHideRight,
-            kShortcutIDActionHideTop,
-        };
-        for (const char* id : playerActions) {
-            if (isKeybind(kShortcutGroupPlayer, id, modifiers, key)) {
-                return true;
-            }
-        }
-        for (const char* id : viewerActions) {
-            if (isKeybind(kShortcutGroupViewer, id, modifiers, key)) {
-                return true;
-            }
-        }
-
-        return false;
-    };
-
     const unsigned int mipmapLevel = _imp->viewer->getCurrentMipmapLevel();
-    if (colorSpace && !colorSpaceKeepsKey()) {
-        accept = false;
-    } else if (!colorSpace && e->isAutoRepeat() && notifyOverlaysKeyRepeat(RenderScale::fromMipmapLevel(mipmapLevel), e)) {
+    if (e->isAutoRepeat() && notifyOverlaysKeyRepeat(RenderScale::fromMipmapLevel(mipmapLevel), e)) {
         update();
-    } else if (!colorSpace && notifyOverlaysKeyDown(RenderScale::fromMipmapLevel(mipmapLevel), e)) {
+    } else if (notifyOverlaysKeyDown(RenderScale::fromMipmapLevel(mipmapLevel), e)) {
         update();
     } else if (isKeybind(kShortcutGroupViewer, kShortcutIDActionLuminance, modifiers, key)) {
         int currentIndex = _imp->viewerChannels->activeIndex();
@@ -1088,8 +1039,7 @@ ViewerTab::keyReleaseEvent(QKeyEvent* e)
         return QWidget::keyPressEvent(e);
     }
     const unsigned int mipmapLevel = _imp->viewer->getCurrentMipmapLevel();
-    // Overlays get no key presses while the colour space view is on, so no releases either.
-    if (!_imp->viewer->isColorSpaceViewActive() && notifyOverlaysKeyUp(RenderScale::fromMipmapLevel(mipmapLevel), e)) {
+    if (notifyOverlaysKeyUp(RenderScale::fromMipmapLevel(mipmapLevel), e)) {
         _imp->viewer->redraw();
     } else {
         handleUnCaughtKeyUpEvent(e);

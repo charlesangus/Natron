@@ -49,15 +49,19 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
+#include "Engine/GlobalModeStroke.h"
 #include "Engine/KnobColorWarpPins.h"
 #include "Engine/Project.h"
 #include "Engine/TimeLine.h"
 
 #include "Gui/ColorKnobEditSession.h"
 #include "Gui/ColorTrackballGlobalMode.h"
+#include "Gui/ColorTrackballHud.h"
+#include "Gui/ColorTrackballReveal.h"
 #include "Gui/ColorTrackballTarget.h"
 #include "Gui/DockablePanel.h"
 #include "Gui/SpinBox.h"
+#include "Gui/ValueModeDiscWidget.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -313,6 +317,248 @@ private:
     ColorWarpPinSet _before;
 };
 
+enum PinPartEnum {
+    ePinPartTarget = 0,
+    ePinPartStrength,
+    ePinPartFalloff,
+    ePinPartCount
+};
+
+/**
+ * @brief The global mode's view of one pin's strength or falloff, a plain value dragged right or
+ * up to raise it. Like the target hook it addresses the pin by id, writes the pin set live and
+ * leaves one undo step per stroke.
+ **/
+class PinValueGlobalModeTarget
+    : public GlobalModeTarget {
+public:
+    PinValueGlobalModeTarget(KnobGuiColorWarpPins* owner,
+                             const KnobColorWarpPinsPtr& knob,
+                             int pinId,
+                             PinPartEnum part)
+        : _owner(owner)
+        , _ownerRef(std::dynamic_pointer_cast<KnobGui>(owner->shared_from_this()))
+        , _knob(knob)
+        , _pinId(pinId)
+        , _part(part)
+        , _stroking(false)
+        , _time(0.)
+        , _before()
+        , _stroke()
+    {
+    }
+
+    virtual KnobGui* getKnobGui() const OVERRIDE FINAL
+    {
+        KnobColorWarpPinsPtr knob = _knob.lock();
+
+        if (!_owner || _ownerRef.expired() || !knob || (knob->getPinSet().indexOf(_pinId) < 0)) {
+            return 0;
+        }
+
+        return _owner.data();
+    }
+
+    virtual std::vector<KnobGui*> getKnobGuis() const OVERRIDE FINAL
+    {
+        std::vector<KnobGui*> knobs;
+
+        if (KnobGui* knob = getKnobGui()) {
+            knobs.push_back(knob);
+        }
+
+        return knobs;
+    }
+
+    virtual DockablePanel* getPanel() const OVERRIDE FINAL
+    {
+        KnobGui* knob = getKnobGui();
+
+        return knob ? dynamic_cast<DockablePanel*>(knob->getContainer()) : 0;
+    }
+
+    virtual void attach() OVERRIDE FINAL
+    {
+        if (!getKnobGui()) {
+            return;
+        }
+        _owner->setGlobalModeHighlighted(true);
+        touchGlobalModeKnob(_owner.data());
+        revealKnobInPanel(getPanel(), _owner->getKnob(), _owner->getPinList());
+    }
+
+    virtual void detach() OVERRIDE FINAL
+    {
+        if (_owner && !_ownerRef.expired()) {
+            _owner->setGlobalModeHighlighted(false);
+        }
+    }
+
+    virtual bool beginStroke() OVERRIDE FINAL
+    {
+        KnobColorWarpPinsPtr knob = _knob.lock();
+        ColorWarpPinData pin;
+
+        if (!getKnobGui() || !knob->isEnabled(0) || !readPin(&pin)) {
+            return false;
+        }
+        _before = knob->getPinSet();
+        _time = _owner->getEditTime();
+        _stroke.begin(std::vector<double>(1, channel(&pin)->valueAt(_time)));
+        _stroking = true;
+
+        return true;
+    }
+
+    virtual void moveStroke(double dx,
+                            double dy,
+                            double gearFactor) OVERRIDE FINAL
+    {
+        ColorWarpPinSet pins;
+
+        _stroke.addMove(dx, dy, gearFactor);
+        if (apply(&pins)) {
+            _knob.lock()->setPinSet(pins);
+        }
+    }
+
+    virtual void endStroke() OVERRIDE FINAL
+    {
+        ColorWarpPinSet pins;
+
+        if (apply(&pins) && !(pins == _before)) {
+            _knob.lock()->editPinSet(_before, pins, getUndoLabel().toStdString());
+        }
+        _stroking = false;
+    }
+
+    virtual void abandonStroke() OVERRIDE FINAL
+    {
+        KnobColorWarpPinsPtr knob = _knob.lock();
+
+        if (_stroking && knob) {
+            knob->setPinSet(_before);
+        }
+        _stroking = false;
+    }
+
+    virtual bool handleKey(int /*key*/,
+                           Qt::KeyboardModifiers /*modifiers*/,
+                           bool /*strokeActive*/) OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    virtual void fillHudState(ColorTrackballHudState* state) const OVERRIDE FINAL
+    {
+        ColorWarpPinData pin;
+        const QString name = readPin(&pin) ? QString::fromStdString(pin.name) : QString();
+
+        state->knobLabel = (_part == ePinPartStrength) ? QObject::tr("%1 Strength").arg(name) : QObject::tr("%1 Falloff").arg(name);
+        state->rateLine = QObject::tr("Value: %1 per px   (right/up +, left/down -)").arg(increment());
+    }
+
+    virtual void syncReveal(ColorTrackballReveal* reveal,
+                            bool strokeActive) OVERRIDE FINAL
+    {
+        if (!reveal) {
+            return;
+        }
+
+        const bool stroking = strokeActive && _stroking;
+
+        reveal->setValueKind(eGlobalModeKindGeneric);
+        reveal->setPillTexts(directionLabels());
+        reveal->setValueTravel(stroking ? _stroke.getTotalDx() : 0., stroking ? _stroke.getTotalDy() : 0.);
+    }
+
+    virtual ColorTrackballRevealLabels directionLabels() const OVERRIDE FINAL
+    {
+        return valueModeRevealDirectionLabels(eGlobalModeKindGeneric);
+    }
+
+    virtual int getGlobalModePart() const OVERRIDE FINAL
+    {
+        return _part;
+    }
+
+private:
+    double increment() const
+    {
+        return (_part == ePinPartStrength) ? 0.005 : 0.01;
+    }
+
+    QString getUndoLabel() const
+    {
+        return (_part == ePinPartStrength) ? QObject::tr("Change Pin Strength") : QObject::tr("Change Pin Falloff");
+    }
+
+    ColorWarpPinChannel* channel(ColorWarpPinData* pin) const
+    {
+        return (_part == ePinPartStrength) ? &pin->strength : &pin->falloff;
+    }
+
+    bool readPin(ColorWarpPinData* pin) const
+    {
+        KnobColorWarpPinsPtr knob = _knob.lock();
+
+        if (!knob) {
+            return false;
+        }
+
+        const ColorWarpPinSet pins = knob->getPinSet();
+        const int index = pins.indexOf(_pinId);
+
+        if (index < 0) {
+            return false;
+        }
+        *pin = pins.pins[index];
+
+        return true;
+    }
+
+    bool apply(ColorWarpPinSet* pins) const
+    {
+        if (!_stroking || !_knob.lock()) {
+            return false;
+        }
+        *pins = _before;
+
+        const int index = pins->indexOf(_pinId);
+
+        if (index < 0) {
+            return false;
+        }
+
+        GlobalModeValueStrokeSpec spec;
+
+        spec.kind = eGlobalModeKindGeneric;
+        spec.increments.assign(1, increment());
+
+        const std::vector<double> values = _stroke.evaluate(spec, GlobalModeValueRates());
+
+        if (values.empty()) {
+            return false;
+        }
+
+        const double value = (_part == ePinPartStrength) ? colorWarpClampPinStrength(values.front()) : colorWarpClampPinFalloff(values.front());
+
+        channel(&pins->pins[index])->set(_time, value);
+
+        return true;
+    }
+
+    QPointer<KnobGuiColorWarpPins> _owner;
+    std::weak_ptr<KnobGui> _ownerRef;
+    KnobColorWarpPinsWPtr _knob;
+    int _pinId;
+    PinPartEnum _part;
+    bool _stroking;
+    double _time;
+    ColorWarpPinSet _before;
+    GlobalModeValueStroke _stroke;
+};
+
 } // namespace
 
 struct KnobGuiColorWarpPinsPrivate {
@@ -400,6 +646,29 @@ KnobGuiColorWarpPins::makeColorGlobalModeHook()
     }
 
     return std::make_shared<PinTargetGlobalModeHook>(this, knob, id);
+}
+
+int
+KnobGuiColorWarpPins::getGlobalModePartCount() const
+{
+    return ePinPartCount;
+}
+
+std::shared_ptr<GlobalModeTarget>
+KnobGuiColorWarpPins::makeGlobalModePartTarget(int part)
+{
+    if (part == ePinPartTarget) {
+        return makeGlobalModeTarget(this);
+    }
+
+    KnobColorWarpPinsPtr knob = _imp->knob.lock();
+    const int id = knob ? knob->getSelectedPinId() : 0;
+
+    if (!knob || (id == 0) || (part < 0) || (part >= ePinPartCount) || weak_from_this().expired()) {
+        return std::shared_ptr<GlobalModeTarget>();
+    }
+
+    return std::make_shared<PinValueGlobalModeTarget>(this, knob, id, (PinPartEnum)part);
 }
 
 void
@@ -676,8 +945,11 @@ KnobGuiColorWarpPins::onSelectionChangedInKnob(int /*id*/)
         return;
     }
 
-    std::shared_ptr<GlobalModeTarget> target = makeGlobalModeTarget(this);
+    std::shared_ptr<GlobalModeTarget> target = makeGlobalModePartTarget(current ? current->getGlobalModePart() : ePinPartTarget);
 
+    if (!target) {
+        target = makeGlobalModeTarget(this);
+    }
     if (target) {
         mode->engage(target);
     } else {

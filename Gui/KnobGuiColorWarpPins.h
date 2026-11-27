@@ -32,6 +32,7 @@
 #include "Engine/EngineFwd.h"
 
 #include "Gui/ColorGlobalModeHook.h"
+#include "Gui/GlobalModeTarget.h"
 #include "Gui/GuiFwd.h"
 #include "Gui/KnobGui.h"
 
@@ -49,7 +50,8 @@ struct KnobGuiColorWarpPinsPrivate;
  **/
 class KnobGuiColorWarpPins
     : public KnobGui,
-      public ColorGlobalModeHookProvider {
+      public ColorGlobalModeHookProvider,
+      public GlobalModePartsProvider {
 public:
     static KnobGui* BuildKnobGui(KnobIPtr knob,
                                  KnobGuiContainerI* container)
@@ -71,6 +73,12 @@ public:
     }
 
     virtual std::shared_ptr<ColorGlobalModeHook> makeColorGlobalModeHook() OVERRIDE FINAL;
+
+    /**
+     * @brief Target, strength, then falloff of the selected pin.
+     **/
+    virtual int getGlobalModePartCount() const OVERRIDE FINAL;
+    virtual std::shared_ptr<GlobalModeTarget> makeGlobalModePartTarget(int part) OVERRIDE FINAL;
 
     QTreeWidget* getPinList() const;
 

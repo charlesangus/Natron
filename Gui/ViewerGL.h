@@ -351,34 +351,20 @@ public:
     void setProjection(double zoomLeft, double zoomBottom, double zoomFactor, double zoomAspectRatio);
 
     /**
-     * @brief The ColorWarp node the colour space view shows, or null when none can be shown; null
-     * also turns the view off.
+     * @brief Frames the colour space inset's cloud and pins when the pointer is over it; returns
+     * whether it was.
      **/
-    void setColorSpaceViewNode(const NodePtr& node);
+    bool frameColorSpaceViewUnderPointer();
 
     /**
-     * @brief Swaps the image for the 3D view of colour space, or back. Turning it on remembers the 2D
-     * pan and zoom, and turning it off restores them. It stays off while there is no node to show.
-     **/
-    void setColorSpaceViewActive(bool active);
-    bool isColorSpaceViewActive() const WARN_UNUSED_RETURN;
-
-    void setColorSpaceViewShowsOutput(bool output);
-
-    /**
-     * @brief Frames the colour space view's cloud and pins.
-     **/
-    void frameColorSpaceView();
-
-    /**
-     * @brief A read-only summary of the colour space view for scripts (see ColorSpaceView::state()),
-     * empty while the view is off.
+     * @brief A read-only summary of the colour space inset for scripts (see ColorSpaceView::state()),
+     * empty while no inset is drawn.
      **/
     Q_INVOKABLE QVariantMap colorSpaceViewState() const;
 
     /**
      * @brief Where working-space colour (r, g, b) sits in the colour space view (see
-     * ColorSpaceView::probe()), empty while the view is off.
+     * ColorSpaceView::probe()), empty while no inset is drawn.
      **/
     Q_INVOKABLE QVariantMap colorSpaceViewProbe(double r,
                                                 double g,
@@ -624,6 +610,17 @@ private:
     virtual void leaveEvent(QEvent* e) OVERRIDE FINAL;
     virtual void tabletEvent(QTabletEvent* e) OVERRIDE FINAL;
     virtual bool event(QEvent* e) OVERRIDE FINAL;
+
+    /**
+     * @brief Points the colour space inset at the first ColorWarp, in overlay order, whose Show 3D
+     * View is on, and places it in that node's corner; hides it when there is none.
+     **/
+    void refreshColorSpaceInset();
+
+    /**
+     * @brief Whether the pointer at widgetPos, in logical pixels, is over the colour space inset.
+     **/
+    bool isOverColorSpaceInset(const QPointF& widgetPos) const;
 
     /**
      *@brief initializes OpenGL context related stuff. This is called once after widget creation.

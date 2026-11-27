@@ -111,8 +111,6 @@ ViewerTabPrivate::ViewerTabPrivate(ViewerTab* publicInterface,
     , configChangedCallbackId(-1)
     , checkerboardButton(NULL)
     , mapSiblingOverlaysButton(NULL)
-    , colorSpaceViewButton(NULL)
-    , colorSpaceOutputButton(NULL)
     , pickerButton(NULL)
     , viewsComboBox(NULL)
     , infoWidget()

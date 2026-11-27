@@ -49,8 +49,18 @@
 #define kColorWarpParamWarpSpace "warpSpace"
 #define kColorWarpParamKernel "kernel"
 #define kColorWarpParamLightnessFalloff "lightnessFalloff"
+#define kColorWarpParamShow3DView "show3DView"
+#define kColorWarpParamViewCorner "viewCorner"
+#define kColorWarpParamViewOutput "viewOutput"
 
 NATRON_NAMESPACE_ENTER
+
+enum ColorWarpViewCornerEnum {
+    eColorWarpViewCornerTopLeft = 0,
+    eColorWarpViewCornerTopRight,
+    eColorWarpViewCornerBottomLeft,
+    eColorWarpViewCornerBottomRight,
+};
 
 inline constexpr InputSpec kColorWarpInputs[] = {
     InputSpec { .label = "Source" },
@@ -70,6 +80,11 @@ struct ColorWarpOp {
                        "colours near a pin move with it, and the move fades with distance in the warp space.\n"
                        "Click the viewer to add a pin on the colour under the pointer, drag a pin to pick another "
                        "colour, and push the selected pin's target with the colour global mode (Ctrl+E).\n"
+                       "Right-click a pin to remove it. Ctrl-scroll or Ctrl-Up/Ctrl-Down steps through the selected "
+                       "pin's target, strength and falloff before other knobs.\n"
+                       "Show 3D View draws the colour-space view as an inset in the viewer corner chosen by View "
+                       "Corner (View Output shows the result), only while the node's panel is open; drag a pin's "
+                       "target or the falloff handle there to edit it.\n"
                        "A pin whose target is its source, or whose strength is 0, holds its colour in place.",
         .grouping = PLUGIN_GROUP_COLOR,
         .majorVersion = PLUGIN_MAJOR_NATRON_COLORWARP,
@@ -100,6 +115,9 @@ struct ColorWarpOp {
     KnobChoiceWPtr warpSpace;
     KnobChoiceWPtr kernel;
     KnobDoubleWPtr lightnessFalloff;
+    KnobBoolWPtr show3DView;
+    KnobChoiceWPtr viewCorner;
+    KnobBoolWPtr viewOutput;
     const KnobHolder* holder = nullptr;
 
 private:
@@ -141,6 +159,14 @@ public:
     ColorWarpSpaceEnum getWarpSpace() const WARN_UNUSED_RETURN;
     ColorWarpKernelEnum getWarpKernel() const WARN_UNUSED_RETURN;
     double getLightnessFalloff(double time) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether the viewer draws the warp space's 3D view as an inset, in which corner, and
+     * whether its cloud shows the output's colours rather than the input's.
+     **/
+    bool isShowing3DView() const WARN_UNUSED_RETURN;
+    ColorWarpViewCornerEnum get3DViewCorner() const WARN_UNUSED_RETURN;
+    bool is3DViewShowingOutput() const WARN_UNUSED_RETURN;
 
     /**
      * @brief The basis toWarpSpace() and fromWarpSpace() take for the project's working space,

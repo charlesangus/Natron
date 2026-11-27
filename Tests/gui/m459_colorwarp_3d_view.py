@@ -1,21 +1,22 @@
-"""ColorWarp's Colour Space viewer mode in the real application: the viewer swaps the image for a 3D
-view of the ColorWarp's colours, with its pins as arrows, and swaps back with its pan and zoom.
+"""ColorWarp's 3D colour-space view in the real application: the ColorWarp's Show 3D View knob draws
+a 3D view of its colours, with its pins as arrows, as an inset in the viewer corner its View Corner
+knob picks, over the 2D image, which keeps working outside the inset.
 
 A CheckerBoard with four known colours (one of them above 1) feeds a Grade feeding a ColorWarp
 feeding the viewer, in a 1920x1080 main window with the ColorWarp's settings panel open. Two pins
 are added through Python: one maps the red box to another colour, one holds the blue box. The
-script turns the mode on and checks that the viewer's second row still fits, and, through
-ViewerGL::colorSpaceViewState() and colorSpaceViewProbe(), that the cloud and the pins are drawn and
-that each box colour has a cloud point on it. It orbits, toggles the cloud between input and output,
-and checks the cloud follows the mix, clears when the ColorWarp cannot render, follows a Grade
-upstream and follows a frame change. It clicks a pin's target to select it and checks the panel
-follows, drags the selected target along one axis handle and reads the knob back, undoes the drag,
-edits a pin from Python and checks the view and its bounds follow, drags the target freely in the
-screen plane and undoes it, and turns the mode off and checks the 2D pan and zoom came back. Last,
-viewing the CheckerBoard instead turns the mode off and disables the toggle, and selecting the
-ColorWarp offers the mode again until the selection clears. With the mode on, the 2D Red channel
-key leaves the viewer's channels alone; viewing a USDCamera with the ColorWarp selected disables
-the toggle and turns the mode off. Saves a screenshot of every state.
+script checks the viewer has no Colour Space or Output button, turns Show 3D View on, and checks
+through ViewerGL::colorSpaceViewState() and colorSpaceViewProbe() that the inset fits the viewer,
+that the cloud and the pins are drawn and that each box colour has a cloud point on it. It moves the
+inset to each corner, orbits and dollies inside the inset without touching the 2D pan and zoom, and
+zooms the 2D image outside it. It switches the cloud to the output with View Output and checks the
+cloud follows the mix, clears when the ColorWarp cannot render, follows a Grade upstream and follows
+a frame change. It clicks a pin's target to select it and checks the panel follows, drags the
+selected target along one axis handle, edits a pin from Python, drags the target freely, and drags
+the selected pin's falloff handle, undoing each drag. Last, it checks the inset stays while the
+viewer shows another node, hides with the panel and with a scene in the viewer, that the 2D Red
+channel key reaches the image only away from the inset, and that turning the knob off removes it.
+Saves a screenshot of every state, one per corner.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
     docker exec -e NATRON_GUI_TEST_OUT=build/m459-shots -e GUI_TEST_TIMEOUT=300 \\
@@ -93,14 +94,9 @@ try:
         viewers = [w for w in gt.widgets_of("ViewerGL") if w.isVisible()]
         return viewers[0] if viewers else None
 
-    def button(name):
+    def buttons_named(name):
         win = main_window()
-        if win is None:
-            return None
-        for b in win.findChildren(QPushButton, name):
-            if b.isVisible() or name == "colorSpaceViewOutput":
-                return hold(b)
-        return None
+        return [] if win is None else win.findChildren(QPushButton, name)
 
     def panel_of(node):
         label = node.getLabel()
@@ -187,8 +183,8 @@ try:
         send_mouse(widget, QEvent.MouseButtonPress, pos, Qt.LeftButton, Qt.LeftButton)
         send_mouse(widget, QEvent.MouseButtonRelease, pos, Qt.LeftButton, Qt.NoButton)
 
-    def wheel(widget, steps):
-        pos = QPointF(widget.width() / 2.0, widget.height() / 2.0)
+    def wheel(widget, steps, pos=None):
+        pos = QPointF(widget.width() / 2.0, widget.height() / 2.0) if pos is None else QPointF(pos)
         QApplication.sendEvent(widget, QWheelEvent(pos, QPointF(widget.mapToGlobal(pos.toPoint())), QPoint(0, 0),
                                                    QPoint(0, 120 * steps), Qt.NoButton, Qt.NoModifier,
                                                    Qt.NoScrollPhase, False))
@@ -237,44 +233,45 @@ try:
                 text = ""
         return "%s %r %r" % (gt.class_name(w), w.objectName(), text)
 
-    def viewer_tab_of(widget):
-        w = widget
-        while w is not None and gt.class_name(w) != "ViewerTab":
-            w = w.parentWidget()
-        return w
+    def inset_rect():
+        r = state().get("rect", [])
+        return [float(v) for v in r] if len(r) == 4 else None
 
-    def measure_second_row(toggle):
-        """The Colour Space toggle's row fits its ViewerTab with the mode on, nothing overlapping."""
-        row = hold(toggle.parentWidget())
-        tab = viewer_tab_of(toggle)
-        require(row is not None and tab is not None, "found the toggle's row and its ViewerTab")
-        hold(tab)
-        row_w = row.width()
-        tab_w = tab.width()
-        hint = row.sizeHint().width()
-        report("NOTE ViewerTab width %d, second row width %d, sizeHint %d" % (tab_w, row_w, hint))
-        parts = []
-        for w in row.children():
-            try:
-                if not isinstance(w, QWidget) or not w.isVisible():
-                    continue
-            except RuntimeError:
-                continue
-            parts.append(hold(w))
-        parts.sort(key=lambda w: w.x())
-        require(len(parts) > 0, "the second row has visible controls")
-        for w in parts:
-            report("NOTE x=%4d w=%4d right=%4d sizeHint=%4d  %s"
-                   % (w.x(), w.width(), w.x() + w.width(), w.sizeHint().width(), describe(w)))
-        check(row_w <= tab_w, "the second row (%d) is no wider than its ViewerTab (%d)" % (row_w, tab_w))
-        check(hint <= row_w, "the second row's layout sizeHint (%d) fits the row (%d)" % (hint, row_w))
-        for w in parts:
-            right = w.x() + w.width()
-            check(w.x() >= 0 and right <= row_w, "inside the second row: %s (x %d..%d of %d)" % (describe(w), w.x(), right, row_w))
-        for left, right in zip(parts, parts[1:]):
-            check(left.x() + left.width() <= right.x(),
-                  "no overlap: %s (right %d) and %s (left %d)" % (describe(left), left.x() + left.width(),
-                                                                   describe(right), right.x()))
+    def inset_centre():
+        r = inset_rect()
+        return QPointF(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)
+
+    def outside_inset(gl):
+        """A viewer point well away from the inset, whichever corner it is in."""
+        r = inset_rect()
+        x = gl.width() * (0.25 if r[0] > gl.width() / 2.0 else 0.75)
+        y = gl.height() * (0.25 if r[1] > gl.height() / 2.0 else 0.75)
+        return QPointF(x, y)
+
+    MARGIN = 10.0
+    CORNERS = ["topLeft", "topRight", "bottomLeft", "bottomRight"]
+
+    def in_corner(corner):
+        gl = visible_viewer()
+        r = inset_rect()
+        if gl is None or r is None:
+            return False
+        left = corner in (0, 2)
+        top = corner in (0, 1)
+        x_ok = abs(r[0] - MARGIN) <= 1.0 if left else abs(r[0] + r[2] - (gl.width() - MARGIN)) <= 1.0
+        y_ok = abs(r[1] - MARGIN) <= 1.0 if top else abs(r[1] + r[3] - (gl.height() - MARGIN)) <= 1.0
+        return x_ok and y_ok
+
+    def check_fits():
+        gl = visible_viewer()
+        r = inset_rect()
+        require(r is not None, "the view state reports the inset rectangle")
+        report("NOTE viewer %dx%d, inset %r" % (gl.width(), gl.height(), r))
+        check(r[0] >= 0 and r[1] >= 0 and r[0] + r[2] <= gl.width() and r[1] + r[3] <= gl.height(),
+              "the inset lies inside the viewer (%r in %dx%d)" % (r, gl.width(), gl.height()))
+        check(r[2] >= min(240.0, gl.width() - 2 * MARGIN) and r[2] <= 640.0,
+              "the inset is 240 to 640 pixels wide (%r)" % (r[2],))
+        check(r[3] <= 0.6 * gl.height() + 1.0, "and at most 60%% of the viewer's height (%r of %d)" % (r[3], gl.height()))
 
     def steps():
         ok = yield ("until", lambda: node_graph_view() is not None, STARTUP_TIMEOUT_S)
@@ -331,21 +328,24 @@ try:
         yield ("sleep", RENDER_MS)
 
         gt.section("toggle")
-        toggle = button("colorSpaceView")
-        require(toggle is not None, "the viewer has a Colour Space toggle")
-        check(toggle.text() == "Colour Space", "the toggle is labelled Colour Space (%r)" % toggle.text())
-        ok = yield ("until", lambda: toggle.isEnabled(), POLL_TIMEOUT_S)
-        require(ok, "the toggle is enabled while the viewer shows a ColorWarp")
+        check(not buttons_named("colorSpaceView") and not buttons_named("colorSpaceViewOutput"),
+              "the viewer has no Colour Space or Output button")
+        show = hold(warp.getParam("show3DView"))
+        corner = hold(warp.getParam("viewCorner"))
+        output = hold(warp.getParam("viewOutput"))
+        require(show is not None and corner is not None and output is not None,
+                "the ColorWarp has Show 3D View, View Corner and View Output knobs")
+        check(show.get() is False and output.get() is False, "Show 3D View and View Output start off")
+        check(corner.get() == 3, "View Corner starts on Bottom Right (%r)" % (corner.get(),))
         gl = visible_viewer()
         wheel(gl, 2)
         yield ("sleep", SETTLE_MS)
+        check(state() == {}, "no 3D view is drawn with the knob off")
         before_2d = projection()
-        report("NOTE 2D projection before the mode: %r" % (before_2d,))
+        report("NOTE 2D projection before the inset: %r" % (before_2d,))
         gt.shot("m459-image.png")
 
-        toggle.click()
-        QApplication.processEvents()
-        check(toggle.isChecked(), "clicking the toggle checks it")
+        show.setValue(True)
         ok = yield ("until", cloud_ready, POLL_TIMEOUT_S)
         require(ok, "the cloud of the input arrives (%r)" % ({k: v for k, v in state().items() if k != "pins"},))
         s = state()
@@ -364,33 +364,53 @@ try:
         hi = s.get("boundsMax", [])
         check(within_bounds(hdr, lo, hi),
               "the axes reach the colour above 1 (%r in %r..%r)" % (hdr, lo, hi))
-        output_toggle = button("colorSpaceViewOutput")
-        check(output_toggle is not None and output_toggle.isVisible(), "the Output toggle shows with the mode")
+        check(close(projection(), before_2d, 1e-6), "the inset leaves the 2D pan and zoom (%r)" % (projection(),))
         gt.shot("m459-input-cloud.png")
 
-        gt.section("second-row-fit")
+        gt.section("inset-fit")
         check(win.width() == 1920 and win.height() == 1080, "the main window is 1920x1080 (%dx%d)" % (win.width(), win.height()))
-        measure_second_row(toggle)
+        check(in_corner(3), "the inset sits in the bottom right corner (%r)" % (inset_rect(),))
+        check_fits()
+
+        gt.section("corners")
+        for index in (0, 1, 2, 3):
+            corner.set(index)
+            ok = yield ("until", lambda: in_corner(index) and cloud_ready(), POLL_TIMEOUT_S)
+            check(ok, "View Corner %s moves the inset there (%r)" % (CORNERS[index], inset_rect()))
+            check_fits()
+            yield ("sleep", SETTLE_MS)
+            gt.shot("m459-corner-%s.png" % CORNERS[index])
 
         gt.section("orbit")
         camera = state().get("camera")
         gl = visible_viewer()
-        centre = QPointF(gl.width() / 2.0, gl.height() / 2.0)
-        drag(gl, centre + QPointF(0, 120), centre + QPointF(120, 80), Qt.LeftButton, Qt.ControlModifier)
+        centre = inset_centre()
+        drag(gl, centre + QPointF(0, 60), centre + QPointF(80, 30), Qt.LeftButton, Qt.ControlModifier)
         yield ("sleep", SETTLE_MS)
         orbited = state().get("camera")
-        check(orbited != camera, "a tumble drag orbits the camera (%r -> %r)" % (camera, orbited))
+        check(orbited != camera, "a tumble drag in the inset orbits the camera (%r -> %r)" % (camera, orbited))
         check(pins.getPinCount() == 2 and close(target_of(pins, moved), MOVED_TARGET),
               "orbiting edits no pin")
-        wheel(gl, 1)
+        wheel(gl, 1, inset_centre())
         yield ("sleep", SETTLE_MS)
-        check(state().get("camera") != orbited, "the wheel dollies the camera")
+        check(state().get("camera") != orbited, "the wheel in the inset dollies the camera")
+        check(close(projection(), before_2d, 1e-6), "neither moves the 2D image (%r)" % (projection(),))
         gt.shot("m459-orbited.png")
 
+        gt.section("2d-outside")
+        dollied = state().get("camera")
+        wheel(gl, 1, outside_inset(gl))
+        yield ("sleep", SETTLE_MS)
+        zoomed_2d = projection()
+        check(not close(zoomed_2d, before_2d, 1e-6), "the wheel away from the inset zooms the 2D image (%r)" % (zoomed_2d,))
+        check(state().get("camera") == dollied, "and leaves the 3D camera")
+        gt.shot("m459-2d-zoomed.png")
+        wheel(gl, -1, outside_inset(gl))
+        yield ("sleep", SETTLE_MS)
+        restored_2d = projection()
+
         gt.section("output")
-        require(output_toggle is not None, "found the Output toggle")
-        output_toggle.click()
-        QApplication.processEvents()
+        output.setValue(True)
         ok = yield ("until", lambda: state().get("output") is True and cloud_ready(), POLL_TIMEOUT_S)
         require(ok, "the cloud switches to the output")
         check(on_cloud(MOVED_TARGET), "the output cloud holds the moved pin's target (%.2g)" % nearest(MOVED_TARGET))
@@ -420,8 +440,7 @@ try:
         require(warp.connectInput(0, grade), "reconnected the Grade to the ColorWarp")
         ok = yield wait_cloud(lambda: on_cloud(MOVED_TARGET))
         check(ok, "reconnecting the input brings the output cloud back")
-        output_toggle.click()
-        QApplication.processEvents()
+        output.setValue(False)
         ok = yield ("until", lambda: state().get("output") is False and cloud_ready(), POLL_TIMEOUT_S)
         check(ok, "the cloud switches back to the input")
         check(state().get("pointCount") == count, "the input cloud has the same points again (%r)" % state().get("pointCount"))
@@ -561,87 +580,115 @@ try:
         ok = yield ("until", lambda: close(target_of(pins, moved), knob_free_before), POLL_TIMEOUT_S)
         check(ok, "one undo puts the freely dragged target back (%r)" % (target_of(pins, moved),))
 
-        gt.section("off")
-        toggle = button("colorSpaceView")
-        toggle.click()
-        QApplication.processEvents()
+        gt.section("falloff-handle")
+        entry = pin_entry(moved)
+        require(entry is not None and "falloffHandle" in entry, "the selected pin has a falloff handle")
+        sx, sy = entry["source"]
+        fx, fy = entry["falloffHandle"]
+        length = math.hypot(fx - sx, fy - sy)
+        report("NOTE falloff handle %r from source %r (%.1f px), falloff %r" % ((fx, fy), (sx, sy), length, entry.get("falloff")))
+        require(length > 10.0, "the falloff handle is clear of the source on screen (%.1f px)" % length)
+        unit = QPointF((fx - sx) / length, (fy - sy) / length)
+        falloff_before = pins.getPinFalloff(moved, app.timelineGetTime())
+        target_before = target_of(pins, moved)
+        handle = QPointF(fx, fy)
+        drag(gl, handle, handle + unit * DRAG_PIXELS)
         yield ("sleep", RENDER_MS)
-        check(not toggle.isChecked(), "clicking the toggle again unchecks it")
-        check(state() == {}, "the view is off")
-        after_2d = projection()
-        check(close(after_2d, before_2d, 1e-6), "the 2D pan and zoom are restored (%r -> %r)" % (before_2d, after_2d))
-        output_toggle = button("colorSpaceViewOutput")
-        check(output_toggle is None or not output_toggle.isVisible(), "the Output toggle hides with the mode")
-        gt.shot("m459-off.png")
+        falloff_after = pins.getPinFalloff(moved, app.timelineGetTime())
+        report("NOTE falloff %r -> %r" % (falloff_before, falloff_after))
+        check(falloff_after > falloff_before + 1e-4, "dragging the handle outward widens the falloff (%r -> %r)"
+              % (falloff_before, falloff_after))
+        check(close(target_of(pins, moved), target_before), "and leaves the target")
+        entry = pin_entry(moved)
+        check(entry is not None and abs(entry.get("falloff", 0.0) - falloff_after) < 1e-4,
+              "the view draws the new falloff (%r)" % (entry.get("falloff") if entry else None,))
+        if entry is not None and "falloffHandle" in entry:
+            moved_handle = QPointF(entry["falloffHandle"][0], entry["falloffHandle"][1])
+            aim = handle + unit * DRAG_PIXELS
+            check(math.hypot(moved_handle.x() - aim.x(), moved_handle.y() - aim.y()) <= SCREEN_TOLERANCE,
+                  "the handle follows the pointer (%r, aim %r)" % (moved_handle, aim))
+        gt.shot("m459-falloff-handle.png")
+        undo_redo(False)
+        ok = yield ("until", lambda: abs(pins.getPinFalloff(moved, app.timelineGetTime()) - falloff_before) < 1e-9, POLL_TIMEOUT_S)
+        check(ok, "one undo puts the falloff back (%r)" % (pins.getPinFalloff(moved, app.timelineGetTime()),))
+        undo_redo(True)
+        ok = yield ("until", lambda: abs(pins.getPinFalloff(moved, app.timelineGetTime()) - falloff_after) < 1e-9, POLL_TIMEOUT_S)
+        check(ok, "redo widens it again")
+        undo_redo(False)
+        ok = yield ("until", lambda: abs(pins.getPinFalloff(moved, app.timelineGetTime()) - falloff_before) < 1e-9, POLL_TIMEOUT_S)
+        check(ok, "and undo takes it back for the rest of the check")
 
-        gt.section("not-a-colorwarp")
-        toggle.click()
-        QApplication.processEvents()
-        ok = yield ("until", cloud_ready, POLL_TIMEOUT_S)
-        check(ok, "the mode comes back on")
+        gt.section("other-node-viewed")
         app.clearSelection()
         viewer.disconnectInput(0)
         require(viewer.connectInput(0, chart), "the viewer views the CheckerBoard")
-        ok = yield ("until", lambda: not toggle.isEnabled(), POLL_TIMEOUT_S)
-        check(ok, "the toggle is disabled while the viewer shows no ColorWarp")
-        check(not toggle.isChecked() and state() == {}, "and the mode is off")
-        check(close(projection(), before_2d, 1e-6), "with the 2D pan and zoom restored (%r)" % (projection(),))
-        gt.shot("m459-not-a-colorwarp.png")
-
-        gt.section("selected-not-viewed")
-        app.selectNode(warp, True)
-        ok = yield ("until", lambda: toggle.isEnabled(), POLL_TIMEOUT_S)
-        check(ok, "selecting a ColorWarp the viewer does not show enables the toggle")
-        toggle.click()
-        QApplication.processEvents()
         ok = yield ("until", cloud_ready, POLL_TIMEOUT_S)
-        check(ok, "the mode shows the selected ColorWarp's cloud")
-        check(state().get("node") == warp.getScriptName(), "for the selected ColorWarp (%r)" % (state().get("node"),))
+        check(ok, "the inset stays while the ColorWarp's panel is open")
+        check(state().get("node") == warp.getScriptName(), "for that ColorWarp (%r)" % (state().get("node"),))
         check(on_cloud(BOXES[0]), "its input cloud holds the red box (%.2g)" % nearest(BOXES[0]))
-        gt.shot("m459-selected-not-viewed.png")
-        app.clearSelection()
-        ok = yield ("until", lambda: not toggle.isEnabled(), POLL_TIMEOUT_S)
-        check(ok, "clearing the selection disables the toggle")
-        check(not toggle.isChecked() and state() == {}, "and turns the mode off")
+        gt.shot("m459-other-node-viewed.png")
         viewer.disconnectInput(0)
         require(viewer.connectInput(0, warp), "the viewer views the ColorWarp again")
-        ok = yield ("until", lambda: toggle.isEnabled(), POLL_TIMEOUT_S)
-        check(ok, "the toggle is enabled again")
 
-        gt.section("2d-keys-off")
-        toggle.click()
-        QApplication.processEvents()
+        gt.section("panel-closed")
+        gt.close_all_panels()
+        ok = yield ("until", lambda: state() == {}, POLL_TIMEOUT_S)
+        check(ok, "closing the ColorWarp's panel hides the inset")
+        check(show.get() is True, "and leaves Show 3D View on")
+        gt.shot("m459-panel-closed.png")
+        open_panel(warp)
         ok = yield ("until", cloud_ready, POLL_TIMEOUT_S)
-        check(ok, "the mode is on for the key check")
+        check(ok, "reopening the panel brings the inset back")
+
+        gt.section("2d-keys")
         channels = viewer.getParam("displayChannels")
         require(channels is not None, "the viewer has a displayChannels parameter")
         channels_before = channels.get()
         gl = visible_viewer()
-        for kind in (QEvent.KeyPress, QEvent.KeyRelease):
-            QApplication.sendEvent(gl, QKeyEvent(kind, Qt.Key_R, Qt.NoModifier, "r"))
+
+        def red_key():
+            for kind in (QEvent.KeyPress, QEvent.KeyRelease):
+                QApplication.sendEvent(gl, QKeyEvent(kind, Qt.Key_R, Qt.NoModifier, "r"))
+            QApplication.processEvents()
+
+        QCursor.setPos(gl.mapToGlobal(inset_centre().toPoint()))
+        yield ("sleep", SETTLE_MS)
+        red_key()
         yield ("sleep", SETTLE_MS)
         check(channels.get() == channels_before,
-              "the 2D Red channel key does nothing in the mode (%r -> %r)" % (channels_before, channels.get()))
-        check(toggle.isChecked() and cloud_ready(), "and the mode stays on")
+              "the 2D Red channel key does nothing over the inset (%r -> %r)" % (channels_before, channels.get()))
+        QCursor.setPos(gl.mapToGlobal(outside_inset(gl).toPoint()))
+        yield ("sleep", SETTLE_MS)
+        red_key()
+        yield ("sleep", SETTLE_MS)
+        check(channels.get() != channels_before,
+              "away from the inset it reaches the image (%r -> %r)" % (channels_before, channels.get()))
+        red_key()
+        yield ("sleep", SETTLE_MS)
+        check(channels.get() == channels_before, "and pressing it again restores the channels (%r)" % (channels.get(),))
+        check(cloud_ready(), "the inset stays on")
 
-        gt.section("scene-disables")
+        gt.section("scene-hides")
         camera = app.createNode("USDCamera")
         require(camera is not None, "created a USDCamera", gt.plugin_problem("USDCamera"))
         camera.setPosition(300, 300)
-        app.selectNode(warp, True)
         viewer.disconnectInput(0)
         require(viewer.connectInput(0, camera), "the viewer views the USDCamera")
         ok = yield ("until", lambda: any(w.isVisible() for w in gt.widgets_of("SceneViewport")), POLL_TIMEOUT_S)
         require(ok, "the viewer shows the scene")
-        ok = yield ("until", lambda: not toggle.isEnabled(), POLL_TIMEOUT_S)
-        check(ok, "the toggle is disabled while a scene is shown, with a ColorWarp selected")
-        check(not toggle.isChecked(), "and the mode is off")
-        app.clearSelection()
+        yield ("sleep", RENDER_MS)
+        check(state() == {}, "no inset is drawn while a scene is shown")
         viewer.disconnectInput(0)
         require(viewer.connectInput(0, warp), "the viewer views the ColorWarp again")
-        ok = yield ("until", lambda: toggle.isEnabled(), POLL_TIMEOUT_S)
-        check(ok, "the toggle is enabled once the image is back")
-        check(not toggle.isChecked(), "and stays off")
+        ok = yield ("until", lambda: visible_viewer() is not None and cloud_ready(), POLL_TIMEOUT_S)
+        check(ok, "the inset comes back with the image")
+
+        gt.section("off")
+        show.setValue(False)
+        ok = yield ("until", lambda: state() == {}, POLL_TIMEOUT_S)
+        check(ok, "turning Show 3D View off removes the inset")
+        check(close(projection(), restored_2d, 1e-6), "and leaves the 2D pan and zoom (%r -> %r)" % (restored_2d, projection()))
+        gt.shot("m459-off.png")
 
         faulthandler.cancel_dump_traceback_later()
 

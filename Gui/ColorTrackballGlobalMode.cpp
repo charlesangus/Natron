@@ -1047,6 +1047,19 @@ ColorTrackballGlobalMode::stepKnob(int direction)
         }
     }
 
+    if (GlobalModePartsProvider* parts = dynamic_cast<GlobalModePartsProvider*>(currentKnob)) {
+        const int part = target->getGlobalModePart() + direction;
+
+        if ((part >= 0) && (part < parts->getGlobalModePartCount())) {
+            if (std::shared_ptr<GlobalModeTarget> partTarget = parts->makeGlobalModePartTarget(part)) {
+                setTarget(partTarget);
+                Q_EMIT stateChanged();
+
+                return true;
+            }
+        }
+    }
+
     int next = stepColorKnobIndex(infos, current, direction);
 
     if (next < 0) {
@@ -1055,7 +1068,16 @@ ColorTrackballGlobalMode::stepKnob(int direction)
         return false;
     }
 
-    std::shared_ptr<GlobalModeTarget> nextTarget = makeGlobalModeTarget(knobs[next]);
+    std::shared_ptr<GlobalModeTarget> nextTarget;
+
+    if (GlobalModePartsProvider* parts = dynamic_cast<GlobalModePartsProvider*>(knobs[next])) {
+        if ((direction < 0) && (parts->getGlobalModePartCount() > 0)) {
+            nextTarget = parts->makeGlobalModePartTarget(parts->getGlobalModePartCount() - 1);
+        }
+    }
+    if (!nextTarget) {
+        nextTarget = makeGlobalModeTarget(knobs[next]);
+    }
 
     if (!nextTarget) {
         return false;

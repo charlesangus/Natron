@@ -204,7 +204,7 @@ ViewerGL::Implementation::Implementation(ViewerGL* this_,
     , updateViewerPboIndex(0)
     , colorSpaceView()
     , colorSpaceViewActive(false)
-    , savedProjectionValid(false)
+    , colorSpaceViewCapture(false)
 {
     infoViewer[0] = 0;
     infoViewer[1] = 0;

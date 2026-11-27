@@ -203,6 +203,49 @@ ColorWarpOp::createKnobs(KnobHolder* h,
                                  .toStdString());
     page->addKnob(pinsKnob);
     pins = pinsKnob;
+
+    KnobBoolPtr showKnob = AppManager::createKnob<KnobBool>(h, EffectInstance::tr("Show 3D View").toStdString());
+    showKnob->setName(kColorWarpParamShow3DView);
+    showKnob->setHintToolTip(EffectInstance::tr("Draws the warp space in 3D in a corner of the viewer: the image's colours as a cloud, "
+                                                "each pin as an arrow from its source to its target, and the selected pin's falloff. "
+                                                "Drag a target or the falloff handle there to edit the pin. It changes no output.")
+                                 .toStdString());
+    showKnob->setDefaultValue(false);
+    showKnob->setAnimationEnabled(false);
+    showKnob->setEvaluateOnChange(false);
+    showKnob->setHashExempt(true);
+    page->addKnob(showKnob);
+    show3DView = showKnob;
+
+    KnobChoicePtr cornerKnob = AppManager::createKnob<KnobChoice>(h, EffectInstance::tr("View Corner").toStdString());
+    cornerKnob->setName(kColorWarpParamViewCorner);
+    cornerKnob->setHintToolTip(EffectInstance::tr("The corner of the viewer the 3D view is drawn in.").toStdString());
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("topleft", EffectInstance::tr("Top Left").toStdString(), ""));
+        options.push_back(ChoiceOption("topright", EffectInstance::tr("Top Right").toStdString(), ""));
+        options.push_back(ChoiceOption("bottomleft", EffectInstance::tr("Bottom Left").toStdString(), ""));
+        options.push_back(ChoiceOption("bottomright", EffectInstance::tr("Bottom Right").toStdString(), ""));
+        cornerKnob->populateChoices(options);
+    }
+    cornerKnob->setDefaultValue((int)eColorWarpViewCornerBottomRight);
+    cornerKnob->setAnimationEnabled(false);
+    cornerKnob->setEvaluateOnChange(false);
+    cornerKnob->setHashExempt(true);
+    page->addKnob(cornerKnob);
+    viewCorner = cornerKnob;
+
+    KnobBoolPtr outputKnob = AppManager::createKnob<KnobBool>(h, EffectInstance::tr("View Output").toStdString());
+    outputKnob->setName(kColorWarpParamViewOutput);
+    outputKnob->setHintToolTip(EffectInstance::tr("When checked, the 3D view's cloud shows the colours of the node's output; "
+                                                  "otherwise those of its input.")
+                                   .toStdString());
+    outputKnob->setDefaultValue(false);
+    outputKnob->setAnimationEnabled(false);
+    outputKnob->setEvaluateOnChange(false);
+    outputKnob->setHashExempt(true);
+    page->addKnob(outputKnob);
+    viewOutput = outputKnob;
 }
 
 ColorWarpOp::Params
@@ -495,6 +538,11 @@ ColorWarp::initializeKnobs()
     if (KnobColorWarpPinsPtr pinsKnob = getPinsKnob()) {
         addOverlaySlaveParam(pinsKnob);
     }
+    for (const KnobIPtr& knob : { KnobIPtr(op().show3DView.lock()), KnobIPtr(op().viewCorner.lock()), KnobIPtr(op().viewOutput.lock()) }) {
+        if (knob) {
+            addOverlaySlaveParam(knob);
+        }
+    }
 }
 
 void
@@ -626,6 +674,31 @@ ColorWarp::getLightnessFalloff(double time) const
     const KnobDoublePtr knob = op().lightnessFalloff.lock();
 
     return knob ? knob->getValueAtTime(time) : kColorWarpDefaultLightnessFalloff;
+}
+
+bool
+ColorWarp::isShowing3DView() const
+{
+    const KnobBoolPtr knob = op().show3DView.lock();
+
+    return knob && knob->getValue();
+}
+
+ColorWarpViewCornerEnum
+ColorWarp::get3DViewCorner() const
+{
+    const KnobChoicePtr knob = op().viewCorner.lock();
+    const int index = knob ? knob->getValue() : (int)eColorWarpViewCornerBottomRight;
+
+    return ((index >= eColorWarpViewCornerTopLeft) && (index <= eColorWarpViewCornerBottomRight)) ? (ColorWarpViewCornerEnum)index : eColorWarpViewCornerBottomRight;
+}
+
+bool
+ColorWarp::is3DViewShowingOutput() const
+{
+    const KnobBoolPtr knob = op().viewOutput.lock();
+
+    return knob && knob->getValue();
 }
 
 ColorWarpSpaceBasis
@@ -805,8 +878,19 @@ ColorWarp::onOverlayPenDown(double time,
     const KnobColorWarpPinsPtr pinsKnob = getPinsKnob();
     double scaleX, scaleY;
 
-    if (!pinsKnob || (pen == ePenTypeMMB) || (pen == ePenTypeRMB) || !pixelScale(&scaleX, &scaleY)) {
+    if (!pinsKnob || (pen == ePenTypeMMB) || !pixelScale(&scaleX, &scaleY)) {
         return false;
+    }
+    if (pen == ePenTypeRMB) {
+        const int hit = ColorWarpInteract::hitTest(pinsKnob->getPinSet(), pos.x(), pos.y(), scaleX, scaleY);
+        if (hit == 0) {
+            return false;
+        }
+        commitMoveNow();
+        removePin(hit);
+        redrawOverlayInteract();
+
+        return true;
     }
     commitMoveNow();
     const ColorWarpPinSet pins = pinsKnob->getPinSet();

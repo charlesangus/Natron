@@ -45,7 +45,6 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/Nodes/Color/ColorWarp/ColorWarp.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneReparentNode.h"
@@ -73,7 +72,6 @@
 #include "Gui/GuiDensity.h"
 #include "Gui/InfoViewerWidget.h"
 #include "Gui/Label.h"
-#include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/ScaleSliderQWidget.h"
@@ -859,41 +857,6 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->mapSiblingOverlaysButton->setDown(true);
     QObject::connect(_imp->mapSiblingOverlaysButton, SIGNAL(clicked(bool)), this, SLOT(onMapSiblingOverlaysButtonClicked(bool)));
     _imp->secondRowLayout->addWidget(_imp->mapSiblingOverlaysButton);
-
-    _imp->colorSpaceViewButton = new Button(tr("Colour Space"), _imp->secondSettingsRow);
-    _imp->colorSpaceViewButton->setObjectName(QString::fromUtf8("colorSpaceView"));
-    _imp->colorSpaceViewButton->setFocusPolicy(Qt::NoFocus);
-    _imp->colorSpaceViewButton->setCheckable(true);
-    _imp->colorSpaceViewButton->setChecked(false);
-    _imp->colorSpaceViewButton->setDown(false);
-    _imp->colorSpaceViewButton->setEnabled(false);
-    _imp->colorSpaceViewButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("If checked, the viewer shows the colours of the ColorWarp it views (or of the selected ColorWarp) "
-                                                                                     "as a point cloud in the node's warp space, with its pins as arrows from source to target. "
-                                                                                     "Drag a pin's target end, or one of the selected target's axis handles, to move it. "
-                                                                                     "Unchecking it brings the image back as it was."),
-                                                                                  NATRON_NAMESPACE::WhiteSpaceNormal));
-    QObject::connect(_imp->colorSpaceViewButton, &Button::clicked, this, [this](bool checked) {
-        _imp->viewer->setColorSpaceViewActive(checked);
-        refreshColorSpaceView();
-    });
-    _imp->secondRowLayout->addWidget(_imp->colorSpaceViewButton);
-
-    _imp->colorSpaceOutputButton = new Button(tr("Output"), _imp->secondSettingsRow);
-    _imp->colorSpaceOutputButton->setObjectName(QString::fromUtf8("colorSpaceViewOutput"));
-    _imp->colorSpaceOutputButton->setFocusPolicy(Qt::NoFocus);
-    _imp->colorSpaceOutputButton->setCheckable(true);
-    _imp->colorSpaceOutputButton->setChecked(false);
-    _imp->colorSpaceOutputButton->setDown(false);
-    _imp->colorSpaceOutputButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("If checked, the colour space view shows the ColorWarp's output colours, else its input colours."), NATRON_NAMESPACE::WhiteSpaceNormal));
-    QObject::connect(_imp->colorSpaceOutputButton, &Button::clicked, this, [this](bool checked) {
-        _imp->colorSpaceOutputButton->setDown(checked);
-        _imp->viewer->setColorSpaceViewShowsOutput(checked);
-    });
-    _imp->secondRowLayout->addWidget(_imp->colorSpaceOutputButton);
-    _imp->colorSpaceOutputButton->hide();
-    QObject::connect(gui, &Gui::nodeSelectionChanged, this, [this]() {
-        refreshColorSpaceView();
-    });
 
     _imp->viewsComboBox = new ComboBox(_imp->secondSettingsRow);
     _imp->viewsComboBox->setToolTip( QString::fromUtf8("<p><b>") + tr("Active view:") + QString::fromUtf8("</b></p>") + tr(
@@ -1745,47 +1708,8 @@ ViewerTab::onActiveInputDataKindChanged()
     }
     refreshSceneRenderRow();
     applyStaleCueInput();
-    refreshColorSpaceView();
     Q_EMIT sceneViewChanged();
 } // onActiveInputDataKindChanged
-
-void
-ViewerTab::refreshColorSpaceView()
-{
-    if (!_imp->colorSpaceViewButton || !_imp->viewer) {
-        return;
-    }
-    auto isColorWarp = [](const NodePtr& node) {
-        return node && node->isActivated() && dynamic_cast<ColorWarp*>(node->getEffectInstance().get());
-    };
-    // The colour space view draws in the image viewer, which is hidden while a scene is shown, and
-    // its keys and drags would otherwise land on a widget nobody sees.
-    const bool scene = isShowingScene();
-    NodePtr candidate = scene ? NodePtr() : getSceneViewedNode();
-    if (!scene && !isColorWarp(candidate)) {
-        candidate.reset();
-        Gui* gui = getGui();
-        NodeGraph* graph = gui ? gui->getLastSelectedGraph() : nullptr;
-        if (!graph && gui) {
-            graph = gui->getNodeGraph();
-        }
-        if (graph) {
-            const std::list<NodeGuiPtr>& selected = graph->getSelectedNodes();
-            if (selected.size() == 1) {
-                const NodePtr node = selected.front() ? selected.front()->getNode() : NodePtr();
-                if (isColorWarp(node)) {
-                    candidate = node;
-                }
-            }
-        }
-    }
-    _imp->viewer->setColorSpaceViewNode(candidate);
-    const bool on = _imp->viewer->isColorSpaceViewActive();
-    _imp->colorSpaceViewButton->setEnabled(bool(candidate));
-    _imp->colorSpaceViewButton->setChecked(on);
-    _imp->colorSpaceViewButton->setDown(on);
-    _imp->colorSpaceOutputButton->setVisible(on);
-}
 
 NodePtr
 ViewerTab::getSceneViewedNode() const

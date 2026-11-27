@@ -59,6 +59,8 @@ With the node's settings panel open:
 - **Drag** a pin to pick another source colour. The pin keeps its move: the target shifts by the
   same amount as the source.
 - **Delete** or **Backspace** removes the selected pin.
+- **Right-click** a pin to remove it. A right-click away from every pin opens the viewer's menu as
+  usual.
 
 Each pin is drawn as a square, with the source on its left half and the target on its right half.
 The selected pin has a white outline, and disabled pins are drawn faded.
@@ -73,17 +75,42 @@ not drawn in the viewer. **Delete Pin** removes the selected pin.
 Below the list are the selected pin's Target, Strength and Falloff. Each has a **Key** button that
 sets a key at the current frame, or removes the key there.
 
+## 3D view
+
+Turn on **Show 3D View** to draw a 3D view of the node's colours as an inset in a corner of the
+viewer, while the node's settings panel is open. **View Corner** picks the corner, Bottom Right by
+default. The inset takes 40% of the viewer's width, between 240 and 640 pixels, and at most 60% of
+its height. The image keeps working outside it.
+
+The view shows a cloud of the colours of the node's input, or of its output with **View Output**
+on, in the warp space. Each pin is an arrow from its source to its target, or a dot when the two
+match. With the pointer over the inset:
+
+- The 3D viewer's mouse bindings orbit, pan and dolly the view, and the wheel dollies it. **F**
+  frames the cloud and the pins.
+- **Click** a pin's target to select the pin. **Drag** the target to move it in the screen plane,
+  or drag one of the selected target's three axis handles to move it along that axis.
+- With the Gaussian kernel, the selected pin has an orange falloff handle beside its source.
+  **Drag** it away from the source to widen the pin's falloff, or towards the source to narrow it.
+
+Keys pressed with the pointer elsewhere in the viewer reach the image as usual. The inset is not
+drawn while the viewer's overlays are off or the viewer shows a 3D scene.
+
 ## Pushing a target with the global mode
 
 The selected pin's target is a colour the colour global mode can drive. Press **Ctrl+E** with the
 pointer over the pin list, or after selecting a pin, to engage the global mode on it. Then use the
 C, S, T and V strokes, as on a colour knob. The list is outlined while the global mode drives it.
-Selecting another pin moves the global mode to that pin's target.
+
+**Ctrl+Down**, **Ctrl+Up** and Ctrl-scroll step from the selected pin's target to its strength and
+then its falloff before moving on to the next knob, and back the same way. Coming back from the knob
+below lands on the falloff. Strength and falloff are plain values: drag right or up to raise them.
+Selecting another pin moves the global mode to the same part of that pin.
 
 ## Undo
 
-Adding, moving, deleting, renaming, enabling and disabling a pin, keying it, and each global mode
-stroke on a target are each one undo step.
+Adding, moving, deleting, renaming, enabling and disabling a pin, keying it, each drag in the 3D
+view, and each global mode stroke on a target, strength or falloff are each one undo step.
 
 ## Python
 

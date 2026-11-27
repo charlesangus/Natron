@@ -1,12 +1,17 @@
 """ColorWarp pins in the real application: a click in the viewer adds a pin on the colour under
-the pointer, a drag moves it, Delete removes the selected pin, and the global mode's C stroke
-pushes the selected pin's target. Each of those is one undo step, and redo puts it back.
+the pointer, a drag moves it, Delete removes the selected pin, a right-click on a pin removes that
+pin, and the global mode's C stroke pushes the selected pin's target. In the global mode Ctrl+Down,
+Ctrl+Up and Ctrl-scroll step through the selected pin's target, strength and falloff before the
+other knobs, and a stroke on strength or falloff changes that value. Each edit is one undo step,
+and redo puts it back.
 
 A Constant feeds a ColorWarp feeding the viewer, with the ColorWarp's settings panel open. One pin
 is added with a viewer click and two through the pins parameter's Python API. The first is pushed
 with Ctrl+E over the pin list and a C stroke, which has to change the viewer's colour; the second is
-dragged in the viewer; the third is selected and deleted with Delete. Saves screenshots of every
-step.
+dragged in the viewer; the third is selected and deleted with Delete. The first is then stepped
+through in the global mode, its strength and falloff stroked, and last it is removed with a
+right-click, while a right-click away from every pin still opens the viewer's menu. Saves a
+screenshot of every step.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh for the GL symlink/Xvfb setup):
     docker exec -e NATRON_GUI_TEST_OUT=build/m458-shots -e GUI_TEST_TIMEOUT=300 \\
@@ -36,10 +41,10 @@ try:
     import faulthandler
 
     import NatronEngine
-    from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Qt
-    from PySide6.QtGui import QCursor, QGuiApplication, QKeyEvent, QMouseEvent
+    from PySide6.QtCore import QEvent, QMetaObject, QPoint, QPointF, Qt, QTimer
+    from PySide6.QtGui import QCursor, QGuiApplication, QKeyEvent, QMouseEvent, QWheelEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow, QTreeWidget
+    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QMainWindow, QMenu, QTreeWidget
 
     import guitest as gt
     from guitest import check, report, require
@@ -177,6 +182,33 @@ try:
         gmouse(QEvent.MouseButtonRelease, QPoint(start.x() + dx, start.y() + dy), Qt.LeftButton, Qt.NoButton)
         yield ("sleep", STROKE_MS)
 
+    def ctrl_wheel(notches):
+        """Ctrl-scroll over the node graph; positive notches scroll up, towards the previous knob."""
+        view = node_graph_view()
+        g = view.mapToGlobal(view.rect().center())
+        win = main_window()
+        local = QPointF(win.mapFromGlobal(g))
+        QApplication.sendEvent(win, QWheelEvent(local, QPointF(g), QPoint(0, 0), QPoint(0, 120 * notches), Qt.NoButton,
+                                                Qt.ControlModifier, Qt.NoScrollPhase, False))
+        QApplication.processEvents()
+
+    def hud_is(suffix):
+        return ("until", lambda: (hud_knob() or "").endswith(suffix), POLL_TIMEOUT_S)
+
+    def right_click(widget, pos):
+        send_mouse(widget, QEvent.MouseMove, pos, Qt.NoButton, Qt.NoButton)
+        send_mouse(widget, QEvent.MouseButtonPress, pos, Qt.RightButton, Qt.RightButton)
+        send_mouse(widget, QEvent.MouseButtonRelease, pos, Qt.RightButton, Qt.NoButton)
+
+    menus_seen = []
+
+    def close_popup():
+        """Closes the context menu a right-click opened; its exec() would otherwise hold the script."""
+        popup = QApplication.activePopupWidget()
+        if popup is not None:
+            menus_seen.append(isinstance(popup, QMenu))
+            popup.close()
+
     def target_of(pins, index):
         t = pins.getPinTarget(index, app.timelineGetTime())
         return (round(t.r, 4), round(t.g, 4), round(t.b, 4))
@@ -300,6 +332,68 @@ try:
         ok = yield ("until", lambda: target_of(pins, 0) == pushed, POLL_TIMEOUT_S)
         check(ok, "redo pushes it again (%r)" % (target_of(pins, 0),))
 
+        gt.section("step-parts")
+        pins.setSelectedPin(0)
+        yield ("sleep", SETTLE_MS)
+        name = pins.getPinName(0)
+        strength_before = pins.getPinStrength(0, app.timelineGetTime())
+        falloff_before = pins.getPinFalloff(0, app.timelineGetTime())
+        report("NOTE pin %r strength %r falloff %r" % (name, strength_before, falloff_before))
+        tree = pin_list(warp)
+        require(tree is not None, "found the pin list to hover")
+        require(engage_over(tree.viewport()), "Ctrl+E over the pin list engages the global mode again")
+        ok = yield hud_is(name + " Target")
+        check(ok, "the HUD starts on the pin's target (%r)" % (hud_knob(),))
+        send_key(Qt.Key_Down, Qt.ControlModifier)
+        ok = yield hud_is(name + " Strength")
+        check(ok, "Ctrl+Down steps to the pin's strength (%r)" % (hud_knob(),))
+        gt.shot("m458-step-strength.png")
+        yield from stroke(-60, 30)
+        stroked_strength = pins.getPinStrength(0, app.timelineGetTime())
+        check(stroked_strength < strength_before - 1e-3,
+              "a left/down stroke lowers the strength (%r -> %r)" % (strength_before, stroked_strength))
+        check(target_of(pins, 0) == pushed, "and leaves the target (%r)" % (target_of(pins, 0),))
+        send_key(Qt.Key_Down, Qt.ControlModifier)
+        ok = yield hud_is(name + " Falloff")
+        check(ok, "Ctrl+Down steps on to the pin's falloff (%r)" % (hud_knob(),))
+        gt.shot("m458-step-falloff.png")
+        yield from stroke(60, -30)
+        stroked_falloff = pins.getPinFalloff(0, app.timelineGetTime())
+        check(stroked_falloff > falloff_before + 1e-3,
+              "a right/up stroke raises the falloff (%r -> %r)" % (falloff_before, stroked_falloff))
+        check(abs(pins.getPinStrength(0, app.timelineGetTime()) - stroked_strength) < 1e-9, "and leaves the strength")
+        send_key(Qt.Key_Down, Qt.ControlModifier)
+        yield ("sleep", SETTLE_MS)
+        after_pins = hud_knob() or ""
+        report("NOTE Ctrl+Down past the falloff names %r" % (after_pins,))
+        if not after_pins.endswith(name + " Falloff"):
+            check(not after_pins.startswith(name + " "), "past the falloff the HUD leaves the pin (%r)" % (after_pins,))
+            send_key(Qt.Key_Up, Qt.ControlModifier)
+            ok = yield hud_is(name + " Falloff")
+            check(ok, "Ctrl+Up from the next knob comes back to the pin's falloff (%r)" % (hud_knob(),))
+        ctrl_wheel(1)
+        ok = yield hud_is(name + " Strength")
+        check(ok, "Ctrl-scroll up steps back to the strength (%r)" % (hud_knob(),))
+        ctrl_wheel(1)
+        ok = yield hud_is(name + " Target")
+        check(ok, "and again to the target (%r)" % (hud_knob(),))
+        ctrl_wheel(1)
+        ok = yield ("until", lambda: not (hud_knob() or name).startswith(name + " "), POLL_TIMEOUT_S)
+        check(ok, "and once more to the knob above the pins (%r)" % (hud_knob(),))
+        ctrl_wheel(-1)
+        ok = yield hud_is(name + " Target")
+        check(ok, "Ctrl-scroll down enters the pins on the target (%r)" % (hud_knob(),))
+        send_key(Qt.Key_Escape)
+        yield ("sleep", SETTLE_MS)
+        check(not engaged(), "Esc leaves the global mode")
+        undo_redo(False)
+        ok = yield ("until", lambda: abs(pins.getPinFalloff(0, app.timelineGetTime()) - falloff_before) < 1e-9, POLL_TIMEOUT_S)
+        check(ok, "one undo puts the falloff back (%r)" % (pins.getPinFalloff(0, app.timelineGetTime()),))
+        undo_redo(False)
+        ok = yield ("until", lambda: abs(pins.getPinStrength(0, app.timelineGetTime()) - strength_before) < 1e-9, POLL_TIMEOUT_S)
+        check(ok, "a second undo puts the strength back (%r)" % (pins.getPinStrength(0, app.timelineGetTime()),))
+        check(target_of(pins, 0) == pushed, "and leaves the pushed target (%r)" % (target_of(pins, 0),))
+
         gt.section("drag-in-viewer")
         start_pos = position_of(pins, 0)
         gl = visible_viewer()
@@ -343,6 +437,39 @@ try:
         undo_redo(True)
         ok = yield ("until", lambda: pins.getPinCount() == 2, POLL_TIMEOUT_S)
         check(ok, "redo deletes it again")
+
+        gt.section("right-click-remove")
+        gl = visible_viewer()
+        on_pin = centre + QPoint(*DRAG_BY)
+        QTimer.singleShot(400, close_popup)
+        right_click(gl, on_pin)
+        yield ("sleep", SETTLE_MS)
+        ok = yield ("until", lambda: pins.getPinCount() == 1, POLL_TIMEOUT_S)
+        check(ok, "a right-click on a pin removes it (%d pins)" % pins.getPinCount())
+        check(pins.getPinCount() == 1 and pins.getPinName(0) == "Sky", "the other pin stays")
+        close_popup()
+        check(not menus_seen, "and no menu opens (%r)" % (menus_seen,))
+        yield ("sleep", RENDER_MS)
+        gt.shot("m458-right-click-removed.png")
+        undo_redo(False)
+        ok = yield ("until", lambda: pins.getPinCount() == 2, POLL_TIMEOUT_S)
+        check(ok, "one undo brings the right-clicked pin back")
+        check(pins.getPinCount() == 2 and position_of(pins, 0) == end_pos, "where it was (%r)" % (position_of(pins, 0),))
+        undo_redo(True)
+        ok = yield ("until", lambda: pins.getPinCount() == 1, POLL_TIMEOUT_S)
+        check(ok, "redo removes it again")
+        undo_redo(False)
+        ok = yield ("until", lambda: pins.getPinCount() == 2, POLL_TIMEOUT_S)
+        check(ok, "and undo restores it for the rest of the check")
+
+        gl = visible_viewer()
+        del menus_seen[:]
+        QTimer.singleShot(400, close_popup)
+        right_click(gl, centre + QPoint(-250, 150))
+        yield ("sleep", RENDER_MS)
+        close_popup()
+        check(pins.getPinCount() == 2, "a right-click away from every pin removes none (%d pins)" % pins.getPinCount())
+        check(any(menus_seen), "and opens the viewer's menu (%r)" % (menus_seen,))
 
         gt.section("panel")
         open_panel(warp)

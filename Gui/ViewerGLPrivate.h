@@ -299,9 +299,8 @@ struct ViewerGL::Implementation
     int updateViewerPboIndex;  // always accessed in the main thread: initialized in the constructor, then always accessed and modified by updateViewer()
     std::unique_ptr<ColorSpaceView> colorSpaceView;
     bool colorSpaceViewActive;
-    // The 2D pan and zoom (left, bottom, factor, aspect) from before the colour space view took over.
-    double savedProjection[4];
-    bool savedProjectionValid;
+    // A press in the inset sends the moves and the release that follow it there too.
+    bool colorSpaceViewCapture;
 
 public:
 

@@ -29,7 +29,9 @@
 #include <chrono>
 #include <condition_variable>
 #include <list>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <thread>
 
@@ -280,19 +282,73 @@ struct SceneStage::DeferredLoadsWake {
     std::atomic<bool> ready { false };
 };
 
-// Counts the changes of the stage a SceneWriteBarrier write makes, on the writing thread: those
-// are edits of shared layers, which the owner's own syncs and loads never are.
-class SceneStage::OutsideEdits
+namespace {
+
+// One listener for every stage, never destroyed: TfNotice::Revoke() does not wait for a delivery
+// already running on the writing thread, so a per-stage listener could be freed under it. A late
+// delivery finds its stage gone from the map and counts nothing.
+class OutsideEditsListener
     : public PXR_NS::TfWeakBase {
 public:
-    explicit OutsideEdits(const PXR_NS::UsdStageRefPtr& stage)
+    static OutsideEditsListener& instance()
     {
-        _key = PXR_NS::TfNotice::Register(PXR_NS::TfCreateWeakPtr(this), &OutsideEdits::changed, PXR_NS::UsdStageWeakPtr(stage));
+        static OutsideEditsListener* listener = new OutsideEditsListener();
+
+        return *listener;
+    }
+
+    PXR_NS::TfNotice::Key add(const PXR_NS::UsdStageRefPtr& stage,
+                              const std::shared_ptr<std::atomic<U64>>& count)
+    {
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            _counts[get_pointer(stage)] = count;
+        }
+
+        return PXR_NS::TfNotice::Register(PXR_NS::TfCreateWeakPtr(this), &OutsideEditsListener::changed, PXR_NS::UsdStageWeakPtr(stage));
+    }
+
+    void remove(const PXR_NS::UsdStage* stage,
+                PXR_NS::TfNotice::Key& key)
+    {
+        PXR_NS::TfNotice::Revoke(key);
+        std::lock_guard<std::mutex> lock(_mutex);
+        _counts.erase(stage);
+    }
+
+private:
+    void changed(const PXR_NS::UsdNotice::ObjectsChanged& notice)
+    {
+        if (!SceneWriteBarrier::isWritingOnThisThread()) {
+            return;
+        }
+        std::lock_guard<std::mutex> lock(_mutex);
+        const auto found = _counts.find(get_pointer(notice.GetStage()));
+        if (found != _counts.end()) {
+            ++*found->second;
+        }
+    }
+
+    std::mutex _mutex;
+    std::map<const PXR_NS::UsdStage*, std::shared_ptr<std::atomic<U64>>> _counts;
+};
+
+} // namespace
+
+// Counts the changes of the stage a SceneWriteBarrier write makes, on the writing thread: those
+// are edits of shared layers, which the owner's own syncs and loads never are.
+class SceneStage::OutsideEdits {
+public:
+    explicit OutsideEdits(const PXR_NS::UsdStageRefPtr& stage)
+        : _stage(get_pointer(stage))
+        , _count(std::make_shared<std::atomic<U64>>(0))
+    {
+        _key = OutsideEditsListener::instance().add(stage, _count);
     }
 
     ~OutsideEdits()
     {
-        PXR_NS::TfNotice::Revoke(_key);
+        OutsideEditsListener::instance().remove(_stage, _key);
     }
 
     OutsideEdits(const OutsideEdits&) = delete;
@@ -300,18 +356,12 @@ public:
 
     U64 getCount() const
     {
-        return _count.load();
+        return _count->load();
     }
 
 private:
-    void changed(const PXR_NS::UsdNotice::ObjectsChanged& /*notice*/)
-    {
-        if (SceneWriteBarrier::isWritingOnThisThread()) {
-            ++_count;
-        }
-    }
-
-    std::atomic<U64> _count { 0 };
+    const PXR_NS::UsdStage* _stage;
+    std::shared_ptr<std::atomic<U64>> _count;
     PXR_NS::TfNotice::Key _key;
 };
 

@@ -38,21 +38,29 @@
 
 #define PLUGINID_NATRON_VDBFROMPOLYGONS "VDBFromPolygons"
 
-#define kVDBFromPolygonsParamName "name"
-#define kVDBFromPolygonsParamOutputType "outputType"
+#define kVDBFromPolygonsParamReferenceVDB "referenceVDB"
+#define kVDBFromPolygonsParamDistanceVDB "distanceVDB"
+#define kVDBFromPolygonsParamDistanceName "distanceName"
+#define kVDBFromPolygonsParamFogVDB "fogVDB"
+#define kVDBFromPolygonsParamFogName "fogName"
 #define kVDBFromPolygonsParamUseVoxelCount "useVoxelCount"
 #define kVDBFromPolygonsParamVoxelSize "voxelSize"
 #define kVDBFromPolygonsParamVoxelCount "voxelCount"
 #define kVDBFromPolygonsParamVoxelCountAxis "voxelCountAxis"
+#define kVDBFromPolygonsParamUseWorldSpaceForBand "useWorldSpaceForBand"
 #define kVDBFromPolygonsParamExteriorBand "exteriorBand"
 #define kVDBFromPolygonsParamInteriorBand "interiorBand"
+#define kVDBFromPolygonsParamExteriorBandWorld "exteriorBandWorld"
+#define kVDBFromPolygonsParamInteriorBandWorld "interiorBandWorld"
 #define kVDBFromPolygonsParamFillInterior "fillInterior"
+#define kVDBFromPolygonsParamUnsignedDistanceField "unsignedDistanceField"
 #define kVDBFromPolygonsParamAttributes "attributes"
 
 NATRON_NAMESPACE_ENTER
 
 inline constexpr InputSpec kVDBFromPolygonsInputs[] = {
     InputSpec { .label = "Source", .kind = eDataKindGeometry, .role = InputRole::Source, .optional = true },
+    InputSpec { .label = "Reference", .kind = eDataKindGeometry, .role = InputRole::Aux, .optional = true },
 };
 
 struct VDBFromPolygonsParams {
@@ -61,6 +69,8 @@ struct VDBFromPolygonsParams {
     bool useVoxelCount = false;
     int voxelCount = 100;
     GeoVDBAxisEnum voxelCountAxis = eGeoVDBAxisLongest;
+    // The VDB of the reference input whose transform the grids take, by name pattern.
+    std::string referenceVDB = "*";
 };
 
 class VDBFromPolygons
@@ -70,9 +80,10 @@ public:
         .id = PLUGINID_NATRON_VDBFROMPOLYGONS,
         .label = "VDBFromPolygons",
         .description = "Turn the polygons of the input into a volume: a narrow-band signed distance field, "
-                       "negative inside, or a fog volume of density 1 inside. Point, vertex and primitive "
-                       "attributes can be carried into extra grids of the same voxels. The output holds only "
-                       "the VDB primitives, one per grid.",
+                       "negative inside or unsigned, and a fog volume of density 1 inside. Point, vertex and "
+                       "primitive attributes can be carried into extra grids of the same voxels. A VDB on the "
+                       "Reference input gives the voxel size and orientation. The output holds only the VDB "
+                       "primitives, one per grid.",
         .grouping = PLUGIN_GROUP_3D,
         .majorVersion = 1,
         .minorVersion = 0,
@@ -92,10 +103,13 @@ public:
 
     /**
      * @brief Appends the VDB primitives converted from @p source to @p out and the info notes to
-     * @p notes. False with @p error set for invalid parameters. A voxel count over a source whose
-     * points have no extent along the axis gives empty geometry and a note.
+     * @p notes. A VDB of @p reference, which may be null, matching params.referenceVDB gives the
+     * transform, over the voxel size or count. False with @p error set for invalid parameters. A
+     * voxel count over a source whose points have no extent along the axis gives empty geometry
+     * and a note.
      **/
     static bool build(const GeoDetail& source,
+                      const GeoDetail* reference,
                       const VDBFromPolygonsParams& params,
                       GeoDetailBuilder& out,
                       std::vector<std::string>* notes,
@@ -119,15 +133,22 @@ private:
     VDBFromPolygonsParams readParams(double time,
                                      ViewSpec view) const;
 
-    KnobStringWPtr _name;
-    KnobChoiceWPtr _outputType;
+    KnobStringWPtr _referenceVDB;
+    KnobBoolWPtr _distanceVDB;
+    KnobStringWPtr _distanceName;
+    KnobBoolWPtr _fogVDB;
+    KnobStringWPtr _fogName;
     KnobBoolWPtr _useVoxelCount;
     KnobDoubleWPtr _voxelSize;
     KnobIntWPtr _voxelCount;
     KnobChoiceWPtr _voxelCountAxis;
+    KnobBoolWPtr _useWorldSpaceForBand;
     KnobDoubleWPtr _exteriorBand;
     KnobDoubleWPtr _interiorBand;
+    KnobDoubleWPtr _exteriorBandWorld;
+    KnobDoubleWPtr _interiorBandWorld;
     KnobBoolWPtr _fillInterior;
+    KnobBoolWPtr _unsignedDistanceField;
     KnobStringWPtr _attributes;
 };
 

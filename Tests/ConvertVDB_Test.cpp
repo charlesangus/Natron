@@ -139,10 +139,10 @@ meshed(const GeoDetail& source,
        double adaptivity)
 {
     ConvertVDBParams params;
-    params.adaptivity = adaptivity;
+    params.mesh.adaptivity = adaptivity;
     GeoDetailBuilder b(source);
     std::string error;
-    EXPECT_TRUE(ConvertVDB::apply(b, params, nullptr, nullptr, &error)) << error;
+    EXPECT_TRUE(ConvertVDB::apply(b, params, nullptr, nullptr, nullptr, &error)) << error;
 
     return b.finish();
 }
@@ -191,19 +191,21 @@ TEST(ConvertVDBTest, FogVolumesMeshAtTheFogIsovalue)
 TEST(ConvertVDBTest, SdfAndFogSwapAndKeepTheName)
 {
     ConvertVDBParams toFog;
-    toFog.target = eConvertVDBTargetFog;
+    toFog.target = eConvertVDBTargetVDB;
+    toFog.vdbClass = eConvertVDBClassSDFToFog;
     GeoDetailBuilder b(sphereVolume(false));
     std::string error;
-    ASSERT_TRUE(ConvertVDB::apply(b, toFog, nullptr, nullptr, &error)) << error;
+    ASSERT_TRUE(ConvertVDB::apply(b, toFog, nullptr, nullptr, nullptr, &error)) << error;
     const GeoDetail fog = b.finish();
     const GeoVDBGridBaseConstPtr fogGrid = firstVDB(fog, "sphere");
     ASSERT_NE(fogGrid, nullptr);
     EXPECT_EQ(fogGrid->getGridClass(), openvdb::GRID_FOG_VOLUME);
 
     ConvertVDBParams toSdf;
-    toSdf.target = eConvertVDBTargetSDF;
+    toSdf.target = eConvertVDBTargetVDB;
+    toSdf.vdbClass = eConvertVDBClassFogToSDF;
     GeoDetailBuilder c(fog);
-    ASSERT_TRUE(ConvertVDB::apply(c, toSdf, nullptr, nullptr, &error)) << error;
+    ASSERT_TRUE(ConvertVDB::apply(c, toSdf, nullptr, nullptr, nullptr, &error)) << error;
     const GeoVDBGridBaseConstPtr sdfGrid = firstVDB(c.finish(), "sphere");
     ASSERT_NE(sdfGrid, nullptr);
     EXPECT_EQ(sdfGrid->getGridClass(), openvdb::GRID_LEVEL_SET);
@@ -215,7 +217,7 @@ TEST(ConvertVDBTest, TheGroupLeavesOtherVolumesAlone)
     params.group = "^sphere";
     GeoDetailBuilder b(sphereVolume(false));
     std::string error;
-    ASSERT_TRUE(ConvertVDB::apply(b, params, nullptr, nullptr, &error)) << error;
+    ASSERT_TRUE(ConvertVDB::apply(b, params, nullptr, nullptr, nullptr, &error)) << error;
     const GeoDetail out = b.finish();
     EXPECT_EQ(countPrimitives(out, eGeoPrimitiveVDB), GeoIndex(1));
     EXPECT_EQ(countPrimitives(out, eGeoPrimitivePolygon), GeoIndex(0));
@@ -228,9 +230,79 @@ TEST(ConvertVDBTest, VectorGridsAreLeftWithANote)
     geoAppendVDB(b, openvdb::Vec3SGrid::create(), "vel");
     std::vector<std::string> notes;
     std::string error;
-    ASSERT_TRUE(ConvertVDB::apply(b, ConvertVDBParams(), nullptr, &notes, &error)) << error;
+    ASSERT_TRUE(ConvertVDB::apply(b, ConvertVDBParams(), nullptr, nullptr, &notes, &error)) << error;
     EXPECT_EQ(countPrimitives(b.finish(), eGeoPrimitiveVDB), GeoIndex(1));
     EXPECT_EQ(notes.size(), 1u);
+}
+
+TEST(ConvertVDBTest, GridsBesideTheSdfAreMeshedOnlyWhenNamed)
+{
+    const GeoDetail sdfOnly = sphereVolume(false);
+    const GeoIndex alone = countPrimitives(meshed(sdfOnly, 0.), eGeoPrimitivePolygon);
+    ASSERT_GT(alone, GeoIndex(100));
+
+    GeoDetailBuilder withAttribute(sdfOnly);
+    openvdb::FloatGrid::Ptr attribute = openvdb::gridPtrCast<openvdb::FloatGrid>(firstVDB(sdfOnly)->deepCopyGrid());
+    attribute->setGridClass(openvdb::GRID_UNKNOWN);
+    geoAppendVDB(withAttribute, attribute, "temperature");
+    const GeoDetail source = withAttribute.finish();
+
+    ConvertVDBParams params;
+    GeoDetailBuilder b(source);
+    std::vector<std::string> notes;
+    std::string error;
+    ASSERT_TRUE(ConvertVDB::apply(b, params, nullptr, nullptr, &notes, &error)) << error;
+    const GeoDetail out = b.finish();
+    EXPECT_EQ(countPrimitives(out, eGeoPrimitivePolygon), alone);
+    ASSERT_NE(firstVDB(out, "temperature"), nullptr);
+    EXPECT_EQ(notes.size(), 1u);
+
+    params.group = "sphere temperature";
+    GeoDetailBuilder c(source);
+    ASSERT_TRUE(ConvertVDB::apply(c, params, nullptr, nullptr, nullptr, &error)) << error;
+    EXPECT_EQ(countPrimitives(c.finish(), eGeoPrimitivePolygon), 2 * alone);
+}
+
+TEST(ConvertVDBTest, OnlySdfsBecomeFog)
+{
+    geoInitializeOpenVDB();
+    GeoDetailBuilder b;
+    openvdb::FloatGrid::Ptr attribute = openvdb::FloatGrid::create(0.f);
+    attribute->tree().setValue(openvdb::Coord(0), -1.f);
+    geoAppendVDB(b, attribute, "temperature");
+    ConvertVDBParams params;
+    params.target = eConvertVDBTargetVDB;
+    params.vdbClass = eConvertVDBClassSDFToFog;
+    std::vector<std::string> notes;
+    std::string error;
+    ASSERT_TRUE(ConvertVDB::apply(b, params, nullptr, nullptr, &notes, &error)) << error;
+    const openvdb::FloatGrid::ConstPtr out = openvdb::gridConstPtrCast<openvdb::FloatGrid>(firstVDB(b.finish(), "temperature"));
+    ASSERT_NE(out, nullptr);
+    EXPECT_EQ(out->getGridClass(), openvdb::GRID_UNKNOWN);
+    EXPECT_EQ(out->tree().getValue(openvdb::Coord(0)), -1.f);
+    EXPECT_EQ(notes.size(), 1u);
+}
+
+TEST(ConvertVDBTest, TheValueTypeChangesOnlyWithoutAClassConversion)
+{
+    ConvertVDBParams params;
+    params.target = eConvertVDBTargetVDB;
+    params.vdbPrecision = eGeoVDBPrecision64;
+    GeoDetailBuilder b(sphereVolume(false));
+    std::string error;
+    ASSERT_TRUE(ConvertVDB::apply(b, params, nullptr, nullptr, nullptr, &error)) << error;
+    const GeoVDBGridBaseConstPtr wide = firstVDB(b.finish(), "sphere");
+    ASSERT_NE(wide, nullptr);
+    EXPECT_TRUE(wide->isType<openvdb::DoubleGrid>());
+    EXPECT_EQ(wide->getGridClass(), openvdb::GRID_LEVEL_SET);
+
+    params.vdbClass = eConvertVDBClassSDFToFog;
+    GeoDetailBuilder c(sphereVolume(false));
+    ASSERT_TRUE(ConvertVDB::apply(c, params, nullptr, nullptr, nullptr, &error)) << error;
+    const GeoVDBGridBaseConstPtr fog = firstVDB(c.finish(), "sphere");
+    ASSERT_NE(fog, nullptr);
+    EXPECT_TRUE(fog->isType<openvdb::FloatGrid>());
+    EXPECT_EQ(fog->getGridClass(), openvdb::GRID_FOG_VOLUME);
 }
 
 TEST(VDBResampleTest, DoubleVoxelSizeHalvesTheActiveDimensions)
@@ -294,4 +366,43 @@ TEST(VDBResampleTest, ReferenceModeTakesTheReferenceVoxels)
     GeoDetailBuilder c(sphereVolume(true));
     EXPECT_FALSE(VDBResample::apply(c, params, nullptr, nullptr, &error));
     EXPECT_FALSE(error.empty());
+}
+
+TEST(VDBResampleTest, IntegerGridsMoveWithTheSurface)
+{
+    GeoDetailBuilder b(sphereVolume(false));
+    openvdb::Int32Grid::Ptr ids = openvdb::Int32Grid::create(0);
+    ids->setTransform(openvdb::math::Transform::createLinearTransform(kVoxel));
+    ids->fill(openvdb::CoordBBox(openvdb::Coord(-4), openvdb::Coord(4)), 3, true);
+    geoAppendVDB(b, ids, "id");
+    VDBResampleParams params;
+    params.voxelSize = 2. * kVoxel;
+    std::vector<std::string> notes;
+    std::string error;
+    ASSERT_TRUE(VDBResample::apply(b, params, nullptr, &notes, &error)) << error;
+    EXPECT_TRUE(notes.empty());
+    const openvdb::Int32Grid::ConstPtr out = openvdb::gridConstPtrCast<openvdb::Int32Grid>(firstVDB(b.finish(), "id"));
+    ASSERT_NE(out, nullptr);
+    EXPECT_NEAR(out->voxelSize()[0], 2. * kVoxel, 1e-9);
+    EXPECT_EQ(out->tree().getValue(openvdb::Coord(1, 1, 1)), 3);
+}
+
+TEST(VDBResampleTest, ExplicitModeTranslatesInVoxels)
+{
+    VDBResampleParams params;
+    params.mode = eVDBResampleModeExplicit;
+    params.transform.translate = { 0., 20., 0. };
+    GeoDetailBuilder b(sphereVolume(false));
+    std::string error;
+    ASSERT_TRUE(VDBResample::apply(b, params, nullptr, nullptr, &error)) << error;
+    const openvdb::FloatGrid::ConstPtr grid = openvdb::gridConstPtrCast<openvdb::FloatGrid>(firstVDB(b.finish(), "sphere"));
+    ASSERT_NE(grid, nullptr);
+    EXPECT_NEAR(grid->voxelSize()[0], kVoxel, 1e-9);
+    const openvdb::tools::GridSampler<openvdb::FloatGrid, openvdb::tools::BoxSampler> sampler(*grid);
+    EXPECT_LT(sampler.wsSample(openvdb::Vec3d(0., 20. * kVoxel, 0.)), -0.9f);
+    EXPECT_NEAR(sampler.wsSample(openvdb::Vec3d(0., 1. + 20. * kVoxel, 0.)), 0.f, float(kVoxel));
+
+    params.transform.scale = { 1., 0., 1. };
+    GeoDetailBuilder c(sphereVolume(false));
+    EXPECT_FALSE(VDBResample::apply(c, params, nullptr, nullptr, &error));
 }

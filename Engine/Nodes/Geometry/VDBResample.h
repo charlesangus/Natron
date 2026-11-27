@@ -39,10 +39,21 @@
 #define PLUGINID_NATRON_VDBRESAMPLE "VDBResample"
 
 #define kVDBResampleParamGroup "group"
+#define kVDBResampleParamReferenceVDB "referenceVDB"
+#define kVDBResampleParamInterpolation "interpolation"
 #define kVDBResampleParamMode "mode"
+#define kVDBResampleParamTransformOrder "transformOrder"
+#define kVDBResampleParamRotateOrder "rotateOrder"
+#define kVDBResampleParamTranslateVoxels "translateVoxels"
+#define kVDBResampleParamRotate "rotate"
+#define kVDBResampleParamScale "scale"
+#define kVDBResampleParamPivot "pivot"
 #define kVDBResampleParamVoxelSize "voxelSize"
 #define kVDBResampleParamVoxelScale "voxelScale"
-#define kVDBResampleParamInterpolation "interpolation"
+#define kVDBResampleParamForceAxisAligned "forceAxisAligned"
+#define kVDBResampleParamTransformVectors "transformVectors"
+#define kVDBResampleParamRebuildSDF "rebuildSDF"
+#define kVDBResampleParamPruneTolerance "pruneTolerance"
 
 NATRON_NAMESPACE_ENTER
 
@@ -55,6 +66,7 @@ enum VDBResampleModeEnum {
     eVDBResampleModeVoxelSize = 0,
     eVDBResampleModeReference,
     eVDBResampleModeVoxelScale,
+    eVDBResampleModeExplicit,
 };
 
 struct VDBResampleParams {
@@ -63,7 +75,13 @@ struct VDBResampleParams {
     VDBResampleModeEnum mode = eVDBResampleModeVoxelSize;
     double voxelSize = 0.1;
     double voxelScale = 2.;
-    GeoVDBInterpolationEnum interpolation = eGeoVDBInterpolationLinear;
+    // Voxel Size and Voxel Scale modes: a new axis-aligned transform instead of the grid's own.
+    bool forceAxisAligned = false;
+    // The VDB of the reference input whose transform Reference mode takes, by name pattern.
+    std::string referenceVDB = "*";
+    // Explicit mode.
+    GeoVDBIndexTransform transform;
+    GeoVDBResampleParams resample;
 };
 
 class VDBResample
@@ -72,10 +90,10 @@ public:
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_VDBRESAMPLE,
         .label = "VDBResample",
-        .description = "Resample the VDB primitives of the input onto other voxels: of a given size, of the first "
-                       "VDB primitive on the Reference input, or scaled from their own. Signed distance fields are "
-                       "rebuilt with the same band width in voxels; other grids are sampled. Other geometry, and "
-                       "VDB primitives the group leaves out, pass through.",
+        .description = "Resample the VDB primitives of the input onto other voxels: of a given size, of a VDB "
+                       "on the Reference input, scaled from their own, or moved by an explicit transform in index "
+                       "space. Signed distance fields can be rebuilt with the same band width in voxels; other "
+                       "grids are sampled. Other geometry, and VDB primitives the group leaves out, pass through.",
         .grouping = PLUGIN_GROUP_3D,
         .majorVersion = 1,
         .minorVersion = 0,
@@ -95,10 +113,11 @@ public:
 
     /**
      * @brief Resamples the VDB primitives of @p builder that match params.group, keeping their
-     * names. @p reference is the detail whose first VDB primitive gives the voxels in reference
-     * mode; it may be null otherwise. Grids that cannot be resampled are left with a note in
+     * names. @p reference is the detail whose VDB matching params.referenceVDB gives the voxels in
+     * reference mode; it may be null otherwise. Grids that cannot be resampled are left with a note in
      * @p notes. False with @p error set for a voxel size or scale that is not positive and finite,
-     * or reference mode without a reference VDB.
+     * reference mode without a matching reference VDB, or an explicit transform that cannot be
+     * inverted.
      **/
     static bool apply(GeoDetailBuilder& builder,
                       const VDBResampleParams& params,
@@ -125,10 +144,21 @@ private:
                                  ViewSpec view) const;
 
     KnobStringWPtr _group;
+    KnobStringWPtr _referenceVDB;
+    KnobChoiceWPtr _interpolation;
     KnobChoiceWPtr _mode;
+    KnobChoiceWPtr _transformOrder;
+    KnobChoiceWPtr _rotateOrder;
+    KnobDoubleWPtr _translateVoxels;
+    KnobDoubleWPtr _rotate;
+    KnobDoubleWPtr _scale;
+    KnobDoubleWPtr _pivot;
     KnobDoubleWPtr _voxelSize;
     KnobDoubleWPtr _voxelScale;
-    KnobChoiceWPtr _interpolation;
+    KnobBoolWPtr _forceAxisAligned;
+    KnobBoolWPtr _transformVectors;
+    KnobBoolWPtr _rebuildSDF;
+    KnobDoubleWPtr _pruneTolerance;
 };
 
 NATRON_NAMESPACE_EXIT

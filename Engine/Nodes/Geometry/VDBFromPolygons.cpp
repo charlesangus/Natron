@@ -30,69 +30,65 @@
 #include <string>
 #include <vector>
 
+#include "Engine/Geo/GeoOpenVDB.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Geometry/GeoNodeKnobUtils.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
 
-template <typename T>
-T
-valueAt(const std::weak_ptr<Knob<T>>& knob,
-        T fallback,
-        double time,
-        ViewSpec view)
+/** @p params' conversion with the voxel size from the voxel count or the reference; false when
+ * no size can be found, with the reason in @p notes. */
+bool
+resolveConvert(const GeoDetail& source,
+               const GeoDetail* reference,
+               const VDBFromPolygonsParams& params,
+               GeoPolygonsToSdfParams* convert,
+               std::vector<std::string>* notes)
 {
-    if (const std::shared_ptr<Knob<T>> locked = knob.lock()) {
-        return locked->getValueAtTime(time, 0, view);
+    *convert = params.convert;
+    if (reference) {
+        if (const GeoVDBGridBaseConstPtr grid = geoFindVDB(*reference, params.referenceVDB)) {
+            convert->transform = grid->transformPtr();
+
+            return true;
+        }
+        notes->push_back("No VDB on the Reference input matches Reference VDB, so Voxel Size is used.");
+    }
+    if (params.useVoxelCount) {
+        const double counted = geoVoxelSizeForCount(source, params.voxelCount, params.voxelCountAxis);
+        if (counted > 0.) {
+            convert->voxelSize = counted;
+        } else if (source.pointCount() > 0) {
+            notes->push_back("The source has no extent along the voxel count's axis to divide, so no volume was made.");
+
+            return false;
+        }
     }
 
-    return fallback;
+    return true;
 }
 
-template <typename KnobPtrT>
-void
-setVisible(const std::weak_ptr<typename KnobPtrT::element_type>& knob,
-           bool visible)
-{
-    if (const KnobPtrT locked = knob.lock()) {
-        locked->setSecret(!visible);
-    }
-}
-
-std::string
-joinNotes(const std::vector<std::string>& notes)
-{
-    std::string text;
-    for (const std::string& note : notes) {
-        text += (text.empty() ? "" : "\n") + note;
-    }
-
-    return text;
-}
-
-} // namespace
+} // anonymous namespace
 
 bool
 VDBFromPolygons::build(const GeoDetail& source,
+                       const GeoDetail* reference,
                        const VDBFromPolygonsParams& params,
                        GeoDetailBuilder& out,
                        std::vector<std::string>* notes,
                        std::string* error)
 {
-    GeoPolygonsToSdfParams convert = params.convert;
-    if (params.useVoxelCount) {
-        const double counted = geoVoxelSizeForCount(source, params.voxelCount, params.voxelCountAxis);
-        if (counted > 0.) {
-            convert.voxelSize = counted;
-        } else if (source.pointCount() > 0) {
-            if (notes) {
-                notes->push_back("The source has no extent along the voxel count's axis to divide, so no volume was made.");
-            }
-
-            return true;
-        }
+    std::vector<std::string> resolveNotes;
+    GeoPolygonsToSdfParams convert;
+    const bool resolved = resolveConvert(source, reference, params, &convert, &resolveNotes);
+    if (notes) {
+        notes->insert(notes->end(), resolveNotes.begin(), resolveNotes.end());
+    }
+    if (!resolved) {
+        return true;
     }
     GeoVDBConvertResult result;
     if (!geoPolygonsToSdf(source, convert, &result, error)) {
@@ -127,70 +123,52 @@ VDBFromPolygons::initializeKnobs()
     const VDBFromPolygonsParams defaults;
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls").toStdString());
 
-    KnobStringPtr name = createKnob<KnobString>(tr("Name").toStdString());
-    name->setName(kVDBFromPolygonsParamName);
-    name->setHintToolTip(tr("The name of the distance or density grid. Attribute grids are named after their "
-                            "attributes.")
-                             .toStdString());
-    name->setDefaultValue(defaults.convert.name);
-    name->setAnimationEnabled(false);
-    page->addKnob(name);
-    _name = name;
+    _referenceVDB = geoAddStringKnob(this, page, tr("Reference VDB").toStdString(), kVDBFromPolygonsParamReferenceVDB,
+                                     tr("The VDB of the Reference input, by name pattern, whose voxel size and "
+                                        "orientation the grids take; the first that matches is used. The voxel "
+                                        "size or count applies when the input is not connected or nothing "
+                                        "matches.")
+                                         .toStdString(),
+                                     defaults.referenceVDB);
 
-    KnobChoicePtr outputType = createKnob<KnobChoice>(tr("Output Type").toStdString());
-    outputType->setName(kVDBFromPolygonsParamOutputType);
-    outputType->setHintToolTip(tr("What the volume holds.").toStdString());
-    {
-        std::vector<ChoiceOption> types;
-        types.push_back(ChoiceOption("sdf", tr("SDF").toStdString(),
-                                     tr("A narrow-band signed distance field: the distance to the surface in "
-                                        "world units, negative inside.")
-                                         .toStdString()));
-        types.push_back(ChoiceOption("fog", tr("Fog").toStdString(),
-                                     tr("A density of 0 outside and 1 inside, ramping across the interior "
-                                        "band.")
-                                         .toStdString()));
-        outputType->populateChoices(types);
-    }
-    outputType->setAnimationEnabled(false);
-    page->addKnob(outputType);
-    _outputType = outputType;
+    _distanceVDB = geoAddBoolKnob(this, page, tr("Distance VDB").toStdString(), kVDBFromPolygonsParamDistanceVDB,
+                                  tr("Output a narrow-band distance field: the distance to the surface in world "
+                                     "units, negative inside unless Unsigned Distance Field is on.")
+                                      .toStdString(),
+                                  defaults.convert.buildDistance);
+    _distanceName = geoAddStringKnob(this, page, tr("Distance Name").toStdString(), kVDBFromPolygonsParamDistanceName,
+                                     tr("The name of the distance grid.").toStdString(), defaults.convert.distanceName);
+    _fogVDB = geoAddBoolKnob(this, page, tr("Fog VDB").toStdString(), kVDBFromPolygonsParamFogVDB,
+                             tr("Output a density of 0 outside and 1 inside, ramping across the interior band "
+                                "whether or not Fill Interior is on.")
+                                 .toStdString(),
+                             defaults.convert.buildFog);
+    _fogName = geoAddStringKnob(this, page, tr("Fog Name").toStdString(), kVDBFromPolygonsParamFogName,
+                                tr("The name of the fog grid.").toStdString(), defaults.convert.fogName);
 
-    KnobBoolPtr useVoxelCount = createKnob<KnobBool>(tr("Use Voxel Count").toStdString());
-    useVoxelCount->setName(kVDBFromPolygonsParamUseVoxelCount);
-    useVoxelCount->setHintToolTip(tr("Size the voxels so that Voxel Count of them span the source along Voxel "
-                                     "Count Axis, instead of giving the voxel size.")
-                                      .toStdString());
-    useVoxelCount->setDefaultValue(defaults.useVoxelCount);
-    useVoxelCount->setAnimationEnabled(false);
-    page->addKnob(useVoxelCount);
-    _useVoxelCount = useVoxelCount;
-
-    KnobDoublePtr voxelSize = createKnob<KnobDouble>(tr("Voxel Size").toStdString());
-    voxelSize->setName(kVDBFromPolygonsParamVoxelSize);
-    voxelSize->setHintToolTip(tr("The edge length of a voxel in world units. Memory grows with the cube of its "
-                                 "inverse; the node's info shows what the grids use.")
-                                  .toStdString());
-    voxelSize->setDefaultValue(defaults.convert.voxelSize);
-    voxelSize->setMinimum(0.);
+    _useVoxelCount = geoAddBoolKnob(this, page, tr("Use Voxel Count").toStdString(), kVDBFromPolygonsParamUseVoxelCount,
+                                    tr("Size the voxels so that Voxel Count of them span the source along Voxel "
+                                       "Count Axis, instead of giving the voxel size.")
+                                        .toStdString(),
+                                    defaults.useVoxelCount);
+    KnobDoublePtr voxelSize = geoAddDoubleKnob(this, page, tr("Voxel Size").toStdString(), kVDBFromPolygonsParamVoxelSize,
+                                               tr("The edge length of a voxel in world units. Memory grows with the "
+                                                  "cube of its inverse; the node's info shows an estimate before "
+                                                  "building and what the grids use after.")
+                                                   .toStdString(),
+                                               defaults.convert.voxelSize, 0., 1.);
     voxelSize->setDisplayMinimum(0.001);
-    voxelSize->setDisplayMaximum(1.);
-    page->addKnob(voxelSize);
     _voxelSize = voxelSize;
 
-    KnobIntPtr voxelCount = createKnob<KnobInt>(tr("Voxel Count").toStdString());
-    voxelCount->setName(kVDBFromPolygonsParamVoxelCount);
-    voxelCount->setHintToolTip(tr("How many voxels span the source's bounds along Voxel Count Axis.").toStdString());
+    KnobIntPtr voxelCount = geoAddKnob<KnobInt>(this, page, tr("Voxel Count").toStdString(), kVDBFromPolygonsParamVoxelCount,
+                                                tr("How many voxels span the source's bounds along Voxel Count Axis.")
+                                                    .toStdString());
+    voxelCount->setAnimationEnabled(true);
     voxelCount->setDefaultValue(defaults.voxelCount);
     voxelCount->setMinimum(1);
     voxelCount->setDisplayMinimum(1);
     voxelCount->setDisplayMaximum(500);
-    page->addKnob(voxelCount);
     _voxelCount = voxelCount;
-
-    KnobChoicePtr voxelCountAxis = createKnob<KnobChoice>(tr("Voxel Count Axis").toStdString());
-    voxelCountAxis->setName(kVDBFromPolygonsParamVoxelCountAxis);
-    voxelCountAxis->setHintToolTip(tr("The axis of the source's bounds that Voxel Count divides.").toStdString());
     {
         std::vector<ChoiceOption> axes;
         axes.push_back(ChoiceOption("x", tr("X").toStdString(), ""));
@@ -198,56 +176,58 @@ VDBFromPolygons::initializeKnobs()
         axes.push_back(ChoiceOption("z", tr("Z").toStdString(), ""));
         axes.push_back(ChoiceOption("longest", tr("Longest").toStdString(),
                                     tr("Whichever of the three is longest.").toStdString()));
-        voxelCountAxis->populateChoices(axes);
+        _voxelCountAxis = geoAddChoiceKnob(this, page, tr("Voxel Count Axis").toStdString(), kVDBFromPolygonsParamVoxelCountAxis,
+                                           tr("The axis of the source's bounds that Voxel Count divides.").toStdString(),
+                                           axes, int(defaults.voxelCountAxis));
     }
-    voxelCountAxis->setDefaultValue((int)defaults.voxelCountAxis);
-    voxelCountAxis->setAnimationEnabled(false);
-    page->addKnob(voxelCountAxis);
-    _voxelCountAxis = voxelCountAxis;
 
-    KnobDoublePtr exteriorBand = createKnob<KnobDouble>(tr("Exterior Band").toStdString());
-    exteriorBand->setName(kVDBFromPolygonsParamExteriorBand);
-    exteriorBand->setHintToolTip(tr("How far outside the surface distances are stored, in voxels. At least 1.")
-                                     .toStdString());
-    exteriorBand->setDefaultValue(defaults.convert.exteriorBand);
-    exteriorBand->setMinimum(1.);
-    exteriorBand->setDisplayMinimum(1.);
-    exteriorBand->setDisplayMaximum(10.);
-    page->addKnob(exteriorBand);
-    _exteriorBand = exteriorBand;
+    _useWorldSpaceForBand = geoAddBoolKnob(this, page, tr("Use World Space For Band").toStdString(),
+                                           kVDBFromPolygonsParamUseWorldSpaceForBand,
+                                           tr("Give the band widths in world units instead of voxels.").toStdString(),
+                                           defaults.convert.useWorldSpaceForBand);
+    _exteriorBand = geoAddDoubleKnob(this, page, tr("Exterior Band").toStdString(), kVDBFromPolygonsParamExteriorBand,
+                                     tr("How far outside the surface distances are stored, in voxels. At least 1.")
+                                         .toStdString(),
+                                     defaults.convert.exteriorBand, 1., 10.);
+    _interiorBand = geoAddDoubleKnob(this, page, tr("Interior Band").toStdString(), kVDBFromPolygonsParamInteriorBand,
+                                     tr("How far inside the surface distances are stored, in voxels. At least 1. "
+                                        "For a fog volume this is the width of the density ramp.")
+                                         .toStdString(),
+                                     defaults.convert.interiorBand, 1., 10.);
+    _exteriorBandWorld = geoAddDoubleKnob(this, page, tr("Exterior Band World").toStdString(),
+                                          kVDBFromPolygonsParamExteriorBandWorld,
+                                          tr("How far outside the surface distances are stored, in world units. "
+                                             "At least one voxel is kept.")
+                                              .toStdString(),
+                                          defaults.convert.exteriorBandWorld, 0., 1.);
+    _interiorBandWorld = geoAddDoubleKnob(this, page, tr("Interior Band World").toStdString(),
+                                          kVDBFromPolygonsParamInteriorBandWorld,
+                                          tr("How far inside the surface distances are stored, in world units. At "
+                                             "least one voxel is kept. For a fog volume this is the width of the "
+                                             "density ramp.")
+                                              .toStdString(),
+                                          defaults.convert.interiorBandWorld, 0., 1.);
+    _fillInterior = geoAddBoolKnob(this, page, tr("Fill Interior").toStdString(), kVDBFromPolygonsParamFillInterior,
+                                   tr("Store distances through the whole inside instead of stopping at the interior "
+                                      "band. Needs a closed mesh.")
+                                       .toStdString(),
+                                   defaults.convert.fillInterior);
+    _unsignedDistanceField = geoAddBoolKnob(this, page, tr("Unsigned Distance Field").toStdString(),
+                                            kVDBFromPolygonsParamUnsignedDistanceField,
+                                            tr("Store positive distances on both sides of the surface, within the "
+                                               "exterior band. It needs no inside, so it suits open meshes, but it "
+                                               "is not an SDF. The fog still guesses an inside.")
+                                                .toStdString(),
+                                            defaults.convert.unsignedDistanceField);
 
-    KnobDoublePtr interiorBand = createKnob<KnobDouble>(tr("Interior Band").toStdString());
-    interiorBand->setName(kVDBFromPolygonsParamInteriorBand);
-    interiorBand->setHintToolTip(tr("How far inside the surface distances are stored, in voxels. At least 1. "
-                                    "For a fog volume this is the width of the density ramp.")
-                                     .toStdString());
-    interiorBand->setDefaultValue(defaults.convert.interiorBand);
-    interiorBand->setMinimum(1.);
-    interiorBand->setDisplayMinimum(1.);
-    interiorBand->setDisplayMaximum(10.);
-    page->addKnob(interiorBand);
-    _interiorBand = interiorBand;
-
-    KnobBoolPtr fillInterior = createKnob<KnobBool>(tr("Fill Interior").toStdString());
-    fillInterior->setName(kVDBFromPolygonsParamFillInterior);
-    fillInterior->setHintToolTip(tr("Store distances through the whole inside instead of stopping at the "
-                                    "interior band. Needs a closed mesh.")
-                                     .toStdString());
-    fillInterior->setDefaultValue(defaults.convert.fillInterior);
-    fillInterior->setAnimationEnabled(false);
-    page->addKnob(fillInterior);
-    _fillInterior = fillInterior;
-
-    KnobStringPtr attributes = createKnob<KnobString>(tr("Attributes").toStdString());
-    attributes->setName(kVDBFromPolygonsParamAttributes);
-    attributes->setHintToolTip(tr("Point, vertex and primitive attributes to carry into grids of their own: "
-                                  "space-separated globs, ^ in front of one to leave out what it matches. Each "
-                                  "voxel of the band holds the value at the closest point of the surface. Float "
-                                  "and integer attributes of one or three components convert.")
-                                   .toStdString());
-    attributes->setAnimationEnabled(false);
-    page->addKnob(attributes);
-    _attributes = attributes;
+    _attributes = geoAddStringKnob(this, page, tr("Attributes").toStdString(), kVDBFromPolygonsParamAttributes,
+                                   tr("Point, vertex and primitive attributes to carry into grids of their own, "
+                                      "each named after its attribute: space-separated globs, ^ in front of one to "
+                                      "leave out what it matches. Each voxel of the band holds the value at the "
+                                      "closest point of the surface. Float and integer attributes of one or three "
+                                      "components convert.")
+                                       .toStdString(),
+                                   defaults.convert.attributes);
 
     updateVisibility();
 }
@@ -257,9 +237,21 @@ VDBFromPolygons::updateVisibility()
 {
     const KnobBoolPtr useVoxelCount = _useVoxelCount.lock();
     const bool count = useVoxelCount && useVoxelCount->getValue();
-    setVisible<KnobDoublePtr>(_voxelSize, !count);
-    setVisible<KnobIntPtr>(_voxelCount, count);
-    setVisible<KnobChoicePtr>(_voxelCountAxis, count);
+    geoSetKnobVisible(_voxelSize, !count);
+    geoSetKnobVisible(_voxelCount, count);
+    geoSetKnobVisible(_voxelCountAxis, count);
+    const KnobBoolPtr world = _useWorldSpaceForBand.lock();
+    const bool inWorld = world && world->getValue();
+    geoSetKnobVisible(_exteriorBand, !inWorld);
+    geoSetKnobVisible(_interiorBand, !inWorld);
+    geoSetKnobVisible(_exteriorBandWorld, inWorld);
+    geoSetKnobVisible(_interiorBandWorld, inWorld);
+    const KnobBoolPtr distance = _distanceVDB.lock();
+    const bool distanceOn = distance && distance->getValue();
+    geoSetKnobVisible(_distanceName, distanceOn);
+    geoSetKnobVisible(_unsignedDistanceField, distanceOn);
+    const KnobBoolPtr fog = _fogVDB.lock();
+    geoSetKnobVisible(_fogName, fog && fog->getValue());
 }
 
 void
@@ -275,11 +267,18 @@ VDBFromPolygons::knobChanged(KnobI* k,
                              double /*time*/,
                              bool /*originatedFromMainThread*/)
 {
-    const KnobBoolPtr useVoxelCount = _useVoxelCount.lock();
-    if (useVoxelCount && (k == useVoxelCount.get())) {
-        updateVisibility();
+    const KnobI* toggles[] = {
+        _useVoxelCount.lock().get(),
+        _useWorldSpaceForBand.lock().get(),
+        _distanceVDB.lock().get(),
+        _fogVDB.lock().get(),
+    };
+    for (const KnobI* toggle : toggles) {
+        if (toggle && (k == toggle)) {
+            updateVisibility();
 
-        return true;
+            return true;
+        }
     }
 
     return false;
@@ -290,19 +289,27 @@ VDBFromPolygons::readParams(double time,
                             ViewSpec view) const
 {
     VDBFromPolygonsParams p;
-    p.convert.name = valueAt<std::string>(_name, p.convert.name, time, view);
-    p.convert.kind = valueAt<int>(_outputType, 0, time, view) == 1 ? eGeoVDBVolumeFog : eGeoVDBVolumeSDF;
-    p.useVoxelCount = valueAt<bool>(_useVoxelCount, p.useVoxelCount, time, view);
-    p.convert.voxelSize = valueAt<double>(_voxelSize, p.convert.voxelSize, time, view);
-    p.voxelCount = valueAt<int>(_voxelCount, p.voxelCount, time, view);
-    const int axis = valueAt<int>(_voxelCountAxis, (int)p.voxelCountAxis, time, view);
+    GeoPolygonsToSdfParams& c = p.convert;
+    p.referenceVDB = geoKnobValueAt<std::string>(_referenceVDB, p.referenceVDB, time, view);
+    c.buildDistance = geoKnobValueAt<bool>(_distanceVDB, c.buildDistance, time, view);
+    c.distanceName = geoKnobValueAt<std::string>(_distanceName, c.distanceName, time, view);
+    c.buildFog = geoKnobValueAt<bool>(_fogVDB, c.buildFog, time, view);
+    c.fogName = geoKnobValueAt<std::string>(_fogName, c.fogName, time, view);
+    p.useVoxelCount = geoKnobValueAt<bool>(_useVoxelCount, p.useVoxelCount, time, view);
+    c.voxelSize = geoKnobValueAt<double>(_voxelSize, c.voxelSize, time, view);
+    p.voxelCount = geoKnobValueAt<int>(_voxelCount, p.voxelCount, time, view);
+    const int axis = geoKnobValueAt<int>(_voxelCountAxis, int(p.voxelCountAxis), time, view);
     if ((axis >= eGeoVDBAxisX) && (axis <= eGeoVDBAxisLongest)) {
-        p.voxelCountAxis = (GeoVDBAxisEnum)axis;
+        p.voxelCountAxis = GeoVDBAxisEnum(axis);
     }
-    p.convert.exteriorBand = valueAt<double>(_exteriorBand, p.convert.exteriorBand, time, view);
-    p.convert.interiorBand = valueAt<double>(_interiorBand, p.convert.interiorBand, time, view);
-    p.convert.fillInterior = valueAt<bool>(_fillInterior, p.convert.fillInterior, time, view);
-    p.convert.attributes = valueAt<std::string>(_attributes, p.convert.attributes, time, view);
+    c.useWorldSpaceForBand = geoKnobValueAt<bool>(_useWorldSpaceForBand, c.useWorldSpaceForBand, time, view);
+    c.exteriorBand = geoKnobValueAt<double>(_exteriorBand, c.exteriorBand, time, view);
+    c.interiorBand = geoKnobValueAt<double>(_interiorBand, c.interiorBand, time, view);
+    c.exteriorBandWorld = geoKnobValueAt<double>(_exteriorBandWorld, c.exteriorBandWorld, time, view);
+    c.interiorBandWorld = geoKnobValueAt<double>(_interiorBandWorld, c.interiorBandWorld, time, view);
+    c.fillInterior = geoKnobValueAt<bool>(_fillInterior, c.fillInterior, time, view);
+    c.unsignedDistanceField = geoKnobValueAt<bool>(_unsignedDistanceField, c.unsignedDistanceField, time, view);
+    c.attributes = geoKnobValueAt<std::string>(_attributes, c.attributes, time, view);
 
     return p;
 }
@@ -314,12 +321,22 @@ VDBFromPolygons::renderGeometry(const GeoRenderActionArgs& args,
 {
     const VDBFromPolygonsParams params = readParams(args.time, args.view);
     const GeoDetailConstPtr input = args.getInputDetail(0);
+    const GeoDetailConstPtr reference = args.getInputDetail(1);
     const GeoDetail empty;
     const GeoDetail& source = input ? *input : empty;
+    const NodePtr node = getNode();
+    if (node) {
+        // A tiny voxel size can take long or run out of memory, so the estimate shows first.
+        std::vector<std::string> ignored;
+        GeoPolygonsToSdfParams convert;
+        if (resolveConvert(source, reference.get(), params, &convert, &ignored)) {
+            node->setQuietInfoMessage(geoVDBEstimateNote(geoPolygonsToSdfVoxelEstimate(source, convert)));
+        }
+    }
     std::vector<std::string> notes;
     const StatusEnum status = renderGeometryGenerator([&](GeoDetailBuilder& detail, std::string* error) {
         try {
-            return build(source, params, detail, &notes, error) ? eStatusOK : eStatusFailed;
+            return build(source, reference.get(), params, detail, &notes, error) ? eStatusOK : eStatusFailed;
         } catch (const std::exception& e) {
             if (error) {
                 *error = e.what();
@@ -329,16 +346,8 @@ VDBFromPolygons::renderGeometry(const GeoRenderActionArgs& args,
         }
     },
                                                       outputDetail, errorMessage);
-    if (status == eStatusOK) {
-        if (notes.empty()) {
-            clearPersistentMessage(false);
-        } else {
-            // An info-type persistent message is only logged or shown as a dialog, never kept on
-            // the node; the quiet one is kept and shown on the node.
-            if (const NodePtr node = getNode()) {
-                node->setQuietInfoMessage(joinNotes(notes));
-            }
-        }
+    if ((status == eStatusOK) && node) {
+        node->setQuietInfoMessage(geoJoinNotes(notes));
     }
 
     return status;

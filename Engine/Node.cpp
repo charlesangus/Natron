@@ -7246,10 +7246,13 @@ Node::setPersistentMessage(MessageTypeEnum type,
 void
 Node::setQuietInfoMessage(const std::string& content)
 {
+    // Renders repeat the same info, which a batch log should show once.
+    if (!storePersistentMessage(eMessageTypeInfo, content, false, 0, NULL)) {
+        return;
+    }
     if (appPTR->isBackground()) {
         std::cout << "Persistent message: " << content << std::endl;
-    }
-    if (storePersistentMessage(eMessageTypeInfo, content, false, 0, NULL) && !appPTR->isBackground()) {
+    } else {
         Q_EMIT persistentMessageChanged();
     }
 }

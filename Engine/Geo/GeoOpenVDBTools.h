@@ -29,11 +29,17 @@
 #undef foreach
 #undef emit
 #include <openvdb/math/Proximity.h>
+#include <openvdb/tools/Activate.h>
+#include <openvdb/tools/Composite.h>
 #include <openvdb/tools/FastSweeping.h>
 #include <openvdb/tools/GridTransformer.h>
+#include <openvdb/tools/LevelSetRebuild.h>
 #include <openvdb/tools/LevelSetUtil.h>
 #include <openvdb/tools/MeshToVolume.h>
 #include <openvdb/tools/ParticlesToLevelSet.h>
+#include <openvdb/tools/Prune.h>
+#include <openvdb/tools/SignedFloodFill.h>
+#include <openvdb/tools/VectorTransformer.h>
 #include <openvdb/tools/VolumeToMesh.h>
 #include <openvdb/tree/LeafManager.h>
 #pragma pop_macro("emit")

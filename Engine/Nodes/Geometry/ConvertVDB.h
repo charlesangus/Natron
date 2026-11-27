@@ -40,34 +40,73 @@
 
 #define kConvertVDBParamGroup "group"
 #define kConvertVDBParamConvertTo "convertTo"
+#define kConvertVDBParamVDBClass "vdbClass"
+#define kConvertVDBParamVDBType "vdbType"
+#define kConvertVDBParamVDBPrecision "vdbPrecision"
 #define kConvertVDBParamIsovalue "isovalue"
 #define kConvertVDBParamFogIsovalue "fogIsovalue"
+#define kConvertVDBParamPruneTolerance "pruneTolerance"
+#define kConvertVDBParamSignedFloodFill "signedFloodFill"
+#define kConvertVDBParamActivateInsideVoxels "activateInsideVoxels"
 #define kConvertVDBParamAdaptivity "adaptivity"
+#define kConvertVDBParamComputeVertexNormals "computeVertexNormals"
+#define kConvertVDBParamInternalAdaptivity "internalAdaptivity"
+#define kConvertVDBParamTransferSurfaceAttributes "transferSurfaceAttributes"
 #define kConvertVDBParamReferenceAttributes "referenceAttributes"
+#define kConvertVDBParamSharpenFeatures "sharpenFeatures"
+#define kConvertVDBParamEdgeTolerance "edgeTolerance"
+#define kConvertVDBParamSurfaceGroup "surfaceGroup"
+#define kConvertVDBParamInteriorGroup "interiorGroup"
+#define kConvertVDBParamSeamLineGroup "seamLineGroup"
+#define kConvertVDBParamSeamPoints "seamPoints"
+#define kConvertVDBParamUseSurfaceMask "useSurfaceMask"
+#define kConvertVDBParamSurfaceMask "surfaceMask"
+#define kConvertVDBParamMaskOffset "maskOffset"
+#define kConvertVDBParamInvertSurfaceMask "invertSurfaceMask"
+#define kConvertVDBParamUseAdaptivityField "useAdaptivityField"
+#define kConvertVDBParamAdaptivityField "adaptivityField"
 
 NATRON_NAMESPACE_ENTER
 
 inline constexpr InputSpec kConvertVDBInputs[] = {
     InputSpec { .label = "Source", .kind = eDataKindGeometry, .role = InputRole::Source },
     InputSpec { .label = "Reference", .kind = eDataKindGeometry, .role = InputRole::Aux, .optional = true },
+    InputSpec { .label = "Mask", .kind = eDataKindGeometry, .role = InputRole::Aux, .optional = true },
 };
 
 enum ConvertVDBTargetEnum {
     eConvertVDBTargetPolygons = 0,
-    eConvertVDBTargetFog,
-    eConvertVDBTargetSDF,
+    eConvertVDBTargetVDB,
+};
+
+enum ConvertVDBClassEnum {
+    eConvertVDBClassNoChange = 0,
+    eConvertVDBClassFogToSDF,
+    eConvertVDBClassSDFToFog,
 };
 
 struct ConvertVDBParams {
     // Globs over VDB primitive names, ^ excluding.
     std::string group = "*";
     ConvertVDBTargetEnum target = eConvertVDBTargetPolygons;
+
+    // VDB target: the class conversion, then, without one, the value type and precision.
+    ConvertVDBClassEnum vdbClass = eConvertVDBClassNoChange;
+    GeoVDBValueTypeEnum vdbType = eGeoVDBValueTypeSame;
+    GeoVDBPrecisionEnum vdbPrecision = eGeoVDBPrecisionSame;
+    GeoVDBCleanupParams cleanup;
+
     // The surface level of grids that are not fog volumes.
     double isovalue = 0.;
     // The surface level of fog volumes, for polygons and for an SDF.
     double fogIsovalue = 0.5;
-    double adaptivity = 0.;
-    std::string referenceAttributes = "*";
+    // Polygons target; its isovalue, surfaceMask and adaptivityField are set per grid.
+    GeoSdfToPolygonsParams mesh;
+    // VDBs of the mask input, by name pattern, when the matching toggle is on.
+    bool useSurfaceMask = false;
+    std::string surfaceMask;
+    bool useAdaptivityField = false;
+    std::string adaptivityField;
 };
 
 class ConvertVDB
@@ -76,10 +115,12 @@ public:
     static constexpr NodeSpec kNodeSpec = {
         .id = PLUGINID_NATRON_CONVERTVDB,
         .label = "ConvertVDB",
-        .description = "Convert the VDB primitives of the input: into polygons along an isosurface, or between "
-                       "signed distance fields and fog volumes. Other geometry, and VDB primitives the group "
-                       "leaves out, pass through. Polygons can take point attributes from the closest point of "
-                       "the Reference input.",
+        .description = "Convert the VDB primitives of the input: into polygons along an isosurface, or into "
+                       "other VDBs, between signed distance fields and fog volumes or to another value type and "
+                       "precision, pruned and flood filled. Other geometry, and VDB primitives the group leaves "
+                       "out, pass through. With the polygons the VDB was made from on the Reference input, the "
+                       "polygons take its attributes and groups and keep its sharp edges. VDBs on the Mask input "
+                       "limit where polygons are made and how far they adapt.",
         .grouping = PLUGIN_GROUP_3D,
         .majorVersion = 1,
         .minorVersion = 0,
@@ -99,13 +140,16 @@ public:
 
     /**
      * @brief Converts the VDB primitives of @p builder that match params.group. Polygons replace
-     * their primitive and its point; fog and SDF conversions replace the grid and keep the name.
-     * Grids already of the target kind are left as they are, and grids that cannot convert are left
-     * with a note in @p notes. @p reference may be null. False with @p error set when OpenVDB fails.
+     * their primitive and its point; they come from SDFs and fog volumes, and from other float
+     * and double grids only when a name in params.group is exactly theirs. VDB conversions
+     * replace the grid and keep the name: SDF to fog takes SDFs only, fog to SDF fog volumes
+     * only. Grids that cannot convert are left with a note in @p notes. @p reference and @p mask
+     * may be null. False with @p error set when OpenVDB fails.
      **/
     static bool apply(GeoDetailBuilder& builder,
                       const ConvertVDBParams& params,
                       const GeoDetail* reference,
+                      const GeoDetail* mask,
                       std::vector<std::string>* notes,
                       std::string* error);
 
@@ -129,10 +173,31 @@ private:
 
     KnobStringWPtr _group;
     KnobChoiceWPtr _convertTo;
+    KnobChoiceWPtr _vdbClass;
+    KnobChoiceWPtr _vdbType;
+    KnobChoiceWPtr _vdbPrecision;
     KnobDoubleWPtr _isovalue;
     KnobDoubleWPtr _fogIsovalue;
+    KnobDoubleWPtr _pruneTolerance;
+    KnobBoolWPtr _signedFloodFill;
+    KnobBoolWPtr _activateInsideVoxels;
     KnobDoubleWPtr _adaptivity;
+    KnobBoolWPtr _computeVertexNormals;
+    KnobDoubleWPtr _internalAdaptivity;
+    KnobBoolWPtr _transferSurfaceAttributes;
     KnobStringWPtr _referenceAttributes;
+    KnobBoolWPtr _sharpenFeatures;
+    KnobDoubleWPtr _edgeTolerance;
+    KnobStringWPtr _surfaceGroup;
+    KnobStringWPtr _interiorGroup;
+    KnobStringWPtr _seamLineGroup;
+    KnobStringWPtr _seamPoints;
+    KnobBoolWPtr _useSurfaceMask;
+    KnobStringWPtr _surfaceMask;
+    KnobDoubleWPtr _maskOffset;
+    KnobBoolWPtr _invertSurfaceMask;
+    KnobBoolWPtr _useAdaptivityField;
+    KnobStringWPtr _adaptivityField;
 };
 
 NATRON_NAMESPACE_EXIT

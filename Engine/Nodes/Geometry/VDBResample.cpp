@@ -37,47 +37,28 @@
 #include "Engine/Geo/GeoOpUtils.h"
 #include "Engine/Geo/GeoVDB.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/Node.h"
+#include "Engine/Nodes/Geometry/GeoNodeKnobUtils.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
 
-template <typename T>
-T
-valueAt(const std::weak_ptr<Knob<T>>& knob,
-        T fallback,
-        double time,
-        ViewSpec view)
+const char* const kTransformOrders[] = { "srt", "str", "rst", "rts", "tsr", "trs" };
+const char* const kRotateOrders[] = { "xyz", "xzy", "yxz", "yzx", "zxy", "zyx" };
+
+bool
+fail(std::string* error,
+     const std::string& message)
 {
-    if (const std::shared_ptr<Knob<T>> locked = knob.lock()) {
-        return locked->getValueAtTime(time, 0, view);
+    if (error) {
+        *error = message;
     }
 
-    return fallback;
+    return false;
 }
 
-template <typename KnobPtrT>
-void
-setVisible(const std::weak_ptr<typename KnobPtrT::element_type>& knob,
-           bool visible)
-{
-    if (const KnobPtrT locked = knob.lock()) {
-        locked->setSecret(!visible);
-    }
-}
-
-std::string
-joinNotes(const std::vector<std::string>& notes)
-{
-    std::string text;
-    for (const std::string& note : notes) {
-        text += (text.empty() ? "" : "\n") + note;
-    }
-
-    return text;
-}
-
-} // namespace
+} // anonymous namespace
 
 bool
 VDBResample::apply(GeoDetailBuilder& builder,
@@ -90,36 +71,28 @@ VDBResample::apply(GeoDetailBuilder& builder,
     switch (params.mode) {
     case eVDBResampleModeVoxelSize:
         if (!std::isfinite(params.voxelSize) || !(params.voxelSize > 0.)) {
-            if (error) {
-                *error = "The voxel size must be above 0.";
-            }
-
-            return false;
+            return fail(error, "The voxel size must be above 0.");
         }
         break;
     case eVDBResampleModeVoxelScale:
         if (!std::isfinite(params.voxelScale) || !(params.voxelScale > 0.)) {
-            if (error) {
-                *error = "The voxel scale must be above 0.";
-            }
-
-            return false;
+            return fail(error, "The voxel scale must be above 0.");
         }
         break;
     case eVDBResampleModeReference:
         if (reference) {
-            reference->primitiveMap().forEachLive([&](GeoIndex /*index*/, GeoOffset prim) {
-                if (!target && (reference->primitiveType(prim) == eGeoPrimitiveVDB)) {
-                    target = geoVDBGrid(*reference, prim);
-                }
-            });
+            target = geoFindVDB(*reference, params.referenceVDB);
         }
         if (!target) {
-            if (error) {
-                *error = "Resampling to a reference needs a VDB primitive on the Reference input.";
+            return fail(error, "Resampling to a reference needs a VDB primitive on the Reference input that "
+                               "Reference VDB matches.");
+        }
+        break;
+    case eVDBResampleModeExplicit:
+        for (const double s : params.transform.scale) {
+            if (!std::isfinite(s) || (s == 0.)) {
+                return fail(error, "The scale cannot be 0 on any axis.");
             }
-
-            return false;
         }
         break;
     }
@@ -134,20 +107,26 @@ VDBResample::apply(GeoDetailBuilder& builder,
         });
     }
     for (const auto& [prim, grid] : selected) {
-        std::shared_ptr<openvdb::math::Transform> xform;
-        switch (params.mode) {
-        case eVDBResampleModeVoxelSize:
-            xform = geoVoxelSizedVDBTransform(*grid, params.voxelSize);
-            break;
-        case eVDBResampleModeVoxelScale:
-            xform = geoScaledVDBTransform(*grid, params.voxelScale);
-            break;
-        case eVDBResampleModeReference:
-            xform = target->transform().copy();
-            break;
-        }
         std::string why;
-        const GeoVDBGridBaseConstPtr resampled = geoResampleVDB(*grid, *xform, params.interpolation, &why);
+        GeoVDBGridBaseConstPtr resampled;
+        if (params.mode == eVDBResampleModeExplicit) {
+            resampled = geoTransformVDB(*grid, params.transform, params.resample, &why);
+        } else {
+            std::shared_ptr<openvdb::math::Transform> xform;
+            switch (params.mode) {
+            case eVDBResampleModeVoxelSize:
+                xform = geoVoxelSizedVDBTransform(*grid, params.voxelSize, params.forceAxisAligned);
+                break;
+            case eVDBResampleModeVoxelScale:
+                xform = geoScaledVDBTransform(*grid, params.voxelScale, params.forceAxisAligned);
+                break;
+            case eVDBResampleModeReference:
+            case eVDBResampleModeExplicit:
+                xform = target->transform().copy();
+                break;
+            }
+            resampled = geoResampleVDB(*grid, *xform, params.resample, &why);
+        }
         if (!resampled) {
             if (notes) {
                 notes->push_back(why + " It was left as it is.");
@@ -158,7 +137,7 @@ VDBResample::apply(GeoDetailBuilder& builder,
     }
 
     return true;
-}
+} // VDBResample::apply
 
 VDBResample::VDBResample(NodePtr node)
     : NativeEffectBase(node)
@@ -181,62 +160,16 @@ VDBResample::initializeKnobs()
     const VDBResampleParams defaults;
     KnobPagePtr page = createKnob<KnobPage>(tr("Controls").toStdString());
 
-    KnobStringPtr group = createKnob<KnobString>(tr("Group").toStdString());
-    group->setName(kVDBResampleParamGroup);
-    group->setHintToolTip(tr("The VDB primitives to resample, by name: space-separated globs, ^ in front of one "
-                             "to leave out what it matches. * resamples every one.")
-                              .toStdString());
-    group->setDefaultValue(defaults.group);
-    group->setAnimationEnabled(false);
-    page->addKnob(group);
-    _group = group;
-
-    KnobChoicePtr mode = createKnob<KnobChoice>(tr("Mode").toStdString());
-    mode->setName(kVDBResampleParamMode);
-    mode->setHintToolTip(tr("Where the new voxels come from.").toStdString());
-    {
-        std::vector<ChoiceOption> modes;
-        modes.push_back(ChoiceOption("voxelSize", tr("Voxel Size").toStdString(),
-                                     tr("Voxels of Voxel Size in world units, keeping each grid's orientation "
-                                        "and origin.")
-                                         .toStdString()));
-        modes.push_back(ChoiceOption("reference", tr("Reference").toStdString(),
-                                     tr("The voxels of the first VDB primitive on the Reference input, so the "
-                                        "grids line up voxel for voxel.")
-                                         .toStdString()));
-        modes.push_back(ChoiceOption("voxelScale", tr("Voxel Scale").toStdString(),
-                                     tr("Each grid's own voxels scaled by Voxel Scale: 2 makes them twice as large "
-                                        "and the grid eight times smaller.")
-                                         .toStdString()));
-        mode->populateChoices(modes);
-    }
-    mode->setAnimationEnabled(false);
-    page->addKnob(mode);
-    _mode = mode;
-
-    KnobDoublePtr voxelSize = createKnob<KnobDouble>(tr("Voxel Size").toStdString());
-    voxelSize->setName(kVDBResampleParamVoxelSize);
-    voxelSize->setHintToolTip(tr("The edge length of the new voxels in world units.").toStdString());
-    voxelSize->setDefaultValue(defaults.voxelSize);
-    voxelSize->setMinimum(0.);
-    voxelSize->setDisplayMinimum(0.001);
-    voxelSize->setDisplayMaximum(1.);
-    page->addKnob(voxelSize);
-    _voxelSize = voxelSize;
-
-    KnobDoublePtr voxelScale = createKnob<KnobDouble>(tr("Voxel Scale").toStdString());
-    voxelScale->setName(kVDBResampleParamVoxelScale);
-    voxelScale->setHintToolTip(tr("How many times larger the new voxels are than each grid's own.").toStdString());
-    voxelScale->setDefaultValue(defaults.voxelScale);
-    voxelScale->setMinimum(0.);
-    voxelScale->setDisplayMinimum(0.1);
-    voxelScale->setDisplayMaximum(4.);
-    page->addKnob(voxelScale);
-    _voxelScale = voxelScale;
-
-    KnobChoicePtr interpolation = createKnob<KnobChoice>(tr("Interpolation").toStdString());
-    interpolation->setName(kVDBResampleParamInterpolation);
-    interpolation->setHintToolTip(tr("How grids that are not signed distance fields are sampled.").toStdString());
+    _group = geoAddStringKnob(this, page, tr("Group").toStdString(), kVDBResampleParamGroup,
+                              tr("The VDB primitives to resample, by name: space-separated globs, ^ in front of one "
+                                 "to leave out what it matches. * resamples every one.")
+                                  .toStdString(),
+                              defaults.group);
+    _referenceVDB = geoAddStringKnob(this, page, tr("Reference VDB").toStdString(), kVDBResampleParamReferenceVDB,
+                                     tr("In Reference mode, the VDB of the Reference input, by name pattern, whose "
+                                        "voxels the grids take; the first that matches is used.")
+                                         .toStdString(),
+                                     defaults.referenceVDB);
     {
         std::vector<ChoiceOption> filters;
         filters.push_back(ChoiceOption("point", tr("Point").toStdString(),
@@ -245,23 +178,136 @@ VDBResample::initializeKnobs()
                                        tr("Trilinear between the eight closest voxels.").toStdString()));
         filters.push_back(ChoiceOption("quadratic", tr("Quadratic").toStdString(),
                                        tr("Triquadratic over the 27 closest voxels: smoother, slower.").toStdString()));
-        interpolation->populateChoices(filters);
+        _interpolation = geoAddChoiceKnob(this, page, tr("Interpolation").toStdString(), kVDBResampleParamInterpolation,
+                                          tr("How the grids are sampled, unless an SDF is rebuilt. Integer grids "
+                                             "always take the closest voxel's value.")
+                                              .toStdString(),
+                                          filters, int(defaults.resample.interpolation));
     }
-    interpolation->setDefaultValue((int)defaults.interpolation);
-    interpolation->setAnimationEnabled(false);
-    page->addKnob(interpolation);
-    _interpolation = interpolation;
+    {
+        std::vector<ChoiceOption> modes;
+        modes.push_back(ChoiceOption("voxelSize", tr("Voxel Size").toStdString(),
+                                     tr("Voxels of Voxel Size in world units, keeping each grid's orientation and "
+                                        "origin unless Force Axis Aligned is on.")
+                                         .toStdString()));
+        modes.push_back(ChoiceOption("reference", tr("Reference").toStdString(),
+                                     tr("The voxels of the Reference VDB, so the grids line up voxel for voxel.")
+                                         .toStdString()));
+        modes.push_back(ChoiceOption("voxelScale", tr("Voxel Scale").toStdString(),
+                                     tr("Each grid's own voxels scaled by Voxel Scale: 2 makes them twice as large "
+                                        "and the grid eight times smaller.")
+                                         .toStdString()));
+        modes.push_back(ChoiceOption("explicit", tr("Explicit").toStdString(),
+                                     tr("The grids' values moved by the transform below, in index space: the "
+                                        "translation is in voxels and the grids keep their voxels.")
+                                         .toStdString()));
+        _mode = geoAddChoiceKnob(this, page, tr("Mode").toStdString(), kVDBResampleParamMode,
+                                 tr("Where the new voxels come from.").toStdString(), modes, int(defaults.mode));
+    }
+    {
+        std::vector<ChoiceOption> orders;
+        for (const char* order : kTransformOrders) {
+            std::string label;
+            for (const char* c = order; *c; ++c) {
+                label += std::string(label.empty() ? "" : " ") + (*c == 's' ? "Scale" : (*c == 'r' ? "Rotate" : "Translate"));
+            }
+            orders.push_back(ChoiceOption(order, label, ""));
+        }
+        _transformOrder = geoAddChoiceKnob(this, page, tr("Transform Order").toStdString(), kVDBResampleParamTransformOrder,
+                                           tr("The order the scale, rotation and translation apply in, first to "
+                                              "last.")
+                                               .toStdString(),
+                                           orders, 0);
+    }
+    {
+        std::vector<ChoiceOption> orders;
+        for (const char* order : kRotateOrders) {
+            std::string label(order);
+            for (char& c : label) {
+                c = char(c - 'a' + 'A');
+            }
+            orders.push_back(ChoiceOption(order, label, ""));
+        }
+        _rotateOrder = geoAddChoiceKnob(this, page, tr("Rotate Order").toStdString(), kVDBResampleParamRotateOrder,
+                                        tr("The order the axis rotations apply in, first to last.").toStdString(),
+                                        orders, 0);
+    }
+    const auto addVector = [&](const QString& label, const char* name, const QString& toolTip, double value,
+                               double displayMinimum, double displayMaximum) {
+        KnobDoublePtr knob = AppManager::createKnob<KnobDouble>(this, label.toStdString(), 3);
+        knob->setName(name);
+        knob->setHintToolTip(toolTip.toStdString());
+        for (int d = 0; d < 3; ++d) {
+            knob->setDefaultValue(value, d);
+            knob->setDisplayMinimum(displayMinimum, d);
+            knob->setDisplayMaximum(displayMaximum, d);
+        }
+        page->addKnob(knob);
+
+        return knob;
+    };
+    _translateVoxels = addVector(tr("Translate Voxels"), kVDBResampleParamTranslateVoxels,
+                                 tr("The translation, in voxels."), 0., -10., 10.);
+    _rotate = addVector(tr("Rotate"), kVDBResampleParamRotate, tr("The rotation about each axis, in degrees."), 0.,
+                        -180., 180.);
+    _scale = addVector(tr("Scale"), kVDBResampleParamScale, tr("The scale along each axis. Not 0."), 1., 0.1, 4.);
+    _pivot = addVector(tr("Pivot"), kVDBResampleParamPivot,
+                       tr("The point, in index space, that the rotation and scale are about."), 0., -100., 100.);
+
+    KnobDoublePtr voxelSize = geoAddDoubleKnob(this, page, tr("Voxel Size").toStdString(), kVDBResampleParamVoxelSize,
+                                               tr("The edge length of the new voxels in world units.").toStdString(),
+                                               defaults.voxelSize, 0., 1.);
+    voxelSize->setDisplayMinimum(0.001);
+    _voxelSize = voxelSize;
+    KnobDoublePtr voxelScale = geoAddDoubleKnob(this, page, tr("Voxel Scale").toStdString(), kVDBResampleParamVoxelScale,
+                                                tr("How many times larger the new voxels are than each grid's own.")
+                                                    .toStdString(),
+                                                defaults.voxelScale, 0., 4.);
+    voxelScale->setDisplayMinimum(0.1);
+    _voxelScale = voxelScale;
+    _forceAxisAligned = geoAddBoolKnob(this, page, tr("Force Axis Aligned").toStdString(), kVDBResampleParamForceAxisAligned,
+                                       tr("Put the new voxels on a fresh transform aligned with the world axes, at the "
+                                          "grid's origin, instead of the grid's own scaled, which may be rotated or "
+                                          "tapered.")
+                                           .toStdString(),
+                                       defaults.forceAxisAligned);
+    _transformVectors = geoAddBoolKnob(this, page, tr("Transform Vectors").toStdString(), kVDBResampleParamTransformVectors,
+                                       tr("In Explicit mode, transform the values of vector grids too, as their vector "
+                                          "type says: directions rotate, positions move as well.")
+                                           .toStdString(),
+                                       defaults.transform.transformVectors);
+    _rebuildSDF = geoAddBoolKnob(this, page, tr("Rebuild SDF").toStdString(), kVDBResampleParamRebuildSDF,
+                                 tr("Rebuild SDFs from their surface, with the same band width in voxels, so that "
+                                    "their values stay distances after scaling. Other grids are sampled.")
+                                     .toStdString(),
+                                 defaults.resample.rebuildSdf);
+    _pruneTolerance = geoAddDoubleKnob(this, page, tr("Prune Tolerance").toStdString(), kVDBResampleParamPruneTolerance,
+                                       tr("Voxels within this of the background, which resampling leaves active, are "
+                                          "made inactive, then regions of values within it of each other collapse "
+                                          "into tiles.")
+                                           .toStdString(),
+                                       defaults.resample.pruneTolerance, 0., 1.);
 
     updateVisibility();
-}
+} // VDBResample::initializeKnobs
 
 void
 VDBResample::updateVisibility()
 {
     const KnobChoicePtr mode = _mode.lock();
-    const int m = mode ? mode->getValue() : (int)eVDBResampleModeVoxelSize;
-    setVisible<KnobDoublePtr>(_voxelSize, m == eVDBResampleModeVoxelSize);
-    setVisible<KnobDoublePtr>(_voxelScale, m == eVDBResampleModeVoxelScale);
+    const int m = mode ? mode->getValue() : int(eVDBResampleModeVoxelSize);
+    const bool explicitMode = m == eVDBResampleModeExplicit;
+    geoSetKnobVisible(_referenceVDB, m == eVDBResampleModeReference);
+    geoSetKnobVisible(_voxelSize, m == eVDBResampleModeVoxelSize);
+    geoSetKnobVisible(_voxelScale, m == eVDBResampleModeVoxelScale);
+    geoSetKnobVisible(_forceAxisAligned, (m == eVDBResampleModeVoxelSize) || (m == eVDBResampleModeVoxelScale));
+    geoSetKnobVisible(_transformOrder, explicitMode);
+    geoSetKnobVisible(_rotateOrder, explicitMode);
+    geoSetKnobVisible(_translateVoxels, explicitMode);
+    geoSetKnobVisible(_rotate, explicitMode);
+    geoSetKnobVisible(_scale, explicitMode);
+    geoSetKnobVisible(_pivot, explicitMode);
+    geoSetKnobVisible(_transformVectors, explicitMode);
 }
 
 void
@@ -292,20 +338,41 @@ VDBResample::readParams(double time,
                         ViewSpec view) const
 {
     VDBResampleParams p;
-    p.group = valueAt<std::string>(_group, p.group, time, view);
-    const int mode = valueAt<int>(_mode, (int)p.mode, time, view);
-    if ((mode >= eVDBResampleModeVoxelSize) && (mode <= eVDBResampleModeVoxelScale)) {
-        p.mode = (VDBResampleModeEnum)mode;
+    p.group = geoKnobValueAt<std::string>(_group, p.group, time, view);
+    p.referenceVDB = geoKnobValueAt<std::string>(_referenceVDB, p.referenceVDB, time, view);
+    const int mode = geoKnobValueAt<int>(_mode, int(p.mode), time, view);
+    if ((mode >= eVDBResampleModeVoxelSize) && (mode <= eVDBResampleModeExplicit)) {
+        p.mode = VDBResampleModeEnum(mode);
     }
-    p.voxelSize = valueAt<double>(_voxelSize, p.voxelSize, time, view);
-    p.voxelScale = valueAt<double>(_voxelScale, p.voxelScale, time, view);
-    const int interpolation = valueAt<int>(_interpolation, (int)p.interpolation, time, view);
+    p.voxelSize = geoKnobValueAt<double>(_voxelSize, p.voxelSize, time, view);
+    p.voxelScale = geoKnobValueAt<double>(_voxelScale, p.voxelScale, time, view);
+    p.forceAxisAligned = geoKnobValueAt<bool>(_forceAxisAligned, p.forceAxisAligned, time, view);
+    const int interpolation = geoKnobValueAt<int>(_interpolation, int(p.resample.interpolation), time, view);
     if ((interpolation >= eGeoVDBInterpolationPoint) && (interpolation <= eGeoVDBInterpolationQuadratic)) {
-        p.interpolation = (GeoVDBInterpolationEnum)interpolation;
+        p.resample.interpolation = GeoVDBInterpolationEnum(interpolation);
     }
+    p.resample.rebuildSdf = geoKnobValueAt<bool>(_rebuildSDF, p.resample.rebuildSdf, time, view);
+    p.resample.pruneTolerance = geoKnobValueAt<double>(_pruneTolerance, p.resample.pruneTolerance, time, view);
+
+    GeoVDBIndexTransform& t = p.transform;
+    const int order = geoKnobValueAt<int>(_transformOrder, 0, time, view);
+    if ((order >= 0) && (order < int(sizeof(kTransformOrders) / sizeof(kTransformOrders[0])))) {
+        t.order = kTransformOrders[order];
+    }
+    const int rotateOrder = geoKnobValueAt<int>(_rotateOrder, 0, time, view);
+    if ((rotateOrder >= 0) && (rotateOrder < int(sizeof(kRotateOrders) / sizeof(kRotateOrders[0])))) {
+        t.rotateOrder = kRotateOrders[rotateOrder];
+    }
+    for (int d = 0; d < 3; ++d) {
+        t.translate[d] = geoKnobValueAt<double>(_translateVoxels, t.translate[d], time, view, d);
+        t.rotate[d] = geoKnobValueAt<double>(_rotate, t.rotate[d], time, view, d);
+        t.scale[d] = geoKnobValueAt<double>(_scale, t.scale[d], time, view, d);
+        t.pivot[d] = geoKnobValueAt<double>(_pivot, t.pivot[d], time, view, d);
+    }
+    t.transformVectors = geoKnobValueAt<bool>(_transformVectors, t.transformVectors, time, view);
 
     return p;
-}
+} // VDBResample::readParams
 
 StatusEnum
 VDBResample::renderGeometry(const GeoRenderActionArgs& args,
@@ -329,7 +396,7 @@ VDBResample::renderGeometry(const GeoRenderActionArgs& args,
         if (notes.empty()) {
             clearPersistentMessage(false);
         } else {
-            setPersistentMessage(eMessageTypeWarning, joinNotes(notes));
+            setPersistentMessage(eMessageTypeWarning, geoJoinNotes(notes));
         }
     }
 

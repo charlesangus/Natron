@@ -127,7 +127,7 @@ TEST(VDBFromPolygonsTest, ColourLandsInACdGridNearTheSurface)
     GeoDetailBuilder out;
     std::vector<std::string> notes;
     std::string error;
-    ASSERT_TRUE(VDBFromPolygons::build(colouredSphere(), params, out, &notes, &error)) << error;
+    ASSERT_TRUE(VDBFromPolygons::build(colouredSphere(), nullptr, params, out, &notes, &error)) << error;
     const GeoDetail result = out.finish();
     EXPECT_EQ(result.primitiveCount(), GeoIndex(2));
     ASSERT_NE(gridNamed(result, "surface"), nullptr);
@@ -161,7 +161,7 @@ TEST(VDBFromPolygonsTest, VoxelCountSizesTheVoxels)
     params.voxelCountAxis = eGeoVDBAxisX;
     GeoDetailBuilder out;
     std::string error;
-    ASSERT_TRUE(VDBFromPolygons::build(colouredSphere(), params, out, nullptr, &error)) << error;
+    ASSERT_TRUE(VDBFromPolygons::build(colouredSphere(), nullptr, params, out, nullptr, &error)) << error;
     const GeoVDBGridBaseConstPtr grid = gridNamed(out.finish(), "surface");
     ASSERT_NE(grid, nullptr);
     EXPECT_NEAR(grid->voxelSize()[0], 0.1, 1e-6);
@@ -173,7 +173,7 @@ TEST(VDBFromPolygonsTest, EmptySourceGivesAnEmptyGrid)
     params.useVoxelCount = true;
     GeoDetailBuilder out;
     std::string error;
-    ASSERT_TRUE(VDBFromPolygons::build(GeoDetail(), params, out, nullptr, &error)) << error;
+    ASSERT_TRUE(VDBFromPolygons::build(GeoDetail(), nullptr, params, out, nullptr, &error)) << error;
     const GeoVDBGridBaseConstPtr grid = gridNamed(out.finish(), "surface");
     ASSERT_NE(grid, nullptr);
     EXPECT_EQ(grid->activeVoxelCount(), 0u);
@@ -183,11 +183,11 @@ TEST(VDBFromParticlesTest, TrailsStretchTheSdfBackAlongV)
 {
     GeoPointsToSdfParams params;
     params.voxelSize = kVoxel;
-    params.trails = true;
+    params.footprint = eGeoParticleFootprintVelocityTrail;
     GeoDetailBuilder out;
     std::vector<std::string> notes;
     std::string error;
-    ASSERT_TRUE(VDBFromParticles::build(oneParticle({ 2., 0., 0. }), params, out, &notes, &error)) << error;
+    ASSERT_TRUE(VDBFromParticles::build(oneParticle({ 2., 0., 0. }), nullptr, "*", false, params, out, &notes, &error)) << error;
     const openvdb::FloatGrid::ConstPtr sdf = openvdb::gridConstPtrCast<openvdb::FloatGrid>(gridNamed(out.finish(), "surface"));
     ASSERT_NE(sdf, nullptr);
 
@@ -211,7 +211,7 @@ TEST(VDBFromParticlesTest, WithoutTrailsTheSphereStaysRound)
     params.voxelSize = kVoxel;
     GeoDetailBuilder out;
     std::string error;
-    ASSERT_TRUE(VDBFromParticles::build(oneParticle({ 2., 0., 0. }), params, out, nullptr, &error)) << error;
+    ASSERT_TRUE(VDBFromParticles::build(oneParticle({ 2., 0., 0. }), nullptr, "*", false, params, out, nullptr, &error)) << error;
     const openvdb::FloatGrid::ConstPtr sdf = openvdb::gridConstPtrCast<openvdb::FloatGrid>(gridNamed(out.finish(), "surface"));
     ASSERT_NE(sdf, nullptr);
     EXPECT_GT(sdfAt(*sdf, -1., 0., 0.), 0.);
@@ -225,11 +225,65 @@ TEST(VDBFromParticlesTest, AttributeGridsCarryPointValues)
     params.attributes = "v";
     GeoDetailBuilder out;
     std::string error;
-    ASSERT_TRUE(VDBFromParticles::build(oneParticle({ 2., 0., 0. }), params, out, nullptr, &error)) << error;
+    ASSERT_TRUE(VDBFromParticles::build(oneParticle({ 2., 0., 0. }), nullptr, "*", false, params, out, nullptr, &error)) << error;
     const openvdb::Vec3SGrid::ConstPtr v = openvdb::gridConstPtrCast<openvdb::Vec3SGrid>(gridNamed(out.finish(), "v"));
     ASSERT_NE(v, nullptr);
     ASSERT_GT(v->activeVoxelCount(), 0u);
     for (openvdb::Vec3SGrid::ValueOnCIter it = v->cbeginValueOn(); it; ++it) {
         EXPECT_EQ(*it, openvdb::Vec3s(2.f, 0.f, 0.f));
     }
+}
+
+TEST(VDBFromPolygonsTest, DistanceAndFogTogetherOnTheReferenceVoxels)
+{
+    geoInitializeOpenVDB();
+    openvdb::FloatGrid::Ptr target = openvdb::FloatGrid::create();
+    target->setTransform(openvdb::math::Transform::createLinearTransform(0.1));
+    GeoDetailBuilder rb;
+    geoAppendVDB(rb, target, "target");
+    const GeoDetail reference = rb.finish();
+
+    VDBFromPolygonsParams params;
+    params.convert.voxelSize = kVoxel;
+    params.convert.buildFog = true;
+    GeoDetailBuilder out;
+    std::vector<std::string> notes;
+    std::string error;
+    ASSERT_TRUE(VDBFromPolygons::build(colouredSphere(), &reference, params, out, &notes, &error)) << error;
+    const GeoDetail result = out.finish();
+    const GeoVDBGridBaseConstPtr surface = gridNamed(result, "surface");
+    const GeoVDBGridBaseConstPtr density = gridNamed(result, "density");
+    ASSERT_NE(surface, nullptr);
+    ASSERT_NE(density, nullptr);
+    EXPECT_EQ(surface->getGridClass(), openvdb::GRID_LEVEL_SET);
+    EXPECT_EQ(density->getGridClass(), openvdb::GRID_FOG_VOLUME);
+    EXPECT_NEAR(surface->voxelSize()[0], 0.1, 1e-9);
+    EXPECT_NEAR(density->voxelSize()[0], 0.1, 1e-9);
+}
+
+TEST(VDBFromParticlesTest, SpheresMergeIntoTheReferenceSdf)
+{
+    geoInitializeOpenVDB();
+    openvdb::FloatGrid::Ptr existing = openvdb::tools::createLevelSetSphere<openvdb::FloatGrid>(0.5f, openvdb::Vec3f(3.f, 0.f, 0.f), float(kVoxel));
+    GeoDetailBuilder rb;
+    geoAppendVDB(rb, existing, "existing");
+    const GeoDetail reference = rb.finish();
+
+    GeoPointsToSdfParams params;
+    params.voxelSize = 2. * kVoxel;
+    std::string error;
+    GeoDetailBuilder merged;
+    ASSERT_TRUE(VDBFromParticles::build(oneParticle({ 0., 0., 0. }), &reference, "existing", true, params, merged, nullptr, &error)) << error;
+    const openvdb::FloatGrid::ConstPtr sdf = openvdb::gridConstPtrCast<openvdb::FloatGrid>(gridNamed(merged.finish(), "surface"));
+    ASSERT_NE(sdf, nullptr);
+    EXPECT_NEAR(sdf->voxelSize()[0], kVoxel, 1e-9);
+    EXPECT_LT(sdfAt(*sdf, 0., 0., 0.), 0.);
+    EXPECT_LT(sdfAt(*sdf, 3., 0., 0.), 0.);
+
+    GeoDetailBuilder separate;
+    ASSERT_TRUE(VDBFromParticles::build(oneParticle({ 0., 0., 0. }), &reference, "existing", false, params, separate, nullptr, &error)) << error;
+    const openvdb::FloatGrid::ConstPtr alone = openvdb::gridConstPtrCast<openvdb::FloatGrid>(gridNamed(separate.finish(), "surface"));
+    ASSERT_NE(alone, nullptr);
+    EXPECT_NEAR(alone->voxelSize()[0], kVoxel, 1e-9);
+    EXPECT_GT(sdfAt(*alone, 3., 0., 0.), 0.);
 }

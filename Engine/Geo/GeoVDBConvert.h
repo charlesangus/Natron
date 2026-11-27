@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <array>
 #include <memory>
 #include <string>
 #include <vector>
@@ -53,15 +54,9 @@ NATRON_NAMESPACE_ENTER
 /**
  * Conversions between native geometry and VDB primitives, over OpenVDB's tools. Distances, band
  * widths and radii given in voxels are multiples of the voxel size; the rest are world units.
- * Grids are made with a uniform linear transform whose index-space origin is the world origin.
+ * Without a reference transform, grids are made with a uniform linear transform whose index-space
+ * origin is the world origin.
  **/
-
-enum GeoVDBVolumeKindEnum {
-    // A narrow-band signed distance field, negative inside (grid class level set).
-    eGeoVDBVolumeSDF = 0,
-    // A density from 0 outside to 1 inside, ramping across the inner band (grid class fog volume).
-    eGeoVDBVolumeFog,
-};
 
 enum GeoVDBAxisEnum {
     eGeoVDBAxisX = 0,
@@ -83,9 +78,10 @@ struct GeoVDBConvertGrid {
 };
 
 struct GeoVDBConvertResult {
-    // The distance or density grid first, then one grid per rasterised attribute.
+    // The distance, fog and mask grids first, then one grid per rasterised attribute.
     std::vector<GeoVDBConvertGrid> grids;
-    // What the node's info shows: what was skipped and why, and the memory the grids use.
+    // What the node's info shows: the size estimate, what was skipped and why, and the memory
+    // the grids use.
     std::vector<std::string> notes;
 };
 
@@ -101,15 +97,33 @@ double geoVoxelSizeForCount(const GeoDetail& detail,
                             int count,
                             GeoVDBAxisEnum axis);
 
+/**
+ * @brief The grid of the first VDB primitive of @p detail whose name matches @p pattern (see
+ * geoNameMatchesPattern()), or null.
+ **/
+GeoVDBGridBaseConstPtr geoFindVDB(const GeoDetail& detail,
+                                  const std::string& pattern);
+
 struct GeoPolygonsToSdfParams {
     double voxelSize = 0.1;
-    // Voxels.
+    // When set, the grids take this transform (a reference VDB's) and voxelSize is ignored.
+    std::shared_ptr<const openvdb::math::Transform> transform;
+    // The bands are exteriorBandWorld and interiorBandWorld in world units instead of
+    // exteriorBand and interiorBand in voxels.
+    bool useWorldSpaceForBand = false;
     double exteriorBand = 3.;
     double interiorBand = 3.;
-    // Distances fill the whole inside instead of stopping at the interior band.
+    double exteriorBandWorld = 0.3;
+    double interiorBandWorld = 0.3;
+    // Distances fill the whole inside instead of stopping at the interior band; a fog volume then
+    // ramps from 0 at the surface to 1 at the deepest point.
     bool fillInterior = false;
-    GeoVDBVolumeKindEnum kind = eGeoVDBVolumeSDF;
-    std::string name = "surface";
+    // The distance grid holds unsigned distances, which need no inside; the fog grid stays signed.
+    bool unsignedDistanceField = false;
+    bool buildDistance = true;
+    std::string distanceName = "surface";
+    bool buildFog = false;
+    std::string fogName = "density";
     // Space-separated globs, ^ excluding, over point, vertex and primitive attribute names; each
     // match becomes a grid of the band's voxels holding the value at the closest surface point.
     // A vertex attribute wins over a point or primitive attribute of the same name, and a point
@@ -118,66 +132,129 @@ struct GeoPolygonsToSdfParams {
 };
 
 /**
- * @brief Rasterises the live polygons of @p source (fan-triangulated) into a distance or density
- * grid named params.name, plus the attribute grids. A mesh with boundary edges is not closed and
- * has no inside, so as an SDF it gets an unsigned distance band and a note. Polylines, packed and
- * VDB primitives are ignored. A source without polygons gives an empty grid. False with @p error
- * set for a voxel size that is not positive and finite or a negative band.
+ * @brief Active voxels one grid of geoPolygonsToSdf() takes at least: the band around the
+ * polygons' area plus, with Fill Interior, the volume they enclose. Cheap; read before building.
+ **/
+double geoPolygonsToSdfVoxelEstimate(const GeoDetail& source,
+                                     const GeoPolygonsToSdfParams& params);
+
+/**
+ * @brief Rasterises the live polygons of @p source (fan-triangulated) into a distance grid named
+ * params.distanceName and a fog grid named params.fogName, each when asked for, plus the
+ * attribute grids. A mesh with boundary edges is not closed: its inside is guessed, with a note
+ * that the sign and the fog may leak through the holes. Polylines, packed and VDB primitives are
+ * ignored. A source without polygons gives empty grids. False with @p error set for a voxel size
+ * that is not positive and finite or a negative band.
  *
- * Numeric attributes of one or three components convert: float to a float or vector grid, int
- * to an int32 grid taking the value of the closest corner. Others are skipped with a note.
+ * Numeric attributes of one or three components convert: float to a float or vector grid, int32
+ * and int64 to grids of the same type taking the value of the closest corner. Others are skipped
+ * with a note.
  **/
 bool geoPolygonsToSdf(const GeoDetail& source,
                       const GeoPolygonsToSdfParams& params,
                       GeoVDBConvertResult* result,
                       std::string* error);
 
+enum GeoParticleFootprintEnum {
+    eGeoParticleFootprintSpherical = 0,
+    // Each sphere is stretched back along -v * velocityScale by spheres shrinking to the minimum
+    // radius, trailSpacing half-radii apart.
+    eGeoParticleFootprintVelocityTrail,
+};
+
 struct GeoPointsToSdfParams {
     double voxelSize = 0.1;
+    // As GeoPolygonsToSdfParams::transform.
+    std::shared_ptr<const openvdb::math::Transform> transform;
+    // A float SDF the spheres are unioned into, resampled onto the grids' transform. May be null.
+    GeoVDBGridBaseConstPtr mergeInto;
     // A sphere's radius is the point's pscale (1 without one) times this.
     double radiusScale = 1.;
     // Voxels: smaller spheres are skipped and counted in a note.
     double minRadius = 1.5;
-    // Half the width of the narrow band, in voxels.
+    // Half the width of the narrow band: bandWidthWorld in world units, or bandWidth voxels.
+    bool useWorldSpaceForBand = false;
     double bandWidth = 3.;
-    // Each sphere is stretched back along -v * velocityScale by spheres shrinking to the minimum
-    // radius, trailSpacing radii apart.
-    bool trails = false;
+    double bandWidthWorld = 0.3;
+    // Collapses constant regions of the grids into tiles.
+    bool prune = false;
+    GeoParticleFootprintEnum footprint = eGeoParticleFootprintSpherical;
     double velocityScale = 1.;
     double trailSpacing = 1.;
-    GeoVDBVolumeKindEnum kind = eGeoVDBVolumeSDF;
-    std::string name = "surface";
+    bool buildDistance = true;
+    std::string distanceName = "surface";
+    bool buildFog = false;
+    std::string fogName = "density";
+    // A fog volume of the shell between the spheres shrunk and grown by half maskWidth radii.
+    bool buildMask = false;
+    std::string maskName = "boundingvolume";
+    double maskWidth = 1.;
     // Patterns over point attribute names, as GeoPolygonsToSdfParams::attributes; each voxel
     // takes the value of the sphere whose surface is closest.
     std::string attributes;
 };
 
+/** @brief Active voxels the distance grid of geoPointsToSdf() takes at most. Cheap; read before building. */
+double geoPointsToSdfVoxelEstimate(const GeoDetail& source,
+                                   const GeoPointsToSdfParams& params);
+
 /**
- * @brief Unions spheres on the live points of @p source into a distance or density grid named
- * params.name, plus the attribute grids. A source without points gives an empty grid. False
- * with @p error set for a voxel size that is not positive and finite, or a band, minimum radius
- * or trail spacing that is not positive.
+ * @brief Unions spheres on the live points of @p source into the distance, fog and mask grids
+ * asked for, plus the attribute grids. A source without points gives empty grids. False with
+ * @p error set for a voxel size that is not positive and finite, or a band, minimum radius, trail
+ * spacing or mask width that is not positive.
  **/
 bool geoPointsToSdf(const GeoDetail& source,
                     const GeoPointsToSdfParams& params,
                     GeoVDBConvertResult* result,
                     std::string* error);
 
+/** @brief The note giving a voxel estimate and the memory a float grid of that many voxels takes. */
+std::string geoVDBEstimateNote(double voxels);
+
 struct GeoSdfToPolygonsParams {
     // The surface level: 0 for an SDF, typically 0.5 for a fog volume.
     double isovalue = 0.;
     // 0 keeps every polygon voxel-sized; towards 1, flat regions are merged into larger ones.
     double adaptivity = 0.;
-    // With a reference, the surface's points copy the point attributes matching this pattern
-    // (see GeoPolygonsToSdfParams::attributes) from the reference's closest point.
+    // Vertex normals N from the polygons around each point within 60 degrees of each other; with
+    // a reference, the surface and the interior polygons do not share theirs.
+    bool computeVertexNormals = false;
+
+    // These need a reference mesh. The adaptivity inside the reference surface.
+    double internalAdaptivity = 0.01;
+    // Every point takes the point attributes matching referenceAttributes (see
+    // GeoPolygonsToSdfParams::attributes) of the closest reference point; the surface polygons
+    // take the primitive and vertex attributes of the closest reference triangle, float vertex
+    // values interpolated across it.
+    bool transferSurfaceAttributes = true;
     std::string referenceAttributes = "*";
+    // The seam points move onto the reference's edges and corners.
+    bool sharpenFeatures = true;
+    // Voxels where the reference surface turns sharper than this normal dot product keep their
+    // full resolution whatever the adaptivity.
+    double edgeTolerance = 0.5;
+    // Groups for the polygons on the reference surface, those inside it, those along the seams
+    // between the two, and the seams' points. Empty for none.
+    std::string surfaceGroup = "surface_polygons";
+    std::string interiorGroup = "interior_polygons";
+    std::string seamLineGroup = "seam_polygons";
+    std::string seamPoints = "seam_points";
+
+    // Only the region inside this grid (below maskOffset for an SDF, above it for any other) is
+    // meshed, or only the region outside it when inverted. May be null.
+    GeoVDBGridBaseConstPtr surfaceMask;
+    double maskOffset = 0.;
+    bool invertSurfaceMask = false;
+    // A float or double grid whose values multiply the adaptivity where it is sampled. May be null.
+    GeoVDBGridBaseConstPtr adaptivityField;
 };
 
 /**
  * @brief Appends the isosurface of the scalar grid @p grid to @p out as quads and triangles on
- * points of their own, facing out of the region above the isovalue for a fog volume and below it
- * for any other grid. False with @p error set for a grid that is not float or double.
- * @p reference may be null.
+ * points of their own, facing out of the region below the isovalue for an SDF and above it for
+ * any other grid. False with @p error set for a grid that is not float or double. @p reference,
+ * the polygons the grid was made from, may be null.
  **/
 bool geoSdfToPolygons(const openvdb::GridBase& grid,
                       const GeoSdfToPolygonsParams& params,
@@ -193,30 +270,105 @@ GeoVDBGridBaseConstPtr geoSdfToFog(const openvdb::GridBase& grid,
                                    std::string* error);
 
 /**
- * @brief An SDF of the float or double fog volume @p grid, whose surface is where it crosses
- * @p isovalue. Null with @p error set for other value types.
+ * @brief A narrow-band SDF, 3 voxels each side, of the float or double fog volume @p grid, whose
+ * surface is where it crosses @p isovalue, at the fog's voxel size. Null with @p error set for
+ * other value types.
  **/
 GeoVDBGridBaseConstPtr geoFogToSdf(const openvdb::GridBase& grid,
                                    double isovalue,
                                    std::string* error);
 
+enum GeoVDBValueTypeEnum {
+    eGeoVDBValueTypeSame = 0,
+    eGeoVDBValueTypeFloat,
+    eGeoVDBValueTypeInteger,
+    eGeoVDBValueTypeVector,
+    eGeoVDBValueTypeBool,
+};
+
+enum GeoVDBPrecisionEnum {
+    eGeoVDBPrecisionSame = 0,
+    eGeoVDBPrecision32,
+    eGeoVDBPrecision64,
+};
+
 /**
- * @brief @p grid resampled into @p target's index space. A level set is rebuilt as one with the
- * same band width in voxels; other grids are sampled. Float, double and float and double vector
- * grids convert; null with @p error set for others.
+ * @brief @p grid with its values converted to another type or precision, its topology kept: a
+ * scalar goes into each component of a vector, a vector to a scalar keeps only the topology, and
+ * a bool is 1 or 0. Only float grids keep their SDF or fog class. @p grid itself when nothing
+ * changes. Null with @p error set for a value type it cannot read.
+ **/
+GeoVDBGridBaseConstPtr geoConvertVDBValues(const GeoVDBGridBaseConstPtr& grid,
+                                           GeoVDBValueTypeEnum type,
+                                           GeoVDBPrecisionEnum precision,
+                                           std::string* error);
+
+struct GeoVDBCleanupParams {
+    // Voxels within this of the background are deactivated, then constant regions collapse.
+    double pruneTolerance = 0.;
+    // SDFs only: the inactive values take the sign of the side they are on.
+    bool signedFloodFill = true;
+    // SDFs only: every voxel inside the surface is made active.
+    bool activateInsideVoxels = false;
+};
+
+/** @brief A copy of @p grid pruned and, for an SDF, flood filled as @p params asks. */
+GeoVDBGridBaseConstPtr geoCleanupVDB(const openvdb::GridBase& grid,
+                                     const GeoVDBCleanupParams& params);
+
+struct GeoVDBResampleParams {
+    GeoVDBInterpolationEnum interpolation = eGeoVDBInterpolationLinear;
+    // A resampled SDF is rebuilt as one of the same band width in voxels instead of sampled.
+    bool rebuildSdf = true;
+    double pruneTolerance = 0.;
+};
+
+/**
+ * @brief @p grid resampled into @p target's index space. Float, double, vector and integer grids
+ * convert, integer ones always with the nearest voxel; null with @p error set for others.
  **/
 GeoVDBGridBaseConstPtr geoResampleVDB(const openvdb::GridBase& grid,
                                       const openvdb::math::Transform& target,
-                                      GeoVDBInterpolationEnum interpolation,
+                                      const GeoVDBResampleParams& params,
                                       std::string* error);
 
-/** @brief @p grid's transform with its voxels scaled by @p scale about the index-space origin. */
-std::shared_ptr<openvdb::math::Transform> geoScaledVDBTransform(const openvdb::GridBase& grid,
-                                                                double scale);
+struct GeoVDBIndexTransform {
+    // Three of 's', 'r' and 't', the first applied first.
+    std::string order = "srt";
+    // Three of 'x', 'y' and 'z', the first applied first.
+    std::string rotateOrder = "xyz";
+    // Voxels.
+    std::array<double, 3> translate { 0., 0., 0. };
+    // Degrees.
+    std::array<double, 3> rotate { 0., 0., 0. };
+    std::array<double, 3> scale { 1., 1., 1. };
+    // Index space.
+    std::array<double, 3> pivot { 0., 0., 0. };
+    // Vector grids' values are transformed too, as their vector type says.
+    bool transformVectors = false;
+};
 
-/** @brief @p grid's transform with its voxels resized to @p voxelSize along their first axis. */
+/**
+ * @brief @p grid's values moved by @p xform in index space, on the same transform. Types as
+ * geoResampleVDB().
+ **/
+GeoVDBGridBaseConstPtr geoTransformVDB(const openvdb::GridBase& grid,
+                                       const GeoVDBIndexTransform& xform,
+                                       const GeoVDBResampleParams& params,
+                                       std::string* error);
+
+/**
+ * @brief @p grid's transform with its voxels scaled by @p scale about the index-space origin, or
+ * an axis-aligned linear transform of the scaled voxel size through the same world origin.
+ **/
+std::shared_ptr<openvdb::math::Transform> geoScaledVDBTransform(const openvdb::GridBase& grid,
+                                                                double scale,
+                                                                bool axisAligned = false);
+
+/** @brief geoScaledVDBTransform() resizing the voxels to @p voxelSize along their first axis. */
 std::shared_ptr<openvdb::math::Transform> geoVoxelSizedVDBTransform(const openvdb::GridBase& grid,
-                                                                    double voxelSize);
+                                                                    double voxelSize,
+                                                                    bool axisAligned = false);
 
 /** @brief A note naming the grid, its active voxel count and the memory it uses. */
 std::string geoVDBMemoryNote(const std::string& name,

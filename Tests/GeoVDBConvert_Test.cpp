@@ -103,6 +103,19 @@ signedVolume(const GeoDetail& d)
     return volume;
 }
 
+bool
+hasNote(const GeoVDBConvertResult& result,
+        const std::string& text)
+{
+    for (const std::string& note : result.notes) {
+        if (note.find(text) != std::string::npos) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 } // namespace
 
 TEST(GeoVDBConvertTest, ClosedSphereMeshGivesSignedDistances)
@@ -144,11 +157,12 @@ TEST(GeoVDBConvertTest, FogFromPolygonsIsOneInside)
 {
     GeoPolygonsToSdfParams params;
     params.voxelSize = kVoxel;
-    params.kind = eGeoVDBVolumeFog;
-    params.name = "density";
+    params.buildDistance = false;
+    params.buildFog = true;
     GeoVDBConvertResult result;
     std::string error;
     ASSERT_TRUE(geoPolygonsToSdf(shape(eGeoShapeSphere), params, &result, &error)) << error;
+    ASSERT_EQ(result.grids.size(), 1u);
     const openvdb::FloatGrid::ConstPtr fog = floatGrid(result.grids[0].grid);
     ASSERT_NE(fog, nullptr);
     EXPECT_EQ(fog->getGridClass(), openvdb::GRID_FOG_VOLUME);
@@ -157,24 +171,77 @@ TEST(GeoVDBConvertTest, FogFromPolygonsIsOneInside)
     EXPECT_NEAR(sampleAt(*fog, 2., 0., 0.), 0., 1e-6);
 }
 
-TEST(GeoVDBConvertTest, OpenMeshGivesUnsignedDistancesAndANote)
+TEST(GeoVDBConvertTest, FilledFogRampsOnlyAcrossTheInteriorBand)
+{
+    GeoPolygonsToSdfParams params;
+    params.voxelSize = kVoxel;
+    params.fillInterior = true;
+    params.buildDistance = false;
+    params.buildFog = true;
+    GeoVDBConvertResult result;
+    std::string error;
+    ASSERT_TRUE(geoPolygonsToSdf(shape(eGeoShapeSphere), params, &result, &error)) << error;
+    const openvdb::FloatGrid::ConstPtr fog = floatGrid(result.grids[0].grid);
+    ASSERT_NE(fog, nullptr);
+    EXPECT_NEAR(sampleAt(*fog, 0.5, 0., 0.), 1., 1e-6);
+    EXPECT_NEAR(sampleAt(*fog, 0., 0., 0.), 1., 1e-6);
+    EXPECT_GT(sampleAt(*fog, 0.95, 0., 0.), 0.1);
+    EXPECT_LT(sampleAt(*fog, 0.95, 0., 0.), 0.9);
+}
+
+TEST(GeoVDBConvertTest, OpenMeshGuessesTheSignWithANote)
 {
     GeoPolygonsToSdfParams params;
     params.voxelSize = kVoxel;
     GeoVDBConvertResult result;
     std::string error;
     ASSERT_TRUE(geoPolygonsToSdf(shape(eGeoShapeGrid), params, &result, &error)) << error;
+    ASSERT_EQ(result.grids.size(), 1u);
+    const openvdb::FloatGrid::ConstPtr sdf = floatGrid(result.grids[0].grid);
+    ASSERT_NE(sdf, nullptr);
+    EXPECT_EQ(sdf->getGridClass(), openvdb::GRID_LEVEL_SET);
+    EXPECT_GT(sdf->activeVoxelCount(), 0u);
+    EXPECT_NEAR(std::abs(sampleAt(*sdf, 0., 0.1, 0.)), 0.1, 0.02);
+    EXPECT_TRUE(hasNote(result, "not closed"));
+}
+
+TEST(GeoVDBConvertTest, UnsignedDistanceFieldNeedsNoInside)
+{
+    GeoPolygonsToSdfParams params;
+    params.voxelSize = kVoxel;
+    params.unsignedDistanceField = true;
+    GeoVDBConvertResult result;
+    std::string error;
+    ASSERT_TRUE(geoPolygonsToSdf(shape(eGeoShapeGrid), params, &result, &error)) << error;
+    ASSERT_EQ(result.grids.size(), 1u);
     const openvdb::FloatGrid::ConstPtr udf = floatGrid(result.grids[0].grid);
     ASSERT_NE(udf, nullptr);
-    EXPECT_NE(udf->getGridClass(), openvdb::GRID_LEVEL_SET);
-    EXPECT_GT(udf->activeVoxelCount(), 0u);
+    EXPECT_EQ(udf->getGridClass(), openvdb::GRID_UNKNOWN);
     EXPECT_NEAR(sampleAt(*udf, 0., 0.1, 0.), 0.1, 0.02);
     EXPECT_NEAR(sampleAt(*udf, 0., -0.1, 0.), 0.1, 0.02);
-    bool noted = false;
-    for (const std::string& note : result.notes) {
-        noted = noted || (note.find("not closed") != std::string::npos);
-    }
-    EXPECT_TRUE(noted);
+    EXPECT_FALSE(hasNote(result, "not closed"));
+}
+
+TEST(GeoVDBConvertTest, TheEstimateComesFirstInTheNotes)
+{
+    GeoPolygonsToSdfParams params;
+    params.voxelSize = kVoxel;
+    const GeoDetail sphere = shape(eGeoShapeSphere);
+    GeoVDBConvertResult result;
+    std::string error;
+    ASSERT_TRUE(geoPolygonsToSdf(sphere, params, &result, &error)) << error;
+    ASSERT_FALSE(result.notes.empty());
+    EXPECT_EQ(result.notes[0].rfind("Estimated before building", 0), 0u);
+    const double estimate = geoPolygonsToSdfVoxelEstimate(sphere, params);
+    const double built = double(result.grids[0].grid->activeVoxelCount());
+    EXPECT_GT(estimate, 0.5 * built);
+    EXPECT_LT(estimate, 2. * built);
+
+    GeoPointsToSdfParams points;
+    GeoVDBConvertResult pointsResult;
+    ASSERT_TRUE(geoPointsToSdf(GeoDetail(), points, &pointsResult, &error)) << error;
+    ASSERT_FALSE(pointsResult.notes.empty());
+    EXPECT_EQ(pointsResult.notes[0].rfind("Estimated before building", 0), 0u);
 }
 
 TEST(GeoVDBConvertTest, EmptyInputGivesAnEmptyGrid)
@@ -307,11 +374,42 @@ TEST(GeoVDBConvertTest, ParticlesBelowTheMinimumRadiusAreCounted)
     GeoVDBConvertResult result;
     std::string error;
     ASSERT_TRUE(geoPointsToSdf(points, params, &result, &error)) << error;
-    bool counted = false;
-    for (const std::string& note : result.notes) {
-        counted = counted || (note.find("2 points were skipped") != std::string::npos);
+    EXPECT_TRUE(hasNote(result, "2 points were skipped"));
+    const openvdb::FloatGrid::ConstPtr sdf = floatGrid(result.grids[0].grid);
+    ASSERT_NE(sdf, nullptr);
+    EXPECT_LT(sampleAt(*sdf, 0., 0., 0.), 0.);
+    EXPECT_NEAR(sampleAt(*sdf, 1., 0., 0.), double(sdf->background()), 1e-6);
+    EXPECT_NEAR(sampleAt(*sdf, 2., 0., 0.), double(sdf->background()), 1e-6);
+    EXPECT_GT(sdf->background(), 0.f);
+}
+
+TEST(GeoVDBConvertTest, TheMaskIsAShellAroundTheSpheres)
+{
+    GeoDetailBuilder b;
+    const GeoOffset p = b.appendPoints(1);
+    b.setPointPosition(p, 0., 0., 0.);
+    GeoAttributeDesc desc;
+    desc.name = "pscale";
+    desc.storage = eGeoStorageFloat32;
+    b.addAttribute(eGeoAttribClassPoint, desc).set<float>(std::size_t(p), 0.5f);
+
+    GeoPointsToSdfParams params;
+    params.voxelSize = kVoxel;
+    params.buildMask = true;
+    GeoVDBConvertResult result;
+    std::string error;
+    ASSERT_TRUE(geoPointsToSdf(b.finish(), params, &result, &error)) << error;
+    openvdb::FloatGrid::ConstPtr mask;
+    for (const GeoVDBConvertGrid& g : result.grids) {
+        if (g.name == params.maskName) {
+            mask = floatGrid(g.grid);
+        }
     }
-    EXPECT_TRUE(counted);
+    ASSERT_NE(mask, nullptr);
+    EXPECT_EQ(mask->getGridClass(), openvdb::GRID_FOG_VOLUME);
+    EXPECT_NEAR(sampleAt(*mask, 0.5, 0., 0.), 1., 1e-6);
+    EXPECT_NEAR(sampleAt(*mask, 0., 0., 0.), 0., 1e-6);
+    EXPECT_NEAR(sampleAt(*mask, 1., 0., 0.), 0., 1e-6);
 }
 
 TEST(GeoVDBConvertTest, FogAndSdfConvertBothWays)
@@ -324,14 +422,103 @@ TEST(GeoVDBConvertTest, FogAndSdfConvertBothWays)
     const openvdb::FloatGrid::ConstPtr fogGrid = floatGrid(fog);
     EXPECT_NEAR(sampleAt(*fogGrid, 0., 0., 0.), 1., 1e-6);
 
-    const GeoVDBGridBaseConstPtr back = geoFogToSdf(*fog, 0.5, &error);
-    ASSERT_NE(back, nullptr) << error;
-    EXPECT_EQ(back->getGridClass(), openvdb::GRID_LEVEL_SET);
-    const openvdb::FloatGrid::ConstPtr backGrid = floatGrid(back);
-    EXPECT_LT(sampleAt(*backGrid, 0.9, 0., 0.), 0.);
-    EXPECT_GT(sampleAt(*backGrid, 1.1, 0., 0.), 0.);
-
     openvdb::Int32Grid::Ptr ints = openvdb::Int32Grid::create(0);
     EXPECT_EQ(geoSdfToFog(*ints, &error), nullptr);
     EXPECT_FALSE(error.empty());
+}
+
+TEST(GeoVDBConvertTest, FogToSdfGivesANarrowBandOnBothSides)
+{
+    // The fog of an SDF ramps across its interior band, so its 0.5 crossing sits half that band inside.
+    const double halfRamp = 0.5 * double(openvdb::LEVEL_SET_HALF_WIDTH) * kVoxel;
+    std::string error;
+    const GeoVDBGridBaseConstPtr fog = geoSdfToFog(*sphereSdf(1. + halfRamp), &error);
+    ASSERT_NE(fog, nullptr) << error;
+    const GeoVDBGridBaseConstPtr back = geoFogToSdf(*fog, 0.5, &error);
+    ASSERT_NE(back, nullptr) << error;
+    EXPECT_EQ(back->getGridClass(), openvdb::GRID_LEVEL_SET);
+    const openvdb::FloatGrid::ConstPtr sdf = floatGrid(back);
+    ASSERT_NE(sdf, nullptr);
+    const openvdb::Coord outside(int(std::lround(1.1 / kVoxel)), 0, 0);
+    EXPECT_TRUE(sdf->tree().isValueOn(outside));
+    EXPECT_NEAR(double(sdf->tree().getValue(outside)), 0.1, 0.02);
+    EXPECT_NEAR(sampleAt(*sdf, 1., 0., 0.), 0., 0.5 * kVoxel);
+    EXPECT_FALSE(sdf->tree().isValueOn(openvdb::Coord(0, 0, 0)));
+    EXPECT_LT(sdf->tree().getValue(openvdb::Coord(0, 0, 0)), 0.f);
+    EXPECT_NEAR(double(sdf->background()), 3. * kVoxel, 1e-5);
+}
+
+TEST(GeoVDBConvertTest, IntegerGridsResampleWithTheClosestVoxel)
+{
+    geoInitializeOpenVDB();
+    openvdb::Int32Grid::Ptr ints = openvdb::Int32Grid::create(0);
+    ints->setTransform(openvdb::math::Transform::createLinearTransform(kVoxel));
+    ints->fill(openvdb::CoordBBox(openvdb::Coord(0), openvdb::Coord(19)), 7, true);
+    GeoVDBResampleParams params;
+    params.interpolation = eGeoVDBInterpolationQuadratic;
+    std::string error;
+    const GeoVDBGridBaseConstPtr out = geoResampleVDB(*ints, *openvdb::math::Transform::createLinearTransform(2. * kVoxel), params, &error);
+    ASSERT_NE(out, nullptr) << error;
+    const openvdb::Int32Grid::ConstPtr resampled = openvdb::gridConstPtrCast<openvdb::Int32Grid>(out);
+    ASSERT_NE(resampled, nullptr);
+    EXPECT_NEAR(resampled->voxelSize()[0], 2. * kVoxel, 1e-9);
+    EXPECT_EQ(resampled->tree().getValue(openvdb::Coord(5, 5, 5)), 7);
+    EXPECT_EQ(resampled->tree().getValue(openvdb::Coord(20, 20, 20)), 0);
+}
+
+TEST(GeoVDBConvertTest, ExplicitTransformMovesTheValuesInVoxels)
+{
+    GeoVDBIndexTransform xform;
+    xform.translate = { 10., 0., 0. };
+    std::string error;
+    const GeoVDBGridBaseConstPtr moved = geoTransformVDB(*sphereSdf(), xform, GeoVDBResampleParams(), &error);
+    ASSERT_NE(moved, nullptr) << error;
+    const openvdb::FloatGrid::ConstPtr sdf = floatGrid(moved);
+    ASSERT_NE(sdf, nullptr);
+    EXPECT_NEAR(sdf->voxelSize()[0], kVoxel, 1e-9);
+    EXPECT_EQ(sdf->getGridClass(), openvdb::GRID_LEVEL_SET);
+    EXPECT_NEAR(sampleAt(*sdf, 1. + 10. * kVoxel, 0., 0.), 0., kVoxel);
+    EXPECT_NEAR(sampleAt(*sdf, -1. + 10. * kVoxel, 0., 0.), 0., kVoxel);
+    EXPECT_LT(sampleAt(*sdf, 10. * kVoxel, 0., 0.), 0.);
+
+    GeoVDBIndexTransform scaled;
+    scaled.scale = { 2., 2., 2. };
+    const GeoVDBGridBaseConstPtr bigger = geoTransformVDB(*sphereSdf(), scaled, GeoVDBResampleParams(), &error);
+    ASSERT_NE(bigger, nullptr) << error;
+    EXPECT_NEAR(sampleAt(*floatGrid(bigger), 2., 0., 0.), 0., kVoxel);
+}
+
+TEST(GeoVDBConvertTest, CleanupActivatesTheInside)
+{
+    GeoVDBCleanupParams params;
+    params.activateInsideVoxels = true;
+    const openvdb::FloatGrid::Ptr source = sphereSdf();
+    EXPECT_FALSE(source->tree().isValueOn(openvdb::Coord(0, 0, 0)));
+    const openvdb::FloatGrid::ConstPtr cleaned = floatGrid(geoCleanupVDB(*source, params));
+    ASSERT_NE(cleaned, nullptr);
+    EXPECT_TRUE(cleaned->tree().isValueOn(openvdb::Coord(0, 0, 0)));
+    EXPECT_LT(cleaned->tree().getValue(openvdb::Coord(0, 0, 0)), 0.f);
+    EXPECT_FALSE(cleaned->tree().isValueOn(openvdb::Coord(40, 0, 0)));
+}
+
+TEST(GeoVDBConvertTest, ValuesConvertToAnotherTypeKeepingTheTopology)
+{
+    const openvdb::FloatGrid::Ptr source = sphereSdf();
+    std::string error;
+    const GeoVDBGridBaseConstPtr same = geoConvertVDBValues(source, eGeoVDBValueTypeSame, eGeoVDBPrecisionSame, &error);
+    EXPECT_EQ(same.get(), source.get());
+
+    const GeoVDBGridBaseConstPtr wide = geoConvertVDBValues(source, eGeoVDBValueTypeSame, eGeoVDBPrecision64, &error);
+    const openvdb::DoubleGrid::ConstPtr doubles = openvdb::gridConstPtrCast<openvdb::DoubleGrid>(wide);
+    ASSERT_NE(doubles, nullptr) << error;
+    EXPECT_EQ(doubles->getGridClass(), openvdb::GRID_LEVEL_SET);
+    EXPECT_EQ(doubles->activeVoxelCount(), source->activeVoxelCount());
+
+    const GeoVDBGridBaseConstPtr vectors = geoConvertVDBValues(source, eGeoVDBValueTypeVector, eGeoVDBPrecisionSame, &error);
+    const openvdb::Vec3SGrid::ConstPtr vec = openvdb::gridConstPtrCast<openvdb::Vec3SGrid>(vectors);
+    ASSERT_NE(vec, nullptr) << error;
+    EXPECT_EQ(vec->activeVoxelCount(), source->activeVoxelCount());
+    const openvdb::Coord c(20, 0, 0);
+    const float v = source->tree().getValue(c);
+    EXPECT_EQ(vec->tree().getValue(c), openvdb::Vec3s(v, v, v));
 }

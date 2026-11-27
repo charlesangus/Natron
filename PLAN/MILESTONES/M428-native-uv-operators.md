@@ -139,7 +139,7 @@ Algorithms:
     - Area matching scales by 3D area.
     - Islands outside the group are avoided.
   - size: M
-- [ ] M428.P3.T4 — Paint check through GeoToUSD
+- [x] M428.P3.T4 — Paint check through GeoToUSD
   - files: `Tests/gui/m428_uv_operators_paint.py`
   - approach:
     - Chain: GeoPrimitive box → GeoUVFlatten → GeoUVLayout (UDIM) → GeoToUSD → USDTexturePaint.

@@ -1000,28 +1000,20 @@ struct SceneGraphModel::Implementation {
         SceneTeardown::release(std::move(done));
     }
 
-    void emitChangedHere(Item* item)
+    /**
+     * @brief Announces columns first to last of every row as changed, through the top-level rows
+     * alone: each dataChanged() makes a view lay its header out again, so one per parent would
+     * cost a layout per open parent. A view must repaint the rows below itself on this signal, as
+     * refreshDrawStates() requires.
+     **/
+    void emitColumnsChanged(int first,
+                            int last)
     {
-        if (item->children.empty()) {
+        if (root.children.empty()) {
             return;
         }
-        Q_EMIT model->dataChanged(model->createIndex(0, 0, item->children.front().get()),
-                                  model->createIndex((int)item->children.size() - 1, eColumnCount - 1, item->children.back().get()));
-        for (const std::unique_ptr<Item>& child : item->children) {
-            emitChangedHere(child.get());
-        }
-    }
-
-    void emitDrawStates(Item* item)
-    {
-        if (item->children.empty()) {
-            return;
-        }
-        Q_EMIT model->dataChanged(model->createIndex(0, eColumnDrawState, item->children.front().get()),
-                                  model->createIndex((int)item->children.size() - 1, eColumnDrawState, item->children.back().get()));
-        for (const std::unique_ptr<Item>& child : item->children) {
-            emitDrawStates(child.get());
-        }
+        Q_EMIT model->dataChanged(model->createIndex(0, first, root.children.front().get()),
+                                  model->createIndex((int)root.children.size() - 1, last, root.children.back().get()));
     }
 
     // False without a viewer to read, and while an edit holds its draw states: the change that
@@ -2432,7 +2424,7 @@ SceneGraphModel::setChangedHere(const QSet<QString>& paths)
         return;
     }
     _imp->changedHere = paths;
-    _imp->emitChangedHere(&_imp->root);
+    _imp->emitColumnsChanged(0, eColumnCount - 1);
 }
 
 QString
@@ -2561,7 +2553,7 @@ SceneGraphModel::refreshDrawStates()
 
         return;
     }
-    _imp->emitDrawStates(&_imp->root);
+    _imp->emitColumnsChanged(eColumnDrawState, eColumnDrawState);
 }
 
 bool
@@ -2836,6 +2828,23 @@ SceneGraphModel::canFetchMore(const QModelIndex& parent) const
     }
 
     return !item->namesRead || (item->children.size() < item->childNames->size());
+}
+
+bool
+SceneGraphModel::hasFetchedAll(const QModelIndex& parent) const
+{
+    if (parent.isValid() && (parent.column() != 0)) {
+        return true;
+    }
+    const Item* item = _imp->itemOf(parent);
+    if (!item->data.hasChildren) {
+        return true;
+    }
+    if (_imp->owedFetches.count(item->path) || _imp->fetchingUnder.count(item->path)) {
+        return false;
+    }
+
+    return item->namesRead && (item->children.size() >= item->childNames->size());
 }
 
 void

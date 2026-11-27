@@ -134,6 +134,28 @@ registeredCustomKinds()
     return kinds;
 }
 
+bool
+kindWalkStopsAt(const PXR_NS::TfToken& kind,
+                const PXR_NS::TfToken& target,
+                bool* matches)
+{
+    const bool match = isBuiltInKindScope(target) ? PXR_NS::KindRegistry::IsA(kind, target) : (kind == target);
+    bool stops = match;
+
+    if (!stops) {
+        const SceneKindLevelEnum targetLevel = sceneKindLevel(target);
+        if (targetLevel != eSceneKindLevelPassThrough) {
+            const SceneKindLevelEnum level = sceneKindLevel(kind);
+            stops = (level != eSceneKindLevelPassThrough) && (level >= targetLevel);
+        }
+    }
+    if (matches) {
+        *matches = match;
+    }
+
+    return stops;
+}
+
 SceneKindWalkResult
 walkToKind(const PXR_NS::UsdStageRefPtr& stage,
            const PXR_NS::SdfPathVector& roots,
@@ -145,8 +167,6 @@ walkToKind(const PXR_NS::UsdStageRefPtr& stage,
     if (!stage || target.IsEmpty()) {
         return result;
     }
-    const bool builtIn = isBuiltInKindScope(target);
-    const SceneKindLevelEnum targetLevel = sceneKindLevel(target);
     std::size_t visited = 0;
     const auto pollCancelled = [&]() {
         if (cancelled && ((++visited % kCancelPollPrims) == 0) && cancelled()) {
@@ -166,14 +186,8 @@ walkToKind(const PXR_NS::UsdStageRefPtr& stage,
             if (pollCancelled()) {
                 return result;
             }
-            const PXR_NS::TfToken kind = kindOf(*it);
-            const bool matches = builtIn ? PXR_NS::KindRegistry::IsA(kind, target) : (kind == target);
-            bool stops = matches;
-            if (!stops && (targetLevel != eSceneKindLevelPassThrough)) {
-                const SceneKindLevelEnum level = sceneKindLevel(kind);
-                stops = (level != eSceneKindLevelPassThrough) && (level >= targetLevel);
-            }
-            if (stops) {
+            bool matches = false;
+            if (kindWalkStopsAt(kindOf(*it), target, &matches)) {
                 if (matches) {
                     result.matches.push_back(it->GetPath());
                 }

@@ -55,6 +55,7 @@
 #include <QListView>
 #include <QMenu>
 #include <QMimeData>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
 #include <QPointer>
@@ -91,6 +92,7 @@
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
+#include "Gui/SceneGraphExpander.h"
 #include "Gui/SceneGraphModel.h"
 #include "Gui/SceneNodeStageSource.h"
 #include "Gui/ScenePrimInspector.h"
@@ -531,8 +533,12 @@ struct SceneGraphPanel::Implementation {
     // selection; see SceneSelectionActions::keepSelectionOrder().
     QStringList selectionOrder;
 
-    // The rows the user expanded, kept across resets.
-    QSet<QString> expanded;
+    // The rows the user expanded, kept across resets, one set per shown node: a stage's reset
+    // reopens only its own rows. The sets go with the stages the panel keeps, the shown one and
+    // those of cachedStages.
+    SceneGraphExpansionMemory expansionMemory { kStageCacheSize + 1 };
+    // The shown node's set.
+    SceneGraphExpandedPaths* expanded = expansionMemory.select(std::shared_ptr<const void>());
     // Set while the panel, not the user, opens or closes rows.
     bool restoringExpansion = false;
     // The row at the top of the tree when it last scrolled other than by rows coming and going.
@@ -578,6 +584,17 @@ struct SceneGraphPanel::Implementation {
     std::vector<std::pair<QString, QToolButton*>> bulkButtons;
     QLabel* bulkStatus = nullptr;
     QTimer bulkRefresh;
+    // Opens and closes branches of the tree a slice at a time; its rows never load a payload.
+    std::unique_ptr<SceneGraphExpander> expander;
+    // The node shown when the expander last ran or the panel last looked: a run, the status line
+    // it wrote and the rows it owes reopening all belong to that node's stage.
+    NodeWPtr expansionNode;
+    const Node* expansionKey = nullptr;
+    // The model's reset count when leaving a node last stopped a run or cleared its status.
+    int expansionLeftAtReset = -1;
+    bool bulkStatusFromExpander = false;
+    QToolButton* expandButton = nullptr;
+    QToolButton* collapseButton = nullptr;
     QTreeView* changedHereTree = nullptr;
     SceneChangedHereModel* changedHereModel = nullptr;
     SceneGraphStageSourcePtr changedHereSource;
@@ -737,6 +754,14 @@ struct SceneGraphPanel::Implementation {
         panel->setProperty("natronSceneGraphCachedStages", (int)cachedStages.size());
         panel->setProperty("natronSceneGraphTimersActive", pinnedPoll.isActive() || editSettle.isActive() || selectionPoll.isActive() || retiredReap.isActive());
         panel->setProperty("natronSceneGraphTopPath", topPath);
+        panel->setProperty("natronSceneGraphExpanding", expander && expander->isRunning());
+        panel->setProperty("natronSceneGraphExpandSlices", expander ? expander->getProgress().slices : 0);
+        panel->setProperty("natronSceneGraphExpandedCount", (int)expanded->size());
+        panel->setProperty("natronSceneGraphRememberedStages", (int)expansionMemory.size());
+        panel->setProperty("natronSceneGraphRestoring", expander && expander->isRestoring());
+        panel->setProperty("natronSceneGraphRestoreSlices", expander ? expander->getRestoreSliceCount() : 0);
+        panel->setProperty("natronSceneGraphResetCount", model->getResetCount());
+        panel->setProperty("natronSceneGraphExpansionLeftAtReset", expansionLeftAtReset);
     }
 
     // The scene node last selected in the node graph, or null when none is selected.
@@ -813,8 +838,47 @@ struct SceneGraphPanel::Implementation {
         return (follow == SceneGraphPanel::eFollowViewer) ? viewerSource : SceneGraphStageSourcePtr();
     }
 
+    // Another shown node means another stage, even through the same source: a run walking the
+    // stage left would keep reading it, and the model only takes the new stage in once no read is
+    // in flight, so the run stops here rather than at the model's reset. The remembered rows are
+    // the new node's from here on. What was owed reopening was owed from the set left, which the
+    // expander drops with it; the new node's whole set is owed instead, so that its rows reopen
+    // whether the new stage comes in by a reset or by an update, and the reopening's end scrolls
+    // back and lets go of holdTopPath.
+    void leaveExpansionNode()
+    {
+        const NodePtr shown = panel->getShownNode();
+        if ((shown.get() == expansionKey) && (!expansionKey || !expansionNode.expired())) {
+            return;
+        }
+        expansionNode = shown;
+        expansionKey = shown.get();
+        expanded = expansionMemory.select(shown);
+        if (!expander) {
+            return;
+        }
+        const bool stopped = expander->isRunning();
+        expander->setExpandedPaths(expanded);
+        insertedUnder.clear();
+        restoreAll = true;
+        expansionDeferred = false;
+        viewRestore.start();
+        const bool cleared = bulkStatusFromExpander;
+        if (cleared) {
+            // It counts rows of the stage left.
+            bulkStatus->clear();
+            bulkStatus->setVisible(false);
+            bulkStatusFromExpander = false;
+        }
+        if (stopped || cleared) {
+            expansionLeftAtReset = model->getResetCount();
+        }
+        publishState();
+    }
+
     void applySource()
     {
+        leaveExpansionNode();
         const SceneGraphStageSourcePtr wanted = wantedSource();
         if (model->getSource() == wanted) {
             setSwitching(false);
@@ -873,6 +937,10 @@ struct SceneGraphPanel::Implementation {
         }
         switching = on;
         stack->setEnabled(!on);
+        // The reopening waited for the rows, which may be the ones on show already.
+        if (!on && (holdTopPath || restoreAll || !insertedUnder.isEmpty())) {
+            viewRestore.start();
+        }
         updateStatus();
     }
 
@@ -902,6 +970,11 @@ struct SceneGraphPanel::Implementation {
         cachedStages.push_back(cached);
         pinned.reset();
         while (cachedStages.size() > kStageCacheSize) {
+            // The viewer may show the node whose stage goes; its rows stay remembered.
+            const NodePtr evicted = cachedStages.front().source->getNode();
+            if (evicted != panel->getShownNode()) {
+                expansionMemory.forget(evicted);
+            }
             retireSource(cachedStages.front().source);
             cachedStages.erase(cachedStages.begin());
         }
@@ -929,12 +1002,16 @@ struct SceneGraphPanel::Implementation {
         for (std::vector<CachedStage>::iterator it = cachedStages.begin(); it != cachedStages.end();) {
             NodePtr node = it->source->getNode();
             if (!node || !node->isActivated()) {
+                if (node) {
+                    expansionMemory.forget(node);
+                }
                 retireSource(it->source);
                 it = cachedStages.erase(it);
             } else {
                 ++it;
             }
         }
+        expansionMemory.forgetGone();
     }
 
     // A worker's evaluation of source reached its stage.
@@ -1005,6 +1082,7 @@ struct SceneGraphPanel::Implementation {
             // The viewport stays across a change of viewed node, which can move the wanted source
             // between the viewer's stage and the shown node's own.
             if (viewerSource && (model->getSource() == viewerSource) && (wantedSource() == viewerSource)) {
+                leaveExpansionNode();
                 model->refresh();
             } else {
                 applySource();
@@ -1150,11 +1228,10 @@ struct SceneGraphPanel::Implementation {
     void requestUnload(const QStringList& paths)
     {
         for (const QString& path : paths) {
-            const QString below = path + QLatin1Char('/');
-            for (const QString& open : expanded.values()) {
-                if (open.startsWith(below)) {
-                    closeRow(open);
-                }
+            const std::pair<SceneGraphExpandedPaths::iterator, SceneGraphExpandedPaths::iterator> below = expandedPathsBelow(*expanded, path);
+            const QStringList open(below.first, below.second);
+            for (const QString& row : open) {
+                closeRow(row);
             }
             // Left open, an unloaded row could not be twirled to load it again.
             if (model->getPayloadState(path) != SceneGraphModel::ePayloadStateNone) {
@@ -1321,6 +1398,13 @@ struct SceneGraphPanel::Implementation {
             }
             button->setChecked(all);
         }
+        for (QToolButton* button : { expandButton, collapseButton }) {
+            if (button) {
+                // They act on the tree's rows, not on the filter's results or Changed Here's.
+                button->setEnabled(!selection.isEmpty() && (shownRowsView() == tree));
+                button->setToolTip(expandToolTip(button == collapseButton, scope));
+            }
+        }
     }
 
     // Runs action in scope on paths, on the stage the rows are read from for loads and in the
@@ -1363,27 +1447,108 @@ struct SceneGraphPanel::Implementation {
         }
         bulkStatus->setText(summary);
         bulkStatus->setVisible(!summary.isEmpty());
+        bulkStatusFromExpander = false;
         bulkRefresh.start();
 
         return summary;
     }
 
-    // The toolbar command a key is bound to in the Shortcut Editor, null when none is.
-    static const SceneGraphBulkKeyBinding* bulkCommandForKey(Qt::KeyboardModifiers modifiers,
-                                                             int key)
+    // The command of bindings a key is bound to in the Shortcut Editor, null when none is.
+    static const SceneGraphBulkKeyBinding* commandForKey(const std::vector<SceneGraphBulkKeyBinding>& bindings,
+                                                         Qt::KeyboardModifiers modifiers,
+                                                         int key)
     {
         GuiApplicationManager* manager = dynamic_cast<GuiApplicationManager*>(AppManager::instance());
 
         if (!manager || (key == 0) || (key == Qt::Key_unknown)) {
             return nullptr;
         }
-        for (const SceneGraphBulkKeyBinding& binding : getSceneGraphBulkKeyBindings()) {
+        for (const SceneGraphBulkKeyBinding& binding : bindings) {
             if (manager->matchesKeybind(kShortcutGroupViewer3D, binding.actionID, modifiers, key)) {
                 return &binding;
             }
         }
 
         return nullptr;
+    }
+
+    static const SceneGraphBulkKeyBinding* bulkCommandForKey(Qt::KeyboardModifiers modifiers,
+                                                             int key)
+    {
+        return commandForKey(getSceneGraphBulkKeyBindings(), modifiers, key);
+    }
+
+    static const SceneGraphBulkKeyBinding* expandCommandForKey(Qt::KeyboardModifiers modifiers,
+                                                               int key)
+    {
+        return commandForKey(getSceneGraphExpandKeyBindings(), modifiers, key);
+    }
+
+    // Expands or collapses the tree's rows at paths in scope: Selected and Below expand all below,
+    // a kind expands to it; collapsing is always all below.
+    void runExpand(bool collapse,
+                   const QStringList& paths,
+                   const QString& scope)
+    {
+        if (paths.isEmpty()) {
+            return;
+        }
+        leaveExpansionNode();
+        if (collapse) {
+            expander->start(SceneGraphExpander::eModeCollapseBelow, paths);
+        } else if ((scope == QString::fromUtf8("selected")) || (scope == QString::fromUtf8("below"))) {
+            expander->start(SceneGraphExpander::eModeExpandBelow, paths);
+        } else {
+            expander->start(SceneGraphExpander::eModeExpandToKind, paths, scope);
+        }
+    }
+
+    void showExpandProgress(const SceneGraphExpander::Progress& progress)
+    {
+        bulkStatus->setText(SceneGraphExpander::progressText(progress));
+        bulkStatus->setVisible(true);
+        bulkStatusFromExpander = true;
+        if (!progress.running && (holdTopPath || restoreAll || !insertedUnder.isEmpty())) {
+            viewRestore.start();
+        }
+        publishState();
+    }
+
+    static QString expandToolTip(bool collapse,
+                                 const QString& scope)
+    {
+        if (collapse) {
+            return SceneGraphPanel::tr("Collapse All Below: closes the selected rows and every row below them, whatever the scope. Esc stops it.");
+        }
+        if ((scope == QString::fromUtf8("selected")) || (scope == QString::fromUtf8("below"))) {
+            return SceneGraphPanel::tr("Expand All Below: opens every row below the selected rows. Rows of unloaded payloads stay closed "
+                                       "and unloaded. Esc stops it.");
+        }
+
+        return SceneGraphPanel::tr("Expand To %1: opens the rows from the selected rows down to the %2 below them and leaves the %2 "
+                                   "closed. Rows of unloaded payloads stay closed and unloaded. Esc stops it.")
+            .arg(kindLabel(scope), SceneGraphModel::kindPluralText(scope));
+    }
+
+    // The row whose branch arrow is at pos in the tree's viewport, invalid when pos is on none.
+    QModelIndex branchArrowAt(const QPoint& pos) const
+    {
+        const QModelIndex at = tree->indexAt(pos);
+
+        if (!at.isValid()) {
+            return QModelIndex();
+        }
+        const QModelIndex index = at.siblingAtColumn(0);
+        if (!model->hasChildren(index) || (!index.parent().isValid() && !tree->rootIsDecorated())) {
+            return QModelIndex();
+        }
+        // The name column's rect starts after the row's indentation, whose last step holds the arrow.
+        const QRect rect = tree->visualRect(index);
+        if ((pos.y() < rect.top()) || (pos.y() > rect.bottom())) {
+            return QModelIndex();
+        }
+
+        return ((pos.x() >= rect.left() - tree->indentation()) && (pos.x() < rect.left())) ? index : QModelIndex();
     }
 
     void closeRow(const QString& path)
@@ -1393,70 +1558,45 @@ struct SceneGraphPanel::Implementation {
         if (index.isValid()) {
             tree->collapse(index);
         }
-        expanded.remove(path);
+        expanded->erase(path);
     }
 
-    // Reopens the remembered rows, or only those below one of under.
-    void restoreExpansion(const QSet<QString>* under = nullptr)
+    // Hands what is owed reopening to the expander, which reopens it a slice at a time and then
+    // calls onRestored().
+    void restoreView()
     {
-        QStringList paths;
-
-        for (const QString& path : expanded) {
-            bool wanted = !under;
-            if (under) {
-                for (const QString& parent : *under) {
-                    if ((path.size() > parent.size() + 1) && path.startsWith(parent) && (path.at(parent.size()) == QLatin1Char('/'))) {
-                        wanted = true;
-                        break;
-                    }
-                }
-            }
-            if (wanted) {
-                paths.push_back(path);
-            }
+        // The rows stay the stage left's until the new one is read, whose reset restores; a run's
+        // end restarts viewRestore.
+        if (!expander || switching || expander->isRunning()) {
+            return;
         }
-        std::sort(paths.begin(), paths.end(), [](const QString& a, const QString& b) { return a.size() < b.size(); });
-        restoringExpansion = true;
+        const bool all = restoreAll;
+        const QStringList under = insertedUnder.values();
+        restoreAll = false;
+        insertedUnder.clear();
         expansionDeferred = false;
-        for (const QString& path : paths) {
-            // Every path asks before any read comes back, so that the reads queue together
-            // rather than one per answer.
-            bool deferred = false;
-            const QModelIndex index = model->indexOfPath(path, true, &deferred);
-            if (deferred) {
-                expansionDeferred = true;
-                continue;
-            }
-            // Opening an unloaded payload row would load it: it stays closed, and remembered,
-            // until the user twirls it.
-            const SceneGraphModel::PayloadStateEnum state = model->getPayloadState(path);
-            if ((state == SceneGraphModel::ePayloadStateUnloaded) || (state == SceneGraphModel::ePayloadStateFailed)) {
-                continue;
-            }
-            if (index.isValid()) {
-                tree->expand(index);
-            }
+        if (model->rowCount(QModelIndex()) == 0) {
+            // Before a stage's top rows are read, every remembered path would ask the worker for
+            // them, holding back the stage's rows and its edits. Their insertion restores.
+            restoreScroll();
+
+            return;
         }
-        restoringExpansion = false;
+        expander->restore(all, under);
     }
 
-    // Reopens what viewRestore was started for, and keeps it to reopen again while the model owes
-    // reads.
-    void restorePendingExpansion()
+    // The expander's reopening ended; one it could not finish for reads the model owed is redone
+    // once they are done.
+    void onRestored(bool deferred)
     {
-        expansionDeferred = false;
-        if (!expanded.isEmpty() && (restoreAll || !insertedUnder.isEmpty())) {
-            restoreExpansion(restoreAll ? nullptr : &insertedUnder);
-        }
-        if (!expansionDeferred) {
-            restoreAll = false;
-            insertedUnder.clear();
-        }
+        expansionDeferred = deferred;
+        restoreScroll();
+        publishState();
     }
 
     void rememberTopPath()
     {
-        if (holdTopPath || restoringExpansion) {
+        if (holdTopPath || restoringExpansion || (expander && expander->isRestoring())) {
             return;
         }
         const QModelIndex top = tree->indexAt(QPoint(0, 0));
@@ -2205,6 +2345,21 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
         { "clearBelow", QT_TR_NOOP("Clear Below") },
     });
     bulkLayout->addWidget(_imp->resetDrawStatesButton);
+    addDivider(12);
+    const auto addExpandButton = [this, bulkLayout](const char* objectName, const QString& label, const char* iconPath, bool collapse) {
+        QToolButton* button = new QToolButton(this);
+        button->setObjectName(QString::fromUtf8(objectName));
+        button->setText(label);
+        button->setIcon(ThemedIcon::icon(QString::fromUtf8(iconPath), 16));
+        button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        button->setEnabled(false);
+        QObject::connect(button, &QToolButton::clicked, this, [this, collapse]() { _imp->runExpand(collapse, getSelection(), _imp->bulkScopeName()); });
+        bulkLayout->addWidget(button);
+
+        return button;
+    };
+    _imp->expandButton = addExpandButton("sceneGraphExpand", tr("Expand"), NATRON_ICONS_PATH "lucide/chevrons-down.svg", false);
+    _imp->collapseButton = addExpandButton("sceneGraphCollapse", tr("Collapse"), NATRON_ICONS_PATH "lucide/chevrons-down-up.svg", true);
     bulkLayout->addStretch(1);
     layout->addLayout(bulkLayout);
     _imp->bulkStatus = new QLabel(this);
@@ -2245,9 +2400,9 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->tree->setObjectName(QString::fromUtf8("sceneGraphTree"));
     _imp->tree->setModel(_imp->model);
     QObject::connect(_imp->model, &SceneGraphModel::deferredReadsDone, this, [this]() {
-        if (_imp->expansionDeferred) {
-            _imp->restorePendingExpansion();
-            _imp->restoreScroll();
+        // As for viewRestore: a run's reads drain many times over, and its end restores once.
+        if (_imp->expansionDeferred && !(_imp->expander && _imp->expander->isRunning())) {
+            _imp->restoreView();
         }
         // Behind the filter's results too: showSelection() selects the tree's rows there, and a
         // pick the filter hides is selected in the tree alone.
@@ -2383,6 +2538,13 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
         QObject::connect(view->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this]() { _imp->bulkRefresh.start(); });
     }
     QObject::connect(_imp->model, &QAbstractItemModel::dataChanged, this, [this]() { _imp->bulkRefresh.start(); });
+    // The model announces draw-state and changed-here updates on the top-level rows only, so that
+    // thousands of open rows don't cost a header layout each; the rows below repaint from this.
+    QObject::connect(_imp->model, &QAbstractItemModel::dataChanged, this, [this](const QModelIndex& topLeft) {
+        if (!topLeft.parent().isValid()) {
+            _imp->tree->viewport()->update();
+        }
+    });
     QObject::connect(_imp->model, &QAbstractItemModel::modelReset, this, [this]() { _imp->bulkRefresh.start(); });
     QObject::connect(_imp->tree->selectionModel(), &QItemSelectionModel::currentChanged, this, &SceneGraphPanel::onCurrentChanged);
     QObject::connect(_imp->results->selectionModel(), &QItemSelectionModel::selectionChanged, this, &SceneGraphPanel::onResultsSelectionChanged);
@@ -2394,27 +2556,45 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     QObject::connect(_imp->model, &QAbstractItemModel::modelReset, this, &SceneGraphPanel::onModelReset, Qt::QueuedConnection);
     // Keys are claimed in the views' own event filter so a window-level shortcut cannot take them.
     _imp->tree->installEventFilter(this);
+    // Shift-clicks on branch arrows are taken before the view toggles the row.
+    _imp->tree->viewport()->installEventFilter(this);
     _imp->results->installEventFilter(this);
     _imp->changedHereTree->installEventFilter(this);
     _imp->results->setContextMenuPolicy(Qt::CustomContextMenu);
     QObject::connect(_imp->tree, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) { showRowMenu(_imp->tree, pos); });
     QObject::connect(_imp->changedHereTree, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) { showRowMenu(_imp->changedHereTree, pos); });
     QObject::connect(_imp->results, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) { showRowMenu(_imp->results, pos); });
+    _imp->expander.reset(new SceneGraphExpander(_imp->tree, _imp->model, _imp->expanded));
+    _imp->expander->setProgressCallback([this](const SceneGraphExpander::Progress& progress) { _imp->showExpandProgress(progress); });
+    _imp->expander->setRestoreCallback([this](bool deferred) { _imp->onRestored(deferred); });
     QObject::connect(_imp->tree, &QTreeView::expanded, this, &SceneGraphPanel::onExpanded);
     QObject::connect(_imp->tree, &QTreeView::collapsed, this, &SceneGraphPanel::onCollapsed);
     QObject::connect(_imp->tree->verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() { _imp->rememberTopPath(); });
     // Rows going, then coming back, as when the viewer shows another node and returns: the rows
     // that come back reopen, and the tree scrolls back to the row it had at its top.
-    const auto holdTop = [this]() {
+    // A run's reads each add and take away a loading row, and the reopenings' own reads add rows
+    // below rows they reopen and will reach: neither owes a reopening, which would make a wide run
+    // or reopening quadratic. The reset stops a run before it gets here.
+    const auto expanderOwnsRows = [this]() {
+        return _imp->expander && (_imp->expander->isRunning() || _imp->expander->isApplying());
+    };
+    const auto holdTop = [this, expanderOwnsRows]() {
         _imp->holdTopPath = true;
-        _imp->restoreAll = true;
+        if (!expanderOwnsRows()) {
+            _imp->restoreAll = true;
+        }
         _imp->viewRestore.start();
     };
-    QObject::connect(_imp->model, &QAbstractItemModel::modelAboutToBeReset, this, holdTop);
+    QObject::connect(_imp->model, &QAbstractItemModel::modelAboutToBeReset, this, [this]() {
+        _imp->holdTopPath = true;
+        _imp->restoreAll = true;
+        _imp->insertedUnder.clear();
+        _imp->viewRestore.start();
+    });
     QObject::connect(_imp->model, &QAbstractItemModel::rowsAboutToBeRemoved, this, holdTop);
     QObject::connect(_imp->model, &QAbstractItemModel::layoutAboutToBeChanged, this, holdTop);
-    QObject::connect(_imp->model, &QAbstractItemModel::rowsInserted, this, [this](const QModelIndex& parent) {
-        if (!_imp->expanded.isEmpty()) {
+    QObject::connect(_imp->model, &QAbstractItemModel::rowsInserted, this, [this, expanderOwnsRows](const QModelIndex& parent) {
+        if (!_imp->expanded->empty() && !expanderOwnsRows()) {
             if (parent.isValid()) {
                 _imp->insertedUnder.insert(_imp->model->pathOf(parent));
             } else {
@@ -2423,10 +2603,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
         }
         _imp->viewRestore.start();
     });
-    QObject::connect(&_imp->viewRestore, &QTimer::timeout, this, [this]() {
-        _imp->restorePendingExpansion();
-        _imp->restoreScroll();
-    });
+    QObject::connect(&_imp->viewRestore, &QTimer::timeout, this, [this]() { _imp->restoreView(); });
     if (gui) {
         QObject::connect(gui, &Gui::activeViewerChanged, this, &SceneGraphPanel::onActiveViewerChanged);
         QObject::connect(gui, &Gui::viewersChanged, this, &SceneGraphPanel::onActiveViewerChanged);
@@ -2525,9 +2702,11 @@ SceneGraphPanel::releaseNodeStages()
     }
     showNodeScene(NodePtr());
     for (const Implementation::CachedStage& cached : _imp->cachedStages) {
+        _imp->expansionMemory.forget(cached.source->getNode());
         _imp->retireSource(cached.source);
     }
     _imp->cachedStages.clear();
+    _imp->expansionMemory.forgetGone();
     _imp->followViewer();
     _imp->publishState();
 }
@@ -2696,6 +2875,26 @@ SceneGraphPanel::showRowMenu(QAbstractItemView* view, const QPoint& pos)
     for (const PXR_NS::TfToken& kind : registeredCustomKinds()) {
         kindScopes.push_back(std::make_pair(QString::fromStdString(kind.GetString()), QString::fromStdString(kind.GetString())));
     }
+    // Only the tree's rows open and close; the filter's list and Changed Here have no branches to walk.
+    const bool canExpand = (view == _imp->tree) && !selection.isEmpty();
+    const auto addExpand = [this, &selection, canExpand](QMenu* into, const QString& text, const QString& objectName, bool collapse, const QString& scope) {
+        QAction* entry = into->addAction(text);
+        entry->setObjectName(objectName);
+        entry->setEnabled(canExpand);
+        entry->setToolTip(Implementation::expandToolTip(collapse, scope));
+        entry->setShortcut(Implementation::keySequenceOf(objectName.toUtf8().constData()));
+        QObject::connect(entry, &QAction::triggered, this, [this, selection, collapse, scope]() { _imp->runExpand(collapse, selection, scope); });
+    };
+    addExpand(&menu, tr("Expand All Below"), QString::fromUtf8("sceneGraphExpandBelow"), false, QString::fromUtf8("below"));
+    QMenu* expandTo = menu.addMenu(tr("Expand To"));
+    expandTo->setObjectName(QString::fromUtf8("sceneGraphExpandToMenu"));
+    expandTo->setToolTipsVisible(true);
+    expandTo->setEnabled(canExpand);
+    for (const std::pair<QString, QString>& kind : kindScopes) {
+        addExpand(expandTo, kind.second, QString::fromUtf8("sceneGraphExpandTo_") + kind.first, false, kind.first);
+    }
+    addExpand(&menu, tr("Collapse All Below"), QString::fromUtf8("sceneGraphCollapseBelow"), true, QString::fromUtf8("below"));
+    menu.addSeparator();
     const auto addBulk = [this, &selection](QMenu* into, const QString& text, const QString& objectName, const QString& action, const QString& scope, bool enabled) {
         QAction* entry = into->addAction(text);
         entry->setObjectName(objectName);
@@ -2833,6 +3032,7 @@ SceneGraphPanel::onSceneSynced()
         _imp->pinnedPoll.start();
     }
     if (_imp->viewerSource && (_imp->model->getSource() == _imp->viewerSource)) {
+        _imp->leaveExpansionNode();
         _imp->model->refresh();
         if (!_imp->filterPattern.isEmpty()) {
             _imp->filterDebounce.start();
@@ -3066,8 +3266,7 @@ SceneGraphPanel::onModelReset()
 {
     _imp->restoreAll = true;
     if (!_imp->model->isDeferred()) {
-        _imp->restorePendingExpansion();
-        _imp->restoreScroll();
+        _imp->restoreView();
     }
     if (_imp->viewport && _imp->sharesViewerSelection()) {
         showSelection(_imp->viewport->getSelection());
@@ -3082,7 +3281,11 @@ SceneGraphPanel::onExpanded(const QModelIndex& index)
         return;
     }
     const QString path = _imp->model->pathOf(index);
-    _imp->expanded.insert(path);
+    _imp->expanded->insert(path);
+    // The expander opens no unloaded payload row, and publishes once a slice rather than per row.
+    if (_imp->expander && _imp->expander->isApplying()) {
+        return;
+    }
     const SceneGraphModel::PayloadStateEnum state = _imp->model->getPayloadState(path);
     if (((state == SceneGraphModel::ePayloadStateUnloaded) || (state == SceneGraphModel::ePayloadStateFailed)) && _imp->loadsOnShownStage()) {
         _imp->requestLoad(QStringList(path), false);
@@ -3096,7 +3299,10 @@ SceneGraphPanel::onCollapsed(const QModelIndex& index)
     if (_imp->restoringExpansion) {
         return;
     }
-    _imp->expanded.remove(_imp->model->pathOf(index));
+    _imp->expanded->erase(_imp->model->pathOf(index));
+    if (_imp->expander && _imp->expander->isApplying()) {
+        return;
+    }
     _imp->publishState();
 }
 
@@ -3157,8 +3363,7 @@ SceneGraphPanel::showEvent(QShowEvent* e)
     }
     _imp->model->setDeferred(false);
     if (_imp->restoreAll) {
-        _imp->restorePendingExpansion();
-        _imp->restoreScroll();
+        _imp->restoreView();
     }
     if (_imp->treeSelectionOwed && (_imp->stack->currentWidget() == _imp->tree)) {
         _imp->askForOwedRows();
@@ -3181,6 +3386,53 @@ bool
 SceneGraphPanel::eventFilter(QObject* watched,
                              QEvent* e)
 {
+    // Shift-click on a branch arrow expands all below it, or, on an open row, collapses all below.
+    // A plain click is the view's, which loads an unloaded row it opens.
+    if ((watched == _imp->tree->viewport()) && ((e->type() == QEvent::MouseButtonPress) || (e->type() == QEvent::MouseButtonRelease) || (e->type() == QEvent::MouseButtonDblClick))) {
+        QMouseEvent* m = static_cast<QMouseEvent*>(e);
+        const Qt::KeyboardModifiers held = m->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+        if ((m->button() == Qt::LeftButton) && (held == Qt::ShiftModifier)) {
+            const QModelIndex index = _imp->branchArrowAt(m->position().toPoint());
+            if (index.isValid()) {
+                if (e->type() == QEvent::MouseButtonPress) {
+                    _imp->runExpand(_imp->tree->isExpanded(index), QStringList(_imp->model->pathOf(index)), QString::fromUtf8("below"));
+                }
+                e->accept();
+
+                return true;
+            }
+        }
+    }
+    if ((watched == _imp->tree) && ((e->type() == QEvent::ShortcutOverride) || (e->type() == QEvent::KeyPress))) {
+        QKeyEvent* k = static_cast<QKeyEvent*>(e);
+        if ((k->key() == Qt::Key_Escape) && _imp->expander && _imp->expander->isRunning()) {
+            if (e->type() == QEvent::KeyPress) {
+                _imp->expander->cancel();
+            }
+            e->accept();
+
+            return true;
+        }
+        if (const SceneGraphBulkKeyBinding* command = Implementation::expandCommandForKey(k->modifiers(), k->key())) {
+            if (e->type() == QEvent::KeyPress) {
+                _imp->runExpand(command->action == "collapse", getSelection(), QString::fromStdString(command->scope));
+            }
+            e->accept();
+
+            return true;
+        }
+        // The view's own * expands recursively, which would load every payload it opened.
+        const Qt::KeyboardModifiers held = k->modifiers() & ~(Qt::KeypadModifier | Qt::ShiftModifier);
+        if ((e->type() == QEvent::KeyPress) && (k->key() == Qt::Key_Asterisk) && (held == Qt::NoModifier)) {
+            const QModelIndex current = _imp->tree->currentIndex();
+            if (current.isValid()) {
+                _imp->runExpand(false, QStringList(_imp->model->pathOf(current.siblingAtColumn(0))), QString::fromUtf8("below"));
+            }
+            e->accept();
+
+            return true;
+        }
+    }
     // Copy, the 3D viewer's selection keys and the toolbar commands' keys work on the panel's selection. A key press is taken
     // before the view's own handling, which would spend Tab on moving the focus.
     if (((watched == _imp->tree) || (watched == _imp->results) || (watched == _imp->changedHereTree)) && ((e->type() == QEvent::ShortcutOverride) || (e->type() == QEvent::KeyPress))) {
@@ -3221,6 +3473,12 @@ SceneGraphPanel::keyPressEvent(QKeyEvent* e)
 {
     if ((e->key() == Qt::Key_Escape) && _imp->filter->hasFocus() && !_imp->filter->text().isEmpty()) {
         _imp->filter->clear();
+        e->accept();
+
+        return;
+    }
+    if ((e->key() == Qt::Key_Escape) && _imp->expander && _imp->expander->isRunning()) {
+        _imp->expander->cancel();
         e->accept();
 
         return;

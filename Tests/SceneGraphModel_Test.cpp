@@ -42,6 +42,7 @@
 
 #include <gtest/gtest.h>
 
+#include "Gui/SceneGraphExpander.h"
 #include "Gui/SceneGraphModel.h"
 
 #include <QAbstractItemModelTester>
@@ -52,6 +53,7 @@
 #include <QPersistentModelIndex>
 #include <QSignalSpy>
 #include <QStringList>
+#include <QTreeView>
 
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -1890,4 +1892,226 @@ TEST(SceneGraphPrimWalk, MatchesPurposeAsANodePatternDoes)
 
     EXPECT_FALSE(walk.setExpression(QString::fromUtf8("//{purpose}"), &error));
     EXPECT_FALSE(error.isEmpty());
+}
+
+namespace {
+
+// /R holding count groups, each holding one row, so that every group can be opened.
+ScenePayload
+expandableGroups(int count)
+{
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("SceneGraphModelTest");
+    {
+        PXR_NS::SdfChangeBlock block;
+        PXR_NS::SdfPrimSpecHandle root = PXR_NS::SdfPrimSpec::New(layer->GetPseudoRoot(), "R", PXR_NS::SdfSpecifierDef, "Xform");
+        for (int i = 0; i < count; ++i) {
+            PXR_NS::SdfPrimSpecHandle group = PXR_NS::SdfPrimSpec::New(root, "G" + std::to_string(i), PXR_NS::SdfSpecifierDef, "Xform");
+            PXR_NS::SdfPrimSpec::New(group, "C", PXR_NS::SdfSpecifierDef, "Xform");
+        }
+    }
+
+    return SceneOps::appendLayer(ScenePayload(), layer, 0xe7a9dULL);
+}
+
+QString
+groupPath(int i)
+{
+    return QString::fromUtf8("/R/G") + QString::number(i);
+}
+
+} // anon namespace
+
+TEST(SceneGraphExpansionMemory, KeepsOneSetPerOwnerAndForgetsTheLeastRecentlyShown)
+{
+    SceneGraphExpansionMemory memory(2);
+    std::shared_ptr<int> a = std::make_shared<int>(0);
+    std::shared_ptr<int> b = std::make_shared<int>(1);
+    std::shared_ptr<int> c = std::make_shared<int>(2);
+
+    SceneGraphExpandedPaths* aPaths = memory.select(a);
+    aPaths->insert(QString::fromUtf8("/A"));
+    SceneGraphExpandedPaths* bPaths = memory.select(b);
+    EXPECT_TRUE(bPaths->empty());
+    bPaths->insert(QString::fromUtf8("/B"));
+    EXPECT_EQ(memory.size(), 2U);
+
+    // Back to a: its own set, untouched by b's.
+    EXPECT_EQ(memory.select(a), aPaths);
+    EXPECT_EQ(aPaths->size(), 1U);
+    EXPECT_EQ(aPaths->count(QString::fromUtf8("/A")), 1U);
+    EXPECT_EQ(memory.getSelected(), aPaths);
+
+    // c past capacity forgets b, the least recently shown.
+    SceneGraphExpandedPaths* cPaths = memory.select(c);
+    EXPECT_TRUE(cPaths->empty());
+    EXPECT_EQ(memory.size(), 2U);
+    EXPECT_TRUE(memory.remembers(a));
+    EXPECT_FALSE(memory.remembers(b));
+    EXPECT_TRUE(memory.select(b)->empty());
+    EXPECT_FALSE(memory.remembers(a));
+
+    // Forgetting the selected set empties it and keeps it selected.
+    memory.getSelected()->insert(QString::fromUtf8("/B2"));
+    memory.forget(b);
+    EXPECT_TRUE(memory.remembers(b));
+    EXPECT_TRUE(memory.getSelected()->empty());
+    memory.forget(c);
+    EXPECT_FALSE(memory.remembers(c));
+    EXPECT_EQ(memory.size(), 1U);
+}
+
+TEST(SceneGraphExpansionMemory, ForgetsTheSetsOfOwnersThatWent)
+{
+    SceneGraphExpansionMemory memory(4);
+    std::shared_ptr<int> gone = std::make_shared<int>(0);
+    std::shared_ptr<int> kept = std::make_shared<int>(1);
+    std::shared_ptr<int> shown = std::make_shared<int>(2);
+
+    memory.select(std::shared_ptr<const void>())->insert(QString::fromUtf8("/None"));
+    memory.select(gone)->insert(QString::fromUtf8("/Gone"));
+    memory.select(kept)->insert(QString::fromUtf8("/Kept"));
+    SceneGraphExpandedPaths* shownPaths = memory.select(shown);
+    shownPaths->insert(QString::fromUtf8("/Shown"));
+    ASSERT_EQ(memory.size(), 4U);
+
+    gone.reset();
+    memory.forgetGone();
+    EXPECT_EQ(memory.size(), 3U);
+    EXPECT_TRUE(memory.remembers(kept));
+    EXPECT_TRUE(memory.remembers(std::shared_ptr<const void>()));
+    EXPECT_EQ(memory.select(kept)->count(QString::fromUtf8("/Kept")), 1U);
+
+    // The selected set stays while its owner is gone, empty.
+    EXPECT_EQ(memory.select(shown), shownPaths);
+    shown.reset();
+    memory.forgetGone();
+    EXPECT_EQ(memory.getSelected(), shownPaths);
+    EXPECT_TRUE(shownPaths->empty());
+}
+
+TEST(SceneGraphExpansionMemory, ThePathsBelowAPathAreOneRange)
+{
+    SceneGraphExpandedPaths paths;
+
+    for (const char* path : { "/A", "/A/B", "/A/B/C", "/A/Z", "/A-x", "/A0", "/AB", "/B", "/B/A" }) {
+        paths.insert(QString::fromUtf8(path));
+    }
+    std::pair<SceneGraphExpandedPaths::iterator, SceneGraphExpandedPaths::iterator> below = expandedPathsBelow(paths, QString::fromUtf8("/A"));
+    EXPECT_EQ(QStringList(below.first, below.second), QStringList({ QString::fromUtf8("/A/B"), QString::fromUtf8("/A/B/C"), QString::fromUtf8("/A/Z") }));
+    below = expandedPathsBelow(paths, QString::fromUtf8("/A/B/C"));
+    EXPECT_TRUE(below.first == below.second);
+    below = expandedPathsBelow(paths, QString::fromUtf8("/B"));
+    EXPECT_EQ(QStringList(below.first, below.second), QStringList({ QString::fromUtf8("/B/A") }));
+}
+
+TEST(SceneGraphExpander, ARestoreReopensTheRememberedRowsInSlices)
+{
+    const int groupCount = 60;
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(expandableGroups(groupCount));
+
+    SceneGraphModel model;
+    model.setSource(source);
+    QTreeView tree;
+    tree.setModel(&model);
+    // Each reopening takes a millisecond, so that a slice's budget holds a few of them only.
+    QObject::connect(&tree, &QTreeView::expanded, &tree, []() { std::this_thread::sleep_for(std::chrono::milliseconds(1)); });
+
+    SceneGraphExpandedPaths remembered;
+    remembered.insert(QString::fromUtf8("/R"));
+    for (int i = 0; i < groupCount; ++i) {
+        remembered.insert(groupPath(i));
+    }
+    SceneGraphExpandedPaths other;
+    other.insert(QString::fromUtf8("/R/G1"));
+    other.insert(QString::fromUtf8("/Elsewhere"));
+    const SceneGraphExpandedPaths otherBefore = other;
+
+    SceneGraphExpander expander(&tree, &model, &remembered);
+    int restores = 0;
+    bool deferred = true;
+    expander.setRestoreCallback([&](bool wasDeferred) {
+        ++restores;
+        deferred = wasDeferred;
+    });
+
+    const int slicesBefore = expander.getRestoreSliceCount();
+    expander.restore(true, QStringList());
+    // The first slice ran at once; the rest wait for the event loop.
+    EXPECT_TRUE(expander.isRestoring());
+    EXPECT_EQ(restores, 0);
+    ASSERT_TRUE(processEventsUntil([&]() { return restores > 0; }));
+    EXPECT_EQ(restores, 1);
+    EXPECT_FALSE(deferred);
+    EXPECT_FALSE(expander.isRestoring());
+    EXPECT_GT(expander.getRestoreSliceCount() - slicesBefore, 1);
+
+    const QModelIndex root = model.indexOfPath(QString::fromUtf8("/R"), false);
+    ASSERT_TRUE(root.isValid());
+    EXPECT_TRUE(tree.isExpanded(root));
+    int open = 0;
+    for (int i = 0; i < groupCount; ++i) {
+        const QModelIndex group = model.indexOfPath(groupPath(i), false);
+        open += (group.isValid() && tree.isExpanded(group)) ? 1 : 0;
+    }
+    EXPECT_EQ(open, groupCount);
+    EXPECT_EQ(other, otherBefore);
+
+    // A restore under one parent reopens only the remembered rows below it.
+    for (int i = 0; i < groupCount; ++i) {
+        tree.collapse(model.indexOfPath(groupPath(i), false));
+    }
+    expander.restore(false, QStringList({ groupPath(7) }));
+    ASSERT_TRUE(processEventsUntil([&]() { return restores > 1; }));
+    open = 0;
+    for (int i = 0; i < groupCount; ++i) {
+        open += tree.isExpanded(model.indexOfPath(groupPath(i), false)) ? 1 : 0;
+    }
+    EXPECT_EQ(open, 0);
+
+    // Another stage's set: the rows it remembers are its own, and none of the first set's reopen.
+    expander.setExpandedPaths(&other);
+    expander.restore(true, QStringList());
+    ASSERT_TRUE(processEventsUntil([&]() { return restores > 2; }));
+    EXPECT_TRUE(tree.isExpanded(model.indexOfPath(QString::fromUtf8("/R/G1"), false)));
+    EXPECT_FALSE(tree.isExpanded(model.indexOfPath(groupPath(2), false)));
+    EXPECT_EQ(other, otherBefore);
+    EXPECT_EQ(remembered.size(), (std::size_t)groupCount + 1);
+}
+
+TEST(SceneGraphExpander, CollapseAllBelowClosesTheRememberedRowsBelowTheRoot)
+{
+    const int groupCount = 20;
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(expandableGroups(groupCount));
+
+    SceneGraphModel model;
+    model.setSource(source);
+    QTreeView tree;
+    tree.setModel(&model);
+    SceneGraphExpandedPaths remembered;
+    // The tree records what it opens and closes, as the panel does.
+    QObject::connect(&tree, &QTreeView::expanded, &tree, [&](const QModelIndex& index) { remembered.insert(model.pathOf(index)); });
+    QObject::connect(&tree, &QTreeView::collapsed, &tree, [&](const QModelIndex& index) { remembered.erase(model.pathOf(index)); });
+    std::vector<QString> closed;
+    QObject::connect(&tree, &QTreeView::collapsed, &tree, [&](const QModelIndex& index) { closed.push_back(model.pathOf(index)); });
+
+    // A run starts from rows the tree shows, as a selection's are; the model reads /R on demand.
+    ASSERT_TRUE(processEventsUntil([&]() { return model.indexOfPath(QString::fromUtf8("/R"), true).isValid(); }));
+
+    SceneGraphExpander expander(&tree, &model, &remembered);
+    expander.start(SceneGraphExpander::eModeExpandBelow, QStringList({ QString::fromUtf8("/R") }));
+    ASSERT_TRUE(processEventsUntil([&]() { return !expander.isRunning(); }));
+    EXPECT_EQ(remembered.size(), (std::size_t)groupCount + 1);
+    // Remembered but not shown: closed by the run along with the rest.
+    remembered.insert(QString::fromUtf8("/R/G3/C"));
+
+    expander.start(SceneGraphExpander::eModeCollapseBelow, QStringList({ QString::fromUtf8("/R") }));
+    ASSERT_TRUE(processEventsUntil([&]() { return !expander.isRunning(); }));
+    EXPECT_FALSE(expander.getProgress().cancelled);
+    EXPECT_TRUE(remembered.empty());
+    ASSERT_EQ(closed.size(), (std::size_t)groupCount + 1);
+    // Every row closes after the rows below it.
+    EXPECT_EQ(closed.back(), QString::fromUtf8("/R"));
+    EXPECT_FALSE(tree.isExpanded(model.indexOfPath(QString::fromUtf8("/R"), false)));
 }

@@ -363,7 +363,8 @@ public:
 
     /**
      * @brief Marks the rows at paths, which the caller gives with their ancestors. Rows read later
-     * are marked too, so the set stays small however large the stage is.
+     * are marked too, so the set stays small however large the stage is. Like
+     * refreshDrawStates(), it announces the change on the top-level rows only.
      **/
     void setChangedHere(const QSet<QString>& paths);
 
@@ -376,7 +377,13 @@ public:
      **/
     void setDrawStateAccess(const DrawStatesReader& reader, const DrawStateWriter& writer);
 
-    // The linked viewer's draw states changed: the column reads them again.
+    /**
+     * @brief The linked viewer's draw states changed: the column reads them again. The one
+     * dataChanged() it emits spans the top-level rows only, though rows at every depth may change,
+     * because each dataChanged() costs a view a header layout and one per parent would be
+     * quadratic in the rows open. A view of this model must therefore repaint its whole viewport
+     * on a top-level dataChanged(), as SceneGraphPanel does; Qt repaints only the range given.
+     **/
     void refreshDrawStates();
 
     int getChangedHereCount() const;
@@ -401,6 +408,11 @@ public:
     // The draw state column takes a SceneDrawStateEnum, or -1 to reset the row to the graph.
     bool setData(const QModelIndex& index, const QVariant& value, int role = Qt::EditRole) override;
     bool canFetchMore(const QModelIndex& parent) const override;
+    /**
+     * @brief Whether every child of parent has a row: none is left to fetch, none is being read and
+     * no read of them is owed. True for a row with no children.
+     **/
+    bool hasFetchedAll(const QModelIndex& parent) const;
     void fetchMore(const QModelIndex& parent) override;
     QStringList mimeTypes() const override;
     QMimeData* mimeData(const QModelIndexList& indexes) const override;

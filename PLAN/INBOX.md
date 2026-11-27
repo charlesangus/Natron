@@ -47,3 +47,8 @@
 ### 2026-11-26T00:00:00Z — info
 - refs: M600
 - Research on the native geometry viewer flash, for M600 - Native Geometry UAT Round 2's grey-flash item (code reading on 11e3a1b115, nothing measured): `PLAN/DESIGN/2026-11-26-m617-research/flash-root-cause.md`. The user sees grey while dragging GeoScatter pscale on Storm. §6 finds no pipeline path for that: only `widths` changes and there is no resync. The likely cause is overlapping large grey points (pscale used as the full diameter, slider up to 1). The user filed the confirmed small bugs (stale older cooks replacing newer ones, a failed cook clearing the view, packed instancers refilling, extent ignoring widths, the pscale range) as M627 - Native Geometry Viewer Cook Fixes, after F15 lands, and the long-term fix as F41 - Native Geometry Scene Index. No change to M600's scope is requested.
+
+### 2026-11-27 — change-request — USDToGeo detail-attribute promotion
+- from: bosley-executor (cat-pm)
+- refs: M611
+- body: M611 - USDToGeo Source Controls keeps constant primvars as detail attributes (the audit's "Detail Attributes promotion — Out for now"). Review of PR #406 found constant instancer primvars then don't reach instance points. Proposed follow-up: the reference set's Promote to Primitive if Different / Primitive / Point / Vertex control on USDToGeo, applied to unpacked prims and point instances alike so they agree.

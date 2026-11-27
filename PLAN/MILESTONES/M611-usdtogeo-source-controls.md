@@ -99,3 +99,4 @@ Ships on its own under E9 - USD And 3D.
   - Tests live in `Tests/Scene/` (globbed by CMake), not the nonexistent `Tests/Geometry/`, so `Tests/CMakeLists.txt` is unchanged.
 - 2026-11-26 — **Apply Inverse USD Transform kept (user):** a port carries every control, and M612's round trip uses it explicitly. Test fixes for the inactive-prim predicate and invisible point instances in 35fee8ed66.
 - 2026-11-27 (PM) — T1–T4 landed in f240d92423 and 35fee8ed66 (milestone/m611-usdtogeo-source-controls); m611-gate3 release (full ctest) green at 4fb0ed2741 after merging F42 (main with the #397 cancel-latency fix).
+- 2026-11-27 (PM) — PR #406 review round 1 (Claude): 8 fixed in 334512d05b, 1 deferred (constant-primvar promotion for instancers and unpacked prims together, filed to the inbox). The round trip should check GeoToUSD's Overlay setting once M609 - GeoToUSD Path And Placement adds Other Primitives; points-prim placement by point name is GeoToUSD's and belongs to M609.

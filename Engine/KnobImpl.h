@@ -1284,6 +1284,16 @@ Knob<T>::setValue(const T & v,
 
 
     if ( holder && !holder->isSetValueCurrentlyPossible() ) {
+        // As when the value can be set, writing the value the knob has changes nothing, so it is
+        // not queued and aborts no render: no render would follow to replace an aborted one.
+        if (!hasChanged && !isQueuedWriteKeying(view, dimension, newKey) && isQueuedWriteUnchanged(v, dimension)) {
+            {
+                QMutexLocker k(&_valueMutex);
+                _guiValues[dimension] = v;
+            }
+
+            return eValueChangedReturnCodeNothingChanged;
+        }
         ///If we cannot set value, queue it
         holder->notifyValueQueued();
         if ( holder && getEvaluateOnChange() ) {
@@ -3169,6 +3179,41 @@ Knob<T>::discardQueuedValues()
     if (_signalSlotHandler) {
         _signalSlotHandler->s_valueChanged(ViewSpec::all(), -1, eValueChangedReasonNatronInternalEdited);
     }
+}
+
+template <typename T>
+bool
+Knob<T>::isQueuedWriteKeying(ViewSpec view,
+                             int dimension,
+                             const KeyFrame* newKey) const
+{
+    if (!newKey) {
+        return false;
+    }
+    const CurvePtr curve = getCurve(view, dimension);
+
+    return curve && curve->isAnimated();
+}
+
+template <typename T>
+bool
+Knob<T>::isQueuedWriteUnchanged(const T& v,
+                                int dimension) const
+{
+    {
+        QMutexLocker k(&_valueMutex);
+        if (!(v == _values[dimension])) {
+            return false;
+        }
+    }
+    QMutexLocker kql(&_setValuesQueueMutex);
+    for (const std::shared_ptr<QueuedSetValue>& queued : _setValuesQueue) {
+        if ((queued->dimension() == dimension) && (queued->useKey() || !(queued->value() == v))) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 template <typename T>

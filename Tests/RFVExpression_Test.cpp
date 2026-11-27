@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
@@ -41,6 +42,7 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Loop/LoopBlock.h"
 #include "Engine/Nodes/RFV/RFVSet.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
@@ -176,11 +178,14 @@ united(RenderContextReadSet a,
 
 } // namespace
 
-// loop.<var> and loops.<name>.<var> read one loop variable; the bare objects read all four of
-// their loop, and any other use of loops may read any loop's.
+// loop.<var> and loops.<name>.<var> read one loop variable; the bare objects read every variable
+// a loop of any kind sets, and any other use of loops may read any loop's.
 TEST(RFVExpression, ScanFindsTheLoopVariablesAnExpressionReads)
 {
-    const std::vector<std::string> all = { "iteration", "count", "t", "frame" };
+    const std::vector<std::string>& all = LoopBlocks::allVariables();
+    for (const char* name : { "iteration", "count", "t", "frame", "numiterations", "value", "ivalue", "svalue", "substep", "numsubsteps", "dt" }) {
+        EXPECT_TRUE(std::find(all.begin(), all.end(), name) != all.end()) << name;
+    }
     struct LoopCase {
         const char* expression;
         bool readsAll;

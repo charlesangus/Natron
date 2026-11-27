@@ -20,7 +20,12 @@ Sections:
     JUMP_FRAME. The Progress panel must show a cancellable task within PROGRESS_TIMEOUT_S;
     clicking its cancel button must remove it within CANCEL_TIMEOUT_S and it must not come back,
     and the longest heartbeat gap must stay under MAX_GAP_MS. The screenshot taken meanwhile is the
-    script's own work on the GUI thread, so the gap across it is left out.
+    script's own work on the GUI thread, so the gap across it is left out;
+  - pairs: the Loop menu's GeoForEach, GeoSolver and Loop entries each create their begin and end
+    (fed by the selected GeoPrimitive for the geometry kinds), the begin feeding the end placed
+    below it, both selected, and one Ctrl+Z removes both; the single begin and end entries stay.
+    app.createLoopPair() of each kind returns [begin, end] wired the same way, and of an unknown
+    kind creates nothing.
 Screenshots: m615_loops_hulls.png, m615_loops_drive_menu_foreach.png,
 m615_loops_drive_menu_solver.png, m615_loops_table_foreach.png, m615_loops_table_solver.png,
 m615_loops_cache.png, m615_loops_progress.png and m615_loops_cancelled.png in $NATRON_GUI_TEST_OUT.
@@ -56,10 +61,20 @@ SHAPE_CUBE = 2
 RUN_OVER_POINTS = 0
 METHOD_PREV_FRAME = 0
 BODY = "@P += {0, 1, 0} * @TimeInc;"
+PROP_GROUPING = "natronGrouping"
+PROP_PLUGIN_ID = "natronPluginID"
+PROP_LOOP_PAIR = "natronLoopPair"
+PAIRS = [
+    ("GeoForEach", "GeoForEachBegin", "GeoForEachEnd"),
+    ("GeoSolver", "GeoSolverBegin", "GeoSolverEnd"),
+    ("Loop", "LoopBegin", "LoopEnd"),
+]
 
 try:
-    from PySide6.QtCore import QMetaObject, QRect, QTimer
+    import NatronGui
+    from PySide6.QtCore import QMetaObject, QRect, Qt, QTimer
     from PySide6.QtGui import QGuiApplication
+    from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QWidget
 
     import guitest as gt
@@ -78,6 +93,31 @@ try:
         require(node is not None, "create " + plugin_id, plugin_problem(plugin_id))
         node.setPosition(x, y)
         return node
+
+    def root_names():
+        return set(n.getScriptName() for n in app.getChildren())
+
+    def new_nodes(before):
+        return [n for n in app.getChildren() if n.getScriptName() not in before]
+
+    def input_name(node, i):
+        src = node.getInput(i)
+        return src.getScriptName() if src is not None else None
+
+    def loop_group_menu():
+        for a in NatronGui.natron.nodesMenu().actions():
+            if a.property(PROP_GROUPING) == "Loop" and gt.menu_of(a) is not None:
+                return hold(gt.menu_of(a))
+        return None
+
+    def undo_in_graph():
+        view = node_graph_view()
+        if view is None:
+            check(False, "the node graph is on screen for Ctrl+Z")
+            return
+        view.setFocus()
+        QTest.keyClick(view, Qt.Key_Z, Qt.ControlModifier)
+        QApplication.processEvents()
 
     def param(node, name):
         p = node.getParam(name)
@@ -464,6 +504,65 @@ try:
               "the GUI thread never stalls for %g ms or more (%.1f ms)" % (MAX_GAP_MS, gaps["max_ms"]))
         shot("m615_loops_cancelled.png")
         param(solve_end, "substeps").setValue(1)
+
+        section("pairs")
+        loop_menu = loop_group_menu()
+        require(loop_menu is not None, "the nodes menu has a Loop submenu")
+        leaves = set(a.property(PROP_PLUGIN_ID) for a in loop_menu.actions() if a.property(PROP_PLUGIN_ID))
+        for index, (kind, begin_id, end_id) in enumerate(PAIRS):
+            check(begin_id in leaves and end_id in leaves,
+                  "%s: the Loop menu still offers %s and %s alone" % (kind, begin_id, end_id))
+            action = next((a for a in loop_menu.actions() if a.property(PROP_LOOP_PAIR) == kind), None)
+            require(action is not None, "%s: the Loop menu has a %s entry" % (kind, kind))
+            check(action.text() == kind, "%s: the entry reads %r" % (kind, action.text()))
+
+            source = None
+            app.clearSelection()
+            if begin_id.startswith("Geo"):
+                source = make("GeoPrimitive", 1200 + 300 * index, 0)
+                app.selectNode(source, False)
+            QApplication.processEvents()
+            before = root_names()
+            action.trigger()
+            ok = yield ("until", lambda: len(new_nodes(before)) >= 2, POLL_TIMEOUT_S)
+            created = new_nodes(before)
+            require(ok and len(created) == 2, "%s: the entry creates two nodes (%r)"
+                    % (kind, [n.getScriptName() for n in created]))
+            begin = next((n for n in created if n.getPluginID() == begin_id), None)
+            end = next((n for n in created if n.getPluginID() == end_id), None)
+            require(begin is not None and end is not None,
+                    "%s: the entry creates a %s and a %s" % (kind, begin_id, end_id))
+            check(input_name(end, 0) == begin.getScriptName(),
+                  "%s: the %s feeds the %s (%r)" % (kind, begin_id, end_id, input_name(end, 0)))
+            if source is not None:
+                check(input_name(begin, 0) == source.getScriptName(),
+                      "%s: the selected node feeds the %s (%r)" % (kind, begin_id, input_name(begin, 0)))
+            selected = sorted(n.getScriptName() for n in app.getSelectedNodes())
+            check(selected == sorted([begin.getScriptName(), end.getScriptName()]),
+                  "%s: both new nodes are selected (%r)" % (kind, selected))
+            check(end.getPosition()[1] > begin.getPosition()[1] + begin.getSize()[1],
+                  "%s: the %s is below the %s" % (kind, end_id, begin_id))
+            names = (begin.getScriptName(), end.getScriptName())
+            undo_in_graph()
+            ok = yield ("until", lambda: not (set(names) & root_names()), 5.0)
+            check(ok, "%s: one undo removes both nodes (left %r)" % (kind, sorted(set(names) & root_names())))
+            if source is not None:
+                source.destroy(False)
+
+            before = root_names()
+            pair = app.createLoopPair(kind)
+            require(len(pair) == 2, "%s: app.createLoopPair returns two nodes (%d)" % (kind, len(pair)))
+            check(pair[0].getPluginID() == begin_id and pair[1].getPluginID() == end_id,
+                  "%s: app.createLoopPair returns [%s, %s] (%s, %s)"
+                  % (kind, begin_id, end_id, pair[0].getPluginID(), pair[1].getPluginID()))
+            check(input_name(pair[1], 0) == pair[0].getScriptName(),
+                  "%s: app.createLoopPair's begin feeds its end" % kind)
+            check(pair[1].getPosition()[1] > pair[0].getPosition()[1] + pair[0].getSize()[1],
+                  "%s: app.createLoopPair puts the end below the begin" % kind)
+            check(len(new_nodes(before)) == 2, "%s: app.createLoopPair creates two nodes" % kind)
+            pair[1].destroy(False)
+            pair[0].destroy(False)
+        check(app.createLoopPair("GeoSolverBegin") == [], "app.createLoopPair of an unknown kind creates nothing")
 
     run(steps())
 except Exception:

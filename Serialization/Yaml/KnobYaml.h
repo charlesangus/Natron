@@ -74,6 +74,18 @@ std::list<KnobSerialization> decodeKnobsYaml(std::string_view text, YamlWarnings
  **/
 void completeKnobSerialization(KnobSerialization* knob, const std::string& typeName, int dimension, const std::vector<std::string>* choiceEntries = nullptr);
 
+/**
+ * @brief User pages, with their groups and user knobs, as the YAML map keyed by page name a node
+ * saves them in, as a document of its own.
+ **/
+std::string encodeUserPagesYaml(const std::list<GroupKnobSerialization>& pages);
+
+/**
+ * @brief Reads user pages written by encodeUserPagesYaml. Unknown keys are skipped and listed
+ * in warnings; malformed values throw YamlError.
+ **/
+std::list<GroupKnobSerialization> decodeUserPagesYaml(std::string_view text, YamlWarnings* warnings = nullptr);
+
 } // namespace Serialization
 NATRON_NAMESPACE_EXIT
 

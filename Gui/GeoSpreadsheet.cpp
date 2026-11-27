@@ -42,6 +42,7 @@
 #include <QtCore/QMetaObject>
 #include <QtCore/QThread>
 #include <QtGui/QColor>
+#include <QtGui/QKeyEvent>
 #include <QtGui/QPalette>
 #include <QtWidgets/QAbstractItemView>
 #include <QtWidgets/QApplication>
@@ -66,8 +67,10 @@
 #include "Engine/TLSHolder.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/ViewerInstance.h"
+#include "Gui/ActionShortcuts.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
+#include "Gui/GuiApplicationManager.h"
 #include "Gui/ScenePrimInspector.h"
 #include "Gui/SceneViewport.h"
 #include "Gui/ViewerTab.h"
@@ -1361,6 +1364,26 @@ GeoSpreadsheetWidget::writeSelection(SceneViewport* viewport,
     _writingSelection = false;
 }
 
+bool
+GeoSpreadsheetWidget::canCreateFromSelection() const
+{
+    const GeoSpreadsheetModel::SourcePtr source = _model->source();
+    SceneViewport* viewport = viewportOf(_selectionViewer.lock());
+
+    return viewport && viewport->isGeometryContext() && source && dynamic_cast<const GeoDetailSpreadsheetSource*>(source.get());
+}
+
+void
+GeoSpreadsheetWidget::createFromSelection()
+{
+    SceneViewport* viewport = viewportOf(_selectionViewer.lock());
+    // The rows picked become the viewer's selection only once a pick on the worker is done.
+    if (!canCreateFromSelection() || _pickCancel) {
+        return;
+    }
+    viewport->createFromSelection(viewport->getSelection());
+}
+
 qlonglong
 GeoSpreadsheetWidget::getShownRows() const
 {
@@ -1385,6 +1408,19 @@ GeoSpreadsheetWidget::eventFilter(QObject* watched,
 {
     if ((watched == _table) && _metricsOwed && ((e->type() == QEvent::Show) || (e->type() == QEvent::Resize))) {
         updateMetrics();
+    }
+    // The table would spend Tab on moving its current cell.
+    if ((watched == _table) && ((e->type() == QEvent::ShortcutOverride) || (e->type() == QEvent::KeyPress))) {
+        QKeyEvent* k = static_cast<QKeyEvent*>(e);
+        GuiApplicationManager* manager = dynamic_cast<GuiApplicationManager*>(AppManager::instance());
+        if (manager && manager->matchesKeybind(kShortcutGroupViewer3D, kShortcutIDActionViewer3DCreateFromSelection, k->modifiers(), k->key()) && canCreateFromSelection()) {
+            if (e->type() == QEvent::KeyPress) {
+                createFromSelection();
+            }
+            k->accept();
+
+            return true;
+        }
     }
 
     return QWidget::eventFilter(watched, e);

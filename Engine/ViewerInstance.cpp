@@ -55,7 +55,6 @@ CLANG_DIAG_OFF(deprecated)
 #include <QThreadPool>
 #include <QTimer>
 #include <QWaitCondition>
-#include <QtConcurrentMap> // QtCore on Qt4, QtConcurrent on Qt5
 #include <QtGlobal>
 CLANG_DIAG_ON(deprecated)
 
@@ -96,6 +95,8 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
+#include "Engine/TLSHolder.h"
+#include "Engine/ThreadPool.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Timer.h"
 #include "Engine/UpdateViewerParams.h"
@@ -1500,17 +1501,24 @@ isRotoPaintNodeInputRecursive(Node* node,
     return false;
 }
 
+// strokeArgs receives the frame args to push on each node set as drawing the stroke; null when invalidating.
 static void
 updateLastStrokeDataRecursively(Node* node,
                                 const NodePtr& rotoPaintNode,
                                 const RectD& lastStrokeBbox,
-                                bool invalidate)
+                                bool invalidate,
+                                FrameArgsToken::Pushes* strokeArgs)
 {
     if ( isRotoPaintNodeInputRecursive(node, rotoPaintNode) ) {
         if (invalidate) {
             node->invalidateLastPaintStrokeDataNoRotopaint();
         } else {
             node->setLastPaintStrokeDataNoRotopaint();
+            const EffectInstancePtr effect = node->getEffectInstance();
+            const ParallelRenderArgsPtr args = effect ? effect->copyFrameArgsDuringPaintStroke(true) : ParallelRenderArgsPtr();
+            if (args && strokeArgs) {
+                strokeArgs->push_back(std::make_pair(effect.get(), args));
+            }
         }
 
         if ( node == rotoPaintNode.get() ) {
@@ -1520,7 +1528,7 @@ updateLastStrokeDataRecursively(Node* node,
         for (int i = 0; i < maxInputs; ++i) {
             NodePtr input = node->getInput(i);
             if (input) {
-                updateLastStrokeDataRecursively(input.get(), rotoPaintNode, lastStrokeBbox, invalidate);
+                updateLastStrokeDataRecursively(input.get(), rotoPaintNode, lastStrokeBbox, invalidate, strokeArgs);
             }
         }
     }
@@ -1531,10 +1539,8 @@ class ViewerParallelRenderArgsSetter
 {
     NodePtr rotoNode;
     NodePtr viewerNode;
-    NodePtr viewerInputNode;
 
 public:
-
     ViewerParallelRenderArgsSetter(double time,
                                    ViewIdx view,
                                    bool isRenderUserInteraction,
@@ -1551,25 +1557,21 @@ public:
         : ParallelRenderArgsSetter(time, view, isRenderUserInteraction, isSequential, abortInfo, treeRoot, textureIndex, timeline, rotoPaintNode, isAnalysis, draftMode, stats)
         , rotoNode(rotoPaintNode)
         , viewerNode(treeRoot)
-        , viewerInputNode()
     {
         ///There can be a case where the viewer input tree does not belong to the project, for example
         ///for the File Dialog preview.
-        if ( viewerInput && !viewerInput->getGroup() ) {
-            viewerInputNode = viewerInput;
+        if (viewerInput && !viewerInput->getGroup()) {
             U64 nodeHash = viewerInput->getHashValue();
 
-            viewerInput->getEffectInstance()->setParallelRenderArgsTLS(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, 1, NodeFrameRequestPtr(), _openGLContext.lock(), textureIndex, timeline, isAnalysis, false, NodesList(), viewerInput->getCurrentRenderThreadSafety(), viewerInput->getCurrentOpenGLRenderSupport(), draftMode, stats);
+            const EffectInstancePtr effect = viewerInput->getEffectInstance();
+            pushArgs(effect.get(), effect->createParallelRenderArgs(time, view, isRenderUserInteraction, isSequential, nodeHash, abortInfo, treeRoot, 1, NodeFrameRequestPtr(), _openGLContext.lock(), textureIndex, timeline, isAnalysis, false, NodesList(), viewerInput->getCurrentRenderThreadSafety(), viewerInput->getCurrentOpenGLRenderSupport(), draftMode, stats));
         }
     }
 
     virtual ~ViewerParallelRenderArgsSetter()
     {
         if (rotoNode) {
-            updateLastStrokeDataRecursively(viewerNode.get(), rotoNode, RectD(), true);
-        }
-        if (viewerInputNode) {
-            viewerInputNode->getEffectInstance()->invalidateParallelRenderArgsTLS();
+            updateLastStrokeDataRecursively(viewerNode.get(), rotoNode, RectD(), true, NULL);
         }
     }
 };
@@ -1902,8 +1904,8 @@ computeViewerFrameEligibility(const ParallelRenderArgsSetter* setter,
     return eligibility;
 }
 
-// Submits the viewer input's render of one frame to the RenderScheduler, or returns null and counts why it falls
-// back to renderRoI.
+// Submits the viewer input's render of one frame to the RenderScheduler, or returns null and, if countFallback,
+// counts why it falls back to renderRoI.
 FrameFuturePtr
 submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
                                    const std::shared_ptr<FrameRequestMap>& request,
@@ -1916,6 +1918,7 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
                                    const RenderStatsPtr& stats,
                                    OpenGLViewerI* uiContext,
                                    GpuPlacementSnapshotBuilder* placementBuilder,
+                                   bool countFallback,
                                    FrameRenderContextPtr* contextOut)
 {
     const ViewerInstance::SchedulerEligibility eligibility = computeViewerFrameEligibility(setter, request, inArgs, hasRotoPaintNode);
@@ -1942,7 +1945,7 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
             return appPTR->getRenderScheduler()->submit(context, std::move(graph), RenderScheduler::Priority::Interactive);
         }
     }
-    if (reason && stats) {
+    if (reason && stats && countFallback) {
         stats->incLegacyFallbacks(std::string("viewer: ") + reason);
     }
 
@@ -2874,7 +2877,7 @@ ViewerInstance::runGpuPlacementDryRun(const AbortableRenderInfoPtr& abortInfo)
     }
     const ViewerInstancePrivate::GpuPlacementStamp stamp = _imp->currentGpuPlacementStamp();
     GpuPlacementSnapshotBuilder builder;
-    if ((appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph) || !isGpuPlacementAvailable()) {
+    if (!isGpuPlacementAvailable()) {
         builder.addUnplacedGraph();
     } else {
         const SequenceTime time = (SequenceTime)getTimeline()->currentFrame();
@@ -2960,6 +2963,7 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                                            false,
                                            stats);
         noteActiveViewerBranch(tls, thisNode);
+        FrameArgsToken strokeArgs;
         NodesList rotoPaintNodes;
         if (rotoPaintNode) {
             if (activeStroke) {
@@ -3011,7 +3015,9 @@ ViewerInstance::getViewerArgsAndRenderViewer(SequenceTime time,
                     for (NodesList::iterator it = rotoPaintNodes.begin(); it != rotoPaintNodes.end(); ++it) {
                         (*it)->prepareForNextPaintStrokeRender();
                     }
-                    updateLastStrokeDataRecursively(thisNode.get(), rotoPaintNode, lastStrokeBbox, false);
+                    FrameArgsToken::Pushes strokePushes;
+                    updateLastStrokeDataRecursively(thisNode.get(), rotoPaintNode, lastStrokeBbox, false, &strokePushes);
+                    strokeArgs = FrameArgsToken(strokePushes);
                 } else {
                     ///The drawing is already up to date: all changes have been taken into account for this event
                     args[i].reset();
@@ -3987,9 +3993,11 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
     std::string error;
     bool ok = false;
     const SceneEvaluationContext context(_imp->sceneContextId, getSceneLoadSet(), std::make_shared<SceneLoadReach>());
+    std::unique_lock<std::mutex> publish(_imp->scenePublishMutex, std::defer_lock);
+    bool superseded = false;
     if (inArgs.geometryUpstream) {
         bool aborted = false;
-        ok = evaluateGeometryInput(inArgs, &scene, &error, &aborted);
+        ok = evaluateGeometryInput(inArgs, &scene, &error, &aborted, publish, &superseded);
         if (aborted) {
             renderEndedWithoutImage(textureIndex, inArgs.params->abortInfo->getRenderAge());
 
@@ -4020,6 +4028,13 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
     if (!ok && error.empty()) {
         error = inArgs.activeInputToRender->getScriptName_mt_safe() + ": scene evaluation failed";
     }
+    if (!superseded && !publish.owns_lock()) {
+        superseded = !claimScenePublish(inArgs, publish);
+    }
+    if (superseded) {
+        // A newer evaluation is already shown: publishing this one would bring an older edit back.
+        return eViewerRenderRetCodeRedraw;
+    }
     if ((textureIndex == 0) || (textureIndex == 1)) {
         {
             std::lock_guard<std::mutex> k(_imp->lastSceneMutex);
@@ -4029,6 +4044,7 @@ ViewerInstance::evaluateSceneInput(ViewerArgs& inArgs)
             _imp->lastSceneLoadSet[textureIndex] = context.loadSet;
             _imp->lastSceneReach[textureIndex] = context.reach;
         }
+        publish.unlock();
         Q_EMIT sceneEvaluated(textureIndex);
     }
 
@@ -4041,7 +4057,9 @@ bool
 ViewerInstance::evaluateGeometryInput(ViewerArgs& inArgs,
                                       ScenePayload* scene,
                                       std::string* error,
-                                      bool* aborted)
+                                      bool* aborted,
+                                      std::unique_lock<std::mutex>& publish,
+                                      bool* superseded)
 {
     const int textureIndex = inArgs.params->textureIndex;
     // Read before evaluating, so an edit made during the evaluation leaves the detail outdated.
@@ -4070,9 +4088,65 @@ ViewerInstance::evaluateGeometryInput(ViewerArgs& inArgs,
         }
         layer = _imp->geometryLayers[textureIndex];
     }
+    if (!claimScenePublish(inArgs, publish)) {
+        *superseded = true;
+
+        return false;
+    }
 
     return layer->serveFrame(detail, inArgs.params->time, inArgs.params->isSequential, scene, error, sourceNode, sourceHash);
 } // ViewerInstance::evaluateGeometryInput
+
+bool
+ViewerInstance::claimScenePublish(const ViewerArgs& inArgs,
+                                  std::unique_lock<std::mutex>& publish)
+{
+    publish.lock();
+    // Playback shows every frame in order; only interactive renders can finish out of order.
+    if (inArgs.params->isSequential) {
+        return true;
+    }
+
+    return _imp->checkAndUpdateDisplayAge(inArgs.params->textureIndex, inArgs.params->abortInfo->getRenderAge());
+}
+
+struct ViewerInstance::PendingViewerRender {
+    // The frame args are thread-local, so a driven render drops them on the preparing thread right after
+    // preparation. Declared first so that, otherwise, they outlive everything rendered under them.
+    ViewerParallelRenderArgsSetterPtr frameArgs;
+
+    // Set by the caller when the scheduler thread prepares the render and another thread completes it: nothing may
+    // then pull synchronously or bind the render to the preparing thread.
+    bool driven = false;
+    // Why a driven render must run synchronously instead.
+    const char* fallbackReason = nullptr;
+    bool needsCompletion = false;
+
+    ViewIdx view;
+    bool singleThreaded = false;
+    bool isSequentialRender = false;
+    U64 viewerHash = 0;
+    NodePtr rotoPaintNode;
+    ViewerCurrentFrameRequestSchedulerStartArgsPtr request;
+    RenderStatsPtr stats;
+    GpuPlacementSnapshotBuilder* placementBuilder = nullptr;
+    ViewerArgs* inArgs = nullptr;
+
+    std::shared_ptr<FrameRequestMap> requestPassData;
+    std::unique_ptr<EffectInstance::NotifyRenderingStarted_RAII> renderingNotifier;
+
+    bool useTextureCache = false;
+    double par = 1.;
+    ImageBitDepthEnum imageDepth = eImageBitDepthFloat;
+    std::list<ImageLayerDesc> requestedComponents;
+    int alphaChannelIndex = -1;
+    std::vector<RectI> splitRoi;
+
+    // The first rect is submitted when preparing; a null future then means it renders through renderRoI.
+    bool firstRectSubmitted = false;
+    FrameFuturePtr future;
+    FrameRenderContextPtr frameContext;
+};
 
 ViewerInstance::ViewerRenderRetCode
 ViewerInstance::renderViewer_internal(ViewIdx view,
@@ -4087,12 +4161,55 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                       GpuPlacementSnapshotBuilder* placementBuilder,
                                       ViewerArgs& inArgs)
 {
+    PendingViewerRender pending;
+    const ViewerRenderRetCode prepared = prepareViewerRender(view, singleThreaded, isSequentialRender, viewerHash, rotoPaintNode, useTLS, request, stats, placementBuilder, inArgs, &pending);
+
+    if (!pending.needsCompletion) {
+        return prepared;
+    }
+
+    return completeViewerRender(pending);
+}
+
+ViewerInstance::ViewerRenderRetCode
+ViewerInstance::prepareViewerRender(ViewIdx view,
+                                    bool singleThreaded,
+                                    bool isSequentialRender,
+                                    U64 viewerHash,
+                                    const NodePtr& rotoPaintNode,
+                                    bool useTLS,
+                                    const ViewerCurrentFrameRequestSchedulerStartArgsPtr& request,
+                                    const RenderStatsPtr& stats,
+                                    GpuPlacementSnapshotBuilder* placementBuilder,
+                                    ViewerArgs& inArgs,
+                                    PendingViewerRender* pending)
+{
     assert(inArgs.activeInputToRender);
+
+    pending->needsCompletion = false;
+    pending->fallbackReason = nullptr;
 
     // The request was queued behind a render and its node may have been destroyed since.
     const NodePtr activeInputNode = inArgs.activeInputToRender->getNode();
     if (!activeInputNode) {
         return eViewerRenderRetCodeRedraw;
+    }
+
+    if (pending->driven) {
+        if (inArgs.sceneUpstream) {
+            pending->fallbackReason = "scene input";
+        } else if (inArgs.deepUpstream) {
+            pending->fallbackReason = "deep input";
+        } else if (inArgs.isDoingPartialUpdates) {
+            pending->fallbackReason = "partial updates";
+        } else if (rotoPaintNode) {
+            pending->fallbackReason = "paint stroke";
+        } else if (!inArgs.staleOverlayImageEffects.empty()) {
+            pending->fallbackReason = "stale overlay images";
+        }
+        if (pending->fallbackReason) {
+            return eViewerRenderRetCodeRender;
+        }
     }
 
     if (inArgs.sceneUpstream) {
@@ -4101,7 +4218,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
 
     // We are in the render thread, we may not have computed the RoD and lookup the cache yet
 
-    ViewerParallelRenderArgsSetterPtr frameArgs;
+    ViewerParallelRenderArgsSetterPtr& frameArgs = pending->frameArgs;
 
     if (useTLS) {
         frameArgs = std::make_shared<ViewerParallelRenderArgsSetter>(inArgs.params->time,
@@ -4136,7 +4253,8 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             return eViewerRenderRetCodeRender;
         }
     }
-    AbortableThread* isAbortable = dynamic_cast<AbortableThread*>( QThread::currentThread() );
+    // A driven render is prepared on the scheduler thread, which is abortable too but prepares every frame.
+    AbortableThread* isAbortable = pending->driven ? nullptr : dynamic_cast<AbortableThread*>(QThread::currentThread());
     if (isAbortable) {
         isAbortable->setAbortInfo( !isSequentialRender, inArgs.params->abortInfo, getNode()->getEffectInstance() );
     }
@@ -4192,9 +4310,9 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
     }
 
     ///Notify the gui we're rendering.
-    EffectInstance::NotifyRenderingStarted_RAII renderingNotifier( getNode().get() );
+    pending->renderingNotifier.reset(new EffectInstance::NotifyRenderingStarted_RAII(getNode().get()));
 
-    std::shared_ptr<FrameRequestMap> requestPassData;
+    std::shared_ptr<FrameRequestMap>& requestPassData = pending->requestPassData;
     if (useTLS) {
         const RectD canonicalRoi = roi.toCanonical(inArgs.params->mipmapLevel, inArgs.params->pixelAspectRatio, inArgs.params->rod);
 
@@ -4206,7 +4324,6 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
 
         frameArgs->updateNodesRequest(*requestPassData);
     }
-    const bool taskGraphMode = appPTR->getRenderSchedulerMode() == eRenderSchedulerModeTaskGraph;
 
     // Under frame args this is the snapshot the frame's request pass and hashes were taken with.
     const NodeMetadataConstPtr renderMetadata = inArgs.activeInputToRender->getRenderMetadata(inArgs.params->time, view);
@@ -4274,7 +4391,64 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
         stats->setGlobalRenderInfosForNode(getNode(), inArgs.params->rod, channelsRendered, true, true, inArgs.params->mipmapLevel);
     }
 
-//#pragma message WARN("Implement Viewer so it accepts OpenGL Textures in input")
+    pending->view = view;
+    pending->singleThreaded = singleThreaded;
+    pending->isSequentialRender = isSequentialRender;
+    pending->viewerHash = viewerHash;
+    pending->rotoPaintNode = rotoPaintNode;
+    pending->request = request;
+    pending->stats = stats;
+    pending->placementBuilder = placementBuilder;
+    pending->inArgs = &inArgs;
+    pending->useTextureCache = useTextureCache;
+    pending->par = par;
+    pending->imageDepth = imageDepth;
+    pending->requestedComponents = requestedComponents;
+    pending->alphaChannelIndex = alphaChannelIndex;
+    pending->splitRoi = splitRoi;
+
+    if (!inArgs.deepUpstream) {
+        pending->firstRectSubmitted = true;
+        pending->future = submitViewerFrameToRenderScheduler(frameArgs.get(), requestPassData, inArgs, bool(rotoPaintNode), view, splitRoi[0], requestedComponents, imageDepth, stats, _imp->uiContext, placementBuilder, !pending->driven, &pending->frameContext);
+        if (!pending->future && pending->driven) {
+            pending->fallbackReason = "ineligible";
+
+            return eViewerRenderRetCodeRender;
+        }
+    }
+    pending->needsCompletion = true;
+
+    return eViewerRenderRetCodeRender;
+} // prepareViewerRender
+
+ViewerInstance::ViewerRenderRetCode
+ViewerInstance::completeViewerRender(PendingViewerRender& pending)
+{
+    ViewerArgs& inArgs = *pending.inArgs;
+    const ViewIdx view = pending.view;
+    const bool singleThreaded = pending.singleThreaded;
+    const U64 viewerHash = pending.viewerHash;
+    const NodePtr& rotoPaintNode = pending.rotoPaintNode;
+    const ViewerCurrentFrameRequestSchedulerStartArgsPtr& request = pending.request;
+    const RenderStatsPtr& stats = pending.stats;
+    GpuPlacementSnapshotBuilder* placementBuilder = pending.placementBuilder;
+    const ViewerParallelRenderArgsSetterPtr& frameArgs = pending.frameArgs;
+    const std::shared_ptr<FrameRequestMap>& requestPassData = pending.requestPassData;
+    const bool useTextureCache = pending.useTextureCache;
+    const double par = pending.par;
+    const ImageBitDepthEnum imageDepth = pending.imageDepth;
+    const std::list<ImageLayerDesc>& requestedComponents = pending.requestedComponents;
+    const int alphaChannelIndex = pending.alphaChannelIndex;
+    const std::vector<RectI>& splitRoi = pending.splitRoi;
+
+    // Without the frame args of the thread that prepared it, the render resolves them, and whether it was aborted,
+    // through its frame context.
+    std::optional<AppTLS::FrameContextScope> contextScope;
+    if (!frameArgs && pending.frameContext) {
+        contextScope.emplace(pending.frameContext.get(), 0, RenderScheduler::runnablePriority(RenderScheduler::Priority::Interactive));
+    }
+
+    // #pragma message WARN("Implement Viewer so it accepts OpenGL Textures in input")
     BufferableObjectPtrList partialUpdateObjects;
     for (std::size_t rectIndex = 0; rectIndex < splitRoi.size(); ++rectIndex) {
         //AlphaImage will only be set when displaying the Matte overlay
@@ -4294,7 +4468,7 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             std::map<ImageLayerDesc, ImagePtr> layers;
             EffectInstance::RenderRoIRetCode retCode;
             if (inArgs.deepUpstream) {
-                if (taskGraphMode && stats) {
+                if (stats) {
                     stats->incLegacyFallbacks("viewer: deep input");
                 }
                 // Only isDoingPartialUpdates (RotoPaint) ever splits the RoI, and deep has no
@@ -4335,11 +4509,16 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
             } else {
                 FrameFuturePtr future;
                 FrameRenderContextPtr frameContext;
-                if (taskGraphMode) {
-                    future = submitViewerFrameToRenderScheduler(frameArgs.get(), requestPassData, inArgs, bool(rotoPaintNode), view, splitRoi[rectIndex], requestedComponents, imageDepth, stats, _imp->uiContext, placementBuilder, &frameContext);
+                if ((rectIndex == 0) && pending.firstRectSubmitted) {
+                    future = pending.future;
+                    frameContext = pending.frameContext;
+                } else {
+                    future = submitViewerFrameToRenderScheduler(frameArgs.get(), requestPassData, inArgs, bool(rotoPaintNode), view, splitRoi[rectIndex], requestedComponents, imageDepth, stats, _imp->uiContext, placementBuilder, true, &frameContext);
                 }
                 if (future) {
-                    retCode = future->wait();
+                    // A playback frame is completed on a pool thread, where wait() is forbidden, once its futures
+                    // finished; the fallback worker completes one whose other input it renders itself, and waits.
+                    retCode = future->isFinished() ? future->result() : future->wait();
                     if (placementBuilder) {
                         const std::unordered_set<const Node*> renderedNodes = frameContext ? frameContext->renderedNodes() : std::unordered_set<const Node*>();
                         placementBuilder->finishGraph(retCode, future->getRegionFallbacks(), frameContext ? &renderedNodes : nullptr);
@@ -4804,10 +4983,14 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
                                   args, this, *it);
                 }
             } else {
-                QtConcurrent::map( unCachedTiles,
-                                   [&](const UpdateViewerParams::CachedTile &tile) {
-                                    renderFunctor(viewerRenderRoI, args, this, tile);
-                                   } ).waitForFinished();
+                std::vector<const UpdateViewerParams::CachedTile*> tiles;
+                tiles.reserve(unCachedTiles.size());
+                for (std::list<UpdateViewerParams::CachedTile>::const_iterator it = unCachedTiles.begin(); it != unCachedTiles.end(); ++it) {
+                    tiles.push_back(&*it);
+                }
+                parallelForOnGlobalPool((int)tiles.size(), QThreadPool::globalInstance()->maxThreadCount(), [&](int index) {
+                    renderFunctor(viewerRenderRoI, args, this, *tiles[index]);
+                });
             }
 
             if (inArgs.isDoingPartialUpdates) {
@@ -4843,7 +5026,210 @@ ViewerInstance::renderViewer_internal(ViewIdx view,
     }
 
     return eViewerRenderRetCodeRender;
-} // renderViewer_internal
+} // completeViewerRender
+
+ViewerInstance::PlaybackFrameStageEnum
+ViewerInstance::preparePlaybackFrame(PlaybackFrame* frame)
+{
+    const SequenceTime time = frame->time;
+    const ViewIdx view = frame->view;
+    const RenderStatsPtr& stats = frame->stats;
+    ViewerArgsPtr* args = frame->args;
+
+    frame->viewerHash = getHash();
+
+    ViewerRenderRetCode status[2] = {
+        eViewerRenderRetCodeFail, eViewerRenderRetCodeFail
+    };
+    bool clearTexture[2] = { false, false };
+    for (int i = 0; i < 2; ++i) {
+        args[i] = std::make_shared<ViewerArgs>();
+        status[i] = getRenderViewerArgsAndCheckCache_public(time, true, view, i, frame->viewerHash, true, NodePtr(), stats, args[i].get());
+        clearTexture[i] = (status[i] == eViewerRenderRetCodeFail) || (status[i] == eViewerRenderRetCodeBlack);
+        if (status[i] == eViewerRenderRetCodeFail) {
+            args[i]->params.reset();
+            args[i].reset();
+        } else if (status[i] == eViewerRenderRetCodeBlack) {
+            if (args[i]->params) {
+                args[i]->params->tiles.clear();
+                frame->toAppend.push_back(args[i]->params);
+                args[i]->params.reset();
+            }
+            args[i].reset();
+        }
+    }
+
+    if ((status[0] == eViewerRenderRetCodeFail) && (status[1] == eViewerRenderRetCodeFail)) {
+        disconnectViewer();
+
+        return ePlaybackFrameStageDone;
+    }
+
+    for (int i = 0; i < 2; ++i) {
+        if (clearTexture[i]) {
+            disconnectTexture(i, status[i] == eViewerRenderRetCodeFail);
+        }
+    }
+
+    if (((status[0] == eViewerRenderRetCodeRedraw) && !args[0]->params->isViewerPaused) && ((status[1] == eViewerRenderRetCodeRedraw) && !args[1]->params->isViewerPaused)) {
+        return ePlaybackFrameStageDone;
+    }
+    for (int i = 0; i < 2; ++i) {
+        if (args[i] && args[i]->params) {
+            if (((args[i]->params->nbCachedTile > 0) && (args[i]->params->nbCachedTile == (int)args[i]->params->tiles.size())) || args[i]->params->isViewerPaused) {
+                frame->toAppend.push_back(args[i]->params);
+                args[i].reset();
+            }
+        }
+    }
+
+    if (!(args[0] && (status[0] != eViewerRenderRetCodeFail)) && !(args[1] && (status[1] != eViewerRenderRetCodeFail))) {
+        return ePlaybackFrameStageDone;
+    }
+
+    for (int i = 0; i < 2; ++i) {
+        if (args[i] && args[i]->params && args[i]->params->abortInfo) {
+            frame->renderAges[i] = args[i]->params->abortInfo->getRenderAge();
+            frame->hadRender[i] = true;
+        }
+    }
+
+    if (!_imp->uiContext) {
+        frame->failed = true;
+        finishPlaybackFrame(*frame);
+
+        return ePlaybackFrameStageDone;
+    }
+
+    bool deferred = false;
+    try {
+        for (int i = 0; i < 2; ++i) {
+            if (!args[i] || !args[i]->params) {
+                continue;
+            }
+            if ((i == 1) && (_imp->uiContext->getCompositingOperator() == eViewerCompositingOperatorNone)) {
+                args[i]->params->tiles.clear();
+                break;
+            }
+            frame->inputRenders[i] = true;
+            frame->abortInfos.push_back(args[i]->params->abortInfo);
+
+            std::shared_ptr<PendingViewerRender> pending = std::make_shared<PendingViewerRender>();
+            pending->driven = true;
+            ScopedThreadAbortInfo abortScope(false, args[i]->params->abortInfo, getNode()->getEffectInstance());
+            frame->ret[i] = prepareViewerRender(view, false, true, frame->viewerHash, NodePtr(), true, ViewerCurrentFrameRequestSchedulerStartArgsPtr(),
+                                                i == 0 ? stats : RenderStatsPtr(), nullptr, *args[i], pending.get());
+            // Before the other input installs its own.
+            pending->frameArgs.reset();
+            if (pending->fallbackReason) {
+                frame->deferred[i] = true;
+                deferred = true;
+            } else if (pending->needsCompletion) {
+                frame->futures.push_back(pending->future);
+                frame->futureAbortInfos.push_back(args[i]->params->abortInfo);
+                frame->pending[i] = pending;
+            }
+        }
+    } catch (...) {
+        for (int i = 0; i < 2; ++i) {
+            frame->pending[i].reset();
+            frame->inputRenders[i] = false;
+        }
+        frame->failed = true;
+        finishPlaybackFrame(*frame);
+
+        return ePlaybackFrameStageDone;
+    }
+
+    if (deferred) {
+        return ePlaybackFrameStageFallback;
+    }
+    if (!frame->futures.empty()) {
+        return ePlaybackFrameStageAwaitFutures;
+    }
+    finishPlaybackFrame(*frame);
+
+    return ePlaybackFrameStageDone;
+} // ViewerInstance::preparePlaybackFrame
+
+void
+ViewerInstance::finishPlaybackInput(PlaybackFrame& frame,
+                                    int i)
+{
+    ViewerArgsPtr& args = frame.args[i];
+    ViewerRenderRetCode ret = frame.ret[i];
+    // The fallback worker and the pool threads finish one frame after another.
+    ScopedThreadAbortInfo abortScope(false, args->params ? args->params->abortInfo : AbortableRenderInfoPtr(), getNode()->getEffectInstance());
+
+    if (frame.deferred[i]) {
+        for (const EffectInstancePtr& effect : args->staleOverlayImageEffects) {
+            // The A and B inputs can share a node: the first of them may have refreshed it.
+            if (effect->overlayImagesStale(args->overlayImageRequest)) {
+                effect->renderOverlayImages(args->overlayImageRequest, args->params->abortInfo);
+            }
+        }
+        ret = renderViewer_internal(frame.view, false, true, frame.viewerHash, true, NodePtr(), true, ViewerCurrentFrameRequestSchedulerStartArgsPtr(),
+                                    i == 0 ? frame.stats : RenderStatsPtr(), nullptr, *args);
+    } else if (frame.pending[i]) {
+        ret = completeViewerRender(*frame.pending[i]);
+        frame.pending[i].reset();
+    }
+    frame.ret[i] = ret;
+
+    args->isRenderingFlag.reset();
+    if (ret != eViewerRenderRetCodeRender) {
+        if (args->params) {
+            for (std::list<UpdateViewerParams::CachedTile>::iterator it = args->params->tiles.begin(); it != args->params->tiles.end(); ++it) {
+                it->cachedData.reset();
+            }
+            args->params->tiles.clear();
+        }
+    }
+    if ((ret == eViewerRenderRetCodeBlack) && args->params) {
+        disconnectTexture(args->params->textureIndex, false);
+    }
+    if (ret == eViewerRenderRetCodeFail) {
+        args.reset();
+    }
+}
+
+void
+ViewerInstance::finishPlaybackFrame(PlaybackFrame& frame)
+{
+    if (!frame.failed) {
+        try {
+            for (int i = 0; i < 2; ++i) {
+                if (frame.inputRenders[i]) {
+                    finishPlaybackInput(frame, i);
+                    if (frame.ret[i] == eViewerRenderRetCodeFail) {
+                        frame.failed = true;
+                    }
+                }
+            }
+        } catch (...) {
+            frame.failed = true;
+        }
+    }
+    for (int i = 0; i < 2; ++i) {
+        frame.pending[i].reset();
+    }
+
+    if (frame.failed) {
+        for (int i = 0; i < 2; ++i) {
+            if (frame.hadRender[i]) {
+                renderFailed(i, frame.renderAges[i]);
+            }
+        }
+
+        return;
+    }
+    for (int i = 0; i < 2; ++i) {
+        if (frame.args[i] && frame.args[i]->params) {
+            frame.toAppend.push_back(frame.args[i]->params);
+            frame.args[i].reset();
+        }
+    }
+} // ViewerInstance::finishPlaybackFrame
 
 void
 ViewerInstance::aboutToUpdateTextures()

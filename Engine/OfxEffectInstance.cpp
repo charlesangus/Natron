@@ -2212,7 +2212,7 @@ OfxEffectInstance::findFrameAnswer(double time,
     if (mayDerive) {
         metadata = getRenderMetadata(time, view);
     } else {
-        metadata = findRenderMetadata(getParallelRenderArgsTLS(), time, view);
+        metadata = findRenderMetadata(getFrameArgs(), time, view);
     }
     if (!metadata) {
         return OfxClipsFrameAnswerPtr();

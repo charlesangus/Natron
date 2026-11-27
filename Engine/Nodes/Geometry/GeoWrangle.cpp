@@ -481,7 +481,7 @@ GeoWrangle::renderGeometry(const GeoRenderActionArgs& args,
     // The kernel polls from pool threads, where this node's abort state is not visible: they read
     // the render's abort info, and the stop latched by the render thread, which also runs batches
     // and can ask aborted(). An edit stops the run even when none of those exist.
-    const ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr frameArgs = getFrameArgs();
     const AbortableRenderInfoPtr render = frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
     const QThread* const renderThread = QThread::currentThread();
     const std::uint64_t generation = _editGeneration.load(std::memory_order_relaxed);

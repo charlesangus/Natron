@@ -1013,7 +1013,7 @@ TEST_F(NativeDirBlurTest, ClampLimitsTheOvershoot)
     EXPECT_GE(lo, -1e-6f);
 }
 
-// Legacy and task-graph renders agree bit for bit, in each mode, and with a mask and mix.
+// Direct and scheduled renders agree bit for bit, in each blur mode, and with a mask and mix.
 TEST_F(NativeDirBlurTest, SameBothWays)
 {
     resetProject();
@@ -1072,7 +1072,7 @@ TEST_F(NativeDirBlurTest, RenderScalesKeepTheSourceRange)
     for (unsigned int mipmapLevel = 1; mipmapLevel <= 3; ++mipmapLevel) {
         std::vector<float> input;
         std::string error;
-        ASSERT_TRUE(renderBlurRangePlane(source, kTime, mipmapLevel, pixelRoDAt(source, mipmapLevel), eRenderSchedulerModeLegacy, true, &input, &error)) << error;
+        ASSERT_TRUE(renderBlurRangePlane(source, kTime, mipmapLevel, pixelRoDAt(source, mipmapLevel), false, true, &input, &error)) << error;
         BlurRange range;
         range.include(input);
         ASSERT_GT(range.high, 100.f);
@@ -1084,7 +1084,7 @@ TEST_F(NativeDirBlurTest, RenderScalesKeepTheSourceRange)
                     NodePtr node = makeBrightBlur(source, mode, filter.id, blackOutside, takeMax);
                     ASSERT_TRUE(bool(node));
                     std::vector<float> output;
-                    ASSERT_TRUE(renderBlurRangePlane(node, kTime, mipmapLevel, pixelRoDAt(node, mipmapLevel), eRenderSchedulerModeLegacy, true, &output, &error)) << error;
+                    ASSERT_TRUE(renderBlurRangePlane(node, kTime, mipmapLevel, pixelRoDAt(node, mipmapLevel), false, true, &output, &error)) << error;
                     EXPECT_EQ(std::string(), blurRangeViolation(output, range, filter.lobes)) << mode << ", " << filter.id << (takeMax ? " max" : "") << (blackOutside ? "" : " edge repeat") << ", mipmap " << mipmapLevel;
                 }
             }
@@ -1137,7 +1137,7 @@ TEST_F(NativeDirBlurTest, ZoomingOutOverACachedFullScaleRenderKeepsTheSourceRang
     NodePtr source = makeBrightSource();
     ASSERT_TRUE(bool(source));
     const char* const modes[] = { kDirBlurParamModeDirectional, kDirBlurParamModeRadial, kDirBlurParamModeZoom };
-    for (const RenderSchedulerModeEnum schedulerMode : { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph }) {
+    for (const bool scheduled : { false, true }) {
         for (const char* mode : modes) {
             NodePtr node = makeBrightBlur(source, mode, "cubic", true, false);
             ASSERT_TRUE(bool(node));
@@ -1145,20 +1145,20 @@ TEST_F(NativeDirBlurTest, ZoomingOutOverACachedFullScaleRenderKeepsTheSourceRang
             const RectI quarter(fullRoD.x1 + fullRoD.width() / 4, fullRoD.y1 + fullRoD.height() / 4, fullRoD.x1 + fullRoD.width() / 2, fullRoD.y1 + fullRoD.height() / 2);
             std::string error;
             std::vector<float> input;
-            ASSERT_TRUE(renderBlurRangePlane(source, kTime, 0, pixelRoDAt(source, 0), eRenderSchedulerModeLegacy, true, &input, &error)) << error;
+            ASSERT_TRUE(renderBlurRangePlane(source, kTime, 0, pixelRoDAt(source, 0), false, true, &input, &error)) << error;
             BlurRange range;
             range.include(input);
             for (unsigned int mipmapLevel = 1; mipmapLevel <= 3; ++mipmapLevel) {
-                ASSERT_TRUE(renderBlurRangePlane(source, kTime, mipmapLevel, pixelRoDAt(source, mipmapLevel), eRenderSchedulerModeLegacy, true, &input, &error)) << error;
+                ASSERT_TRUE(renderBlurRangePlane(source, kTime, mipmapLevel, pixelRoDAt(source, mipmapLevel), false, true, &input, &error)) << error;
                 range.include(input);
             }
             for (unsigned int mipmapLevel = 1; mipmapLevel <= 3; ++mipmapLevel) {
                 appPTR->clearAllCaches();
                 std::vector<float> atFullScale;
-                ASSERT_TRUE(renderBlurRangePlane(node, kTime, 0, quarter, schedulerMode, false, &atFullScale, &error)) << error;
+                ASSERT_TRUE(renderBlurRangePlane(node, kTime, 0, quarter, scheduled, false, &atFullScale, &error)) << error;
                 std::vector<float> zoomedOut;
-                ASSERT_TRUE(renderBlurRangePlane(node, kTime, mipmapLevel, pixelRoDAt(node, mipmapLevel), schedulerMode, false, &zoomedOut, &error)) << error;
-                EXPECT_EQ(std::string(), blurRangeViolation(zoomedOut, range, kBlurRangeNoLobes)) << mode << ", mipmap " << mipmapLevel << ((schedulerMode == eRenderSchedulerModeLegacy) ? ", legacy" : ", task graph");
+                ASSERT_TRUE(renderBlurRangePlane(node, kTime, mipmapLevel, pixelRoDAt(node, mipmapLevel), scheduled, false, &zoomedOut, &error)) << error;
+                EXPECT_EQ(std::string(), blurRangeViolation(zoomedOut, range, kBlurRangeNoLobes)) << mode << ", mipmap " << mipmapLevel << (scheduled ? ", scheduled" : ", direct");
             }
             appPTR->clearAllCaches();
         }

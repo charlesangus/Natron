@@ -59,6 +59,10 @@ file(GLOB NatronEngineKernel_HEADERS Kernel/*.h)
 file(GLOB NatronEngineKernel_SOURCES Kernel/*.cpp)
 list(APPEND NatronEngine_HEADERS ${NatronEngineKernel_HEADERS})
 list(APPEND NatronEngine_SOURCES ${NatronEngineKernel_SOURCES})
+file(GLOB NatronEngineOptics_HEADERS Optics/*.h)
+file(GLOB NatronEngineOptics_SOURCES Optics/*.cpp)
+list(APPEND NatronEngine_HEADERS ${NatronEngineOptics_HEADERS})
+list(APPEND NatronEngine_SOURCES ${NatronEngineOptics_SOURCES})
 # Engine/Flow/ is the optical-flow library. It knows nothing of nodes, images or Qt.
 file(GLOB NatronEngineFlow_HEADERS Flow/*.h)
 file(GLOB NatronEngineFlow_SOURCES Flow/*.cpp)
@@ -66,7 +70,7 @@ list(APPEND NatronEngine_HEADERS ${NatronEngineFlow_HEADERS})
 list(APPEND NatronEngine_SOURCES ${NatronEngineFlow_SOURCES})
 # OpenUSD's headers (Nodes/Scene/UsdIncludes.h) include its Python bindings' headers, which need
 # the full Python API, and libshiboken puts Py_LIMITED_API on everything that links it.
-file(GLOB NatronEngineScene_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)
+file(GLOB_RECURSE NatronEngineScene_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Scene/*.cpp)
 set_source_files_properties(${NatronEngineScene_SOURCES} PROPERTIES COMPILE_OPTIONS -UPy_LIMITED_API)
 # The geometry nodes translate to and from USD, so they include the same headers.
 file(GLOB NatronEngineGeometry_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/Nodes/Geometry/*.cpp)
@@ -210,6 +214,7 @@ if(NATRON_GPU)
 endif()
 
 add_library(NatronEngine STATIC ${NatronEngine_HEADERS} ${NatronEngine_SOURCES})
+add_subdirectory(Nodes/Scene/Utility)
 # The pinned darktable-ai model manifest Ai/ModelRegistry reads, as :/Ai/ai_models.json.
 # tools/ai/update-manifest.py regenerates it.
 qt_add_resources(NatronEngine AiModelManifest
@@ -270,6 +275,7 @@ target_link_libraries(NatronEngine
         tess
         rawspeed::rawspeed
         lensfun::lensfun
+        ZLIB::ZLIB
         ${CMAKE_DL_LIBS}
         ${NATRON_USD_ENGINE_LIBRARIES}
         OpenSubdiv::osdCPU

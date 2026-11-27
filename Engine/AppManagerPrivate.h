@@ -114,11 +114,6 @@ public:
     bool useThreadPool; // whether the multi-thread suite should use the global thread pool (of QtConcurrent) or not
     mutable QMutex nThreadsMutex; // protects nThreadsToRender & nThreadsPerEffect & useThreadPool
 
-    // Read on render threads, so atomic rather than behind nThreadsMutex.
-    std::atomic<int> renderSchedulerMode;
-    // NATRON_RENDER_SCHEDULER was set to a valid value at startup; settings changes must not override it.
-    bool renderSchedulerEnvOverride;
-
     // Created once the settings are loaded; destroyed with the private data.
     std::unique_ptr<GpuContext> gpuContext;
 

@@ -143,7 +143,7 @@ protected:
         project->setOrAddProjectFormat(Format(0, 0, kParitySourceWidth, kParitySourceHeight, "nativeEdgeDetect64x48", 1.));
     }
 
-    // Renders `node` in Legacy mode and as a task graph at pool sizes 1 and 4 over its own region
+    // Renders `node` by a direct pull and as a task graph at pool sizes 1 and 4 over its own region
     // of definition: bit-exact, and the task graph pulls nothing it did not plan.
     void expectSameBothWays(const NodePtr& node,
                             const std::string& caseName)
@@ -457,7 +457,7 @@ TEST_F(NativeEdgeDetectTest, MaskAndMixBlendTheUnmaskedRender)
     }
 }
 
-TEST_F(NativeEdgeDetectTest, RendersTheSameInBothSchedulerModesAtAnyPoolSize)
+TEST_F(NativeEdgeDetectTest, RendersTheSameDirectAndScheduledAtAnyPoolSize)
 {
     resetProject();
     NodePtr source = createNodeAtMajor(getApp(), kTestPluginIDParitySource, -1);

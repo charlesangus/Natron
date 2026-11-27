@@ -731,7 +731,8 @@ std::string
 geoEncodePattern(const GeoDetail& detail,
                  GeoAttribClassEnum cls,
                  const GeoElementMask& mask,
-                 bool emptyMeansEverything)
+                 bool emptyMeansEverything,
+                 bool collapseFull)
 {
     const GeoIndexMap& map = detail.indexMap(cls);
     std::vector<GeoIndex> numbers;
@@ -746,7 +747,7 @@ geoEncodePattern(const GeoDetail& detail,
     if (numbers.empty()) {
         return emptyMeansEverything ? std::string() : std::string("^*");
     }
-    if (numbers.size() > 1 && GeoIndex(numbers.size()) == map.size()) {
+    if (collapseFull && numbers.size() > 1 && GeoIndex(numbers.size()) == map.size()) {
         return "*";
     }
     std::string out;

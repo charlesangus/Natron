@@ -162,6 +162,15 @@ TEST(GeoOpUtilsTest, FullSelectionIsStar)
     EXPECT_EQ("*", geoEncodePattern(d, eGeoAttribClassPoint, maskOfNumbers(d, eGeoAttribClassPoint, all)));
 }
 
+TEST(GeoOpUtilsTest, FullSelectionWithoutCollapseIsExplicit)
+{
+    const GeoDetail d = detailWithPoints(4);
+    const GeoElementMask all = maskOfNumbers(d, eGeoAttribClassPoint, { 0, 1, 2, 3 });
+    EXPECT_EQ("0-3", geoEncodePattern(d, eGeoAttribClassPoint, all, false, false));
+    EXPECT_EQ(all, decode(d, eGeoAttribClassPoint, "0-3"));
+    EXPECT_EQ("*", geoEncodePattern(d, eGeoAttribClassPoint, all));
+}
+
 TEST(GeoOpUtilsTest, EmptySetRoundTrips)
 {
     const GeoDetail d = detailWithPoints(30);

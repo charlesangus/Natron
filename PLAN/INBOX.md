@@ -1,7 +1,5 @@
 ## Pending
 
-- **User knob properties still not saved** (PM, 2026-11-25, from the F16 - User Knob Editor review): increments and decimals, Double matrix display, primPathHint, customHTMLText, and per-dimension min/max for Int/Double/Color (one range is saved for all dimensions). They are lost on save/load, copy/paste and Ctrl-drop copy. Parametric min/max is dropped by the copy too.
-
 - **An expression reading another dimension of its own knob never updates** (PM, 2026-11-25, from F16 - User Knob Editor's gate): `size.h = thisNode.size.getValue(0)` keeps its first result when `size.w` changes, because self-reads register no listener (`Engine/PyParameter.cpp:1026` `_addAsDependencyOf`, `Engine/Knob.cpp:3310` `registerExpressionReads`). Pre-existing on main. A fix would register cross-dimension self-reads and keep refusing a dimension reading itself; check cycle handling in `refreshListenersAfterValueChange`.
 
 - **SplitOnGapsTest stalls at startup** (PM, 2026-11-26): timed out at 300 s on f18-gate1 (passed on the serial rerun), and the watchdog dumped it "still running 225 s after the process started, phase 'start'" in m496-rep8's ctest leg. The stall is before the test body, so look at the watchdog stacks from rep8's log for what process start waits on (likely shared with other startup-phase stalls under -j4).

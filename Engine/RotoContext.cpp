@@ -120,7 +120,14 @@ isDefaultPaintNode(const NodePtr& node)
 RotoContext::RotoContext(const NodePtr& node)
     : RotoCurveContext(node, isDefaultPaintNode(node))
 {
-    _imp->createPaintKnobs();
+    // Through the node: the handle may outlive the context.
+    const NodeWPtr weakNode = node;
+    _imp->createPaintKnobs([weakNode](double time, Transform::Matrix3x3* frame) {
+        NodePtr n = weakNode.lock();
+        RotoCurveContextPtr context = n ? n->getCurveContext() : RotoCurveContextPtr();
+
+        return context && context->getTransformKnobsFrameAtTime(time, frame);
+    });
 }
 
 

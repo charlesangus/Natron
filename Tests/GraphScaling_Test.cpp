@@ -98,7 +98,7 @@ expectFrameVaryingFromSetterAndFallback(const AppInstancePtr& app,
     ASSERT_EQ(chain.size(), expected.size());
 
     for (std::size_t i = 0; i < chain.size(); ++i) {
-        EXPECT_FALSE(bool(chain[i]->getEffectInstance()->getParallelRenderArgsTLS()));
+        EXPECT_FALSE(bool(chain[i]->getEffectInstance()->getFrameArgs()));
         EXPECT_EQ(expected[i], chain[i]->getEffectInstance()->isFrameVaryingOrAnimated_Recursive()) << chain[i]->getScriptName();
     }
 
@@ -117,7 +117,7 @@ expectFrameVaryingFromSetterAndFallback(const AppInstancePtr& app,
                                     RenderStatsPtr());
 
     for (std::size_t i = 0; i < chain.size(); ++i) {
-        ParallelRenderArgsPtr frameArgs = chain[i]->getEffectInstance()->getParallelRenderArgsTLS();
+        ParallelRenderArgsPtr frameArgs = chain[i]->getEffectInstance()->getFrameArgs();
         ASSERT_TRUE(bool(frameArgs)) << chain[i]->getScriptName();
         EXPECT_TRUE(frameArgs->frameVaryingComputed) << chain[i]->getScriptName();
         EXPECT_EQ(expected[i], bool(frameArgs->isFrameVaryingOrAnimated)) << chain[i]->getScriptName();
@@ -223,10 +223,10 @@ TEST_F(GraphScalingTest, InputFetchedFromOnInputChangedLeavesNoFrameArgsUpstream
 
     EXPECT_TRUE(bool(fetchEffect->getFetchedImage()));
 
-    EXPECT_FALSE(bool(constant->getEffectInstance()->getParallelRenderArgsTLS()));
-    EXPECT_FALSE(bool(gradeA->getEffectInstance()->getParallelRenderArgsTLS()));
-    EXPECT_FALSE(bool(gradeB->getEffectInstance()->getParallelRenderArgsTLS()));
-    EXPECT_FALSE(bool(fetcher->getEffectInstance()->getParallelRenderArgsTLS()));
+    EXPECT_FALSE(bool(constant->getEffectInstance()->getFrameArgs()));
+    EXPECT_FALSE(bool(gradeA->getEffectInstance()->getFrameArgs()));
+    EXPECT_FALSE(bool(gradeB->getEffectInstance()->getFrameArgs()));
+    EXPECT_FALSE(bool(fetcher->getEffectInstance()->getFrameArgs()));
 
     KnobColor* color = dynamic_cast<KnobColor*>(constant->getKnobByName("color").get());
     ASSERT_TRUE(color != NULL);

@@ -575,7 +575,7 @@ TEST_F(NativeCropTest, UnversionedRequestsGetTheNativeCrop)
     EXPECT_EQ(kNativeCropMajor, unversioned->getMajorVersion());
 }
 
-TEST_F(NativeCropTest, RendersTheSameInBothSchedulerModes)
+TEST_F(NativeCropTest, RendersTheSameDirectAndScheduled)
 {
     resetProject();
     std::vector<int> poolSizes;

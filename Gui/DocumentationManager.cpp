@@ -70,6 +70,7 @@ DocumentationManager::DocumentationManager(QObject *parent)
     (void)QT_TR_NOOP(PLUGIN_GROUP_MERGE);
     (void)QT_TR_NOOP(PLUGIN_GROUP_TRANSFORM);
     (void)QT_TR_NOOP(PLUGIN_GROUP_3D);
+    (void)QT_TR_NOOP(PLUGIN_GROUP_GEOMETRY);
     (void)QT_TR_NOOP(PLUGIN_GROUP_DEEP);
     (void)QT_TR_NOOP(PLUGIN_GROUP_METADATA);
     (void)QT_TR_NOOP(PLUGIN_GROUP_LOOP);

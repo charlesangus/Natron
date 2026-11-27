@@ -160,9 +160,7 @@ public:
 
     void setKeyframeOnAllTransformParameters(double time);
 
-    const std::list<KnobIPtr>& getKnobs() const;
-
-    KnobIPtr getKnobByName(const std::string& name) const;
+    virtual const std::list<KnobIPtr>& getKnobs() const OVERRIDE FINAL;
 
     /**
      * @brief Adds a knob the hosting effect owns on this item: it is saved, copied and hashed

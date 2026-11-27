@@ -143,11 +143,10 @@ protected:
         EXPECT_EQ(Route::Kind::None, routeAt(node, time).kind) << "at " << time;
         const RectI& window = NativeTimeNodes::kWindow;
         const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
-        const RenderSchedulerModeEnum modes[] = { eRenderSchedulerModeLegacy, eRenderSchedulerModeTaskGraph };
-        for (RenderSchedulerModeEnum mode : modes) {
+        for (bool scheduled : { false, true }) {
             std::vector<RenderedPlane> planes;
             std::string error;
-            ASSERT_TRUE(renderNodePlanesInMode(node, time, ViewIdx(0), 0, window, rgba, mode, true, &planes, &error)) << "mode " << (int)mode << ": " << error;
+            ASSERT_TRUE((scheduled ? renderNodePlanesScheduled(node, time, ViewIdx(0), 0, window, true, &planes, &error) : renderNodePlanesDirect(node, time, ViewIdx(0), 0, window, rgba, &planes, &error, true))) << (scheduled ? "scheduled" : "direct") << ": " << error;
             ASSERT_FALSE(planes.empty());
             const std::size_t nComps = planes.front().channels.size();
             ASSERT_EQ(4u, nComps);
@@ -157,7 +156,7 @@ protected:
                     const double t = timeOf(x, y);
                     const std::size_t i = ((std::size_t)(y - window.y1) * window.width() + (std::size_t)(x - window.x1)) * nComps;
                     for (int c = 0; c < 4; ++c) {
-                        EXPECT_NEAR(colourAtTime(t, linear, c), planes.front().pixels[i + c], 1e-5) << "mode " << (int)mode << ", pixel " << x << "," << y << ", channel " << c;
+                        EXPECT_NEAR(colourAtTime(t, linear, c), planes.front().pixels[i + c], 1e-5) << (scheduled ? "scheduled" : "direct") << ", pixel " << x << "," << y << ", channel " << c;
                     }
                 }
             }

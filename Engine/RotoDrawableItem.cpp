@@ -1519,18 +1519,6 @@ RotoDrawableItem::getKnobs() const
     return _imp->knobs;
 }
 
-KnobIPtr
-RotoDrawableItem::getKnobByName(const std::string& name) const
-{
-    for (std::list<KnobIPtr>::const_iterator it = _imp->knobs.begin(); it != _imp->knobs.end(); ++it) {
-        if ( (*it)->getName() == name ) {
-            return *it;
-        }
-    }
-
-    return KnobIPtr();
-}
-
 void
 RotoDrawableItem::getTransformAtTime(double time,
                                      Transform::Matrix3x3* matrix) const

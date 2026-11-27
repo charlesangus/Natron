@@ -26,15 +26,18 @@
 #include "EffectInstance.h"
 #include "EffectInstancePrivate.h"
 
+#include <atomic>
 #include <exception>
 #include <functional>
 #include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <tuple>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -62,25 +65,6 @@ EffectInstance::SceneRenderActionArgs::getInputContext(int inputNb) const
 }
 
 namespace {
-// Pops the fallback frame args evaluateScene() pushes when it is called outside of a render set
-// up by the scheduler, so a later direct call does not find this call's hash on the thread.
-class ScopedSceneFallbackFrameArgs {
-public:
-    explicit ScopedSceneFallbackFrameArgs(const EffectInstance::EffectTLSDataPtr& tls)
-        : _tls(tls)
-    {
-    }
-
-    ~ScopedSceneFallbackFrameArgs()
-    {
-        if (_tls && !_tls->frameArgs.empty()) {
-            _tls->frameArgs.pop_back();
-        }
-    }
-
-private:
-    EffectInstance::EffectTLSDataPtr _tls;
-};
 
 void
 setSceneError(std::string* errorMessage,
@@ -89,6 +73,36 @@ setSceneError(std::string* errorMessage,
     if (errorMessage) {
         *errorMessage = message;
     }
+}
+
+std::atomic<int> scenePreparerCount { 0 };
+
+// Every node upstream of root and root itself, inputs before the nodes reading them. Iterative,
+// as graphs can be deeper than the stack.
+std::vector<EffectInstancePtr>
+upstreamInputsFirst(const EffectInstancePtr& root)
+{
+    std::vector<EffectInstancePtr> order;
+    std::unordered_set<const EffectInstance*> visited;
+    std::vector<std::pair<EffectInstancePtr, int>> stack;
+
+    visited.insert(root.get());
+    stack.emplace_back(root, 0);
+    while (!stack.empty()) {
+        std::pair<EffectInstancePtr, int>& top = stack.back();
+        if (top.second >= top.first->getNInputs()) {
+            order.push_back(top.first);
+            stack.pop_back();
+            continue;
+        }
+        const EffectInstancePtr input = top.first->getInput(top.second);
+        ++top.second;
+        if (input && visited.insert(input.get()).second) {
+            stack.emplace_back(input, 0);
+        }
+    }
+
+    return order;
 }
 
 /**
@@ -135,6 +149,12 @@ struct SceneInputContextIds {
 };
 } // anonymous namespace
 
+void
+EffectInstance::setPreparesSceneSources(bool prepares)
+{
+    scenePreparerCount.fetch_add(prepares ? 1 : -1);
+}
+
 bool
 EffectInstance::producesSceneData() const
 {
@@ -160,10 +180,6 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
     }
     *outputScene = ScenePayload();
 
-    // An evaluation reads layers and opens files from start to end: a layer reload waits for it,
-    // and one waiting holds new evaluations off. Re-entrant, so only the outermost one counts.
-    SceneWriteBarrier::ReadScope read;
-
     // Same guard as renderDeepRoI(): a render clone forwards to the main instance, which owns
     // the node's memoized layer and the TLS.
     if (_imp->mainInstance) {
@@ -180,11 +196,10 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         return eRenderRoIRetCodeAborted;
     }
 
-    EffectTLSDataPtr tls = _imp->tlsData->getOrCreateTLSData();
-    assert(tls);
-    ParallelRenderArgsPtr frameArgs;
-    std::unique_ptr<ScopedSceneFallbackFrameArgs> fallbackFrameArgs;
-    if (tls->frameArgs.empty()) {
+    ParallelRenderArgsPtr frameArgs = getFrameArgs();
+    // Popped when the call returns, so a later direct call does not find this call's hash on the thread.
+    FrameArgsToken fallbackFrameArgs;
+    if (!frameArgs) {
         // A direct call (a test, a script, the viewer asking for a stage): give the hash the
         // identity cache keys on and the abort flag somewhere to live, as renderDeepRoI() does.
         frameArgs = std::make_shared<ParallelRenderArgs>();
@@ -199,15 +214,29 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
         frameArgs->isSequentialRender = false;
         frameArgs->isRenderResponseToUserInteraction = true;
         frameArgs->abortInfo = args.abortInfo;
-        tls->frameArgs.push_back(frameArgs);
-        fallbackFrameArgs.reset(new ScopedSceneFallbackFrameArgs(tls));
-    } else {
-        frameArgs = tls->frameArgs.back();
+        fallbackFrameArgs = FrameArgsToken(this, frameArgs);
     }
 
     if (aborted()) {
         return eRenderRoIRetCodeAborted;
     }
+
+    if (!SceneWriteBarrier::isReadingOnThisThread() && (scenePreparerCount.load() > 0)) {
+        const std::vector<EffectInstancePtr> upstream = upstreamInputsFirst(shared_from_this());
+        for (const EffectInstancePtr& effect : upstream) {
+            const RenderRoIRetCode code = effect->prepareSceneSources(args, errorMessage);
+            if (code != eRenderRoIRetCodeOk) {
+                return code;
+            }
+            if (aborted()) {
+                return eRenderRoIRetCodeAborted;
+            }
+        }
+    }
+
+    // An evaluation reads layers and opens files from start to end: a layer reload waits for it,
+    // and one waiting holds new evaluations off. Re-entrant, so only the outermost one counts.
+    SceneWriteBarrier::ReadScope read;
 
     const U64 nodeHash = frameArgs->nodeHash;
 

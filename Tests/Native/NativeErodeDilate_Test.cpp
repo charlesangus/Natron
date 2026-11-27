@@ -386,7 +386,7 @@ TEST_F(NativeErodeDilateTest, EdgeModeDecidesTheBorderOfAnErodedConstant)
     }
 }
 
-TEST_F(NativeErodeDilateTest, RendersTheSameInBothSchedulerModesAtAnyPoolSize)
+TEST_F(NativeErodeDilateTest, RendersTheSameDirectAndScheduledAtAnyPoolSize)
 {
     resetProject();
     for (double sign : { 1., -1. }) {

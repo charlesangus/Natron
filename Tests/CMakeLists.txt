@@ -20,7 +20,7 @@
 # Where the test-only OFX bundles are built; the test mains append it to OFX_PLUGIN_PATH.
 set(NATRON_TEST_OFX_PLUGIN_DIR ${CMAKE_BINARY_DIR}/Tests/TestPlugins)
 
-set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h ContinuationTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h Flow/FlowTestPlate.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/KeyerMatteReference.h Native/NativeBlurRange.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestWatchdog.h SplineWarpHostTestEffect.h Native/SplineWarpTestCurves.h TestOfxPluginPath.h TestRetiredOfxIds.h TwoPlaneTestEffect.h ViewerInstanceTestAccess.h)
+set(Tests_HEADERS Ai/AiModelTestEffect.h BaseTest.h CacheMemoryPressureGuard.h CacheStress.h CacheStressTestEffect.h ContextTestEffects.h ContinuationTestEffects.h CountingTestEffect.h CurveHostTestEffect.h DataKindTestEffect.h DeepRenderTestEffect.h FlatExrReader.h Flow/FlowTestPlate.h GeoRenderTestEffect.h IdentityHopTestEffect.h InputChangedFetchTestEffect.h MultiplanarTestEffect.h Native/KeyerMatteReference.h Native/NativeBlurRange.h Native/NativeGolden.h Native/NativeGpuParity.h Native/NativeTimeNodesTest.h NativeMetadataTestEffect.h NativeParity.h PerProcessUserDirs.h RenderBothWays.h SceneTestEffect.h TestWatchdog.h SplineWarpHostTestEffect.h Native/SplineWarpTestCurves.h TestOfxPluginPath.h TestRetiredOfxIds.h TwoPlaneTestEffect.h ViewerInstanceTestAccess.h)
 set(Tests_SOURCES
     google-test/src/gtest-all.cc
     google-mock/src/gmock-all.cc
@@ -67,6 +67,34 @@ set(Tests_SOURCES
     FrameRenderContext_Test.cpp
     FrameStoreHandoff_Test.cpp
     GeneratorLayer_Test.cpp
+    GeoAttribute_Test.cpp
+    GeoBench_Test.cpp
+    GeoCopyToPoints_Test.cpp
+    GeoDetail_Test.cpp
+    GeoDetailCache_Test.cpp
+    GeoDelete_Test.cpp
+    GeoDisplace_Test.cpp
+    GeoEdit_Test.cpp
+    GeoGroup_Test.cpp
+    GeoGroupOps_Test.cpp
+    GeoImportOBJ_Test.cpp
+    GeoIndexMap_Test.cpp
+    GeoKernelRunner_Test.cpp
+    GeoKernelTopology_Test.cpp
+    GeoMerge_Test.cpp
+    GeoNormals_Test.cpp
+    GeoOpUtils_Test.cpp
+    GeoPacked_Test.cpp
+    GeoPrimitive_Test.cpp
+    GeoPython_Test.cpp
+    GeoRender_Test.cpp
+    GeoScatter_Test.cpp
+    GeoSpreadsheet_Test.cpp
+    GeoSubdivide_Test.cpp
+    GeoTransform_Test.cpp
+    GeoUVProject_Test.cpp
+    GeoWrangleParams_Test.cpp
+    GeoWrangle_Test.cpp
     GLScheduler_Test.cpp
     KnobChangeGLContext_Test.cpp
     GlobalModeKind_Test.cpp
@@ -88,6 +116,7 @@ set(Tests_SOURCES
     HashPluginSweep_Test.cpp
     IdentityHop_Test.cpp
     Image_Test.cpp
+    KernelParser_Test.cpp
     KnobChannelSet_Test.cpp
     KnobFile_Test.cpp
     KnobValueRole_Test.cpp
@@ -126,6 +155,7 @@ set(Tests_SOURCES
     RippleEditModes_Test.cpp
     RotoUndoGesture_Test.cpp
     RotoDragUndo_Test.cpp
+    RotoInsertPointDrag_Test.cpp
     RotoOverlayHomography_Test.cpp
     RotoDragRenderThrottle_Test.cpp
     RotoKeyDuringRender_Test.cpp
@@ -172,6 +202,7 @@ set(Tests_SOURCES
     NodeColorSampler_Test.cpp
     OSGLContext_Test.cpp
     PersistentMessage_Test.cpp
+    PlaybackTimer_Test.cpp
     PluginIdentity_Test.cpp
     ImagePasteBands_Test.cpp
     PoolParallelFor_Test.cpp
@@ -220,7 +251,6 @@ set(Tests_SOURCES
     RenderRange_Test.cpp
     RenderScheduler_Test.cpp
     RenderSchedulerAbort_Test.cpp
-    RenderSchedulerMode_Test.cpp
     RotoFeatherBanding_Test.cpp
     RotoFeatherDrag_Test.cpp
     RotoLayer_Test.cpp
@@ -235,6 +265,7 @@ set(Tests_SOURCES
     Tracker_Test.cpp
     TwoPlaneRender_Test.cpp
     TypedPassthrough_Test.cpp
+    UserKnobEdit_Test.cpp
     WeightedInterpolation_Test.cpp
     WriteAllLayers_Test.cpp
     ImageConvert_Test.cpp
@@ -364,6 +395,7 @@ set(GuiTests_SOURCES
     DisplayLegendColour_Test.cpp
     EdgeGeometry_Test.cpp
     EdgeNearbyGrab_Test.cpp
+    GeoSpreadsheetModel_Test.cpp
     GlobalModeTargeting_Test.cpp
     GpuOverlayMapping_Test.cpp
     GuiGLRequirements_Test.cpp
@@ -409,6 +441,7 @@ set(GuiTests_SOURCES
     ValueKnobGlobalModeTarget_Test.cpp
     ViewerPixelGrid_Test.cpp
     ViewerStaleCueTiming_Test.cpp
+    ViewerZoomLadder_Test.cpp
     WindowPlacement_Test.cpp
     guimain.cpp
 )
@@ -454,8 +487,9 @@ include(NatronGtestSuites)
 # TIMEOUT 300 turns a scheduler wait that never returns (OutputSchedulerThread.cpp's
 # bufEmptyCondition wait has no predicate, loop or timeout) into a failed suite instead of a process
 # that never exits; SuiteProperties.cmake raises it for the suites that run longer than that.
-natron_add_gtest_suites(Tests PROPERTIES TIMEOUT 300)
-natron_add_gtest_suites(GuiTests PROPERTIES TIMEOUT 300)
+set(NATRON_TEST_DEFAULT_TIMEOUT_S 300)
+natron_add_gtest_suites(Tests PROPERTIES TIMEOUT ${NATRON_TEST_DEFAULT_TIMEOUT_S})
+natron_add_gtest_suites(GuiTests PROPERTIES TIMEOUT ${NATRON_TEST_DEFAULT_TIMEOUT_S})
 # Per-suite properties go in an include that ctest runs after the includes registered above, once
 # their add_test() calls have run.
 # SuiteProperties.cmake runs at ctest time and cannot see configure-time variables, so what it needs
@@ -474,7 +508,7 @@ if(EXISTS "${NATRON_USD_PREFIX}/plugin/usd/hdCycles.so")
 else()
     set(NATRON_CYCLES_BUNDLED OFF)
 endif()
-file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake "set(NATRON_CYCLES_BUNDLED ${NATRON_CYCLES_BUNDLED})\nset(NATRON_MOONRAY_BUNDLED ${NATRON_MOONRAY_BUNDLED})\n")
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake "set(NATRON_CYCLES_BUNDLED ${NATRON_CYCLES_BUNDLED})\nset(NATRON_MOONRAY_BUNDLED ${NATRON_MOONRAY_BUNDLED})\nset(NATRON_TEST_DEFAULT_TIMEOUT_S ${NATRON_TEST_DEFAULT_TIMEOUT_S})\n")
 set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_BINARY_DIR}/SuiteConfigure.cmake)
 set_property(DIRECTORY APPEND PROPERTY TEST_INCLUDE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/SuiteProperties.cmake)
 

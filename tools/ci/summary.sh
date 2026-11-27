@@ -3,7 +3,7 @@
 #
 #   build <preset> <artifact[,artifact]> [cmake-arg...]
 #                                              preset, commit, CMake args, uploaded artifacts
-#   ctest <scheduler> <build-dir> <log-artifact> [heading-label]
+#   ctest <build-dir> <log-artifact>
 #                                              pass/fail/total counts and failed test names
 #   gui <script> <result> <artifact>           script, result, output artifact
 #   legs <title> <name>=<result>...            one line per job or matrix leg
@@ -110,15 +110,14 @@ failed_names() {
 }
 
 cmd_ctest() {
-    local scheduler="${1:-unknown}" dir="${2:-}" log_artifact="${3:-}" label="${4:-}"
+    local dir="${1:-}" log_artifact="${2:-}"
     local temp="${dir}/Testing/Temporary" counts="" passed failed total names shown
     counts="$(counts_from_stdout "${temp}/ctest-stdout.log")" ||
         counts="$(counts_from_last_test "${temp}/LastTest.log")" || counts=""
     names="$(failed_names "${dir}")"
     {
-        printf '### Test · %s scheduler\n\n' "${label:-${scheduler}}"
+        printf '### Test · task-graph scheduler\n\n'
         status_line
-        printf -- "- Scheduler: ${BT}%s${BT}\n" "${scheduler}"
         if [[ -n "${counts}" ]]; then
             read -r passed failed total <<<"${counts}"
             printf -- '- Passed: %s, failed: %s, total: %s\n' "${passed}" "${failed}" "${total}"

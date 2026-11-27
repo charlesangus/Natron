@@ -48,6 +48,7 @@
 #include "Engine/Nodes/Scene/MoonRaySettings.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
+#include "Engine/Nodes/Scene/UtilitySettings.h"
 
 #include <pxr/base/gf/vec2d.h>
 #include <pxr/base/gf/vec2i.h>
@@ -576,6 +577,8 @@ RenderSettingsKnobs::curatedFor(const std::string& rendererId)
         return &CyclesSettings::curated();
     } else if (MoonRayAovs::isMoonRay(rendererId)) {
         return &MoonRaySettings::curated();
+    } else if (rendererId == kRenderDelegateUtilityId) {
+        return &UtilitySettings::curated();
     }
 
     return nullptr;
@@ -834,7 +837,7 @@ RenderSettingsKnobs::labelFromScriptName(const std::string& scriptName,
         }
         words.back() += c;
     }
-    static const char* const acronyms[] = { "AA", "AO", "BSDF", "BSSRDF", "FPS", "GI", "GPU", "ID", "MIS", "OIDN", "RDL" };
+    static const char* const acronyms[] = { "AA", "AO", "BSDF", "BSSRDF", "FPS", "GI", "GPU", "ID", "MIS", "OIDN", "RDL", "UDIM", "UV" };
     std::string label;
     for (const std::string& w : words) {
         std::string word = capitalized(w);
@@ -1504,6 +1507,17 @@ RenderSettingsKnobs::addRenderer(const std::string& rendererId,
         addSetting(other, d.key, prefix + capitalized(camelCaseFromKey(d.key, false)), d.name, d.defaultValue, d.defaultValue,
                    std::vector<Choice>(), std::string(), (off == disabled.end()) ? std::string() : off->second, nullptr);
         handled.insert(d.key);
+    }
+    // The settings panel shows no tab for a page without knobs.
+    if (page->getChildren().empty()) {
+        KnobStringPtr note = AppManager::createKnob<KnobString>(_imp->holder, std::string());
+        note->setName(prefix + "NoSettings");
+        note->setDefaultValue(pageLabel + " has no settings.");
+        note->setAsLabel();
+        note->setAnimationEnabled(false);
+        note->setEvaluateOnChange(false);
+        note->setIsPersistent(false);
+        page->addKnob(note);
     }
     _imp->renderers.push_back(renderer);
     refreshEnabled();

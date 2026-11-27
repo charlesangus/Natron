@@ -118,6 +118,12 @@ public:
     ///MT-safe
     RotoLayerPtr getParentLayer() const;
 
+    /**
+     * @brief The item's own knobs: a shape's settings, a layer's transform. None by default.
+     **/
+    virtual const std::list<KnobIPtr>& getKnobs() const;
+    KnobIPtr getKnobByName(const std::string& name) const;
+
     ///only callable from the main-thread
     void setGloballyActivated(bool a, bool setChildren);
 

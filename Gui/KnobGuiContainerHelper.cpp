@@ -168,6 +168,33 @@ KnobGuiContainerHelper::getPages() const
     return _imp->pages;
 }
 
+bool
+KnobGuiContainerHelper::areEnclosingTabsCurrent(const KnobIPtr& knob) const
+{
+    for (KnobIPtr parent = knob ? knob->getParentKnob() : KnobIPtr(); parent; parent = parent->getParentKnob()) {
+        KnobGroup* group = dynamic_cast<KnobGroup*>(parent.get());
+        if (!group || !group->isTab()) {
+            continue;
+        }
+        KnobIPtr holderKnob = group->getParentKnob();
+        TabGroup* tabs = 0;
+        KnobPagePtr isPage = std::dynamic_pointer_cast<KnobPage>(holderKnob);
+        if (isPage) {
+            PagesMap::const_iterator found = _imp->pages.find(isPage);
+            tabs = (found != _imp->pages.end() && found->second) ? found->second->groupAsTab : 0;
+        } else if (holderKnob) {
+            KnobsGuiMapping::iterator found = _imp->findKnobGui(holderKnob);
+            KnobGuiGroup* holderGui = (found != _imp->knobsMap.end()) ? dynamic_cast<KnobGuiGroup*>(found->second.get()) : 0;
+            tabs = holderGui ? holderGui->getTabWidget() : 0;
+        }
+        if (!tabs || !tabs->isTabCurrent(group)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 KnobGuiPtr
 KnobGuiContainerHelper::getKnobGui(const KnobIPtr& knob) const
 {
@@ -884,7 +911,7 @@ KnobGuiContainerHelper::findKnobGuiOrCreate(const KnobIPtr & knob,
 
     // For a page, create it if needed and recursively describe its children
     if (isPage) {
-        if ( isPage->getChildren().empty() ) {
+        if (isPage->getChildren().empty() && !(isPage->isUserKnob() && showsEmptyUserPages())) {
             return KnobGuiPtr();
         }
         getOrCreatePage(isPage);
@@ -1447,7 +1474,7 @@ KnobGuiContainerHelper::refreshPagesOrder(const KnobPageGuiPtr& curTabName,
     for (std::list<KnobPagePtr>::iterator it = internalPages.begin(); it != internalPages.end(); ++it) {
         PagesMap::const_iterator foundPage = _imp->pages.find(*it);
         if ( foundPage != _imp->pages.end() ) {
-            if ( (*it)->getChildren().size() > 0 ) {
+            if (((*it)->getChildren().size() > 0) || ((*it)->isUserKnob() && showsEmptyUserPages())) {
                 foundPage->second->tab->show();
                 orderedPages.push_back(foundPage->second);
             } else {

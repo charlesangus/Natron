@@ -87,6 +87,26 @@ public:
     bool isFloating() const;
     bool isHideUnmodified() const;
 
+    /**
+     * @brief True when the panel is open and expanded, and is either floating or the top panel of
+     * its properties bin. Only such a panel puts keyframes on the timeline.
+     **/
+    bool isInForeground() const;
+
+    /**
+     * @brief True when the knob's page is the one the panel shows and every tab group enclosing the
+     * knob shows its tab. A knob on no page is never shown, except on a panel without pages, which
+     * shows everything at once.
+     **/
+    bool isKnobOnVisiblePage(const KnobIPtr& knob) const;
+
+    /**
+     * @brief True when the widget is on the page the panel shows, or outside the pages altogether.
+     **/
+    bool isWidgetOnVisiblePage(const QWidget* widget) const;
+
+    void notifyForegroundChanged() const;
+
     /*Creates a new button and inserts it in the header
        at position headerPosition. You can then take
        the pointer to the Button to customize it the
@@ -165,7 +185,25 @@ public:
 
     virtual void setPyPlugUIEnabled(bool enabled);
 
+    /**
+     * @brief The in-panel user knob editor, or null when the holder has no user knobs to edit here
+     **/
+    KnobEditMode* getKnobEditMode() const;
+
+    /**
+     * @brief The column holding the pages, where the knob editor adds its palette and property section
+     **/
+    QVBoxLayout* getPagesColumnLayout() const;
+
+    QTabWidget* getTabWidget() const;
+
+    /**
+     * @brief Whether the user knobs of the holder may be edited now
+     **/
+    bool canEditUserKnobs() const;
+
 private:
+    virtual bool showsEmptyUserPages() const OVERRIDE FINAL;
 
     virtual void refreshUndoRedoButtonsEnabledNess(bool canUndo, bool canRedo) OVERRIDE FINAL;
     virtual QWidget* createKnobHorizontalFieldContainer(QWidget* parent) const OVERRIDE FINAL;
@@ -226,7 +264,11 @@ public Q_SLOTS:
 
     void onHideUnmodifiedButtonClicked(bool checked);
 
-    void onManageUserParametersActionTriggered();
+    void onEditParametersActionTriggered();
+
+    void onEditButtonClicked(bool checked);
+
+    void refreshEditButton();
 
     void onNodeScriptChanged(const QString& label);
 
@@ -284,6 +326,10 @@ protected:
 private:
 
     void setClosedInternal(bool c);
+
+    void releaseFloatingWindow();
+
+    bool isPageVisible(const KnobPagePtr& page) const;
 
     void initializeKnobsInternal();
     virtual void mousePressEvent(QMouseEvent* e) OVERRIDE FINAL

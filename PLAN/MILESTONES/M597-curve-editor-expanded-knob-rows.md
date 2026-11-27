@@ -2,6 +2,8 @@
 
 `Tests/gui/m69_cleanup.py`'s `[expanded-curve]` section fails on main. It was checked on a 2026-11-20 main AppImage and on M521. After expanding Blur's `size` and bringing the Curve Editor tab to the front, the size row is found with 8 component rows (expected 2) and the curve widget is not found visible. The script last passed at 3b71764db (2026-11-12). The suspects since then are 5031f097c (M421 - Stroke Keyframe Indicators: tree `blockSignals` around context removal in `Gui/CurveEditor.cpp`) and 125e085eb (M399 - Node Creation Keys And Speed: the `KnobGuiContainerHelper` rewrite). Find out whether the curve editor really duplicates component rows (a product bug) or the check reads the tree wrongly, fix whichever it is, and keep the script passing.
 
+**Possibly already covered (PM, 2026-11-27, from F36 - UI Polish Batch II):** the `[expanded-curve]` failure looks like the script counting the curve editor's hidden loop-driver rows (`Gui/CurveEditor.cpp` adds 6 hidden Start/End rows under each int/double knob), not a tree bug. F36 changes the script to count only shown rows (`feature/f36-ui-polish-batch-ii`). Once F36 lands, re-run the check on main first, then cancel this milestone or narrow it to what still fails.
+
 ## Scope
 
 **In:**

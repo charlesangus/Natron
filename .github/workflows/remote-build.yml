@@ -591,7 +591,7 @@ jobs:
       # Without the step bound, a suite that outlives ctest's own per-suite timeout holds the job
       # until GitHub's six-hour limit. A debug suite runs for about 50 minutes, as in PR CI.
       - name: Run ctest suite
-        timeout-minutes: ${{ inputs.shuffle_seeds != '' && 120 || inputs.preset == 'debug' && 75 || 30 }}
+        timeout-minutes: ${{ inputs.shuffle_seeds != '' && 120 || inputs.preset == 'debug' && 75 || 45 }}
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           GALLIUM_OVERRIDE_CPU_CAPS: avx

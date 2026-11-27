@@ -766,6 +766,7 @@ future core work has solid ground to build on.
 | F42 | Geometry USD Bridge Controls | open | bosley-executor |  | feature/f42-geometry-usd-bridge-controls | GeoToUSD path, placement, attribute and material controls, USDToGeo source controls and a USDGeoModify node, accepted in one UAT. |
 
 # Open questions
+- **M365 - Delegate Display Transform (2026-11-27):** Lobby shots sent. (1) Cycles is ~3x brighter than Storm and MoonRay at the same exposure (its Hydra plugin multiplies non-distant light intensity by π): match it to Storm, or leave Cycles as Cycles? (2) MoonRay renders but reports no sample count, so the viewer HUD shows "- / 16 samples": fix in this milestone or file a follow-up?
 - **M104 - Merge Resolution UI (2026-11-22):** Keep Both Keys puts theirs' key one frame after mine, or halfway to the next key when that's closer. Confirm, or give the rule you want.
 
 - **Engine TLS race (found in M402, 2026-11-22):** `makeInheritedTLSData` (`Engine/TLSHolderImpl.h:70`, HostFrameThreading path via `inheritFromSpawner`/`getTLSData`) copies a live spawner thread's `frameArgs` list without a lock while the spawner may push/pop entries (`ContextFrameArgsScope::install`, `Engine/ParallelRenderArgs.cpp:1862`), a use-after-free that segfaulted M402's 100k-iteration loop. M402 fixed its own path (helpers no longer inherit); any other `SpawnedThreadScope` user whose spawner keeps cooking is exposed, and it may explain unexplained render-thread crashes/flakes. File an E14 milestone to make the inheritance safe (lock, or snapshot at spawn time)?

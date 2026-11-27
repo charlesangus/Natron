@@ -610,7 +610,7 @@ plug-in. Neither checks the doc, icon or kernel fragments.
 
 ## Data kinds
 
-`DataKindEnum` (`Global/Enums.h`) has five values:
+`DataKindEnum` (`Global/Enums.h`) has six values:
 
 - `eDataKindImage` -- a flat raster image. The default for every input and
   output that doesn't say otherwise, so every existing node and every OFX
@@ -649,6 +649,16 @@ plug-in. Neither checks the doc, icon or kernel fragments.
   (`Engine/Nodes/IO/RawMetadata.h`), not in the kind. There is no adapter
   between raw and image: the conversion is always a node in the graph. Raw
   edges have their own Preferences colour (`edgeRawColor`).
+- `eDataKindGeometry` -- native SOP-style geometry: a copy-on-write `GeoDetail`
+  with one shared point pool, vertices and primitives indexing it, and
+  detail/primitive/vertex/point attributes. Like Scene it is a different payload
+  from an image, so geometry never reaches an image or scene input, and there is
+  no adapter between them. At this stage of the framework, this is a
+  **declaration only** until M54 - Native Geometry Data Model phase 54.1 lands: a
+  node can declare an input or output as `eDataKindGeometry` and have that
+  participate in connection typing, but there is no detail type, no geometry
+  cache and no `renderGeometry()` path yet. Geometry pipes take the Native 3D node
+  colour preference (`native3DNodesColor`).
 
 A node declares kinds via `NodeSpec::inputs[i].kind` and
 `NodeSpec::outputKind` (or, off `NativeEffectBase`, by
@@ -1303,6 +1313,39 @@ differ by design:
   cycle in one dispatch. It records at most `kPoissonHealGpuMaxCycles` cycles; those after
   convergence return at once. Its sums run in float, in another order.
 
+### Lens knobs
+
+Nodes that trace a real lens (lens flares, traced bokeh) take their lens from
+`Optics::LensKnobs` (`Engine/Optics/LensKnobs.h`), so every such node has the
+same controls with the same script names:
+
+| Script name | Knob | Notes |
+| --- | --- | --- |
+| `lensModel` | choice | The node's own entries first (`LensKnobOptions::leadingModels`, such as a procedural lens), then Database and From File. |
+| `lens` | string | A `LensDatabase` id, `<vendor>/<file stem>`; the default is the caller's. Shown for Database. |
+| `lensBrowse` | button, "Lens Browse" | Opens the lens browser. Shown for Database. |
+| `lensFile` | file | A `.zmx` or `.dat` prescription. Shown for From File. |
+| `glassVendor` | choice | Schott, Ohara, Hoya, CDGM, Hikari, Sumita: the `glass.json` catalogue to match glasses in. |
+| `abbeOffset` | double, ±20 | Added to each Abbe number before matching. |
+| `useAspheric` | bool, on | Off traces aspheres as spheres; cylinders stay cylinders. |
+
+The node calls `LensKnobs::create()` in `initializeKnobs()`, forwards its
+`knobChanged()` to `LensKnobs::knobChanged()` (which keeps the visibility above
+and opens the browser), and calls `refreshVisibility()` once its knobs are
+loaded. `resolve(reader)` gives the prescription, or an error string the node
+reports as its error: a lens file's parse error with its line, or a lens id the
+database lacks, named, with the knob keeping its value so the project still
+opens. The lens browser is a GUI dialog that the GUI installs through
+`LensKnobs::setBrowseHandler()`, so the engine and background renders never
+depend on it. The browser's previews render with the node's glass vendor, Abbe
+offset and Use Aspheric, and with its aperture once the node passes its
+`ApertureKnobs` to `LensKnobs::setApertureKnobs()`; a node reads both sets of
+knobs through one `KnobReader` (`ApertureKnobs::params(reader)`).
+
+The database itself is `Optics::LensDatabase::shared()`: 986 of the 1,041
+photographic lenses of OpticsDatabase, bundled as `Gui/Resources/Optics/lenses.zmx.gz`
+(see `Gui/Resources/Optics/README.md`), and the built-in prescriptions as "Classic Designs".
+
 ### AI nodes
 
 An AI node runs a neural network through `Engine/Ai` (see `Engine/Ai/README.md`),
@@ -1479,21 +1522,30 @@ returns `true` and fills `continuation->requests` with the outputs it needs
 next -- node, context, time, view, canonical region and layers -- and
 `continuation->continuation`, run once they are rendered.
 
-A node that overrides `offersRenderContinuation()` to return `true` is never placed on the GPU, because only CPU tasks are probed.
+A node that overrides `offersRenderContinuation()` to return `true` stays on the CPU unless it
+also overrides `supportsRenderContinuationOnGpu()`. GPU placement then starts a region at it that
+holds none of the tasks it depends on and merges with no other region, so its inputs are rendered
+before the region runs. The scheduler probes it on the CPU (an input rendered on the device is
+downloaded for the probe), renders the extension, runs the continuation callback, and only then
+records the region. `renderGpu()` reads each requested output from
+`GpuRenderArgs::continuationInputs`, in request order, with the request's context and time;
+`getGpuInputRoI()` and `getGpuInputLayer()` are asked about them with `kGpuContinuationInputNb`.
 
 - **Task-graph scheduler.** The requests go through an incremental request
   pass of their own, are built into an extension graph that shares the frame's
-  store, abort info and bytes budget, and render as tasks in parallel. An
+  store, abort info and bytes budget, and render as tasks in parallel. The
+  extension graph is GPU-placed as a frame is, so a GPU-capable body renders
+  in regions and a GPU continuation reads its outputs on the device. An
   output the frame's store already holds over the region is reused, not
   rendered again. The probing task gives its thread back while it waits and is
   resumed ahead of admission once the extension finished, so it never waits on
   memory its own pending inputs hold. The continuation then runs on the thread
   that renders the node, and both read the requested outputs as store hits
   with `pullRenderContinuationRequest()`.
-- **Legacy scheduler, frames the task graph does not take, unplanned pulls.**
+- **Frames the task graph does not take, unplanned pulls.**
   `renderRoI()` runs the probe inline, pulls each request one after the other
   on the probing thread, keeps the images for the render, then runs the
-  continuation. Both schedulers give bit-identical output.
+  continuation. Planned and direct pulls give bit-identical output.
 - **Lifetime.** The probe must not keep the images it reads past its return.
   Whatever the continuation captures lives until it has run or the render was
   dropped. An aborted frame drops its pending extension and never runs the

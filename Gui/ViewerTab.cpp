@@ -45,6 +45,7 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Loop/GeoSolverEnd.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneReparentNode.h"
@@ -63,6 +64,8 @@
 #include "Gui/Button.h"
 #include "Gui/ChannelsComboBox.h"
 #include "Gui/ClickableLabel.h"
+#include "Gui/GeoDisplay.h"
+#include "Gui/GeoDisplayBar.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
@@ -82,6 +85,7 @@
 #include "Gui/TimeLineGui.h"
 #include "Gui/UndoHistory.h"
 #include "Gui/ViewerGL.h"
+#include "Gui/ViewerZoomLadder.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -122,6 +126,12 @@ const char* const kViewerKnobNames[] = {
     kViewerParamRenderEverything,
     kViewerParamRefinementPaused,
     kViewerParamMapSiblingOverlays,
+    kViewerParamPointMarkers,
+    kViewerParamPointNumbers,
+    kViewerParamPrimitiveNumbers,
+    kViewerParamNormals,
+    kViewerParamNormalScale,
+    kViewerParamHighlightGroup,
 };
 
 // One value per dimension: numbers for bool/int/double knobs, strings for string knobs.
@@ -481,7 +491,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
                                         "The channels of the layer will be mapped to the RGBA channels of the viewer according to "
                                         "its number of channels. (e.g: UV would be mapped to RG)") + QString::fromUtf8("</p>") );
     QObject::connect( _imp->layerChoice, SIGNAL(currentIndexChanged(int)), this, SLOT(onLayerComboChanged(int)) );
-    _imp->layerChoice->setFixedWidth(_imp->layerChoice->widthToFit(QStringList() << QString::fromUtf8("Color.Toto.RGBA")));
+    _imp->layerChoice->setElidedWidthWithTextToolTip(_imp->layerChoice->widthToFit(QStringList() << QString::fromUtf8("Color.Toto.RGBA")));
     _imp->layerChoice->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     _imp->firstRowLayout->addWidget(_imp->layerChoice);
 
@@ -489,7 +499,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->alphaChannelChoice->setToolTip( QString::fromUtf8("<p><b>") + tr("Alpha channel:") + QString::fromUtf8("</b></p><p>")
                                           + tr("Select here a channel of any layer that will be used when displaying the "
                                                "alpha channel with the <b>Channels</b> choice on the right.") + QString::fromUtf8("</p>") );
-    _imp->alphaChannelChoice->setFixedWidth(_imp->alphaChannelChoice->widthToFit(QStringList() << QString::fromUtf8("Color.alpha")));
+    _imp->alphaChannelChoice->setElidedWidthWithTextToolTip(_imp->alphaChannelChoice->widthToFit(QStringList() << QString::fromUtf8("Color.alpha")));
     _imp->alphaChannelChoice->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     QObject::connect( _imp->alphaChannelChoice, SIGNAL(currentIndexChanged(int)), this, SLOT(onAlphaChannelComboChanged(int)) );
     _imp->firstRowLayout->addWidget(_imp->alphaChannelChoice);
@@ -536,20 +546,13 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->zoomCombobox->addAction(zoomInAction);
     _imp->zoomCombobox->addAction(zoomOutAction);
     _imp->zoomCombobox->addSeparator();
-    _imp->zoomCombobox->addItem( QString::fromUtf8("10%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("25%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("50%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("75%") );
-    _imp->zoomCombobox->addAction(level100Action);
-    _imp->zoomCombobox->addItem( QString::fromUtf8("125%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("150%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("200%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("400%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("800%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("1600%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("2400%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("3200%") );
-    _imp->zoomCombobox->addItem( QString::fromUtf8("6400%") );
+    for (int percent : kViewerZoomPresetsPercent) {
+        if (percent == 100) {
+            _imp->zoomCombobox->addAction(level100Action);
+        } else {
+            _imp->zoomCombobox->addItem(QString::number(percent) + QLatin1Char('%'));
+        }
+    }
     _imp->zoomCombobox->setMaximumWidthFromText( QString::fromUtf8("100000%") );
 
     _imp->firstRowLayout->addWidget(_imp->zoomCombobox);
@@ -707,7 +710,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
 
     _imp->firstInputImage = new ComboBox(_imp->firstSettingsRow);
     _imp->firstInputImage->setToolTip( _imp->firstInputLabel->toolTip() );
-    _imp->firstInputImage->setFixedWidth(_imp->firstInputImage->widthToFit(QStringList() << QString::fromUtf8("ColorCorrect1")));
+    _imp->firstInputImage->setElidedWidthWithTextToolTip(_imp->firstInputImage->widthToFit(QStringList() << QString::fromUtf8("ColorCorrect1")));
     _imp->firstInputImage->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     _imp->firstInputImage->addItem( QString::fromUtf8(" - ") );
     QObject::connect(_imp->firstInputImage, SIGNAL(currentIndexChanged(int)), this, SLOT(onFirstInputMenuChanged(int)));
@@ -746,7 +749,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
 
     _imp->secondInputImage = new ComboBox(_imp->firstSettingsRow);
     _imp->secondInputImage->setToolTip( _imp->secondInputLabel->toolTip() );
-    _imp->secondInputImage->setFixedWidth(_imp->secondInputImage->widthToFit(QStringList() << QString::fromUtf8("ColorCorrect1")));
+    _imp->secondInputImage->setElidedWidthWithTextToolTip(_imp->secondInputImage->widthToFit(QStringList() << QString::fromUtf8("ColorCorrect1")));
     _imp->secondInputImage->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
     _imp->secondInputImage->addItem( QString::fromUtf8(" - ") );
     QObject::connect(_imp->secondInputImage, SIGNAL(currentIndexChanged(int)), this, SLOT(onSecondInputMenuChanged(int)));
@@ -933,12 +936,27 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->sceneRenderRowLayout->addWidget(_imp->refineSamplesLabel);
     _imp->sceneRenderRowLayout->addStretch();
     _imp->sceneRenderRow->hide();
-    // The first switch to a progressive renderer shows the row: its style sheet polish is done
+    // The first switch to the 3D view shows the row: its style sheet polish is done
     // now rather than on that switch.
     _imp->sceneRenderRow->ensurePolished();
     QObject::connect(_imp->maxSamplesBox, SIGNAL(valueChanged(double)), this, SLOT(onMaxSamplesBoxChanged(double)));
     QObject::connect(_imp->refinementPausedButton, SIGNAL(clicked(bool)), this, SLOT(onRefinementPausedButtonClicked(bool)));
     QObject::connect(_imp->renderEverythingButton, SIGNAL(clicked(bool)), this, SLOT(onRenderEverythingButtonClicked(bool)));
+
+    _imp->geoDisplayRow = new GeoDisplayBar(this);
+    _imp->mainLayout->addWidget(_imp->geoDisplayRow);
+    _imp->geoDisplayRow->hide();
+    _imp->geoDisplayRow->setEditCallback([this](const GeoDisplayOptions& options) {
+        editViewerKnobs(tr("Geometry Display"), [this, options]() {
+            _imp->setViewerValue<bool>(kViewerParamPointMarkers, options.pointMarkers);
+            _imp->setViewerValue<bool>(kViewerParamPointNumbers, options.pointNumbers);
+            _imp->setViewerValue<bool>(kViewerParamPrimitiveNumbers, options.primitiveNumbers);
+            _imp->setViewerValue<bool>(kViewerParamNormals, options.normals);
+            _imp->setViewerValue<double>(kViewerParamNormalScale, options.normalScale);
+            _imp->setViewerValue<std::string>(kViewerParamHighlightGroup, options.highlightGroup);
+        });
+        refreshSceneRenderFromKnobs();
+    });
     /*=============================================*/
 
     /*OpenGL viewer*/
@@ -1533,7 +1551,8 @@ ViewerTab::onActiveInputDataKindChanged()
 
     refreshCompositingOperatorFromKnob();
 
-    const bool scene = (node->getActiveInputDataKind() == eDataKindScene);
+    const DataKindEnum kind = node->getActiveInputDataKind();
+    const bool scene = (kind == eDataKindScene) || (kind == eDataKindGeometry);
     if (!scene && isShowingScene() && !getSceneViewedNode()) {
         // An empty input keeps the scene view and its stage: showing the image viewer builds its GL
         // context on the main thread, and a reconnect would flip straight back and reload.
@@ -1545,6 +1564,7 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->sceneViewport = new SceneViewport(_imp->viewerSubContainer);
         _imp->sceneViewport->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         _imp->sceneViewport->hide();
+        QObject::connect(_imp->sceneViewport, &SceneViewport::outOfDateChanged, this, &ViewerTab::onSceneOutOfDateChanged);
         const int index = _imp->viewerSubContainerLayout->indexOf(_imp->viewer);
         _imp->sceneBreadcrumbBar = new SceneBreadcrumbBar(_imp->sceneViewport, _imp->viewerSubContainer);
         _imp->sceneBreadcrumbBar->hide();
@@ -1589,6 +1609,13 @@ ViewerTab::onActiveInputDataKindChanged()
             actions.createFromSelection = [this](const QStringList& paths) {
                 SceneSelectionActions::createFromSelection(getGui(), getSceneViewedNode(), paths);
             };
+            actions.createFromComponents = [this](const GeoDetailConstPtr& detail, const GeoComponentSelection& selection) {
+                SceneSelectionActions::createFromComponents(getGui(), getSceneViewedNode(), detail, selection);
+            };
+            auto reselect = std::make_shared<SceneSelectionActions::ReselectSession>(getGui(), this, _imp->sceneViewport);
+            actions.reselect = [reselect]() { reselect->begin(); };
+            actions.commitReselect = [reselect](const GeoComponentSelection& selection) { reselect->commit(selection); };
+            actions.cancelReselect = [reselect]() { reselect->cancel(); };
             _imp->sceneViewport->setSelectionActions(actions);
         }
         {
@@ -1649,6 +1676,14 @@ ViewerTab::onActiveInputDataKindChanged()
         }
         QObject::connect(_imp->sceneViewport, &SceneViewport::rendererChanged, this, &ViewerTab::refreshSceneRenderRow);
         QObject::connect(_imp->sceneViewport, &SceneViewport::refineStateChanged, this, &ViewerTab::refreshRefineSamplesLabel);
+        QObject::connect(_imp->sceneViewport, &SceneViewport::geoPickModeChanged, _imp->geoDisplayRow, [this](int mode) {
+            _imp->geoDisplayRow->setPickMode(mode);
+        });
+        _imp->geoDisplayRow->setPickModeCallback([this](int mode) {
+            if (_imp->sceneViewport) {
+                _imp->sceneViewport->setGeoPickMode((GeoComponentEnum)mode);
+            }
+        });
         refreshSceneRenderFromKnobs();
         // Before the first sync, so that the saved loads go out with the scene's first stage.
         _imp->sceneViewport->restoreSceneView(node->getLoadedSceneView());
@@ -1664,7 +1699,7 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->viewer->hide();
         _imp->sceneBreadcrumbBar->show();
         _imp->sceneViewport->show();
-        onSceneEvaluated(0);
+        showEvaluatedScene(getTimeLine()->currentFrame(), false);
     } else {
         _imp->sceneBreadcrumbBar->hide();
         _imp->sceneViewport->hide();
@@ -1673,6 +1708,7 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->viewer->show();
     }
     refreshSceneRenderRow();
+    applyStaleCueInput();
     Q_EMIT sceneViewChanged();
 } // onActiveInputDataKindChanged
 
@@ -1717,7 +1753,20 @@ void
 ViewerTab::onSceneEvaluated(int textureIndex)
 {
     // Only A is shown in the scene view.
-    if ((textureIndex != 0) || !_imp->viewerNode || !isShowingScene()) {
+    if (textureIndex == 0) {
+        showEvaluatedScene(getTimeLine()->currentFrame(), true);
+    }
+}
+
+void
+ViewerTab::showEvaluatedScene(int frame,
+                              bool onlyNewGeometry)
+{
+    if (!_imp->viewerNode || !isShowingScene()) {
+        if (_imp->infoWidget[0]) {
+            _imp->infoWidget[0]->setShowingKeptSimulationFrame(false);
+        }
+
         return;
     }
     const NodePtr viewedNode = getSceneViewedNode();
@@ -1734,10 +1783,26 @@ ViewerTab::onSceneEvaluated(int textureIndex)
         // Not evaluated yet: the evaluation the kind change started reports back here.
         return;
     }
+    bool keptFrame = false;
+    if (ok) {
+        const std::vector<std::shared_ptr<GeoSolverEnd>> solvers = GeoSolverEnd::upstreamOf(viewedNode);
+        for (const std::shared_ptr<GeoSolverEnd>& solver : solvers) {
+            keptFrame = keptFrame || solver->outputKeptFrame(frame);
+        }
+    }
+    if (_imp->infoWidget[0]) {
+        _imp->infoWidget[0]->setShowingKeptSimulationFrame(keptFrame);
+    }
     if (!ok) {
         _imp->sceneViewport->setError(QString::fromStdString(error));
 
         return;
+    }
+    if (_imp->viewerNode->getActiveInputDataKind() == eDataKindGeometry) {
+        const bool changed = _imp->viewerNode->showGeometryFrame(0, frame);
+        if (!changed && onlyNewGeometry) {
+            return;
+        }
     }
     double fps = 24.;
     if (getGui() && getGui()->getApp()) {
@@ -1748,7 +1813,7 @@ ViewerTab::onSceneEvaluated(int textureIndex)
         _imp->sceneViewport->cancelPendingLoads();
     }
     _imp->sceneViewport->setSceneEvaluatedFor(loadSet, reach);
-    _imp->sceneViewport->setScene(scene, getTimeLine()->currentFrame(), fps);
+    _imp->sceneViewport->setScene(scene, frame, fps);
 }
 
 void
@@ -1833,7 +1898,7 @@ ViewerTab::refreshFromViewerKnob(const std::string& name)
     } else if ((name == kViewerParamInPoint) || (name == kViewerParamOutPoint)) {
         refreshFrameRangeFromKnobs();
         abortViewersAndRefresh();
-    } else if ((name == kViewerParamMaxSamples) || (name == kViewerParamRefinementPaused) || (name == kViewerParamRenderEverything)) {
+    } else if ((name == kViewerParamMaxSamples) || (name == kViewerParamRefinementPaused) || (name == kViewerParamRenderEverything) || (name == kViewerParamPointMarkers) || (name == kViewerParamPointNumbers) || (name == kViewerParamPrimitiveNumbers) || (name == kViewerParamNormals) || (name == kViewerParamNormalScale) || (name == kViewerParamHighlightGroup)) {
         refreshSceneRenderFromKnobs();
     } else if (name == kViewerParamMapSiblingOverlays) {
         refreshMapSiblingOverlaysFromKnob();
@@ -1953,6 +2018,14 @@ ViewerTab::refreshSceneRenderFromKnobs()
     const int maxSamples = _imp->viewerValue<int>(kViewerParamMaxSamples, 0);
     const bool paused = _imp->viewerValue<bool>(kViewerParamRefinementPaused, false);
     const bool everything = _imp->viewerValue<bool>(kViewerParamRenderEverything, false);
+    GeoDisplayOptions geoOptions;
+    geoOptions.pointMarkers = _imp->viewerValue<bool>(kViewerParamPointMarkers, false);
+    geoOptions.pointNumbers = _imp->viewerValue<bool>(kViewerParamPointNumbers, false);
+    geoOptions.primitiveNumbers = _imp->viewerValue<bool>(kViewerParamPrimitiveNumbers, false);
+    geoOptions.normals = _imp->viewerValue<bool>(kViewerParamNormals, false);
+    geoOptions.normalScale = _imp->viewerValue<double>(kViewerParamNormalScale, geoOptions.normalScale);
+    geoOptions.highlightGroup = _imp->viewerValue<std::string>(kViewerParamHighlightGroup, std::string());
+    _imp->geoDisplayRow->setOptions(geoOptions);
 
     {
         QSignalBlocker b0(_imp->maxSamplesBox), b1(_imp->refinementPausedButton), b2(_imp->renderEverythingButton);
@@ -1968,6 +2041,7 @@ ViewerTab::refreshSceneRenderFromKnobs()
         _imp->sceneViewport->setMaxSamples(maxSamples);
         _imp->sceneViewport->setRefinementPaused(paused);
         _imp->sceneViewport->setRenderEverything(everything);
+        _imp->sceneViewport->setGeoDisplayOptions(geoOptions);
     }
 }
 
@@ -2007,11 +2081,27 @@ ViewerTab::refreshSceneRenderRow()
         QMutexLocker l(&_imp->visibleToolbarsMutex);
         topVisible = _imp->topToolbarVisible;
     }
-    const bool progressive = isShowingScene() && (_imp->sceneViewport->getRenderer().getActiveRendererId() != kRenderDelegateStormId);
+    const bool scene = isShowingScene();
+    const bool progressive = scene && (_imp->sceneViewport->getRenderer().getActiveRendererId() != kRenderDelegateStormId);
 
-    const bool show = topVisible && progressive;
-    const bool toggled = _imp->sceneRenderRow->isVisibleTo(this) != show;
+    // The row stays for every renderer so switching renderers never resizes the 3D view, which would
+    // rescale its fitted framing.
+    const bool show = topVisible && scene;
+    const bool geometry = scene && _imp->viewerNode && (_imp->viewerNode->getActiveInputDataKind() == eDataKindGeometry);
+    const bool showGeometry = topVisible && geometry;
+    const bool toggled = (_imp->sceneRenderRow->isVisibleTo(this) != show) || (_imp->geoDisplayRow->isVisibleTo(this) != showGeometry);
     _imp->sceneRenderRow->setVisible(show);
+    _imp->maxSamplesBox->setEnabled(progressive);
+    _imp->refinementPausedButton->setEnabled(progressive);
+    _imp->geoDisplayRow->setVisible(showGeometry);
+    // Without geometry, as downstream of a conversion to a scene, only prims are picked.
+    if (_imp->sceneViewport) {
+        _imp->sceneViewport->setGeometryContext(geometry);
+    }
+    // Geometry is shown as prims named after its pieces, not a scene to walk through by path.
+    if (_imp->sceneBreadcrumbBar) {
+        _imp->sceneBreadcrumbBar->setVisible(scene && !geometry);
+    }
     refreshRefineSamplesLabel();
     if (toggled) {
         // Laid out now rather than at the posted layout request, so that the view's resize, which
@@ -2024,6 +2114,11 @@ void
 ViewerTab::refreshRefineSamplesLabel()
 {
     if (!_imp->sceneViewport || !_imp->sceneRenderRow->isVisible()) {
+        return;
+    }
+    if (_imp->sceneViewport->getRenderer().getActiveRendererId() == kRenderDelegateStormId) {
+        _imp->refineSamplesLabel->clear();
+
         return;
     }
     const SceneViewportRenderer::RefineStatus refine = _imp->sceneViewport->getRenderer().getRefineStatus();

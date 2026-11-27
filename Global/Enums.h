@@ -193,6 +193,7 @@ enum PixmapEnum {
     NATRON_PIXMAP_MISC_GROUPING,
     NATRON_PIXMAP_OPEN_EFFECTS_GROUPING,
     NATRON_PIXMAP_TIME_GROUPING,
+    NATRON_PIXMAP_LOOP_GROUP,
     NATRON_PIXMAP_PAINT_GROUPING,
     NATRON_PIXMAP_KEYER_GROUPING,
     NATRON_PIXMAP_OTHER_PLUGINS,
@@ -517,6 +518,7 @@ enum DataKindEnum {
     eDataKindScene,
     eDataKindPolymorphic,
     eDataKindRaw,
+    eDataKindGeometry,
 };
 
 enum NodeCategoryEnum {
@@ -544,11 +546,6 @@ enum RenderSafetyEnum
     eRenderSafetyInstanceSafe = 1,
     eRenderSafetyFullySafe = 2,
     eRenderSafetyFullySafeFrame = 3,
-};
-
-enum RenderSchedulerModeEnum {
-    eRenderSchedulerModeLegacy = 0,
-    eRenderSchedulerModeTaskGraph = 1,
 };
 
 enum GpuComputeModeEnum {

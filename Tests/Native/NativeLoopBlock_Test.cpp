@@ -29,6 +29,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <functional>
 #include <list>
 #include <map>
@@ -52,6 +53,7 @@
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/FrameArgsOverlay.h"
 #include "Engine/FrameRenderContext.h"
 #include "Engine/Image.h"
 #include "Engine/ImageLayerDesc.h"
@@ -348,8 +350,6 @@ renderAbortablyWhileEditing(const NodePtr& node,
         });
     }
 
-    const RenderSchedulerModeEnum savedMode = appPTR->getRenderSchedulerMode();
-    appPTR->setRenderSchedulerMode(throughScheduler ? eRenderSchedulerModeTaskGraph : eRenderSchedulerModeLegacy);
     EffectInstance::RenderRoIRetCode code = EffectInstance::eRenderRoIRetCodeFailed;
     std::thread renderer([&code, &node, throughScheduler, &abortInfo]() {
         try {
@@ -381,7 +381,6 @@ renderAbortablyWhileEditing(const NodePtr& node,
     }
     renderer.join();
     CountingTestRegistry::setRenderHook(CountingTestRegistry::RenderHook());
-    appPTR->setRenderSchedulerMode(savedMode);
     appPTR->clearAllCaches();
 
     return code;
@@ -708,6 +707,46 @@ TEST_F(NativeLoopBlockTest, NestedLoopsSeeBothLoopsVariables)
     EXPECT_TRUE(message.isEmpty()) << message.toStdString();
 }
 
+TEST_F(NativeLoopBlockTest, NestedLoopsRecordTheFrameArgsChainDepthWithEachPull)
+{
+    NodePtr constant = createConstant(1.);
+    NodePtr outerBegin = createLoopBegin();
+    NodePtr innerBegin = createLoopBegin();
+    NodePtr innerGain = createDrivenGrade(kKnobDriverDefaultVariable, 1., 2.);
+    NodePtr outerGain = createDrivenGrade("loops.outer.t", 1., 3.);
+    NodePtr innerEnd = createLoopEnd(3, kLoopEndParamOperationMean);
+    NodePtr outerEnd = createLoopEnd(2, kLoopEndParamOperationSum);
+    ASSERT_TRUE(constant && outerBegin && innerBegin && innerGain && outerGain && innerEnd && outerEnd);
+    ASSERT_TRUE(setLoopName(outerEnd, "outer"));
+    ASSERT_TRUE(setLoopName(innerEnd, "inner"));
+    ASSERT_TRUE(outerBegin->connectInput(constant, 0));
+    ASSERT_TRUE(innerBegin->connectInput(outerBegin, 0));
+    ASSERT_TRUE(innerGain->connectInput(innerBegin, 0));
+    ASSERT_TRUE(outerGain->connectInput(innerGain, 0));
+    ASSERT_TRUE(innerEnd->connectInput(outerGain, 0));
+    ASSERT_TRUE(outerEnd->connectInput(innerEnd, 0));
+
+    for (int scheduled = 0; scheduled < 2; ++scheduled) {
+        const char* const where = scheduled ? "scheduled" : "direct";
+        appPTR->clearAllCaches();
+        const FrameArgsOverlayPtr headBefore = FrameArgsOverlay::currentHead();
+        FrameArgsOverlay::resetStats();
+        std::vector<RenderedPlane> planes;
+        std::string error;
+        const bool ok = scheduled ? renderNodePlanesScheduled(outerEnd, kTime, ViewIdx(0), 0, fullWindow(), true, &planes, &error)
+                                  : renderNodePlanesDirect(outerEnd, kTime, ViewIdx(0), 0, fullWindow(), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, true);
+        const FrameArgsOverlay::Stats stats = FrameArgsOverlay::stats();
+        std::printf("FRAMEARGS_DEPTH nested-loops-2x3-%s maxDepth=%llu outOfOrderPops=%llu\n", where, (unsigned long long)stats.maxDepth, (unsigned long long)stats.outOfOrderPops);
+        std::fflush(stdout);
+
+        ASSERT_TRUE(ok) << where << ": " << error;
+        ASSERT_FALSE(planes.empty() || planes[0].pixels.empty()) << where;
+        EXPECT_NEAR(6., planes[0].pixels[0], 1e-4) << where;
+        EXPECT_EQ(0u, stats.outOfOrderPops) << where;
+        EXPECT_EQ(headBefore.get(), FrameArgsOverlay::currentHead().get()) << where << ": the render left args on the thread";
+    }
+}
+
 // A Python expression reads loop.t through the loop object: it gives 10 * t at each iteration,
 // reads loop.t and nothing else, and the mean over the loop is the midpoint.
 TEST_F(NativeLoopBlockTest, AnExpressionReadsTheLoopVariable)
@@ -859,7 +898,7 @@ TEST_F(NativeLoopBlockTest, AnExpressionReadInKnobChangedReadsThePreviewIteratio
             return;
         }
         ++calls;
-        underActionArgs = effect->getParallelRenderArgsTLS() != nullptr;
+        underActionArgs = effect->getFrameArgs() != nullptr;
         rendering = effect->isRenderingTLS();
         try {
             read = value->getValueAtTime(time, 0);
@@ -875,7 +914,7 @@ TEST_F(NativeLoopBlockTest, AnExpressionReadInKnobChangedReadsThePreviewIteratio
     EXPECT_FALSE(rendering);
     EXPECT_FALSE(threw);
     EXPECT_NEAR(20., read, 1e-9);
-    EXPECT_FALSE(effect->getParallelRenderArgsTLS() != nullptr);
+    EXPECT_FALSE(effect->getFrameArgs() != nullptr);
     EXPECT_NEAR(20., value->getValueAtTime(kTime, 0), 1e-9);
 }
 
@@ -1021,7 +1060,7 @@ TEST_F(NativeLoopBlockTest, OverAndUnderFoldInOrder)
 
 // 64 iterations of a float body: the task graph folds them in a chain, so with a budget of a few
 // images the iterations never all wait in the frame's store at once, and the result is the same
-// bits as the Legacy render's serial fold at every pool size. The iterations all read the same
+// bits as the direct render's serial fold at every pool size. The iterations all read the same
 // image, so each is admitted against the budget rather than run as soon as that image is there.
 TEST_F(NativeLoopBlockTest, AFoldChainStaysWithinTheBytesBudget)
 {
@@ -1099,12 +1138,8 @@ TEST_F(NativeLoopBlockTest, FramesIterateOverARelativeFrameRange)
             needed.insert(frame);
         }
     }
-    if (appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph) {
-        EXPECT_EQ(std::set<double>({ -1., 0., 1., 2., 3. }), needed);
-    } else {
-        // Under no fold step, the last step's iteration.
-        EXPECT_EQ(std::set<double>({ 3. }), needed);
-    }
+    // Under no fold step, the last step's iteration.
+    EXPECT_EQ(std::set<double>({ 3. }), needed);
 
     struct Case {
         const char* operation;
@@ -1180,18 +1215,7 @@ TEST_F(NativeLoopBlockTest, FramesIterateOverFractionalTimes)
     ASSERT_TRUE(setDoubleKnob(end, kLoopEndParamFrameStep, 0.1));
 
     const std::set<double> needed = framesNeeded(end);
-    if (appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph) {
-        ASSERT_EQ(6u, needed.size());
-        int k = 0;
-        for (double time : needed) {
-            EXPECT_NEAR(0.5 + 0.1 * k, time, 1e-9) << "sample " << k;
-            ++k;
-        }
-        // The last sample is the current frame exactly, sharing its renders and cache entries.
-        EXPECT_EQ(kTime, *needed.rbegin());
-    } else {
-        EXPECT_EQ(std::set<double>({ kTime }), needed);
-    }
+    EXPECT_EQ(std::set<double>({ kTime }), needed);
 
     struct Case {
         const char* operation;
@@ -1413,7 +1437,6 @@ TEST_F(NativeLoopBlockTest, EditingAParameterTheStopConditionReadsRefreshesTheLo
     ASSERT_TRUE(setStopCondition(end, "loop.iteration >= " + controlVar + ".color.getValue(0)"));
 
     EffectInstancePtr effect = end->getEffectInstance();
-    const bool legacy = appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph;
     appPTR->clearAllCaches();
 
     // Stopping at iteration 2 keeps the frames -1 and 0.
@@ -1421,8 +1444,8 @@ TEST_F(NativeLoopBlockTest, EditingAParameterTheStopConditionReadsRefreshesTheLo
     bool isProjectFormat = false;
     ASSERT_EQ(eStatusOK, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat));
     EXPECT_NEAR(20., rod.width(), 1e-6);
-    // Under the task graph and no fold step, the last step's iteration.
-    EXPECT_EQ(legacy ? std::set<double>({ -1., 0. }) : std::set<double>({ 0. }), framesNeeded(end));
+    // Under no fold step, the last step's iteration.
+    EXPECT_EQ(std::set<double>({ 0. }), framesNeeded(end));
     float value = -10.f;
     ASSERT_TRUE(renderedValue(end, &value, false /*byPassCache*/));
     EXPECT_NEAR(-1., value, 1e-5);
@@ -1433,7 +1456,7 @@ TEST_F(NativeLoopBlockTest, EditingAParameterTheStopConditionReadsRefreshesTheLo
     EXPECT_NE(hash, effect->getRenderHash());
     ASSERT_EQ(eStatusOK, effect->getRegionOfDefinition_public(effect->getRenderHash(), kTime, RenderScale::identity, ViewIdx(0), &rod, &isProjectFormat));
     EXPECT_NEAR(40., rod.width(), 1e-6);
-    EXPECT_EQ(legacy ? std::set<double>({ -1., 0., 1., 2. }) : std::set<double>({ 2. }), framesNeeded(end));
+    EXPECT_EQ(std::set<double>({ 2. }), framesNeeded(end));
     ASSERT_TRUE(renderedValue(end, &value, false /*byPassCache*/));
     EXPECT_NEAR(2., value, 1e-5);
 
@@ -1561,7 +1584,7 @@ TEST_F(NativeLoopBlockTest, AnUneditedAbortableLoopRenderIsNotAborted)
     ASSERT_TRUE(end->connectInput(body, 0));
 
     for (int throughScheduler = 0; throughScheduler < 2; ++throughScheduler) {
-        SCOPED_TRACE(throughScheduler ? "task graph" : "legacy");
+        SCOPED_TRACE(throughScheduler ? "scheduled" : "direct");
         CountingTestRegistry::reset();
         AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
         bool edited = false;
@@ -1579,7 +1602,7 @@ TEST_F(NativeLoopBlockTest, EditingTheBodyMidRenderAbortsTheLoopsRender)
     const int pauseAt = 3;
 
     for (int throughScheduler = 0; throughScheduler < 2; ++throughScheduler) {
-        SCOPED_TRACE(throughScheduler ? "task graph" : "legacy");
+        SCOPED_TRACE(throughScheduler ? "scheduled" : "direct");
         getApp()->getProject()->reset(false, true);
         NodePtr constant = createConstant(1.);
         NodePtr begin = createLoopBegin();
@@ -1611,5 +1634,64 @@ TEST_F(NativeLoopBlockTest, EditingTheBodyMidRenderAbortsTheLoopsRender)
         float rendered = -1.f;
         ASSERT_TRUE(renderedValue(end, &rendered));
         EXPECT_NEAR(2., rendered, 1e-5);
+    }
+}
+
+// An edit made while the render holds the edited node applies only once the render ends, so no
+// hash moves meanwhile. Whether of the body or of the LoopEnd, it still aborts the loop's render
+// before another iteration is folded, under either scheduler.
+TEST_F(NativeLoopBlockTest, AnEditHeldBackByTheRenderAbortsTheLoopsRender)
+{
+    const int iterations = 8;
+    const int pauseAt = 3;
+    struct QueueWritesScope {
+        QueueWritesScope() { EffectInstance::setQueuesWritesDuringBackgroundRendersForTesting(true); }
+        ~QueueWritesScope() { EffectInstance::setQueuesWritesDuringBackgroundRendersForTesting(false); }
+    };
+
+    for (int editBody = 0; editBody < 2; ++editBody) {
+        for (int throughScheduler = 0; throughScheduler < 2; ++throughScheduler) {
+            SCOPED_TRACE(editBody ? "body" : "loop end");
+            SCOPED_TRACE(throughScheduler ? "task graph" : "legacy");
+            getApp()->getProject()->reset(false, true);
+            NodePtr constant = createConstant(1.);
+            NodePtr begin = createLoopBegin();
+            NodePtr body = createDrivenCounter();
+            NodePtr end = createLoopEnd(iterations, kLoopEndParamOperationMean);
+            ASSERT_TRUE(constant && begin && body && end);
+            ASSERT_TRUE(begin->connectInput(constant, 0));
+            ASSERT_TRUE(body->connectInput(begin, 0));
+            ASSERT_TRUE(end->connectInput(body, 0));
+            KnobIntPtr delay = std::dynamic_pointer_cast<KnobInt>(body->getKnobByName("delayMs"));
+            KnobIntPtr count = std::dynamic_pointer_cast<KnobInt>(end->getKnobByName(kLoopEndParamIterations));
+            ASSERT_TRUE(bool(delay));
+            ASSERT_TRUE(bool(count));
+
+            CountingTestRegistry::reset();
+            const QueueWritesScope queueWrites;
+            AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+            std::unique_ptr<RenderingFlagSetter> rendering;
+            bool heldBack = false;
+            const std::function<void()> edit = [&]() {
+                rendering.reset(new RenderingFlagSetter(end));
+                if (editBody) {
+                    delay->setValue(1);
+                    heldBack = (delay->getRawValue(0) == 0);
+                } else {
+                    count->setValue(iterations - 1);
+                    heldBack = (count->getRawValue(0) == iterations);
+                }
+            };
+            bool edited = false;
+            const EffectInstance::RenderRoIRetCode code = renderAbortablyWhileEditing(end, body, throughScheduler != 0, abortInfo, pauseAt, edit, &edited);
+            rendering.reset();
+            ASSERT_TRUE(edited) << "no body render paused for the edit";
+            EXPECT_TRUE(heldBack) << "the edit applied while the loop rendered";
+            EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, code);
+            EXPECT_TRUE(abortInfo->isAborted());
+            if (!throughScheduler) {
+                EXPECT_EQ(pauseAt, CountingTestRegistry::renders(body));
+            }
+        }
     }
 }

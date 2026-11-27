@@ -200,11 +200,13 @@ struct FrameGraph {
         struct Output {
             int task = -1;
 
-            // Per edge, as Task::consumerTasks counts them.
+            // Per edge, as Task::consumerTasks counts them. externalConsumers also counts the reads from outside the
+            // graph that Task::consumers holds beyond them, as the task an extension resumes reads its roots.
             int internalConsumers = 0;
             int externalConsumers = 0;
 
-            // The frame's root, whose planes go to the future rather than to a consumer task.
+            // The frame's root, whose planes go to the future rather than to a consumer task. An extension's root, read
+            // from the store, is not one.
             bool isRoot = false;
         };
 
@@ -256,7 +258,16 @@ public:
      **/
     EffectInstance::RenderRoIRetCode wait();
 
+    // The calls to wait() made on a thread of the global pool, which debug builds also assert against.
+    static int getPoolThreadWaitsForTests();
+
     bool isFinished() const;
+
+    /**
+     * @brief The outcome of a frame that finished, without blocking, for the threads wait() is forbidden to:
+     * eRenderRoIRetCodeFailed before it finished.
+     **/
+    EffectInstance::RenderRoIRetCode result() const;
 
     /**
      * @brief What the root task rendered; empty unless the frame finished with eRenderRoIRetCodeOk.
@@ -268,10 +279,20 @@ public:
      **/
     std::vector<RegionFallback> getRegionFallbacks() const;
 
+    typedef std::function<void(EffectInstance::RenderRoIRetCode)> CompletionCallback;
+
+    /**
+     * @brief Calls callback once when the frame finishes or aborts, on the thread that ends it, which may be a thread
+     * of the global pool: the callback must not wait on the scheduler. A frame already finished calls it at once on
+     * this thread. At most one callback is held; registering another replaces one not yet called.
+     **/
+    void onFinished(CompletionCallback callback);
+
 private:
     friend class RenderScheduler;
 
-    void finish(EffectInstance::RenderRoIRetCode retCode,
+    // A frame finishes once: a second finish is a scheduler bug, logged and dropped, and returns false.
+    bool finish(EffectInstance::RenderRoIRetCode retCode,
                 std::map<ImageLayerDesc, ImagePtr> rootPlanes,
                 std::vector<RegionFallback> fallbacks = std::vector<RegionFallback>());
 
@@ -281,6 +302,7 @@ private:
     EffectInstance::RenderRoIRetCode _retCode;
     std::map<ImageLayerDesc, ImagePtr> _rootPlanes;
     std::vector<RegionFallback> _fallbacks;
+    CompletionCallback _callback;
 };
 
 /**
@@ -327,12 +349,34 @@ private:
  * EffectInstance::kMaxRenderContinuationDepth levels. Aborting the frame drops the extension's queued tasks, and the
  * frame finishes, without running the continuation, once the extension's running tasks returned. A failed extension
  * task fails the frame.
+ *
+ * A GPU region holding a member whose effect supportsRenderContinuationOnGpu() is extended the same way: placement keeps
+ * the member's dependencies out of the region, so the probe runs before the region body, which then reads the
+ * extension's outputs on the device through RegionReport::continuationInputs.
+ *
+ * An extension's graph is placed as a frame's is (placeExtensionGraph()), its roots counting as read on the device when
+ * the task waiting on it is a region's: a region holding a root leaves it in the store on the device, where the waiting
+ * region reads it in place and a waiting CPU task has it downloaded. The waiting task gives up its GPU slot along with its
+ * thread, so the extension's regions never wait on it. The frame owning the store holds the GPU runtime for the device
+ * images the extension leaves there. An extension that loses the device restarts that frame on the CPU, which then
+ * places no extension.
  **/
 class RenderScheduler {
 public:
     enum class Priority {
         Interactive,
         Background
+    };
+
+    /**
+     * @brief An output a region member's render continuation requested, which the extension rendered into the frame's
+     * store under key, over renderedRoI in components.
+     **/
+    struct ContinuationInput {
+        EffectInstance::RenderContinuationRequest request;
+        FrameStore::TaskKey key;
+        RectI renderedRoI;
+        std::list<ImageLayerDesc> components;
     };
 
     /**
@@ -437,6 +481,12 @@ public:
         // Set by the scheduler when the profile is on; the region then lists each upload and download it issued, and
         // timestamps them on the device when it can.
         bool recordTransfers = false;
+
+        // Set by the scheduler once it probed the render continuation of the member at this position in
+        // Region::members, -1 for none: what each of the continuation's requests named, in their order, which the
+        // member reads as GpuRenderArgs::continuationInputs.
+        int continuationMember = -1;
+        std::vector<ContinuationInput> continuationInputs;
         std::vector<GpuTransferRecord> uploads;
         std::vector<GpuTransferRecord> downloads;
 
@@ -585,6 +635,11 @@ public:
      **/
     static int computeTaskBudget(int poolMax, int running, int ready, int cores, int perEffect);
 
+    /**
+     * @brief The global pool priority the tasks of a frame of this priority run at.
+     **/
+    static int runnablePriority(Priority priority);
+
     struct TaskBudgetInputs {
         int poolMax = 0;
         int running = 0;
@@ -690,13 +745,24 @@ private:
     };
 
     /**
-     * @brief Asks the effect of a CPU task for its render continuation and, when it names outputs, plans and submits the
-     * extension that renders them. On Render, continuation holds what to run before the render, if anything.
+     * @brief Asks the effect of the task probed for its render continuation and, when it names outputs, plans and
+     * submits the extension that renders them. task is the one parked meanwhile: probed itself, or the region task
+     * standing for the region probed is a member of. On Render, continuation holds what to run before the render, if
+     * anything.
      **/
     ProbeOutcome probeRenderContinuation(const FramePtr& frame,
                                          int task,
+                                         int probed,
                                          int budget,
                                          std::unique_ptr<Continuation>* continuation);
+
+    /**
+     * @brief Runs continuation's callback, if any, for the task probed, as its render would run; false when it failed.
+     **/
+    bool runContinuationCallback(const FramePtr& frame,
+                                 int probed,
+                                 const Continuation& continuation,
+                                 int budget);
 
     /**
      * @brief Marks the tasks of an extension graph whose outputs the store holds from a graph it extends as reusing

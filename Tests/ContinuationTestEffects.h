@@ -76,6 +76,7 @@ public:
         probes() = 0;
         continuations() = 0;
         claimsGpu() = false;
+        supportsGpuContinuation() = false;
         setContinuationCapture(CaptureFactory());
     }
 
@@ -88,6 +89,17 @@ public:
     static bool probeClaimsGpu()
     {
         return claimsGpu().load();
+    }
+
+    // Whether the probe also says its GPU path renders after its continuation; off by default.
+    static void setProbeSupportsGpuContinuation(bool supports)
+    {
+        supportsGpuContinuation() = supports;
+    }
+
+    static bool probeSupportsGpuContinuation()
+    {
+        return supportsGpuContinuation().load();
     }
 
     static void noteProbe()
@@ -143,6 +155,13 @@ private:
     }
 
     static std::atomic<bool>& claimsGpu()
+    {
+        static std::atomic<bool> b(false);
+
+        return b;
+    }
+
+    static std::atomic<bool>& supportsGpuContinuation()
     {
         static std::atomic<bool> b(false);
 
@@ -352,7 +371,7 @@ private:
             QThread::msleep((unsigned long)delayKnob->getValue());
         }
         KnobDoublePtr valueKnob = _value.lock();
-        double value = (valueKnob ? valueKnob->getValue() : 0.) + contextTestValue(renderContext(getParallelRenderArgsTLS()));
+        double value = (valueKnob ? valueKnob->getValue() : 0.) + contextTestValue(renderContext(getFrameArgs()));
         KnobBoolPtr varyingKnob = _varying.lock();
         if (varyingKnob && varyingKnob->getValue()) {
             value *= CountingTestRegistry::renders(getNode());
@@ -423,6 +442,11 @@ public:
         return ContinuationTestRegistry::probeClaimsGpu();
     }
 
+    virtual bool supportsRenderContinuationOnGpu() const OVERRIDE FINAL WARN_UNUSED_RETURN
+    {
+        return ContinuationTestRegistry::probeSupportsGpuContinuation();
+    }
+
     virtual bool getRenderContinuation(const RenderContinuationArgs& args,
                                        RenderContinuation* continuation) OVERRIDE FINAL
     {
@@ -479,7 +503,7 @@ private:
                   unsigned int* mask)
     {
         float value = 0.f;
-        if (!pullFirstPixel(control, renderContext(getParallelRenderArgsTLS()), time, view, mipmapLevel, &value) || (value < 0.f)) {
+        if (!pullFirstPixel(control, renderContext(getFrameArgs()), time, view, mipmapLevel, &value) || (value < 0.f)) {
             return false;
         }
         *mask = (unsigned int)value;
@@ -514,7 +538,7 @@ private:
         if (!source || !control || !readMask(control, args.time, args.view, mipmapLevel, &mask)) {
             return eStatusFailed;
         }
-        const RenderContextPtr context = renderContext(getParallelRenderArgsTLS());
+        const RenderContextPtr context = renderContext(getFrameArgs());
         float sum = 0.f;
         for (int i = 0; i < kProbeTestContexts; ++i) {
             if (!(mask & (1u << i))) {
@@ -639,7 +663,7 @@ private:
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN
     {
         CountingTestRegistry::noteRender(getNode().get());
-        const RenderContextPtr context = renderContext(getParallelRenderArgsTLS());
+        const RenderContextPtr context = renderContext(getFrameArgs());
         const double k = contextTestValue(context, recursiveProbeVariable().name);
         float value = (float)k;
         if (k < depth()) {

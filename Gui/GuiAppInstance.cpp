@@ -62,6 +62,7 @@
 #include "Engine/ProcessHandler.h"
 #include "Engine/Project.h"
 #include "Engine/RFV.h"
+#include "Engine/RotoCurveContext.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
 #include "Engine/StartupGLDiag.h"
@@ -76,12 +77,14 @@
 
 #include "Gui/BackdropGui.h"
 #include "Gui/ForegroundTaskDialog.h"
+#include "Gui/GeoSpreadsheetPanel.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/KnobGuiFile.h"
 #include "Gui/MultiInstancePanel.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
+#include "Gui/NodeSettingsPanel.h"
 #include "Gui/ProgressPanel.h"
 #include "Gui/PythonUndoRecorder.h"
 #include "Gui/SceneGraphPanel.h"
@@ -226,6 +229,7 @@ struct GuiAppInstancePrivate
     std::atomic<bool> nodeKeysDirty;
     std::atomic<bool> nodeKeysRefreshQueued;
     bool nodeKeysChangedSinceSignal;
+    bool panelForegroundRefreshQueued;
     KnobDnDData knobDnd;
 
     GuiAppInstancePrivate()
@@ -249,10 +253,40 @@ struct GuiAppInstancePrivate
         , nodeKeysDirty(false)
         , nodeKeysRefreshQueued(false)
         , nodeKeysChangedSinceSignal(false)
+        , panelForegroundRefreshQueued(false)
         , knobDnd()
     {
         _previewProvider = std::make_shared<FileDialogPreviewProvider>();
         rotoData.turboAlreadyActiveBeforePainting = false;
+    }
+
+    static DockablePanel* settingsPanelOf(const NodePtr& node)
+    {
+        NodeGuiPtr nodeGui = std::dynamic_pointer_cast<NodeGui>(node->getNodeGui());
+
+        return nodeGui ? nodeGui->getSettingPanel() : 0;
+    }
+
+    static void collectShownKnobKeyframes(const NodePtr& node,
+                                          std::list<SequenceTime>* keys)
+    {
+        NodePtr parent = node->getParentMultiInstance();
+        DockablePanel* panel = settingsPanelOf(parent ? parent : node);
+        if (!panel || !panel->isInForeground()) {
+            return;
+        }
+        if (parent) {
+            // A child instance's knobs are edited through its parent's table, not on a page.
+            node->getAllKnobsKeyframes(keys);
+
+            return;
+        }
+        // The RotoPanel publishes the selected items' own keys; a proxy keeps the last-shown item's
+        // curves after the selection changes, and holds keys that reach no item through a layer.
+        RotoCurveContextPtr curveContext = node->getCurveContext();
+        node->getAllKnobsKeyframes(keys, [panel, curveContext](const KnobIPtr& knob) {
+            return panel->isKnobOnVisiblePage(knob) && !(curveContext && curveContext->isItemProxyKnob(knob));
+        });
     }
 
     void refreshNodeKeysIfDirty()
@@ -268,7 +302,7 @@ struct GuiAppInstancePrivate
                 continue;
             }
             if (node->isActivated()) {
-                node->getAllKnobsKeyframes(&keys);
+                collectShownKnobKeyframes(node, &keys);
             }
             ++it;
         }
@@ -726,13 +760,13 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
 } // createNodeGui
 
 std::string
-GuiAppInstance::openImageFileDialog()
+GuiAppInstance::openImageFileDialog(std::optional<std::pair<int, int>>* frameRange)
 {
     {
         QMutexLocker l(&_imp->_showingDialogMutex);
         ++_imp->_showingDialog;
     }
-    std::string ret = _imp->_gui->openImageSequenceDialog();
+    std::string ret = _imp->_gui->openImageSequenceDialog(frameRange);
     {
         QMutexLocker l(&_imp->_showingDialogMutex);
         --_imp->_showingDialog;
@@ -1002,6 +1036,9 @@ GuiAppInstance::aboutToDestroyProjectNodes()
         const std::list<SceneGraphPanel*> panels = _imp->_gui->getSceneGraphPanels();
         for (SceneGraphPanel* panel : panels) {
             panel->releaseNodeStages();
+        }
+        if (GeoSpreadsheetPanel* geoPanel = _imp->_gui->getGeoSpreadsheetPanel()) {
+            geoPanel->releaseNodes();
         }
     }
     SceneNodeStageSource::stopAll();
@@ -1498,6 +1535,28 @@ GuiAppInstance::clearOverlayRedrawRequests()
 }
 
 void
+GuiAppInstance::setNodeGraphSelection(const NodesList& nodes)
+{
+    NodeGraph* graph = 0;
+    NodesGuiList guis;
+    for (const NodePtr& node : nodes) {
+        NodeGuiPtr gui = node ? std::dynamic_pointer_cast<NodeGui>(node->getNodeGui()) : NodeGuiPtr();
+        if (!gui) {
+            continue;
+        }
+        if (!graph) {
+            graph = gui->getDagGui();
+        }
+        if (gui->getDagGui() == graph) {
+            guis.push_back(gui);
+        }
+    }
+    if (graph) {
+        graph->setSelection(guis);
+    }
+}
+
+void
 GuiAppInstance::onGroupCreationFinished(const NodePtr& node,
                                         const Serialization::NodeSerializationPtr& serialization, bool autoConnect)
 {
@@ -1816,6 +1875,27 @@ GuiAppInstance::invalidateNodeKeyframeIndicators()
             _imp->nodeKeysChangedSinceSignal = false;
             Q_EMIT keyframeIndicatorsChanged();
         } }, Qt::QueuedConnection);
+}
+
+void
+GuiAppInstance::onPanelForegroundChanged()
+{
+    assert(QThread::currentThread() == qApp->thread());
+
+    if (_imp->panelForegroundRefreshQueued) {
+        return;
+    }
+    _imp->panelForegroundRefreshQueued = true;
+    // Queued, so that the panel layout has settled when the foreground panels are read.
+    QMetaObject::invokeMethod(this, [this]() {
+        _imp->panelForegroundRefreshQueued = false;
+        _imp->nodeKeysDirty.store(true);
+        _imp->refreshNodeKeysIfDirty();
+        if (_imp->nodeKeysChangedSinceSignal) {
+            _imp->nodeKeysChangedSinceSignal = false;
+            Q_EMIT keyframeIndicatorsChanged();
+        }
+        Q_EMIT panelForegroundChanged(); }, Qt::QueuedConnection);
 }
 
 void

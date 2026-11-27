@@ -29,6 +29,7 @@
 
 #include <QtCore/QString>
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ContentHasher.h"
@@ -67,11 +68,20 @@ plannedAt(const EffectInstance* effect,
           double time,
           ViewIdx view)
 {
-    const ParallelRenderArgsPtr args = effect->getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr args = effect->getFrameArgs();
 
     return args && args->request && args->request->getFrameViewRequest(time, view);
 }
 } // anonymous namespace
+
+void
+noteEditAtLatestRenderSequence(std::atomic<U64>* editedAt)
+{
+    const U64 latest = AbortableRenderInfo::getLatestRenderSequence();
+    U64 seen = editedAt->load();
+    while ((seen < latest) && !editedAt->compare_exchange_weak(seen, latest)) {
+    }
+}
 
 void
 refreshLoopMessage(const NodePtr& node,
@@ -447,9 +457,6 @@ LoopBegin::render(const RenderActionArgs& args)
 bool
 LoopBegin::canRenderOnGpu(const GpuQuery& query) const
 {
-    if (appPTR->getRenderSchedulerMode() != eRenderSchedulerModeTaskGraph) {
-        return false;
-    }
     if ((query.bitDepth != eImageBitDepthFloat) || query.hasMask || (query.mix != 1.) || query.hasConcatenatedInput) {
         return false;
     }

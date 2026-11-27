@@ -72,9 +72,9 @@ public:
 
     static const std::string & typeNameStatic();
 
-    void setAsInputImage()
+    void setAsInputImage(bool isInputImage = true)
     {
-        _isInputImage = true;
+        _isInputImage = isInputImage;
     }
 
     bool isInputImageFile() const
@@ -94,6 +94,20 @@ public:
     const std::vector<std::string>& getFileExtensions() const
     {
         return _fileExtensions;
+    }
+
+    /**
+     * @brief Makes the file dialog the one Read uses, which lists a numbered sequence as one entry
+     * and, when one is picked, limits the node's time domain knobs to its frames.
+     **/
+    void setOpensSequences()
+    {
+        _opensSequences = true;
+    }
+
+    bool opensSequences() const
+    {
+        return _isInputImage || _opensSequences;
     }
 
     /**
@@ -206,6 +220,7 @@ private:
     virtual const std::string & typeName() const OVERRIDE FINAL;
     static const std::string _typeNameStr;
     int _isInputImage;
+    bool _opensSequences;
     KnobButtonWPtr _reloadButton;
     std::vector<std::string> _fileExtensions;
 };
@@ -235,9 +250,23 @@ public:
                    bool declaredByPlugin);
     static const std::string & typeNameStatic();
 
-    void setAsOutputImageFile()
+    void setAsOutputImageFile(bool isOutputImage = true)
     {
-        _isOutputImage = true;
+        _isOutputImage = isOutputImage;
+    }
+
+    /**
+     * @brief The extensions the save dialog offers, the first selected, such as "ngeo". An empty
+     * list offers every file. Output-image knobs offer the writers' formats instead.
+     **/
+    void setFileExtensions(const std::vector<std::string>& extensions)
+    {
+        _fileExtensions = extensions;
+    }
+
+    const std::vector<std::string>& getFileExtensions() const
+    {
+        return _fileExtensions;
     }
 
     bool isOutputImageFile() const
@@ -299,6 +328,7 @@ private:
     bool _isOutputImage;
     bool _sequenceDialog;
     bool _showsRewriteButton;
+    std::vector<std::string> _fileExtensions;
 };
 
 

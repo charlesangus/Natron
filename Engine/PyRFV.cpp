@@ -35,6 +35,7 @@
 #include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Loop/LoopBlock.h"
 #include "Engine/Nodes/Loop/LoopEnd.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
@@ -289,8 +290,6 @@ namespace {
         return entry ? getLoopPreviewContext(entry->knob) : RenderContextPtr();
     }
 
-    const char* const kLoopVariableNames[] = { "iteration", "count", "t", "frame" };
-
     PyObject*
     loopGetAttr(PyObject* self,
                 PyObject* attribute)
@@ -321,12 +320,12 @@ namespace {
         Py_XDECREF(types);
         PyObject* variables = simpleNamespace ? PyDict_New() : NULL;
         bool ok = (variables != NULL);
-        for (const char* variable : kLoopVariableNames) {
+        for (const std::string& variable : LoopBlocks::allVariables()) {
             if (!ok) {
                 break;
             }
             PyObject* value = getLoopVariable(name, variable);
-            ok = value && (PyDict_SetItemString(variables, variable, value) == 0);
+            ok = value && (PyDict_SetItemString(variables, variable.c_str(), value) == 0);
             Py_XDECREF(value);
         }
         PyObject* noArgs = ok ? PyTuple_New(0) : NULL;
@@ -424,7 +423,7 @@ getLoopPreviewContext(const KnobI* knob)
     const EffectInstance* effect = knob ? dynamic_cast<const EffectInstance*>(knob->getHolder()) : NULL;
     const NodePtr node = effect ? effect->getNode() : NodePtr();
 
-    return node ? LoopEnd::previewContextOf(node, knob->getCurrentTime()) : RenderContextPtr();
+    return node ? LoopBlocks::previewContextOf(node, knob->getCurrentTime()) : RenderContextPtr();
 }
 
 PyObject*
@@ -461,7 +460,7 @@ getVariable(const std::string& name,
     // of a project variable read for a render reads under that render's context.
     RenderContextPtr context;
     const bool acting = ActionContextScope::current(&context);
-    const ParallelRenderArgsPtr frameArgs = (effect && effect->isRenderingTLS()) ? effect->getParallelRenderArgsTLS() : ParallelRenderArgsPtr();
+    const ParallelRenderArgsPtr frameArgs = (effect && effect->isRenderingTLS()) ? effect->getFrameArgs() : ParallelRenderArgsPtr();
     if (!acting) {
         if (frameArgs) {
             context = effect->getCurrentRenderContext();

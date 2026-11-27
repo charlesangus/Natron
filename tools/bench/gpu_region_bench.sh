@@ -199,7 +199,7 @@ run_session() {
     mkdir -p "$render_dir" "$cache"
     t0=$SECONDS
     (cd "$REPO" && with_display env -u LD_LIBRARY_PATH XDG_CACHE_HOME="$cache" NATRON_GPU="$mode" \
-        NATRON_RENDER_SCHEDULER=taskgraph NATRON_RENDER_PROFILE="$OUT/$tag.prof" BENCH_TAG="$tag" \
+        NATRON_RENDER_PROFILE="$OUT/$tag.prof" BENCH_TAG="$tag" \
         BENCH_SESSION="$(session_of "$kind")" BENCH_LABEL="$kind" BENCH_RENDER_DIR="$render_dir" \
         BENCH_MARKS="$OUT/$tag.marks.jsonl" BENCH_OUT="$OUT/results.jsonl" BENCH_N=1 "$@" \
         RSS_FILE="$rss_file" python3 -I -c "$PEAK_RSS_PY" timeout 3600 "$CUR_APPIMAGE" "${APPIMAGE_ARGV[@]}" "${APP_ARGV[@]}" tools/bench/graph_bench.py) > "$OUT/$tag.log" 2>&1

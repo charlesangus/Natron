@@ -1072,6 +1072,64 @@ public:
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) WARN_UNUSED_RETURN;
 
+    /**
+     * @brief Whether what this effect puts on its output is geometry, as the graph around it
+     * resolves it: eDataKindGeometry and unambiguously so. Decides whether evaluateGeometry() may
+     * be asked of it.
+     **/
+    bool producesGeometryData() const WARN_UNUSED_RETURN;
+
+    struct EvaluateGeometryArgs {
+        double time;
+        ViewIdx view;
+        bool byPassCache;
+        // When set, the effect evaluates under this context instead of the one the actions on
+        // this thread answer for, its inputs under what it requests of them in turn.
+        RenderContextPtr context;
+
+        EvaluateGeometryArgs()
+            : time(0)
+            , view(0)
+            , byPassCache(false)
+        {
+        }
+
+        EvaluateGeometryArgs(double time_,
+                             ViewIdx view_,
+                             bool byPassCache_ = false,
+                             const RenderContextPtr& context_ = RenderContextPtr())
+            : time(time_)
+            , view(view_)
+            , byPassCache(byPassCache_)
+            , context(context_)
+        {
+        }
+    };
+
+    /**
+     * @brief The geometry counterpart of renderDeepRoI(): evaluates this effect's detail at the
+     * given time and view and returns it in *outputDetail. A detail is pulled whole: there is
+     * no region of interest and no render scale.
+     *
+     * The same pull pipeline as renderDeepRoI(): identities (Dot, the NoOps, disabled nodes,
+     * group boundaries) hand back their input's detail, the geometry cache is consulted, every
+     * input whose effective data kind is eDataKindGeometry is evaluated at each time
+     * getFramesNeeded() asks for, the render's abort flag is checked between steps, and only
+     * then is this effect's renderGeometry() called.
+     *
+     * The effect evaluates under the render context its knobs read, getCurrentRenderContext(),
+     * restricted to what its output reads: its detail is cached under its hash with that
+     * context's key mixed in, so a node whose upstream reads no context variable keeps one entry
+     * for every context, and one that does renders and caches once per distinct value.
+     *
+     * On eRenderRoIRetCodeOk, *outputDetail is non-NULL, possibly an empty detail. On any other
+     * return code it is NULL; on eRenderRoIRetCodeFailed, *errorMessage (if given) carries the
+     * message of the node that failed, whichever node upstream that was.
+     **/
+    RenderRoIRetCode evaluateGeometry(const EvaluateGeometryArgs& args,
+                                      GeoDetailConstPtr* outputDetail,
+                                      std::string* errorMessage) WARN_UNUSED_RETURN;
+
     void getImageFromCacheAndConvertIfNeeded(bool useCache,
                                              StorageModeEnum storage,
                                              StorageModeEnum returnStorage,
@@ -1116,31 +1174,7 @@ public:
     typedef std::shared_ptr<NotifyRenderingStarted_RAII> NotifyRenderingStarted_RAIIPtr;
 
     /**
-     * @brief Sets render preferences for the rendering of a frame for the current thread.
-     * This is thread-local storage. This is NOT local to a call to renderRoI
-     **/
-    void setParallelRenderArgsTLS(double time,
-                                  ViewIdx view,
-                                  bool isRenderUserInteraction,
-                                  bool isSequential,
-                                  U64 nodeHash,
-                                  const AbortableRenderInfoPtr& abortInfo,
-                                  const NodePtr& treeRoot,
-                                  int visitsCount,
-                                  const NodeFrameRequestPtr& nodeRequest,
-                                  const OSGLContextPtr& glContext,
-                                  int textureIndex,
-                                  const TimeLine* timeline,
-                                  bool isAnalysis,
-                                  bool isDuringPaintStrokeCreation,
-                                  const NodesList& rotoPaintNodes,
-                                  RenderSafetyEnum currentThreadSafety,
-                                  PluginOpenGLRenderSupport currentOpenGLSupport,
-                                  bool draftMode,
-                                  const RenderStatsPtr& stats);
-
-    /**
-     * @brief The frame args setParallelRenderArgsTLS() would install, without installing them.
+     * @brief Frame args for the rendering of a frame, to install on the effect with a FrameArgsToken.
      **/
     ParallelRenderArgsPtr createParallelRenderArgs(double time,
                                                    ViewIdx view,
@@ -1167,23 +1201,31 @@ public:
      **/
     const TLSHolderBase* getTLSHolder() const;
 
-    void setDuringPaintStrokeCreationThreadLocal(bool duringPaintStroke);
-
-    void setNodeRequestThreadLocal(const NodeFrameRequestPtr & nodeRequest);
-
-    void setParallelRenderArgsTLS(const ParallelRenderArgsPtr & args);
+    /**
+     * @brief A copy of the current thread's frame args of the effect with isDuringPaintStrokeCreation set to
+     * duringPaintStroke; null when the thread has none.
+     **/
+    ParallelRenderArgsPtr copyFrameArgsDuringPaintStroke(bool duringPaintStroke) const;
 
     /**
-     *@returns whether the effect was flagged with canSetValue = true or false
+     * @brief Pushes copyFrameArgsDuringPaintStroke() for the token's lifetime; the token is empty when the thread
+     * has no frame args for the effect.
      **/
-    void invalidateParallelRenderArgsTLS();
+    FrameArgsToken setDuringPaintStrokeCreationThreadLocal(bool duringPaintStroke) WARN_UNUSED_RETURN;
 
     /**
-     * @brief Pops the frame args setParallelRenderArgsTLS() pushed last, leaving the rotopaint tree's alone.
+     * @brief The frame args of the effect on the current thread: the innermost a FrameArgsToken pushed for it on the
+     * thread's FrameArgsOverlay chain, else those of the frame the thread renders (the scheduler task's frame, or the
+     * innermost AppTLS::FrameContextScope's), else none. A lock-free walk of the chain; it creates no thread-local data.
      **/
-    void popParallelRenderArgsTLS();
+    ParallelRenderArgsPtr getFrameArgs() const;
 
-    ParallelRenderArgsPtr getParallelRenderArgsTLS() const;
+    /**
+     * @brief The hash of the frame args the calling thread renders this effect under that carry no
+     * render context: the one evaluateGeometry() mixes a context's key into for the cache key, and
+     * the one onNodeHashChanged() reports in. getHash() when the thread has no frame args.
+     **/
+    U64 getContextFreeRenderHash() const WARN_UNUSED_RETURN;
 
     /**
      * @brief Whether the calling thread renders this node: its frame args are installed and are not
@@ -1840,6 +1882,41 @@ public:
         const SceneEvaluationContext& getInputContext(int inputNb) const;
     };
 
+    // Like a deep input, a geometry input is fetched once per time getFramesNeeded() asked for.
+    typedef std::map<double, GeoDetailConstPtr> GeoDetailsByTime;
+    typedef std::map<int, GeoDetailsByTime> GeoInputDetailsMap;
+
+    struct GeoRenderActionArgs {
+        double time;
+        ViewIdx view;
+        GeoInputDetailsMap inputDetails;
+        bool isSequentialRender;
+        bool isRenderResponseToUserInteraction;
+        bool byPassCache;
+
+        GeoRenderActionArgs()
+            : time(0)
+            , view(0)
+            , inputDetails()
+            , isSequentialRender(false)
+            , isRenderResponseToUserInteraction(false)
+            , byPassCache(false)
+        {
+        }
+
+        /**
+         * @brief The detail fetched from inputNb at the given time, or NULL if that input is not
+         * connected, does not produce geometry, or was not asked for at that time. The
+         * single-argument overload asks for this render's own time.
+         **/
+        GeoDetailConstPtr getInputDetail(int inputNb, double atTime) const;
+
+        GeoDetailConstPtr getInputDetail(int inputNb) const
+        {
+            return getInputDetail(inputNb, time);
+        }
+    };
+
 protected:
     /**
      * @brief Must fill the image 'output' for the region of interest 'roi' at the given time and
@@ -1883,6 +1960,45 @@ protected:
     virtual StatusEnum renderScene(const SceneRenderActionArgs& /*args*/,
                                    ScenePayload* /*outputScene*/,
                                    std::string* /*errorMessage*/) WARN_UNUSED_RETURN
+    {
+        return eStatusReplyDefault;
+    }
+
+    /**
+     * @brief Called by the outermost evaluateScene() of a thread on every node upstream of it,
+     * inputs first, before that evaluation takes its SceneWriteBarrier::ReadScope: the one point
+     * of a scene evaluation where a node may edit a layer it owns in place, through
+     * SceneWriteBarrier::runExclusive(). Only called while at least one effect has registered
+     * through setPreparesSceneSources(). Must return eRenderRoIRetCodeAborted soon after
+     * aborted() turns true. The default does nothing.
+     **/
+    virtual RenderRoIRetCode prepareSceneSources(const EvaluateSceneArgs& /*args*/,
+                                                 std::string* /*errorMessage*/) WARN_UNUSED_RETURN
+    {
+        return eRenderRoIRetCodeOk;
+    }
+
+    /**
+     * @brief Counts this effect among those overriding prepareSceneSources(), so evaluateScene()
+     * walks the graph only while one exists. Pair every true with a false, at the latest in the
+     * destructor. MT-safe.
+     **/
+    static void setPreparesSceneSources(bool prepares);
+
+    /**
+     * @brief The geometry counterpart of render(): must set *outputDetail to this effect's detail
+     * at args.time. Pre-condition: evaluateGeometry() has already evaluated every geometry input
+     * at every time getFramesNeeded() asked for. An input's detail is shared with the cache and
+     * with every other consumer: change a copy through GeoDetailBuilder, never the input (see
+     * NativeEffectBase::renderGeometryFromInput()).
+     *
+     * On failure returns eStatusFailed with *errorMessage set to what the user should read. The
+     * default returns eStatusReplyDefault, meaning "this effect does not produce geometry",
+     * which evaluateGeometry() turns into a failure.
+     **/
+    virtual StatusEnum renderGeometry(const GeoRenderActionArgs& /*args*/,
+                                      GeoDetailConstPtr* /*outputDetail*/,
+                                      std::string* /*errorMessage*/) WARN_UNUSED_RETURN
     {
         return eStatusReplyDefault;
     }
@@ -2065,6 +2181,37 @@ public:
     /*@brief The derived class should query this to abort any long process
        in the engine function.*/
     bool aborted() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The render state aborted() decides from on this thread: the AbortableThread's, else
+     * this effect's frame args, else what an InheritedAbortScope lent the thread. False when
+     * none of those exists.
+     **/
+    bool getAbortState(bool* isRenderResponseToUserInteraction,
+                       AbortableRenderInfoPtr* abortInfo,
+                       EffectInstancePtr* treeRoot) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Lends a pool thread the abort state of the render it works for, read with
+     * getAbortState() on the thread running that render. A pool thread is no AbortableThread
+     * and the effects it evaluates have no frame args of that render on it, so without this
+     * aborted() there is false until the work returns, however long it runs.
+     **/
+    class InheritedAbortScope {
+    public:
+        InheritedAbortScope(bool isRenderResponseToUserInteraction,
+                            const AbortableRenderInfoPtr& abortInfo,
+                            const EffectInstancePtr& treeRoot);
+        ~InheritedAbortScope();
+
+        InheritedAbortScope(const InheritedAbortScope&) = delete;
+        InheritedAbortScope& operator=(const InheritedAbortScope&) = delete;
+
+    private:
+        bool _previousUserInteraction;
+        AbortableRenderInfoPtr _previousAbortInfo;
+        EffectInstancePtr _previousTreeRoot;
+    };
 
     /**
      * @brief When the render running on this thread can be aborted and a newer request has
@@ -2476,7 +2623,7 @@ public:
      * scheduler the requests are planned by an incremental request pass, rendered as tasks in parallel under the
      * frame's budget, and continuation runs on the thread that then renders the effect, where it and the render
      * read the requested outputs with pullRenderContinuationRequest() as store hits. A request for an output the
-     * frame already holds over the region is served from it without a task. Under the legacy scheduler, on a frame
+     * frame already holds over the region is served from it without a task. On a frame
      * the task graph does not take, and for an effect pulled unplanned, the requests are rendered one after the
      * other on the probing thread, then continuation runs inline.
      *
@@ -2494,9 +2641,21 @@ public:
 
     /**
      * @brief Whether getRenderContinuation() may return true for some frame. GPU placement keeps such an effect on the
-     * CPU, since only CPU tasks are probed and the answer depends on pixels placement cannot read.
+     * CPU unless supportsRenderContinuationOnGpu() says otherwise, since the answer depends on pixels placement cannot
+     * read.
      **/
     virtual bool offersRenderContinuation() const WARN_UNUSED_RETURN
+    {
+        return false;
+    }
+
+    /**
+     * @brief Whether the effect's GPU path renders after its render continuation: GPU placement then puts it in a region
+     * holding none of the tasks it depends on, the scheduler probes it on the CPU before the region runs, and renderGpu() reads
+     * the outputs the probe requested from GpuRenderArgs::continuationInputs. The probe still reads its inputs on the
+     * CPU, so an input rendered on the GPU is downloaded for it.
+     **/
+    virtual bool supportsRenderContinuationOnGpu() const WARN_UNUSED_RETURN
     {
         return false;
     }
@@ -2669,6 +2828,15 @@ public:
     virtual bool refreshFileDependencies(const std::vector<std::string>& /*paths*/)
     {
         return false;
+    }
+
+    /**
+     * @brief Called after files one of the effect's file knobs names were reloaded and their stamps
+     * dropped, once its caches are purged: one that lists the files, such as their frame range,
+     * lists them again. Main thread only.
+     **/
+    virtual void onFilesReloaded()
+    {
     }
     virtual void clearLastRenderedImage();
 
@@ -2868,7 +3036,6 @@ public:
            In the event where the fullScaleImage is in the cache but we must resize it to render a portion unallocated yet and
            if the render is issues directly from getImage() we swap image in cache instead of taking the write lock of fullScaleImage
          */
-        ImagePtr cacheSwapImage;
         void* originalCachedImage;
 
         /**
@@ -2881,7 +3048,6 @@ public:
             , downscaleImage()
             , renderMappedImage()
             , tmpImage()
-            , cacheSwapImage()
             , originalCachedImage(0)
             , isAllocatedOnTheFly(false)
         {
@@ -2967,6 +3133,15 @@ public:
      * it, after the hashes of its inputs and with no node lock held.
      **/
     virtual void onNodeHashChanged(U64 hash);
+
+    /**
+     * @brief Called for an edit of this node or of any node upstream of it made while that node
+     * renders (Node::abortCooksStaleAfterEditDownstream()). Such an edit is queued until the
+     * renders reading the edited node end, so it moves no hash while they run and
+     * onNodeHashChanged() does not hear of it. An effect whose own cooks outlast edits aborts the
+     * ones the edit leaves stale. Called on the editing thread, possibly while cooks run. MT-safe.
+     **/
+    virtual void abortCooksStaleAfterEdit() { }
 
     /**
      * @brief Drops every output metadata result this effect cached, its inputs' included, with no
@@ -3720,10 +3895,6 @@ public:
         std::list<bool> canSetValue;
 #endif
 
-        ///Recursive because it may be set recursively in such situation:
-        ///knobChanged : set ParallelRenderArgs TLS for analysis
-        ///timelineGoTo calls getRenderviewerArgs on the MT which overrides this TLS
-        std::list<ParallelRenderArgsPtr> frameArgs;
         EffectInstance::RenderArgs currentRenderArgs;
 
         std::vector<std::string> userLayerStrings;
@@ -3749,7 +3920,6 @@ public:
 #ifdef DEBUG
             , canSetValue()
 #endif
-            , frameArgs()
             , currentRenderArgs()
             , userLayerStrings()
             , resolvingLayersPassThrough(false)

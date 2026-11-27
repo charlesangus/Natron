@@ -25,6 +25,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <functional>
 #include <iostream>
 #include <list>
@@ -74,6 +75,9 @@ NATRON_NAMESPACE_USING
 
 namespace {
 
+enum RenderPull { eRenderPullDirect,
+                  eRenderPullScheduled };
+
 const double kTime = 1.;
 
 RectI
@@ -92,14 +96,16 @@ bothPools()
 bool
 renderPlane(const NodePtr& node,
             const RectI& roi,
-            RenderSchedulerModeEnum mode,
+            RenderPull mode,
             bool byPassCache,
             RenderedPlane* plane)
 {
     std::vector<RenderedPlane> planes;
     std::string error;
 
-    if (!renderNodePlanesInMode(node, kTime, ViewIdx(0), 0, roi, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), mode, byPassCache, &planes, &error)) {
+    if (!(mode == eRenderPullScheduled
+              ? renderNodePlanesScheduled(node, kTime, ViewIdx(0), 0, roi, byPassCache, &planes, &error)
+              : renderNodePlanesDirect(node, kTime, ViewIdx(0), 0, roi, std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error, byPassCache))) {
         ADD_FAILURE() << error;
 
         return false;
@@ -119,7 +125,7 @@ renderPlane(const NodePtr& node,
 // The red value of the bottom-left pixel of node's output.
 bool
 renderedValue(const NodePtr& node,
-              RenderSchedulerModeEnum mode,
+              RenderPull mode,
               bool byPassCache,
               float* value)
 {
@@ -403,12 +409,12 @@ protected:
                      const std::string& what)
     {
         float value = -1.f;
-        ASSERT_TRUE(renderedValue(node, eRenderSchedulerModeLegacy, false, &value)) << what;
-        EXPECT_EQ(expected, value) << what << " (legacy, cached)";
-        ASSERT_TRUE(renderedValue(node, eRenderSchedulerModeTaskGraph, false, &value)) << what;
-        EXPECT_EQ(expected, value) << what << " (task graph, cached)";
-        ASSERT_TRUE(renderedValue(node, eRenderSchedulerModeLegacy, true, &value)) << what;
-        EXPECT_EQ(expected, value) << what << " (legacy, uncached)";
+        ASSERT_TRUE(renderedValue(node, eRenderPullDirect, false, &value)) << what;
+        EXPECT_EQ(expected, value) << what << " (direct, cached)";
+        ASSERT_TRUE(renderedValue(node, eRenderPullScheduled, false, &value)) << what;
+        EXPECT_EQ(expected, value) << what << " (scheduled, cached)";
+        ASSERT_TRUE(renderedValue(node, eRenderPullDirect, true, &value)) << what;
+        EXPECT_EQ(expected, value) << what << " (direct, uncached)";
     }
 
     void expectBothWays(const NodePtr& node,
@@ -514,11 +520,11 @@ TEST_F(NativeLoopFeedbackTest, FiveOnePixelErodesAreAFivePixelErode)
     const RectI roi(window.x1 + 8, window.y1 + 8, window.x2 - 8, window.y2 - 8);
     ASSERT_FALSE(roi.isNull());
     RenderedPlane expected, actual;
-    ASSERT_TRUE(renderPlane(reference, roi, eRenderSchedulerModeLegacy, true, &expected));
-    ASSERT_TRUE(renderPlane(end, roi, eRenderSchedulerModeLegacy, true, &actual));
-    expectSamePixels(expected, actual, "legacy");
-    ASSERT_TRUE(renderPlane(end, roi, eRenderSchedulerModeTaskGraph, true, &actual));
-    expectSamePixels(expected, actual, "task graph");
+    ASSERT_TRUE(renderPlane(reference, roi, eRenderPullDirect, true, &expected));
+    ASSERT_TRUE(renderPlane(end, roi, eRenderPullDirect, true, &actual));
+    expectSamePixels(expected, actual, "direct");
+    ASSERT_TRUE(renderPlane(end, roi, eRenderPullScheduled, true, &actual));
+    expectSamePixels(expected, actual, "scheduled");
     expectBothWays(end, roi);
 }
 
@@ -544,11 +550,11 @@ TEST_F(NativeLoopFeedbackTest, TenOnePixelTranslatesAreATenPixelTranslate)
     const RectI roi(window.x1 + 12, window.y1 + 2, window.x2 - 2, window.y2 - 2);
     ASSERT_FALSE(roi.isNull());
     RenderedPlane expected, actual;
-    ASSERT_TRUE(renderPlane(reference, roi, eRenderSchedulerModeLegacy, true, &expected));
-    ASSERT_TRUE(renderPlane(end, roi, eRenderSchedulerModeLegacy, true, &actual));
-    expectSamePixels(expected, actual, "legacy");
-    ASSERT_TRUE(renderPlane(end, roi, eRenderSchedulerModeTaskGraph, true, &actual));
-    expectSamePixels(expected, actual, "task graph");
+    ASSERT_TRUE(renderPlane(reference, roi, eRenderPullDirect, true, &expected));
+    ASSERT_TRUE(renderPlane(end, roi, eRenderPullDirect, true, &actual));
+    expectSamePixels(expected, actual, "direct");
+    ASSERT_TRUE(renderPlane(end, roi, eRenderPullScheduled, true, &actual));
+    expectSamePixels(expected, actual, "scheduled");
     expectBothWays(end, roi);
 }
 
@@ -601,15 +607,15 @@ TEST_F(NativeLoopFeedbackTest, SinglePassIsTheLoopCutShort)
 
     const RectI window = paritySourceWindow(source, kTime, 0);
     const RectI roi(window.x1 + 4, window.y1 + 4, window.x2 - 4, window.y2 - 4);
-    RenderedPlane singlePass, taskGraph, threeIterations;
-    ASSERT_TRUE(renderPlane(end, roi, eRenderSchedulerModeLegacy, true, &singlePass));
-    ASSERT_TRUE(renderPlane(end, roi, eRenderSchedulerModeTaskGraph, true, &taskGraph));
-    expectSamePixels(singlePass, taskGraph, "task graph");
+    RenderedPlane singlePass, scheduled, threeIterations;
+    ASSERT_TRUE(renderPlane(end, roi, eRenderPullDirect, true, &singlePass));
+    ASSERT_TRUE(renderPlane(end, roi, eRenderPullScheduled, true, &scheduled));
+    expectSamePixels(singlePass, scheduled, "scheduled");
     expectBothWays(end, roi);
 
     ASSERT_TRUE(setBoolKnob(end, kLoopEndParamSinglePass, false));
     ASSERT_TRUE(setIntKnob(end, kLoopEndParamIterations, 3));
-    ASSERT_TRUE(renderPlane(end, roi, eRenderSchedulerModeLegacy, true, &threeIterations));
+    ASSERT_TRUE(renderPlane(end, roi, eRenderPullDirect, true, &threeIterations));
     expectSamePixels(threeIterations, singlePass, "single pass");
 }
 
@@ -627,17 +633,17 @@ TEST_F(NativeLoopFeedbackTest, ABodyReadingNoLoopVariableRendersEveryIteration)
 
     CountingTestRegistry::reset();
     float value = -1.f;
-    ASSERT_TRUE(renderedValue(end, eRenderSchedulerModeLegacy, true, &value));
+    ASSERT_TRUE(renderedValue(end, eRenderPullDirect, true, &value));
     EXPECT_EQ(5.f, value);
     EXPECT_EQ(4, CountingTestRegistry::renders(counting));
-    ASSERT_TRUE(renderedValue(end, eRenderSchedulerModeTaskGraph, true, &value));
+    ASSERT_TRUE(renderedValue(end, eRenderPullScheduled, true, &value));
     EXPECT_EQ(5.f, value);
     expectBothWays(end, countingWindow());
 }
 
-// A legacy render split into several rectangles, by what the cache already holds of the LoopEnd,
+// A direct render split into several rectangles, by what the cache already holds of the LoopEnd,
 // runs the chain once, not once per rectangle.
-TEST_F(NativeLoopFeedbackTest, ATiledLegacyRenderRunsTheChainOnce)
+TEST_F(NativeLoopFeedbackTest, ATiledDirectRenderRunsTheChainOnce)
 {
     NodePtr constant = createConstant(1.);
     NodePtr begin = createLoopBegin();
@@ -651,12 +657,12 @@ TEST_F(NativeLoopFeedbackTest, ATiledLegacyRenderRunsTheChainOnce)
 
     CountingTestRegistry::reset();
     RenderedPlane centre;
-    ASSERT_TRUE(renderPlane(end, RectI(8, 8, 24, 24), eRenderSchedulerModeLegacy, false, &centre));
+    ASSERT_TRUE(renderPlane(end, RectI(8, 8, 24, 24), eRenderPullDirect, false, &centre));
     EXPECT_EQ(4, CountingTestRegistry::renders(counting)) << "centre";
 
     CountingTestRegistry::reset();
     RenderedPlane full;
-    ASSERT_TRUE(renderPlane(end, countingWindow(), eRenderSchedulerModeLegacy, false, &full));
+    ASSERT_TRUE(renderPlane(end, countingWindow(), eRenderPullDirect, false, &full));
     EXPECT_EQ(4, CountingTestRegistry::renders(counting)) << "around the cached centre";
     const std::size_t nComps = full.channels.empty() ? 1 : full.channels.size();
     ASSERT_EQ((std::size_t)kCountingTestSize * kCountingTestSize * nComps, full.pixels.size());
@@ -681,7 +687,7 @@ TEST_F(NativeLoopFeedbackTest, ASinglePassRendersEachIterationBeforeItOnce)
 
     CountingTestRegistry::reset();
     float value = -1.f;
-    ASSERT_TRUE(renderedValue(end, eRenderSchedulerModeLegacy, true, &value));
+    ASSERT_TRUE(renderedValue(end, eRenderPullDirect, true, &value));
     EXPECT_EQ(5.f, value);
     EXPECT_EQ(4, CountingTestRegistry::renders(counting));
 }
@@ -707,7 +713,7 @@ TEST_F(NativeLoopFeedbackTest, ABodyChangingComponentsIsConformedWithAWarning)
     ASSERT_TRUE(end->connectInput(grade, 0));
 
     float value = -1.f;
-    ASSERT_TRUE(renderedValue(end, eRenderSchedulerModeLegacy, true, &value));
+    ASSERT_TRUE(renderedValue(end, eRenderPullDirect, true, &value));
     QString message;
     int messageType = -1;
     begin->getPersistentMessage(&message, &messageType, false);
@@ -717,12 +723,12 @@ TEST_F(NativeLoopFeedbackTest, ABodyChangingComponentsIsConformedWithAWarning)
 
     setParitySourceComponents(source, "rgba");
     CountingTestRegistry::reset();
-    ASSERT_TRUE(renderedValue(end, eRenderSchedulerModeLegacy, true, &value));
+    ASSERT_TRUE(renderedValue(end, eRenderPullDirect, true, &value));
     std::cerr << "ABodyChangingComponents first RGBA render: body rendered " << CountingTestRegistry::renders(counting) << " times" << std::endl;
 
     // Tell a body that iterates wrongly from a loop input that is not RGBA.
     float sourceValue = -1.f;
-    ASSERT_TRUE(renderedValue(source, eRenderSchedulerModeLegacy, true, &sourceValue));
+    ASSERT_TRUE(renderedValue(source, eRenderPullDirect, true, &sourceValue));
     EXPECT_EQ(sourceValue + 3.f, value) << "after 3 feedback iterations: source " << sourceValue << ", rendered " << value;
     const EffectInstancePtr beginEffect = begin->getEffectInstance();
     const int beginComps = EffectInstance::getNCompsFromMetadata(*beginEffect->getTimeInvariantMetadata(), -1);
@@ -732,7 +738,7 @@ TEST_F(NativeLoopFeedbackTest, ABodyChangingComponentsIsConformedWithAWarning)
     EXPECT_TRUE(beginLayer == ImageLayerDesc::getRGBAComponents()) << "LoopBegin output layer " << beginLayer.getUserFacingLabel() << " (" << beginLayer.getNumComponents() << " comps)";
 
     RenderedPlane finalPlane;
-    ASSERT_TRUE(renderPlane(end, countingWindow(), eRenderSchedulerModeLegacy, true, &finalPlane));
+    ASSERT_TRUE(renderPlane(end, countingWindow(), eRenderPullDirect, true, &finalPlane));
     ASSERT_GE(finalPlane.pixels.size(), (std::size_t)4);
     std::cerr << "ABodyChangingComponents final RGBA " << finalPlane.pixels[0] << " " << finalPlane.pixels[1] << " "
               << finalPlane.pixels[2] << " " << finalPlane.pixels[3] << " (source " << sourceValue << ")" << std::endl;
@@ -946,6 +952,80 @@ TEST_F(NativeLoopFeedbackTest, TheLoopBeginHashFollowsTheBody)
     EXPECT_EQ(hash, begin->getContentHash()) << "LoopEnd knob set to its value";
 }
 
+// A node feeding a Feedback or Cross Frame LoopEnd's Map is read where the LoopEnd is, outside its
+// body, directly or through a Group: it is not among the nodes the LoopBegin folds in, and an edit
+// to it leaves the LoopBegin's hash and its caches as they are.
+TEST_F(NativeLoopFeedbackTest, AMapInputIsNotInTheBody)
+{
+    for (int crossFrame = 0; crossFrame < 2; ++crossFrame) {
+        for (int throughGroup = 0; throughGroup < 2; ++throughGroup) {
+            SCOPED_TRACE(std::string(crossFrame ? "cross frame" : "feedback") + (throughGroup ? ", through a group" : ", direct"));
+            getApp()->getProject()->reset(false, true);
+            NodePtr constant = createConstant(1.);
+            NodePtr begin = createLoopBegin();
+            NodePtr body = createCounting(1.);
+            NodePtr end = createFeedbackEnd(3);
+            NodePtr mapSide = createCounting(2.);
+            ASSERT_TRUE(constant && begin && body && end && mapSide);
+            ASSERT_TRUE(setLoopName(end, "fb"));
+            ASSERT_TRUE(setBoolKnob(end, kLoopEndParamCrossFrame, crossFrame != 0));
+            ASSERT_TRUE(begin->connectInput(constant, 0));
+            ASSERT_TRUE(body->connectInput(begin, 0));
+            ASSERT_TRUE(end->connectInput(body, kLoopEndInputSource));
+
+            NodePtr mapTail = mapSide;
+            NodePtr mapFeed = mapSide;
+            if (throughGroup) {
+                CreateNodeArgs groupArgs(PLUGINID_NATRON_GROUP, getApp()->getProject());
+                groupArgs.setProperty<bool>(kCreateNodeArgsPropNodeGroupDisableCreateInitialNodes, true);
+                groupArgs.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+                NodePtr group = getApp()->createNode(groupArgs);
+                ASSERT_TRUE(bool(group));
+                NodeCollectionPtr inside = std::dynamic_pointer_cast<NodeCollection>(group->getEffectInstance());
+                ASSERT_TRUE(bool(inside));
+                const auto createInside = [&](const char* pluginID) {
+                    CreateNodeArgs args(pluginID, inside);
+                    args.setProperty<bool>(kCreateNodeArgsPropAutoConnect, false);
+
+                    return getApp()->createNode(args);
+                };
+                NodePtr groupInput = createInside(PLUGINID_NATRON_INPUT);
+                NodePtr groupCounting = createInside(kTestPluginIDCounting);
+                NodePtr groupOutput = createInside(PLUGINID_NATRON_OUTPUT);
+                ASSERT_TRUE(groupInput && groupCounting && groupOutput);
+                ASSERT_TRUE(groupCounting->connectInput(groupInput, 0));
+                ASSERT_TRUE(groupOutput->connectInput(groupCounting, 0));
+                ASSERT_GE(group->getNInputs(), 1);
+                ASSERT_TRUE(group->connectInput(mapSide, 0));
+                mapTail = groupCounting;
+                mapFeed = group;
+            }
+            ASSERT_TRUE(end->connectInput(mapFeed, kLoopEndInputMap));
+            ASSERT_TRUE(mapTail == end->getInput(kLoopEndInputMap));
+
+            const auto feedbackBeginsOf = [](const NodePtr& node) {
+                LoopEnd::FeedbackBeginsLookup lookup;
+                std::vector<NodePtr> begins;
+                lookup.appendFeedbackBeginsOf(node, &begins);
+
+                return begins;
+            };
+            const std::vector<NodePtr> bodyBegins = feedbackBeginsOf(body);
+            EXPECT_NE(std::find(bodyBegins.begin(), bodyBegins.end(), begin), bodyBegins.end()) << "body";
+            const std::vector<NodePtr> mapBegins = feedbackBeginsOf(mapSide);
+            EXPECT_EQ(std::find(mapBegins.begin(), mapBegins.end(), begin), mapBegins.end()) << "Map input";
+            const std::vector<NodePtr> tailBegins = feedbackBeginsOf(mapTail);
+            EXPECT_EQ(std::find(tailBegins.begin(), tailBegins.end(), begin), tailBegins.end()) << "node the Map reads";
+
+            const U64 hash = begin->getContentHash();
+            ASSERT_TRUE(setDoubleKnob(mapSide, "value", 4.));
+            EXPECT_EQ(hash, begin->getContentHash()) << "edit feeding the Map";
+            ASSERT_TRUE(setDoubleKnob(body, "value", 3.));
+            EXPECT_NE(hash, begin->getContentHash()) << "edit in the body";
+        }
+    }
+}
+
 // A Group inside the body is part of it: edits to the nodes inside the Group move the LoopBegin's
 // hash and reach the cached loop.
 TEST_F(NativeLoopFeedbackTest, AGroupInTheBodyIsPartOfIt)
@@ -1051,7 +1131,7 @@ TEST_F(NativeLoopFeedbackTest, NestedFeedbackLoops)
 }
 
 // A 200-node body over 1024 iterations: the scheduler stays within its bytes budget and plans
-// every pull, and the legacy render does each iteration's work once.
+// every pull, and the direct render does each iteration's work once.
 TEST_F(NativeLoopFeedbackTest, ALongFeedbackChainStaysBounded)
 {
     const int bodySize = 200;
@@ -1075,7 +1155,7 @@ TEST_F(NativeLoopFeedbackTest, ALongFeedbackChainStaysBounded)
 
     CountingTestRegistry::reset();
     float value = -1.f;
-    ASSERT_TRUE(renderedValue(end, eRenderSchedulerModeLegacy, true, &value));
+    ASSERT_TRUE(renderedValue(end, eRenderPullDirect, true, &value));
     EXPECT_EQ(expected, value);
     EXPECT_EQ(bodySize * iterations, CountingTestRegistry::totalRenders());
 

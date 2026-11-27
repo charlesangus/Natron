@@ -91,7 +91,7 @@ reference(const AppInstancePtr& app,
 {
     clearEverything(app);
 
-    return renderProbe(probe, kTime, 0, kWindow, eRenderSchedulerModeLegacy, true, out, error);
+    return renderProbeDirect(probe, kTime, 0, kWindow, true, out, error);
 }
 
 std::string
@@ -101,7 +101,7 @@ cachedDiff(const NodePtr& probe,
     RenderedPlane got;
     std::string error;
 
-    if (!renderProbe(probe, kTime, 0, kWindow, eRenderSchedulerModeLegacy, false, &got, &error)) {
+    if (!renderProbeDirect(probe, kTime, 0, kWindow, false, &got, &error)) {
         return "the cached render failed: " + error;
     }
 

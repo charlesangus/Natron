@@ -72,10 +72,24 @@ endforeach()
 
 set_tests_properties(${_natron_serial_suites} ${_natron_core_hogging_suites} PROPERTIES RUN_SERIAL TRUE)
 
+# Every registration sets NATRON_TEST_CTEST_TIMEOUT_S from its TIMEOUT through
+# ENVIRONMENT_MODIFICATION (cmake/NatronGtestSuites.cmake), which the test process reads to dump
+# its stacks shortly before ctest's kill. A suite's TIMEOUT or ENVIRONMENT_MODIFICATION is changed
+# here only, so the two cannot drift apart: ctest applies the entries in order, and the set:
+# entry made here comes after the registration's.
+if(CMAKE_VERSION VERSION_LESS 3.22)
+    message(FATAL_ERROR "SuiteProperties.cmake: the suites need ctest from CMake 3.22 or newer "
+                        "for ENVIRONMENT_MODIFICATION.")
+endif()
+function(_natron_set_timeout_and_env suite timeout)
+    set(_entries "NATRON_TEST_CTEST_TIMEOUT_S=set:${timeout}" ${ARGN})
+    set_tests_properties(${suite} PROPERTIES TIMEOUT ${timeout} ENVIRONMENT_MODIFICATION "${_entries}")
+endfunction()
+
 set(_natron_i 0)
 foreach(_suite IN LISTS _natron_long_suites)
     list(GET _natron_long_timeouts ${_natron_i} _timeout)
-    set_tests_properties(${_suite} PROPERTIES TIMEOUT ${_timeout})
+    _natron_set_timeout_and_env(${_suite} ${_timeout})
     math(EXPR _natron_i "${_natron_i} + 1")
 endforeach()
 
@@ -103,6 +117,21 @@ if(NOT "HydraRenderCameraTest" IN_LIST NATRON_GTEST_SUITE_TESTS)
 endif()
 set_tests_properties(HydraRenderCameraTest PROPERTIES ENVIRONMENT "NATRON_TEST_REQUIRE_GL=1")
 
+# The Storm volume suite renders through a GL context and would otherwise pass by skipping.
+if(NOT "VolumeRenderStorm" IN_LIST NATRON_GTEST_SUITE_TESTS)
+    message(FATAL_ERROR "SuiteProperties.cmake: 'VolumeRenderStorm' is not a registered test; "
+                        "update the suite name or it would silently lose its properties.")
+endif()
+set_tests_properties(VolumeRenderStorm PROPERTIES ENVIRONMENT "NATRON_TEST_REQUIRE_GL=1")
+
+# One MSAA sample puts Storm's depth at the pixel's centre for this suite's comparison with a ray. The
+# setting is read once per process and would change the bits of every other Storm render in it.
+if(NOT "USDRenderSingleSampleTest" IN_LIST NATRON_GTEST_SUITE_TESTS)
+    message(FATAL_ERROR "SuiteProperties.cmake: 'USDRenderSingleSampleTest' is not a registered test; "
+                        "update the suite name or it would silently lose its properties.")
+endif()
+set_tests_properties(USDRenderSingleSampleTest PROPERTIES ENVIRONMENT "HDX_MSAA_SAMPLE_COUNT=1")
+
 # These suites skip when the MoonRay plug-in is missing, which would hide a bundling or plug-in
 # discovery regression in a build that does carry MoonRay.
 if(NATRON_MOONRAY_BUNDLED)
@@ -118,7 +147,8 @@ endif()
 # These suites skip when the Cycles plug-in is missing, which would hide a bundling or plug-in
 # discovery regression in a build that does carry Cycles.
 if(NATRON_CYCLES_BUNDLED)
-    foreach(_suite CyclesDelegate USDRenderCyclesMaterialTest VolumeRenderCycles)
+    foreach(_suite CyclesDelegate USDRenderCyclesMaterialTest USDRenderCyclesInstancerTest
+                   VolumeRenderCycles)
         if(NOT "${_suite}" IN_LIST NATRON_GTEST_SUITE_TESTS)
             message(FATAL_ERROR "SuiteProperties.cmake: '${_suite}' is not a registered test; "
                                 "update the suite name or it would silently lose its properties.")
@@ -135,14 +165,10 @@ if(NOT "AiOrtTelemetry" IN_LIST NATRON_GTEST_SUITE_TESTS)
     message(FATAL_ERROR "SuiteProperties.cmake: 'AiOrtTelemetry' is not a registered test; "
                         "update the suite name or it would silently lose its properties.")
 endif()
-if(CMAKE_VERSION VERSION_LESS 3.22)
-    message(FATAL_ERROR "SuiteProperties.cmake: AiOrtTelemetry needs ctest from CMake 3.22 or newer "
-                        "for ENVIRONMENT_MODIFICATION.")
-endif()
 set(_natron_ort_env_unset "")
 foreach(_var CI TF_BUILD GITHUB_ACTIONS GITLAB_CI CIRCLECI TRAVIS JENKINS_URL CODEBUILD_BUILD_ID
         BUILDKITE TEAMCITY_VERSION APPVEYOR BITBUCKET_BUILD_NUMBER SYSTEM_TEAMFOUNDATIONCOLLECTIONURI
         ORT_RUNNING_UNIT_TESTS)
     list(APPEND _natron_ort_env_unset "${_var}=unset:")
 endforeach()
-set_tests_properties(AiOrtTelemetry PROPERTIES ENVIRONMENT_MODIFICATION "${_natron_ort_env_unset}")
+_natron_set_timeout_and_env(AiOrtTelemetry ${NATRON_TEST_DEFAULT_TIMEOUT_S} ${_natron_ort_env_unset})

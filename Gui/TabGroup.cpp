@@ -34,6 +34,7 @@
 
 #include "Engine/AppManager.h"
 #include "Engine/KnobTypes.h"
+#include "Gui/DockablePanel.h"
 #include "Gui/GuiDensity.h"
 
 NATRON_NAMESPACE_ENTER
@@ -75,6 +76,7 @@ TabGroup::TabGroup(QWidget* parent)
     QHBoxLayout* frameLayout = new QHBoxLayout(this);
     _imp->tabWidget = new QTabWidget(this);
     frameLayout->addWidget(_imp->tabWidget);
+    QObject::connect(_imp->tabWidget, SIGNAL(currentChanged(int)), this, SLOT(onCurrentTabChanged()));
 }
 
 TabGroup::~TabGroup()
@@ -190,6 +192,36 @@ TabGroup::onGroupKnobSecretChanged()
         return;
     }
     refreshTabSecretNess(groupKnob);
+}
+
+bool
+TabGroup::isTabCurrent(const KnobGroup* group) const
+{
+    QWidget* current = _imp->tabWidget->currentWidget();
+    if (!current) {
+        return false;
+    }
+    for (std::size_t i = 0; i < _imp->tabs.size(); ++i) {
+        if (_imp->tabs[i].groupKnob.lock().get() == group) {
+            return _imp->tabs[i].visible && _imp->tabs[i].tab == current;
+        }
+    }
+
+    return false;
+}
+
+void
+TabGroup::onCurrentTabChanged()
+{
+    // The timeline shows only the keys of the knobs on the tabs in view.
+    for (QWidget* parent = parentWidget(); parent; parent = parent->parentWidget()) {
+        DockablePanel* panel = qobject_cast<DockablePanel*>(parent);
+        if (panel) {
+            panel->notifyForegroundChanged();
+
+            return;
+        }
+    }
 }
 
 NATRON_NAMESPACE_EXIT

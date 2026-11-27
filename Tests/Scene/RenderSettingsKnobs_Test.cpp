@@ -610,7 +610,11 @@ switchTable()
     RenderSettingsKnobs::CuratedSetting locked = curatedSetting("test:locked", "locked", "");
     locked.enabledBy = { bySwitch };
     locked.disabledReason = "Never available.";
-    t.settings = { sw, count, dependent, inverse, both, locked };
+    RenderSettingsKnobs::EnabledBy byCountTwo = byCount;
+    byCountTwo.equals = VtValue(2);
+    RenderSettingsKnobs::CuratedSetting atTwo = curatedSetting("test:atTwo", "atTwo", "");
+    atTwo.enabledBy = { byCountTwo };
+    t.settings = { sw, count, dependent, inverse, both, locked, atTwo };
 
     return t;
 }
@@ -637,8 +641,12 @@ TEST_F(RenderSettingsKnobsTest, SwitchesGreyTheirDependents)
     EXPECT_FALSE(enabled("Inverse"));
     EXPECT_FALSE(enabled("Both"));
     EXPECT_FALSE(enabled("Locked"));
+    EXPECT_FALSE(enabled("AtTwo"));
 
+    setKnob(node, prefix + "Count", VtValue(3));
+    EXPECT_FALSE(enabled("AtTwo"));
     setKnob(node, prefix + "Count", VtValue(2));
+    EXPECT_TRUE(enabled("AtTwo"));
     EXPECT_TRUE(enabled("Both"));
     const U64 hash = node->getHashValue();
     const RenderSettingsKnobs::Values values = settings->values(kRenderer);
@@ -666,6 +674,35 @@ TEST_F(RenderSettingsKnobsTest, SwitchesGreyTheirDependents)
     EXPECT_FALSE(enabled("Dependent"));
     EXPECT_TRUE(enabled("Inverse"));
     EXPECT_FALSE(enabled("Locked"));
+}
+
+// A setting every engine is given starts at that value whatever the delegate declares, and is sent
+// only when its knob leaves it.
+TEST_F(RenderSettingsKnobsTest, EngineDefaultsAreSentOnlyWhenChanged)
+{
+    const std::string prefix = "natronTestSettingsRenderer";
+    RenderSettingsKnobs::Curated table;
+    RenderSettingsKnobs::CuratedSetting given = curatedSetting("test:given", "given", "");
+    given.defaultValue = VtValue(true);
+    given.engineDefault = true;
+    table.settings = { given, curatedSetting("test:count", "count", "") };
+    RenderSettingsKnobs::setCuratedForTests(kRenderer, &table);
+    RenderSettingsKnobs::setDescriptorsForTests(kRenderer, RenderSettingsKnobs::DescriptorList(1, descriptor("test:given", VtValue(false))));
+    NodePtr node = createSettings();
+    ASSERT_TRUE(bool(node));
+    const RenderSettingsKnobs* settings = settingsOf(node);
+    ASSERT_TRUE(settings != nullptr);
+
+    const RenderSettingsKnobs::Values defaults = RenderSettingsKnobs::engineDefaults(kRenderer);
+    ASSERT_EQ(1u, defaults.size());
+    EXPECT_EQ(VtValue(true), defaults.at("test:given"));
+    KnobBool* knob = dynamic_cast<KnobBool*>(node->getKnobByName(prefix + "Given").get());
+    ASSERT_TRUE(knob != nullptr);
+    EXPECT_TRUE(knob->getValue());
+    EXPECT_EQ(0u, settings->values(kRenderer).count("test:given"));
+    setKnob(node, prefix + "Given", VtValue(false));
+    ASSERT_EQ(1u, settings->values(kRenderer).count("test:given"));
+    EXPECT_EQ(VtValue(false), settings->values(kRenderer).at("test:given"));
 }
 
 // A table whose groups are invalid is ignored: every setting lands in the curated group.

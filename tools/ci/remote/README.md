@@ -46,6 +46,11 @@ tools/ci/remote/build.sh --mode    # prints the resolved mode
   packages an AppImage: llvmpipe raises SIGFPE under the `-DDEBUG` traps in
   the container, so `debug` takes neither `--appimage` nor `--gui`. Use it with
   `--tests` to reproduce a PR CI failure.
+  PR CI (`ci.yml`) builds and tests only a PR that is ready for review: on a
+  draft its build and test legs are skipped until the PR is marked ready
+  (`gh pr ready`), which starts the full run. Format, Lint CI and Code rules
+  still run on a draft, and the `Build and test` aggregator fails on purpose
+  with a message, because a skipped required check would count as passing.
 - Performance: a `release` AppImage (-O2), measured on the target host. Never take performance numbers from a GitHub runner.
 
 `stage-bundle.sh` strips the ELF files of every preset's bundle, `fast`
@@ -54,7 +59,7 @@ included, not only `release`. Set `NATRON_STAGE_NO_STRIP=1` to opt out.
 ## Usage
 
 ```
-tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui "<script> ..."]
+tools/ci/remote/build.sh <fast|release|debug> [--tests] [--ctest-regex <re>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui "<script> ..."]
 tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
 ```
 
@@ -63,14 +68,13 @@ tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
   (`NATRON_CTEST_JOBS=4`, one suite per vCPU), as in PR CI, and cases that
   fail are re-run serially with `ctest --rerun-failed -V`, so the logs carry
   the full output and assert text of each failure.
-- `--scheduler <legacy|taskgraph>` implies `--tests` and runs only that
-  scheduler's ctest leg and smoke test; without it both legs run, as before.
-  Intermediate fix builds may use `--scheduler taskgraph` to halve the wait,
-  but a milestone's verification gate runs without it, so both legs are
-  green. The cross-scheduler smoke render comparison runs only when both legs
-  did, and an unknown name exits with the usage line before dispatching.
-  The workflow takes it as the `schedulers` input, a comma-separated list
-  that defaults to `legacy,taskgraph`.
+- `--ctest-regex <re>` implies `--tests` and makes the ctest job run only the
+  ctest entries matching `<re>` (`ctest -R`, through `test.sh`'s
+  `NATRON_CTEST_REGEX`; entries are whole suites, e.g. `'^NativeBlurTest$'`).
+  A regex matching no entry fails the job, and the smoke test still runs.
+  It is for intermediate fix builds only: a milestone's final verification
+  gate must not use it, so the full suite is green. The workflow takes it as
+  the `ctest_regex` input, sent only when given.
 - `--record-goldens` implies `--tests`. It also records the native golden
   renders of `NativeGoldenTest`, `NativeIDistortAmountTest` and
   `NativeIWarpTest` on the runner and downloads them into
@@ -84,11 +88,11 @@ tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
   comes down under `Tests/fixtures/native-golden/native-parity/`; copy a
   node's directory to `Tests/fixtures/native-parity/` to commit it.
 - `--shuffle-seeds <n,n,...>` implies `--tests`, e.g. `--shuffle-seeds 1,2,3`
-  (seeds 1 to 99999). Each ctest leg runs once unshuffled, as without the
+  (seeds 1 to 99999). The ctest job runs once unshuffled, as without the
   option, then once per seed with `GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<seed>`,
   which shuffles the cases within each suite process to flush out leaks
-  between cases. Every seed runs even after a failure, the leg fails if any
-  run did, and each shuffled run's log is `ctest-<scheduler>-seed<seed>.log`.
+  between cases. Every seed runs even after a failure, the job fails if any
+  run did, and each shuffled run's log is `ctest-seed<seed>.log`.
   The ctest step's timeout rises from 30 to a fixed 120 minutes, about five
   seeds on the debug preset, so at most 5 seeds are accepted; `build.sh` and
   the workflow both reject a longer list.
@@ -98,7 +102,7 @@ tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
   meant as a later `--from-run` source. `--no-appimage` names the default and
   is rejected beside any of the three. `debug` takes none of them.
   Packaging runs in its own `package` job off the uploaded build tree, beside
-  the ctest legs, so ctest does not wait for it.
+  the ctest job, so ctest does not wait for it.
 - `--cmake-arg <arg>` (repeatable) adds an argument to the cmake configure,
   e.g. `--cmake-arg -DNATRON_GPU=OFF`. `tools/ci/local/build.sh` takes the same
   flag and then builds in its own `build/<preset>-<hash>` tree instead of the
@@ -120,7 +124,7 @@ run name, watches it, then downloads the artifacts (kept 7 days on GitHub):
 | Artifact | Contents |
 | --- | --- |
 | `natron-<preset>-<sha>` | the `.AppImage`, made executable (`--appimage`, `--gui` or `--debug-symbols` only) |
-| `ctest-logs-<preset>-<sha>` | the ctest logs, `ctest-legacy.log` and `ctest-taskgraph.log` (only the chosen leg's with `--scheduler`), plus `ctest-<scheduler>-seed<seed>.log` per shuffle seed (`--tests` only), uploaded even when the run fails |
+| `ctest-logs-<preset>-<sha>` | the ctest logs, `ctest.log`, plus `ctest-seed<seed>.log` per shuffle seed (`--tests` only), uploaded even when the run fails |
 
 Both land in `build/remote/<preset>/`, which is wiped at the start of each
 download. The script prints the run URL, the `AppImage:` path and, with
@@ -201,21 +205,26 @@ Merging main into the branch fixes it. Presets differ too: most gates build
 
 ## GUI checks in remote mode
 
-`--gui "<script> ..."` runs `Tests/gui/` scripts on GitHub Actions, one job
-per script in parallel, against the run's AppImage. It implies `--appimage`,
-so not with `debug`:
+`--gui "<script> ..."` runs `Tests/gui/` scripts on GitHub Actions against the
+run's AppImage, in at most 4 parallel jobs (`GUI · group <i> of <n>`) that each
+run a round-robin share of the scripts one after another, so a gate leaves
+runner slots free for others. It implies `--appimage`, so not with `debug`:
 
 ```
 tools/ci/remote/build.sh fast --gui "Tests/gui/m55_node_graph.py Tests/gui/m45_tab_menu.py"
 tools/ci/remote/build.sh release --from-run 12345678901 --gui "Tests/gui/m55_node_graph.py"
 ```
 
-Each job runs `Tests/gui/run-gui-test.sh` in the dev image with a 1920x1080
-screen and a 900 s script timeout, and uploads its `NATRON_GUI_TEST_OUT`
-(screenshots, `results.txt`, `natron.log`) as `gui-<name>-<preset>-<sha>`,
-even when the script fails. A failing or timed-out script fails only its own
-job. Git LFS fixtures are fetched only when the script names them (by file
-name), so most scripts download none.
+Each job runs `Tests/gui/run-gui-test.sh` per script in the dev image with a
+1920x1080 screen, a 900 s Natron timeout and a 25-minute limit on the whole
+script, each on its own Xvfb display, and uploads each script's
+`NATRON_GUI_TEST_OUT` (screenshots, `results.txt`, `natron.log`, plus the
+runner's output in `run.log` and its exit code in `exit-status`) as
+`gui-<name>-<preset>-<sha>`, even when the script fails. A failing or
+timed-out script does not stop the rest of its group; the job fails if any of
+its scripts did. A job has 16 upload steps, so a list of more than 64 scripts
+is spread over more than 4 jobs. Git LFS fixtures are fetched only when a
+script of the group names them (by file name), so most groups download few.
 
 `--from-run <run-id>` skips the build and uses the `natron-<preset>-<sha>`
 AppImage of an earlier `remote-build` run (artifacts last 7 days). Only a run
@@ -232,7 +241,7 @@ testing the run's AppImage under the dev image of the run's commit.
 
 The outputs land in `build/remote/<preset>/gui/<name>/`. The script prints a
 `gui: PASS|FAIL <script> (<n> passed, <n> failed): <dir>` line per script,
-judged by the job's conclusion with the counts from `results.txt`, and exits
+judged by its `exit-status` with the counts from `results.txt`, and exits
 non-zero if any script failed.
 
 To run a script locally instead, run it inside the natron-dev container

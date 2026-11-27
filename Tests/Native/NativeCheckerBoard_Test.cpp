@@ -232,7 +232,7 @@ TEST_F(NativeCheckerBoardTest, UnversionedRequestsGetTheNativeCheckerBoard)
     EXPECT_EQ(kNativeCheckerBoardMajor, unversioned->getMajorVersion());
 }
 
-TEST_F(NativeCheckerBoardTest, RendersTheSameInBothSchedulerModes)
+TEST_F(NativeCheckerBoardTest, RendersTheSameDirectAndScheduled)
 {
     resetProject();
     NodePtr node = createNode(QString::fromUtf8(kCheckerBoardID), kNativeCheckerBoardMajor);

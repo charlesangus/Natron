@@ -46,6 +46,7 @@
 #include "Global/GlobalDefines.h"
 
 #include "Engine/EngineFwd.h"
+#include "Engine/FrameArgsOverlay.h"
 #include "Engine/Image.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/OSGLContext.h"
@@ -527,6 +528,8 @@ public:
         std::bitset<4> processChannels;
         ImageLayersToRenderPtr layers;
         const FrameRenderContext* frameContext;
+        FrameArgsOverlayPtr frameArgsHead;
+        bool scheduledTask;
         const IsolatedJob* isolatedJob;
     };
 
@@ -627,6 +630,22 @@ public:
 private:
     bool _fresh;
 };
+
+/**
+ * @brief Gives frame args made up for a call outside of a render set up by the scheduler the
+ * render set on this AbortableThread, so that what reads the abort flag from the frame args sees
+ * that render's. A pool thread's InheritedAbortScope is left out: aborted() caches the frame args'
+ * render on the thread, where it would outlive the scope. Leaves args as they are otherwise.
+ **/
+void adoptThreadAbortState(ParallelRenderArgs* args);
+
+/**
+ * @brief Gives frame args made up on a pool thread the render an InheritedAbortScope lent it, so
+ * the effects cooked there, and the context args derived from these, see that render's abort.
+ * getAbortState() answers it without caching it on the thread. Leaves args as they are when no
+ * scope is open.
+ **/
+void adoptInheritedAbortState(ParallelRenderArgs* args);
 
 NATRON_NAMESPACE_EXIT
 

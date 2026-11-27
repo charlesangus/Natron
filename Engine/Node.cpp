@@ -643,7 +643,6 @@ Node::setLastPaintStrokeDataNoRotopaint()
         _imp->strokeBitmapCleared = false;
         _imp->duringPaintStrokeCreation = true;
     }
-    _imp->effect->setDuringPaintStrokeCreationThreadLocal(true);
 }
 
 void
@@ -2762,16 +2761,17 @@ isRegisteredAdapter(DataKindEnum from,
     return (from == eDataKindDeep) && (to == eDataKindImage);
 }
 
-// Raw and scene reach an image input only at the Viewer, which feeds nothing downstream: it shows
-// raw values as they are for display (RawDisplay) and hands a scene to its 3D view instead of
-// rendering it as an image. They are kept out of the table above so that no other image input,
-// whatever its virtual answers, can take raw without a RawToImage, or a scene at all.
+// Raw, scene and geometry reach an image input only at the Viewer, which feeds nothing downstream:
+// it shows raw values as they are for display (RawDisplay) and hands a scene or geometry to its 3D
+// view instead of rendering it as an image. They are kept out of the table above so that no other
+// image input, whatever its virtual answers, can take raw without a RawToImage, or a scene or
+// geometry at all.
 static bool
 isViewerOnlyAdapter(const EffectInstancePtr& effect,
                     DataKindEnum from,
                     DataKindEnum to)
 {
-    return ((from == eDataKindRaw) || (from == eDataKindScene)) && (to == eDataKindImage) && dynamic_cast<const ViewerInstance*>(effect.get());
+    return ((from == eDataKindRaw) || (from == eDataKindScene) || (from == eDataKindGeometry)) && (to == eDataKindImage) && dynamic_cast<const ViewerInstance*>(effect.get());
 }
 
 static bool
@@ -5258,6 +5258,7 @@ walkDownstreamUntil(const Node* start,
 
 thread_local int removalBatchDepth = 0;
 thread_local std::unordered_set<const Node*> removalBatchOutputWalkVisited;
+thread_local std::unordered_set<const Node*> removalBatchStaleCookWalkVisited;
 
 int pythonDeclarationBatchDepth = 0;
 // Each deactivated node with the name its variable was deleted under, and the script deleting all.
@@ -5311,6 +5312,7 @@ Node::RemovalBatch::~RemovalBatch()
 {
     if (--removalBatchDepth == 0) {
         removalBatchOutputWalkVisited.clear();
+        removalBatchStaleCookWalkVisited.clear();
     }
 }
 
@@ -5505,6 +5507,99 @@ Node::hasOutputNodesConnected(std::list<OutputEffectInstance*>* writers) const
     });
 }
 
+void
+Node::abortCooksStaleAfterEditDownstream()
+{
+    // A paint tree's nodes are read through the paint node, below which its outputs are.
+    NodePtr start = shared_from_this();
+    RotoDrawableItemPtr attachedStroke = getAttachedRotoItem();
+    if (attachedStroke) {
+        RotoCurveContextPtr context = attachedStroke->getContext();
+        NodePtr paintNode = context ? context->getNode() : NodePtr();
+        if (!paintNode) {
+            return;
+        }
+        start = paintNode;
+    }
+    // Only the start is tested, as an edit of a node no render reads applies at once. The walk
+    // does not stop at nodes below it that are not marked rendering: a group's inner nodes may
+    // render unmarked.
+    if (!start->isNodeRendering()) {
+        return;
+    }
+    std::unordered_set<const Node*> visited;
+    // A node an earlier walk of the batch reached already heard of an edit at least as old.
+    walkDownstreamUntil(start.get(), (removalBatchDepth > 0) ? &removalBatchStaleCookWalkVisited : &visited, [](const Node* node) {
+        const EffectInstancePtr effect = node->getEffectInstance();
+        if (effect) {
+            effect->abortCooksStaleAfterEdit();
+        }
+
+        return false;
+    });
+}
+
+namespace {
+void
+abortCooksStaleAfterEditAt(const Node* node)
+{
+    const EffectInstancePtr effect = node->getEffectInstance();
+    if (effect) {
+        effect->abortCooksStaleAfterEdit();
+    }
+}
+
+// Completes a walk that stopped at the stops: what is below them and was not visited hears of the
+// edit too.
+void
+abortCooksStaleAfterEditBelow(const std::vector<const Node*>& stops,
+                              std::unordered_set<const Node*>* visited)
+{
+    std::vector<NodePtr> below;
+    for (const Node* stop : stops) {
+        below.clear();
+        stop->appendOutputsWithGroupRedirection(&below);
+        for (const NodePtr& node : below) {
+            walkDownstreamUntil(node.get(), visited, [](const Node* reached) {
+                abortCooksStaleAfterEditAt(reached);
+
+                return false;
+            });
+        }
+    }
+}
+} // anonymous namespace
+
+bool
+Node::abortCooksStaleAfterEditFindingOutputs(std::list<OutputEffectInstance*>* outputs)
+{
+    if ((removalBatchDepth > 0) || isEffectGroup() || getAttachedRotoItem()) {
+        return false;
+    }
+    const bool rendering = isNodeRendering();
+    std::unordered_set<const Node*> visited;
+    std::vector<const Node*> found;
+    walkDownstreamUntil(this, &visited, [rendering, outputs, &found](const Node* node) {
+        if (rendering) {
+            abortCooksStaleAfterEditAt(node);
+        }
+        OutputEffectInstance* writer = dynamic_cast<OutputEffectInstance*>(node->getEffectInstance().get());
+        if (writer && writer->isOutput() && !dynamic_cast<GroupOutput*>(writer)) {
+            outputs->push_back(writer);
+            found.push_back(node);
+
+            return true;
+        }
+
+        return false;
+    });
+    if (rendering) {
+        abortCooksStaleAfterEditBelow(found, &visited);
+    }
+
+    return true;
+}
+
 bool
 Node::couldReachConnectedViewer() const
 {
@@ -5539,16 +5634,24 @@ Node::abortViewerRendersForInputEdit(std::list<ViewerInstance*>* viewersDownstre
         return false;
     }
     if (!couldReachConnectedViewer()) {
+        abortCooksStaleAfterEditDownstream();
+
         return true;
     }
 
     // The renders to abort are those of the viewers hasOutputNodesConnected() reaches, which stops
     // at every output node; hasViewersConnected() also goes on past the other output nodes, so
-    // carrying on from them under the same visited set completes it.
+    // carrying on from them under the same visited set completes it. These walks, with the one on
+    // from the viewers, reach every node abortCooksStaleAfterEditDownstream() does.
+    const bool rendering = isNodeRendering();
     std::unordered_set<const Node*> visited;
     std::list<ViewerInstance*> toAbort;
     std::vector<const Node*> otherOutputs;
-    walkDownstreamUntil(this, &visited, [&toAbort, &otherOutputs](const Node* node) {
+    std::vector<const Node*> viewerNodes;
+    walkDownstreamUntil(this, &visited, [rendering, &toAbort, &otherOutputs, &viewerNodes](const Node* node) {
+        if (rendering) {
+            abortCooksStaleAfterEditAt(node);
+        }
         OutputEffectInstance* output = dynamic_cast<OutputEffectInstance*>(node->getEffectInstance().get());
         if (!output || !output->isOutput() || dynamic_cast<GroupOutput*>(output)) {
             return false;
@@ -5556,6 +5659,7 @@ Node::abortViewerRendersForInputEdit(std::list<ViewerInstance*>* viewersDownstre
         ViewerInstance* viewer = dynamic_cast<ViewerInstance*>(output);
         if (viewer) {
             toAbort.push_back(viewer);
+            viewerNodes.push_back(node);
         } else {
             otherOutputs.push_back(node);
         }
@@ -5568,10 +5672,22 @@ Node::abortViewerRendersForInputEdit(std::list<ViewerInstance*>* viewersDownstre
         below.clear();
         output->appendOutputsWithGroupRedirection(&below);
         for (const NodePtr& node : below) {
-            walkDownstreamUntil(node.get(), &visited, [viewersDownstream](const Node* reached) {
-                return collectViewer(viewersDownstream, reached);
+            walkDownstreamUntil(node.get(), &visited, [rendering, viewersDownstream, &viewerNodes](const Node* reached) {
+                if (rendering) {
+                    abortCooksStaleAfterEditAt(reached);
+                }
+                if (collectViewer(viewersDownstream, reached)) {
+                    viewerNodes.push_back(reached);
+
+                    return true;
+                }
+
+                return false;
             });
         }
+    }
+    if (rendering) {
+        abortCooksStaleAfterEditBelow(viewerNodes, &visited);
     }
 
     for (ViewerInstance* viewer : toAbort) {
@@ -6848,6 +6964,11 @@ Node::domainCategoryFromGrouping(const std::list<std::string>& grouping,
     const std::string& major = grouping.front();
     if (major == PLUGIN_GROUP_DEEP) {
         *category = eNodeCategoryDeep;
+
+        return true;
+    }
+    if (major == PLUGIN_GROUP_GEOMETRY) {
+        *category = eNodeCategoryNative3D;
 
         return true;
     }
@@ -9662,7 +9783,8 @@ Node::hasAnimatedKnob() const
 }
 
 void
-Node::getAllKnobsKeyframes(std::list<SequenceTime>* keyframes)
+Node::getAllKnobsKeyframes(std::list<SequenceTime>* keyframes,
+                           const std::function<bool(const KnobIPtr&)>& accept)
 {
     assert(keyframes);
     const KnobsVec & knobs = getKnobs();
@@ -9672,6 +9794,9 @@ Node::getAllKnobsKeyframes(std::list<SequenceTime>* keyframes)
             continue;
         }
         if ( !knobs[i]->canAnimate() ) {
+            continue;
+        }
+        if (accept && !accept(knobs[i])) {
             continue;
         }
         int dim = knobs[i]->getDimension();
@@ -9777,7 +9902,8 @@ Node::setNodeIsRenderingInternal(std::list<NodeWPtr>& markedNodes)
         QMutexLocker k(&_imp->nodeIsDequeuingMutex);
         if (QThread::currentThread() != qApp->thread()) {
             while ((_imp->nodeIsDequeuing || (_imp->renderStartsHeldByEdits > 0)) && !aborted()) {
-                _imp->nodeIsDequeuingCond.wait(k.mutex());
+                // Nothing wakes this condition on an abort, so the wait must time out to notice one.
+                _imp->nodeIsDequeuingCond.wait(k.mutex(), 10);
             }
         }
         QMutexLocker nrLocker(&_imp->nodeIsRenderingMutex);
@@ -10025,7 +10151,7 @@ addIdentityNodesRecursively(const Node* caller,
 
 
     if (caller != node) {
-        ParallelRenderArgsPtr inputFrameArgs = node->getEffectInstance()->getParallelRenderArgsTLS();
+        ParallelRenderArgsPtr inputFrameArgs = node->getEffectInstance()->getFrameArgs();
         const FrameViewRequest* request = 0;
         bool isIdentity = false;
         if (inputFrameArgs && inputFrameArgs->request) {

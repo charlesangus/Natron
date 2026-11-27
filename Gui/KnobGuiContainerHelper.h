@@ -159,6 +159,12 @@ public:
     const PagesMap& getPages() const;
 
     /**
+     * @brief True when every tab group enclosing the knob shows the tab that holds it. Never builds
+     * a gui: a tab whose gui is not built yet is not shown.
+     **/
+    bool areEnclosingTabsCurrent(const KnobIPtr& knob) const;
+
+    /**
      * @brief Return a list of all the internal pages which were created by the user
      **/
     void getUserPages(std::list<KnobPage*>& userPages) const;
@@ -211,6 +217,14 @@ public:
      * @brief Returns whether the container for knobs should use a scroll-area or a plain widget
      **/
     virtual bool useScrollAreaForTabs() const
+    {
+        return false;
+    }
+
+    /**
+     * @brief Whether user pages without any knob get a tab, so that the knob editor can fill them
+     **/
+    virtual bool showsEmptyUserPages() const
     {
         return false;
     }

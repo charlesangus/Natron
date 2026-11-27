@@ -11,7 +11,47 @@ application it shares the viewer's OpenGL. Without a window system
 (`NatronRenderer`, or a server without X) it makes its own context through EGL,
 which Mesa's llvmpipe software renderer provides. If neither is available, the
 node reports why instead of rendering, and image-only graphs are unaffected.
-The other delegates (Cycles, MoonRay) render on the CPU.
+
+Natron Utility is Natron's own ray tracer. It shades with the scene's materials
+and lights:
+
+- Materials: UsdPreviewSurface, its inputs constant, read from primvars or from
+  textures (UDIM textures included), and the surface USDProject3D authors. A
+  prim with no material shades as a UsdPreviewSurface of its display colour
+  and display opacity. A material it cannot read renders magenta.
+- Lights: the UsdLux distant, sphere, rect, disk, cylinder and dome lights,
+  with their light and shadow links, casting shadows that surfaces with an
+  opacity below 1 let some light through.
+- Reflection and refraction: rays go on from a surface by reflection,
+  refraction or straight through a transparent surface, as far as its Max Ray
+  Depth, Reflection Depth and Refraction Depth settings allow.
+- Sampling: a grid of samples a pixel, weighed by a pixel filter, and motion
+  blur of the camera, of transforms (instances included) and of deforming
+  meshes within the shutter.
+- Subdivision: subdivision-surface meshes refine to the Subdiv Level setting,
+  or to a mesh's own `natron:subdivLevel`.
+- Projection: the frame looks through the camera, as a spherical lat-long, as
+  a cylindrical band, or bakes one mesh's surface into a UV tile (UV Unwrap),
+  and Overscan grows the frame beyond the format. A bake takes only the
+  surface's own lit shading unless UV Bake Bounces is on.
+
+The settings for all of these are on the Natron Utility tab of
+USDRenderSettings. `depth.Z` and `primId.id` match Storm's.
+
+Its Device setting picks Auto, GPU or CPU: Auto uses the GPU when it supports
+ray queries and otherwise renders on the CPU, and the node says which device
+rendered and why a render fell back to the CPU. A frame rendered on the GPU
+keeps its `rgba` there, so GPU nodes downstream read it without a copy through
+host memory.
+
+Cancelling a Natron Utility render stops it within a fraction of a second, on
+either device: between tiles and within a tile between batches of lights, while
+the CPU builds the scene's acceleration structures, while the GPU updates its
+own, and while meshes are refined. A stopped frame is never shown, and the next
+render starts it again. An edit to the scene is taken in whole before the
+frame that shows it starts.
+
+The other delegates (Cycles, MoonRay) render on the CPU on their own threads.
 
 ## Controls
 
@@ -67,11 +107,17 @@ Headlight, off by default, adds a light at the camera to the scene's own
 lights. With it off, only the scene's lights light it: a scene with no light
 renders its lit surfaces black, and only emission shows.
 
-The output has three layers, and a fourth with the renderers other than Storm:
+Render Purpose (on), Proxy Purpose (off) and Guide Purpose (off) choose which
+prims of those USD purposes are drawn; prims of the default purpose always are.
+With Render Purpose and Proxy Purpose both on, both are drawn. Natron Utility
+only rebuilds its list of instances for a change here: geometry already built
+for a purpose is kept while that purpose is off.
 
-- `rgba`: the colour as the renderer shades it, with the scene's materials and lights,
-  in the project's working space with no colour transform. Where nothing was
-  hit it is transparent black.
+The output has three layers, and a fourth with the renderers other than Storm
+and Natron Utility:
+
+- `rgba`: the colour as the renderer shades it, with the scene's materials and
+  lights, in the project's working space with no colour transform. Where nothing was hit it is transparent black.
 - `depth.Z`: the distance from the camera along its view axis, in scene units,
   so a plane facing the camera has one depth throughout. Where nothing was hit
   it is +inf.
@@ -81,8 +127,8 @@ The output has three layers, and a fourth with the renderers other than Storm:
   its path under the key `primId/` followed by the value's bits as eight
   lowercase hexadecimal digits, for example `primId/1a2b3c4d` = `/World/Box`.
 - `normal`: the shading normal in camera space, in `normal.x`, `normal.y` and
-  `normal.z`. Where nothing was hit it is 0. Storm renders no normal, so the
-  layer is not there with Storm.
+  `normal.z`. Where nothing was hit it is 0. Storm and Natron Utility render no
+  normal, so the layer is not there with them.
 
 Storm renders whole frames, one at a time, so renders of several USDRender
 nodes, or of several frames, take turns on one OpenGL context.
@@ -94,3 +140,44 @@ it changed. They are released when the node is deleted, by Cache > Clear All
 Caches and Clear Per-Node Cache, by Cache > Free GPU Memory, and, least recently
 rendered first, when the nodes' renderers hold more than 2 GB of GPU memory
 together. A released node rebuilds them at its next render.
+
+## Subdivision surfaces
+
+Cycles and MoonRay render a mesh as a subdivision surface when their
+Subdivision Surfaces setting is on (`cyclesSubdivisionSurfaces`,
+`moonraySubdivisionSurfaces` on USDRenderSettings). It is off by default, and
+every mesh then renders as its polygons. USD's default subdivision scheme is
+Catmull-Clark, so with the setting on, every mesh that does not author a
+`subdivisionScheme` of `none` is smoothed. The viewer's refine level has no
+effect on either renderer.
+
+- `catmullClark`: a Catmull-Clark surface.
+- `loop`: rendered as Catmull-Clark, with a warning that names the mesh.
+- `bilinear`: subdivided linearly, which keeps the mesh's shape.
+- `none`: never subdivided.
+
+A subdivided mesh shades with its limit surface's normals; its authored
+normals are ignored. Creases, corners, holes and the boundary and face-varying
+interpolation rules are passed to the renderer.
+
+How finely a surface is diced into micropolygons:
+
+- Cycles: Dicing Rate (`cyclesDicingRate`, 1 by default) is the size of a
+  micropolygon edge, in pixels with Adaptive Space (`cyclesAdaptiveSpace`) at
+  Pixel, its default, or in scene units at Object. Max Subdivision Level
+  (`cyclesMaxSubdivisionLevel`, 12) caps the splitting. Dicing Camera
+  (`cyclesDicingCamera`) names the camera prim meshes are diced as seen from;
+  empty uses the render camera. A mesh's constant primvars `cycles:dicing_rate`
+  (a multiplier on Dicing Rate) and `cycles:max_level` (in place of Max
+  Subdivision Level) override them for that mesh.
+- MoonRay: Mesh Resolution (`moonrayMeshResolution`, 2) and Adaptive Error
+  (`moonrayAdaptiveError`, 0, which turns adaptive dicing off) set the dicing.
+  Dicing Camera (`moonrayDicingCamera`) names the camera prim meshes are diced
+  as seen from; empty uses the render camera. Faces outside its view get the
+  coarsest dicing and its field of view sets how large a face looks, while the
+  distance to a face is still measured from the render camera. A mesh's primvars
+  `moonray:mesh_resolution` and `moonray:adaptive_error` override them for that
+  mesh.
+
+Changing any of these settings re-dices the meshes, in a running render and in
+the viewer.

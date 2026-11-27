@@ -27,6 +27,7 @@
 
 #include "Global/Macros.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -410,6 +411,7 @@ boundCard(const std::string& outputs)
 
 const char* const kCyclesVolumeOutput = "        token outputs:cycles:volume.connect = </Looks/Mat/Volume.outputs:volume>\n";
 const char* const kRiSurfaceOutput = "        token outputs:ri:surface.connect = </Looks/Mat/Surface.outputs:out>\n";
+const char* const kRiVolumeOutput = "        token outputs:ri:volume.connect = </Looks/Mat/Volume.outputs:volume>\n";
 
 std::string
 supportWarning(const std::string& body)
@@ -486,6 +488,13 @@ TEST(DelegateSupportWarnings, AMaterialWithNeitherForTheRenderersContextsStillWa
     EXPECT_TRUE(has(warning, "/Looks/Mat")) << warning;
 }
 
+TEST(DelegateSupportWarnings, AMaterialWithOnlyAnotherRenderersVolumeWarns)
+{
+    const std::string warning = supportWarning(boundCard(kRiVolumeOutput));
+    EXPECT_TRUE(has(warning, "finds no surface or volume")) << warning;
+    EXPECT_TRUE(has(warning, "/Looks/Mat")) << warning;
+}
+
 TEST(DelegateSupportWarnings, AValidVolumeRaisesNoWarning)
 {
     const std::string body = volumeScene({ { "density", kFrame1Vdb, "density" }, { "velocity", kFrame1Vdb, "velocity" } });
@@ -558,4 +567,113 @@ TEST(DelegateSupportWarnings, ATimeSampledFileIsCheckedAtTheTimeAskedFor)
     EXPECT_EQ(std::string(), volumeWarning(body, DelegateSupport::VolumeLimits(), 1.));
     const std::string warning = volumeWarning(body, DelegateSupport::VolumeLimits(), 2.);
     EXPECT_TRUE(has(warning, "finds no file for volume fields: /Vol (density)")) << warning;
+}
+
+TEST(DelegateSupportWarnings, AFieldWithNoPrimIsNamed)
+{
+    const std::string body = "def Volume \"Vol\"\n"
+                             "{\n"
+                             "    rel field:density = </Vol/missing>\n"
+                             "}\n";
+    const std::string warning = volumeWarning(body, DelegateSupport::VolumeLimits());
+    EXPECT_TRUE(has(warning, "Test finds no field prim for volume fields: /Vol (density): /Vol/missing")) << warning;
+}
+
+// The prototype is walked once, and its volume is named by an instance, not by the prototype.
+TEST(DelegateSupportWarnings, AnInstancedVolumeIsFoundOnceByAnInstance)
+{
+    const std::string body = "class Xform \"Proto\"\n"
+                             "{\n"
+                             "    def Volume \"Vol\"\n"
+                             "    {\n"
+                             "        rel field:density = </Proto/Vol/density>\n"
+                             "        def OpenVDBAsset \"density\"\n"
+                             "        {\n"
+                             "            asset filePath = @" NATRON_TESTS_FIXTURES_DIR "/no-such-volume.vdb@\n"
+                             "            token fieldName = \"density\"\n"
+                             "        }\n"
+                             "    }\n"
+                             "}\n"
+                             "def Xform \"A\" (\n"
+                             "    instanceable = true\n"
+                             "    prepend references = </Proto>\n"
+                             ")\n"
+                             "{\n"
+                             "}\n"
+                             "def Xform \"B\" (\n"
+                             "    instanceable = true\n"
+                             "    prepend references = </Proto>\n"
+                             ")\n"
+                             "{\n"
+                             "}\n";
+    const PXR_NS::UsdStageRefPtr stage = stageOf(body);
+    ASSERT_TRUE(bool(stage));
+    ASSERT_EQ(1u, stage->GetPrototypes().size());
+    const std::vector<PXR_NS::SdfPath> volumes = DelegateSupport::volumePrims(stage);
+    ASSERT_EQ(1u, volumes.size());
+    EXPECT_TRUE((volumes[0] == PXR_NS::SdfPath("/A/Vol")) || (volumes[0] == PXR_NS::SdfPath("/B/Vol"))) << volumes[0].GetString();
+    const std::string warning = DelegateSupport::volumeWarningText(stage, volumes, PXR_NS::UsdTimeCode(1.), DelegateSupport::VolumeLimits(), "Test");
+    EXPECT_TRUE(has(warning, "Test finds no file for volume fields: " + volumes[0].GetString() + " (density)")) << warning;
+}
+
+TEST(DelegateSupportWarnings, AVolumeInAVariantIsFound)
+{
+    const std::string body = "def Xform \"Root\" (\n"
+                             "    variants = {\n"
+                             "        string look = \"smoke\"\n"
+                             "    }\n"
+                             "    prepend variantSets = \"look\"\n"
+                             ")\n"
+                             "{\n"
+                             "    variantSet \"look\" = {\n"
+                             "        \"smoke\" {\n"
+                             "            def Volume \"Vol\"\n"
+                             "            {\n"
+                             "            }\n"
+                             "        }\n"
+                             "    }\n"
+                             "}\n";
+    const PXR_NS::UsdStageRefPtr stage = stageOf(body);
+    ASSERT_TRUE(bool(stage));
+    const std::vector<PXR_NS::SdfPath> volumes = DelegateSupport::volumePrims(stage);
+    ASSERT_EQ(1u, volumes.size());
+    EXPECT_EQ(PXR_NS::SdfPath("/Root/Vol"), volumes[0]);
+}
+
+TEST(DelegateSupportWarnings, ACancelledSearchIsDropped)
+{
+    const PXR_NS::UsdStageRefPtr stage = stageOf(volumeScene({ { "density", NATRON_TESTS_FIXTURES_DIR "/no-such-volume.vdb", "density" } }));
+    ASSERT_TRUE(bool(stage));
+    const std::vector<PXR_NS::SdfPath> volumes = DelegateSupport::volumePrims(stage);
+    ASSERT_EQ(1u, volumes.size());
+    const std::atomic<bool> cancel(true);
+    EXPECT_TRUE(DelegateSupport::volumePrims(stage, &cancel).empty());
+    EXPECT_EQ(std::string(), DelegateSupport::volumeWarningText(stage, volumes, PXR_NS::UsdTimeCode(1.), DelegateSupport::VolumeLimits(), "Test", &cancel));
+}
+
+// Every line a volume warning has is told apart from the other warnings a render carries.
+TEST(DelegateSupportWarnings, EveryVolumeWarningLineIsRecognised)
+{
+    Field notOpenVdb = { "emission", kFrame1Vdb, "density" };
+    notOpenVdb.type = "Field3DAsset";
+    std::string body = volumeScene({ { "density", NATRON_TESTS_FIXTURES_DIR "/no-such-volume.vdb", "density" },
+                                     { "velocity", NATRON_TESTS_FIXTURES_DIR "/scene-volume.usda", "velocity" },
+                                     { "temperature", kFrame1Vdb, "smoke" },
+                                     { "heat", kFrame2Vdb, "density" },
+                                     notOpenVdb });
+    body.insert(body.find("{\n") + 2, "    rel field:flame = </Vol/missing>\n");
+    const std::string warning = volumeWarning(body, DelegateSupport::VolumeLimits::moonRay());
+    std::vector<std::string> lines;
+    size_t start = 0;
+    while (start < warning.size()) {
+        const size_t end = std::min(warning.find('\n', start), warning.size());
+        lines.push_back(warning.substr(start, end - start));
+        start = end + 1;
+    }
+    EXPECT_EQ(7u, lines.size()) << warning;
+    for (const std::string& line : lines) {
+        EXPECT_TRUE(DelegateSupport::isVolumeWarningLine(line)) << line;
+    }
+    EXPECT_FALSE(DelegateSupport::isVolumeWarningLine("Test cannot render prims of type volume: /Vol"));
+    EXPECT_FALSE(DelegateSupport::isVolumeWarningLine("Test finds no surface or volume for its render contexts in materials: /Looks/Mat"));
 }

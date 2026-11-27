@@ -84,6 +84,7 @@ readGrids(const std::string& path,
           std::string* error)
 {
     grids->clear();
+    error->clear();
     struct stat info;
     if ((::stat(path.c_str(), &info) != 0) || !S_ISREG(info.st_mode)) {
         *error = "no file at " + path;

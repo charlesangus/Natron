@@ -58,6 +58,8 @@ Member of F22 - Native VDB: branches off and merges into `feature/f22-native-vdb
 
 ## Decisions
 
+- 2026-11-26 (PM): known limitation: GeoToUSD's Unpack mode writes one VDB file per copy (each copy's grid carries its own transform). Instance mode writes one file per prototype. Sharing files across unpacked copies needs per-field prim transforms that every delegate honours; not in M417.
+
 - 2026-11-26 (PM): the Cycles fixes M417's own copies check needed move into M417 and come out of M345's scope: NanoVDB in the Cycles build, the default volume shader for unbound volumes, and the Finalize crash (fork natron/m417-default-volume-shader, built on M616's instancer fix). Merge M616 (#393) before M417 (#377).
 
 - 2026-11-12 — **Volumes reach renderers as content-hashed `.vdb` files (user, /cat-plan grill),** not an in-memory Hydra field plugin: works with Storm, Cycles and MoonRay unchanged.

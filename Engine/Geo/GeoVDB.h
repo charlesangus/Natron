@@ -231,13 +231,15 @@ bool geoReadVDBFile(const std::string& path,
 
 /**
  * @brief Reads the grid named @p name from the .vdb file at @p path: the first one, or with
- * @p index the one after @p index others of that name, in file order.
+ * @p index the one after @p index others of that name, in file order. @p aborted is asked before
+ * the grid is read; once it says so, nothing is returned and the read fails.
  **/
 bool geoReadVDBGrid(const std::string& path,
                     const std::string& name,
                     GeoVDBGridBaseConstPtr* grid,
                     std::string* errorMessage,
-                    int index = 0);
+                    int index = 0,
+                    const GeoVDBAbortFunc& aborted = GeoVDBAbortFunc());
 
 /** @brief A grid to write to a file and the name it is stored under there. */
 struct GeoVDBNamedGrid {

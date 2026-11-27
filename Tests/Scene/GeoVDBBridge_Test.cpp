@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <filesystem>
 #include <memory>
@@ -618,11 +619,10 @@ TEST(GeoVDBBridge, EnsuringVolumeFilesPutsBackOneThatIsGone)
 
 namespace {
 
-// 500 packed copies of a density volume, on points spread and scaled apart.
+// Packed copies of a density volume, on points spread and scaled apart.
 GeoDetailConstPtr
-packedVolumeCopies()
+packedVolumeCopies(int kCopies = 500)
 {
-    constexpr int kCopies = 500;
     GeoDetailBuilder targets;
     const GeoOffset first = targets.appendPoints(kCopies);
     GeoAttribute& pscale = targets.addAttribute(eGeoAttribClassPoint, GeoAttributeDesc { "pscale", eGeoStorageFloat32, 1, eGeoTypeInfoNone, false });
@@ -718,4 +718,65 @@ TEST(GeoVDBBridge, PackedVolumeCopiesAreOnePrototypeOfAPointInstancer)
     ASSERT_TRUE(geoUsdEnsureVolumeFiles(*copies, optionsIn(dir), GeoVDBAbortFunc()));
     EXPECT_TRUE(std::filesystem::exists(file));
     EXPECT_EQ(filesIn(dir), 1u);
+}
+
+TEST(GeoVDBBridge, UnpackedVolumeCopiesAreOneVolumeEachWithItsFile)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    constexpr int kCopies = 4;
+    const GeoDetailConstPtr copies = packedVolumeCopies(kCopies);
+    ASSERT_EQ(copies->primitiveCount(), GeoIndex(kCopies));
+    std::vector<std::array<double, 3>> centres;
+    for (int i = 0; i < kCopies; ++i) {
+        centres.push_back(geoTransformPoint(geoPackedTransform(*copies, copies->primitiveMap().offsetFromIndex(GeoIndex(i))), { 0., 0., 0. }));
+    }
+
+    GeoUsdConvertOptions options = optionsIn(dir);
+    options.packedMode = eGeoUsdPackedUnpack;
+    const GeoUsdConvert convert(copies, options);
+    EXPECT_TRUE(convert.volumeWriteFailures().empty());
+    std::size_t volumePartitions = 0;
+    for (std::size_t i = 0; i < convert.partitionCount(); ++i) {
+        EXPECT_NE(convert.partitionKind(i), eGeoUsdPrimInstancer);
+        if (convert.partitionKind(i) == eGeoUsdPrimVolume) {
+            ++volumePartitions;
+        }
+    }
+    EXPECT_EQ(volumePartitions, std::size_t(kCopies));
+
+    const UsdStageRefPtr stage = UsdStage::Open(authored(convert));
+    ASSERT_TRUE(static_cast<bool>(stage));
+    std::vector<std::string> files;
+    for (const UsdPrim& prim : stage->Traverse()) {
+        if (!prim.IsA<UsdVolVolume>()) {
+            continue;
+        }
+        const UsdVolVolume::FieldMap fields = UsdVolVolume(prim).GetFieldPaths();
+        ASSERT_EQ(fields.size(), 1u) << prim.GetPath();
+        files.push_back(fieldFile(stage, fields.begin()->second));
+        EXPECT_TRUE(std::filesystem::exists(files.back())) << files.back();
+    }
+    ASSERT_EQ(files.size(), std::size_t(kCopies));
+
+    // Each copy's file holds the grid where its copy was placed.
+    std::vector<char> found(centres.size(), 0);
+    for (const std::string& file : files) {
+        GeoVDBGridBaseConstPtr grid;
+        std::string error;
+        ASSERT_TRUE(geoReadVDBGrid(file, "density", &grid, &error)) << error;
+        const GeoBounds bounds = geoVDBGridBounds(*grid);
+        for (std::size_t c = 0; c < centres.size(); ++c) {
+            bool near = true;
+            for (int k = 0; k < 3; ++k) {
+                near = near && std::abs(0.5 * (bounds.min[k] + bounds.max[k]) - centres[c][k]) < 0.3;
+            }
+            if (near) {
+                found[c] = 1;
+            }
+        }
+    }
+    for (std::size_t c = 0; c < centres.size(); ++c) {
+        EXPECT_TRUE(found[c]) << "no volume file holds copy " << c;
+    }
 }

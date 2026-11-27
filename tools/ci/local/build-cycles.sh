@@ -34,13 +34,28 @@ plugin_dir="${usd_prefix}/plugin/usd"
 test -f "${usd_prefix}/pxrConfig.cmake"
 test -f "${plugin_dir}/plugInfo.json"
 
+# Fetches $1 to $2. wget --tries covers dropped connections; the outer loop also retries a whole
+# failed transfer (a refused connection or a server error), which a CI runner's network sees often.
+download() {
+    local attempt
+    for attempt in 1 2 3; do
+        if wget -q --tries=3 --timeout=60 -O "$2" "$1"; then
+            return 0
+        fi
+        echo "build-cycles.sh: download of $1 failed (attempt ${attempt} of 3)" >&2
+        sleep $((attempt * 10))
+    done
+    echo "build-cycles.sh: could not download $1" >&2
+    return 1
+}
+
 work="$(mktemp -d /tmp/cycles-build.XXXXXX)"
 src="${work}/src"
 build="${work}/build"
 helpers="${work}/cmake"
 mkdir -p "$src" "$build" "${helpers}/ocio" "${helpers}/no-epoxy"
 
-wget -q -O "${work}/cycles.tar.gz" "$url"
+download "$url" "${work}/cycles.tar.gz"
 echo "${sha256}  ${work}/cycles.tar.gz" | sha256sum -c -
 tar -xzf "${work}/cycles.tar.gz" -C "$src" --strip-components=1
 test -f "${src}/src/hydra/plugInfo.json"
@@ -73,14 +88,17 @@ sed -i 's/"priority": 0/"priority": 99/' "$cycles_plug_info"
 nanovdb_version=13.0.0
 nanovdb_sha256=4d6a91df5f347017496fe8d22c3dbb7c4b5d7289499d4eb4d53dd2c75bb454e1
 openvdb_version_h="${usd_prefix}/include/openvdb/version.h"
-IFS=. read -r nanovdb_major nanovdb_minor nanovdb_patch <<<"$nanovdb_version"
-grep -Eq "define OPENVDB_LIBRARY_MAJOR_VERSION_NUMBER ${nanovdb_major}\$" "$openvdb_version_h"
-grep -Eq "define OPENVDB_LIBRARY_MINOR_VERSION_NUMBER ${nanovdb_minor}\$" "$openvdb_version_h"
-grep -Eq "define OPENVDB_LIBRARY_PATCH_VERSION_NUMBER ${nanovdb_patch}\$" "$openvdb_version_h"
+# The headers must match the installed OpenVDB; under set -e a bare grep would stop the build with
+# no word on why, so a mismatch names both versions.
+openvdb_installed="$(sed -nE 's/^#[[:space:]]*define[[:space:]]+OPENVDB_LIBRARY_(MAJOR|MINOR|PATCH)_VERSION_NUMBER[[:space:]]+([0-9]+)[[:space:]]*$/\2/p' "$openvdb_version_h" 2>/dev/null | paste -sd. - || true)"
+if [ "$openvdb_installed" != "$nanovdb_version" ]; then
+    echo "build-cycles.sh: NanoVDB ${nanovdb_version} needs OpenVDB ${nanovdb_version}, but ${openvdb_version_h} declares '${openvdb_installed:-no version}'; update nanovdb_version and nanovdb_sha256 to the image's OpenVDB" >&2
+    exit 1
+fi
 nanovdb_root="${work}/nanovdb"
 mkdir -p "${nanovdb_root}/include"
-wget -q -O "${work}/openvdb.tar.gz" \
-    "https://github.com/AcademySoftwareFoundation/openvdb/archive/refs/tags/v${nanovdb_version}.tar.gz"
+download "https://github.com/AcademySoftwareFoundation/openvdb/archive/refs/tags/v${nanovdb_version}.tar.gz" \
+    "${work}/openvdb.tar.gz"
 echo "${nanovdb_sha256}  ${work}/openvdb.tar.gz" | sha256sum -c -
 tar -xzf "${work}/openvdb.tar.gz" -C "${nanovdb_root}/include" --strip-components=2 \
     "openvdb-${nanovdb_version}/nanovdb/nanovdb"

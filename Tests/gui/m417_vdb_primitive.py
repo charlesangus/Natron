@@ -14,8 +14,9 @@ float grid named "density"; $NATRON_M417_VDB overrides its path. The script chec
     everything, the neutral pixels that differ from the background, below the heads-up text and
     outside the guide's yellow, form one horizontal span per copy position along X.
     The stage's PointInstancer instance count and its distinct .vdb file paths are reported when
-    pxr is importable. The copies check repeats on Cycles and then MoonRay at a low Max Samples, each
-    skipped with a NOTE when the build does not have it.
+    pxr is importable. The copies check repeats on Cycles and then MoonRay at a low Max Samples.
+    Cycles missing or disabled is a failure unless $NATRON_M417_ALLOW_NO_CYCLES is set; MoonRay
+    missing is skipped with a NOTE.
 
 Screenshots for sign-off: m417-volume-scene, m417-volume-drawn, m417-volume-empty, m417-volume-render,
 m417-copies-storm, m417-copies-cycles, m417-copies-moonray.
@@ -293,11 +294,12 @@ try:
         report("NOTE PointInstancers (path, instances) %r, distinct .vdb filePaths %d %r"
                % (counts, len(files), sorted(files)))
 
-    def copies_on(label, slug, renderer_id, samples_reported):
+    def copies_on(label, slug, renderer_id, samples_reported, required):
         """Switches the view to a path-traced delegate and checks every packed copy draws there.
 
         samples_reported says whether the delegate publishes its drawn sample count; one that does not is
-        given the timeout to refine instead, and only the copies are checked.
+        given the timeout to refine instead, and only the copies are checked. A required delegate that is
+        missing or disabled fails, unless $NATRON_M417_ALLOW_NO_CYCLES is set; otherwise it is a NOTE.
         """
         section("packed copies on " + label)
         state = {}
@@ -306,7 +308,11 @@ try:
         found = [a for a in sub.actions() if a.text().replace("&", "").lower().startswith(slug)] if sub is not None else []
         if not found or not found[0].isEnabled() or "unavailable" in found[0].text():
             yield from finish_menu(state)
-            report("NOTE %s is not available in this build (%r); its copies check is skipped" % (label, labels))
+            if required and not os.environ.get("NATRON_M417_ALLOW_NO_CYCLES"):
+                # A build without the delegate would otherwise pass this check without running it.
+                check(False, "%s is available in this build (%r); set NATRON_M417_ALLOW_NO_CYCLES to skip it" % (label, labels))
+            else:
+                report("NOTE %s is not available in this build (%r); its copies check is skipped" % (label, labels))
             return
         found[0].trigger()
         yield from finish_menu(state)
@@ -432,8 +438,8 @@ try:
         check(len(spans) == COPY_POSITIONS_X,
               "Storm draws a copy at each of the %d positions along X (%d spans)" % (COPY_POSITIONS_X, len(spans)))
 
-        yield from copies_on("Cycles", "cycles", CYCLES_ID, True)
-        yield from copies_on("MoonRay", "moonray", MOONRAY_ID, False)
+        yield from copies_on("Cycles", "cycles", CYCLES_ID, True, True)
+        yield from copies_on("MoonRay", "moonray", MOONRAY_ID, False, False)
 
     run(steps())
 except Exception:

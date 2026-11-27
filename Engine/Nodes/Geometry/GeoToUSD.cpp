@@ -1000,6 +1000,7 @@ GeoToUSD::renderScene(const SceneRenderActionArgs& args,
             }
             GeoUsdConvertOptions options = settings.options;
             options.inputScene = gathered[i].inputScene;
+            options.aborted = [&cancel]() { return cancel.check(); };
             converts[i].reset(new GeoUsdConvert(gathered[i].detail, options));
         });
         if (cancel.check()) {

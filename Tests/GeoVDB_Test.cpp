@@ -232,12 +232,31 @@ TEST(GeoVDBTest, InactiveTilesThatAreNotTheBackgroundEnterTheHash)
 
 TEST(GeoVDBTest, AbortedHashingCachesNothing)
 {
-    const GeoVDBGrid grid(makeSphere());
-    EXPECT_FALSE(grid.computeHashes([]() { return true; }));
+    // More leaves than GeoVDB.cpp's kNodesPerAbortCheck (8192), one active voxel each, in a row,
+    // so the leaves are hashed in two blocks and the abort can land between them.
+    const auto manyLeaves = []() {
+        geoInitializeOpenVDB();
+        openvdb::FloatGrid::Ptr grid = openvdb::FloatGrid::create(0.f);
+        openvdb::FloatGrid::Accessor acc = grid->getAccessor();
+        for (int i = 0; i < 8300; ++i) {
+            acc.setValue(openvdb::Coord(8 * i, 0, 0), float(i + 1));
+        }
+
+        return grid;
+    };
+    const openvdb::FloatGrid::Ptr source = manyLeaves();
+    ASSERT_GT(source->tree().leafCount(), openvdb::Index64(8192));
+
+    const GeoVDBGrid grid(source);
+    // Asked before the upper nodes, the lower nodes, then each block of leaves: the fourth call
+    // comes after the first block of leaves was hashed.
+    int asked = 0;
+    EXPECT_FALSE(grid.computeHashes([&asked]() { return ++asked > 3; }));
+    EXPECT_EQ(asked, 4);
     EXPECT_TRUE(grid.computeHashes(GeoVDBAbortFunc()));
     const U64 h = grid.contentHash();
     EXPECT_NE(h, U64(0));
-    EXPECT_EQ(GeoVDBGrid(makeSphere()).contentHash(), h);
+    EXPECT_EQ(GeoVDBGrid(manyLeaves()).contentHash(), h);
 }
 
 TEST(GeoVDBTest, AbortedWriteLeavesNoFile)

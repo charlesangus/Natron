@@ -124,6 +124,10 @@ struct GeoUsdConvertOptions {
     GeoUsdInputSceneConstPtr inputScene;
     // Where VDB primitives' grids are written; empty for geoVDBCacheDirectory().
     std::string volumeDirectory;
+    // Asked while volume files are hashed and written during construction; a volume whose file
+    // the abort stopped is left without one. Cleared once construction is done, since it is the
+    // building render's.
+    GeoVDBAbortFunc aborted;
 };
 
 /**
@@ -385,9 +389,9 @@ GeoMatrix4 geoMatrixFromUsd(const PXR_NS::GfMatrix4d& m);
 
 /**
  * @brief The detail with every packed geometry primitive replaced by its contents, transformed
- * by its local transform, recursively. Unpacked primitives take the packed primitive's
- * primitive attributes and primitive groups. Packed USD primitives inside packed geometry are
- * dropped with a warning.
+ * by its local transform, recursively; a VDB primitive's grid takes the transform on top of its
+ * own and keeps its name. Unpacked primitives take the packed primitive's primitive attributes
+ * and primitive groups. Packed USD primitives inside packed geometry are dropped with a warning.
  **/
 GeoDetail geoUnpackPackedGeometry(const GeoDetail& source,
                                   std::vector<std::string>* warnings);
@@ -403,14 +407,16 @@ GeoDetail geoUnpackPackedGeometry(const GeoDetail& source,
  * read from the files; other fields are skipped with a warning. An attribute that exists in
  * the builder with another description is skipped with a warning. Returns false with
  * *errorMessage set for another prim type or inconsistent topology, leaving the builder as it
- * was.
+ * was. @p aborted is asked before each volume field's grid is read; once it says so, the read
+ * fails the same way.
  **/
 bool geoUsdReadPrim(const PXR_NS::UsdPrim& prim,
                     PXR_NS::UsdTimeCode time,
                     const PXR_NS::GfMatrix4d* worldTransform,
                     GeoDetailBuilder& builder,
                     std::vector<std::string>* warnings,
-                    std::string* errorMessage);
+                    std::string* errorMessage,
+                    const GeoVDBAbortFunc& aborted = GeoVDBAbortFunc());
 
 NATRON_NAMESPACE_EXIT
 

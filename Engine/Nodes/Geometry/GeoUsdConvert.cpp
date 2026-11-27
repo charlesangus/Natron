@@ -961,6 +961,9 @@ GeoUsdConvert::GeoUsdConvert(GeoDetailConstPtr detail,
         _options.rootPath = SdfPath("/geo");
     }
     build(nested);
+    // The abort belongs to the render that built this conversion, which may be gone by the time
+    // the conversion is authored or its options are reused for another.
+    _options.aborted = GeoVDBAbortFunc();
 }
 
 GeoUsdConvert::~GeoUsdConvert()
@@ -1510,8 +1513,12 @@ GeoUsdConvert::planProperties(Partition& p)
             p.properties.push_back(std::move(rel));
         }
         std::string error;
-        if (!ensureVolumeFile(d, p.primitives, recorded, directory, &p.volumeFile, &error, GeoVDBAbortFunc())) {
-            _volumeWriteFailures.push_back("The grids of the volume " + p.path.GetString() + " could not be written, so its fields have no file: " + error);
+        if (!ensureVolumeFile(d, p.primitives, recorded, directory, &p.volumeFile, &error, _options.aborted)) {
+            if (_options.aborted && _options.aborted()) {
+                _volumeWriteFailures.push_back("The grids of the volume " + p.path.GetString() + " were not written, so its fields have no file: the render was aborted");
+            } else {
+                _volumeWriteFailures.push_back("The grids of the volume " + p.path.GetString() + " could not be written, so its fields have no file: " + error);
+            }
             p.volumeFile.clear();
         }
         // The input's other OpenVDB fields are blocked: the detail's grids replace them.
@@ -2705,15 +2712,29 @@ geoUnpackPackedGeometry(const GeoDetail& source,
         std::vector<std::size_t> dstVertices;
         forEachLive(flat.primitiveMap(), [&](GeoOffset prim) {
             const GeoPrimitiveTypeEnum type = flat.primitiveType(prim);
+            const GeoVertexRange r = flat.primitiveVertices(prim);
+            if (type == eGeoPrimitiveVDB) {
+                // The packed transform goes onto the grid's own transform, so the volume lands where
+                // its copy was drawn; the tree is shared, not copied.
+                const GeoOffset created = geoAppendVDB(b, pointMap[std::size_t(flat.vertexPoint(r.start))], geoVDB(flat, prim), geoVDBName(flat, prim));
+                geoTransformVDB(b, created, xform);
+                srcPrims.push_back(std::size_t(prim));
+                dstPrims.push_back(std::size_t(created));
+                srcVertices.push_back(std::size_t(r.start));
+                dstVertices.push_back(std::size_t(b.detail().primitiveVertices(created).start));
+
+                return;
+            }
             if (type != eGeoPrimitivePolygon && type != eGeoPrimitivePolyline) {
+                // flat is already unpacked, so only packed USD references are left here: they name a
+                // stage prim, not geometry this detail holds.
                 if (!warnedUSD && warnings) {
-                    warnings->push_back("Packed USD primitives inside packed geometry are dropped when unpacking");
+                    warnings->push_back("Packed USD references inside packed geometry are dropped when unpacking: their geometry lives on a stage, not in the packed contents");
                     warnedUSD = true;
                 }
 
                 return;
             }
-            const GeoVertexRange r = flat.primitiveVertices(prim);
             std::vector<GeoOffset> corners;
             corners.reserve(std::size_t(r.count));
             for (GeoOffset v = r.start; v < r.start + r.count; ++v) {
@@ -2767,6 +2788,10 @@ geoUnpackPackedGeometry(const GeoDetail& source,
                 continue;
             }
             for (std::size_t prim : dstPrims) {
+                // A volume's name is its field's name, which the container's name must not replace.
+                if (name == kGeoNameAttr && b.detail().primitiveType(GeoOffset(prim)) == eGeoPrimitiveVDB) {
+                    continue;
+                }
                 a->copyElement(prim, std::size_t(outer));
             }
         }
@@ -2969,13 +2994,15 @@ readValue(ReadTarget& t,
     scatterComponents(*a, offsets, flat);
 }
 
-// The volume's file-backed OpenVDB fields as VDB primitives; every grid is read before the first is appended.
-void
+// The volume's file-backed OpenVDB fields as VDB primitives; every grid is read before the first is
+// appended, so an aborted read, which returns false, leaves the builder as it was.
+bool
 readVolume(const UsdPrim& prim,
            UsdTimeCode time,
            const GfMatrix4d* worldTransform,
            GeoDetailBuilder& builder,
-           std::vector<std::string>* warnings)
+           std::vector<std::string>* warnings,
+           const GeoVDBAbortFunc& aborted)
 {
     ReadTarget target { builder, warnings, prim.GetPath().GetString() };
     struct ReadGrid {
@@ -2985,6 +3012,9 @@ readVolume(const UsdPrim& prim,
     };
     std::vector<ReadGrid> grids;
     for (const auto& [name, fieldPath] : UsdVolVolume(prim).GetFieldPaths()) {
+        if (aborted && aborted()) {
+            return false;
+        }
         const UsdPrim fieldPrim = prim.GetStage()->GetPrimAtPath(fieldPath);
         if (!fieldPrim || !fieldPrim.IsA<UsdVolOpenVDBAsset>()) {
             target.warn("the field " + name.GetString() + " is not an OpenVDB asset and is skipped");
@@ -3004,17 +3034,22 @@ readVolume(const UsdPrim& prim,
         GeoVDBGridBaseConstPtr grid;
         bool read = false;
         if (gridName.IsEmpty()) {
-            std::vector<GeoVDBGridBaseConstPtr> all;
-            read = geoReadVDBFile(resolved, "*", &all, &error) && !all.empty();
+            // A field with no name takes the file's first grid; only that one is read, not the
+            // whole file.
+            std::vector<std::string> names;
+            read = geoVDBFileGridNames(resolved, &names, &error) && !names.empty();
             if (read) {
-                grid = all.front();
+                read = geoReadVDBGrid(resolved, names.front(), &grid, &error, 0, aborted);
             } else if (error.empty()) {
                 error = resolved + " holds no grid";
             }
         } else {
             int index = 0;
             asset.GetFieldIndexAttr().Get(&index, time);
-            read = geoReadVDBGrid(resolved, gridName.GetString(), &grid, &error, index);
+            read = geoReadVDBGrid(resolved, gridName.GetString(), &grid, &error, index, aborted);
+        }
+        if (aborted && aborted()) {
+            return false;
         }
         if (!read) {
             target.warn("the field " + name.GetString() + " is skipped: " + error);
@@ -3030,7 +3065,7 @@ readVolume(const UsdPrim& prim,
         grids.push_back({ grid, std::move(gridLabel), name.GetString() });
     }
     if (grids.empty()) {
-        return;
+        return true;
     }
 
     std::vector<std::size_t> primOffsets;
@@ -3069,6 +3104,8 @@ readVolume(const UsdPrim& prim,
             field->setString(primOffsets[i], grids[i].field);
         }
     }
+
+    return true;
 }
 
 } // namespace
@@ -3079,7 +3116,8 @@ geoUsdReadPrim(const UsdPrim& prim,
                const GfMatrix4d* worldTransform,
                GeoDetailBuilder& builder,
                std::vector<std::string>* warnings,
-               std::string* errorMessage)
+               std::string* errorMessage,
+               const GeoVDBAbortFunc& aborted)
 {
     auto fail = [&](const std::string& message) {
         if (errorMessage) {
@@ -3089,7 +3127,9 @@ geoUsdReadPrim(const UsdPrim& prim,
         return false;
     };
     if (prim.IsA<UsdVolVolume>()) {
-        readVolume(prim, time, worldTransform, builder, warnings);
+        if (!readVolume(prim, time, worldTransform, builder, warnings, aborted)) {
+            return fail("reading the volume was aborted");
+        }
 
         return true;
     }

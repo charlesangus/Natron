@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -768,11 +769,16 @@ geoReadVDBGrid(const std::string& path,
                const std::string& name,
                GeoVDBGridBaseConstPtr* grid,
                std::string* errorMessage,
-               int index)
+               int index,
+               const GeoVDBAbortFunc& aborted)
 {
     grid->reset();
     bool found = false;
     const bool opened = withVDBFile(path, errorMessage, [&](openvdb::io::File& file) {
+        // OpenVDB reads a grid in one call, so the last chance to stop is just before it.
+        if (aborted && aborted()) {
+            throw std::runtime_error("aborted");
+        }
         if (index <= 0) {
             if (file.hasGrid(name)) {
                 *grid = file.readGrid(name);
@@ -786,6 +792,9 @@ geoReadVDBGrid(const std::string& path,
             const std::string unique = it.gridName();
             if (plainGridName(file, unique) != name) {
                 continue;
+            }
+            if (aborted && aborted()) {
+                throw std::runtime_error("aborted");
             }
             if (seen++ == index) {
                 const openvdb::GridBase::Ptr read = file.readGrid(unique);
@@ -885,14 +894,17 @@ public:
     }
 };
 
-} // namespace
-
+// geoWriteVDBFile(). With keepExisting, a file already at @p path is kept and *created is false,
+// so that of writers racing on one content-addressed name exactly one learns it made the file.
 bool
-geoWriteVDBFile(const std::vector<GeoVDBNamedGrid>& grids,
-                const std::string& path,
-                std::string* errorMessage,
-                const GeoVDBAbortFunc& aborted)
+writeVDBFile(const std::vector<GeoVDBNamedGrid>& grids,
+             const std::string& path,
+             std::string* errorMessage,
+             const GeoVDBAbortFunc& aborted,
+             bool keepExisting,
+             bool* created)
 {
+    *created = false;
     geoInitializeOpenVDB();
     static std::atomic<std::uint64_t> counter { 0 };
     const std::filesystem::path target(path);
@@ -932,7 +944,22 @@ geoWriteVDBFile(const std::vector<GeoVDBNamedGrid>& grids,
         if (!file.close()) {
             throw std::runtime_error("the file could not be written");
         }
-        std::filesystem::rename(partial, path);
+        if (keepExisting) {
+            // link() fails with EEXIST when another writer got there first, where rename() would
+            // silently replace its file; either way the name holds a whole file.
+            if (::link(partial.c_str(), path.c_str()) == 0) {
+                *created = true;
+            } else if (errno != EEXIST) {
+                // A file system without hard links: fall back to replacing.
+                std::filesystem::rename(partial, path);
+                *created = true;
+            }
+            std::error_code ignored;
+            std::filesystem::remove(partial, ignored);
+        } else {
+            std::filesystem::rename(partial, path);
+            *created = true;
+        }
     } catch (const std::exception& e) {
         std::error_code ignored;
         std::filesystem::remove(partial, ignored);
@@ -944,6 +971,19 @@ geoWriteVDBFile(const std::vector<GeoVDBNamedGrid>& grids,
     }
 
     return true;
+}
+
+} // namespace
+
+bool
+geoWriteVDBFile(const std::vector<GeoVDBNamedGrid>& grids,
+                const std::string& path,
+                std::string* errorMessage,
+                const GeoVDBAbortFunc& aborted)
+{
+    bool created = false;
+
+    return writeVDBFile(grids, path, errorMessage, aborted, false, &created);
 }
 
 bool
@@ -1021,11 +1061,18 @@ geoEnsureVDBFile(const std::vector<GeoVDBStoredGrid>& grids,
 
         return true;
     }
-    if (!geoWriteVDBFile(named, *path, errorMessage, aborted)) {
+    bool created = false;
+    if (!writeVDBFile(named, *path, errorMessage, aborted, true, &created)) {
         return false;
     }
+    // Two exports of one grid can both find the name absent and both write; only the one whose
+    // file landed is charged, or the tier would count the file twice.
     if (tier) {
-        tier->noteFileWritten(*path);
+        if (created) {
+            tier->noteFileWritten(*path);
+        } else {
+            tier->noteFileUsed(*path);
+        }
     }
 
     return true;

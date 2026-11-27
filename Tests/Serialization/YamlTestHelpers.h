@@ -144,6 +144,7 @@ canonicalKnob(const NATRON_NAMESPACE::Serialization::KnobSerialization& knob)
         result.isPersistent = defaults.isPersistent;
         result.extraData = defaults.extraData;
         result.useHostOverlayHandle = defaults.useHostOverlayHandle;
+        result.userProperties = defaults.userProperties;
     }
 
     return result;
@@ -271,6 +272,15 @@ expectKnobsEqual(const NATRON_NAMESPACE::Serialization::KnobSerialization& expec
         EXPECT_EQ(e->usesRichText, a.usesRichText);
     }
     EXPECT_EQ(expected.useHostOverlayHandle, actual.useHostOverlayHandle);
+    EXPECT_EQ(expected.userProperties.sliderDisabled, actual.userProperties.sliderDisabled);
+    EXPECT_EQ(expected.userProperties.isRectangle, actual.userProperties.isRectangle);
+    EXPECT_EQ(expected.userProperties.spatial, actual.userProperties.spatial);
+    EXPECT_EQ(expected.userProperties.valueIsNormalized, actual.userProperties.valueIsNormalized);
+    EXPECT_EQ(expected.userProperties.preferredRows, actual.userProperties.preferredRows);
+    EXPECT_EQ(expected.userProperties.allowNone, actual.userProperties.allowNone);
+    EXPECT_EQ(expected.userProperties.allowAll, actual.userProperties.allowAll);
+    EXPECT_EQ(expected.userProperties.allLabel, actual.userProperties.allLabel);
+    EXPECT_EQ(expected.userProperties.dimensionNames, actual.userProperties.dimensionNames);
 }
 
 // Gives decoded knobs the type the live knobs would, taken from the knobs that were encoded.

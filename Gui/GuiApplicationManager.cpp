@@ -69,6 +69,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Nodes/Merge/Merge.h" // PLUGINID_NATRON_NATIVE_MERGE
 #include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Transform/Transform.h"
+#include "Engine/Optics/LensKnobs.h"
 #include "Engine/Plugin.h"
 #include "Engine/PluginActionShortcut.h"
 #include "Engine/RotoLatencyProbe.h"
@@ -79,6 +80,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiDefines.h"
 #include "Gui/KnobGuiFactory.h"
+#include "Gui/LensBrowser.h"
 #include "Gui/Menu.h"
 #include "Gui/PreviewThread.h"
 #include "Gui/QtEnumConvert.h"
@@ -1205,6 +1207,8 @@ GuiApplicationManager::initGui(const CLArgs& args)
     RotoLatencyProbe::startFromEnvironment();
     NodeCreationStageLog::startFromEnvironment();
 
+    Optics::LensKnobs::setBrowseHandler([](const KnobStringPtr& lens, const Optics::LensPreviewContext& context) { LensBrowser::open(lens, context); });
+
     return exec();
 } // GuiApplicationManager::initGui
 
@@ -1330,6 +1334,7 @@ const char* const namedGroupsOrdered[] = {
     PLUGIN_GROUP_MERGE,
     PLUGIN_GROUP_TRANSFORM,
     PLUGIN_GROUP_3D,
+    PLUGIN_GROUP_GEOMETRY,
     PLUGIN_GROUP_DEEP,
     PLUGIN_GROUP_METADATA,
     PLUGIN_GROUP_LOOP,
@@ -1367,7 +1372,7 @@ getIconForGrouping(QIcon* icon,
         e = NATRON_PIXMAP_MERGE_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_TRANSFORM)) {
         e = NATRON_PIXMAP_TRANSFORM_GROUPING;
-    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_3D)) {
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_3D) || grouping == QString::fromUtf8(PLUGIN_GROUP_GEOMETRY)) {
         e = NATRON_PIXMAP_3D_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_DEEP)) {
         e = NATRON_PIXMAP_DEEP_GROUPING;

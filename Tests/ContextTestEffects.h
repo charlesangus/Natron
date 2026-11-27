@@ -283,7 +283,7 @@ private:
     {
         CountingTestRegistry::noteRender(getNode().get());
 
-        const ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
+        const ParallelRenderArgsPtr frameArgs = getFrameArgs();
         const RenderContextPtr context = frameArgs ? frameArgs->context : RenderContextPtr();
         float out = (float)value(context);
         if (getInput(0)) {

@@ -42,6 +42,7 @@
 #include <utility>
 
 #include <QDateTime>
+#include <QDebug>
 #include <QMutexLocker>
 #include <QRunnable>
 #include <QString>
@@ -96,9 +97,19 @@ FrameFuture::~FrameFuture()
 {
 }
 
+namespace {
+
+std::atomic<int> gPoolThreadWaits { 0 };
+
+} // namespace
+
 EffectInstance::RenderRoIRetCode
 FrameFuture::wait()
 {
+    if (QThreadPool::globalInstance()->contains(QThread::currentThread())) {
+        ++gPoolThreadWaits;
+        qWarning("RenderScheduler: a frame was waited for on a thread of the global pool, which may deadlock");
+    }
     assert(!QThreadPool::globalInstance()->contains(QThread::currentThread()));
 
     QMutexLocker k(&_mutex);
@@ -109,12 +120,32 @@ FrameFuture::wait()
     return _retCode;
 }
 
+int
+FrameFuture::getPoolThreadWaitsForTests()
+{
+    return gPoolThreadWaits.load();
+}
+
 bool
 FrameFuture::isFinished() const
 {
     QMutexLocker k(&_mutex);
 
     return _finished;
+}
+
+EffectInstance::RenderRoIRetCode
+FrameFuture::result() const
+{
+    QMutexLocker k(&_mutex);
+
+    if (!_finished) {
+        qWarning("RenderScheduler: the result of a frame was read before it finished");
+
+        return EffectInstance::eRenderRoIRetCodeFailed;
+    }
+
+    return _retCode;
 }
 
 std::map<ImageLayerDesc, ImagePtr>
@@ -133,18 +164,52 @@ FrameFuture::getRegionFallbacks() const
     return _fallbacks;
 }
 
-void
+bool
 FrameFuture::finish(EffectInstance::RenderRoIRetCode retCode,
                     std::map<ImageLayerDesc, ImagePtr> rootPlanes,
                     std::vector<RegionFallback> fallbacks)
 {
-    QMutexLocker k(&_mutex);
+    CompletionCallback callback;
+    {
+        QMutexLocker k(&_mutex);
 
-    _retCode = retCode;
-    _rootPlanes = std::move(rootPlanes);
-    _fallbacks = std::move(fallbacks);
-    _finished = true;
-    _finishedCond.wakeAll();
+        if (_finished) {
+            qWarning("RenderScheduler: a frame was finished twice; the second result (%d) is dropped", (int)retCode);
+
+            return false;
+        }
+        _retCode = retCode;
+        _rootPlanes = std::move(rootPlanes);
+        _fallbacks = std::move(fallbacks);
+        _finished = true;
+        callback.swap(_callback);
+        _finishedCond.wakeAll();
+    }
+    // Outside the lock: the callback may read the planes back through this future.
+    if (callback) {
+        callback(retCode);
+    }
+
+    return true;
+}
+
+void
+FrameFuture::onFinished(CompletionCallback callback)
+{
+    EffectInstance::RenderRoIRetCode retCode;
+    {
+        QMutexLocker k(&_mutex);
+
+        if (!_finished) {
+            _callback = std::move(callback);
+
+            return;
+        }
+        retCode = _retCode;
+    }
+    if (callback) {
+        callback(retCode);
+    }
 }
 
 struct RenderScheduler::Continuation {
@@ -706,7 +771,7 @@ RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
             getOutputComponents(effect, nodeRequest->second->nodeHash, task.key.time, task.key.view, *metadata, &task.components);
         }
 
-        ParallelRenderArgsPtr frameArgs = effect->getParallelRenderArgsTLS();
+        ParallelRenderArgsPtr frameArgs = effect->getFrameArgs();
 
         // renderRoI renders at full scale then downscales for eSupportsNo, and also for eSupportsMaybe, which it
         // switches to full scale once the identity check is done.
@@ -1108,6 +1173,12 @@ RenderScheduler::getLoad(int* running,
 
     *running = _runningTasks;
     *ready = (int)(_freeReady.size() + _admittedReady.size() + _gatedReady.size() + _deferredReady.size() + _gpuWaiting.size());
+}
+
+int
+RenderScheduler::runnablePriority(Priority priority)
+{
+    return runnablePriorityOf(priority);
 }
 
 int
@@ -1845,7 +1916,7 @@ RenderScheduler::executeTask(const FramePtr& frame,
             renders = false;
             retCode = EffectInstance::eRenderRoIRetCodeAborted;
         } else if (continuation->callback) {
-            AppTLS::FrameContextScope scope(continuation->context.get(), budget, runnablePriorityOf(frame->priority));
+            AppTLS::FrameContextScope scope(continuation->context.get(), budget, runnablePriorityOf(frame->priority), true);
             OpenMPThreadsScope openMPThreads(budget);
             ContextFrameArgsScope contextArgs(effect, task.key.contextKey ? continuation->context->getArgs(NodeCtxKey(task.key.node, task.key.contextKey)) : ParallelRenderArgsPtr());
             EffectInstance::RenderContinuationHandledScope handled(task.key.node.get(), task.key.time, task.key.view, task.key.contextKey, frame->depth + 1);
@@ -1864,7 +1935,7 @@ RenderScheduler::executeTask(const FramePtr& frame,
 
     if (renders) {
         const FrameRenderContextPtr& renderContext = continuation ? continuation->context : frame->context;
-        AppTLS::FrameContextScope scope(renderContext.get(), budget, runnablePriorityOf(frame->priority));
+        AppTLS::FrameContextScope scope(renderContext.get(), budget, runnablePriorityOf(frame->priority), true);
         OpenMPThreadsScope openMPThreads(budget);
         // A partial cache hit was not probed: renderRoI probes it inline if something is left to render.
         std::optional<EffectInstance::RenderContinuationHandledScope> handled;
@@ -1969,7 +2040,7 @@ RenderScheduler::probeRenderContinuation(const FramePtr& frame,
 {
     const FrameGraph::Task& task = frame->graph.tasks[taskIndex];
     const EffectInstancePtr effect = task.key.node->getEffectInstance();
-    AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
+    AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority), true);
     EffectInstance::RenderContinuation probed;
     bool hasContinuation = false;
     {
@@ -2071,7 +2142,7 @@ RenderScheduler::probeRenderContinuation(const FramePtr& frame,
     const FrameRenderContextPtr extensionContext = FrameRenderContext::createExtension(frame->context, request, _nextStoreGeneration++);
     FrameGraph graph;
     {
-        AppTLS::FrameContextScope extensionScope(extensionContext.get(), budget, runnablePriorityOf(frame->priority));
+        AppTLS::FrameContextScope extensionScope(extensionContext.get(), budget, runnablePriorityOf(frame->priority), true);
         graph = buildGraph(extensionContext, rootKeys);
         if (graph.tasks.size() < rootKeys.size()) {
             failTaskWithReason(effect, "asked its render continuation for outputs the request pass did not reach");
@@ -2288,7 +2359,7 @@ RenderScheduler::executeRegion(const FramePtr& frame,
     bool deviceLost = false;
 
     if (body) {
-        AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority));
+        AppTLS::FrameContextScope scope(frame->context.get(), budget, runnablePriorityOf(frame->priority), true);
         OpenMPThreadsScope openMPThreads(budget);
         const int rendering = ++_tasksRendering;
         if (frame->context->getStats()) {

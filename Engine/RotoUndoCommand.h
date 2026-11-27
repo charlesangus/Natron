@@ -161,10 +161,16 @@ public:
      **/
     void addDelta(double dx, double dy);
 
+    void setSmoothsMovedPoints(const std::pair<double, double>& pixelScale);
+
+    bool movesControlPoint(const BezierCPPtr& cp) const;
+
 private:
     void movePoints(double dx, double dy);
 
     double _dx, _dy;
+    bool _smoothsMovedPoints;
+    std::pair<double, double> _pixelScale;
     KnobButtonWPtr _selectedTool; //< corresponds to the RotoGui::RotoToolEnum enum
     std::list<RotoDrawableItemPtr> _selectedCurves;
     std::list<int> _indexesToMove; //< indexes of the control points
@@ -226,8 +232,8 @@ private:
 };
 
 class AddPointUndoCommand
-    : public UndoCommand
-{
+    : public UndoCommand,
+      public UndoGestureMember {
     Q_DECLARE_TR_FUNCTIONS(AddPointUndoCommand)
 
 public:
@@ -241,6 +247,8 @@ public:
     virtual void undo() OVERRIDE FINAL;
     virtual void redo() OVERRIDE FINAL;
 
+    virtual bool mergeWith(const UndoCommandPtr& other) OVERRIDE FINAL;
+
 private:
 
     bool _firstRedoCalled; //< false by default
@@ -250,8 +258,13 @@ private:
     double _t;
     std::shared_ptr<RotoCurveContextHostState> _hostBefore;
     std::shared_ptr<RotoCurveContextHostState> _hostAfter;
+    std::shared_ptr<MoveControlPointsUndoCommand> _insertDrag;
+    // Copies of every point of the curve before the insertion, which the split changed at every
+    // keyframe, and after the insertion and its drag. Once undone, the after copies stand in for
+    // the drag, which refers to the inserted point objects a redo no longer brings back.
+    std::vector<BezierCPPtr> _cpsBefore, _fpsBefore, _cpsAfter, _fpsAfter;
+    bool _restoresPoints;
 };
-
 
 class RemovePointUndoCommand
     : public UndoCommand

@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -1076,6 +1077,176 @@ TEST_F(RenderSchedulerTest, AbortStopsTheFrame)
         EXPECT_EQ(0u, run.context->getStore().bytesInFlight());
         EXPECT_EQ(1, CountingTestRegistry::totalRenders());
         CountingTestRegistry::setRenderHook(CountingTestRegistry::RenderHook());
+    }
+}
+
+// wait() returns once the frame is marked finished, which is before the callback runs, so tests wait for the callback
+// itself.
+struct CompletionLog {
+    std::mutex mutex;
+    std::condition_variable cond;
+    int calls = 0;
+    EffectInstance::RenderRoIRetCode retCode = EffectInstance::eRenderRoIRetCodeOk;
+    std::thread::id thread;
+
+    FrameFuture::CompletionCallback callback()
+    {
+        return [this](EffectInstance::RenderRoIRetCode code) {
+            std::lock_guard<std::mutex> k(mutex);
+            ++calls;
+            retCode = code;
+            thread = std::this_thread::get_id();
+            cond.notify_all();
+        };
+    }
+
+    bool waitForCall()
+    {
+        std::unique_lock<std::mutex> k(mutex);
+
+        return cond.wait_for(k, std::chrono::milliseconds(kFrameTimeoutMs), [this]() { return calls > 0; });
+    }
+};
+
+TEST_F(RenderSchedulerTest, CompletionCallbackRunsOnceAfterSuccess)
+{
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(10, &nodes));
+
+    for (std::size_t p = 0; p < sizeof(kPoolSizes) / sizeof(kPoolSizes[0]); ++p) {
+        SCOPED_TRACE("pool size " + std::to_string(kPoolSizes[p]));
+        PoolSizeGuard pool(kPoolSizes[p]);
+        CountingTestRegistry::reset();
+        setDelay(nodes.front(), kOverlapDelayMs);
+
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &run, &error)) << error;
+        CompletionLog log;
+        submit(&run);
+        run.future->onFinished(log.callback());
+        ASSERT_TRUE(log.waitForCall());
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+        std::lock_guard<std::mutex> k(log.mutex);
+        EXPECT_EQ(1, log.calls);
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, log.retCode);
+        EXPECT_NE(std::this_thread::get_id(), log.thread);
+    }
+}
+
+TEST_F(RenderSchedulerTest, CompletionCallbackRunsOnceAfterAbort)
+{
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(10, &nodes));
+
+    for (std::size_t p = 0; p < sizeof(kPoolSizes) / sizeof(kPoolSizes[0]); ++p) {
+        SCOPED_TRACE("pool size " + std::to_string(kPoolSizes[p]));
+        PoolSizeGuard pool(kPoolSizes[p]);
+        CountingTestRegistry::reset();
+
+        FrameRun run;
+        std::string error;
+        ASSERT_TRUE(prepareFrame(nodes.back(), 1., true, &run, &error)) << error;
+        const Node* first = nodes.front().get();
+        AbortableRenderInfoPtr abortInfo = run.abortInfo;
+        CountingTestRegistry::setRenderHook([first, abortInfo](const Node* node) {
+            if (node == first) {
+                abortInfo->setAborted();
+            }
+        });
+        CompletionLog log;
+        submit(&run);
+        run.future->onFinished(log.callback());
+        EXPECT_TRUE(log.waitForCall());
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, run.future->wait());
+        CountingTestRegistry::setRenderHook(CountingTestRegistry::RenderHook());
+        std::lock_guard<std::mutex> k(log.mutex);
+        EXPECT_EQ(1, log.calls);
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, log.retCode);
+    }
+}
+
+TEST_F(RenderSchedulerTest, CompletionCallbackRegisteredLateRunsAtOnceOnTheCaller)
+{
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(3, &nodes));
+
+    FrameRun run;
+    std::string error;
+    ASSERT_TRUE(prepareFrame(nodes.back(), 1., false, &run, &error)) << error;
+    submit(&run);
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, run.future->wait());
+
+    CompletionLog log;
+    run.future->onFinished(log.callback());
+    std::lock_guard<std::mutex> k(log.mutex);
+    EXPECT_EQ(1, log.calls);
+    EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, log.retCode);
+    EXPECT_EQ(std::this_thread::get_id(), log.thread);
+}
+
+// Frames are submitted, given their callback and aborted from several threads at once, so registration races the
+// frame ending on a pool thread and on an aborting thread.
+TEST_F(RenderSchedulerTest, CompletionCallbackRunsExactlyOnceUnderParallelStress)
+{
+    std::vector<NodePtr> nodes;
+    ASSERT_TRUE(buildChain(3, &nodes));
+    const int kFrames = 64;
+    const int kSubmitters = 4;
+    const int stressPools[] = { 2, 16 };
+
+    for (std::size_t p = 0; p < sizeof(stressPools) / sizeof(stressPools[0]); ++p) {
+        SCOPED_TRACE("pool size " + std::to_string(stressPools[p]));
+        PoolSizeGuard pool(stressPools[p]);
+        CountingTestRegistry::reset();
+
+        std::vector<FrameRun> runs(kFrames);
+        for (int i = 0; i < kFrames; ++i) {
+            std::string error;
+            ASSERT_TRUE(prepareFrame(nodes.back(), 1. + i, true, &runs[i], &error)) << error;
+        }
+        std::vector<std::atomic<int>> calls(kFrames);
+        for (int i = 0; i < kFrames; ++i) {
+            calls[i] = 0;
+        }
+        std::atomic<int> total(0);
+        std::vector<std::thread> submitters;
+        for (int t = 0; t < kSubmitters; ++t) {
+            submitters.emplace_back([&, t]() {
+                for (int i = t; i < kFrames; i += kSubmitters) {
+                    FrameRun& run = runs[i];
+                    run.future = _scheduler->submit(run.context, std::move(run.graph), RenderScheduler::Priority::Background);
+                    if (i % 3 == 0) {
+                        std::this_thread::yield();
+                    }
+                    run.future->onFinished([&calls, &total, i](EffectInstance::RenderRoIRetCode) {
+                        ++calls[i];
+                        ++total;
+                    });
+                    if (i % 2 == 1) {
+                        _scheduler->abort(run.abortInfo);
+                    }
+                }
+            });
+        }
+        for (std::thread& submitter : submitters) {
+            submitter.join();
+        }
+        for (int i = 0; i < kFrames; ++i) {
+            ASSERT_TRUE(bool(runs[i].future));
+            runs[i].future->wait();
+        }
+        QElapsedTimer timer;
+        timer.start();
+        while (total.load() < kFrames && timer.elapsed() < kFrameTimeoutMs) {
+            QThread::msleep(1);
+        }
+        // A second call, if any, would land shortly after the first.
+        QThread::msleep(50);
+        for (int i = 0; i < kFrames; ++i) {
+            EXPECT_EQ(1, calls[i].load()) << "frame " << i;
+        }
+        EXPECT_EQ(kFrames, total.load());
     }
 }
 

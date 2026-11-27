@@ -695,7 +695,7 @@ NodeGraph::selectAllNodes(bool onlyInVisiblePortion)
     if (onlyInVisiblePortion) {
         QRectF r = visibleSceneRect();
         for (NodesGuiList::iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
-            QRectF bbox = (*it)->mapToScene( (*it)->boundingRect() ).boundingRect();
+            QRectF bbox = (*it)->sceneFootprint();
             if (r.intersects(bbox) && (*it)->isVisible()) {
                 nodes.push_back(*it);
             }

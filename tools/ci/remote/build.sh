@@ -5,8 +5,8 @@
 # build/remote/<preset>/. The remote twin of tools/ci/local/build.sh.
 #
 # Usage:
-#   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens]
-#                            [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui "<script> ..."]
+#   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--ctest-regex <re>] [--record-goldens]
+#                            [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N> [--repeat-parallel <P>] [--repeat-timeout <S>]] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui "<script> ..."]
 #   tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
 #   tools/ci/remote/build.sh --mode
 #
@@ -16,12 +16,12 @@
 #                        the -DDEBUG traps, so it takes neither --appimage nor --gui.
 #   --tests           -> also run the ctest suite and smoke tests remotely; the
 #                        ctest logs are downloaded even when the run fails.
-#   --scheduler <legacy|taskgraph> -> implies --tests; runs only that scheduler's
-#                        ctest leg and smoke test instead of both, which halves the
-#                        wait of an intermediate fix build. Without it both legs
-#                        run. A milestone's verification gate must run without it.
-#                        The smoke renders of the two schedulers are compared
-#                        only when both legs ran.
+#   --ctest-regex <re> -> implies --tests; the ctest job runs only the ctest
+#                        entries matching <re> (`ctest -R`; one entry per gtest
+#                        suite, e.g. '^NativeBlurTest$'), and a regex matching
+#                        none fails the job. The smoke test still runs. For
+#                        intermediate fix builds only: a milestone's
+#                        verification gate must run the full suite without it.
 #   --record-goldens  -> implies --tests; also records the native, Cycles and MoonRay golden
 #                        renders (NativeGoldenTest, NativeIDistortAmountTest,
 #                        NativeIWarpTest, USDRenderCyclesTest,
@@ -29,28 +29,35 @@
 #                        USDRenderCyclesProjectionTest, USDRenderMoonRayProjectionTest,
 #                        USDRenderStormTest)
 #                        remotely and downloads them, STAMP included, into
-#                        Tests/fixtures/native-golden/ of this checkout. The
+#                        Tests/fixtures/native-golden/ of this checkout, with NatronUtilityGoldenTest's. The
 #                        references bind bit for bit only under the preset that
 #                        recorded them (see STAMP). Also records the resampling
 #                        parity references of NativeTransformTest (CubicMinifyingAndRotated,
 #                        MaskedMixHalf, SkewYX) and NativeReformatTest (FitIntoAFixedBox,
 #                        ToFormatWithAPixelAspectRatio, ToProjectFormatFromTheSourceRoD)
 #                        into Tests/fixtures/native-parity/; no other parity reference changes.
-#   --shuffle-seeds <n,n,...> -> implies --tests; each ctest leg also runs once
+#   --shuffle-seeds <n,n,...> -> implies --tests; the ctest job also runs once
 #                        per seed with GTEST_SHUFFLE=1 GTEST_RANDOM_SEED=<seed>,
 #                        after its unshuffled run, e.g. --shuffle-seeds 1,2,3.
 #                        Every seed runs even if an earlier one failed, and each
-#                        run's log is ctest-<scheduler>-seed<seed>.log next to
-#                        the unshuffled ctest-<scheduler>.log. The ctest step's
+#                        run's log is ctest-seed<seed>.log next to
+#                        the unshuffled ctest.log. The ctest step's
 #                        timeout is a fixed 120 minutes, which fits about five
 #                        seeds on the debug preset, so at most 5 seeds are
 #                        accepted.
-#   --repeat-test <name>:<N> -> implies --tests; after its normal ctest run, each ctest
-#                        leg runs the one ctest case matching the regex <name> N times
+#   --repeat-test <name>:<N> -> implies --tests; after its normal ctest run, the ctest
+#                        job runs the one ctest case matching the regex <name> N times
 #                        under background ctest load (`tools/ci/local/test.sh repeat
 #                        <name> <N>`), stopping at the first failure. The log is
-#                        ctest-<scheduler>-repeat.log next to the ctest log. <name>
+#                        ctest-repeat.log next to the ctest log. <name>
 #                        must not contain a colon or whitespace.
+#                        Every iteration's log and any hung one's thread stacks are
+#                        downloaded into repeat/ next to it.
+#   --repeat-parallel <P> -> with --repeat-test: copies of the case run at once
+#                        (test.sh repeat --parallel; default 4).
+#   --repeat-timeout <S> -> with --repeat-test: seconds each copy may run before its
+#                        stacks are dumped and it is killed (test.sh repeat --timeout;
+#                        default 900). The repeat step itself stops after 90 minutes.
 #   --appimage        -> also package the AppImage and download it into build/remote/<preset>/.
 #                        Without it (or --gui or --debug-symbols, which imply it) the
 #                        run builds no AppImage. Use it for UAT builds and for a run
@@ -71,8 +78,9 @@
 #                        the workflow as one space-separated input, so an arg
 #                        containing whitespace is rejected.
 #   --gui "<script> ..." -> after the build, run each Tests/gui/<name>.py script
-#                        (space-separated) under Xvfb against the AppImage, one
-#                        job per script in parallel, and download each one's
+#                        (space-separated) under Xvfb against the AppImage, in up
+#                        to 4 parallel jobs that each run a group of the scripts
+#                        one after another, and download each one's
 #                        screenshots, results.txt and natron.log into
 #                        build/remote/<preset>/gui/<name>/. Prints a PASS/FAIL
 #                        line per script and fails if any script failed. Implies
@@ -110,7 +118,7 @@ for interval_var in FIND_INTERVAL_SECS WATCH_INTERVAL_SECS; do
 done
 
 usage() {
-    echo "usage: build.sh <fast|release|debug> [--tests] [--scheduler <legacy|taskgraph>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N>] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
+    echo "usage: build.sh <fast|release|debug> [--tests] [--ctest-regex <re>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N> [--repeat-parallel <P>] [--repeat-timeout <S>]] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
     echo "       build.sh <fast|release> --from-run <run-id> [--gui-ref <ref>] --gui \"<script> ...\"" >&2
     echo "       build.sh --mode" >&2
 }
@@ -151,7 +159,9 @@ DEBUG_SYMBOLS=false
 REMOTE_CCACHE=true
 SHUFFLE_SEEDS=""
 REPEAT_TEST=""
-SCHEDULERS="legacy,taskgraph"
+REPEAT_PARALLEL=""
+REPEAT_TIMEOUT=""
+CTEST_REGEX=""
 CMAKE_ARGS=""
 GUI_SCRIPTS=""
 FROM_RUN=""
@@ -189,13 +199,13 @@ while [[ $# -gt 0 ]]; do
             RUN_TESTS=true
             BUILD_OPTION=true
             ;;
-        --scheduler)
-            if [[ $# -eq 0 || ( "$1" != "legacy" && "$1" != "taskgraph" ) ]]; then
-                echo "build.sh: --scheduler needs legacy or taskgraph, got '${1:-}'" >&2
+        --ctest-regex)
+            if [[ $# -eq 0 || -z "$1" || "$1" == --* ]]; then
+                echo "build.sh: --ctest-regex needs a ctest -R regex, got '${1:-}'" >&2
                 usage
                 exit 1
             fi
-            SCHEDULERS="$1"
+            CTEST_REGEX="$1"
             shift
             RUN_TESTS=true
             BUILD_OPTION=true
@@ -220,6 +230,20 @@ while [[ $# -gt 0 ]]; do
             REPEAT_TEST="$1"
             shift
             RUN_TESTS=true
+            BUILD_OPTION=true
+            ;;
+        --repeat-parallel|--repeat-timeout)
+            if [[ $# -eq 0 || ! "$1" =~ ^[1-9][0-9]*$ ]]; then
+                echo "build.sh: ${arg} needs a positive integer, got '${1:-}'" >&2
+                usage
+                exit 1
+            fi
+            if [[ "${arg}" == --repeat-parallel ]]; then
+                REPEAT_PARALLEL="$1"
+            else
+                REPEAT_TIMEOUT="$1"
+            fi
+            shift
             BUILD_OPTION=true
             ;;
         --appimage)
@@ -302,6 +326,12 @@ done
 
 if [[ -z "${PRESET}" ]]; then
     echo "build.sh: a preset (fast|release|debug) is required" >&2
+    usage
+    exit 1
+fi
+
+if [[ ( -n "${REPEAT_PARALLEL}" || -n "${REPEAT_TIMEOUT}" ) && -z "${REPEAT_TEST}" ]]; then
+    echo "build.sh: --repeat-parallel and --repeat-timeout need --repeat-test" >&2
     usage
     exit 1
 fi
@@ -427,8 +457,17 @@ REPEAT_ARGS=()
 if [[ -n "${REPEAT_TEST}" ]]; then
     REPEAT_ARGS=(-f "repeat_test=${REPEAT_TEST}")
 fi
+if [[ -n "${REPEAT_PARALLEL}" ]]; then
+    REPEAT_ARGS+=(-f "repeat_parallel=${REPEAT_PARALLEL}")
+fi
+if [[ -n "${REPEAT_TIMEOUT}" ]]; then
+    REPEAT_ARGS+=(-f "repeat_timeout=${REPEAT_TIMEOUT}")
+fi
 if [[ "${DEBUG_SYMBOLS}" == "true" ]]; then
     REPEAT_ARGS+=(-f "debug_symbols=true")
+fi
+if [[ -n "${CTEST_REGEX}" ]]; then
+    REPEAT_ARGS+=(-f "ctest_regex=${CTEST_REGEX}")
 fi
 
 # Sent only when switched off, so a ref whose workflow predates the input still dispatches.
@@ -446,7 +485,6 @@ gh workflow run "${WORKFLOW}" --ref "${BRANCH}" \
     -f "shuffle_seeds=${SHUFFLE_SEEDS}" \
     ${REPEAT_ARGS[@]+"${REPEAT_ARGS[@]}"} \
     ${REMOTE_CCACHE_ARGS[@]+"${REMOTE_CCACHE_ARGS[@]}"} \
-    -f "schedulers=${SCHEDULERS}" \
     -f "cmake_args=${CMAKE_ARGS}" \
     -f "label=${LABEL}" \
     -f "token=${TOKEN}" \
@@ -628,6 +666,13 @@ if [[ "${RUN_TESTS}" == "true" ]]; then
     fi
 fi
 
+REPEAT_DIRS=()
+if [[ -n "${REPEAT_TEST}" ]]; then
+    if download_artifact "ctest-repeat-${PRESET}-${HEAD_SHA}" "${OUT_DIR}/repeat"; then
+        REPEAT_DIRS+=("${OUT_DIR}/repeat")
+    fi
+fi
+
 GOLDEN_DIR=""
 if [[ "${RECORD_GOLDENS}" == "true" ]]; then
     GOLDEN_DIR="${REPO_ROOT}/Tests/fixtures/native-golden"
@@ -657,7 +702,9 @@ if [[ "${RECORD_GOLDENS}" == "true" ]]; then
 fi
 
 # The artifacts carry the tested commit's sha, which for --from-run is the other run's, so
-# they are looked up by prefix. A script passes only when its job succeeded.
+# they are looked up by prefix. A GUI job runs a group of scripts, so a script's result is the
+# exit-status file in its artifact; a branch whose workflow still runs one job per script has
+# none, and there the script passes only when its job succeeded.
 GUI_FAILED=0
 GUI_LINES=()
 if [[ -n "${GUI_SCRIPTS}" ]]; then
@@ -674,7 +721,16 @@ if [[ -n "${GUI_SCRIPTS}" ]]; then
         else
             echo "build.sh: run ${RUN_ID} uploaded no output for ${script}" >&2
         fi
-        conclusion="$(awk -F'\t' -v job="GUI · ${name}" '$1 == job { print $2; exit }' <<<"${JOB_CONCLUSIONS}")"
+        if [[ -f "${dir}/exit-status" ]]; then
+            status="$(tr -d '[:space:]' <"${dir}/exit-status")"
+            if [[ "${status}" == 0 ]]; then
+                conclusion=success
+            else
+                conclusion="exit ${status:-unknown}"
+            fi
+        else
+            conclusion="$(awk -F'\t' -v job="GUI · ${name}" '$1 == job { print $2; exit }' <<<"${JOB_CONCLUSIONS}")"
+        fi
         detail=""
         if [[ -f "${dir}/results.txt" ]]; then
             detail="$(grep -c '^PASS' "${dir}/results.txt" || true) passed, $(grep -c '^FAIL' "${dir}/results.txt" || true) failed"
@@ -684,7 +740,7 @@ if [[ -n "${GUI_SCRIPTS}" ]]; then
         if [[ "${conclusion}" == "success" ]]; then
             GUI_LINES+=("PASS ${script} (${detail}): ${dir}")
         else
-            GUI_LINES+=("FAIL ${script} (job ${conclusion:-missing}, ${detail}): ${dir}")
+            GUI_LINES+=("FAIL ${script} (${conclusion:-no result}, ${detail}): ${dir}")
             GUI_FAILED=1
         fi
     done
@@ -731,6 +787,9 @@ if [[ -n "${CTEST_LOG_DIR}" ]]; then
         done
     fi
 fi
+for dir in ${REPEAT_DIRS[@]+"${REPEAT_DIRS[@]}"}; do
+    echo "repeat iteration logs: ${dir}"
+done
 for line in "${GUI_LINES[@]}"; do
     echo "gui: ${line}"
 done

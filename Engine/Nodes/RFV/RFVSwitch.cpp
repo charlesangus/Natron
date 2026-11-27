@@ -1003,7 +1003,7 @@ RFVSwitch::reportOutcome(const Outcome& outcome)
 {
     // Only a render shows what the node decided: a query outside one, such as a hash or a
     // metadata read, may run under a context no render reaches the node with.
-    const ParallelRenderArgsPtr frameArgs = getParallelRenderArgsTLS();
+    const ParallelRenderArgsPtr frameArgs = getFrameArgs();
     const AbortableRenderInfoPtr render = frameArgs ? frameArgs->abortInfo.lock() : AbortableRenderInfoPtr();
     NodePtr node = getNode();
     if (!render || !node) {

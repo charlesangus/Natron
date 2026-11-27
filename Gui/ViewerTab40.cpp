@@ -381,23 +381,29 @@ ViewerTab::toggleTopToolbarVisibility()
 void
 ViewerTab::setLeftToolbarVisible(bool visible)
 {
-    QMutexLocker l(&_imp->visibleToolbarsMutex);
+    {
+        QMutexLocker l(&_imp->visibleToolbarsMutex);
 
-    _imp->leftToolbarVisible = visible;
-    for (std::list<ViewerTabPrivate::PluginViewerContext>::iterator it = _imp->currentNodeContext.begin(); it != _imp->currentNodeContext.end(); ++it) {
-        QToolBar* bar = it->currentContext->getToolBar();
-        if (bar) {
-            bar->setVisible(_imp->leftToolbarVisible);
+        _imp->leftToolbarVisible = visible;
+        for (std::list<ViewerTabPrivate::PluginViewerContext>::iterator it = _imp->currentNodeContext.begin(); it != _imp->currentNodeContext.end(); ++it) {
+            QToolBar* bar = it->currentContext->getToolBar();
+            if (bar) {
+                bar->setVisible(_imp->leftToolbarVisible);
+            }
         }
     }
+    refreshSceneRenderRow();
 }
 
 void
 ViewerTab::setRightToolbarVisible(bool visible)
 {
-    QMutexLocker l(&_imp->visibleToolbarsMutex);
+    {
+        QMutexLocker l(&_imp->visibleToolbarsMutex);
 
-    _imp->rightToolbarVisible = visible;
+        _imp->rightToolbarVisible = visible;
+    }
+    refreshSceneRenderRow();
 }
 
 void

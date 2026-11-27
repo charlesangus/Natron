@@ -176,6 +176,7 @@
 #include "Gui/KnobGui.h"
 #include "Gui/KnobUndoCommand.h"
 #include "Gui/Menu.h"
+#include "Gui/NodeViewerContext.h"
 #include "Gui/SceneDrawBoxes.h"
 #include "Gui/SceneDrawStateQueue.h"
 #include "Gui/SceneDrawTiming.h"
@@ -3162,7 +3163,7 @@ struct SceneViewportRenderer::Implementation {
     // The widget on the selection, while its tool shows handles. Needs stageMutex.
     bool computeSelectionFrame(SceneGizmo::Frame* frame) const
     {
-        if ((transformTool == SceneTransform::eToolSelect) || !currentStage()) {
+        if ((transformTool == SceneTransform::eToolSelect) || (transformTool == SceneTransform::eToolNodeHandle) || !currentStage()) {
             return false;
         }
 
@@ -3222,11 +3223,11 @@ struct SceneViewportRenderer::Implementation {
         return SceneGizmo::computeOpSpace(stage->GetPrimAtPath(path), opName, timeCode(), space);
     }
 
-    // Where an op's handles sit at the shown time, moved by a drag of them under way. Needs
-    // stageMutex.
+    // Where an op's handles sit at the shown time, moved by a drag of them under way; only the
+    // node handle tool shows them. Needs stageMutex.
     bool computeOpFrame(SceneGizmo::Frame* frame) const
     {
-        if (!hasHandles) {
+        if (!hasHandles || (transformTool != SceneTransform::eToolNodeHandle)) {
             return false;
         }
         const bool dragged = (dragHandle != SceneGizmo::kNoHandle) && !dragSelection;
@@ -5900,7 +5901,7 @@ SceneViewportRenderer::isComponentTransformDrag() const
 void
 SceneViewportRenderer::setTransformTool(int tool)
 {
-    _imp->transformTool = (SceneTransform::ToolEnum)std::max(0, std::min(tool, (int)SceneTransform::eToolScale));
+    _imp->transformTool = (SceneTransform::ToolEnum)std::max(0, std::min(tool, (int)SceneTransform::eToolNodeHandle));
 }
 
 int
@@ -7425,6 +7426,7 @@ const TransformToolEntry kTransformTools[] = {
     { SceneTransform::eToolTranslate, kShortcutIDActionViewer3DTranslateTool, "translate", kShortcutDescActionViewer3DTranslateTool },
     { SceneTransform::eToolRotate, kShortcutIDActionViewer3DRotateTool, "rotate", kShortcutDescActionViewer3DRotateTool },
     { SceneTransform::eToolScale, kShortcutIDActionViewer3DScaleTool, "scale", kShortcutDescActionViewer3DScaleTool },
+    { SceneTransform::eToolNodeHandle, kShortcutIDActionViewer3DNodeHandleTool, "nodeHandle", kShortcutDescActionViewer3DNodeHandleTool },
 };
 
 // The tool a key selects, -1 for none.
@@ -8482,6 +8484,8 @@ struct SceneViewport::Implementation {
     double framesPerSecond = 0.;
 
     std::function<NodePtr()> transformNodeProvider;
+    // The node transformNodeProvider named at the last paint, which the bars were told of.
+    const Node* shownHandleNode = nullptr;
     // The drag of a transform handle under way: the handle, the node whose op it moves (null
     // for the widget on the selection), and the last change it made. The renderer draws the
     // change as a preview; the release writes it once.
@@ -8828,6 +8832,14 @@ struct SceneViewport::Implementation {
     const std::shared_ptr<GeoDisplay> geoDisplay = std::make_shared<GeoDisplay>();
     GeoComponentEnum geoPickMode = eGeoComponentObjects;
     bool geometryContext = false;
+    QList<QAction*> transformToolActions;
+    QList<QAction*> drawModeActions;
+    QList<QAction*> purposeActions;
+    QList<QAction*> lightingActions;
+    QAction* showGridAction = nullptr;
+    // The display state displayStateChanged() last announced.
+    QString displaySnapshot;
+    std::function<void(QMenu*)> contextMenuExtender;
     int displayHighlightCount = 0;
     GeoComponentSelection componentSelection;
     bool reselecting = false;
@@ -9949,6 +9961,7 @@ SceneViewport::SceneViewport(QWidget* parent)
         });
     });
 #endif
+    createDisplayActions();
     publishState();
 }
 
@@ -11549,6 +11562,7 @@ SceneViewport::publishState()
     setProperty("natronSceneTransformSpace", QString::fromUtf8((_imp->renderer.getTransformSpace() == SceneTransform::eSpaceLocal) ? "local" : "world"));
     setProperty("natronSceneTransformPivot", QString::fromUtf8((_imp->renderer.getTransformPivot() == SceneTransform::ePivotCurrentPrim) ? "currentPrim" : "selectionCentre"));
     publishRefineState();
+    syncDisplayActions();
 }
 
 void
@@ -12583,6 +12597,18 @@ SceneViewport::setTransformNodeProvider(const std::function<NodePtr()>& provider
     update();
 }
 
+NodePtr
+SceneViewport::getHandleNode() const
+{
+    return _imp->transformNodeProvider ? _imp->transformNodeProvider() : NodePtr();
+}
+
+bool
+SceneViewport::drawsHandleOf(const NodePtr& node)
+{
+    return node && dynamic_cast<USDEditTransform*>(node->getEffectInstance().get());
+}
+
 void
 SceneViewport::setTransformTarget(const std::shared_ptr<SceneTransformTarget>& target)
 {
@@ -12595,10 +12621,27 @@ SceneViewport::setTransformTool(int tool)
     if (_imp->handle != SceneGizmo::kNoHandle) {
         return;
     }
+    if ((tool == SceneTransform::eToolNodeHandle) && !getHandleNode()) {
+        return;
+    }
     _imp->renderer.setTransformTool(tool);
     _imp->renderer.setHighlightedTransformHandle(SceneGizmo::kNoHandle);
     publishState();
     update();
+}
+
+bool
+SceneViewport::offersTransformTool(int tool) const
+{
+    return (tool != SceneTransform::eToolNodeHandle) || bool(getHandleNode());
+}
+
+void
+SceneViewport::leaveNodeHandleToolWithoutNode()
+{
+    if ((_imp->renderer.getTransformTool() == SceneTransform::eToolNodeHandle) && !getHandleNode()) {
+        setTransformTool(SceneTransform::eToolSelect);
+    }
 }
 
 int
@@ -12612,7 +12655,7 @@ SceneViewport::cycleTransformTool()
 {
     const int tool = _imp->renderer.getTransformTool();
 
-    setTransformTool(((tool == SceneTransform::eToolSelect) || (tool == SceneTransform::eToolScale)) ? SceneTransform::eToolTranslate : tool + 1);
+    setTransformTool(((tool == SceneTransform::eToolTranslate) || (tool == SceneTransform::eToolRotate)) ? tool + 1 : SceneTransform::eToolTranslate);
 }
 
 void
@@ -13078,6 +13121,16 @@ SceneViewport::refreshTransformHandles()
     refreshComponentHandles();
     NodePtr node;
     USDEditTransform* effect = _imp->getTransformNode(&node);
+    if (node.get() != _imp->shownHandleNode) {
+        _imp->shownHandleNode = node.get();
+        // A panel opening or closing changes the node; this runs from paints, so the tool and the
+        // bars hear of it after.
+        const auto onHandleNodeChanged = [this]() {
+            leaveNodeHandleToolWithoutNode();
+            syncDisplayActions();
+        };
+        QMetaObject::invokeMethod(this, onHandleNodeChanged, Qt::QueuedConnection);
+    }
     std::string primPath, opName;
 
     if (!effect || !effect->getHandleTarget(&primPath, &opName)) {
@@ -13981,6 +14034,9 @@ SceneViewport::endHandleDrag()
     } else {
         _imp->clearPreview();
     }
+    // The switch to Select is refused while a drag is under way, so a panel closed mid-drag is
+    // only acted on here.
+    leaveNodeHandleToolWithoutNode();
     update();
 } // SceneViewport::endHandleDrag
 
@@ -14109,7 +14165,7 @@ SceneViewport::event(QEvent* e)
         if (matchesKeyBinding(kShortcutIDActionViewer3DFrameSelection, k->modifiers(), k->key()) || matchesKeyBinding(kShortcutIDActionViewer3DFrameAll, k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DLockView, k->modifiers(), k->key()) || (viewModeForKey(k->modifiers(), k->key()) >= 0)
             || (drawModeForKey(k->modifiers(), k->key()) >= 0) || matchesKeyBinding(kShortcutIDActionViewer3DShowGrid, k->modifiers(), k->key())
-            || matchesKeyBinding(kShortcutIDActionViewer3DShowGuides, k->modifiers(), k->key()) || isTransformKey(k->modifiers(), k->key())
+            || matchesKeyBinding(kShortcutIDActionViewer3DShowGuides, k->modifiers(), k->key()) || (isTransformKey(k->modifiers(), k->key()) && offersTransformTool(transformToolForKey(k->modifiers(), k->key())))
             || matchesKeyBinding(kShortcutIDActionViewer3DSetSelectionOnNode, k->modifiers(), k->key())
             || matchesKeyBinding(kShortcutIDActionViewer3DCreateFromSelection, k->modifiers(), k->key()) || drawKeyFor(k->modifiers(), k->key())
             || (pickwalkForKey(k->modifiers(), k->key()) >= 0)
@@ -14175,7 +14231,7 @@ SceneViewport::keyPressEvent(QKeyEvent* e)
         return;
     }
     const int tool = transformToolForKey(e->modifiers(), e->key());
-    if (tool >= 0) {
+    if ((tool >= 0) && offersTransformTool(tool)) {
         setTransformTool(tool);
         e->accept();
 
@@ -14324,11 +14380,16 @@ SceneViewport::keyReleaseEvent(QKeyEvent* e)
 void
 SceneViewport::focusOutEvent(QFocusEvent* e)
 {
-    // A release or key release that goes elsewhere never comes back.
-    if (_imp->handle != SceneGizmo::kNoHandle) {
-        endHandleDrag();
+    // A key release that goes elsewhere never comes back. A mouse release only goes elsewhere
+    // with another window or a popup; any other focus loss, such as a closing panel clearing
+    // the focus, leaves the press's mouse grab here, so the release still ends the drag.
+    const Qt::FocusReason reason = e->reason();
+    if ((reason == Qt::ActiveWindowFocusReason) || (reason == Qt::PopupFocusReason)) {
+        if (_imp->handle != SceneGizmo::kNoHandle) {
+            endHandleDrag();
+        }
+        clearGesture();
     }
-    clearGesture();
     _imp->spaceHeld = false;
     QOpenGLWidget::focusOutEvent(e);
 }
@@ -14346,27 +14407,218 @@ SceneViewport::contextMenuEvent(QContextMenuEvent* e)
     e->accept();
 }
 
-void
-SceneViewport::showContextMenu(const QPoint& globalPos)
-{
-    // The menu takes the release, so no drag may outlive it.
-    clearGesture();
-    Menu menu(this);
+namespace {
 
-    QActionGroup* modes = new QActionGroup(&menu);
-    for (const DrawModeEntry& item : kDrawModes) {
-        QAction* action = menu.addAction(shortcutText(item.label));
+// Deletes what an earlier fill left in menu, its action groups included.
+void
+resetMenu(QMenu* menu)
+{
+    const QList<QActionGroup*> groups = menu->findChildren<QActionGroup*>(QString(), Qt::FindDirectChildrenOnly);
+    menu->clear();
+    qDeleteAll(groups);
+}
+
+} // anonymous namespace
+
+void
+SceneViewport::createDisplayActions()
+{
+    QActionGroup* tools = new QActionGroup(this);
+    for (const TransformToolEntry& entry : kTransformTools) {
+        QAction* action = new QAction(shortcutText(entry.label), this);
+        action->setObjectName(QString::fromUtf8(entry.name));
         action->setCheckable(true);
-        action->setChecked(_imp->renderer.getDrawMode() == item.mode);
+        action->setShortcutContext(Qt::WidgetShortcut);
+        action->setActionGroup(tools);
+        const int tool = entry.tool;
+        QObject::connect(action, &QAction::triggered, this, [this, tool]() {
+            setTransformTool(tool);
+            // A tool change refused mid-drag publishes nothing, and must not leave the action checked.
+            syncDisplayActions();
+        });
+        _imp->transformToolActions.push_back(action);
+    }
+
+    QActionGroup* modes = new QActionGroup(this);
+    for (const DrawModeEntry& item : kDrawModes) {
+        QAction* action = new QAction(shortcutText(item.label), this);
+        action->setObjectName(QString::fromUtf8(item.name));
+        action->setCheckable(true);
+        action->setShortcutContext(Qt::WidgetShortcut);
         action->setActionGroup(modes);
-        action->setShortcut(keySequenceOf(item.actionID));
         const SceneViewportRenderer::DrawModeEnum mode = item.mode;
         QObject::connect(action, &QAction::triggered, this, [this, mode]() {
             setDrawMode(mode);
+            syncDisplayActions();
+        });
+        _imp->drawModeActions.push_back(action);
+    }
+
+    const struct
+    {
+        const char* name;
+        QString label;
+    } purposeItems[] = {
+        { "proxy", tr("Proxy") },
+        { "render", tr("Render") },
+        { "guide", tr("Guide") },
+    };
+    for (const auto& item : purposeItems) {
+        QAction* action = new QAction(item.label, this);
+        action->setObjectName(QString::fromUtf8(item.name));
+        action->setCheckable(true);
+        _imp->purposeActions.push_back(action);
+    }
+    for (QAction* action : _imp->purposeActions) {
+        QObject::connect(action, &QAction::toggled, this, [this]() {
+            const QList<QAction*>& shown = _imp->purposeActions;
+            setShowPurposes(shown[0]->isChecked(), shown[1]->isChecked(), shown[2]->isChecked());
+            syncDisplayActions();
         });
     }
 
-    QMenu* renderers = menu.addMenu(tr("Renderer"));
+    QActionGroup* lightingModes = new QActionGroup(this);
+    for (const LightingModeEntry& entry : kLightingModes) {
+        QAction* action = new QAction(tr(entry.label), this);
+        action->setObjectName(QString::fromUtf8(entry.name));
+        action->setCheckable(true);
+        action->setActionGroup(lightingModes);
+        const SceneViewportRenderer::LightingModeEnum mode = entry.mode;
+        QObject::connect(action, &QAction::triggered, this, [this, mode]() {
+            setLightingMode(mode);
+            syncDisplayActions();
+        });
+        _imp->lightingActions.push_back(action);
+    }
+
+    _imp->showGridAction = new QAction(shortcutText(kShortcutDescActionViewer3DShowGrid), this);
+    _imp->showGridAction->setObjectName(QString::fromUtf8("showGrid"));
+    _imp->showGridAction->setCheckable(true);
+    _imp->showGridAction->setShortcutContext(Qt::WidgetShortcut);
+    QObject::connect(_imp->showGridAction, &QAction::toggled, this, [this](bool show) {
+        setShowGrid(show);
+        syncDisplayActions();
+    });
+    refreshActionShortcuts();
+} // createDisplayActions
+
+void
+SceneViewport::refreshActionShortcuts()
+{
+    for (int i = 0; i < _imp->transformToolActions.size(); ++i) {
+        _imp->transformToolActions[i]->setShortcut(keySequenceOf(kTransformTools[i].actionID));
+    }
+    for (int i = 0; i < _imp->drawModeActions.size(); ++i) {
+        _imp->drawModeActions[i]->setShortcut(keySequenceOf(kDrawModes[i].actionID));
+    }
+    if (_imp->showGridAction) {
+        _imp->showGridAction->setShortcut(keySequenceOf(kShortcutIDActionViewer3DShowGrid));
+    }
+}
+
+void
+SceneViewport::syncDisplayActions()
+{
+    if (!_imp->showGridAction) {
+        return;
+    }
+    const SceneViewportRenderer& renderer = _imp->renderer;
+    const auto check = [](QAction* action, bool checked) {
+        if (action->isChecked() != checked) {
+            const QSignalBlocker blocker(action);
+            action->setChecked(checked);
+        }
+    };
+    const NodePtr handleNode = getHandleNode();
+    for (int i = 0; i < _imp->transformToolActions.size(); ++i) {
+        check(_imp->transformToolActions[i], renderer.getTransformTool() == kTransformTools[i].tool);
+        if (kTransformTools[i].tool == SceneTransform::eToolNodeHandle) {
+            QAction* action = _imp->transformToolActions[i];
+            action->setEnabled(bool(handleNode));
+            const NodeHandleTool* handleTool = handleNode ? NodeViewerContext::findHandleTool(handleNode->getPluginID()) : nullptr;
+            const QString text = handleTool ? handleTool->label : shortcutText(kTransformTools[i].label);
+            if (action->text() != text) {
+                action->setText(text);
+            }
+        }
+    }
+    for (int i = 0; i < _imp->drawModeActions.size(); ++i) {
+        check(_imp->drawModeActions[i], renderer.getDrawMode() == kDrawModes[i].mode);
+    }
+    check(_imp->purposeActions[0], renderer.getShowProxy());
+    check(_imp->purposeActions[1], renderer.getShowRender());
+    check(_imp->purposeActions[2], renderer.getShowGuidePurpose());
+    for (int i = 0; i < _imp->lightingActions.size(); ++i) {
+        check(_imp->lightingActions[i], renderer.getLightingMode() == kLightingModes[i].mode);
+    }
+    check(_imp->showGridAction, renderer.getShowGrid());
+
+    const QString snapshot = QStringList {
+        QString::number(renderer.getDrawMode()),
+        QString::number(renderer.getShowGrid()),
+        QString::number(renderer.getShowProxy()),
+        QString::number(renderer.getShowRender()),
+        QString::number(renderer.getShowGuidePurpose()),
+        QString::number(renderer.getLightingMode()),
+        QString::number(renderer.getTransformTool()),
+        QString::number(renderer.getTransformSpace()),
+        QString::number(renderer.getTransformPivot()),
+        QString::fromStdString(renderer.getRendererId()),
+        QString::fromStdString(renderer.getActiveRendererId()),
+        QString::fromStdString(renderer.getLookThroughCamera()),
+        QString::number(renderer.getViewMode()),
+        QString::number(_imp->lockView),
+        QString::number(renderer.getClipPlanes().automatic),
+        QString::number(quintptr(handleNode.get())),
+    }
+                                 .join(QLatin1Char('\n'));
+    if (snapshot == _imp->displaySnapshot) {
+        return;
+    }
+    _imp->displaySnapshot = snapshot;
+    Q_EMIT displayStateChanged();
+} // syncDisplayActions
+
+const QList<QAction*>&
+SceneViewport::getTransformToolActions() const
+{
+    return _imp->transformToolActions;
+}
+
+const QList<QAction*>&
+SceneViewport::getDrawModeActions() const
+{
+    return _imp->drawModeActions;
+}
+
+const QList<QAction*>&
+SceneViewport::getPurposeActions() const
+{
+    return _imp->purposeActions;
+}
+
+const QList<QAction*>&
+SceneViewport::getLightingActions() const
+{
+    return _imp->lightingActions;
+}
+
+QAction*
+SceneViewport::getShowGridAction() const
+{
+    return _imp->showGridAction;
+}
+
+void
+SceneViewport::setContextMenuExtender(const std::function<void(QMenu*)>& extend)
+{
+    _imp->contextMenuExtender = extend;
+}
+
+void
+SceneViewport::populateRendererMenu(QMenu* renderers)
+{
+    resetMenu(renderers);
     QActionGroup* rendererGroup = new QActionGroup(renderers);
     const std::string& rendererId = _imp->renderer.getRendererId();
     {
@@ -14398,9 +14650,12 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
             setRendererId(id);
         });
     }
+} // populateRendererMenu
 
-    menu.addSeparator();
-    QMenu* lookThrough = menu.addMenu(tr("Look Through"));
+void
+SceneViewport::populateLookThroughMenu(QMenu* lookThrough)
+{
+    resetMenu(lookThrough);
     QActionGroup* cameras = new QActionGroup(lookThrough);
     std::vector<std::string> paths = _imp->renderer.getStageCameraPaths();
     paths.insert(paths.begin(), std::string());
@@ -14427,8 +14682,12 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
             lockViewToCamera(qpath);
         });
     }
+} // populateLookThroughMenu
 
-    QMenu* views = menu.addMenu(tr("View"));
+void
+SceneViewport::populateViewMenu(QMenu* views)
+{
+    resetMenu(views);
     QActionGroup* viewModes = new QActionGroup(views);
     for (const ViewModeEntry& entry : kViewModes) {
         QAction* action = views->addAction(shortcutText(entry.label));
@@ -14441,52 +14700,15 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
             setViewMode(mode);
         });
     }
+}
 
-    QAction* lockView = menu.addAction(shortcutText(kShortcutDescActionViewer3DLockView));
-    lockView->setCheckable(true);
-    lockView->setChecked(navigatesLockedCamera());
-    lockView->setShortcut(keySequenceOf(kShortcutIDActionViewer3DLockView));
-    QObject::connect(lockView, &QAction::toggled, this, [this](bool locked) {
-        if (locked) {
-            lockViewToCamera();
-        } else {
-            setLockView(false);
-        }
-    });
-    QAction* createCamera = menu.addAction(tr("Create Camera from View"));
-    createCamera->setEnabled(bool(_imp->viewedNodeProvider) && _imp->renderer.hasScene());
-    QObject::connect(createCamera, &QAction::triggered, this, [this]() {
-        createCameraFromView();
-    });
-
-    menu.addSeparator();
-    {
-        const QStringList selection = getSelection();
-        QAction* setOnNode = menu.addAction(tr(kShortcutDescActionViewer3DSetSelectionOnNode));
-        setOnNode->setObjectName(QString::fromUtf8("sceneSetSelectionOnNode"));
-        setOnNode->setShortcut(keySequenceOf(kShortcutIDActionViewer3DSetSelectionOnNode));
-        const QString blocker = _imp->selectionActions.setOnNodeBlocker ? _imp->selectionActions.setOnNodeBlocker(selection) : QString();
-        setOnNode->setEnabled(bool(_imp->selectionActions.setOnNode) && blocker.isEmpty());
-        setOnNode->setToolTip(blocker);
-        setOnNode->setStatusTip(blocker);
-        QObject::connect(setOnNode, &QAction::triggered, this, [this, selection]() {
-            if (_imp->selectionActions.setOnNode) {
-                _imp->selectionActions.setOnNode(selection);
-            }
-        });
-        QAction* create = menu.addAction(tr(kShortcutDescActionViewer3DCreateFromSelection));
-        create->setObjectName(QString::fromUtf8("sceneCreateFromSelection"));
-        create->setShortcut(keySequenceOf(kShortcutIDActionViewer3DCreateFromSelection));
-        const bool canCreate = _imp->geometryContext ? bool(_imp->selectionActions.createFromComponents) : bool(_imp->selectionActions.createFromSelection);
-        create->setEnabled(canCreate && _imp->renderer.hasScene());
-        QObject::connect(create, &QAction::triggered, this, [this, selection]() {
-            createFromSelection(selection);
-        });
-    }
-
+void
+SceneViewport::populateClippingMenu(QMenu* clipping)
+{
+    resetMenu(clipping);
     // The free camera's clip planes: typing a distance makes them absolute.
-    QMenu* clipping = menu.addMenu(tr("Clipping"));
     QAction* automaticClip = clipping->addAction(tr("Automatic Clipping"));
+    automaticClip->setObjectName(QString::fromUtf8("automaticClipping"));
     automaticClip->setCheckable(true);
     automaticClip->setChecked(_imp->renderer.getClipPlanes().automatic);
     double nearClip = 0., farClip = 0.;
@@ -14548,6 +14770,68 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
         nearBox->setValue(n);
         farBox->setValue(f);
     });
+} // populateClippingMenu
+
+void
+SceneViewport::showContextMenu(const QPoint& globalPos)
+{
+    // The menu takes the release, so no drag may outlive it.
+    clearGesture();
+    syncDisplayActions();
+    refreshActionShortcuts();
+    Menu menu(this);
+
+    menu.addActions(_imp->drawModeActions);
+
+    populateRendererMenu(menu.addMenu(tr("Renderer")));
+
+    menu.addSeparator();
+    populateLookThroughMenu(menu.addMenu(tr("Look Through")));
+    populateViewMenu(menu.addMenu(tr("View")));
+
+    QAction* lockView = menu.addAction(shortcutText(kShortcutDescActionViewer3DLockView));
+    lockView->setCheckable(true);
+    lockView->setChecked(navigatesLockedCamera());
+    lockView->setShortcut(keySequenceOf(kShortcutIDActionViewer3DLockView));
+    QObject::connect(lockView, &QAction::toggled, this, [this](bool locked) {
+        if (locked) {
+            lockViewToCamera();
+        } else {
+            setLockView(false);
+        }
+    });
+    QAction* createCamera = menu.addAction(tr("Create Camera from View"));
+    createCamera->setEnabled(bool(_imp->viewedNodeProvider) && _imp->renderer.hasScene());
+    QObject::connect(createCamera, &QAction::triggered, this, [this]() {
+        createCameraFromView();
+    });
+
+    menu.addSeparator();
+    {
+        const QStringList selection = getSelection();
+        QAction* setOnNode = menu.addAction(tr(kShortcutDescActionViewer3DSetSelectionOnNode));
+        setOnNode->setObjectName(QString::fromUtf8("sceneSetSelectionOnNode"));
+        setOnNode->setShortcut(keySequenceOf(kShortcutIDActionViewer3DSetSelectionOnNode));
+        const QString blocker = _imp->selectionActions.setOnNodeBlocker ? _imp->selectionActions.setOnNodeBlocker(selection) : QString();
+        setOnNode->setEnabled(bool(_imp->selectionActions.setOnNode) && blocker.isEmpty());
+        setOnNode->setToolTip(blocker);
+        setOnNode->setStatusTip(blocker);
+        QObject::connect(setOnNode, &QAction::triggered, this, [this, selection]() {
+            if (_imp->selectionActions.setOnNode) {
+                _imp->selectionActions.setOnNode(selection);
+            }
+        });
+        QAction* create = menu.addAction(tr(kShortcutDescActionViewer3DCreateFromSelection));
+        create->setObjectName(QString::fromUtf8("sceneCreateFromSelection"));
+        create->setShortcut(keySequenceOf(kShortcutIDActionViewer3DCreateFromSelection));
+        const bool canCreate = _imp->geometryContext ? bool(_imp->selectionActions.createFromComponents) : bool(_imp->selectionActions.createFromSelection);
+        create->setEnabled(canCreate && _imp->renderer.hasScene());
+        QObject::connect(create, &QAction::triggered, this, [this, selection]() {
+            createFromSelection(selection);
+        });
+    }
+
+    populateClippingMenu(menu.addMenu(tr("Clipping")));
 
     menu.addSeparator();
     QAction* frameSelected = menu.addAction(tr("Frame Selection"));
@@ -14563,19 +14847,7 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
 
     // The transform widget's tool, frame and origin.
     QMenu* transform = menu.addMenu(tr("Transform"));
-    QActionGroup* tools = new QActionGroup(transform);
-    for (const TransformToolEntry& entry : kTransformTools) {
-        QAction* action = transform->addAction(tr(entry.label));
-        action->setObjectName(QString::fromUtf8(entry.name));
-        action->setCheckable(true);
-        action->setChecked(_imp->renderer.getTransformTool() == entry.tool);
-        action->setShortcut(keySequenceOf(entry.actionID));
-        action->setActionGroup(tools);
-        const int tool = entry.tool;
-        QObject::connect(action, &QAction::triggered, this, [this, tool]() {
-            setTransformTool(tool);
-        });
-    }
+    transform->addActions(_imp->transformToolActions);
     transform->addSeparator();
     QActionGroup* spaces = new QActionGroup(transform);
     const struct
@@ -14624,50 +14896,11 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
     // The purposes and lights Storm draws with, and the overlays drawn over it.
     QMenu* display = menu.addMenu(tr("Display"));
     QMenu* purposes = display->addMenu(tr("Purposes"));
-    const struct
-    {
-        const char* name;
-        QString label;
-        bool shown;
-    } purposeItems[] = {
-        { "proxy", tr("Proxy"), _imp->renderer.getShowProxy() },
-        { "render", tr("Render"), _imp->renderer.getShowRender() },
-        { "guide", tr("Guide"), _imp->renderer.getShowGuidePurpose() },
-    };
-    QAction* purposeActions[3] = { nullptr, nullptr, nullptr };
-    for (int i = 0; i < 3; ++i) {
-        QAction* action = purposes->addAction(purposeItems[i].label);
-        action->setObjectName(QString::fromUtf8(purposeItems[i].name));
-        action->setCheckable(true);
-        action->setChecked(purposeItems[i].shown);
-        purposeActions[i] = action;
-    }
-    for (QAction* action : purposeActions) {
-        QObject::connect(action, &QAction::toggled, this, [this, purposeActions]() {
-            setShowPurposes(purposeActions[0]->isChecked(), purposeActions[1]->isChecked(), purposeActions[2]->isChecked());
-        });
-    }
+    purposes->addActions(_imp->purposeActions);
     QMenu* lighting = display->addMenu(tr("Lighting"));
-    QActionGroup* lightingModes = new QActionGroup(lighting);
-    for (const LightingModeEntry& entry : kLightingModes) {
-        QAction* action = lighting->addAction(tr(entry.label));
-        action->setObjectName(QString::fromUtf8(entry.name));
-        action->setCheckable(true);
-        action->setChecked(_imp->renderer.getLightingMode() == entry.mode);
-        action->setActionGroup(lightingModes);
-        const SceneViewportRenderer::LightingModeEnum mode = entry.mode;
-        QObject::connect(action, &QAction::triggered, this, [this, mode]() {
-            setLightingMode(mode);
-        });
-    }
+    lighting->addActions(_imp->lightingActions);
     display->addSeparator();
-    QAction* grid = display->addAction(shortcutText(kShortcutDescActionViewer3DShowGrid));
-    grid->setCheckable(true);
-    grid->setChecked(_imp->renderer.getShowGrid());
-    grid->setShortcut(keySequenceOf(kShortcutIDActionViewer3DShowGrid));
-    QObject::connect(grid, &QAction::toggled, this, [this](bool show) {
-        setShowGrid(show);
-    });
+    display->addAction(_imp->showGridAction);
     QAction* guides = display->addAction(shortcutText(kShortcutDescActionViewer3DShowGuides));
     guides->setCheckable(true);
     guides->setChecked(_imp->renderer.getShowGuides());
@@ -14677,6 +14910,27 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
     });
 
     if (_imp->geometryContext) {
+        QMenu* pick = menu.addMenu(tr("Pick"));
+        QActionGroup* pickModes = new QActionGroup(pick);
+        const char* const pickLabels[] = {
+            kShortcutDescActionViewer3DPickObjects,
+            kShortcutDescActionViewer3DPickPoints,
+            kShortcutDescActionViewer3DPickEdges,
+            kShortcutDescActionViewer3DPickPrimitives,
+        };
+        for (std::size_t i = 0; i < std::size(kGeoPickModes); ++i) {
+            const GeoPickModeEntry& entry = kGeoPickModes[i];
+            QAction* action = pick->addAction(shortcutText(pickLabels[i]));
+            action->setObjectName(QString::fromUtf8(entry.name));
+            action->setCheckable(true);
+            action->setChecked(_imp->geoPickMode == entry.mode);
+            action->setShortcut(keySequenceOf(entry.actionID));
+            action->setActionGroup(pickModes);
+            const GeoComponentEnum mode = entry.mode;
+            QObject::connect(action, &QAction::triggered, this, [this, mode]() {
+                setGeoPickMode(mode);
+            });
+        }
         menu.addSeparator();
         for (std::size_t i = 0; i < std::size(kGeoSelectionActions); ++i) {
             const GeoSelectionActionEntry& entry = kGeoSelectionActions[i];
@@ -14688,6 +14942,10 @@ SceneViewport::showContextMenu(const QPoint& globalPos)
                 runGeoSelectionAction(this, index);
             });
         }
+    }
+
+    if (_imp->contextMenuExtender) {
+        _imp->contextMenuExtender(&menu);
     }
 
     menu.exec(globalPos);

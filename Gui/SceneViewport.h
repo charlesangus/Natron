@@ -55,8 +55,10 @@
 // Free of USD: the viewer tab includes it, and USD's headers need the full Python API. Everything
 // that touches pxr lives in SceneViewport.cpp.
 
+class QAction;
 class QContextMenuEvent;
 class QKeyEvent;
+class QMenu;
 class QMouseEvent;
 class QOpenGLContextGroup;
 class QPainter;
@@ -1336,12 +1338,24 @@ public:
     GeoComponentSelection pickComponentsIn(const QRect& rect, bool* busy = nullptr);
 
     /**
-     * @brief Sets the function that names the node whose transform handles are drawn while the
-     * transform widget shows none on the selection: a USDEditTransform with its settings panel
-     * open, or null for none. Dragging a handle sets the node's Translate, Rotate or Scale once,
-     * at the release, as one undoable edit.
+     * @brief Sets the function that names the node being edited: the node, with its settings
+     * panel open, whose plug-in offers a handle tool (NodeViewerContext::registerHandleTool()),
+     * or null for none. Only the node handle tool (SceneTransform::eToolNodeHandle) draws that
+     * node's handle; it cannot be chosen while there is none, and gives way to Select when the
+     * node's panel closes. Dragging a USDEditTransform's handle sets the node's Translate, Rotate
+     * or Scale once, at the release, as one undoable edit.
      **/
     void setTransformNodeProvider(const std::function<NodePtr()>& provider);
+
+    // The node the provider names now, null for none.
+    NodePtr getHandleNode() const;
+
+    /**
+     * @brief Whether the view can draw and drag @p node's handle, which a provider checks before
+     * naming it: a registered handle tool the view cannot draw would enable the node handle tool
+     * with nothing to show, and hide a node it can draw.
+     **/
+    static bool drawsHandleOf(const NodePtr& node);
 
     /**
      * @brief Where drags of the transform widget on the selection are written. Without one, or
@@ -1361,6 +1375,33 @@ public:
     void setTransformSpace(int space);
 
     void setTransformPivot(int pivot);
+
+    /**
+     * @brief The actions the view's bars and its context menu share, so both always show one state:
+     * one per transform tool and per draw mode (named after their script names), the proxy, render
+     * and guide purposes, one per lighting mode, and Show Grid. Their shortcuts only show in menus;
+     * the keys themselves go through the view's own key handling.
+     **/
+    const QList<QAction*>& getTransformToolActions() const;
+    const QList<QAction*>& getDrawModeActions() const;
+    const QList<QAction*>& getPurposeActions() const;
+    const QList<QAction*>& getLightingActions() const;
+    QAction* getShowGridAction() const;
+
+    // Gives the shared actions the keys bound to them now, for a menu about to show them.
+    void refreshActionShortcuts();
+
+    /**
+     * @brief Empties menu and fills it with the context menu's Renderer, Look Through, View or
+     * Clipping entries as the view stands now, for a bar to rebuild each time its menu opens.
+     **/
+    void populateRendererMenu(QMenu* menu);
+    void populateLookThroughMenu(QMenu* menu);
+    void populateViewMenu(QMenu* menu);
+    void populateClippingMenu(QMenu* menu);
+
+    // Called with the context menu before it opens, to add entries the view does not own.
+    void setContextMenuExtender(const std::function<void(QMenu*)>& extend);
 
     // The node whose scene is shown: new cameras are placed near it, in its group.
     void setViewedNodeProvider(const std::function<NodePtr()>& provider);
@@ -1554,6 +1595,13 @@ Q_SIGNALS:
     // Whenever the natronSceneSamples family of properties is published.
     void refineStateChanged();
 
+    /**
+     * @brief The draw mode, grid, purposes, lighting, transform tool, space or pivot, renderer,
+     * camera looked through, view mode, view lock or automatic clipping changed, by key, menu or
+     * bar, or the node being edited (getHandleNode()) changed.
+     **/
+    void displayStateChanged();
+
     // The renderer's stage holds the latest requested scene, or none (main thread).
     void sceneSynced();
 
@@ -1605,6 +1653,20 @@ private:
     void publishState();
 
     void publishRefineState();
+
+    void createDisplayActions();
+
+    /**
+     * @brief Checks the shared actions from the view's state, and emits displayStateChanged() if
+     * that state differs from the last one announced.
+     **/
+    void syncDisplayActions();
+
+    // False for the node handle tool while no node offers a handle, so that its key passes on.
+    bool offersTransformTool(int tool) const;
+
+    // Gives the node handle tool way to Select once no node offers a handle and no drag holds it.
+    void leaveNodeHandleToolWithoutNode();
 
     /**
      * @brief Hands the pick mode and component selection to the view's guides and highlight, and

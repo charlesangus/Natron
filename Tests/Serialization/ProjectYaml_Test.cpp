@@ -345,6 +345,7 @@ expectNodesEqual(const NodeSerialization& expected,
     EXPECT_EQ(expected.sceneView.drawStates, actual.sceneView.drawStates);
     EXPECT_EQ(expected.sceneView.impliedChildren, actual.sceneView.impliedChildren);
     EXPECT_EQ(expected.sceneView.loadRules, actual.sceneView.loadRules);
+    EXPECT_TRUE(expected.viewerBars == actual.viewerBars);
     EXPECT_EQ(0u, actual.knobsAge);
     EXPECT_TRUE(actual.multiInstanceParentName.empty());
     EXPECT_EQ(expected.cacheID, actual.cacheID);
@@ -671,6 +672,47 @@ TEST(ProjectYaml, RotoAndTrackerBlobsAreNamedAfterTheFullyQualifiedNode)
     ASSERT_EQ(1u, decodedRoto->rotoContext.baseLayer.children.size());
     expectCurvesBitIdentical(child.stroke.strokes.back().yCurve, decodedRoto->rotoContext.baseLayer.children.front().stroke.strokes.back().yCurve);
     EXPECT_TRUE((*std::next(decodedGroup->children.begin(), 4))->hasTrackerContext);
+}
+
+TEST(ProjectYaml, ViewerBarsRoundTripAndAreLeftOutAtTheirDefaults)
+{
+    ProjectSerialization project = exampleProject();
+    Serialization::MemoryBlobStore emptyBlobs;
+    EXPECT_EQ(std::string::npos, Serialization::encodeProjectYaml(project, emptyBlobs).find("viewerBars"));
+
+    NodeSerializationPtr viewer = project.nodes.nodes.back();
+    ASSERT_EQ("Viewer1", viewer->scriptName);
+    // Every flag away from its default, so a flag read into the wrong field would show.
+    viewer->viewerBars.toolBar2D = true;
+    viewer->viewerBars.toolBar3D = false;
+    viewer->viewerBars.displayBar2D = true;
+    viewer->viewerBars.displayBar3D = false;
+    viewer->viewerBars.topBar3D = false;
+
+    Serialization::MemoryBlobStore blobs;
+    const std::string text = Serialization::encodeProjectYaml(project, blobs);
+    EXPECT_NE(std::string::npos, text.find("viewerBars:")) << text;
+
+    YamlWarnings warnings;
+    const ProjectSerialization decoded = Serialization::decodeProjectYaml(text, blobs, &warnings);
+    EXPECT_TRUE(warnings.empty());
+    expectProjectsEqual(project, decoded);
+    const NodeSerializationPtr decodedViewer = decoded.nodes.nodes.back();
+    EXPECT_TRUE(decodedViewer->viewerBars.toolBar2D);
+    EXPECT_FALSE(decodedViewer->viewerBars.toolBar3D);
+    EXPECT_TRUE(decodedViewer->viewerBars.displayBar2D);
+    EXPECT_FALSE(decodedViewer->viewerBars.displayBar3D);
+    EXPECT_FALSE(decodedViewer->viewerBars.topBar3D);
+    EXPECT_EQ(text, Serialization::encodeProjectYaml(decoded, blobs));
+
+    // One flag away from its default is enough to save the map.
+    viewer->viewerBars = Serialization::ViewerBarsSerialization();
+    viewer->viewerBars.displayBar3D = false;
+    Serialization::MemoryBlobStore oneFlagBlobs;
+    const std::string oneFlag = Serialization::encodeProjectYaml(project, oneFlagBlobs);
+    EXPECT_NE(std::string::npos, oneFlag.find("viewerBars:")) << oneFlag;
+    const ProjectSerialization decodedOne = Serialization::decodeProjectYaml(oneFlag, oneFlagBlobs, &warnings);
+    EXPECT_TRUE(decodedOne.nodes.nodes.back()->viewerBars == viewer->viewerBars);
 }
 
 TEST(ProjectYaml, ViewerSceneViewRoundTripsAndIsLeftOutWhenEmpty)

@@ -347,6 +347,11 @@ public:
     // What the project saves of the 3D view. Any thread.
     void sceneViewToSerialization(Serialization::SceneViewSerialization* serialization) const;
 
+    // Which of the viewer's 3D bars show: as the project was opened with them, then as the tab sets them. Any thread.
+    Serialization::ViewerBarsSerialization getViewerBars() const;
+
+    void setViewerBars(const Serialization::ViewerBarsSerialization& bars);
+
     ///Called upon node creation and then never changed
     void setUiContext(OpenGLViewerI* viewer);
 
@@ -1159,6 +1164,8 @@ private:
     mutable std::mutex _sceneViewMutex;
     std::unique_ptr<Serialization::SceneViewSerialization> _loadedSceneView;
     SceneViewSaver _sceneViewSaver;
+    // Null for the defaults.
+    std::unique_ptr<Serialization::ViewerBarsSerialization> _viewerBars;
 };
 
 enum ViewerDisplayOutputEnum {

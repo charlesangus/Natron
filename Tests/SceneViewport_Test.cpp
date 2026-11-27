@@ -53,6 +53,7 @@
 // Before Qt's OpenGL headers.
 #include "Gui/SceneDrawStateQueue.h"
 #include "Gui/SceneGizmo.h"
+#include "Gui/SceneTransformTarget.h"
 #include "Gui/SceneViewport.h"
 #include "Gui/SelectionEngine.h"
 #include "Tests/TestWatchdog.h"
@@ -1554,6 +1555,8 @@ TEST_F(SceneViewportStorm, DrawsTransformHandlesOverTheScene)
     handles.primPath = "/World/Box";
     handles.opName = "xformOp:transform:Gizmo";
     _renderer.setTransformHandles(handles);
+    EXPECT_FALSE(_renderer.hasTransformHandles()) << "the select tool draws no node's handles";
+    _renderer.setTransformTool(SceneTransform::eToolNodeHandle);
     ASSERT_TRUE(_renderer.hasTransformHandles());
 
     QImage image = render();

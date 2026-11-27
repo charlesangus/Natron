@@ -19,7 +19,7 @@ Checks:
     primitives;
   - packed USD from USDToGeo picks as one whole primitive, and not in Edges mode;
   - downstream of GeoToUSD the view is a scene: no component picking (natronGeoComponents false),
-    the pick row is hidden and a click selects a prim (natronSceneSelection).
+    the pick mode buttons are disabled and a click selects a prim (natronSceneSelection).
 
 Mouse and key events are sent to the SceneViewport (synthesized window-system events do not reach
 Natron's widgets under Xvfb). Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go
@@ -46,7 +46,7 @@ try:
     from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
     from PySide6.QtGui import QGuiApplication, QMouseEvent
     from PySide6.QtTest import QTest
-    from PySide6.QtWidgets import QApplication
+    from PySide6.QtWidgets import QApplication, QWidget
 
     from guitest import check, finish, plugin_problem, report, require, run, shot, viewer_up, widgets_of
 
@@ -98,14 +98,14 @@ try:
                 and not v.property("natronSceneError"))
 
     def row():
-        rows = [w for w in QApplication.allWidgets() if w.objectName() == "geoDisplayRow"]
+        rows = [w for w in QApplication.allWidgets() if w.objectName() == "sceneToolBar"]
         return rows[0] if rows else None
 
     def control(name):
         r = row()
         if r is None:
             return None
-        found = [w for w in r.children() if hasattr(w, "objectName") and w.objectName() == name]
+        found = [w for w in r.findChildren(QWidget) if w.objectName() == name]
         return found[0] if found else None
 
     def framebuffer():
@@ -116,11 +116,16 @@ try:
             image = QGuiApplication.primaryScreen().grabWindow(0, origin.x(), origin.y(), v.width(), v.height()).toImage()
         return image
 
-    def differs(a, b, step=2):
+    def differs(a, b, step=2, around=None, radius=12):
+        """Whether the frames differ, sampling every step pixels, or every pixel within radius of around."""
         if a.size() != b.size():
             return True
-        for y in range(0, a.height(), step):
-            for x in range(0, a.width(), step):
+        xs, ys = range(0, a.width(), step), range(0, a.height(), step)
+        if around is not None:
+            xs = range(max(0, around.x() - radius), min(a.width(), around.x() + radius + 1))
+            ys = range(max(0, around.y() - radius), min(a.height(), around.y() + radius + 1))
+        for y in ys:
+            for x in xs:
                 if a.pixel(x, y) != b.pixel(x, y):
                     return True
         return False
@@ -230,7 +235,7 @@ try:
         yield settle()
 
         r = row()
-        check(r is not None and r.isVisible(), "the geometry display row shows")
+        check(r is not None and r.isVisible(), "the 3D view's tool bar shows")
         check(bool(prop("natronGeoComponents")) is False, "in Objects mode no components are picked")
         for index in (1, 2, 3, 0):
             ok = yield set_mode(index)
@@ -258,7 +263,7 @@ try:
         if check(hit is not None, "a click on the cube's corner selects one point (%r)" % pattern()):
             check(pattern() != "" and not pattern().startswith("p"), "the selection is a point number (%r)" % pattern())
             yield settle()
-            check(differs(before, framebuffer()), "the selected point is drawn highlighted")
+            check(differs(before, framebuffer(), around=hit), "the selected point is drawn highlighted")
             shot("m361-point.png")
             picked = pattern()
             click(hit, Qt.ShiftModifier)
@@ -327,8 +332,8 @@ try:
         require(viewer.connectInput(0, to_usd), "connect the Viewer to the GeoToUSD")
         ok = yield ("until", lambda: scene_drawn() and not prop("natronGeoComponents"), POLL_TIMEOUT_S)
         check(ok, "downstream of GeoToUSD no components are pickable")
-        r = row()
-        check(r is None or not r.isVisible(), "the pick row is hidden for a scene")
+        button = control("geoPickPoints")
+        check(button is not None and not button.isEnabled(), "the pick mode buttons are disabled for a scene")
         yield settle()
         click(centre)
         ok = yield ("until", lambda: bool(prop("natronSceneSelection")), PICK_TIMEOUT_S)

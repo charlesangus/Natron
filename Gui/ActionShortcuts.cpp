@@ -226,6 +226,7 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DTranslateTool);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DRotateTool);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DScaleTool);
+    (void)QT_TR_NOOP(kShortcutDescActionViewer3DNodeHandleTool);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DCycleTool);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DToggleSpace);
     (void)QT_TR_NOOP(kShortcutDescActionViewer3DTogglePivot);
@@ -534,6 +535,7 @@ getViewer3DDefaultKeyBindings()
         { kShortcutIDActionViewer3DTranslateTool, kShortcutDescActionViewer3DTranslateTool, Qt::NoModifier, Qt::Key_T, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DRotateTool, kShortcutDescActionViewer3DRotateTool, Qt::NoModifier, Qt::Key_R, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DScaleTool, kShortcutDescActionViewer3DScaleTool, Qt::NoModifier, Qt::Key_E, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DNodeHandleTool, kShortcutDescActionViewer3DNodeHandleTool, Qt::NoModifier, Qt::Key_Return, Qt::NoModifier, Qt::Key_Enter },
         { kShortcutIDActionViewer3DCycleTool, kShortcutDescActionViewer3DCycleTool, Qt::NoModifier, Qt::Key_Y, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DToggleSpace, kShortcutDescActionViewer3DToggleSpace, Qt::NoModifier, Qt::Key_D, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DTogglePivot, kShortcutDescActionViewer3DTogglePivot, Qt::NoModifier, Qt::Key(0), Qt::NoModifier, Qt::Key(0) },

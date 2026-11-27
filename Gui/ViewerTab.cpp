@@ -38,9 +38,10 @@
 #include <QUndoCommand>
 
 #include <QAction>
-#include <QVBoxLayout>
 #include <QCheckBox>
+#include <QMenu>
 #include <QPalette>
+#include <QVBoxLayout>
 
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
@@ -50,7 +51,6 @@
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneReparentNode.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
-#include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/OutputSchedulerThread.h" // RenderEngine
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
@@ -65,7 +65,6 @@
 #include "Gui/ChannelsComboBox.h"
 #include "Gui/ClickableLabel.h"
 #include "Gui/GeoDisplay.h"
-#include "Gui/GeoDisplayBar.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
@@ -75,9 +74,13 @@
 #include "Gui/Label.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
+#include "Gui/NodeViewerContext.h"
 #include "Gui/ScaleSliderQWidget.h"
 #include "Gui/SceneBreadcrumbBar.h"
+#include "Gui/SceneDisplayBar.h"
 #include "Gui/SceneSelectionActions.h"
+#include "Gui/SceneToolBar.h"
+#include "Gui/SceneTopBar.h"
 #include "Gui/SceneTransformTarget.h"
 #include "Gui/SceneViewport.h"
 #include "Gui/SpinBox.h"
@@ -884,79 +887,39 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
 
     _imp->secondRowLayout->addWidget(_imp->pickerButton);
 
-    /*Progressive render row*/
-    _imp->sceneRenderRow = new QWidget(this);
-    _imp->sceneRenderRow->setObjectName(QString::fromUtf8("sceneRenderRow"));
-    _imp->sceneRenderRowLayout = new QHBoxLayout(_imp->sceneRenderRow);
-    _imp->sceneRenderRowLayout->setSpacing(TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING));
-    _imp->sceneRenderRowLayout->setContentsMargins(TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING * 2), TO_DPIY(NATRON_DENSITY_TOOLBAR_SPACING),
-                                                   TO_DPIX(NATRON_DENSITY_TOOLBAR_SPACING * 2), TO_DPIY(NATRON_DENSITY_TOOLBAR_SPACING));
-    _imp->mainLayout->addWidget(_imp->sceneRenderRow);
-
-    const QString maxSamplesTt = NATRON_NAMESPACE::convertFromPlainText(tr("The samples per pixel the renderer refines the 3D view to; "
-                                                                           "0 uses the renderer's default. A change restarts the render."),
-                                                                        NATRON_NAMESPACE::WhiteSpaceNormal);
-    Label* maxSamplesLabel = new Label(tr("Max Samples"), _imp->sceneRenderRow);
-    maxSamplesLabel->setToolTip(maxSamplesTt);
-    _imp->sceneRenderRowLayout->addWidget(maxSamplesLabel);
-    _imp->maxSamplesBox = new SpinBox(_imp->sceneRenderRow, SpinBox::eSpinBoxTypeInt);
-    _imp->maxSamplesBox->setObjectName(QString::fromUtf8(kViewerParamMaxSamples));
-    _imp->maxSamplesBox->setMinimum(0);
-    _imp->maxSamplesBox->setValue(0);
-    _imp->maxSamplesBox->setMinimumWidth(_imp->maxSamplesBox->fontMetrics().horizontalAdvance(QString::fromUtf8("1048576")) + TO_DPIX(24));
-    _imp->maxSamplesBox->setToolTip(maxSamplesTt);
-    _imp->sceneRenderRowLayout->addWidget(_imp->maxSamplesBox);
-
-    _imp->refinementPausedButton = new Button(tr("Pause"), _imp->sceneRenderRow);
-    _imp->refinementPausedButton->setObjectName(QString::fromUtf8(kViewerParamRefinementPaused));
-    _imp->refinementPausedButton->setFocusPolicy(Qt::NoFocus);
-    _imp->refinementPausedButton->setCheckable(true);
-    _imp->refinementPausedButton->setChecked(false);
-    _imp->refinementPausedButton->setDown(false);
-    _imp->refinementPausedButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("Holds the refinement at its current samples; "
-                                                                                       "releasing it continues from them. Edits wait until it is released."),
-                                                                                    NATRON_NAMESPACE::WhiteSpaceNormal));
-    _imp->sceneRenderRowLayout->addWidget(_imp->refinementPausedButton);
-
-    _imp->renderEverythingButton = new Button(tr("Render Everything"), _imp->sceneRenderRow);
-    _imp->renderEverythingButton->setObjectName(QString::fromUtf8(kViewerParamRenderEverything));
-    _imp->renderEverythingButton->setFocusPolicy(Qt::NoFocus);
-    _imp->renderEverythingButton->setCheckable(true);
-    _imp->renderEverythingButton->setChecked(false);
-    _imp->renderEverythingButton->setDown(false);
-    _imp->renderEverythingButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("Renders the whole scene, ignoring the draw states, and loads every payload. "
-                                                                                       "Turning it off brings the draw states back and unloads nothing."),
-                                                                                    NATRON_NAMESPACE::WhiteSpaceNormal));
-    _imp->sceneRenderRowLayout->addWidget(_imp->renderEverythingButton);
-
-    _imp->refineSamplesLabel = new Label(QString(), _imp->sceneRenderRow);
-    _imp->refineSamplesLabel->setObjectName(QString::fromUtf8("refineSamples"));
-    _imp->refineSamplesLabel->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("The samples per pixel of the frame shown, against the cap."),
-                                                                                NATRON_NAMESPACE::WhiteSpaceNormal));
-    _imp->sceneRenderRowLayout->addWidget(_imp->refineSamplesLabel);
-    _imp->sceneRenderRowLayout->addStretch();
-    _imp->sceneRenderRow->hide();
-    // The first switch to the 3D view shows the row: its style sheet polish is done
+    /*3D view top bar*/
+    _imp->sceneTopBar = new SceneTopBar(this);
+    _imp->mainLayout->addWidget(_imp->sceneTopBar);
+    _imp->maxSamplesBox = _imp->sceneTopBar->getMaxSamplesBox();
+    _imp->refinementPausedButton = _imp->sceneTopBar->getRefinementPausedButton();
+    _imp->renderEverythingButton = _imp->sceneTopBar->getRenderEverythingButton();
+    _imp->refineSamplesLabel = _imp->sceneTopBar->getRefineSamplesLabel();
+    _imp->sceneTopBar->hide();
+    // The first switch to the 3D view shows the bar: its style sheet polish is done
     // now rather than on that switch.
-    _imp->sceneRenderRow->ensurePolished();
+    _imp->sceneTopBar->ensurePolished();
     QObject::connect(_imp->maxSamplesBox, SIGNAL(valueChanged(double)), this, SLOT(onMaxSamplesBoxChanged(double)));
     QObject::connect(_imp->refinementPausedButton, SIGNAL(clicked(bool)), this, SLOT(onRefinementPausedButtonClicked(bool)));
     QObject::connect(_imp->renderEverythingButton, SIGNAL(clicked(bool)), this, SLOT(onRenderEverythingButtonClicked(bool)));
 
-    _imp->geoDisplayRow = new GeoDisplayBar(this);
-    _imp->mainLayout->addWidget(_imp->geoDisplayRow);
-    _imp->geoDisplayRow->hide();
-    _imp->geoDisplayRow->setEditCallback([this](const GeoDisplayOptions& options) {
-        editViewerKnobs(tr("Geometry Display"), [this, options]() {
-            _imp->setViewerValue<bool>(kViewerParamPointMarkers, options.pointMarkers);
-            _imp->setViewerValue<bool>(kViewerParamPointNumbers, options.pointNumbers);
-            _imp->setViewerValue<bool>(kViewerParamPrimitiveNumbers, options.primitiveNumbers);
-            _imp->setViewerValue<bool>(kViewerParamNormals, options.normals);
-            _imp->setViewerValue<double>(kViewerParamNormalScale, options.normalScale);
-            _imp->setViewerValue<std::string>(kViewerParamHighlightGroup, options.highlightGroup);
-        });
-        refreshSceneRenderFromKnobs();
-    });
+    // Before the GL viewer, whose context menu holds them too.
+    const struct
+    {
+        QAction** action;
+        const char* name;
+        QString text;
+    } barToggles[] = {
+        { &_imp->toggleToolBarAction, "viewerToggleToolBar", tr("Tool Bar") },
+        { &_imp->toggleDisplayBarAction, "viewerToggleDisplayBar", tr("Display Bar") },
+        { &_imp->toggleTopBarAction, "viewerToggleTopBar", tr("Top Bar") },
+    };
+    for (const auto& toggle : barToggles) {
+        QAction* action = new QAction(toggle.text, this);
+        action->setObjectName(QString::fromUtf8(toggle.name));
+        action->setCheckable(true);
+        QObject::connect(action, &QAction::triggered, this, &ViewerTab::onViewerBarToggled);
+        *toggle.action = action;
+    }
     /*=============================================*/
 
     /*OpenGL viewer*/
@@ -1005,8 +968,25 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
         }
     }
 
-
+    // Node toolbars go in front of the tool bar, at the layout's start.
+    _imp->sceneToolBar = new SceneToolBar(_imp->viewerContainer);
+    _imp->sceneToolBar->hide();
+    _imp->viewerLayout->addWidget(_imp->sceneToolBar);
     _imp->viewerLayout->addWidget(_imp->viewerSubContainer);
+    _imp->sceneDisplayBar = new SceneDisplayBar(_imp->viewerContainer);
+    _imp->sceneDisplayBar->hide();
+    _imp->viewerLayout->addWidget(_imp->sceneDisplayBar);
+    _imp->sceneDisplayBar->setEditCallback([this](const GeoDisplayOptions& options) {
+        editViewerKnobs(tr("Geometry Display"), [this, options]() {
+            _imp->setViewerValue<bool>(kViewerParamPointMarkers, options.pointMarkers);
+            _imp->setViewerValue<bool>(kViewerParamPointNumbers, options.pointNumbers);
+            _imp->setViewerValue<bool>(kViewerParamPrimitiveNumbers, options.primitiveNumbers);
+            _imp->setViewerValue<bool>(kViewerParamNormals, options.normals);
+            _imp->setViewerValue<double>(kViewerParamNormalScale, options.normalScale);
+            _imp->setViewerValue<std::string>(kViewerParamHighlightGroup, options.highlightGroup);
+        });
+        refreshSceneRenderFromKnobs();
+    });
 
     // The viewer area takes all the spare height, whichever of the image view and the
     // scene view is shown, so the settings rows and the player keep their own height.
@@ -1469,6 +1449,7 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
 
     _imp->viewerNode->setUiContext( getViewer() );
+    loadViewerBars();
 
     {
         ProjectPtr project = getGui()->getApp()->getProject();
@@ -1575,7 +1556,7 @@ ViewerTab::onActiveInputDataKindChanged()
         });
         _imp->viewerSubContainerLayout->insertWidget(index + 1, _imp->sceneBreadcrumbBar);
         _imp->viewerSubContainerLayout->insertWidget(index + 2, _imp->sceneViewport, 1);
-        // The USDEditTransform whose settings panel was opened last.
+        // The node offering a handle tool the view draws whose settings panel was opened last.
         const std::function<NodePtr()> openEditNode = [this]() -> NodePtr {
             Gui* gui = getGui();
             if (!gui) {
@@ -1586,7 +1567,8 @@ ViewerTab::onActiveInputDataKindChanged()
                 NodeSettingsPanel* panel = dynamic_cast<NodeSettingsPanel*>(dockable);
                 NodeGuiPtr nodeGui = panel ? panel->getNode() : NodeGuiPtr();
                 NodePtr panelNode = nodeGui ? nodeGui->getNode() : NodePtr();
-                if (panelNode && panelNode->isActivated() && (panelNode->getPluginID() == PLUGINID_NATRON_USDEDITTRANSFORM)) {
+                if (panelNode && panelNode->isActivated() && NodeViewerContext::findHandleTool(panelNode->getPluginID())
+                    && SceneViewport::drawsHandleOf(panelNode)) {
                     return panelNode;
                 }
             }
@@ -1676,14 +1658,18 @@ ViewerTab::onActiveInputDataKindChanged()
         }
         QObject::connect(_imp->sceneViewport, &SceneViewport::rendererChanged, this, &ViewerTab::refreshSceneRenderRow);
         QObject::connect(_imp->sceneViewport, &SceneViewport::refineStateChanged, this, &ViewerTab::refreshRefineSamplesLabel);
-        QObject::connect(_imp->sceneViewport, &SceneViewport::geoPickModeChanged, _imp->geoDisplayRow, [this](int mode) {
-            _imp->geoDisplayRow->setPickMode(mode);
+        QObject::connect(_imp->sceneViewport, &SceneViewport::geoPickModeChanged, _imp->sceneToolBar, [this](int mode) {
+            _imp->sceneToolBar->setPickMode(mode);
         });
-        _imp->geoDisplayRow->setPickModeCallback([this](int mode) {
+        _imp->sceneToolBar->setPickModeCallback([this](int mode) {
             if (_imp->sceneViewport) {
                 _imp->sceneViewport->setGeoPickMode((GeoComponentEnum)mode);
             }
         });
+        _imp->sceneToolBar->setViewport(_imp->sceneViewport);
+        _imp->sceneDisplayBar->setViewport(_imp->sceneViewport);
+        _imp->sceneTopBar->setViewport(_imp->sceneViewport);
+        _imp->sceneViewport->setContextMenuExtender([this](QMenu* menu) { extendSceneContextMenu(menu); });
         refreshSceneRenderFromKnobs();
         // Before the first sync, so that the saved loads go out with the scene's first stage.
         _imp->sceneViewport->restoreSceneView(node->getLoadedSceneView());
@@ -2025,7 +2011,7 @@ ViewerTab::refreshSceneRenderFromKnobs()
     geoOptions.normals = _imp->viewerValue<bool>(kViewerParamNormals, false);
     geoOptions.normalScale = _imp->viewerValue<double>(kViewerParamNormalScale, geoOptions.normalScale);
     geoOptions.highlightGroup = _imp->viewerValue<std::string>(kViewerParamHighlightGroup, std::string());
-    _imp->geoDisplayRow->setOptions(geoOptions);
+    _imp->sceneDisplayBar->setOptions(geoOptions);
 
     {
         QSignalBlocker b0(_imp->maxSamplesBox), b1(_imp->refinementPausedButton), b2(_imp->renderEverythingButton);
@@ -2073,27 +2059,33 @@ ViewerTab::onRenderEverythingButtonClicked(bool on)
 void
 ViewerTab::refreshSceneRenderRow()
 {
-    if (!_imp->sceneRenderRow) {
+    if (!_imp->sceneTopBar) {
         return;
     }
-    bool topVisible;
+    bool topVisible, leftVisible, rightVisible;
     {
         QMutexLocker l(&_imp->visibleToolbarsMutex);
         topVisible = _imp->topToolbarVisible;
+        leftVisible = _imp->leftToolbarVisible;
+        rightVisible = _imp->rightToolbarVisible;
     }
     const bool scene = isShowingScene();
     const bool progressive = scene && (_imp->sceneViewport->getRenderer().getActiveRendererId() != kRenderDelegateStormId);
-
-    // The row stays for every renderer so switching renderers never resizes the 3D view, which would
-    // rescale its fitted framing.
-    const bool show = topVisible && scene;
     const bool geometry = scene && _imp->viewerNode && (_imp->viewerNode->getActiveInputDataKind() == eDataKindGeometry);
-    const bool showGeometry = topVisible && geometry;
-    const bool toggled = (_imp->sceneRenderRow->isVisibleTo(this) != show) || (_imp->geoDisplayRow->isVisibleTo(this) != showGeometry);
-    _imp->sceneRenderRow->setVisible(show);
-    _imp->maxSamplesBox->setEnabled(progressive);
-    _imp->refinementPausedButton->setEnabled(progressive);
-    _imp->geoDisplayRow->setVisible(showGeometry);
+    const Serialization::ViewerBarsSerialization& bars = _imp->bars;
+    const bool showTool = leftVisible && (scene ? bars.toolBar3D : bars.toolBar2D);
+    const bool showDisplay = rightVisible && (scene ? bars.displayBar3D : bars.displayBar2D);
+    const bool showTop = topVisible && scene && bars.topBar3D;
+
+    const bool toggled = (_imp->sceneTopBar->isVisibleTo(this) != showTop) || (_imp->sceneToolBar->isVisibleTo(this) != showTool)
+        || (_imp->sceneDisplayBar->isVisibleTo(this) != showDisplay);
+    _imp->sceneTopBar->setVisible(showTop);
+    _imp->sceneToolBar->setVisible(showTool);
+    _imp->sceneDisplayBar->setVisible(showDisplay);
+    _imp->sceneTopBar->setActive(scene, progressive);
+    _imp->sceneToolBar->setActive(scene, geometry);
+    _imp->sceneDisplayBar->setActive(scene, geometry);
+    refreshViewerBarActions();
     // Without geometry, as downstream of a conversion to a scene, only prims are picked.
     if (_imp->sceneViewport) {
         _imp->sceneViewport->setGeometryContext(geometry);
@@ -2107,13 +2099,79 @@ ViewerTab::refreshSceneRenderRow()
         // Laid out now rather than at the posted layout request, so that the view's resize, which
         // paints it, comes before any repaint asked for after this (SceneViewport::setRendererId()).
         _imp->mainLayout->activate();
+        _imp->viewerLayout->activate();
     }
+}
+
+void
+ViewerTab::refreshViewerBarActions()
+{
+    const bool scene = isShowingScene();
+    const Serialization::ViewerBarsSerialization& bars = _imp->bars;
+    const QSignalBlocker b0(_imp->toggleToolBarAction), b1(_imp->toggleDisplayBarAction), b2(_imp->toggleTopBarAction);
+
+    _imp->toggleToolBarAction->setChecked(scene ? bars.toolBar3D : bars.toolBar2D);
+    _imp->toggleDisplayBarAction->setChecked(scene ? bars.displayBar3D : bars.displayBar2D);
+    // The top bar holds 3D controls only.
+    _imp->toggleTopBarAction->setChecked(bars.topBar3D);
+    _imp->toggleTopBarAction->setEnabled(scene);
+}
+
+void
+ViewerTab::onViewerBarToggled()
+{
+    Serialization::ViewerBarsSerialization& bars = _imp->bars;
+    if (isShowingScene()) {
+        bars.toolBar3D = _imp->toggleToolBarAction->isChecked();
+        bars.displayBar3D = _imp->toggleDisplayBarAction->isChecked();
+        bars.topBar3D = _imp->toggleTopBarAction->isChecked();
+    } else {
+        bars.toolBar2D = _imp->toggleToolBarAction->isChecked();
+        bars.displayBar2D = _imp->toggleDisplayBarAction->isChecked();
+    }
+    if (_imp->viewerNode) {
+        _imp->viewerNode->setViewerBars(bars);
+        // The flags are saved with the project but are no knob, so nothing else marks it changed.
+        if (Gui* gui = getGui()) {
+            gui->getApp()->triggerAutoSave();
+        }
+    }
+    refreshSceneRenderRow();
+}
+
+QList<QAction*>
+ViewerTab::getViewerBarToggleActions() const
+{
+    return { _imp->toggleToolBarAction, _imp->toggleDisplayBarAction, _imp->toggleTopBarAction };
+}
+
+void
+ViewerTab::loadViewerBars()
+{
+    if (_imp->viewerNode) {
+        _imp->bars = _imp->viewerNode->getViewerBars();
+    }
+    refreshSceneRenderRow();
+}
+
+void
+ViewerTab::extendSceneContextMenu(QMenu* menu)
+{
+    refreshViewerBarActions();
+    if (_imp->viewerNode && (_imp->viewerNode->getActiveInputDataKind() == eDataKindGeometry)) {
+        QMenu* geometry = menu->addMenu(tr("Geometry Display"));
+        geometry->addActions(_imp->sceneDisplayBar->getGeometryToggleActions());
+    }
+    QMenu* bars = menu->addMenu(tr("Bars"));
+    bars->addAction(_imp->toggleToolBarAction);
+    bars->addAction(_imp->toggleDisplayBarAction);
+    bars->addAction(_imp->toggleTopBarAction);
 }
 
 void
 ViewerTab::refreshRefineSamplesLabel()
 {
-    if (!_imp->sceneViewport || !_imp->sceneRenderRow->isVisible()) {
+    if (!_imp->sceneViewport || !_imp->sceneTopBar->isVisible()) {
         return;
     }
     if (_imp->sceneViewport->getRenderer().getActiveRendererId() == kRenderDelegateStormId) {
@@ -2134,6 +2192,7 @@ void
 ViewerTab::onProjectLoaded()
 {
     _imp->viewer->fitImageToFormatUnlessNavigated();
+    loadViewerBars();
 }
 
 void

@@ -48,6 +48,7 @@ isToolHandle(SceneTransform::ToolEnum tool,
     case SceneTransform::eToolScale:
         return SceneGizmo::getHandleKind(handle) == SceneGizmo::eHandleKindScale;
     case SceneTransform::eToolSelect:
+    case SceneTransform::eToolNodeHandle:
         break;
     }
 

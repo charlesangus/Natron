@@ -56,6 +56,7 @@ struct RotoLayerSerialization;
 struct RotoStrokeCurvesSerialization;
 struct RotoStrokeItemSerialization;
 struct SceneViewSerialization;
+struct ViewerBarsSerialization;
 struct SplitterChildSerialization;
 struct SplitterSerialization;
 struct TrackSerialization;

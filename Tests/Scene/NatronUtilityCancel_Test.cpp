@@ -260,18 +260,35 @@ viewFrom(double x)
     return camera;
 }
 
-// The CPU, the GPU handing its colour over in tiles, and the GPU keeping it in a film on the device.
+// The CPU, the GPU handing its colour over in tiles, and the GPU keeping it in a film on the device, the last
+// two also in Raster mode.
 enum class Backend {
     Cpu,
     GpuTiles,
     GpuFilm,
+    RasterTiles,
+    RasterFilm,
 };
 
 void
 PrintTo(Backend backend,
         std::ostream* os)
 {
-    *os << (backend == Backend::Cpu ? "Cpu" : (backend == Backend::GpuTiles ? "GpuTiles" : "GpuFilm"));
+    const char* names[] = { "Cpu", "GpuTiles", "GpuFilm", "RasterTiles", "RasterFilm" };
+
+    *os << names[static_cast<int>(backend)];
+}
+
+bool
+keepsColourOnDevice(Backend backend)
+{
+    return backend == Backend::GpuFilm || backend == Backend::RasterFilm;
+}
+
+bool
+rasterizes(Backend backend)
+{
+    return backend == Backend::RasterTiles || backend == Backend::RasterFilm;
 }
 
 #ifdef NATRON_HAVE_GPU
@@ -312,6 +329,11 @@ public:
         return WavefrontGpu::missingSupport(*appPTR->getGpuContext()->runtime());
     }
 
+    std::string missingRasterSupport() const
+    {
+        return WavefrontGpu::missingRasterSupport(appPTR->getGpuContext()->runtime()->device().info());
+    }
+
     std::string unavailable;
 
 private:
@@ -341,7 +363,10 @@ public:
         // Nor does it trace reflections, whose extra bounces the limit was not set for.
         _engine->SetRendererSetting(TfToken(kUtilitySettingMaxRayDepth), VtValue(0));
         _engine->SetRendererSetting(TfToken(kUtilitySettingDevice), VtValue(TfToken(backend == Backend::Cpu ? kUtilityDeviceCpu : kUtilityDeviceGpu)));
-        if (backend == Backend::GpuFilm) {
+        _engine->SetRendererSetting(TfToken(kUtilitySettingRenderMode), VtValue(TfToken(rasterizes(backend) ? kUtilityRenderModeRaster : kUtilityRenderModeRay)));
+        // One pass for the same reason as one pixel sample: the frame stays heavy but finishable.
+        _engine->SetRendererSetting(TfToken(kUtilitySettingRasterSamples), VtValue(1));
+        if (keepsColourOnDevice(backend)) {
             // The colour alone is the one buffer the GPU may keep on the device.
             EXPECT_TRUE(_engine->SetRendererAovs({ HdAovTokens->color }));
         } else {
@@ -353,6 +378,11 @@ public:
     std::string device() const
     {
         return VtDictionaryGet<std::string>(_engine->GetRenderStats(), kUtilityStatDevice, VtDefault = std::string());
+    }
+
+    std::string warning() const
+    {
+        return VtDictionaryGet<std::string>(_engine->GetRenderStats(), kUtilityStatWarning, VtDefault = std::string());
     }
 
     // size is the frame's side in pixels; a frame that is only drawn to its end for its colour uses a
@@ -484,6 +514,10 @@ checkCancelLatency(const UsdStageRefPtr& stage,
     EXPECT_FLOAT_EQ(1.f, render.centreColor()[0]);
     if (backend != Backend::Cpu) {
         EXPECT_EQ(0u, render.device().find("GPU")) << render.device();
+    }
+    if (rasterizes(backend)) {
+        // A frame that fell back to Ray mode would time the ray path's stops instead.
+        EXPECT_EQ(std::string::npos, render.warning().find("Ray mode")) << render.warning();
     }
 
     // Now that the scene is prepared, a new view spends its time on the tiles alone.
@@ -685,6 +719,13 @@ protected:
         if (!missing.empty()) {
             GPUTEST_SKIP() << missing;
         }
+        if (rasterizes(GetParam())) {
+            const std::string missingRaster = _gpu->missingRasterSupport();
+
+            if (!missingRaster.empty()) {
+                GPUTEST_SKIP() << missingRaster;
+            }
+        }
         _ready = true;
 #else
         std::printf("[  SKIPPED ] Natron was built without the Vulkan backend, so there is no GPU to render on\n");
@@ -726,7 +767,7 @@ TEST_P(NatronUtilityCancelLatency, AStopCutsTheFrameOfManyMeshesShortWithinTheBo
     checkCancelLatency(stage, "many meshes", GetParam());
 }
 
-INSTANTIATE_TEST_CASE_P(Backends, NatronUtilityCancelLatency, ::testing::Values(Backend::Cpu, Backend::GpuTiles, Backend::GpuFilm));
+INSTANTIATE_TEST_CASE_P(Backends, NatronUtilityCancelLatency, ::testing::Values(Backend::Cpu, Backend::GpuTiles, Backend::GpuFilm, Backend::RasterTiles, Backend::RasterFilm));
 
 namespace {
 class CountingFilm : public WavefrontFilm {
@@ -847,6 +888,13 @@ protected:
 
     WavefrontExecutor* _executor = nullptr;
 
+#ifdef NATRON_HAVE_GPU
+    WavefrontGpu* gpuExecutor() const
+    {
+        return _gpu.get();
+    }
+#endif
+
 private:
     std::unique_ptr<WavefrontCpu> _cpu;
 #ifdef NATRON_HAVE_GPU
@@ -875,14 +923,14 @@ TEST_P(NatronUtilityCancelTile, AStopCutsATileShortBetweenItsLights)
     if (onGpu) {
         // The first frame compiles the kernels, which is no stop point of the tile's.
         UtilityScene warmScene;
-        CountingFilm warmFilm(8, GetParam() == Backend::GpuFilm);
+        CountingFilm warmFilm(8, keepsColourOnDevice(GetParam()));
 
         ASSERT_TRUE(_executor->render(litCard(warmScene, 1), cardFrame(8), warmFilm, unstopped, 1));
     }
 
     UtilityScene scene;
     const UtilityScene::Snapshot snapshot = litCard(scene, lightCount);
-    CountingFilm film(size, GetParam() == Backend::GpuFilm);
+    CountingFilm film(size, keepsColourOnDevice(GetParam()));
     std::atomic<bool> stop(false);
     Clock::time_point stopped;
     std::thread stopper([&stop, &stopped]() {
@@ -907,6 +955,143 @@ TEST_P(NatronUtilityCancelTile, AStopCutsATileShortBetweenItsLights)
 }
 
 INSTANTIATE_TEST_CASE_P(Backends, NatronUtilityCancelTile, ::testing::Values(Backend::Cpu, Backend::GpuTiles, Backend::GpuFilm));
+
+#ifdef NATRON_HAVE_GPU
+namespace {
+// The tile test's GPU executor, on a device that draws in Raster mode.
+class NatronUtilityCancelRaster : public NatronUtilityCancelTile {
+protected:
+    void SetUp() OVERRIDE
+    {
+        NatronUtilityCancelTile::SetUp();
+        if (!_executor) {
+            return;
+        }
+
+        const std::string missing = gpuExecutor()->missingRasterSupport();
+
+        if (!missing.empty()) {
+            _executor = nullptr;
+            GPUTEST_SKIP() << missing;
+        }
+    }
+};
+
+// Grids of a quarter of a million triangles each, stacked along the view over the whole frame, so that each
+// band's visibility pass draws them all, one behind the other, in one draw.
+UtilityScene::Snapshot
+stackedGrids(UtilityScene& scene,
+             int layers)
+{
+    const int n = 350;
+    VtVec3fArray points;
+    VtVec3iArray triangles;
+
+    points.reserve(static_cast<std::size_t>((n + 1) * (n + 1)));
+    triangles.reserve(static_cast<std::size_t>(2 * n * n));
+    for (int y = 0; y <= n; ++y) {
+        for (int x = 0; x <= n; ++x) {
+            points.push_back(GfVec3f(-12.f + 24.f * x / n, -12.f + 24.f * y / n, 0.f));
+        }
+    }
+    for (int y = 0; y < n; ++y) {
+        for (int x = 0; x < n; ++x) {
+            const int corner = y * (n + 1) + x;
+
+            triangles.push_back(GfVec3i(corner, corner + 1, corner + n + 2));
+            triangles.push_back(GfVec3i(corner, corner + n + 2, corner + n + 1));
+        }
+    }
+
+    const UtilityScene::GeometryId id = scene.addGeometry(SdfPath("/Grids"), 1);
+    std::vector<GfMatrix4d> instances;
+
+    for (int i = 0; i < layers; ++i) {
+        instances.push_back(GfMatrix4d(1.).SetTranslate(GfVec3d(0., 0., -i)));
+    }
+    scene.setTopology(id, points, triangles);
+    scene.setColors(id, UtilityScene::eColorBindingConstant, VtVec4fArray { GfVec4f(1.f, 1.f, 1.f, 1.f) });
+    scene.setInstances(id, instances);
+
+    std::shared_ptr<UtilityLightDesc> light = std::make_shared<UtilityLightDesc>();
+
+    scene.setLight(SdfPath("/Light"), light);
+
+    return scene.snapshot();
+}
+} // anon namespace
+
+// A 4096-pixel frame of several Raster passes, each band of which draws millions of triangles: a stop lands
+// within a pass, most likely while the device draws, and the frame ends within the bound with that pass undrawn.
+TEST_P(NatronUtilityCancelRaster, AStopCutsARasterFrameShortWithinItsPasses)
+{
+    if (!_executor) {
+        return;
+    }
+
+    const int size = kLatencyWindow;
+    const int passes = 4;
+    const std::atomic<bool> unstopped(false);
+    UtilityScene scene;
+    const UtilityScene::Snapshot snapshot = stackedGrids(scene, 16);
+    WavefrontFrame frame = cardFrame(size);
+
+    frame.raster = true;
+    frame.rasterSamples = passes;
+
+    {
+        // A small frame of the same scene compiles the kernels and pipelines and prepares the scene's structures
+        // and tables, none of which is a stop point of the passes'.
+        WavefrontFrame warm = frame;
+        CountingFilm warmFilm(8, keepsColourOnDevice(GetParam()));
+
+        warm.window.width = 8;
+        warm.window.height = 8;
+        warm.rasterSamples = 1;
+        ASSERT_TRUE(wavefrontDrawSamples(*_executor, snapshot, warm, WavefrontMotion(), warmFilm, unstopped, 1, std::function<void(std::size_t)>()))
+            << gpuExecutor()->status().message;
+    }
+
+    CountingFilm film(size, keepsColourOnDevice(GetParam()));
+    std::atomic<bool> stop(false);
+    std::atomic<int> drawn(0);
+    Clock::time_point stopped;
+    std::thread stopper([&stop, &stopped]() {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        stopped = Clock::now();
+        stop = true;
+    });
+    const bool finished = wavefrontDrawSamples(*_executor, snapshot, frame, WavefrontMotion(), film, stop, 1, [&drawn](std::size_t pass) {
+        drawn = static_cast<int>(pass);
+    });
+    const Clock::time_point returned = Clock::now();
+
+    stopper.join();
+    if (finished) {
+        GPUTEST_SKIP() << "the device drew " << passes << " passes of the frame before the stop came";
+    }
+
+    const std::chrono::milliseconds took = std::chrono::duration_cast<std::chrono::milliseconds>(returned - stopped);
+
+    std::cout << "[   NOTE   ] a stop " << drawn.load() << " passes into a Raster frame took " << took.count() << " ms" << std::endl;
+    EXPECT_FALSE(finished);
+    EXPECT_LT(took.count(), kCancelBound.count());
+    EXPECT_LT(drawn.load(), passes);
+    EXPECT_TRUE(gpuExecutor()->status().status == Tracer::Status::Stopped) << gpuExecutor()->status().message;
+
+    // The executor draws on after the stop: the next frame finishes as one that was never stopped.
+    CountingFilm after(8, keepsColourOnDevice(GetParam()));
+    WavefrontFrame small = frame;
+
+    small.window.width = 8;
+    small.window.height = 8;
+    EXPECT_TRUE(wavefrontDrawSamples(*_executor, snapshot, small, WavefrontMotion(), after, unstopped, 1, std::function<void(std::size_t)>()))
+        << gpuExecutor()->status().message;
+    EXPECT_GT(after.tiles.load(), 0);
+}
+
+INSTANTIATE_TEST_CASE_P(Backends, NatronUtilityCancelRaster, ::testing::Values(Backend::RasterTiles, Backend::RasterFilm));
+#endif // NATRON_HAVE_GPU
 
 TEST_P(NatronUtilityCancelTest, AnEditDuringAFrameRestartsItAndTheOldFrameNeverLands)
 {

@@ -44,6 +44,31 @@ rendered and why a render fell back to the CPU. A frame rendered on the GPU
 keeps its `rgba` there, so GPU nodes downstream read it without a copy through
 host memory.
 
+Its Render Mode setting picks Ray or Raster. Ray traces a ray through every
+sample of every pixel. Raster draws the frame Raster Samples times on the GPU,
+each pass at one sub-pixel offset and one moment of the shutter for the whole
+frame, finds the surface each pixel sees from that drawing and traces only
+what follows from it: shading, shadows, reflections, refractions and the
+surfaces seen through cutouts and transparency, as Ray does. It is faster on
+simple scenes, most of all projections with motion blur. The image need not
+match Ray's exactly:
+
+- Motion blur and anti-aliasing come from the passes, so a low Raster Samples
+  steps visibly, a moving object showing as that many copies. With the
+  shutter closed every pass is at the frame's own time.
+- A moving or zooming camera is taken at each pass's time; lights stay at the
+  middle of the shutter.
+- Depth, `primId` and `instanceId` take the pixel's heaviest sample, as in
+  Ray; they are never averaged.
+- Large frames are drawn in tiles the GPU can hold.
+
+Raster needs the GPU and the Camera projection. A frame that cannot use it
+renders as Ray and the node warns "Render Mode is Raster, but the frame was
+rendered in Ray mode" with the reason: Device is CPU, the GPU cannot draw the
+visibility buffer Raster needs, or the projection is Spherical, Cylindrical or
+UV Unwrap. On Auto, a scene that does not fit on the GPU falls back to the CPU
+in Ray mode, with the same warning.
+
 Cancelling a Natron Utility render stops it within a fraction of a second, on
 either device: between tiles and within a tile between batches of lights, while
 the CPU builds the scene's acceleration structures, while the GPU updates its

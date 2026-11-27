@@ -33,6 +33,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <memory>
@@ -41,6 +42,8 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+
+#include <QTemporaryDir>
 
 #include <pxr/base/gf/frustum.h>
 #include <pxr/base/gf/matrix4d.h>
@@ -59,6 +62,7 @@
 #include <pxr/imaging/hd/renderBuffer.h>
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hdx/tokens.h>
+#include <pxr/imaging/hio/image.h>
 #include <pxr/usd/sdf/layer.h>
 #include <pxr/usd/sdf/path.h>
 #include <pxr/usd/usd/stage.h>
@@ -68,6 +72,7 @@
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/Utility/Tracer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityKernels.h"
+#include "Engine/Nodes/Scene/Utility/UtilityLight.h"
 #include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
@@ -413,6 +418,167 @@ awayFromEdges(const AovFilm& film,
     return true;
 }
 
+std::string
+addMaterial(UtilityScene& scene,
+            const std::string& name,
+            const UtilityMaterialDesc& desc)
+{
+    const std::string path = "/Materials/" + name;
+
+    scene.setMaterial(SdfPath(path), std::make_shared<const UtilityMaterialDesc>(desc));
+
+    return path;
+}
+
+UtilityMaterialDesc
+emitting(const GfVec3f& color)
+{
+    UtilityMaterialDesc desc;
+
+    desc.diffuseColor = GfVec3f(0.f);
+    desc.emissiveColor = color;
+    desc.metallic = 1.f;
+
+    return desc;
+}
+
+// A rectangle centred at centre spanning +-u and +-v, whose outward side is u x v.
+void
+addPanel(UtilityScene& scene,
+         const std::string& name,
+         int primId,
+         const GfVec3d& centre,
+         const GfVec3d& u,
+         const GfVec3d& v,
+         const std::string& material)
+{
+    const UtilityScene::GeometryId id = scene.addGeometry(SdfPath("/" + name), primId);
+    const GfVec3f c(centre);
+    const GfVec3f a(u);
+    const GfVec3f b(v);
+
+    scene.setTopology(id, VtVec3fArray { c - a - b, c + a - b, c + a + b, c - a + b }, quadTriangles());
+    scene.setColors(id, UtilityScene::eColorBindingConstant, VtVec4fArray { GfVec4f(1.f, 1.f, 1.f, 1.f) });
+    scene.setInstances(id, { GfMatrix4d(1.) });
+    scene.setMaterialId(id, SdfPath(material));
+}
+
+void
+addBall(UtilityScene& scene,
+        const std::string& name,
+        int primId,
+        const GfVec3d& centre,
+        double radius,
+        const std::string& material)
+{
+    const int rings = 32;
+    const int segments = 64;
+    VtVec3fArray points;
+    VtVec3iArray triangles;
+
+    for (int i = 0; i <= rings; ++i) {
+        const double theta = M_PI * i / rings;
+
+        for (int j = 0; j < segments; ++j) {
+            const double phi = 2. * M_PI * j / segments;
+
+            points.push_back(GfVec3f(centre + radius * GfVec3d(std::sin(theta) * std::cos(phi), std::cos(theta), std::sin(theta) * std::sin(phi))));
+        }
+    }
+    for (int i = 0; i < rings; ++i) {
+        for (int j = 0; j < segments; ++j) {
+            const int a = i * segments + j;
+            const int b = i * segments + (j + 1) % segments;
+
+            triangles.push_back(GfVec3i(a, a + segments, b));
+            triangles.push_back(GfVec3i(b, a + segments, b + segments));
+        }
+    }
+
+    const UtilityScene::GeometryId id = scene.addGeometry(SdfPath("/" + name), primId);
+
+    scene.setTopology(id, points, triangles);
+    scene.setColors(id, UtilityScene::eColorBindingConstant, VtVec4fArray { GfVec4f(1.f, 1.f, 1.f, 1.f) });
+    scene.setInstances(id, { GfMatrix4d(1.) });
+    scene.setMaterialId(id, SdfPath(material));
+}
+
+// The mean over the pixels and the colour channels of how far the two filtered films differ.
+double
+meanDifference(const AovFilm& a,
+               const AovFilm& b)
+{
+    double sum = 0.;
+
+    for (std::size_t pixel = 0; pixel < a.color.size(); ++pixel) {
+        const GfVec4f x = a.filtered(pixel);
+        const GfVec4f y = b.filtered(pixel);
+
+        for (int c = 0; c < 3; ++c) {
+            sum += std::fabs(x[c] - y[c]);
+        }
+    }
+
+    return sum / (3. * a.color.size());
+}
+
+// A white floor in the sun, and a panel high above it, out of the frame, whose shadow covers much of it.
+void
+shadowedFloor(UtilityScene& scene,
+              bool withCaster)
+{
+    UtilityLightDesc sun;
+
+    sun.type = UtilityLightDesc::eTypeDistant;
+    sun.transform.SetRotate(GfRotation(GfVec3d(0., 1., 0.), 45.));
+    sun.angleDegrees = 0.f;
+    sun.emission = GfVec3f(3.f);
+    scene.setLight(SdfPath("/Sun"), std::make_shared<const UtilityLightDesc>(sun));
+
+    UtilityMaterialDesc floor;
+
+    floor.diffuseColor = GfVec3f(1.f);
+    addPanel(scene, "Floor", 1, GfVec3d(0.), GfVec3d(100., 0., 0.), GfVec3d(0., 100., 0.), addMaterial(scene, "Floor", floor));
+    if (withCaster) {
+        // At a height of 20 under a sun 45 degrees from the vertical, the panel's shadow falls 20 across, away
+        // from the light's side: from 5 to 45 on that side of the frame's centre, which ends at 24.
+        const GfVec3d toLight = sun.transform.TransformDir(GfVec3d(0., 0., 1.));
+        const double side = toLight[0] > 0. ? 1. : -1.;
+
+        addPanel(scene, "Caster", 2, GfVec3d(side * 45., 0., 20.), GfVec3d(20., 0., 0.), GfVec3d(0., 100., 0.), addMaterial(scene, "Caster", UtilityMaterialDesc()));
+    }
+}
+
+// A mirror at 45 degrees turns the camera's rays up along +y onto a white ball above the frame, which shows in
+// it as a disc of radius 14 at the frame's centre.
+void
+mirrorAndBall(UtilityScene& scene)
+{
+    const double s = std::sqrt(0.5);
+    UtilityMaterialDesc mirror;
+
+    mirror.diffuseColor = GfVec3f(1.f);
+    mirror.metallic = 1.f;
+    mirror.roughness = 0.f;
+    addPanel(scene, "Mirror", 1, GfVec3d(0.), GfVec3d(40., 0., 0.), GfVec3d(0., 40. * s, -40. * s), addMaterial(scene, "Mirror", mirror));
+    addBall(scene, "Ball", 2, GfVec3d(0., 45., 0.), 14., addMaterial(scene, "White", emitting(GfVec3f(1.f))));
+}
+
+// A glass ball in front of a backdrop, yellow on the left and cyan on the right, which it turns about.
+void
+glassBallAndBackdrop(UtilityScene& scene)
+{
+    UtilityMaterialDesc glass;
+
+    glass.diffuseColor = GfVec3f(1.f);
+    glass.opacity = 0.f;
+    glass.roughness = 0.f;
+    glass.ior = 1.5f;
+    addPanel(scene, "Left", 1, GfVec3d(-20., 0., -20.), GfVec3d(20., 0., 0.), GfVec3d(0., 40., 0.), addMaterial(scene, "Yellow", emitting(GfVec3f(1.f, 1.f, 0.f))));
+    addPanel(scene, "Right", 2, GfVec3d(20., 0., -20.), GfVec3d(20., 0., 0.), GfVec3d(0., 40., 0.), addMaterial(scene, "Cyan", emitting(GfVec3f(0.f, 1.f, 1.f))));
+    addBall(scene, "Glass", 3, GfVec3d(0.), 16., addMaterial(scene, "Glass", glass));
+}
+
 class NatronUtilityRaster : public gputest::SkippableTest {
 protected:
     void SetUp() override
@@ -636,6 +802,58 @@ protected:
         EXPECT_EQ(frame.rasterSamples, film.passes);
 
         return ok;
+    }
+
+    // Draws a frame in Ray mode at samplesPerSide squared samples a pixel.
+    bool drawRays(WavefrontGpu& executor,
+                  const UtilityScene& scene,
+                  WavefrontFrame frame,
+                  int samplesPerSide,
+                  AovFilm& film)
+    {
+        const std::atomic<bool> stop(false);
+
+        frame.raster = false;
+        frame.sampling.samplesPerSide = samplesPerSide;
+
+        const bool ok = wavefrontDrawSamples(executor, scene.snapshot(), frame, WavefrontMotion(), film, stop, 2, std::function<void(std::size_t)>());
+
+        EXPECT_TRUE(ok) << executor.status().message;
+
+        return ok;
+    }
+
+    // The scene drawn in Raster mode shows what the path after the camera rays adds to it: with as many passes
+    // as Ray mode has samples, it is within 0.05 of Ray mode on average, and so far from the plain render, the
+    // same frame without the effect, that the effect must show in it.
+    void expectRasterShowsTheEffect(const UtilityScene& scene,
+                                    const WavefrontFrame& frame,
+                                    const UtilityScene& plainScene,
+                                    const WavefrontFrame& plainFrame)
+    {
+        const int side = 4;
+        // An executor for each scene: the tracer tells scenes apart by their versions, which two scenes share.
+        WavefrontGpu executor(*_registry, *_pool, std::make_shared<int>(0));
+        WavefrontGpu plainExecutor(*_registry, *_pool, std::make_shared<int>(0));
+        WavefrontFrame rasterFrame = frame;
+        AovFilm ray;
+        AovFilm raster;
+        AovFilm plain;
+
+        rasterFrame.raster = true;
+        rasterFrame.rasterSamples = side * side;
+        ASSERT_TRUE(drawRays(executor, scene, frame, side, ray));
+        ASSERT_TRUE(drawPasses(executor, scene, rasterFrame, WavefrontMotion(), raster));
+        ASSERT_TRUE(drawRays(plainExecutor, plainScene, plainFrame, side, plain));
+
+        const double effect = meanDifference(ray, plain);
+        const double fromRay = meanDifference(raster, ray);
+        const double fromPlain = meanDifference(raster, plain);
+
+        std::printf("[   NOTE   ] the effect: %.4f; Raster from Ray: %.4f, from the plain render: %.4f\n", effect, fromRay, fromPlain);
+        EXPECT_GT(effect, 0.1) << "the scene is too plain to test this";
+        EXPECT_LT(fromRay, 0.05);
+        EXPECT_GT(fromPlain, effect / 2.);
     }
 
     gputest::ValidationCheck _check;
@@ -871,6 +1089,204 @@ GPU_TEST_F(NatronUtilityRaster, SmallTilesEqualOneTile)
             ASSERT_NEAR(whole.filtered(pixel)[c], tiled.filtered(pixel)[c], 1e-5f) << "pixel " << pixel;
         }
     }
+}
+
+// The camera rays' hits come from the visibility buffer, and the shadow rays from them are traced: the panel
+// above the frame shades the floor as in Ray mode.
+GPU_TEST_F(NatronUtilityRaster, ShadowsShowAsInRayMode)
+{
+    UtilityScene scene;
+    UtilityScene plain;
+
+    shadowedFloor(scene, true);
+    shadowedFloor(plain, false);
+    expectRasterShowsTheEffect(scene, pixelFrame(), plain, pixelFrame());
+}
+
+GPU_TEST_F(NatronUtilityRaster, AMirrorReflectionShowsAsInRayMode)
+{
+    UtilityScene scene;
+
+    mirrorAndBall(scene);
+
+    WavefrontFrame unreflected = pixelFrame();
+
+    unreflected.maxRayDepth = 0;
+    expectRasterShowsTheEffect(scene, pixelFrame(), scene, unreflected);
+}
+
+GPU_TEST_F(NatronUtilityRaster, ARefractingBallShowsAsInRayMode)
+{
+    UtilityScene scene;
+
+    glassBallAndBackdrop(scene);
+
+    WavefrontFrame unrefracted = pixelFrame();
+
+    unrefracted.refractionDepth = 0;
+    expectRasterShowsTheEffect(scene, pixelFrame(), scene, unrefracted);
+}
+
+namespace {
+// Writes a checkerboard of 32-texel squares, so that a smeared plate shows in the shading cost as it would in a shot.
+bool
+writeCheckerPlate(const std::string& path,
+                  int size)
+{
+    std::vector<unsigned char> bytes;
+
+    bytes.reserve(static_cast<std::size_t>(size) * size * 4);
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            const bool light = ((x / 32) + (y / 32)) % 2 == 0;
+
+            bytes.push_back(light ? 230 : 40);
+            bytes.push_back(light ? 200 : 60);
+            bytes.push_back(light ? 120 : 90);
+            bytes.push_back(255);
+        }
+    }
+
+    HioImage::StorageSpec spec;
+
+    spec.width = size;
+    spec.height = size;
+    spec.depth = 1;
+    spec.format = HioFormatUNorm8Vec4;
+    spec.flipped = false;
+    spec.data = bytes.data();
+
+    const HioImageSharedPtr image = HioImage::OpenForWriting(path);
+
+    return image && image->Write(spec);
+}
+
+class DiscardingFilm : public WavefrontFilm {
+public:
+    virtual void writeTile(const WavefrontTile&) override
+    {
+        ++tiles;
+    }
+
+    virtual WavefrontAovs aovs() const override
+    {
+        WavefrontAovs aovs;
+
+        aovs.depth = false;
+        aovs.primId = false;
+        aovs.instanceId = false;
+
+        return aovs;
+    }
+
+    std::size_t tiles = 0;
+};
+} // anon namespace
+
+// Set NATRON_UTILITY_RASTER_BENCH to run: an HD frame of a card carrying a plate projected from a camera, sliding
+// and turning over an open shutter, drawn in Ray mode and in Raster mode at the same samples a pixel.
+GPU_TEST_F(NatronUtilityRaster, BenchAProjectedCardWithMotionBlurInRayAndRasterModes)
+{
+    if (!std::getenv("NATRON_UTILITY_RASTER_BENCH")) {
+        std::printf("[  SKIPPED ] set NATRON_UTILITY_RASTER_BENCH to run the bench\n");
+
+        return;
+    }
+    const int width = 1920;
+    const int height = 1080;
+    const int side = 6;
+    const int reps = 3;
+    QTemporaryDir dir;
+
+    ASSERT_TRUE(dir.isValid());
+
+    const std::string plate = dir.filePath(QString::fromUtf8("plate.png")).toStdString();
+
+    ASSERT_TRUE(writeCheckerPlate(plate, 1024));
+
+    GfFrustum camera;
+
+    camera.SetPerspective(40., double(width) / height, 0.5, 100.);
+    camera.SetPosition(GfVec3d(0., 0., 10.));
+
+    GfMatrix4d toUnit(1.);
+
+    toUnit.SetRow(0, GfVec4d(0.5, 0., 0., 0.));
+    toUnit.SetRow(1, GfVec4d(0., 0.5, 0., 0.));
+    toUnit.SetRow(3, GfVec4d(0.5, 0.5, 0., 1.));
+
+    UtilityTextureRef texture;
+
+    texture.asset = plate;
+    texture.colorSpace = UtilityTextureRef::eColorSpaceRaw;
+
+    UtilityMaterialDesc material;
+
+    material.kind = UtilityMaterialDesc::eKindProject3D;
+    material.projection.worldToProjector = camera.ComputeViewMatrix() * camera.ComputeProjectionMatrix() * toUnit;
+    material.projection.projectorOrigin = GfVec4f(0.f, 0.f, 10.f, 1.f);
+    material.projection.plate = 0;
+    material.textureRefs.push_back(texture);
+
+    UtilityScene scene;
+    const UtilityScene::GeometryId card = scene.addGeometry(SdfPath("/card"), 1);
+
+    scene.setTopology(card, VtVec3fArray { GfVec3f(-6.f, -4.f, 0.f), GfVec3f(6.f, -4.f, 0.f), GfVec3f(6.f, 4.f, 0.f), GfVec3f(-6.f, 4.f, 0.f) }, quadTriangles());
+    scene.setMaterial(SdfPath("/Projection"), std::make_shared<const UtilityMaterialDesc>(material));
+    scene.setMaterialId(card, SdfPath("/Projection"));
+    moveInstance(scene, card, placed(GfVec3d(0., 1., 0.), -10., GfVec3d(-0.8, 0., 0.)), placed(GfVec3d(0., 1., 0.), 10., GfVec3d(0.8, 0., 0.)));
+    EXPECT_TRUE(scene.warnings().empty());
+
+    WavefrontFrame frame;
+
+    frame.worldToView = camera.ComputeViewMatrix();
+    frame.projection = camera.ComputeProjectionMatrix();
+    frame.window.width = width;
+    frame.window.height = height;
+    frame.sampling.samplesPerSide = side;
+    frame.sampling.seed = 7;
+    frame.maxRayDepth = 0;
+    frame.rasterSamples = side * side;
+
+    WavefrontGpu executor(*_registry, *_pool, std::make_shared<int>(0));
+    const WavefrontMotion motion = openShutter();
+    const std::atomic<bool> stop(false);
+    const auto seconds = [&](bool raster) {
+        WavefrontFrame drawn = frame;
+        DiscardingFilm film;
+
+        drawn.raster = raster;
+
+        const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        const bool ok = wavefrontDrawSamples(executor, scene.snapshot(), drawn, motion, film, stop, 2, std::function<void(std::size_t)>());
+        const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+
+        EXPECT_TRUE(ok) << executor.status().message;
+        EXPECT_GT(film.tiles, 0u);
+
+        return elapsed;
+    };
+
+    // Each mode once untimed, for its kernels' pipelines and the scene's device tables.
+    seconds(false);
+    seconds(true);
+    EXPECT_TRUE(WavefrontGpu::waitForWarmUps(*_device, std::chrono::milliseconds(60000)));
+
+    double ray = 0.;
+    double raster = 0.;
+
+    for (int rep = 0; rep < reps; ++rep) {
+        ray += seconds(false) / reps;
+        raster += seconds(true) / reps;
+    }
+    std::printf("[   BENCH  ] projected card, %dx%d, %d samples a pixel, open shutter, on %s: Ray %.3f s, Raster %.3f s, Raster %.2fx as fast\n",
+                width,
+                height,
+                side * side,
+                _device->info().name.c_str(),
+                ray,
+                raster,
+                raster > 0. ? ray / raster : 0.);
 }
 
 #endif // NATRON_HAVE_GPU

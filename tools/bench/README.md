@@ -270,6 +270,20 @@ python3 tools/bench/cache_probe_bench.py --tests build/release/Tests/Tests --dir
 `docs/cache/tiered-cache.md` (Assumed costs) says what each number means and what it decides. Results are appended to
 `build/bench/cache-probe.jsonl`; the exit code is non-zero when `miss_per_frame_ms` passes the 30 ms estimate.
 
+## Utility raster bench
+
+`utility_raster_bench.sh` needs a built `Tests` and a Vulkan device with ray queries and the raster visibility
+capability; it runs by hand, not in ctest. It times Natron Utility's Ray and Raster modes on the same HD
+projected-card shot with transform motion blur, at 36 samples a pixel each, and prints one line with both times
+and the speed-up.
+
+```
+tools/bench/utility_raster_bench.sh --tests build/release/Tests/Tests [--device <NATRON_GPU_DEVICE name>]
+```
+
+Without the script: `NATRON_UTILITY_RASTER_BENCH=1 build/release/Tests/Tests --gtest_filter='NatronUtilityRaster.Bench*'`.
+On llvmpipe the numbers say nothing about hardware; run it on the GPU host.
+
 ## Page-fault bench
 
 `page_fault_bench.c` faults a fresh anonymous buffer and reports what the kernel did, with no Natron

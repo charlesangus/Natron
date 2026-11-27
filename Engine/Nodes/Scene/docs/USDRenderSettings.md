@@ -60,6 +60,13 @@ with no settings says only that.
 ### Natron Utility
 
 - Device: Auto, GPU or CPU (see USDRender).
+- Render Mode: Ray (the default) or Raster, how the camera finds what each
+  pixel sees (see USDRender). Raster Samples (32), shown only in Raster, is
+  how many passes Raster draws a frame in. Each pass is one sample of every
+  pixel at one sub-pixel offset and one moment of the shutter, so a low value
+  steps visibly: a moving object shows as that many separate copies rather
+  than a smooth smear, and edges show few levels. Pixel Samples does not
+  apply in Raster.
 - Sampling: Pixel Samples (3, a 3 by 3 grid a pixel), Pixel Filter, Filter
   Width and Seed.
 - Ray depths: Max Cutouts, the surfaces a ray passes through before it gives

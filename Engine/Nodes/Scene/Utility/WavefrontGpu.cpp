@@ -1291,6 +1291,11 @@ WavefrontGpu::Implementation::rasterHits(const WavefrontFrame& frame,
         std::make_pair(&hitIds, static_cast<VkDeviceSize>(kHitArrays * count * sizeof(std::uint32_t))),
     };
     const std::atomic<bool>& stop = rec.stop();
+    // Every call after a context's abort check has fired fails, not only the one that ran it: a stop that lands
+    // between draws and the rebuild must still end the frame as stopped rather than as failed.
+    const auto failUnlessStopped = [this, &stop](const std::string& what, const gpu::GpuStatus& s) {
+        return (s.aborted || stop.load(std::memory_order_relaxed)) ? stopped() : fail(what, s);
+    };
 
     for (int tileY = 0; tileY < rect.height; tileY += step) {
         for (int tileX = 0; tileX < rect.width; tileX += step) {
@@ -1340,16 +1345,16 @@ WavefrontGpu::Implementation::rasterHits(const WavefrontFrame& frame,
             visibilityPass.jitter[1] = pass.jitter[1];
             visibilityPass.time = pass.time;
             if (gpu::GpuStatus s = ctx->beginRasterUint(*visibilityColour, { Tracer::kNoHit, Tracer::kNoHit, 0u, 0u }, visibilityDepth.get(), 1.0f); !s) {
-                return fail("WavefrontGpu could not begin a visibility pass", s);
+                return failUnlessStopped("WavefrontGpu could not begin a visibility pass", s);
             }
             if (gpu::GpuStatus s = tracer.recordVisibility(*ctx, visibilityPass); !s) {
-                return s.aborted ? stopped() : fail("WavefrontGpu could not draw a visibility pass", s);
+                return failUnlessStopped("WavefrontGpu could not draw a visibility pass", s);
             }
             if (gpu::GpuStatus s = ctx->endRaster(); !s) {
-                return fail("WavefrontGpu could not end a visibility pass", s);
+                return failUnlessStopped("WavefrontGpu could not end a visibility pass", s);
             }
             if (gpu::GpuStatus s = ctx->copyToImage(*visibility); !s) {
-                return fail("WavefrontGpu could not read a visibility buffer", s);
+                return failUnlessStopped("WavefrontGpu could not read a visibility buffer", s);
             }
 
             params.tileX = tileX;
@@ -1363,23 +1368,23 @@ WavefrontGpu::Implementation::rasterHits(const WavefrontFrame& frame,
             };
 
             if (gpu::GpuStatus s = ctx->dispatchBindings(rasterHitsKernel, bindings, std::as_bytes(std::span(&params, 1)), { static_cast<std::uint32_t>(texels), 1, 1 }); !s) {
-                return fail("WavefrontGpu could not rebuild the hits of a visibility pass", s);
+                return failUnlessStopped("WavefrontGpu could not rebuild the hits of a visibility pass", s);
             }
             if (last) {
                 for (const auto& [buffer, bytes] : handed) {
                     if (gpu::GpuStatus s = ctx->releaseToOtherQueue(*buffer, 0, bytes); !s) {
-                        return fail("WavefrontGpu could not hand a visibility pass's hits to its compute queue", s);
+                        return failUnlessStopped("WavefrontGpu could not hand a visibility pass's hits to its compute queue", s);
                     }
                 }
             }
             if (gpu::GpuStatus s = ctx->submitAndWait(kRasterSubmitTimeoutNs, [&stop]() { return stop.load(std::memory_order_relaxed); }); !s) {
-                return (s.aborted || stop.load(std::memory_order_relaxed)) ? stopped() : fail("WavefrontGpu could not draw a visibility pass", s);
+                return failUnlessStopped("WavefrontGpu could not draw a visibility pass", s);
             }
         }
     }
     for (const auto& [buffer, bytes] : handed) {
         if (gpu::GpuStatus s = rec.ctx().acquireFromOtherQueue(*buffer, 0, bytes); !s) {
-            return fail("WavefrontGpu could not take a visibility pass's hits on its compute queue", s);
+            return failUnlessStopped("WavefrontGpu could not take a visibility pass's hits on its compute queue", s);
         }
     }
 

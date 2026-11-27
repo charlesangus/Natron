@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -271,6 +272,67 @@ TEST_P(GeoUVFlattenSolverTest, SinglePinPlacesItsReference)
     EXPECT_NEAR(result.uv[pin.referenceVertex][1], 0.75, 1e-9);
 }
 
+TEST_P(GeoUVFlattenSolverTest, TwoPinsOnOneVertexAreOnePin)
+{
+    const GeoDetail detail = grid(4, 4, dome);
+    const Flattened f = chartsOf(detail, std::set<GeoEdge>());
+    const GeoUVFlattenChartResult free = flatten(f.charts[0], GeoUVFlattenChartConstraints(), GetParam());
+    GeoUVFlattenChartConstraints constraints;
+    GeoUVFlattenPin pin;
+    pin.vertex = chartVertexOfPoint(detail, f, 0);
+    pin.uv = { 0., 0. };
+    constraints.pins.push_back(pin);
+    pin.uv = { 0.2, 0.3 };
+    constraints.pins.push_back(pin);
+    const GeoUVFlattenChartResult result = flatten(f.charts[0], constraints, GetParam());
+    EXPECT_TRUE(result.placed);
+    EXPECT_EQ(result.uv[pin.vertex][0], 0.2);
+    EXPECT_EQ(result.uv[pin.vertex][1], 0.3);
+    EXPECT_NEAR(uvArea(f.charts[0], result.uv), uvArea(f.charts[0], free.uv), 1e-6 * uvArea(f.charts[0], free.uv));
+}
+
+TEST_P(GeoUVFlattenSolverTest, ARepeatedPinDoesNotCollapseTheChart)
+{
+    const GeoDetail detail = grid(4, 4, dome);
+    const Flattened f = chartsOf(detail, std::set<GeoEdge>());
+    GeoUVFlattenChartConstraints constraints;
+    GeoUVFlattenPin pin;
+    pin.vertex = chartVertexOfPoint(detail, f, 0);
+    pin.uv = { 0.5, 0.5 };
+    constraints.pins.push_back(pin);
+    pin.uv = { 0.1, 0.2 };
+    constraints.pins.push_back(pin);
+    GeoUVFlattenPin other;
+    other.vertex = chartVertexOfPoint(detail, f, 24);
+    other.uv = { 0.9, 0.8 };
+    constraints.pins.push_back(other);
+    const GeoUVFlattenChartResult result = flatten(f.charts[0], constraints, GetParam());
+    EXPECT_TRUE(result.placed);
+    EXPECT_EQ(result.uv[pin.vertex][0], 0.1);
+    EXPECT_EQ(result.uv[pin.vertex][1], 0.2);
+    EXPECT_EQ(result.uv[other.vertex][0], 0.9);
+    EXPECT_EQ(result.uv[other.vertex][1], 0.8);
+    EXPECT_GT(std::fabs(uvArea(f.charts[0], result.uv)), 0.1);
+}
+
+TEST_P(GeoUVFlattenSolverTest, CancelDuringASolveStopsIt)
+{
+    const GeoDetail detail = grid(120, 120, dome);
+    const Flattened f = chartsOf(detail, std::set<GeoEdge>());
+    std::atomic<int> polls { 0 };
+    const auto aborted = [&polls]() {
+        return ++polls > 1;
+    };
+    GeoUVFlattenChartResult result;
+    std::string error;
+    EXPECT_FALSE(geoFlattenUVChart(f.charts[0], GeoUVFlattenChartConstraints(), GetParam(), &result, &error, aborted));
+    EXPECT_TRUE(result.aborted);
+    EXPECT_FALSE(result.solved);
+    EXPECT_FALSE(result.placed);
+    EXPECT_TRUE(error.empty()) << error;
+    EXPECT_EQ(polls.load(), 2);
+}
+
 TEST_P(GeoUVFlattenSolverTest, AlignedGroupsShareAnAxis)
 {
     const GeoDetail detail = grid(6, 6, dome);
@@ -371,6 +433,40 @@ TEST(GeoUVFlattenSolver, PreservedBoundaryKeepsItsShape)
     const int centre = chartVertexOfPoint(detail, f, 12);
     EXPECT_NEAR(result.uv[centre][0], 3., 0.05);
     EXPECT_NEAR(result.uv[centre][1], 1., 0.05);
+}
+
+TEST(GeoUVFlattenSolver, AClosedChartHasNoBoundaryToPreserve)
+{
+    const GeoDetail detail = cube();
+    const Flattened f = chartsOf(detail, std::set<GeoEdge>());
+    ASSERT_EQ(f.charts.size(), 1u);
+    const GeoUVFlattenChart& chart = f.charts[0];
+    GeoUVFlattenChartConstraints constraints;
+    constraints.preservedBoundary.assign(chart.positions.size(), GeoUV { 0., 0. });
+    GeoUVFlattenChartResult result;
+    std::string error;
+    geoFlattenUVChart(chart, constraints, eGeoUVFlattenMethodSCP, &result, &error);
+    EXPECT_FALSE(result.placed);
+}
+
+TEST(GeoUVFlattenSolver, AClosedStraightenedLoopAnchorsFarApart)
+{
+    const GeoDetail detail = grid(6, 6, dome);
+    const Flattened f = chartsOf(detail, std::set<GeoEdge>());
+    const GeoOffset ring[] = { 16, 17, 18, 25, 32, 31, 30, 23 };
+    const std::size_t count = sizeof(ring) / sizeof(ring[0]);
+    std::vector<std::array<int, 2>> edges;
+    for (std::size_t i = 0; i < count; ++i) {
+        edges.push_back({ chartVertexOfPoint(detail, f, ring[i]), chartVertexOfPoint(detail, f, ring[(i + 1) % count]) });
+    }
+    GeoUVFlattenChartConstraints constraints;
+    constraints.straightenings.push_back(edges);
+    const GeoUVFlattenChartResult result = flatten(f.charts[0], constraints, eGeoUVFlattenMethodABF);
+    EXPECT_FALSE(result.fellBack);
+    for (const GeoUV& uv : result.uv) {
+        EXPECT_TRUE(std::isfinite(uv[0]) && std::isfinite(uv[1]));
+    }
+    EXPECT_GT(std::fabs(uvArea(f.charts[0], result.uv)), 1.);
 }
 
 TEST(GeoUVFlattenSolver, MinimumAreaRotationAlignsARotatedRectangle)

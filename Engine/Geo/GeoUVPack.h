@@ -147,7 +147,9 @@ GeoUV geoUVPackApply(const GeoUVPackPlacement& placement,
  * placing each, largest first, at the lowest place it fits, trying every rotation and target.
  * Iterations repeat the packing in random orders seeded from seed, in parallel, keeping the one
  * that packs the most and then stays lowest. Identical (and with stackMirrored, mirrored)
- * islands are stacked onto the first of them instead of being packed. Fails, with *errorMessage
+ * islands are stacked onto the first of them instead of being packed, when that first is an
+ * obstacle or has the same scale. When no scale fits every island, the largest scale that fit the
+ * most is kept, the search stopping once the islands are smaller than a cell. Fails, with *errorMessage
  * set, for an empty target, a resolution below 1 or a scale that is not positive; fails with
  * result->aborted set and no message when params.aborted stopped it.
  **/

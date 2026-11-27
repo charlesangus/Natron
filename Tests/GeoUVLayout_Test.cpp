@@ -453,6 +453,90 @@ TEST(GeoUVLayout, PointUVStaysOnPoints)
     EXPECT_LE(value[0], 1. + 1e-6);
 }
 
+TEST(GeoUVLayout, PointUVSharedByTwoIslandsBecomesVertexUV)
+{
+    GeoDetailBuilder b;
+    const GeoOffset first = b.appendPoints(6);
+    for (int i = 0; i < 6; ++i) {
+        b.setPointPosition(first + i, i % 3, i / 3, 0.);
+    }
+    b.appendPrimitives(eGeoPrimitivePolygon, std::vector<std::int32_t> { 4, 4 }, std::vector<GeoOffset> { 0, 1, 4, 3, 1, 2, 5, 4 });
+    GeoAttribute& uv = b.addAttribute(eGeoAttribClassPoint, GeoAttributeDesc { "uv", eGeoStorageFloat32, 2, eGeoTypeInfoNone, false });
+    for (GeoOffset point = 0; point < 6; ++point) {
+        const std::array<double, 3> p = b.detail().pointPosition(point);
+        const double value[2] = { p[0], p[1] };
+        geoWriteNumeric(uv, (std::size_t)point, std::span<const double>(value, 2));
+    }
+    const GeoDetail input = b.finish();
+    GeoUVLayoutParams params = plainParams();
+    params.islands.separatorEdges = "p1-4";
+    GeoUVLayoutReport report;
+    const GeoDetail out = layout(input, params, &report);
+    EXPECT_TRUE(report.promotedToVertices);
+    EXPECT_EQ(out.findAttribute(eGeoAttribClassPoint, "uv"), nullptr);
+    const GeoAttribute* moved = out.findAttribute(eGeoAttribClassVertex, "uv");
+    ASSERT_NE(moved, nullptr);
+    EXPECT_EQ(moved->desc().tupleSize, 2);
+    EXPECT_EQ(moved->desc().storage, eGeoStorageFloat32);
+    const std::vector<GeoUV> left = ringOf(out, 0);
+    const std::vector<GeoUV> right = ringOf(out, 1);
+    EXPECT_NEAR(area(left), area(right), 1e-6);
+    EXPECT_GT(area(left), 0.1);
+    EXPECT_FALSE(overlap(left, right));
+    for (const std::vector<GeoUV>* ring : { &left, &right }) {
+        for (std::size_t k = 0; k < 4; ++k) {
+            const GeoUV& a = (*ring)[k];
+            const GeoUV& c = (*ring)[(k + 1) % 4];
+            EXPECT_NEAR(std::hypot(c[0] - a[0], c[1] - a[1]), std::sqrt(area(*ring)), 1e-5);
+        }
+    }
+}
+
+TEST(GeoUVLayout, DegeneratePolygonsMoveWithTheirIsland)
+{
+    GeoDetailBuilder b;
+    const GeoOffset first = b.appendPoints(4);
+    const double corner[4][2] = { { 0., 0. }, { 1., 0. }, { 1., 1. }, { 0., 1. } };
+    for (int k = 0; k < 4; ++k) {
+        b.setPointPosition(first + k, corner[k][0], corner[k][1], 0.);
+    }
+    b.appendPrimitives(eGeoPrimitivePolygon, std::vector<std::int32_t> { 4, 3 }, std::vector<GeoOffset> { 0, 1, 2, 3, 1, 2, 2 });
+    GeoAttribute& uv = b.addAttribute(eGeoAttribClassVertex, GeoAttributeDesc { "uv", eGeoStorageFloat64, 2, eGeoTypeInfoNone, false });
+    b.detail().vertexMap().forEachLive([&](GeoIndex, GeoOffset vertex) {
+        const std::array<double, 3> p = b.detail().pointPosition(b.detail().vertexPoint(vertex));
+        const double value[2] = { 10. + p[0], 10. + p[1] };
+        geoWriteNumeric(uv, (std::size_t)vertex, std::span<const double>(value, 2));
+    });
+    const GeoDetail input = b.finish();
+    GeoUVLayoutReport report;
+    const GeoDetail out = layout(input, plainParams(), &report);
+    EXPECT_EQ(report.degenerateFaces, 1);
+    const std::vector<GeoUV> quad = ringOf(out, 0);
+    const std::vector<GeoUV> sliver = ringOf(out, 1);
+    for (const GeoUV& p : quad) {
+        EXPECT_LE(p[0], 1. + 1e-9);
+        EXPECT_LE(p[1], 1. + 1e-9);
+    }
+    EXPECT_NEAR(sliver[0][0], quad[1][0], 1e-9);
+    EXPECT_NEAR(sliver[0][1], quad[1][1], 1e-9);
+    EXPECT_NEAR(sliver[1][0], quad[2][0], 1e-9);
+    EXPECT_NEAR(sliver[1][1], quad[2][1], 1e-9);
+    EXPECT_NEAR(sliver[2][0], quad[2][0], 1e-9);
+    EXPECT_NEAR(sliver[2][1], quad[2][1], 1e-9);
+}
+
+TEST(GeoUVLayout, UDIMTargetsBelowTheFirstTileAreCounted)
+{
+    const GeoDetail input = quads({ Quad(), Quad() });
+    GeoUVLayoutParams params = plainParams();
+    params.pack.targetType = eGeoUVPackTargetUDIM;
+    params.targetOverrides = "0:500";
+    GeoUVLayoutReport report;
+    layout(input, params, &report);
+    EXPECT_EQ(report.invalidTargets, 1);
+    EXPECT_EQ(report.nonpacked, 0);
+}
+
 TEST(GeoUVLayout, MalformedOverridesAreCounted)
 {
     const GeoDetail input = quads({ Quad() });

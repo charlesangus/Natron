@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <map>
 #include <random>
 #include <string>
@@ -278,6 +279,67 @@ TEST(GeoUVPack, TheSameSeedGivesTheSameLayout)
     }
 }
 
+TEST(GeoUVPack, AnotherSeedCanGiveAnotherLayout)
+{
+    std::vector<GeoUVPackIsland> islands;
+    for (int i = 0; i < 6; ++i) {
+        GeoUVPackIsland triangle;
+        triangle.polygons = { { { 0., 0. }, { 1. + 0.3 * i, 0. }, { 0.2 * i, 0.5 + 0.1 * i } } };
+        islands.push_back(triangle);
+        islands.push_back(mapped(lShape(), 0.2 + 0.05 * i, 0., 0., 0.2 + 0.05 * i, 3. * i, 5.));
+    }
+    GeoUVPackParams params;
+    params.iterations = 6;
+    params.seed = 11;
+    params.resolution = 64;
+    params.scaleTolerance = 0.02;
+    const GeoUVPackResult reference = pack(islands, params);
+    bool differs = false;
+    for (std::uint32_t seed = 1; (seed <= 32) && !differs; ++seed) {
+        if (seed == 11) {
+            continue;
+        }
+        params.seed = seed;
+        const GeoUVPackResult other = pack(islands, params);
+        differs = other.scale != reference.scale;
+        for (std::size_t i = 0; (i < other.placements.size()) && !differs; ++i) {
+            differs = (other.placements[i].m != reference.placements[i].m) || (other.placements[i].t != reference.placements[i].t);
+        }
+    }
+    EXPECT_TRUE(differs);
+}
+
+TEST(GeoUVPack, StackingNeedsTheSameScale)
+{
+    std::vector<GeoUVPackIsland> islands = { lShape(), mapped(lShape(), 1., 0., 0., 1., 5., 0.), mapped(lShape(), 1., 0., 0., 1., 10., 0.) };
+    islands[1].scale = 2.;
+    GeoUVPackParams params;
+    params.resolution = 64;
+    params.scaleTolerance = 0.02;
+    params.stackIdentical = true;
+    const GeoUVPackResult result = pack(islands, params);
+    EXPECT_EQ(result.placements[0].stackedOn, -1);
+    EXPECT_EQ(result.placements[1].stackedOn, -1);
+    EXPECT_EQ(result.placements[2].stackedOn, 0);
+    const Box small = placedBox(islands[0], result.placements[0]);
+    const Box large = placedBox(islands[1], result.placements[1]);
+    EXPECT_NEAR((large.x1 - large.x0) * (large.y1 - large.y0), 4. * (small.x1 - small.x0) * (small.y1 - small.y0), 1e-9);
+    EXPECT_GE(separation(small, large), 1. / 64. - 1e-9);
+}
+
+TEST(GeoUVPack, NoScaleFittingEverythingKeepsAUsableScale)
+{
+    std::vector<GeoUVPackIsland> islands = { square(0., 0., 1.), square(3., 3., 0.5) };
+    islands[0].obstacle = true;
+    GeoUVPackParams params;
+    params.resolution = 32;
+    params.avoidObstacles = true;
+    const GeoUVPackResult result = pack(islands, params);
+    EXPECT_FALSE(result.placements[1].packed);
+    EXPECT_EQ(result.nonpacked, 1);
+    EXPECT_GT(result.scale, 0.1);
+}
+
 TEST(GeoUVPack, StackingPutsIdenticalAndMirroredIslandsOnTheFirst)
 {
     const GeoUVPackIsland first = lShape();
@@ -410,6 +472,32 @@ TEST(GeoUVPack, CancelReturnsPromptly)
     EXPECT_TRUE(result.aborted);
     EXPECT_TRUE(error.empty()) << error;
     EXPECT_LT(seconds, 3.);
+}
+
+TEST(GeoUVPack, CancelDuringStackingReturnsPromptly)
+{
+    std::mt19937 rng(7);
+    std::uniform_real_distribution<double> size(0.01, 0.2);
+    std::vector<GeoUVPackIsland> islands;
+    for (int i = 0; i < 20000; ++i) {
+        GeoUVPackIsland triangle;
+        triangle.polygons = { { { 0., 0. }, { size(rng), 0. }, { 0., size(rng) } } };
+        islands.push_back(triangle);
+    }
+    GeoUVPackParams params;
+    params.stackIdentical = true;
+    params.stackMirrored = true;
+    const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    params.aborted = [start]() {
+        return std::chrono::steady_clock::now() - start > std::chrono::milliseconds(20);
+    };
+    GeoUVPackResult result;
+    std::string error;
+    EXPECT_FALSE(geoPackUVIslands(islands, params, &result, &error));
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    EXPECT_TRUE(result.aborted);
+    EXPECT_TRUE(error.empty()) << error;
+    EXPECT_LT(seconds, 2.);
 }
 
 TEST(GeoUVPack, BadParametersFail)

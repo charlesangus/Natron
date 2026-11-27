@@ -104,6 +104,8 @@ struct GeoUVFlattenChartResult {
     // True when pins or a preserved boundary fix the result's position, so packing leaves it
     // where it is.
     bool placed = false;
+    // True when aborted() stopped the solve; the uv are then meaningless.
+    bool aborted = false;
     int degenerateFaces = 0;
 };
 
@@ -122,17 +124,21 @@ void geoBuildUVFlattenCharts(const GeoDetail& detail,
  * @brief Flattens one chart, minimizing angular distortion with the method and honouring the
  * constraints. Charts without placing constraints are scaled so their uv area equals their
  * surface area. Faces with no area are skipped and counted. An ABF solve that fails falls back
- * to SCP. Returns false with *errorMessage set when even SCP cannot solve.
+ * to SCP. Returns false with *errorMessage set when even SCP cannot solve. Pins are counted by
+ * distinct chart vertex, the last pin of a vertex winning. aborted() is polled before every
+ * factorisation and between the solver's iterations; once it returns true the solve stops and
+ * returns false with result->aborted set and no message.
  **/
 bool geoFlattenUVChart(const GeoUVFlattenChart& chart,
                        const GeoUVFlattenChartConstraints& constraints,
                        GeoUVFlattenMethodEnum method,
                        GeoUVFlattenChartResult* result,
-                       std::string* errorMessage);
+                       std::string* errorMessage,
+                       const std::function<bool()>& aborted = std::function<bool()>());
 
 /**
- * @brief geoFlattenUVChart() over every chart in parallel. Stops early, returning false with no
- * message, once aborted() returns true.
+ * @brief geoFlattenUVChart() over every chart in parallel. Stops early, within a chart's solve as
+ * well as between charts, returning false with no message, once aborted() returns true.
  **/
 bool geoFlattenUVCharts(const std::vector<GeoUVFlattenChart>& charts,
                         const std::vector<GeoUVFlattenChartConstraints>& constraints,

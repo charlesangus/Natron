@@ -248,6 +248,37 @@ TEST(GeoUVFlatten, PreserveLayoutKeepsExistingIslands)
     EXPECT_FALSE(same);
 }
 
+TEST(GeoUVFlatten, PinsOnKeptIslandsAreCounted)
+{
+    GeoDetailBuilder b;
+    buildCube(b);
+    GeoAttribute& uv = b.addAttribute(eGeoAttribClassVertex, GeoAttributeDesc { "uv", eGeoStorageFloat32, 3, eGeoTypeInfoNone, false });
+    const std::array<std::array<double, 3>, 4> square = { { { 0., 0., 0. }, { 0.25, 0., 0. }, { 0.25, 0.25, 0. }, { 0., 0.25, 0. } } };
+    const GeoVertexRange range = b.detail().primitiveVertices(0);
+    for (GeoOffset k = 0; k < 4; ++k) {
+        geoWriteNumeric(uv, (std::size_t)(range.start + k), std::span<const double>(square[(std::size_t)k]));
+    }
+    const GeoDetail input = b.finish();
+    GeoUVFlattenParams params;
+    params.seams = kEveryCubeEdge;
+    params.preserveLayout = true;
+    GeoUVFlattenPinSpec kept;
+    kept.primitive = 0;
+    kept.uv = { 0.7, 0.7 };
+    kept.referenceUV = kept.uv;
+    GeoUVFlattenPinSpec solved = kept;
+    solved.primitive = 3;
+    params.pins = { kept, solved };
+    GeoUVFlattenReport report;
+    const GeoDetail d = flatten(input, params, &report);
+    EXPECT_EQ(report.ignoredPins, 1);
+    const std::vector<GeoUV> after = ringOf(d, 0);
+    for (std::size_t k = 0; k < 4; ++k) {
+        EXPECT_EQ(after[k][0], square[k][0]);
+        EXPECT_EQ(after[k][1], square[k][1]);
+    }
+}
+
 TEST(GeoUVFlatten, PreserveSeamsCutsAlongExistingUVBreaks)
 {
     GeoUVFlattenParams first;
@@ -310,6 +341,34 @@ TEST(GeoUVFlatten, AlignmentFromAVertexGroupSharesV)
     const GeoDetail d = flatten(cube(), params);
     EXPECT_EQ(uvOf(d, 16)[1], uvOf(d, 17)[1]);
     EXPECT_GT(std::fabs(uvOf(d, 16)[0] - uvOf(d, 17)[0]), 1e-3);
+}
+
+TEST(GeoUVFlatten, ManualLayoutOffKeepsTheAlignment)
+{
+    GeoUVFlattenParams params;
+    params.enableManualLayout = false;
+    params.layoutSeams = kEveryCubeEdge;
+    params.seams = "p0-1-3-2-0 p0-4 p1-5 p2-6 p3-7";
+    GeoUVFlattenAlignmentSpec alignment;
+    alignment.group = "16 17";
+    alignment.axis = eGeoUVFlattenAxisU;
+    params.alignments.push_back(alignment);
+    const GeoDetail d = flatten(cube(), params);
+    EXPECT_NEAR(uvOf(d, 16)[1], uvOf(d, 17)[1], 1e-9);
+    EXPECT_GT(std::fabs(uvOf(d, 16)[0] - uvOf(d, 17)[0]), 1e-3);
+}
+
+TEST(GeoUVFlatten, MalformedAlignmentsAreIgnoredAndCounted)
+{
+    GeoUVFlattenParams params;
+    params.seams = kEveryCubeEdge;
+    GeoUVFlattenAlignmentSpec alignment;
+    alignment.group = "16 17";
+    alignment.malformed = true;
+    params.alignments.push_back(alignment);
+    GeoUVFlattenReport report;
+    flatten(cube(), params, &report);
+    EXPECT_EQ(report.ignoredAlignments, 1);
 }
 
 TEST(GeoUVFlatten, ManualLayoutOffFitsTheFinalIslandsOntoTheLayout)

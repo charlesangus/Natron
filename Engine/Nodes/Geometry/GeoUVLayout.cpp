@@ -517,6 +517,15 @@ layoutGeoUVs(GeoDetailBuilder& detail,
         }
         rotateRings(&island.polygons, turn[u]);
         island.target = hasTarget[u] ? (int)std::lround(target[u]) : -1;
+        if (island.target >= 0) {
+            const bool valid = (pack.targetType == eGeoUVPackTargetUDIM) ? (island.target >= 1001)
+                : (pack.targetType == eGeoUVPackTargetIslands)           ? ((std::size_t)island.target < pack.targetIslands.size())
+                                                                         : ((std::size_t)island.target < pack.rectangles.size());
+            if (!valid) {
+                ++r->invalidTargets;
+                island.target = -1;
+            }
+        }
         island.stackable = (units.islandCount[u] == 1);
         islands.push_back(std::move(island));
     }
@@ -553,6 +562,53 @@ layoutGeoUVs(GeoDetailBuilder& detail,
     r->nonpacked = packed.nonpacked;
     r->maxUdim = packed.maxUdim;
 
+    // A polygon with no area is no part of any island's shape, but one touching an island moves
+    // with it so the faces round it do not leave it behind: with the island it shares a uv with
+    // at one of its points when there is one, otherwise with any island sharing a point.
+    std::vector<std::vector<GeoOffset>> carried(count);
+    r->degenerateFaces = (int)units.islands.degenerate.size();
+    if (!units.islands.degenerate.empty()) {
+        std::vector<std::vector<std::pair<GeoOffset, int>>> users((std::size_t)d.pointMap().offsetSize());
+        std::vector<char> wanted(users.size(), 0);
+        for (GeoOffset primitive : units.islands.degenerate) {
+            const GeoVertexRange range = d.primitiveVertices(primitive);
+            for (GeoOffset k = 0; k < range.count; ++k) {
+                wanted[(std::size_t)d.vertexPoint(range.start + k)] = 1;
+            }
+        }
+        for (std::size_t u = 0; u < count; ++u) {
+            for (GeoOffset primitive : units.polygons[u]) {
+                const GeoVertexRange range = d.primitiveVertices(primitive);
+                for (GeoOffset k = 0; k < range.count; ++k) {
+                    const std::size_t point = (std::size_t)d.vertexPoint(range.start + k);
+                    if (wanted[point]) {
+                        users[point].emplace_back(range.start + k, (int)u);
+                    }
+                }
+            }
+        }
+        for (GeoOffset primitive : units.islands.degenerate) {
+            const GeoVertexRange range = d.primitiveVertices(primitive);
+            int unit = -1;
+            for (int pass = 0; (pass < 2) && (unit < 0); ++pass) {
+                for (GeoOffset k = 0; (k < range.count) && (unit < 0); ++k) {
+                    const GeoOffset vertex = range.start + k;
+                    const Vec3& own = uv.uvw[(std::size_t)vertex];
+                    for (const std::pair<GeoOffset, int>& user : users[(std::size_t)d.vertexPoint(vertex)]) {
+                        const Vec3& other = uv.uvw[(std::size_t)user.first];
+                        if ((pass == 1) || ((std::fabs(own[0] - other[0]) <= params.connectivityTolerance) && (std::fabs(own[1] - other[1]) <= params.connectivityTolerance))) {
+                            unit = user.second;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (unit >= 0) {
+                carried[(std::size_t)unit].push_back(primitive);
+            }
+        }
+    }
+
     std::vector<std::pair<GeoOffset, Vec3>> written;
     for (std::size_t u = 0; u < count; ++u) {
         const GeoUVPackPlacement& placement = packed.placements[u];
@@ -561,22 +617,67 @@ layoutGeoUVs(GeoDetailBuilder& detail,
             lift += targetLift[(std::size_t)placement.target];
         }
         const double c = std::cos(turn[u]), s = std::sin(turn[u]);
-        for (GeoOffset primitive : units.polygons[u]) {
-            const GeoVertexRange range = d.primitiveVertices(primitive);
-            for (GeoOffset k = 0; k < range.count; ++k) {
-                const GeoOffset vertex = range.start + k;
-                const Vec3& p = uv.uvw[(std::size_t)vertex];
-                const GeoUV moved = geoUVPackApply(placement, GeoUV { c * p[0] - s * p[1], s * p[0] + c * p[1] });
-                written.emplace_back(vertex, Vec3 { moved[0], moved[1], p[2] + lift });
+        for (const std::vector<GeoOffset>* polygons : { &units.polygons[u], &carried[u] }) {
+            for (GeoOffset primitive : *polygons) {
+                const GeoVertexRange range = d.primitiveVertices(primitive);
+                for (GeoOffset k = 0; k < range.count; ++k) {
+                    const GeoOffset vertex = range.start + k;
+                    const Vec3& p = uv.uvw[(std::size_t)vertex];
+                    const GeoUV moved = geoUVPackApply(placement, GeoUV { c * p[0] - s * p[1], s * p[0] + c * p[1] });
+                    written.emplace_back(vertex, Vec3 { moved[0], moved[1], p[2] + lift });
+                }
             }
         }
     }
 
-    const GeoAttribClassEnum cls = uv.onVertices ? eGeoAttribClassVertex : eGeoAttribClassPoint;
-    GeoAttribute* out = detail.attributeForWriting(cls, uvName);
+    // A point uv holds one value per point, so a point the packing gives two values (on islands
+    // cut apart by separator edges, islands meeting at a point, or an island and a polygon that
+    // stays) would corrupt one of them; the attribute is then made a vertex one.
+    bool promote = false;
+    if (!uv.onVertices) {
+        std::vector<int> writer((std::size_t)d.pointMap().offsetSize(), -1);
+        std::vector<char> moved((std::size_t)d.vertexMap().offsetSize(), 0);
+        for (std::size_t i = 0; i < written.size(); ++i) {
+            moved[(std::size_t)written[i].first] = 1;
+            const std::size_t point = (std::size_t)d.vertexPoint(written[i].first);
+            if (writer[point] < 0) {
+                writer[point] = (int)i;
+            } else if (written[(std::size_t)writer[point]].second != written[i].second) {
+                promote = true;
+            }
+        }
+        if (!promote) {
+            d.vertexMap().forEachLive([&](GeoIndex, GeoOffset vertex) {
+                const int i = writer[(std::size_t)d.vertexPoint(vertex)];
+                if (!moved[(std::size_t)vertex] && (i >= 0) && (written[(std::size_t)i].second != uv.uvw[(std::size_t)vertex])) {
+                    promote = true;
+                }
+            });
+        }
+    }
+    GeoAttribute* out = nullptr;
+    if (promote) {
+        const GeoAttribute* pointUV = d.findAttribute(eGeoAttribClassPoint, uvName);
+        const GeoAttributeDesc desc = pointUV->desc();
+        std::vector<std::pair<GeoOffset, std::vector<double>>> seeded;
+        std::vector<double> tuple((std::size_t)desc.tupleSize);
+        d.vertexMap().forEachLive([&](GeoIndex, GeoOffset vertex) {
+            geoReadNumeric(*pointUV, (std::size_t)d.vertexPoint(vertex), std::span<double>(tuple));
+            seeded.emplace_back(vertex, tuple);
+        });
+        detail.removeAttribute(eGeoAttribClassPoint, uvName);
+        out = &detail.addAttribute(eGeoAttribClassVertex, desc);
+        for (const std::pair<GeoOffset, std::vector<double>>& seed : seeded) {
+            geoWriteNumeric(*out, (std::size_t)seed.first, std::span<const double>(seed.second));
+        }
+        r->promotedToVertices = true;
+    } else {
+        out = detail.attributeForWriting(uv.onVertices ? eGeoAttribClassVertex : eGeoAttribClassPoint, uvName);
+    }
+    const bool onVertices = uv.onVertices || promote;
     std::vector<double> value((std::size_t)out->desc().tupleSize);
     for (const std::pair<GeoOffset, Vec3>& w : written) {
-        const std::size_t element = (std::size_t)(uv.onVertices ? w.first : detail.detail().vertexPoint(w.first));
+        const std::size_t element = (std::size_t)(onVertices ? w.first : detail.detail().vertexPoint(w.first));
         geoReadNumeric(*out, element, std::span<double>(value));
         for (std::size_t k = 0; k < std::min<std::size_t>(3, value.size()); ++k) {
             value[k] = w.second[k];
@@ -726,7 +827,9 @@ GeoUVLayout::initializeKnobs()
 
     _uvAttribute = createString(tr("UV Attribute"), kGeoUVLayoutParamUVAttribute,
                                 tr("The point or vertex attribute holding the texture coordinates to pack. It stays of "
-                                   "its class."),
+                                   "its class, except that a point attribute becomes a vertex one, seeded from it, when the "
+                                   "layout would give a point more than one uv: islands cut apart by the Separator Edges, "
+                                   "islands meeting at a point, or an island sharing points with polygons that stay."),
                                 "uv");
     _group = createString(tr("Group"), kGeoUVLayoutParamGroup,
                           tr("The polygons to pack, as a primitive group pattern. Empty packs every polygon. The "
@@ -827,7 +930,9 @@ GeoUVLayout::initializeKnobs()
     _scaleSearchTolerance = createDouble(tr("Scale Search Tolerance"), kGeoUVLayoutParamScaleSearchTolerance,
                                          tr("How finely the largest packable scale is searched, as a fraction of it."), 0.005, 0.);
     _randomSeed = createInt(tr("Random Seed"), kGeoUVLayoutParamRandomSeed,
-                            tr("The seed of the shuffled orders; one seed always gives one layout."), 5489, 0);
+                            tr("The seed of the shuffled orders; one seed always gives one layout. It only matters with "
+                               "Iterations above 1, as the first packing is always largest first."),
+                            5489, 0);
     _packInto = createChoice(tr("Pack Into"), kGeoUVLayoutParamPackInto,
                              tr("What the islands are packed into."),
                              { ChoiceOption("rectangles", tr("Rectangles").toStdString(),
@@ -999,7 +1104,7 @@ GeoUVLayout::renderGeometry(const GeoRenderActionArgs& args,
                 *error = message;
             }
 
-            return report.aborted ? eStatusOK : eStatusFailed;
+            return eStatusFailed;
         }
 
         return eStatusOK; }, outputDetail, errorMessage);
@@ -1012,6 +1117,19 @@ GeoUVLayout::renderGeometry(const GeoRenderActionArgs& args,
     }
     if (report.maxUdim > 1100) {
         warnings.push_back(tr("The layout reaches UDIM tile %1, past 1100.").arg(report.maxUdim).toStdString());
+    }
+    if (report.invalidTargets > 0) {
+        warnings.push_back(tr("%1 island(s) have a target that names no target and were packed as if they had none.")
+                               .arg(report.invalidTargets)
+                               .toStdString());
+    }
+    if (report.degenerateFaces > 0) {
+        warnings.push_back(tr("%1 polygon(s) with no area were left out of the packing; those touching an island moved with it.")
+                               .arg(report.degenerateFaces)
+                               .toStdString());
+    }
+    if (report.promotedToVertices) {
+        warnings.push_back(tr("The point uv was made a vertex attribute, as the layout gives some points more than one uv.").toStdString());
     }
     if (report.ignoredOverrides > 0) {
         warnings.push_back(tr("%1 override(s) are malformed or name no polygon in the group and were ignored.")

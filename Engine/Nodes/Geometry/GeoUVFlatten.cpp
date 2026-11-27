@@ -34,6 +34,7 @@
 #include <cstdlib>
 #include <exception>
 #include <initializer_list>
+#include <limits>
 #include <list>
 #include <map>
 #include <memory>
@@ -349,6 +350,10 @@ addConstraints(const GeoDetail& d,
                 ++report->ignoredPins;
                 continue;
             }
+            if (stage->kept[(std::size_t)chart]) {
+                ++report->ignoredPins;
+                continue;
+            }
             const GeoOffset vertex = range.start + spec.vertex;
             GeoUVFlattenPin pin;
             pin.vertex = chartVertex(*stage, vertex);
@@ -365,6 +370,10 @@ addConstraints(const GeoDetail& d,
     }
     if (params.enableAxisAlignment) {
         for (std::size_t a = 0; a < alignmentMasks.size(); ++a) {
+            if (params.alignments[a].malformed) {
+                ++report->ignoredAlignments;
+                continue;
+            }
             std::vector<std::set<int>> members(count);
             d.vertexMap().forEachLive([&](GeoIndex, GeoOffset vertex) {
                 const int chart = inMask(alignmentMasks[a], vertex) ? chartOfVertex(d, *stage, vertex) : -1;
@@ -422,8 +431,11 @@ solveStage(const GeoUVFlattenParams& params,
             return;
         }
         std::string error;
-        if (!geoFlattenUVChart(stage->charts[c], stage->constraints[c], params.method, &stage->results[c], &error)) {
+        if (!geoFlattenUVChart(stage->charts[c], stage->constraints[c], params.method, &stage->results[c], &error, params.aborted)) {
             failed[c] = 1;
+            if (stage->results[c].aborted) {
+                stopped.store(true, std::memory_order_relaxed);
+            }
         } }, 1);
     if (stopped.load() || isAborted(params)) {
         report->aborted = true;
@@ -441,9 +453,7 @@ solveStage(const GeoUVFlattenParams& params,
         }
         report->degenerateFaces += stage->results[c].degenerateFaces;
         report->fellBack += stage->results[c].fellBack ? 1 : 0;
-        if (stage->results[c].placed && !stage->constraints[c].pins.empty()) {
-            stage->anchored[c] = 1;
-        }
+        stage->anchored[c] = stage->results[c].placed && (stage->anchored[c] || !stage->constraints[c].pins.empty());
     }
 
     return true;
@@ -533,6 +543,51 @@ packStage(const GeoDetail& d,
     return true;
 } // packStage
 
+// The least-squares fit of from onto to by a uniform scale, a translation and a turn of a whole
+// number of steps of a quarter turn, so the axes the island was aligned to stay axes.
+GeoUVPackPlacement
+fitInQuarterTurns(const std::vector<GeoUV>& from,
+                  const std::vector<GeoUV>& to,
+                  int step)
+{
+    static const std::array<double, 4> kTurns[4] = { { 1., 0., 0., 1. }, { 0., -1., 1., 0. }, { -1., 0., 0., -1. }, { 0., 1., -1., 0. } };
+    const std::size_t n = std::min(from.size(), to.size());
+    GeoUV cf = { 0., 0. }, ct = { 0., 0. };
+    for (std::size_t i = 0; i < n; ++i) {
+        for (int a = 0; a < 2; ++a) {
+            cf[(std::size_t)a] += from[i][(std::size_t)a] / (double)n;
+            ct[(std::size_t)a] += to[i][(std::size_t)a] / (double)n;
+        }
+    }
+    double norm = 0.;
+    for (std::size_t i = 0; i < n; ++i) {
+        const double fx = from[i][0] - cf[0], fy = from[i][1] - cf[1];
+        norm += fx * fx + fy * fy;
+    }
+    int best = 0;
+    double bestDot = -std::numeric_limits<double>::infinity();
+    for (int k = 0; k < 4; k += step) {
+        const std::array<double, 4>& m = kTurns[k];
+        double dot = 0.;
+        for (std::size_t i = 0; i < n; ++i) {
+            const double fx = from[i][0] - cf[0], fy = from[i][1] - cf[1];
+            dot += (m[0] * fx + m[1] * fy) * (to[i][0] - ct[0]) + (m[2] * fx + m[3] * fy) * (to[i][1] - ct[1]);
+        }
+        if (dot > bestDot) {
+            best = k;
+            bestDot = dot;
+        }
+    }
+    const double scale = ((norm > 0.) && (bestDot > 0.)) ? bestDot / norm : 1.;
+    const std::array<double, 4>& m = kTurns[best];
+    GeoUVPackPlacement placement;
+    placement.m = { scale * m[0], scale * m[1], scale * m[2], scale * m[3] };
+    placement.t = { ct[0] - (placement.m[0] * cf[0] + placement.m[1] * cf[1]), ct[1] - (placement.m[2] * cf[0] + placement.m[3] * cf[1]) };
+    placement.packed = true;
+
+    return placement;
+}
+
 void
 fitOntoLayout(const GeoDetail& d,
               const FlattenStage& layout,
@@ -560,7 +615,15 @@ fitOntoLayout(const GeoDetail& d,
         if (from.size() < 2) {
             continue;
         }
-        const GeoUVPackPlacement placement = geoUVFitSimilarity(from, to);
+        const GeoUVFlattenChartConstraints& constraints = stage->constraints[c];
+        GeoUVPackPlacement placement;
+        if (!constraints.alignments.empty()) {
+            placement = fitInQuarterTurns(from, to, 2);
+        } else if (!constraints.rectify.empty()) {
+            placement = fitInQuarterTurns(from, to, 1);
+        } else {
+            placement = geoUVFitSimilarity(from, to);
+        }
         for (GeoUV& uv : stage->results[c].uv) {
             uv = geoUVPackApply(placement, uv);
         }
@@ -805,6 +868,7 @@ GeoUVFlatten::initializeKnobs()
         for (double value : defaults) {
             knob->setDefaultValue(value, i++);
         }
+        knob->setAnimationEnabled(false);
         page->addKnob(knob);
 
         return knob;
@@ -876,19 +940,21 @@ GeoUVFlatten::initializeKnobs()
                                tr("Turns every pin on or off."), true);
     _pins = createTable(tr("Pins"), kGeoUVFlattenParamPins,
                         tr("Vertices pinned to uv positions. Primitive is the polygon's number, Vertex the vertex's place "
-                           "in it, UV where it goes, as \"u v\". Reference UV, where the polygon's next vertex goes, is "
-                           "only used when the pin is the only one of its island. An island with two or more pins, or "
-                           "one, is left where its pins put it."),
+                           "in it, UV where it goes, as \"u v\". Reference UV is the absolute uv the polygon's next vertex "
+                           "goes to, turning and scaling the island; it is only used when the pin is the only one of its "
+                           "island, and empty (or equal to UV) only moves the island, keeping its flattened size and "
+                           "orientation. Two rows on one vertex count as one pin, the last winning. An island with two or "
+                           "more pins, or one, is left where its pins put it."),
                         { KnobRowTable::Column { "Primitive", "primitive", "0" },
                           KnobRowTable::Column { "Vertex", "vertex", "0" },
                           KnobRowTable::Column { "UV", "uv", "0 0" },
-                          KnobRowTable::Column { "Reference UV", "referenceUV", "1 0" } });
+                          KnobRowTable::Column { "Reference UV", "referenceUV", "" } });
     _enableAxisAlignment = createToggle(tr("Enable Axis Alignment"), kGeoUVFlattenParamEnableAxisAlignment,
                                         tr("Turns every alignment on or off."), true);
     _alignments = createTable(tr("Alignments"), kGeoUVFlattenParamAlignments,
                               tr("Vertex groups lined up in uv. Group is a vertex group pattern; one of the vertices "
                                  "wired to a point is enough. Align Parallel To is U, to give them one v, or V, to give "
-                                 "them one u."),
+                                 "them one u, in either case; a row with any other value is ignored, with a warning."),
                               { KnobRowTable::Column { "Group", "group", "" },
                                 KnobRowTable::Column { "Align Parallel To", "alignParallelTo", "U" } });
     _enableLoopStraightening = createToggle(tr("Enable Loop Straightening"), kGeoUVFlattenParamEnableLoopStraightening,
@@ -998,7 +1064,7 @@ GeoUVFlatten::renderGeometry(const GeoRenderActionArgs& args,
                 *error = message;
             }
 
-            return report.aborted ? eStatusOK : eStatusFailed;
+            return eStatusFailed;
         }
 
         return eStatusOK; }, outputDetail, errorMessage);
@@ -1021,7 +1087,15 @@ GeoUVFlatten::renderGeometry(const GeoRenderActionArgs& args,
         warnings.push_back(tr("%1 island(s) did not fit in the packing area.").arg(report.nonpacked).toStdString());
     }
     if (report.ignoredPins > 0) {
-        warnings.push_back(tr("%1 pin(s) name no vertex of a polygon in the group and were ignored.").arg(report.ignoredPins).toStdString());
+        warnings.push_back(tr("%1 pin(s) name no vertex of a polygon in the group, or one of an island Preserve Layout keeps, "
+                              "and were ignored.")
+                               .arg(report.ignoredPins)
+                               .toStdString());
+    }
+    if (report.ignoredAlignments > 0) {
+        warnings.push_back(tr("%1 alignment(s) have an Align Parallel To other than U or V and were ignored.")
+                               .arg(report.ignoredAlignments)
+                               .toStdString());
     }
     if (warnings.empty()) {
         clearPersistentMessage(false);
@@ -1098,7 +1172,7 @@ GeoUVFlatten::readParams(double time,
             pin.vertex = (int)vertex;
         }
         if ((row.size() < 4) || !geoUVFlattenParseUV(row[3], &pin.referenceUV)) {
-            pin.referenceUV = { pin.uv[0] + 1., pin.uv[1] };
+            pin.referenceUV = pin.uv;
         }
         p.pins.push_back(pin);
     }
@@ -1110,7 +1184,13 @@ GeoUVFlatten::readParams(double time,
         GeoUVFlattenAlignmentSpec alignment;
         alignment.group = row[0];
         const std::string axis = (row.size() > 1) ? trimmed(row[1]) : std::string();
-        alignment.axis = ((axis == "V") || (axis == "v")) ? eGeoUVFlattenAxisV : eGeoUVFlattenAxisU;
+        if ((axis == "V") || (axis == "v")) {
+            alignment.axis = eGeoUVFlattenAxisV;
+        } else if ((axis == "U") || (axis == "u")) {
+            alignment.axis = eGeoUVFlattenAxisU;
+        } else {
+            alignment.malformed = true;
+        }
         p.alignments.push_back(alignment);
     }
     p.enableLoopStraightening = toggle(_enableLoopStraightening, p.enableLoopStraightening);

@@ -533,6 +533,9 @@ public:
 
     double px() const { return _px; }
 
+    // The longest bounding box side of the islands to pack, each at its own scale.
+    double largestExtent() const { return _largestExtent; }
+
     // The best of the iterations at this scale and padding.
     Attempt pack(double scale, int padding) const;
 
@@ -551,6 +554,7 @@ private:
     int _maxW = 1;
     int _maxH = 1;
     double _targetArea = 0.;
+    double _largestExtent = 0.;
     std::vector<double> _areas;
     std::vector<int> _toPack;
     std::vector<int> _obstacles;
@@ -687,16 +691,30 @@ Packer::setUp(std::string* errorMessage)
     }
 
     // Stacking: each stackable island looks for an earlier match (and with stackOnObstacles, an
-    // obstacle) to sit on; the first of a kind is packed and the rest follow it.
-    std::vector<int> leaders;
+    // obstacle) to sit on; the first of a kind is packed and the rest follow it. A follower is
+    // drawn at its leader's size, so a packed leader must have the follower's scale; an obstacle
+    // leader keeps its own size. Only islands of as many polygons and corners can match, so the
+    // leaders are bucketed by those.
+    const auto shapeKey = [](const GeoUVPackIsland& island) {
+        std::size_t corners = 0;
+        for (const std::vector<GeoUV>& polygon : island.polygons) {
+            corners += polygon.size();
+        }
+
+        return std::make_pair(island.polygons.size(), corners);
+    };
+    std::map<std::pair<std::size_t, std::size_t>, std::vector<int>> leaders;
     if (p.stackIdentical && p.stackOnObstacles) {
         for (int i = 0; i < n; ++i) {
             if (_islands[i].obstacle && _islands[i].stackable && !_islands[i].polygons.empty()) {
-                leaders.push_back(i);
+                leaders[shapeKey(_islands[i])].push_back(i);
             }
         }
     }
     for (int i = 0; i < n; ++i) {
+        if (((i & 63) == 0) && poll()) {
+            return true;
+        }
         const GeoUVPackIsland& island = _islands[i];
         if (island.obstacle) {
             if (p.avoidObstacles) {
@@ -709,7 +727,12 @@ Packer::setUp(std::string* errorMessage)
         }
         bool stacked = false;
         if (p.stackIdentical && island.stackable) {
-            for (int j : leaders) {
+            std::vector<int>& candidates = leaders[shapeKey(island)];
+            for (int j : candidates) {
+                const double leaderScale = _islands[j].scale;
+                if (!_islands[j].obstacle && !(std::fabs(leaderScale - island.scale) <= 1e-9 * std::max(std::fabs(leaderScale), std::fabs(island.scale)))) {
+                    continue;
+                }
                 if (matchIslands(_islands[j], island, false, p.stackTolerance, &_stackM[i], &_stackT[i]) || (p.stackMirrored && matchIslands(_islands[j], island, true, p.stackTolerance, &_stackM[i], &_stackT[i]))) {
                     _leader[i] = j;
                     stacked = true;
@@ -717,11 +740,15 @@ Packer::setUp(std::string* errorMessage)
                 }
             }
             if (!stacked) {
-                leaders.push_back(i);
+                candidates.push_back(i);
             }
         }
         if (!stacked) {
             _toPack.push_back(i);
+            GeoUV lo, hi;
+            if (polygonsBounds(island.polygons, &lo, &hi)) {
+                _largestExtent = std::max(_largestExtent, std::max(hi[0] - lo[0], hi[1] - lo[1]) * island.scale);
+            }
         }
     }
 
@@ -1089,12 +1116,15 @@ geoPackUVIslands(const std::vector<GeoUVPackIsland>& islands,
     if (!packer.setUp(errorMessage)) {
         return false;
     }
-    const std::size_t wanted = packer.toPack().size();
     auto stopped = [&]() {
         result->aborted = true;
 
         return false;
     };
+    if (params.aborted && params.aborted()) {
+        return stopped();
+    }
+    const std::size_t wanted = packer.toPack().size();
 
     double scale = params.fixedScale;
     Attempt best;
@@ -1122,9 +1152,14 @@ geoPackUVIslands(const std::vector<GeoUVPackIsland>& islands,
             scale = hi;
             best = std::move(attempt);
         } else {
+            // Once every island is smaller than a cell, each takes one cell however small it
+            // gets, so a smaller scale cannot pack more: the halving stops there, keeping the
+            // largest scale that packed the most, and the rest are lined up beside the targets.
             double lo = hi;
+            double bestScale = hi;
+            best = std::move(attempt);
             bool found = false;
-            for (int halvings = 0; halvings < 60 && !found; ++halvings) {
+            for (int halvings = 0; (halvings < 60) && !found && !(lo * packer.largestExtent() < packer.px()); ++halvings) {
                 hi = lo;
                 lo *= 0.5;
                 attempt = packer.pack(lo, params.padding);
@@ -1132,11 +1167,12 @@ geoPackUVIslands(const std::vector<GeoUVPackIsland>& islands,
                     return stopped();
                 }
                 found = attempt.packed == static_cast<int>(wanted);
-                if (found || (halvings == 59)) {
+                if (found || (attempt.packed > best.packed)) {
                     best = std::move(attempt);
+                    bestScale = lo;
                 }
             }
-            scale = lo;
+            scale = found ? lo : bestScale;
             while (found && (hi - lo > params.scaleTolerance * lo)) {
                 const double mid = 0.5 * (lo + hi);
                 attempt = packer.pack(mid, params.padding);

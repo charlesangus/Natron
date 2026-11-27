@@ -480,8 +480,12 @@ bool
 solveConstrained(const SpMat& q,
                  const Reduction& r,
                  const std::vector<LinearRow>& rows,
+                 const std::function<bool()>& stopped,
                  std::vector<double>* x)
 {
+    if (stopped()) {
+        return false;
+    }
     if (r.count == 0) {
         *x = expand(r, Eigen::VectorXd());
 
@@ -569,8 +573,12 @@ bool
 solveSpectral(const ChartSystem& sys,
               const SpMat& q,
               const Reduction& r,
+              const std::function<bool()>& stopped,
               std::vector<double>* x)
 {
+    if (stopped()) {
+        return false;
+    }
     SpMat reduced;
     Eigen::VectorXd unused;
     reduceEnergy(q, r, &reduced, &unused);
@@ -596,7 +604,7 @@ solveSpectral(const ChartSystem& sys,
     }
     Eigen::SimplicialLDLT<SpMat> ldlt;
     ldlt.compute(shifted);
-    if (ldlt.info() != Eigen::Success) {
+    if ((ldlt.info() != Eigen::Success) || stopped()) {
         return false;
     }
     const std::vector<double> projected = projectToPlane(sys);
@@ -638,6 +646,9 @@ solveSpectral(const ChartSystem& sys,
         return false;
     }
     for (int iteration = 0; iteration < 200; ++iteration) {
+        if (stopped()) {
+            return false;
+        }
         Eigen::VectorXd next = ldlt.solve(mass.cwiseProduct(y));
         if (!allFinite(next) || !normalize(&next)) {
             return false;
@@ -884,6 +895,7 @@ abfMatrixInvert(AbfSystem* s,
 
 bool
 abfSolve(const ChartSystem& sys,
+         const std::function<bool()>& stopped,
          std::vector<double>* angles)
 {
     const int nfaces = (int)sys.tris.size();
@@ -944,6 +956,9 @@ abfSolve(const ChartSystem& sys,
         abfComputeSines(&s);
         int i = 0;
         for (; i < maxIterations; ++i) {
+            if (stopped()) {
+                return false;
+            }
             if (abfComputeGradient(&s, sys) < limit) {
                 break;
             }
@@ -1139,9 +1154,10 @@ straightenRows(const std::vector<std::vector<int>>& loops,
     return rows;
 }
 
-// Two vertices far apart to hold a pinless angle-based layout in place: the first
-// straightened loop's ends when there is one, the extremes of the longest bounding box axis
-// otherwise.
+// Two vertices far apart to hold a pinless angle-based layout in place: on the first
+// straightened loop when there is one, the extremes of the longest bounding box axis
+// otherwise. A closed loop's first and last vertices are neighbours, so the pair on a loop is
+// found as the vertex farthest from its first, and the vertex farthest from that.
 void
 autoLock(const ChartSystem& sys,
          const std::vector<std::vector<int>>& loops,
@@ -1151,8 +1167,22 @@ autoLock(const ChartSystem& sys,
 {
     int p1 = -1, p2 = -1;
     if (!loops.empty() && (loops[0].size() >= 2)) {
-        p1 = loops[0].front();
-        p2 = loops[0].back();
+        const std::vector<int>& loop = loops[0];
+        const auto farthestFrom = [&](int from) {
+            int best = from;
+            double bestDistance = -1.;
+            for (int v : loop) {
+                const double distance = length(sub(sys.pos[v], sys.pos[from]));
+                if (distance > bestDistance) {
+                    best = v;
+                    bestDistance = distance;
+                }
+            }
+
+            return best;
+        };
+        p1 = farthestFrom(loop.front());
+        p2 = farthestFrom(p1);
     }
     if ((p1 < 0) || (p1 == p2)) {
         Vec3 lo = sys.pos[0], hi = sys.pos[0];
@@ -1269,9 +1299,25 @@ geoFlattenUVChart(const GeoUVFlattenChart& chart,
                   const GeoUVFlattenChartConstraints& constraints,
                   GeoUVFlattenMethodEnum method,
                   GeoUVFlattenChartResult* result,
-                  std::string* errorMessage)
+                  std::string* errorMessage,
+                  const std::function<bool()>& aborted)
 {
     *result = GeoUVFlattenChartResult();
+    bool stop = false;
+    const std::function<bool()> stopped = [&]() {
+        stop = stop || (aborted && aborted());
+
+        return stop;
+    };
+    const auto stopSolve = [&]() {
+        result->aborted = true;
+        result->solved = false;
+        if (errorMessage) {
+            errorMessage->clear();
+        }
+
+        return false;
+    };
     result->uv.assign(chart.positions.size(), GeoUV { 0., 0. });
     ChartSystem sys;
     buildSystem(chart, &sys);
@@ -1327,13 +1373,21 @@ geoFlattenUVChart(const GeoUVFlattenChart& chart,
             loops.push_back(loop);
         }
     }
+    // Two pins on one vertex fix one point, which leaves the similarity free.
     std::vector<GeoUVFlattenPin> pins;
+    std::map<int, std::size_t> pinOfVertex;
     for (const GeoUVFlattenPin& pin : constraints.pins) {
         if (active(pin.vertex) >= 0) {
             GeoUVFlattenPin p = pin;
             p.vertex = active(pin.vertex);
             p.referenceVertex = active(pin.referenceVertex);
-            pins.push_back(p);
+            const auto found = pinOfVertex.find(p.vertex);
+            if (found == pinOfVertex.end()) {
+                pinOfVertex.emplace(p.vertex, pins.size());
+                pins.push_back(p);
+            } else {
+                pins[found->second] = p;
+            }
         }
     }
     std::vector<std::pair<int, double>> pinFixes;
@@ -1344,7 +1398,8 @@ geoFlattenUVChart(const GeoUVFlattenChart& chart,
         }
     }
     std::vector<std::pair<int, double>> boundaryFixes = pinFixes;
-    const bool preserveBoundary = (method == eGeoUVFlattenMethodSCP) && (constraints.preservedBoundary.size() == chart.positions.size());
+    const bool preserveBoundary = (method == eGeoUVFlattenMethodSCP) && (constraints.preservedBoundary.size() == chart.positions.size())
+        && std::any_of(sys.boundary.begin(), sys.boundary.end(), [](char b) { return b != 0; });
     if (preserveBoundary) {
         for (int v = 0; v < sys.n; ++v) {
             if (sys.boundary[v]) {
@@ -1359,20 +1414,23 @@ geoFlattenUVChart(const GeoUVFlattenChart& chart,
     bool ok = false;
     if (method == eGeoUVFlattenMethodABF) {
         std::vector<double> angles;
-        if (abfSolve(sys, &angles)) {
+        if (abfSolve(sys, stopped, &angles)) {
             const SpMat q = angleEnergy(sys, angles);
             std::vector<std::pair<int, double>> fixes = pinFixes;
             if (fixes.empty()) {
                 autoLock(sys, loops, merged, hasMerges, &fixes);
             }
             const Reduction r = makeReduction(merged, fixes);
-            ok = solveConstrained(q, r, std::vector<LinearRow>(), &x);
+            ok = solveConstrained(q, r, std::vector<LinearRow>(), stopped, &x);
             if (ok && !loops.empty()) {
                 std::vector<double> straightened;
-                if (solveConstrained(q, r, straightenRows(loops, r, x), &straightened)) {
+                if (solveConstrained(q, r, straightenRows(loops, r, x), stopped, &straightened)) {
                     x = straightened;
                 }
             }
+        }
+        if (stopped()) {
+            return stopSolve();
         }
         result->fellBack = !ok;
     }
@@ -1380,7 +1438,10 @@ geoFlattenUVChart(const GeoUVFlattenChart& chart,
         const SpMat q = conformalEnergy(sys);
         const std::vector<std::pair<int, double>>& fixes = preserveBoundary ? boundaryFixes : pinFixes;
         const Reduction r = makeReduction(merged, fixes);
-        ok = fixes.empty() ? solveSpectral(sys, q, r, &x) : solveConstrained(q, r, std::vector<LinearRow>(), &x);
+        ok = fixes.empty() ? solveSpectral(sys, q, r, stopped, &x) : solveConstrained(q, r, std::vector<LinearRow>(), stopped, &x);
+        if (stopped()) {
+            return stopSolve();
+        }
     }
     result->solved = ok;
     if (!ok) {
@@ -1469,7 +1530,10 @@ geoFlattenUVCharts(const std::vector<GeoUVFlattenChart>& charts,
             return;
         }
         std::string ignored;
-        geoFlattenUVChart(charts[i], (i < constraints.size()) ? constraints[i] : none, method, &(*results)[i], &ignored); }, 1);
+        geoFlattenUVChart(charts[i], (i < constraints.size()) ? constraints[i] : none, method, &(*results)[i], &ignored, aborted);
+        if ((*results)[i].aborted) {
+            stop.store(true, std::memory_order_relaxed);
+        } }, 1);
     if (stop.load()) {
         if (errorMessage) {
             errorMessage->clear();

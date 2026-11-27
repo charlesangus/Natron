@@ -137,15 +137,24 @@ struct GeoUVLayoutReport {
     int maxUdim = 0;
     // Override tokens naming no polygon of an island, or malformed.
     int ignoredOverrides = 0;
+    // Islands whose target is no rectangle, target island or UDIM tile; packed as if untargeted.
+    int invalidTargets = 0;
+    // Polygons with no area, left out of the islands' shapes.
+    int degenerateFaces = 0;
+    // True when the point uv had to become a vertex attribute.
+    bool promotedToVertices = false;
     bool aborted = false;
 };
 
 /**
  * @brief Packs the uv islands of the group's polygons into the targets, moving, turning and
  * scaling each as a whole and writing the result back on params.islands.uvAttribute, of the
- * class it is on (vertex, or point). Islands come from uv connectivity within
- * connectivityTolerance, or from the separator edges, merged by the island attribute; a merged
- * group moves as one and is never stacked.
+ * class it is on (vertex, or point). A point attribute that would get two values on one point,
+ * from islands sharing it or an island and a polygon left in place, is replaced by a vertex
+ * attribute of the same storage seeded from it. Polygons with no area are left out of the
+ * islands' shapes and moved with an island they touch, preferring one they share a uv with.
+ * Islands come from uv connectivity within connectivityTolerance, or from the separator edges,
+ * merged by the island attribute; a merged group moves as one and is never stacked.
  *
  * Before packing, each island is optionally scaled so its uv area follows its surface area, then
  * by its scale attribute or override, and turned by the axis alignment: Island Symmetry turns its

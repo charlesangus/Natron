@@ -70,7 +70,8 @@ struct GeoUVFlattenPinSpec {
     GeoIndex primitive = 0;
     int vertex = 0;
     GeoUV uv = { 0., 0. };
-    // Where the polygon's next vertex goes when this is the only pin of its island.
+    // Where the polygon's next vertex goes when this is the only pin of its island; equal to uv,
+    // the island only moves.
     GeoUV referenceUV = { 0., 0. };
 };
 
@@ -78,6 +79,8 @@ struct GeoUVFlattenAlignmentSpec {
     // A vertex group pattern; one vertex of those wired to a point is enough.
     std::string group;
     GeoUVFlattenAxisEnum axis = eGeoUVFlattenAxisU;
+    // Set for a row whose axis is neither U nor V; it is ignored and counted.
+    bool malformed = false;
 };
 
 struct GeoUVFlattenParams {
@@ -117,8 +120,10 @@ struct GeoUVFlattenReport {
     int fellBack = 0;
     int unsolved = 0;
     int nonpacked = 0;
-    // Pins naming no polygon of the group or no vertex of it.
+    // Pins naming no polygon of the group or no vertex of it, or on an island Preserve Layout
+    // keeps.
     int ignoredPins = 0;
+    int ignoredAlignments = 0;
     bool aborted = false;
 };
 
@@ -137,7 +142,8 @@ struct GeoUVFlattenReport {
  * With Enable Manual Layout off the islands are cut by the layout seams, flattened without
  * constraints and packed; the islands of the flattening seams are then flattened with their
  * constraints and each is fitted, by rotation, uniform scale and translation, onto where the
- * packing put its vertices.
+ * packing put its vertices. An island with alignments only turns by half turns, and one with
+ * rectified quads by quarter turns, so the axes they were put on stay axes.
  *
  * Non-polygon primitives, and polygons outside the group, keep their uv. Fails, with
  * *errorMessage set, for a malformed pattern or an empty attribute name; returns false with

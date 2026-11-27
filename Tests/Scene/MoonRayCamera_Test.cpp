@@ -95,6 +95,19 @@ const char* const kMovingCube = "over \"World\"\n"
                                 "    }\n"
                                 "}\n";
 
+// Two side-by-side quads facing the camera; the right one is a hole.
+const char* const kHoleQuads = "over \"World\"\n"
+                               "{\n"
+                               "    def Mesh \"Holed\"\n"
+                               "    {\n"
+                               "        int[] faceVertexCounts = [4, 4]\n"
+                               "        int[] faceVertexIndices = [0, 1, 4, 3, 1, 2, 5, 4]\n"
+                               "        int[] holeIndices = [1]\n"
+                               "        point3f[] points = [(-3, -1, 0), (0, -1, 0), (3, -1, 0), (-3, 1, 0), (0, 1, 0), (3, 1, 0)]\n"
+                               "        color3f[] primvars:displayColor = [(1, 1, 1)]\n"
+                               "    }\n"
+                               "}\n";
+
 // The shutter open a quarter frame either side of the frame: the cube sweeps half a unit each way.
 const char* const kOpenShutter = "over \"World\"\n"
                                  "{\n"
@@ -346,4 +359,23 @@ TEST(MoonRayCamera, TheFillFitFramesAsTheFrustum)
         EXPECT_LE(countDifferent(frustum, path, 0.1f), pixels / 50) << what << ": the path render is not framed as the frustum's";
         EXPECT_GT(countDifferent(expand, path, 0.1f), pixels / 10) << what << ": the fill fit does not reach the path render";
     }
+}
+
+// At 64 x 48 the left quad covers about columns 4 to 31 and the right, the hole, columns 32 to 59,
+// over rows 6 to 41.
+TEST(MoonRayCamera, AHoleFaceIsNotDrawn)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const int width = 64;
+    const int height = 48;
+    const MoonRaySampling sampling(16);
+    std::vector<float> image;
+    ASSERT_TRUE(renderMoonRay({ kHoleQuads }, HydraRender::eFitModeExpand, width, height, true, &image));
+
+    const float solid = meanOf(image, width, 10, 26, 14, 34);
+    const float hole = meanOf(image, width, 38, 54, 14, 34);
+    ASSERT_GT(solid, 0.1f) << "MoonRay does not draw the face beside the hole";
+    EXPECT_LT(hole, 0.02f * solid) << "the hole face is drawn: " << hole << " against " << solid;
 }

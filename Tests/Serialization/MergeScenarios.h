@@ -689,7 +689,6 @@ struct ExpectedConflict {
     std::string kind;
     std::string knob;
     int dimension = -1;
-    std::optional<double> time;
     std::string item;
     std::string input;
     // Space-separated in the file.
@@ -697,12 +696,12 @@ struct ExpectedConflict {
 
     bool operator<(const ExpectedConflict& other) const
     {
-        return std::tie(node, kind, knob, dimension, time, item, input, defaulted) < std::tie(other.node, other.kind, other.knob, other.dimension, other.time, other.item, other.input, other.defaulted);
+        return std::tie(node, kind, knob, dimension, item, input, defaulted) < std::tie(other.node, other.kind, other.knob, other.dimension, other.item, other.input, other.defaulted);
     }
 
     bool operator==(const ExpectedConflict& other) const
     {
-        return std::tie(node, kind, knob, dimension, time, item, input, defaulted) == std::tie(other.node, other.kind, other.knob, other.dimension, other.time, other.item, other.input, other.defaulted);
+        return std::tie(node, kind, knob, dimension, item, input, defaulted) == std::tie(other.node, other.kind, other.knob, other.dimension, other.item, other.input, other.defaulted);
     }
 };
 
@@ -774,8 +773,6 @@ readExpected(const std::string& path)
                     conflict.knob = value;
                 } else if (key == "dim") {
                     conflict.dimension = std::stoi(value);
-                } else if (key == "time") {
-                    conflict.time = std::stod(value);
                 } else if (key == "item") {
                     conflict.item = value;
                 } else if (key == "input") {

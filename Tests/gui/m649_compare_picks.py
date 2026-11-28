@@ -9,8 +9,8 @@ the base draws the five ghosts and the node graph's merge bar counts the changes
 Restore brings Mid back spliced between A1 and A3, and Edit > Undo puts its ghost back. A rubber band
 selects the ghosts of P1 and P2, and Restore Selected on the merge bar brings them back as a chain.
 Restoring Grp brings it back with GBlur inside. Restoring S leaves C3 on Other, since the artist
-rewired it, and adds a splice choice on C3: Splice In feeds C3 from S, Edit > Undo brings the choice
-back and Keep My Wiring keeps Other. Take on Grade1's multiply gives it the base value and leaves
+rewired it, and adds a splice choice on C3, which the merge bar counts as waiting: Splice In feeds
+C3 from S, Edit > Undo brings the choice back and Keep My Wiring keeps Other. Take on Grade1's multiply gives it the base value and leaves
 gamma, Revert to Other gives gamma the base value too, Remove deletes Added and bridges D1 to D3,
 and Restore Position puts Mover back. The merge bar's counts follow every pick, and Clear Comparison
 hides the bar.
@@ -126,6 +126,11 @@ try:
             if len(words) == 2 and words[0].isdigit():
                 found[words[1]] = int(words[0])
         return found if len(found) == 4 else None
+
+    def waiting_text():
+        """The merge bar's count of merge conflicts waiting for the comparison to clear, or None when hidden."""
+        label = shown_widget(QLabel, "mergeBarWaitingConflicts")
+        return None if label is None else label.text()
 
     def counts_are(want):
         found = bar_counts()
@@ -359,6 +364,9 @@ try:
         check(app.mergeBarMode() == "comparison", "the comparison keeps the merge bar (%r)" % app.mergeBarMode())
         counts = yield from expect_counts({"added": before["added"], "changed": before["changed"],
                                            "removed": before["removed"] - 1, "moved": before["moved"]}, "after Restore S")
+        show_top_level_graph()
+        ok = yield ("until", lambda: waiting_text() == "1 merge conflict waiting", POLL_TIMEOUT_S)
+        check(ok, "the merge bar shows the splice choice waiting (%r)" % waiting_text())
         require(app.resolveMergeConflict(int(choices[0]["index"]), "theirs"), "Splice In")
         yield ("sleep", SETTLE_MS)
         check(source_of(app.getNode("C3")) == "S", "Splice In feeds C3 from S (%r)" % source_of(app.getNode("C3")))
@@ -373,6 +381,8 @@ try:
             yield ("sleep", SETTLE_MS)
             check(source_of(app.getNode("C3")) == "Other", "Keep My Wiring keeps C3 on Other (%r)" % source_of(app.getNode("C3")))
             check(len(splice_choices()) == 0, "Keep My Wiring resolves the splice choice")
+            ok = yield ("until", lambda: waiting_text() is None, POLL_TIMEOUT_S)
+            check(ok, "the merge bar no longer shows a conflict waiting (%r)" % waiting_text())
 
         gt.section("take")
         grade = app.getNode("Grade1")

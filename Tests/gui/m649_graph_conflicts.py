@@ -3,22 +3,22 @@
 A template holds, far apart: Val; Key, whose size has a key at frame 1; and Up -> Rd. It is saved as
 version 1, and as version 2 where Val's size is 4, Key's size gets a key of 4 at frame 10 and Rd is
 fed from a new Feed. It is imported, the artist sets Val's size to 2, keys Key's size to 2 at frame
-10 and feeds Rd from Artist, and the update to version 2 raises a value conflict on Val, a key
-conflict at one frame on Key and an input conflict on Rd.
+10 and feeds Rd from Artist, and the update to version 2 raises a value conflict on Val, one
+whole-knob conflict on Key's animated size and an input conflict on Rd.
 
 The Merge Conflicts panel does not open, the merge bar is in conflict mode and the graph frames the
 first conflicted node. Clicking Val's badge opens the popover with the choices the conflict lists;
 Theirs resolves it and closes the popover, Edit > Undo brings it back, and Theirs again resolves
-it. Key's popover offers Mine and Theirs and no Keep Both Keys, and All Mine resolves its conflicts
+it. Key's one conflict offers Mine, Theirs and Base and no per-key choice, and All Mine resolves it
 and is undone. Alt+Down and Alt+Up frame the conflicted nodes in turn and open their popovers. On
 Rd's popover, hovering Theirs draws its preview wire in full, and clicking the end of that wire
 feeds Rd from Feed; Edit > Undo feeds it from Artist again.
 
 A comparison with a saved copy, after Val's size and Up's position change, hides the badges and
-puts the merge bar in comparison mode; Alt+Shift+Down and Alt+Shift+Up frame and select the
-changed nodes. The Node Diff panel's Take on Val's size gives it the saved value as one undo step,
-its Revert Node does the same for the whole node, and Up, which only moved, gets a disabled Revert
-Node and no Take. Clearing the comparison brings the badges back. All Theirs on the merge bar
+puts the merge bar in comparison mode with the conflicts counted as waiting, and Alt+Down opens no
+popover; Alt+Shift+Down and Alt+Shift+Up frame and select the changed nodes. The Node Diff panel's
+Take on Val's size gives it the saved value as one undo step, its Revert Node does the same for the
+whole node, and Up, which only moved, gets a disabled Revert Node and no Take. Clearing the comparison brings the badges back. All Theirs on the merge bar
 resolves everything and is undone, and the project saved and reopened opens no panel and still
 draws Rd's structural preview.
 
@@ -405,19 +405,19 @@ try:
             QApplication.processEvents()
         count = len(conflicts())
 
-        gt.section("key conflict")
-        key_conflicts = [c for c in conflicts_on("Key") if str(c["kind"]) == "curve-key"]
-        require(len(key_conflicts) > 0, "Key has key conflicts (%r)" % (conflicts_on("Key"),))
-        for c in key_conflicts:
-            choices = [str(n) for n in c["choices"]]
-            report("NOTE key conflict %r offers %r %r" % (str(c["label"]), choices, [str(l) for l in c["choiceLabels"]]))
-            check("mine" in choices and "theirs" in choices, "a key conflict at one frame offers Mine and Theirs (%r)" % choices)
-            check(all(n in ("mine", "theirs", "base") for n in choices),
-                  "a key conflict at one frame offers no Keep Both Keys (%r)" % choices)
+        gt.section("animated knob conflict")
+        key_conflicts = conflicts_on("Key")
+        require(len(key_conflicts) == 1, "Key's animated size gives one conflict (%r)" % (key_conflicts,))
+        c = key_conflicts[0]
+        choices = [str(n) for n in c["choices"]]
+        check(str(c["kind"]) == "value" and str(c["label"]) == SIZE,
+              "Key's conflict is a value conflict on its whole size (%r %r)" % (str(c["kind"]), str(c["label"])))
+        check(choices == ["mine", "theirs", "base"], "Key's conflict offers Mine, Theirs and Base (%r)" % choices)
         require(app.openMergePopover(key), "open Key's popover")
         QApplication.processEvents()
         texts = popover_buttons()
-        check(len(texts) > 0 and not any("both" in t.lower() for t in texts), "Key's popover offers no Keep Both Keys (%r)" % texts)
+        labels = [str(l) for l in c["choiceLabels"]]
+        check(texts == labels, "Key's popover offers the conflict's choices %r (got %r)" % (labels, texts))
         key_count = len(conflicts_on("Key"))
         require(click_popover_named("mergePopoverAllMine", "All Mine on Key's popover"), "All Mine on Key")
         yield ("sleep", SETTLE_MS)
@@ -493,6 +493,17 @@ try:
               "Val is changed and Up moved (%r, %r)" % (app.getDiffTint(val), app.getDiffTint(up)))
         for name in remaining:
             check(not app.isMergeConflictBadgeShown(app.getNode(name)), "the comparison hides %s's badge" % name)
+        waiting = "1 merge conflict waiting" if len(conflicts()) == 1 else "%d merge conflicts waiting" % len(conflicts())
+        ok = yield ("until", lambda: (widget(QLabel, "mergeBarWaitingConflicts", True) is not None
+                                      and widget(QLabel, "mergeBarWaitingConflicts", True).text() == waiting), POLL_TIMEOUT_S)
+        check(ok, "the merge bar counts the conflicts waiting for the comparison to clear (%r)" % waiting)
+        p = popover()
+        if p is not None:
+            QApplication.sendEvent(p, QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+            QApplication.processEvents()
+        press(graph, Qt.Key_Down, Qt.AltModifier)
+        yield ("sleep", SETTLE_MS)
+        check(not app.isMergePopoverOpen(), "Alt+Down opens no conflict popover during a comparison")
         graph.resetTransform()
         QApplication.processEvents()
         selected = []

@@ -237,11 +237,13 @@ MergeConflictPreview::pickAt(const QPointF& scenePos,
     if (!pick) {
         return false;
     }
-    const std::size_t index = pick->index;
+    const std::vector<std::size_t> indices = MergeConflictResolve::indicesOf(_graph->getGui(), std::vector<Serialization::MergeConflict>(1, pick->conflict));
     const ProjectMerge::ConflictSide side = pick->side;
     _hovered.reset();
     error->clear();
-    ignore_result(MergeConflictResolve::resolve(_graph->getGui(), std::vector<std::size_t>(1, index), side, error));
+    if (!indices.empty()) {
+        ignore_result(MergeConflictResolve::resolve(_graph->getGui(), indices, side, error));
+    }
 
     return true;
 }
@@ -327,7 +329,7 @@ MergeConflictPreview::redraw()
                 ghost->setZValue(kPreviewDepth);
                 _ghosts.push_back(ghost);
                 ghosts[value.node->id] = rect;
-                _picks.push_back(Pick { rect, false, index, side });
+                _picks.push_back(Pick { rect, false, conflict, side });
             }
             const auto rectOf = [&](const std::string& id, QRectF* rect) {
                 std::map<std::string, QRectF>::const_iterator ghost = ghosts.find(id);
@@ -348,7 +350,7 @@ MergeConflictPreview::redraw()
                 const QLineF line = NodeGraphDiffOverlay::wireBetween(source, reader);
                 wires.push_back(NodeDiffWireItem::Wire { line, color });
                 const QPointF end = line.p2();
-                _picks.push_back(Pick { QRectF(end.x() - kWireEndRadius, end.y() - kWireEndRadius, 2. * kWireEndRadius, 2. * kWireEndRadius), true, index, side });
+                _picks.push_back(Pick { QRectF(end.x() - kWireEndRadius, end.y() - kWireEndRadius, 2. * kWireEndRadius, 2. * kWireEndRadius), true, conflict, side });
             }
             if (!full) {
                 continue;

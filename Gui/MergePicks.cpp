@@ -67,12 +67,12 @@ class MergePickCommand
 public:
     MergePickCommand(Gui* gui,
                      const ProjectPtr& project,
-                     const std::shared_ptr<const Serialization::ProjectSerialization>& other,
+                     const std::shared_ptr<const Serialization::ProjectSerialization>& source,
                      const QString& text)
         : QUndoCommand(text)
         , _gui(gui)
         , _project(project)
-        , _other(other)
+        , _source(source)
         , _conflictsBefore(project->getMergeConflicts())
         , _conflictsAfter()
     {
@@ -113,12 +113,12 @@ private:
         if (project->getMergeConflicts() != conflicts) {
             project->setMergeConflicts(conflicts);
         }
-        _gui->recompareGraphComparison(_other);
+        _gui->recompareGraphComparison(_source);
     }
 
     Gui* _gui;
     ProjectWPtr _project;
-    std::shared_ptr<const Serialization::ProjectSerialization> _other;
+    std::shared_ptr<const Serialization::ProjectSerialization> _source;
     std::vector<Serialization::MergeConflict> _conflictsBefore;
     std::vector<Serialization::MergeConflict> _conflictsAfter;
 };
@@ -133,7 +133,7 @@ pick(NodeGraph* graph,
     Gui* gui = graph->getGui();
     const ProjectMerge::ChangeSummary* summary = gui->getGraphComparison();
     const ProjectPtr project = gui->getApp()->getProject();
-    MergePickCommand* command = new MergePickCommand(gui, project, summary->other, text);
+    MergePickCommand* command = new MergePickCommand(gui, project, summary->source, text);
     if (!ops.empty()) {
         const std::vector<Serialization::OpResult> results = ApplyGraphOpsCommand::applyAndRecord(graph, project, ops, text, command);
         for (const Serialization::OpResult& result : results) {
@@ -212,12 +212,6 @@ bool
 isAdded(const ProjectMerge::NodeChange& change)
 {
     return change.kind == ProjectMerge::NodeChange::eAdded;
-}
-
-bool
-isMoved(const ProjectMerge::NodeChange& change)
-{
-    return (change.kind == ProjectMerge::NodeChange::eChanged) && change.moved;
 }
 
 void
@@ -356,7 +350,9 @@ restorePosition(NodeGraph* graph,
     if (!summary) {
         return false;
     }
-    const std::vector<std::string> ids = idsWhere(*summary, nodeIds, isMoved);
+    const std::vector<std::string> ids = idsWhere(*summary, nodeIds, [summary](const ProjectMerge::NodeChange& change) {
+        return ProjectMerge::canRestorePosition(*summary, change.nodeId);
+    });
     if (ids.empty()) {
         return false;
     }
@@ -378,7 +374,9 @@ addMenuActions(QMenu* menu,
     const bool removed = !idsWhere(*summary, ids, isRemoved).empty();
     const bool changed = !idsWhere(*summary, ids, isChanged).empty();
     const bool added = !idsWhere(*summary, ids, isAdded).empty();
-    const bool moved = !idsWhere(*summary, ids, isMoved).empty();
+    const bool moved = !idsWhere(*summary, ids, [summary](const ProjectMerge::NodeChange& change) {
+                            return ProjectMerge::canRestorePosition(*summary, change.nodeId);
+                        }).empty();
     if (!removed && !changed && !added && !moved) {
         return;
     }

@@ -107,99 +107,88 @@ stringOf(const std::optional<Serialization::KnobSerialization>& knob)
     return std::get<std::string>(*knob->dimensions[0].value);
 }
 
+// Merges a one-dimension Double knob through the scalar handler.
+void
+mergeKnob(const Serialization::KnobSerialization& base,
+          const Serialization::KnobSerialization& mine,
+          const Serialization::KnobSerialization& theirs,
+          std::optional<Serialization::KnobSerialization>* merged,
+          std::vector<Serialization::MergeConflict>* conflicts)
+{
+    Serialization::MergeHandlerRegistry::defaults().handlerFor("Grade", "Double").merge(&base, &mine, &theirs, merged, conflicts);
+}
+
 } // namespace
 
-TEST(CurveMerge, KeysMergeByTimeAndConflictOnlyWhereBothChangedOneKey)
-{
-    std::vector<Serialization::CurveKeyConflict> conflicts;
-    const Serialization::CurveSerialization merged = Serialization::mergeCurves(curve({ { 1., 1. }, { 10., 2. } }),
-                                                                                curve({ { 1., 1. }, { 10., 2.5 }, { 20., 3. } }),
-                                                                                curve({ { 1., 1.2 }, { 10., 1.8 }, { 30., 0.5 } }),
-                                                                                &conflicts);
-    const std::map<double, double> expected = { { 1., 1.2 }, { 10., 2.5 }, { 20., 3. }, { 30., 0.5 } };
-    EXPECT_EQ(keysOf(merged), expected);
-    ASSERT_EQ(conflicts.size(), 1u);
-    EXPECT_EQ(conflicts[0].time, 10.);
-    ASSERT_TRUE(conflicts[0].base && conflicts[0].mine && conflicts[0].theirs);
-    EXPECT_EQ(conflicts[0].base->value, 2.);
-    EXPECT_EQ(conflicts[0].mine->value, 2.5);
-    EXPECT_EQ(conflicts[0].theirs->value, 1.8);
-}
-
-TEST(CurveMerge, AKeyOneSideRemovedAndTheOtherLeftIsRemoved)
-{
-    std::vector<Serialization::CurveKeyConflict> conflicts;
-    const Serialization::CurveSerialization merged = Serialization::mergeCurves(curve({ { 1., 1. }, { 10., 2. } }), curve({ { 1., 1. } }), curve({ { 1., 1. }, { 10., 2. } }), &conflicts);
-    EXPECT_EQ(keysOf(merged), (std::map<double, double> { { 1., 1. } }));
-    EXPECT_TRUE(conflicts.empty());
-}
-
-TEST(CurveMerge, RemovingAKeyTheOtherSideChangedConflictsAndKeepsMine)
-{
-    std::vector<Serialization::CurveKeyConflict> conflicts;
-    const Serialization::CurveSerialization merged = Serialization::mergeCurves(curve({ { 1., 1. }, { 10., 2. } }), curve({ { 1., 1. } }), curve({ { 1., 1. }, { 10., 4. } }), &conflicts);
-    EXPECT_EQ(keysOf(merged), (std::map<double, double> { { 1., 1. } }));
-    ASSERT_EQ(conflicts.size(), 1u);
-    EXPECT_FALSE(conflicts[0].mine.has_value());
-    ASSERT_TRUE(conflicts[0].theirs.has_value());
-    EXPECT_EQ(conflicts[0].theirs->value, 4.);
-}
-
-TEST(CurveMerge, RecomputedTangentsAreNotAChangeButFreeTangentsAre)
-{
-    Serialization::CurveSerialization recomputed = curve({ { 1., 1. } });
-    recomputed.keyframes[0].rightDerivative = 0.5;
-    std::vector<Serialization::CurveKeyConflict> conflicts;
-    Serialization::CurveSerialization merged = Serialization::mergeCurves(curve({ { 1., 1. } }), recomputed, curve({ { 1., 3. } }), &conflicts);
-    EXPECT_EQ(keysOf(merged), (std::map<double, double> { { 1., 3. } }));
-    EXPECT_TRUE(conflicts.empty());
-
-    Serialization::CurveSerialization freeTangent = curve({ { 1., 1. } }, kFree);
-    freeTangent.keyframes[0].rightDerivative = 0.5;
-    merged = Serialization::mergeCurves(curve({ { 1., 1. } }, kFree), freeTangent, curve({ { 1., 3. } }, kFree), &conflicts);
-    EXPECT_EQ(keysOf(merged), (std::map<double, double> { { 1., 1. } }));
-    EXPECT_EQ(conflicts.size(), 1u);
-}
-
-TEST(CurveMerge, TheScalarHandlerMergesADimensionBothSidesAnimatedKeyByKey)
+TEST(CurveMerge, AKeyEditedOnOneSideMergesAsThatSidesCurve)
 {
     const Serialization::KnobSerialization base = doubleKnob({ { 1., 1. }, { 10., 2. } });
-    const Serialization::KnobSerialization mine = doubleKnob({ { 1., 1. }, { 10., 2.5 }, { 20., 3. } });
-    const Serialization::KnobSerialization theirs = doubleKnob({ { 1., 1.2 }, { 10., 1.8 }, { 30., 0.5 } });
+    const Serialization::KnobSerialization theirs = doubleKnob({ { 1., 1. }, { 10., 4. }, { 20., 5. } });
     std::optional<Serialization::KnobSerialization> merged;
     std::vector<Serialization::MergeConflict> conflicts;
-    Serialization::MergeHandlerRegistry::defaults().handlerFor("Grade", "Double").merge(&base, &mine, &theirs, &merged, &conflicts);
+    mergeKnob(base, base, theirs, &merged, &conflicts);
     ASSERT_TRUE(merged && merged->dimensions[0].curve);
-    EXPECT_EQ(keysOf(*merged->dimensions[0].curve), (std::map<double, double> { { 1., 1.2 }, { 10., 2.5 }, { 20., 3. }, { 30., 0.5 } }));
-    ASSERT_EQ(conflicts.size(), 1u);
-    EXPECT_EQ(conflicts[0].kind, Serialization::MergeConflictKind::eCurveKey);
-    EXPECT_EQ(conflicts[0].knob, "multiply");
-    EXPECT_EQ(conflicts[0].dimension, 0);
-    ASSERT_TRUE(conflicts[0].time.has_value());
-    EXPECT_EQ(*conflicts[0].time, 10.);
-    ASSERT_TRUE(conflicts[0].mine.key && conflicts[0].theirs.key);
-    EXPECT_EQ(conflicts[0].mine.key->value, 2.5);
-    EXPECT_EQ(conflicts[0].theirs.key->value, 1.8);
+    EXPECT_EQ(*merged->dimensions[0].curve, *theirs.dimensions[0].curve);
+    EXPECT_TRUE(conflicts.empty());
+
+    mergeKnob(base, theirs, base, &merged, &conflicts);
+    ASSERT_TRUE(merged && merged->dimensions[0].curve);
+    EXPECT_EQ(*merged->dimensions[0].curve, *theirs.dimensions[0].curve);
+    EXPECT_TRUE(conflicts.empty());
 }
 
-TEST(CurveMerge, AnimatingADimensionTheOtherSideSetConflictsOnTheWholeDimension)
+TEST(CurveMerge, KeyEditsOnBothSidesAtDifferentFramesGiveOneKnobConflict)
+{
+    const Serialization::KnobSerialization base = doubleKnob({ { 1., 1. }, { 10., 2. } });
+    const Serialization::KnobSerialization mine = doubleKnob({ { 1., 3. }, { 10., 2. } });
+    const Serialization::KnobSerialization theirs = doubleKnob({ { 1., 1. }, { 10., 4. }, { 30., 0.5 } });
+    std::optional<Serialization::KnobSerialization> merged;
+    std::vector<Serialization::MergeConflict> conflicts;
+    mergeKnob(base, mine, theirs, &merged, &conflicts);
+    ASSERT_TRUE(merged && merged->dimensions[0].curve);
+    EXPECT_EQ(keysOf(*merged->dimensions[0].curve), (std::map<double, double> { { 1., 3. }, { 10., 2. } }));
+    ASSERT_EQ(conflicts.size(), 1u);
+    EXPECT_EQ(conflicts[0].kind, Serialization::MergeConflictKind::eValue);
+    EXPECT_EQ(conflicts[0].knob, "multiply");
+    EXPECT_EQ(conflicts[0].dimension, -1);
+    EXPECT_TRUE(conflicts[0].options.empty());
+    ASSERT_TRUE(conflicts[0].base.knob && conflicts[0].mine.knob && conflicts[0].theirs.knob);
+    EXPECT_EQ(*conflicts[0].mine.knob, mine);
+    EXPECT_EQ(*conflicts[0].theirs.knob, theirs);
+}
+
+TEST(CurveMerge, AnInterpolationChangeIsAChangeOfTheWholeKnob)
+{
+    const Serialization::KnobSerialization base = doubleKnob({ { 1., 1. }, { 10., 2. } });
+    Serialization::KnobSerialization mine = base;
+    mine.dimensions[0].curve->keyframes[0].interpolation = kFree;
+    const Serialization::KnobSerialization theirs = doubleKnob({ { 1., 1. }, { 10., 4. } });
+    std::optional<Serialization::KnobSerialization> merged;
+    std::vector<Serialization::MergeConflict> conflicts;
+    mergeKnob(base, mine, theirs, &merged, &conflicts);
+    ASSERT_TRUE(merged && merged->dimensions[0].curve);
+    EXPECT_EQ(*merged->dimensions[0].curve, *mine.dimensions[0].curve);
+    ASSERT_EQ(conflicts.size(), 1u);
+    EXPECT_EQ(conflicts[0].dimension, -1);
+}
+
+TEST(CurveMerge, AnimatingAKnobTheOtherSideSetConflictsOnTheWholeKnob)
 {
     const Serialization::KnobSerialization base = doubleKnob({}, 2.);
     const Serialization::KnobSerialization mine = doubleKnob({ { 1., 1. }, { 10., 3. } });
     const Serialization::KnobSerialization theirs = doubleKnob({}, 4.);
     std::optional<Serialization::KnobSerialization> merged;
     std::vector<Serialization::MergeConflict> conflicts;
-    Serialization::MergeHandlerRegistry::defaults().handlerFor("Grade", "Double").merge(&base, &mine, &theirs, &merged, &conflicts);
+    mergeKnob(base, mine, theirs, &merged, &conflicts);
     ASSERT_TRUE(merged && merged->dimensions[0].curve);
     ASSERT_EQ(conflicts.size(), 1u);
     EXPECT_EQ(conflicts[0].kind, Serialization::MergeConflictKind::eValue);
-    EXPECT_EQ(conflicts[0].dimension, 0);
-    EXPECT_FALSE(conflicts[0].time.has_value());
+    EXPECT_EQ(conflicts[0].dimension, -1);
     ASSERT_TRUE(conflicts[0].base.knob && conflicts[0].mine.knob && conflicts[0].theirs.knob);
     EXPECT_EQ(*conflicts[0].theirs.knob, theirs);
 }
 
-TEST(CurveMerge, AnExpressionOnOneSideKeepsTheOtherSidesKeys)
+TEST(CurveMerge, AnExpressionOnOneSideAndKeysChangedOnTheOtherConflict)
 {
     const Serialization::KnobSerialization base = doubleKnob({ { 1., 1. } });
     Serialization::KnobSerialization mine = doubleKnob({ { 1., 1. } });
@@ -207,14 +196,15 @@ TEST(CurveMerge, AnExpressionOnOneSideKeepsTheOtherSidesKeys)
     const Serialization::KnobSerialization theirs = doubleKnob({ { 1., 5. } });
     std::optional<Serialization::KnobSerialization> merged;
     std::vector<Serialization::MergeConflict> conflicts;
-    Serialization::MergeHandlerRegistry::defaults().handlerFor("Grade", "Double").merge(&base, &mine, &theirs, &merged, &conflicts);
+    mergeKnob(base, mine, theirs, &merged, &conflicts);
     ASSERT_TRUE(merged && merged->dimensions[0].curve);
     EXPECT_EQ(merged->dimensions[0].expression, "frame");
-    EXPECT_EQ(keysOf(*merged->dimensions[0].curve), (std::map<double, double> { { 1., 5. } }));
-    EXPECT_TRUE(conflicts.empty());
+    EXPECT_EQ(keysOf(*merged->dimensions[0].curve), (std::map<double, double> { { 1., 1. } }));
+    ASSERT_EQ(conflicts.size(), 1u);
+    EXPECT_EQ(conflicts[0].dimension, -1);
 }
 
-TEST(CurveMerge, ParametricCurvesMergeCurveByCurve)
+TEST(CurveMerge, ParametricCurvesMergeAsOneKnob)
 {
     Serialization::KnobSerialization base;
     base.name = "curves";
@@ -222,19 +212,22 @@ TEST(CurveMerge, ParametricCurvesMergeCurveByCurve)
     base.parametricCurves = std::list<Serialization::CurveSerialization> { curve({ { 0., 0. }, { 1., 1. } }), curve({ { 0., 0. }, { 1., 1. } }) };
     Serialization::KnobSerialization mine = base;
     mine.parametricCurves->front() = curve({ { 0., 0. }, { 0.5, 0.7 }, { 1., 1. } });
-    mine.parametricCurves->back() = curve({ { 0., 0.1 }, { 1., 1. } });
     Serialization::KnobSerialization theirs = base;
     theirs.parametricCurves->back() = curve({ { 0., 0.2 }, { 1., 0.9 } });
+    const Serialization::KnobMergeHandler& handler = Serialization::MergeHandlerRegistry::defaults().handlerFor("ColorLookup", "Parametric");
     std::optional<Serialization::KnobSerialization> merged;
     std::vector<Serialization::MergeConflict> conflicts;
-    Serialization::MergeHandlerRegistry::defaults().handlerFor("ColorLookup", "Parametric").merge(&base, &mine, &theirs, &merged, &conflicts);
+    handler.merge(&base, &base, &theirs, &merged, &conflicts);
     ASSERT_TRUE(merged && merged->parametricCurves);
-    EXPECT_EQ(keysOf(merged->parametricCurves->front()), (std::map<double, double> { { 0., 0. }, { 0.5, 0.7 }, { 1., 1. } }));
-    EXPECT_EQ(keysOf(merged->parametricCurves->back()), (std::map<double, double> { { 0., 0.1 }, { 1., 0.9 } }));
+    EXPECT_EQ(*merged->parametricCurves, *theirs.parametricCurves);
+    EXPECT_TRUE(conflicts.empty());
+
+    handler.merge(&base, &mine, &theirs, &merged, &conflicts);
+    ASSERT_TRUE(merged && merged->parametricCurves);
+    EXPECT_EQ(*merged->parametricCurves, *mine.parametricCurves);
     ASSERT_EQ(conflicts.size(), 1u);
-    EXPECT_EQ(conflicts[0].kind, Serialization::MergeConflictKind::eCurveKey);
-    EXPECT_EQ(conflicts[0].dimension, 1);
-    EXPECT_EQ(conflicts[0].time, std::optional<double>(0.));
+    EXPECT_EQ(conflicts[0].kind, Serialization::MergeConflictKind::eValue);
+    EXPECT_EQ(conflicts[0].dimension, -1);
 }
 
 TEST(TextMerge, EditsToDifferentLinesMerge)

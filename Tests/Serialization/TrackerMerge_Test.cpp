@@ -132,20 +132,24 @@ merge(const Serialization::TrackerContextSerialization& base,
 
 } // namespace
 
-TEST(TrackerMerge, TrackCurvesMergeKeyByKeyAndConflictsNameTheTrack)
+TEST(TrackerMerge, TrackCurvesMergeAsWholeKnobsAndConflictsNameTheTrack)
 {
     const Serialization::TrackerContextSerialization base = tracker({ track("track1", { { 1., 10. }, { 2., 11. } }) });
     const Serialization::TrackerContextSerialization mine = tracker({ track("track1", { { 1., 10. }, { 2., 12. }, { 3., 13. } }) });
-    const Serialization::TrackerContextSerialization theirs = tracker({ track("track1", { { 1., 9. }, { 2., 15. } }) });
+    const Serialization::TrackerContextSerialization theirs = tracker({ track("track1", { { 1., 9. }, { 2., 11. } }) });
     std::vector<Serialization::MergeConflict> conflicts;
     const Serialization::TrackerContextSerialization merged = merge(base, mine, theirs, &conflicts);
 
-    EXPECT_EQ(centreOf(trackNamed(merged, "track1")), (std::map<double, double> { { 1., 9. }, { 2., 12. }, { 3., 13. } }));
+    EXPECT_EQ(centreOf(trackNamed(merged, "track1")), (std::map<double, double> { { 1., 10. }, { 2., 12. }, { 3., 13. } }));
     ASSERT_EQ(conflicts.size(), 1u);
-    EXPECT_EQ(conflicts[0].kind, Serialization::MergeConflictKind::eCurveKey);
+    EXPECT_EQ(conflicts[0].kind, Serialization::MergeConflictKind::eValue);
     EXPECT_EQ(conflicts[0].item, "track1");
     EXPECT_EQ(conflicts[0].knob, "centerPoint");
-    EXPECT_EQ(conflicts[0].time, std::optional<double>(2.));
+    EXPECT_EQ(conflicts[0].dimension, -1);
+
+    const Serialization::TrackerContextSerialization theirsOnly = merge(base, base, theirs, &conflicts);
+    EXPECT_EQ(centreOf(trackNamed(theirsOnly, "track1")), (std::map<double, double> { { 1., 9. }, { 2., 11. } }));
+    EXPECT_EQ(conflicts.size(), 1u);
 }
 
 TEST(TrackerMerge, UserKeyframesMergeAsSets)

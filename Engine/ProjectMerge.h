@@ -217,6 +217,9 @@ struct ChangeSummary {
     // other version, under the IDs of the live nodes its nodes stand for, and the live project.
     std::shared_ptr<const Serialization::ProjectSerialization> other;
     std::shared_ptr<const Serialization::ProjectSerialization> live;
+    // The other version as it was given, before its IDs were mapped to the live nodes: what
+    // recompare() compares with again. Every comparison made again from this one shares it.
+    std::shared_ptr<const Serialization::ProjectSerialization> source;
     // For a template version, the live nodes the comparison covers besides those other has; null
     // when it covers every node.
     std::shared_ptr<const std::set<std::string>> scope;
@@ -232,9 +235,11 @@ struct ChangeSummary {
 };
 
 /**
- * @brief The comparison previous made, made again against the same other version and scope, as
- * after an edit of the live project. It shares previous's other snapshot, so a pick recorded
- * against that snapshot still finds it. An empty summary when previous has no other version.
+ * @brief The comparison previous made, made again against the same other version, as after an edit
+ * of the live project. A template version is matched with the live nodes again and filtered as the
+ * first comparison filtered it, so a restored node is matched through its origin. It shares
+ * previous's source, so a pick recorded against that source still finds it. An empty summary when
+ * previous has no other version.
  **/
 ChangeSummary recompare(const ProjectPtr& project,
                         const ChangeSummary& previous);
@@ -296,14 +301,17 @@ struct PendingSplice {
 /**
  * @brief The operations that bring back nodes of summary's other version that the live project no
  * longer has, by ID, under their IDs: each at its placed position with its knobs, a group with
- * everything inside it. A node takes a fresh script name when a live node of its group has its
+ * everything inside it. From a template version, a node and its children belong to the import
+ * again instead: each takes a fresh ID and keeps its ID in the version as its origin, as an
+ * imported node does, so pending names the restored node by its fresh ID. A node takes a fresh script name when a live node of its group has its
  * name, and the inputs and expressions of the restored nodes that name it follow. An input of a
  * restored node connects to its source when that is live in the same group or restored with it,
  * and stays empty otherwise. Restored nodes that read from each other are wired as in the other
  * version. A live node that read from a restored node in the other version is connected to it
  * again on that input, as mode says when the artist has rewired the input since; under eAsk each
  * such input is added to pending. An ID the live project has, or that the other version does not,
- * is skipped, as is a node inside a group restored with it. Returns false with error set, and no
+ * is skipped, as is a node inside a group restored with it. Outside a template version, a restored
+ * group with a node whose ID the live project has fails the restore. Returns false with error set, and no
  * operations, when a node's group is neither live nor restored with it.
  **/
 bool restoreOperations(const ProjectPtr& project,
@@ -335,18 +343,26 @@ bool takeKnobOperations(const ProjectPtr& project,
                         std::vector<Serialization::GraphOp>* ops);
 
 /**
- * @brief The operations that delete added nodes, by ID. As deleting a node in the graph does, the
- * nodes reading from one with a single connected input are connected to that input's source, and
- * are disconnected otherwise. Nodes that are not added in summary are skipped.
+ * @brief The operations that delete added nodes, by ID. The nodes reading from one are connected
+ * to the source of the input Node::getInputReconnectedOnDelete() names, as deleting the node in
+ * the graph connects them, and are disconnected when it names none. Nodes that are not added in
+ * summary are skipped.
  **/
 std::vector<Serialization::GraphOp> removeAddedOperations(const ProjectPtr& project,
                                                           const ChangeSummary& summary,
                                                           const std::vector<std::string>& nodeIds);
 
 /**
+ * @brief Whether the node with that ID is moved in summary and has a position in the other
+ * version to go back to.
+ **/
+bool canRestorePosition(const ChangeSummary& summary,
+                        const std::string& nodeId);
+
+/**
  * @brief The operations that move moved nodes, by ID, back to their position in the other
  * version, shifted by their group's offset so a whole template moved stays where it is. Nodes
- * that are not moved in summary are skipped.
+ * canRestorePosition() refuses are skipped.
  **/
 std::vector<Serialization::GraphOp> restorePositionOperations(const ProjectPtr& project,
                                                               const ChangeSummary& summary,
@@ -390,8 +406,7 @@ struct ConflictChoice {
  * @brief The choices to offer for conflict, in Mine, Theirs, Base, options order: each one whose
  * state can be put back in the project, less any whose result equals that of an earlier choice
  * offered. A side without state of its own is not offered (Base for a node only mine has, a group
- * the merge did not keep), nor a Keep Both Keys whose keys share a time, nor Base where it is what
- * Mine or Theirs already gives. A splice choice offers Keep My Wiring (Mine, always) and Splice
+ * the merge did not keep), nor Base where it is what Mine or Theirs already gives. A splice choice offers Keep My Wiring (Mine, always) and Splice
  * In (Theirs). Every UI and binding offers these and only these.
  **/
 std::vector<ConflictChoice> availableChoices(const ProjectPtr& project,

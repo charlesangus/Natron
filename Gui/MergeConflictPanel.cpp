@@ -106,7 +106,7 @@ sameConflictPlace(const Serialization::MergeConflict& a,
                   const Serialization::MergeConflict& b)
 {
     return (a.kind == b.kind) && (a.templateKey == b.templateKey) && (a.baseNodeId == b.baseNodeId) && (a.nodeId == b.nodeId) && (a.knob == b.knob)
-        && (a.dimension == b.dimension) && (a.time == b.time) && (a.item == b.item) && (a.input == b.input);
+        && (a.dimension == b.dimension) && (a.item == b.item) && (a.input == b.input);
 }
 
 QString
@@ -188,16 +188,9 @@ sideText(const ProjectPtr& project,
         return deleter ? MergeConflictPanel::tr("Deleted") : MergeConflictPanel::tr("Changed");
     }
     case Serialization::MergeConflictKind::eValue:
-    case Serialization::MergeConflictKind::eCurveKey:
         break;
     }
     switch (conflict.kind) {
-    case Serialization::MergeConflictKind::eCurveKey:
-        if (!side.key) {
-            return MergeConflictPanel::tr("No key");
-        }
-
-        return QString::number(side.key->value);
     case Serialization::MergeConflictKind::eValue: {
         if (!side.knob) {
             return MergeConflictPanel::tr("Default");
@@ -205,7 +198,23 @@ sideText(const ProjectPtr& project,
         // A conflict on every dimension of a folded knob shows the one dimension its sides saved.
         const int index = (conflict.dimension == Serialization::kMergeConflictAllDimensions) ? 0 : conflict.dimension;
         if (index < 0) {
-            return MergeConflictPanel::tr("Changed");
+            // A whole-knob conflict: an animated side shows its keys, counted over its curves.
+            std::size_t keys = 0;
+            bool animated = false;
+            for (const Serialization::KnobDimensionSerialization& dimension : side.knob->dimensions) {
+                if (dimension.curve) {
+                    animated = true;
+                    keys += dimension.curve->keyframes.size();
+                }
+            }
+            if (side.knob->parametricCurves) {
+                animated = true;
+                for (const Serialization::CurveSerialization& curve : *side.knob->parametricCurves) {
+                    keys += curve.keyframes.size();
+                }
+            }
+
+            return animated ? MergeConflictPanel::tr("Animated, %1 keys").arg(keys) : MergeConflictPanel::tr("Changed");
         }
         if (index >= (int)side.knob->dimensions.size()) {
             return MergeConflictPanel::tr("Default");

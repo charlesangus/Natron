@@ -47,6 +47,8 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/GuiFwd.h"
 
+#include "Serialization/Merge/MergeConflict.h"
+
 class QGraphicsItem;
 class QGraphicsRectItem;
 
@@ -111,7 +113,8 @@ private:
     struct Pick {
         QRectF area;
         bool round;
-        std::size_t index;
+        // The conflict itself, found again when picked: its index may have shifted by then.
+        Serialization::MergeConflict conflict;
         ProjectMerge::ConflictSide side;
     };
 

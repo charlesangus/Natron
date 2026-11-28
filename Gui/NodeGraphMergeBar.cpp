@@ -102,6 +102,7 @@ NodeGraphMergeBar::NodeGraphMergeBar(NodeGraph* graph)
     , _comparison(0)
     , _compared(0)
     , _counts(0)
+    , _waitingConflicts(0)
     , _restoreSelected(0)
     , _revertSelected(0)
     , _conflicts(0)
@@ -121,6 +122,8 @@ NodeGraphMergeBar::NodeGraphMergeBar(NodeGraph* graph)
     comparison->setSpacing(4);
     _compared = addLabel(comparison, _comparison, "mergeBarCompared");
     _counts = addLabel(comparison, _comparison, "mergeBarCounts");
+    _waitingConflicts = addLabel(comparison, _comparison, "mergeBarWaitingConflicts");
+    _waitingConflicts->hide();
     QPushButton* previousChange = addButton(comparison, _comparison, tr("Previous Change"), "mergeBarPreviousChange", tr("Frame the previous changed node."));
     QPushButton* nextChange = addButton(comparison, _comparison, tr("Next Change"), "mergeBarNextChange", tr("Frame the next changed node."));
     _restoreSelected = addButton(comparison, _comparison, tr("Restore Selected"), "mergeBarRestoreSelected", tr("Bring the selected removed nodes back."));
@@ -265,6 +268,10 @@ NodeGraphMergeBar::refresh()
         _compared->setToolTip(_compared->text());
         _counts->setText(tr("%1 added, %2 changed, %3 removed, %4 moved").arg(added).arg(changed).arg(removed).arg(moved));
         _counts->setToolTip(_counts->text());
+        const std::size_t waiting = gui->getApp()->getProject()->getMergeConflicts().size();
+        _waitingConflicts->setText((waiting == 1) ? tr("1 merge conflict waiting") : tr("%1 merge conflicts waiting").arg(waiting));
+        _waitingConflicts->setToolTip(tr("Clear Comparison to resolve them, including the splice choices Restore adds."));
+        _waitingConflicts->setVisible(waiting > 0);
         bool anyRemoved = false;
         bool anyChanged = false;
         for (const std::string& id : MergePicks::selectedNodeIds(_graph)) {

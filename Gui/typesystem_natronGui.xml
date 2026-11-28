@@ -93,6 +93,66 @@
                 return %CONVERTTOPYTHON[QString](updateStatus);
             </inject-code>
         </modify-function>
+        <modify-function signature="restoreFromComparisonChecked(QStringList,QString,QString*)" remove="all"/>
+        <modify-function signature="restoreFromComparison(QStringList,QString)">
+            <inject-code class="target" position="beginning">
+                QString restoreError;
+                const bool picked = %CPPSELF.restoreFromComparisonChecked(%1, %2, &amp;restoreError);
+                if (!picked &amp;&amp; !restoreError.isEmpty()) {
+                    PyErr_SetString(PyExc_RuntimeError, restoreError.toUtf8().constData());
+                    return 0;
+                }
+                return %CONVERTTOPYTHON[bool](picked);
+            </inject-code>
+        </modify-function>
+        <modify-function signature="revertFromComparisonChecked(std::list&lt;Effect*&gt;,QString*)" remove="all"/>
+        <modify-function signature="revertFromComparison(std::list&lt;Effect*&gt;)">
+            <inject-code class="target" position="beginning">
+                QString revertError;
+                const bool picked = %CPPSELF.revertFromComparisonChecked(%1, &amp;revertError);
+                if (!picked &amp;&amp; !revertError.isEmpty()) {
+                    PyErr_SetString(PyExc_RuntimeError, revertError.toUtf8().constData());
+                    return 0;
+                }
+                return %CONVERTTOPYTHON[bool](picked);
+            </inject-code>
+        </modify-function>
+        <modify-function signature="takeKnobFromComparisonChecked(Effect*,QString,QString*)" remove="all"/>
+        <modify-function signature="takeKnobFromComparison(Effect*,QString)">
+            <inject-code class="target" position="beginning">
+                QString takeError;
+                const bool picked = %CPPSELF.takeKnobFromComparisonChecked(%1, %2, &amp;takeError);
+                if (!picked &amp;&amp; !takeError.isEmpty()) {
+                    PyErr_SetString(PyExc_RuntimeError, takeError.toUtf8().constData());
+                    return 0;
+                }
+                return %CONVERTTOPYTHON[bool](picked);
+            </inject-code>
+        </modify-function>
+        <modify-function signature="removeAddedFromComparisonChecked(std::list&lt;Effect*&gt;,QString*)" remove="all"/>
+        <modify-function signature="removeAddedFromComparison(std::list&lt;Effect*&gt;)">
+            <inject-code class="target" position="beginning">
+                QString removeError;
+                const bool picked = %CPPSELF.removeAddedFromComparisonChecked(%1, &amp;removeError);
+                if (!picked &amp;&amp; !removeError.isEmpty()) {
+                    PyErr_SetString(PyExc_RuntimeError, removeError.toUtf8().constData());
+                    return 0;
+                }
+                return %CONVERTTOPYTHON[bool](picked);
+            </inject-code>
+        </modify-function>
+        <modify-function signature="restorePositionFromComparisonChecked(std::list&lt;Effect*&gt;,QString*)" remove="all"/>
+        <modify-function signature="restorePositionFromComparison(std::list&lt;Effect*&gt;)">
+            <inject-code class="target" position="beginning">
+                QString positionError;
+                const bool picked = %CPPSELF.restorePositionFromComparisonChecked(%1, &amp;positionError);
+                if (!picked &amp;&amp; !positionError.isEmpty()) {
+                    PyErr_SetString(PyExc_RuntimeError, positionError.toUtf8().constData());
+                    return 0;
+                }
+                return %CONVERTTOPYTHON[bool](picked);
+            </inject-code>
+        </modify-function>
         <modify-function signature="getViewer(QString)const">
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>

@@ -50,7 +50,10 @@ Merges two edits of a common ancestor and writes the result to `out`:
   its path, content hash and the time of the merge.
 
 Where both sides changed the same thing differently, the result keeps **mine** and records a
-conflict. The conflicts are saved in the bundle (`merge/conflicts.yaml`), so a conflicted
+conflict. An animated parameter is compared as a whole: any difference in its curves (keys,
+values, interpolation, tangents, extrapolation) is a change of the parameter, a side that changed
+it alone gives its whole curve, and two different changes give one conflict on the parameter,
+however far apart their keys are. The conflicts are saved in the bundle (`merge/conflicts.yaml`), so a conflicted
 project still opens normally, with the conflicts listed for resolving later. A later merge keeps
 the conflicts saved earlier, by `mine` and, with `--scope all`, by `theirs`, while the node each
 names is still in the result. A summary of the new conflicts is printed on stderr.
@@ -233,7 +236,8 @@ project does not are drawn as ghosts where they would sit. Ghosts can be selecte
 click one, Shift- or Ctrl-click to add or remove one, or drag a rubber band over them. Selected
 ghosts get the selection outline. Delete, copy and drag leave ghosts alone.
 
-Right-click the selection for the picks that apply to it. Each pick is one undo step, and the
+Right-click the selection for the picks that apply to it; right-clicking a ghost outside the
+selection selects that ghost alone first. Each pick is one undo step, and the
 comparison is made again after it, and after it is undone or redone, so the graph always shows
 what still differs. A pick applies only to the selected nodes it fits, so a mixed selection can
 offer several.
@@ -248,9 +252,10 @@ offer several.
   settle rewired readers without asking (see below).
 - **Revert to Other** (changed nodes) gives the node every changed parameter, input and
   appearance the other version has.
-- **Remove** (added nodes) deletes the node and connects its main input to whatever it fed, as
-  a normal delete does.
-- **Restore Position** (moved nodes) moves the node back to where the other version has it.
+- **Remove** (added nodes) deletes the node and connects its readers as deleting it in the node
+  graph does: to the source of its one connected input, and to nothing when several are connected.
+- **Restore Position** (moved nodes) moves the node back to where the other version has it. It
+  is not offered when the other version gives the node no position.
 
 ### Splicing restored nodes back in
 
@@ -265,7 +270,13 @@ input in the project:
   leaves it with no choice, and **Restore (Splice Everywhere)** connects it.
 
 Pending splice choices are merge conflicts like any other: they carry the badge, appear in the
-popover and the Merge Conflicts panel, and are saved with the project.
+popover and the Merge Conflicts panel, and are saved with the project. While the comparison is
+shown they wait with the other conflicts, and the merge bar counts them; clear the comparison to
+choose.
+
+A node restored from a version of a template import belongs to that import again, as an
+imported node does, so the next update from the template treats it as the template's node. It
+gets a new node ID, so the same node can be restored into each import of the template.
 
 ### The merge popover
 
@@ -285,8 +296,7 @@ The popover is not modal. It refreshes after every choice, and closes on Escape,
 elsewhere, or once nothing on the node is left to choose.
 
 Only choices that are possible and lead somewhere new are offered: a choice that would give
-the same result as one listed before it is left out, and Keep Both Keys is offered only for
-keys at different frames, since two keys cannot share a frame.
+the same result as one listed before it is left out.
 
 ### Previews of structural conflicts
 
@@ -305,11 +315,13 @@ both, and is hidden when there is neither.
 
 - During a comparison it names what is compared, counts the added, changed, removed and moved
   nodes, and offers **Previous Change**, **Next Change**, **Restore Selected**, **Revert
-  Selected** and **Clear Comparison**.
+  Selected** and **Clear Comparison**. When merge conflicts are waiting, such as the splice
+  choices a Restore adds, it counts them too.
 - While the project has merge conflicts it counts them and offers **Previous Conflict**,
   **Next Conflict**, **All Mine**, **All Theirs** and **Open Panel**.
 
-Starting a comparison hides the conflict badges until it is cleared; an update that raises
+Starting a comparison hides the conflict badges, their popover sections and previews, and
+conflict navigation until it is cleared; an update that raises
 conflicts clears the comparison first. After such an update the graph frames the first node
 with a conflict. The Merge Conflicts panel does not open by itself, after an update or when a
 project with conflicts is opened; **Open Panel** shows it. It offers the same choices as the
@@ -326,8 +338,9 @@ The node graph's menu has the same navigation, which frames the node and opens i
 
 ### Scripting
 
-The GUI app (`app` in the script editor) has a call for every pick, each one undo step that
-returns `False`, with the reason in the script editor, when it did nothing:
+The GUI app (`app` in the script editor) has a call for every pick, each one undo step on each
+node graph holding the nodes. A call returns `False` when none of the nodes has that pick, and
+raises `RuntimeError` with the reason when the pick fails:
 
 - `app.restoreFromComparison(nodeNames=[], splice="ask")` restores the ghosts named by script
   name or node ID, or the selected ghosts when the list is empty. `splice` is `"ask"`,

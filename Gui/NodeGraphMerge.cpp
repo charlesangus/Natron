@@ -213,7 +213,11 @@ void
 NodeGraph::goToMergeConflict(int step)
 {
     Gui* gui = getGui();
-    const ProjectPtr project = (gui && gui->getApp()) ? gui->getApp()->getProject() : ProjectPtr();
+    // A comparison hides the conflicts until it is cleared.
+    if (!gui || gui->getGraphComparison()) {
+        return;
+    }
+    const ProjectPtr project = gui->getApp() ? gui->getApp()->getProject() : ProjectPtr();
     const std::vector<std::string> ids = conflictedNodeIds(project);
     if (ids.empty()) {
         return;
@@ -317,7 +321,8 @@ NodeGraph::handleMergePress(QMouseEvent* e,
         }
         if (buttonDownIsRight(e)) {
             if (!_imp->_diffOverlay->isGhostSelected(ghost)) {
-                _imp->_diffOverlay->toggleGhostSelected(ghost);
+                deselect();
+                _imp->_diffOverlay->setGhostSelection(std::set<std::string> { ghost });
             }
             showMenu(mapToGlobal(e->pos()));
 

@@ -33,7 +33,7 @@ namespace {
     bool
     hasSideValue(const MergeConflictValue& value)
     {
-        return value.knob.has_value() || value.key.has_value() || !value.otherKeys.empty() || !value.connections.empty() || !value.removedNodes.empty() || value.parent.has_value() || value.knobs.has_value() || value.node || value.roto.has_value() || value.tracker.has_value() || !value.itemsBefore.empty();
+        return value.knob.has_value() || !value.connections.empty() || !value.removedNodes.empty() || value.parent.has_value() || value.knobs.has_value() || value.node || value.roto.has_value() || value.tracker.has_value() || !value.itemsBefore.empty();
     }
 
     void
@@ -142,20 +142,6 @@ namespace {
         if (value.knob) {
             emitTypedKnob(em, *value.knob);
         }
-        if (value.key) {
-            CurveSerialization curve;
-            curve.keyframes.push_back(*value.key);
-            emitKey(em, "key");
-            em << YAML::Value;
-            emitCurve(em, curve);
-        }
-        if (!value.otherKeys.empty()) {
-            CurveSerialization curve;
-            curve.keyframes.assign(value.otherKeys.begin(), value.otherKeys.end());
-            emitKey(em, "otherKeys");
-            em << YAML::Value;
-            emitCurve(em, curve);
-        }
         if (!value.connections.empty()) {
             emitKey(em, "connections");
             em << YAML::Value << YAML::BeginSeq;
@@ -257,11 +243,6 @@ namespace {
             em << YAML::Value;
             emitInt(em, conflict.dimension);
         }
-        if (conflict.time) {
-            emitKey(em, "time");
-            em << YAML::Value;
-            emitDouble(em, *conflict.time);
-        }
         emitOptionalString(em, "item", conflict.item);
         emitOptionalString(em, "input", conflict.input);
         if (!conflict.inputs.empty()) {
@@ -310,17 +291,6 @@ namespace {
         MergeConflictValue value;
         if (YAML::Node knob = reader.get("knob")) {
             value.knob = readTypedKnob(reader, knob, knobName, context, warnings);
-        }
-        if (YAML::Node key = reader.get("key")) {
-            const CurveSerialization curve = readCurve(key, context + ".key");
-            if (curve.keyframes.size() != 1) {
-                fail(key, context + ".key", "expected a curve of one key");
-            }
-            value.key = curve.keyframes.front();
-        }
-        if (YAML::Node otherKeys = reader.get("otherKeys")) {
-            const CurveSerialization curve = readCurve(otherKeys, context + ".otherKeys");
-            value.otherKeys.assign(curve.keyframes.begin(), curve.keyframes.end());
         }
         if (YAML::Node connections = reader.get("connections")) {
             if (!connections.IsSequence()) {
@@ -439,9 +409,6 @@ namespace {
             } else {
                 conflict.dimension = readInt(dimension, context + ".dim");
             }
-        }
-        if (YAML::Node time = reader.get("time")) {
-            conflict.time = readDouble(time, context + ".time");
         }
         if (YAML::Node item = reader.get("item")) {
             conflict.item = readString(item, context + ".item");

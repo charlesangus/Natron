@@ -141,6 +141,14 @@ bool resolveOption(Gui* gui,
  **/
 void accept(Gui* gui,
             const std::vector<std::size_t>& indices);
+
+/**
+ * @brief Where each of conflicts is in the project's list now, in their order, skipping those no
+ * longer in it. A button or preview keeps the conflicts it was made for rather than their indices,
+ * which shift when a conflict before them is resolved.
+ **/
+std::vector<std::size_t> indicesOf(Gui* gui,
+                                   const std::vector<Serialization::MergeConflict>& conflicts);
 } // namespace MergeConflictResolve
 
 NATRON_NAMESPACE_EXIT

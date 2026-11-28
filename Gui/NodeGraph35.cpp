@@ -669,6 +669,9 @@ NodeGraph::showMenu(const QPoint & pos)
     previousConflict->setObjectName(QString::fromUtf8("actionGraphPreviousMergeConflict"));
     QObject::connect(previousConflict, SIGNAL(triggered()), this, SLOT(goToPreviousMergeConflict()));
     viewMenu->addAction(previousConflict);
+    // A comparison hides the conflicts until it is cleared.
+    nextConflict->setEnabled(!getGui()->getGraphComparison());
+    previousConflict->setEnabled(!getGui()->getGraphComparison());
     QAction* nextChange = new ActionWithShortcut(kShortcutGroupNodegraph, kShortcutIDActionGraphNextComparisonChange,
                                                  kShortcutDescActionGraphNextComparisonChange, viewMenu);
     nextChange->setObjectName(QString::fromUtf8("actionGraphNextComparisonChange"));

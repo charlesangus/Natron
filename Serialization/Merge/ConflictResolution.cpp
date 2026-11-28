@@ -59,27 +59,6 @@ namespace {
         return dimension;
     }
 
-    // Times are compared as the curve merge stores them: copied, never computed.
-    void
-    setKeyAt(CurveSerialization* curve,
-             double time,
-             const std::optional<KeyFrameSerialization>& key)
-    {
-        std::vector<KeyFrameSerialization>& keys = curve->keyframes;
-        keys.erase(std::remove_if(keys.begin(), keys.end(), [time](const KeyFrameSerialization& k) {
-                       return k.time == time;
-                   }),
-                   keys.end());
-        if (key) {
-            KeyFrameSerialization placed = *key;
-            placed.time = time;
-            keys.insert(std::upper_bound(keys.begin(), keys.end(), placed, [](const KeyFrameSerialization& a, const KeyFrameSerialization& b) {
-                            return a.time < b.time;
-                        }),
-                        placed);
-        }
-    }
-
     // What a side stands for in a delete-modify conflict, whose side is the one that deleted.
     enum class Role {
         eDeleter,
@@ -651,13 +630,9 @@ namespace {
 
             return true;
         case MergeConflictKind::eValue:
-        case MergeConflictKind::eCurveKey:
             break;
         }
 
-        if ((conflict.kind == MergeConflictKind::eCurveKey) && !conflict.time) {
-            return failWith(error, "this key conflict has no time");
-        }
         std::list<KnobSerialization>* knobs = nullptr;
         if (conflict.nodeId.empty() && conflict.baseNodeId.empty()) {
             knobs = &snapshot->projectKnobs;
@@ -710,14 +685,6 @@ namespace {
             }
 
             return true;
-        case MergeConflictKind::eCurveKey:
-            if (!conflict.time) {
-                return false;
-            }
-            // One key replaces the other at a shared time, so the choice could not keep both.
-            return std::none_of(value.otherKeys.begin(), value.otherKeys.end(), [&conflict](const KeyFrameSerialization& key) {
-                return key.time == *conflict.time;
-            });
         case MergeConflictKind::eValue:
         case MergeConflictKind::eRotoShape:
             break;
@@ -774,10 +741,9 @@ namespace {
         const MergeConflictValue& left = choiceState(conflict, a);
         const MergeConflictValue& right = choiceState(conflict, b);
         switch (conflict.kind) {
-        case MergeConflictKind::eValue:
-        case MergeConflictKind::eCurveKey: {
+        case MergeConflictKind::eValue: {
             if (!conflict.mine.knob && !conflict.theirs.knob && !conflict.base.knob) {
-                return sameOptionalKnob(left.knob, right.knob) && (left.key == right.key) && (left.otherKeys == right.otherKeys);
+                return sameOptionalKnob(left.knob, right.knob);
             }
             const std::optional<KnobSerialization> leftKnob = knobResult(conflict, left);
             const std::optional<KnobSerialization> rightKnob = knobResult(conflict, right);
@@ -842,6 +808,9 @@ applyConflictKnobValue(const MergeConflict& conflict,
                        KnobSerialization* state,
                        std::string* error)
 {
+    if (conflict.kind != MergeConflictKind::eValue) {
+        return failWith(error, "this conflict is not about a knob value");
+    }
     const int dimension = conflict.dimension;
     // One saved dimension stands for all of the knob's, as the merge compared them.
     if ((dimension >= 0) && (state->dimensions.size() == 1) && (state->dimension > 1)) {
@@ -853,89 +822,54 @@ applyConflictKnobValue(const MergeConflict& conflict,
             return failWith(error, quoted(conflict.knob) + " has no dimension");
         }
         for (KnobDimensionSerialization& target : state->dimensions) {
-            if (conflict.kind == MergeConflictKind::eValue) {
-                if (value.knob && !value.knob->dimensions.empty()) {
-                    KnobDimensionSerialization recorded = value.knob->dimensions.front();
-                    if (!recorded.defaultValue) {
-                        recorded.defaultValue = target.defaultValue;
-                    }
-                    target = std::move(recorded);
-                } else {
-                    target = defaultDimensionLike(target);
-                }
-                continue;
-            }
-            if (!conflict.time) {
-                return failWith(error, "this key conflict has no time");
-            }
-            if (!target.curve) {
-                target.curve = CurveSerialization();
-            }
-            setKeyAt(&*target.curve, *conflict.time, value.key);
-            for (const KeyFrameSerialization& key : value.otherKeys) {
-                setKeyAt(&*target.curve, key.time, key);
-            }
-            if (target.curve->keyframes.empty()) {
-                target.curve.reset();
-            }
-        }
-
-        return true;
-    }
-    if (conflict.kind == MergeConflictKind::eValue) {
-        if (dimension < 0) {
-            state->parametricCurves = value.knob ? value.knob->parametricCurves : std::nullopt;
-            state->stringAnimation = value.knob ? value.knob->stringAnimation : std::nullopt;
-            state->choiceOptionID = value.knob ? value.knob->choiceOptionID : std::nullopt;
-        } else {
-            if (dimension >= int(state->dimensions.size())) {
-                return failWith(error, quoted(conflict.knob) + " has no dimension " + std::to_string(dimension));
-            }
-            if (value.knob && !value.knob->dimensions.empty() && ((dimension < int(value.knob->dimensions.size())) || (value.knob->dimensions.size() == 1))) {
-                // A plug-in knob's default is not saved with the side it came from, so the live one stays.
-                KnobDimensionSerialization recorded = value.knob->dimensions[std::min(dimension, int(value.knob->dimensions.size()) - 1)];
+            if (value.knob && !value.knob->dimensions.empty()) {
+                KnobDimensionSerialization recorded = value.knob->dimensions.front();
                 if (!recorded.defaultValue) {
-                    recorded.defaultValue = state->dimensions[dimension].defaultValue;
+                    recorded.defaultValue = target.defaultValue;
                 }
-                state->dimensions[dimension] = std::move(recorded);
+                target = std::move(recorded);
             } else {
-                state->dimensions[dimension] = defaultDimensionLike(state->dimensions[dimension]);
+                target = defaultDimensionLike(target);
             }
         }
 
         return true;
     }
+    if (dimension < 0) {
+        // The whole knob: every dimension, with its animation, and the parametric curves, string
+        // animation and choice option.
+        if (value.knob && !value.knob->dimensions.empty()) {
+            std::vector<KnobDimensionSerialization> dimensions = value.knob->dimensions;
+            for (std::size_t i = 0; i < dimensions.size(); ++i) {
+                if (!dimensions[i].defaultValue && !state->dimensions.empty()) {
+                    // A plug-in knob's default is not saved with the side it came from, so the live one stays.
+                    dimensions[i].defaultValue = state->dimensions[std::min(i, state->dimensions.size() - 1)].defaultValue;
+                }
+            }
+            state->dimensions = std::move(dimensions);
+        } else {
+            for (KnobDimensionSerialization& target : state->dimensions) {
+                target = defaultDimensionLike(target);
+            }
+        }
+        state->parametricCurves = value.knob ? value.knob->parametricCurves : std::nullopt;
+        state->stringAnimation = value.knob ? value.knob->stringAnimation : std::nullopt;
+        state->choiceOptionID = value.knob ? value.knob->choiceOptionID : std::nullopt;
 
-    if (!conflict.time) {
-        return failWith(error, "this key conflict has no time");
+        return true;
     }
-    CurveSerialization* curve = nullptr;
-    if (state->parametricCurves) {
-        if ((dimension < 0) || (dimension >= int(state->parametricCurves->size()))) {
-            return failWith(error, quoted(conflict.knob) + " has no curve " + std::to_string(dimension));
+    if (dimension >= int(state->dimensions.size())) {
+        return failWith(error, quoted(conflict.knob) + " has no dimension " + std::to_string(dimension));
+    }
+    if (value.knob && !value.knob->dimensions.empty() && ((dimension < int(value.knob->dimensions.size())) || (value.knob->dimensions.size() == 1))) {
+        // A plug-in knob's default is not saved with the side it came from, so the live one stays.
+        KnobDimensionSerialization recorded = value.knob->dimensions[std::min(dimension, int(value.knob->dimensions.size()) - 1)];
+        if (!recorded.defaultValue) {
+            recorded.defaultValue = state->dimensions[dimension].defaultValue;
         }
-        std::list<CurveSerialization>::iterator found = state->parametricCurves->begin();
-        std::advance(found, dimension);
-        curve = &*found;
+        state->dimensions[dimension] = std::move(recorded);
     } else {
-        if ((dimension < 0) || (dimension >= int(state->dimensions.size()))) {
-            return failWith(error, quoted(conflict.knob) + " has no dimension " + std::to_string(dimension));
-        }
-        KnobDimensionSerialization& target = state->dimensions[dimension];
-        if (!target.curve) {
-            target.curve = CurveSerialization();
-        }
-        curve = &*target.curve;
-    }
-    setKeyAt(curve, *conflict.time, value.key);
-    for (const KeyFrameSerialization& key : value.otherKeys) {
-        setKeyAt(curve, key.time, key);
-    }
-    if (!state->parametricCurves) {
-        KnobDimensionSerialization& target = state->dimensions[dimension];
-        if (target.curve->keyframes.empty()) {
-            target.curve.reset();
-        }
+        state->dimensions[dimension] = defaultDimensionLike(state->dimensions[dimension]);
     }
 
     return true;

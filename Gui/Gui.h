@@ -840,9 +840,9 @@ public:
 
     /**
      * @brief Makes the comparison again, after an edit of the project, while it is still one
-     * against other; does nothing otherwise.
+     * against source (see ProjectMerge::ChangeSummary::source); does nothing otherwise.
      **/
-    void recompareGraphComparison(const std::shared_ptr<const Serialization::ProjectSerialization>& other);
+    void recompareGraphComparison(const std::shared_ptr<const Serialization::ProjectSerialization>& source);
 
     // What the merge bar calls the comparison with the base of the template import templateKey.
     static QString templateBaseDescription(const ProjectPtr& project,

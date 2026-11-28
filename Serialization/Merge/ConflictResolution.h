@@ -42,9 +42,9 @@ enum class ResolutionSide {
 const MergeConflictValue& sideState(const MergeConflict& conflict, ResolutionSide side);
 
 /**
- * @brief Gives knob, the state of the conflicted knob, value's conflicted dimension, extra state
- * or curve key, and value's other keys at their own times. Returns false with error set when the
- * knob has no such dimension or curve.
+ * @brief Gives knob, the state of the conflicted knob, value's conflicted dimension, or all of
+ * value's knob for a whole-knob conflict. Returns false with error set when the conflict is not
+ * about a value or the knob has no such dimension.
  **/
 bool applyConflictKnobValue(const MergeConflict& conflict,
                             const MergeConflictValue& value,
@@ -105,8 +105,7 @@ typedef std::function<bool(const MergeConflictChoice& choice)> ChoiceFilter;
  * @brief The choices to offer for conflict, in Mine, Theirs, Base, options order: each one with
  * state to put back that applicable (when set) accepts, less any whose result equals that of an
  * earlier choice offered. A choice's result is compared from the recorded state alone, so a
- * caller that knows the live graph can drop more through applicable. A curve-key choice that
- * puts two keys at one time has none to put back.
+ * caller that knows the live graph can drop more through applicable.
  **/
 std::vector<MergeConflictChoice> availableChoices(const MergeConflict& conflict,
                                                   const ChoiceFilter& applicable = ChoiceFilter());

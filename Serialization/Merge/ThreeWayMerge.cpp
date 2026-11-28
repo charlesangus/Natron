@@ -710,9 +710,9 @@ conflictsToSave(const ProjectSerialization& base,
                 const MergePlan& plan,
                 const MergeResult& result)
 {
-    typedef std::tuple<MergeConflictKind, std::string, std::string, std::string, int, std::string, std::string, std::optional<double>> Place;
+    typedef std::tuple<MergeConflictKind, std::string, std::string, std::string, int, std::string, std::string> Place;
     const auto placeOf = [](const MergeConflict& conflict) {
-        return Place(conflict.kind, conflict.templateKey, conflict.nodeId, conflict.knob, conflict.dimension, conflict.item, conflict.input, conflict.time);
+        return Place(conflict.kind, conflict.templateKey, conflict.nodeId, conflict.knob, conflict.dimension, conflict.item, conflict.input);
     };
     const auto placesOf = [&](const std::vector<MergeConflict>& conflicts) {
         std::set<Place> places;

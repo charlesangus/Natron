@@ -51,6 +51,7 @@
 #include "Engine/Knob.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
+#include "Engine/ProjectTemplate.h"
 
 #include "Serialization/Bundle/ProjectBundle.h"
 #include "Serialization/Merge/ConflictResolution.h"
@@ -406,7 +407,7 @@ namespace {
                     std::vector<Serialization::GraphOp>* ops,
                     QString* error)
     {
-        const bool knobValue = ((conflict.kind == Serialization::MergeConflictKind::eValue) || (conflict.kind == Serialization::MergeConflictKind::eCurveKey)) && conflict.item.empty();
+        const bool knobValue = (conflict.kind == Serialization::MergeConflictKind::eValue) && conflict.item.empty();
         if (knobValue) {
             KnobIPtr knob = conflictKnob(project, conflict);
             if (!knob) {
@@ -461,13 +462,8 @@ namespace {
                   bool baseSide)
     {
         using Serialization::MergeConflictKind;
-        if ((conflict.kind == MergeConflictKind::eValue) || (conflict.kind == MergeConflictKind::eCurveKey)) {
-            if ((conflict.kind == MergeConflictKind::eCurveKey) && !conflict.time) {
-                return false;
-            }
-            if (conflict.item.empty()) {
-                return bool(conflictKnob(project, conflict));
-            }
+        if ((conflict.kind == MergeConflictKind::eValue) && conflict.item.empty()) {
+            return bool(conflictKnob(project, conflict));
         }
         if (projectKnobDeleted(conflict)) {
             return true;
@@ -502,7 +498,6 @@ namespace {
             return true;
         case MergeConflictKind::eRotoShape:
         case MergeConflictKind::eValue:
-        case MergeConflictKind::eCurveKey:
             break;
         }
 
@@ -1190,6 +1185,7 @@ compare(const ProjectPtr& project,
         }
     }
     summary.other = std::make_shared<const Serialization::ProjectSerialization>(std::move(before));
+    summary.source = summary.other;
     summary.live = std::make_shared<const Serialization::ProjectSerialization>(std::move(after));
 
     return summary;
@@ -1253,12 +1249,15 @@ namespace {
         return best;
     }
 
+    // The nodes of version the plan matches with live nodes take those nodes' IDs; the rest are
+    // listed as removed. Only removed nodes and the live nodes in the plan's scope are listed.
     ChangeSummary
     compareWithTemplateVersion(const ProjectPtr& project,
                                const Serialization::ProjectSerialization& mine,
-                               const Serialization::ProjectSerialization& version,
+                               const std::shared_ptr<const Serialization::ProjectSerialization>& source,
                                const std::string& templateKey)
     {
+        const Serialization::ProjectSerialization& version = *source;
         const Serialization::MergePlan plan = Serialization::planMerge(version, mine, version, templateKey);
         Serialization::ProjectSerialization other = Serialization::editableState(version);
         // A published file's template node never matches the live one, which has an ID of its
@@ -1270,6 +1269,7 @@ namespace {
         ChangeSummary summary;
         summary.other = all.other;
         summary.live = all.live;
+        summary.source = source;
         summary.scope = std::make_shared<const std::set<std::string>>(plan.scope);
         summary.templateKey = templateKey;
         for (NodeChange& change : all.nodes) {
@@ -1286,26 +1286,18 @@ ChangeSummary
 recompare(const ProjectPtr& project,
           const ChangeSummary& previous)
 {
-    if (!previous.other) {
+    if (!previous.source) {
         return ChangeSummary();
     }
-    ChangeSummary all = compare(project, *previous.other);
-    all.other = previous.other;
-    all.templateKey = previous.templateKey;
-    if (!previous.scope) {
-        return all;
+    if (!previous.templateKey.empty()) {
+        Serialization::ProjectSerialization mine;
+        project->toSerialization(&mine);
+
+        return compareWithTemplateVersion(project, mine, previous.source, previous.templateKey);
     }
-    ChangeSummary summary;
-    summary.other = all.other;
-    summary.live = all.live;
-    summary.scope = previous.scope;
-    summary.templateKey = previous.templateKey;
-    // A node restored since is in other under its own ID, so it is matched and stays listed.
-    for (NodeChange& change : all.nodes) {
-        if ((change.kind != NodeChange::eAdded) || previous.scope->count(change.nodeId)) {
-            summary.nodes.push_back(std::move(change));
-        }
-    }
+    ChangeSummary summary = compare(project, *previous.source);
+    summary.other = previous.other;
+    summary.source = previous.source;
 
     return summary;
 }
@@ -1328,7 +1320,7 @@ compareWithFile(const ProjectPtr& project,
         *summary = compare(project, other);
     } else {
         other.templates.clear();
-        *summary = compareWithTemplateVersion(project, mine, other, templateKey);
+        *summary = compareWithTemplateVersion(project, mine, std::make_shared<const Serialization::ProjectSerialization>(std::move(other)), templateKey);
     }
 
     return true;
@@ -1359,7 +1351,7 @@ compareWithTemplateBase(const ProjectPtr& project,
 
     Serialization::ProjectSerialization mine;
     project->toSerialization(&mine);
-    *summary = compareWithTemplateVersion(project, mine, *found->base, templateKey);
+    *summary = compareWithTemplateVersion(project, mine, std::make_shared<const Serialization::ProjectSerialization>(*found->base), templateKey);
 
     return true;
 }
@@ -1375,12 +1367,10 @@ conflictLabel(const Serialization::MergeConflict& conflict)
             return QCoreApplication::translate("ProjectMerge", "%1, all dimensions").arg(knob);
         }
         if (conflict.dimension < 0) {
-            return QCoreApplication::translate("ProjectMerge", "%1 (animation, options)").arg(knob);
+            return knob;
         }
 
         return QCoreApplication::translate("ProjectMerge", "%1, dimension %2").arg(knob).arg(conflict.dimension);
-    case Serialization::MergeConflictKind::eCurveKey:
-        return QCoreApplication::translate("ProjectMerge", "%1, key at %2").arg(knob).arg(conflict.time ? *conflict.time : 0.);
     case Serialization::MergeConflictKind::eInput:
         return QCoreApplication::translate("ProjectMerge", "Input %1 connected differently").arg(QString::fromStdString(conflict.input));
     case Serialization::MergeConflictKind::eSpliceChoice:
@@ -1592,21 +1582,27 @@ namespace {
         return copy;
     }
 
-    // A node restored from a template version belongs to the import again, under the ID it has in
-    // the version, as a node the update added would.
-    void
+    // A node restored from a template version belongs to the import again, as an imported node
+    // does: its ID in the version becomes its origin and it takes a fresh ID, so the same version
+    // node can be restored into every import of the template. Returns the fresh ID.
+    std::string
     giveTemplateOrigin(Serialization::NodeSerialization* node,
                        const std::string& templateKey)
     {
-        if (!node->origin.isSet()) {
+        node->origin = Serialization::NodeOriginSerialization();
+        if (!node->id.empty()) {
             node->origin.templateKey = templateKey;
             node->origin.nodeId = node->id;
         }
+        node->id = ProjectTemplateDetail::newId();
+        node->cacheID.clear();
         for (const Serialization::NodeSerializationPtr& child : node->children) {
             if (child) {
                 giveTemplateOrigin(child.get(), templateKey);
             }
         }
+
+        return node->id;
     }
 
     // The group's script names from the top level down, joined by '.', as node references name it.
@@ -1781,7 +1777,7 @@ restoreOperations(const ProjectPtr& project,
         while (!below.empty()) {
             const Serialization::NodeSerialization* node = below.back();
             below.pop_back();
-            if (!node->id.empty() && live.count(node->id)) {
+            if (summary.templateKey.empty() && !node->id.empty() && live.count(node->id)) {
                 return failWith(error, QCoreApplication::translate("ProjectMerge", "%1 cannot be restored: %2 is already in the project").arg(QString::fromStdString(other.at(id).node->scriptName)).arg(QString::fromStdString(node->scriptName)));
             }
             if (!node->id.empty()) {
@@ -1835,6 +1831,8 @@ restoreOperations(const ProjectPtr& project,
         return source ? source->scriptName : std::string();
     };
 
+    // The live ID each restored node takes, by its ID in other, where it differs.
+    std::map<std::string, std::string> liveIds;
     for (const std::string& id : roots) {
         const FlatNode& node = other.at(id);
         Serialization::NodeSerializationPtr copy = copyNode(*node.node);
@@ -1843,7 +1841,7 @@ restoreOperations(const ProjectPtr& project,
         }
         copy->scriptName = names.at(id);
         if (!summary.templateKey.empty()) {
-            giveTemplateOrigin(copy.get(), summary.templateKey);
+            liveIds[id] = giveTemplateOrigin(copy.get(), summary.templateKey);
         }
         copy->inputs.clear();
         for (const std::pair<const std::string, std::string>& input : node.node->inputs) {
@@ -1886,7 +1884,8 @@ restoreOperations(const ProjectPtr& project,
                 if (!rewired || (mode == SpliceMode::eEverywhere)) {
                     reader.node->inputs[input.first] = names.at(id);
                 } else if (mode == SpliceMode::eAsk) {
-                    pending->push_back(PendingSplice { entry.first, input.first, id, sourceId });
+                    const std::map<std::string, std::string>::const_iterator liveId = liveIds.find(id);
+                    pending->push_back(PendingSplice { entry.first, input.first, (liveId == liveIds.end()) ? id : liveId->second, sourceId });
                 }
             }
         }
@@ -1991,16 +1990,15 @@ removeAddedOperations(const ProjectPtr& project,
         if (!isKind(summary, id, NodeChange::eAdded) || !findEditable(&after.nodes.nodes, id, &node)) {
             continue;
         }
+        // The readers are bridged as deleting the node in the graph bridges them.
         std::string bridge;
-        int connected = 0;
-        for (const std::pair<const std::string, std::string>& input : node.node->inputs) {
-            if (!input.second.empty()) {
-                bridge = input.second;
-                ++connected;
+        const NodePtr liveNode = project->findNodeById(id);
+        const int bridged = liveNode ? liveNode->getInputReconnectedOnDelete() : -1;
+        if (bridged != -1) {
+            const std::map<std::string, std::string>::const_iterator source = node.node->inputs.find(liveNode->getInputLabel(bridged));
+            if (source != node.node->inputs.end()) {
+                bridge = source->second;
             }
-        }
-        if (connected != 1) {
-            bridge.clear();
         }
         node.siblings->remove(node.node);
         for (const Serialization::NodeSerializationPtr& reader : *node.siblings) {
@@ -2023,6 +2021,16 @@ removeAddedOperations(const ProjectPtr& project,
     return Serialization::diffSnapshots(before, after);
 }
 
+bool
+canRestorePosition(const ChangeSummary& summary,
+                   const std::string& nodeId)
+{
+    const NodeChange* change = summary.find(nodeId);
+    const Serialization::NodeSerialization* other = summary.otherNode(nodeId);
+
+    return change && (change->kind == NodeChange::eChanged) && change->moved && other && other->layout.hasPosition;
+}
+
 std::vector<Serialization::GraphOp>
 restorePositionOperations(const ProjectPtr& project,
                           const ChangeSummary& summary,
@@ -2041,14 +2049,14 @@ restorePositionOperations(const ProjectPtr& project,
     const LayoutShift shift = layoutShift(other, compared);
     for (const std::string& id : nodeIds) {
         const NodeChange* change = summary.find(id);
-        if (!change || (change->kind != NodeChange::eChanged) || !change->moved || !other.count(id) || !project->findNodeById(id)) {
+        if (!canRestorePosition(summary, id) || !other.count(id) || !project->findNodeById(id)) {
             continue;
         }
         const Serialization::NodeLayoutSerialization& layout = other.at(id).node->layout;
         const Offset offset = shift.groupOffset(change->parentId);
         Serialization::SetNodeUiOp move;
         move.nodeId = id;
-        move.position = layout.hasPosition ? std::optional<std::pair<double, double>>(std::make_pair(layout.x + offset.first, layout.y + offset.second)) : std::optional<std::pair<double, double>>();
+        move.position = std::make_pair(layout.x + offset.first, layout.y + offset.second);
         ops.push_back(Serialization::GraphOp(std::move(move)));
     }
 

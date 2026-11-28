@@ -89,6 +89,9 @@ private:
     QWidget* _comparison;
     QLabel* _compared;
     QLabel* _counts;
+    // In comparison mode, the merge conflicts waiting for the comparison to be cleared, such as
+    // the splice choices a Restore adds; hidden when there are none.
+    QLabel* _waitingConflicts;
     QPushButton* _restoreSelected;
     QPushButton* _revertSelected;
     QWidget* _conflicts;

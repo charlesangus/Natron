@@ -236,18 +236,29 @@ public:
 
     /**
      * @brief Brings back the removed nodes the comparison draws as ghosts named in nodeNames (script
-     * names or node IDs), or the selected ghosts when it is empty, as one undo step. splice is
-     * "ask" (the default; inputs rewired since become splice choices among the merge conflicts),
-     * "keepMine" or "everywhere". False, with the reason in the script editor, when nothing was
-     * restored.
+     * names or node IDs), or the selected ghosts when it is empty, as one undo step on each graph
+     * that draws them. splice is "ask" (the default; inputs rewired since become splice choices
+     * among the merge conflicts), "keepMine" or "everywhere". False when none of them can be
+     * restored; raises RuntimeError when no ghost is named or selected or the restore fails.
      **/
     bool restoreFromComparison(const QStringList& nodeNames = QStringList(), const QString& splice = QString());
 
-    // Each is one undo step, false with the reason in the script editor when it recorded nothing.
+    /**
+     * @brief Revert to Other, Take, Remove and Restore Position on the nodes of effects, each one
+     * undo step on each graph holding them. False when none of the nodes has that pick; raises
+     * RuntimeError when the pick fails.
+     **/
     bool revertFromComparison(const std::list<Effect*>& effects);
     bool takeKnobFromComparison(Effect* effect, const QString& knobName);
     bool removeAddedFromComparison(const std::list<Effect*>& effects);
     bool restorePositionFromComparison(const std::list<Effect*>& effects);
+
+    // The picks above, reporting a failure in error instead of raising it.
+    bool restoreFromComparisonChecked(const QStringList& nodeNames, const QString& splice, QString* error);
+    bool revertFromComparisonChecked(const std::list<Effect*>& effects, QString* error);
+    bool takeKnobFromComparisonChecked(Effect* effect, const QString& knobName, QString* error);
+    bool removeAddedFromComparisonChecked(const std::list<Effect*>& effects, QString* error);
+    bool restorePositionFromComparisonChecked(const std::list<Effect*>& effects, QString* error);
 
     // Selects the ghosts named in nodeNames (script names or node IDs) in their graphs, and no other.
     void selectComparisonGhosts(const QStringList& nodeNames);

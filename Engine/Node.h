@@ -1331,6 +1331,13 @@ public:
        @param reconnect If set to true Natron will attempt to re-connect disconnected output to an input of this node
        @param hideGui When true, the node gui will be notified so it gets hidden
      */
+    /**
+     * @brief The input whose source a delete with reconnection connects this node's readers to,
+     * or -1 when it disconnects them: the one connected input that is not optional, or the one
+     * connected optional input when none that is not optional is connected.
+     **/
+    int getInputReconnectedOnDelete() const;
+
     void deactivate(const std::list<NodePtr> & outputsToDisconnect = std::list<NodePtr>(),
                     bool disconnectAll = true,
                     bool reconnect = true,

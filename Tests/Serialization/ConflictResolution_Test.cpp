@@ -88,15 +88,6 @@ side(const MergeConflict& conflict,
     };
 }
 
-Edit
-option(const MergeConflict& conflict,
-       const std::string& name)
-{
-    return [&conflict, name](ProjectSerialization* snapshot, std::string* error) {
-        return Serialization::applyConflictOption(conflict, name, snapshot, error);
-    };
-}
-
 // The merged project after the choice, applied as the operations the app applies; undoing them,
 // as the undo stack does with the reverse diff, gives the merged project back.
 ProjectSerialization
@@ -495,14 +486,18 @@ TEST(ConflictResolution, AnAdoptedNodeTakesTheChosenSidesDefaultedKnobs)
     }
 }
 
-TEST(ConflictResolution, ACurveKeyConflictTakesTheChosenKey)
+TEST(ConflictResolution, AnAnimatedKnobConflictTakesTheChosenSidesWholeCurve)
 {
     const Serialization::MergeResult result = Projects(scenarios().at("keyframes-both-sides")).merge();
-    const MergeConflict* conflict = conflictOn(result, MergeConflictKind::eCurveKey, "Grade1");
+    const MergeConflict* conflict = conflictOn(result, MergeConflictKind::eValue, "Grade1");
     ASSERT_TRUE(conflict != nullptr);
-    EXPECT_EQ(keysOf(resolved(result.merged, side(*conflict, ResolutionSide::eMine)), "Grade1", "multiply").at(10.), 2.5);
-    EXPECT_EQ(keysOf(resolved(result.merged, side(*conflict, ResolutionSide::eTheirs)), "Grade1", "multiply").at(10.), 1.8);
-    EXPECT_EQ(keysOf(resolved(result.merged, side(*conflict, ResolutionSide::eBase)), "Grade1", "multiply").at(10.), 2.);
+    EXPECT_EQ(conflict->knob, "multiply");
+    EXPECT_EQ(conflict->dimension, -1);
+    EXPECT_TRUE(conflict->options.empty());
+    EXPECT_EQ(labelsOf(*conflict), std::vector<std::string>({ "Mine", "Theirs", "Base" }));
+    EXPECT_EQ(keysOf(resolved(result.merged, side(*conflict, ResolutionSide::eMine)), "Grade1", "multiply"), (std::map<double, double> { { 1., 1. }, { 10., 2.5 }, { 20., 3. } }));
+    EXPECT_EQ(keysOf(resolved(result.merged, side(*conflict, ResolutionSide::eTheirs)), "Grade1", "multiply"), (std::map<double, double> { { 1., 1.2 }, { 10., 1.8 }, { 30., 0.5 } }));
+    EXPECT_EQ(keysOf(resolved(result.merged, side(*conflict, ResolutionSide::eBase)), "Grade1", "multiply"), (std::map<double, double> { { 1., 1. }, { 10., 2. } }));
 
     std::string error;
     ProjectSerialization snapshot = Serialization::editableState(result.merged);
@@ -510,49 +505,14 @@ TEST(ConflictResolution, ACurveKeyConflictTakesTheChosenKey)
     EXPECT_FALSE(error.empty());
 }
 
-TEST(ConflictResolution, ASameFrameKeyConflictOffersNoKeepBothKeys)
+TEST(ConflictResolution, AnAnimatedKnobConflictHidesBaseWhereItEqualsMine)
 {
     const Serialization::MergeResult result = Projects(scenarios().at("keyframes-both-sides")).merge();
-    const MergeConflict* merged = conflictOn(result, MergeConflictKind::eCurveKey, "Grade1");
+    const MergeConflict* merged = conflictOn(result, MergeConflictKind::eValue, "Grade1");
     ASSERT_TRUE(merged != nullptr);
-    EXPECT_TRUE(merged->options.empty());
-    EXPECT_EQ(labelsOf(*merged), std::vector<std::string>({ "Mine", "Theirs", "Base" }));
-
     MergeConflict conflict = *merged;
-    ASSERT_TRUE(conflict.time && conflict.theirs.key);
-    Serialization::MergeConflictOption both;
-    both.name = std::string(Serialization::kMergeOptionKeepBothKeys);
-    both.label = "Keep Both Keys";
-    both.state.key = conflict.mine.key;
-    both.state.otherKeys.push_back(*conflict.theirs.key);
-    both.state.otherKeys.back().time = *conflict.time;
-    conflict.options.push_back(both);
-    EXPECT_EQ(labelsOf(conflict), std::vector<std::string>({ "Mine", "Theirs", "Base" }));
-
-    conflict.base.key = conflict.mine.key;
+    conflict.base = conflict.mine;
     EXPECT_EQ(labelsOf(conflict), std::vector<std::string>({ "Mine", "Theirs" }));
-}
-
-TEST(ConflictResolution, KeepBothKeysAtDifferentFramesIsOfferedAndKeepsBoth)
-{
-    const Serialization::MergeResult result = Projects(scenarios().at("keyframes-both-sides")).merge();
-    const MergeConflict* merged = conflictOn(result, MergeConflictKind::eCurveKey, "Grade1");
-    ASSERT_TRUE(merged != nullptr);
-    MergeConflict conflict = *merged;
-    ASSERT_TRUE(conflict.time && conflict.theirs.key);
-    Serialization::MergeConflictOption both;
-    both.name = std::string(Serialization::kMergeOptionKeepBothKeys);
-    both.label = "Keep Both Keys";
-    both.state.key = conflict.mine.key;
-    both.state.otherKeys.push_back(*conflict.theirs.key);
-    both.state.otherKeys.back().time = 15.;
-    conflict.options.push_back(both);
-    EXPECT_EQ(labelsOf(conflict), std::vector<std::string>({ "Mine", "Theirs", "Base", "Keep Both Keys" }));
-
-    const std::map<double, double> keys = keysOf(resolved(result.merged, option(conflict, both.name)), "Grade1", "multiply");
-    EXPECT_EQ(keys.at(10.), 2.5);
-    EXPECT_EQ(keys.at(15.), 1.8);
-    EXPECT_EQ(keys.at(20.), 3.);
 }
 
 TEST(ConflictResolution, AValueConflictHidesBaseWhereItEqualsMine)

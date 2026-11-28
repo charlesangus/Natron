@@ -144,65 +144,37 @@ namespace {
         return conflict;
     }
 
-    void
-    addKeyConflicts(const std::string& name,
-                    int dimension,
-                    const std::vector<CurveKeyConflict>& keys,
-                    std::vector<MergeConflict>* conflicts)
-    {
-        for (const CurveKeyConflict& key : keys) {
-            MergeConflict conflict;
-            conflict.kind = MergeConflictKind::eCurveKey;
-            conflict.knob = name;
-            conflict.dimension = dimension;
-            conflict.time = key.time;
-            conflict.base.key = key.base;
-            conflict.mine.key = key.mine;
-            conflict.theirs.key = key.theirs;
-            conflicts->push_back(conflict);
-        }
-    }
-
-    // Parametric curves merge one by one only when no side added or removed a curve, since a
-    // curve is known by its index alone.
+    // Whether a side animates the knob: a curve on a dimension, parametric curves or a string
+    // animation table.
     bool
-    mergeParametricCurves(const KnobSerialization* base,
-                          const KnobSerialization* mine,
-                          const KnobSerialization* theirs,
-                          std::list<CurveSerialization>* merged,
-                          std::vector<MergeConflict>* conflicts)
+    isAnimated(const KnobSerialization* knob)
     {
-        if (!mine || !theirs || !mine->parametricCurves || !theirs->parametricCurves) {
+        if (!knob) {
             return false;
         }
-        const std::size_t count = mine->parametricCurves->size();
-        if ((theirs->parametricCurves->size() != count) || (base && base->parametricCurves && (base->parametricCurves->size() != count))) {
-            return false;
-        }
-        const std::list<CurveSerialization> none(count);
-        const std::list<CurveSerialization>& baseCurves = (base && base->parametricCurves) ? *base->parametricCurves : none;
-        std::list<CurveSerialization>::const_iterator b = baseCurves.begin();
-        std::list<CurveSerialization>::const_iterator m = mine->parametricCurves->begin();
-        std::list<CurveSerialization>::const_iterator t = theirs->parametricCurves->begin();
-        merged->clear();
-        for (int index = 0; m != mine->parametricCurves->end(); ++b, ++m, ++t, ++index) {
-            std::vector<CurveKeyConflict> keys;
-            merged->push_back(mergeCurves(*b, *m, *t, &keys));
-            addKeyConflicts(mine->name, index, keys, conflicts);
+        if (knob->parametricCurves || knob->stringAnimation) {
+            return true;
         }
 
-        return true;
+        return std::any_of(knob->dimensions.begin(), knob->dimensions.end(), [](const KnobDimensionSerialization& dimension) {
+            return dimension.curve.has_value();
+        });
     }
 
-    KnobDimensionSerialization
-    withoutAnimation(const std::optional<KnobDimensionSerialization>& dimension)
-    {
-        KnobDimensionSerialization result = dimension ? *dimension : KnobDimensionSerialization();
-        result.curve.reset();
-        result.value.reset();
-        result.defaultValue.reset();
+    typedef std::pair<std::vector<std::optional<KnobDimensionSerialization>>, KnobExtras> WholeKnobState;
 
-        return result;
+    WholeKnobState
+    wholeState(const KnobSerialization* knob,
+               std::size_t count)
+    {
+        WholeKnobState state;
+        state.first.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+            state.first.push_back(dimensionState(knob, i));
+        }
+        state.second = extrasOf(knob);
+
+        return state;
     }
 
 } // namespace
@@ -353,47 +325,44 @@ ScalarKnobMergeHandler::merge(const KnobSerialization* base,
 
     KnobSerialization result = *frame;
     result.dimensions.resize(count);
-    for (std::size_t i = 0; i < count; ++i) {
-        const Pick choice = pick(dimensionState(base, i), dimensionState(mine, i), dimensionState(theirs, i));
-        const KnobSerialization* side = (choice == Pick::eTheirs) ? theirs : mine;
+    const auto takeDimension = [&](std::size_t i, const KnobSerialization* side) {
         if (dimensionState(side, i)) {
             result.dimensions[i] = side->dimensions[i];
         } else {
             result.dimensions[i] = defaultDimension(*frame, i, side);
         }
+    };
+
+    // An animated knob is one unit: a change to any key, value, interpolation, tangent or
+    // extrapolation of its curves is a change to the whole knob, and keys are never reconciled.
+    if (isAnimated(base) || isAnimated(mine) || isAnimated(theirs)) {
+        const Pick choice = pick(wholeState(base, count), wholeState(mine, count), wholeState(theirs, count));
+        const KnobSerialization* side = (choice == Pick::eTheirs) ? theirs : mine;
+        for (std::size_t i = 0; i < count; ++i) {
+            takeDimension(i, side);
+        }
+        std::tie(result.parametricCurves, result.stringAnimation, result.choiceOptionID) = extrasOf(side);
         if (choice == Pick::eConflict) {
-            std::vector<MergeConflict> finer;
-            KnobDimensionSerialization dimension = result.dimensions[i];
-            if (mergeDimension(base, mine, theirs, i, &dimension, &finer)) {
-                result.dimensions[i] = std::move(dimension);
-                if (allFolded) {
-                    for (MergeConflict& conflict : finer) {
-                        conflict.dimension = kMergeConflictAllDimensions;
-                    }
+            conflicts->push_back(valueConflict(name, -1, base, mine, theirs));
+        }
+    } else {
+        for (std::size_t i = 0; i < count; ++i) {
+            const Pick choice = pick(dimensionState(base, i), dimensionState(mine, i), dimensionState(theirs, i));
+            takeDimension(i, (choice == Pick::eTheirs) ? theirs : mine);
+            if (choice == Pick::eConflict) {
+                KnobDimensionSerialization dimension = result.dimensions[i];
+                if (mergeDimension(base, mine, theirs, i, &dimension)) {
+                    result.dimensions[i] = std::move(dimension);
+                } else {
+                    conflicts->push_back(valueConflict(name, allFolded ? kMergeConflictAllDimensions : int(i), base, mine, theirs));
                 }
-                conflicts->insert(conflicts->end(), finer.begin(), finer.end());
-            } else {
-                conflicts->push_back(valueConflict(name, allFolded ? kMergeConflictAllDimensions : int(i), base, mine, theirs));
             }
         }
-    }
-
-    const KnobExtras baseExtras = extrasOf(base);
-    const KnobExtras mineExtras = extrasOf(mine);
-    const KnobExtras theirsExtras = extrasOf(theirs);
-    const Pick extras = pick(baseExtras, mineExtras, theirsExtras);
-    std::tie(result.parametricCurves, result.stringAnimation, result.choiceOptionID) = (extras == Pick::eTheirs) ? theirsExtras : mineExtras;
-    if (extras == Pick::eConflict) {
-        const bool onlyCurves = (pick(std::get<1>(baseExtras), std::get<1>(mineExtras), std::get<1>(theirsExtras)) != Pick::eConflict)
-            && (pick(std::get<2>(baseExtras), std::get<2>(mineExtras), std::get<2>(theirsExtras)) != Pick::eConflict);
-        std::list<CurveSerialization> curves;
-        std::vector<MergeConflict> finer;
-        if (onlyCurves && mergeParametricCurves(base, mine, theirs, &curves, &finer)) {
-            result.parametricCurves = std::move(curves);
-            result.stringAnimation = (pick(std::get<1>(baseExtras), std::get<1>(mineExtras), std::get<1>(theirsExtras)) == Pick::eTheirs) ? std::get<1>(theirsExtras) : std::get<1>(mineExtras);
-            result.choiceOptionID = (pick(std::get<2>(baseExtras), std::get<2>(mineExtras), std::get<2>(theirsExtras)) == Pick::eTheirs) ? std::get<2>(theirsExtras) : std::get<2>(mineExtras);
-            conflicts->insert(conflicts->end(), finer.begin(), finer.end());
-        } else {
+        const KnobExtras mineExtras = extrasOf(mine);
+        const KnobExtras theirsExtras = extrasOf(theirs);
+        const Pick extras = pick(extrasOf(base), mineExtras, theirsExtras);
+        std::tie(result.parametricCurves, result.stringAnimation, result.choiceOptionID) = (extras == Pick::eTheirs) ? theirsExtras : mineExtras;
+        if (extras == Pick::eConflict) {
             conflicts->push_back(valueConflict(name, -1, base, mine, theirs));
         }
     }
@@ -411,38 +380,13 @@ ScalarKnobMergeHandler::merge(const KnobSerialization* base,
 }
 
 bool
-ScalarKnobMergeHandler::mergeDimension(const KnobSerialization* base,
-                                       const KnobSerialization* mine,
-                                       const KnobSerialization* theirs,
-                                       std::size_t index,
-                                       KnobDimensionSerialization* merged,
-                                       std::vector<MergeConflict>* conflicts) const
+ScalarKnobMergeHandler::mergeDimension(const KnobSerialization* /*base*/,
+                                       const KnobSerialization* /*mine*/,
+                                       const KnobSerialization* /*theirs*/,
+                                       std::size_t /*index*/,
+                                       KnobDimensionSerialization* /*merged*/) const
 {
-    const std::optional<KnobDimensionSerialization> b = dimensionState(base, index);
-    const std::optional<KnobDimensionSerialization> m = dimensionState(mine, index);
-    const std::optional<KnobDimensionSerialization> t = dimensionState(theirs, index);
-    if (!m || !t || !m->curve || !t->curve) {
-        return false;
-    }
-    // A string knob's animation lives in its string table, which the curve's key values index.
-    for (const KnobSerialization* knob : { base, mine, theirs }) {
-        if (knob && knob->stringAnimation) {
-            return false;
-        }
-    }
-    const Pick rest = pick(withoutAnimation(b), withoutAnimation(m), withoutAnimation(t));
-    if (rest == Pick::eConflict) {
-        return false;
-    }
-
-    std::vector<CurveKeyConflict> keys;
-    const CurveSerialization none;
-    CurveSerialization curve = mergeCurves((b && b->curve) ? *b->curve : none, *m->curve, *t->curve, &keys);
-    *merged = (rest == Pick::eTheirs) ? theirs->dimensions[index] : mine->dimensions[index];
-    addKeyConflicts(mine->name, int(index), keys, conflicts);
-    merged->curve = std::move(curve);
-
-    return true;
+    return false;
 }
 
 std::list<KnobSerialization>

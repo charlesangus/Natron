@@ -253,8 +253,9 @@ MergePopover::rebuild()
 
         return;
     }
-    const std::vector<std::size_t> indices = conflictsOf(project, _nodeId);
     const ProjectMerge::ChangeSummary* summary = gui->getGraphComparison();
+    // A comparison hides the conflicts until it is cleared.
+    const std::vector<std::size_t> indices = summary ? std::vector<std::size_t>() : conflictsOf(project, _nodeId);
     const ProjectMerge::NodeChange* change = summary ? summary->find(_nodeId) : 0;
     if (change && ((change->kind != ProjectMerge::NodeChange::eChanged) || NodeGraphDiffOverlay::isOnlyMoved(*change))) {
         change = 0;
@@ -293,11 +294,15 @@ MergePopover::rebuild()
                 button->setProperty(kSideProperty, (int)choice.side);
                 button->installEventFilter(this);
             }
-            QObject::connect(button, &QPushButton::clicked, this, [this, index, choice]() {
-                QString error;
+            QObject::connect(button, &QPushButton::clicked, this, [this, conflict, choice]() {
                 Gui* g = _graph->getGui();
-                const bool done = choice.option.empty() ? MergeConflictResolve::resolve(g, std::vector<std::size_t>(1, index), choice.side, &error)
-                                                        : MergeConflictResolve::resolveOption(g, index, choice.option, &error);
+                const std::vector<std::size_t> now = MergeConflictResolve::indicesOf(g, std::vector<Serialization::MergeConflict>(1, conflict));
+                if (now.empty()) {
+                    return;
+                }
+                QString error;
+                const bool done = choice.option.empty() ? MergeConflictResolve::resolve(g, now, choice.side, &error)
+                                                        : MergeConflictResolve::resolveOption(g, now.front(), choice.option, &error);
                 showError(done ? QString() : error);
             });
         }
@@ -313,10 +318,15 @@ MergePopover::rebuild()
                                            tr("Give every conflict of this node the state the template had."));
         row->addStretch();
         box->addLayout(row);
-        const auto bindAll = [this, indices](QPushButton* button, ProjectMerge::ConflictSide side) {
-            QObject::connect(button, &QPushButton::clicked, this, [this, indices, side]() {
+        std::vector<Serialization::MergeConflict> mine;
+        for (std::size_t index : indices) {
+            mine.push_back(conflicts[index]);
+        }
+        const auto bindAll = [this, mine](QPushButton* button, ProjectMerge::ConflictSide side) {
+            QObject::connect(button, &QPushButton::clicked, this, [this, mine, side]() {
                 QString error;
-                showError(resolveSide(_graph->getGui(), indices, side, &error) ? QString() : error);
+                Gui* g = _graph->getGui();
+                showError(resolveSide(g, MergeConflictResolve::indicesOf(g, mine), side, &error) ? QString() : error);
             });
         };
         bindAll(allMine, ProjectMerge::ConflictSide::eMine);

@@ -375,9 +375,9 @@ Gui::getGraphComparisonDescription() const
 }
 
 void
-Gui::recompareGraphComparison(const std::shared_ptr<const Serialization::ProjectSerialization>& other)
+Gui::recompareGraphComparison(const std::shared_ptr<const Serialization::ProjectSerialization>& source)
 {
-    if (!_imp->graphComparison || !other || (_imp->graphComparison->other != other)) {
+    if (!_imp->graphComparison || !source || (_imp->graphComparison->source != source)) {
         return;
     }
     setGraphComparison(ProjectMerge::recompare(getApp()->getProject(), *_imp->graphComparison), _imp->graphComparisonDescription);

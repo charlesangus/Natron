@@ -75,6 +75,7 @@ KnobFile::KnobFile(KnobHolder* holder,
                    bool declaredByPlugin)
     : AnimatingKnobStringHelper(holder, description, dimension, declaredByPlugin)
     , _isInputImage(false)
+    , _opensSequences(false)
     , _reloadButton()
 {
 }
@@ -174,6 +175,7 @@ KnobFile::reloadNodesReadingFiles(const std::vector<std::string>& paths,
                 // before, and nodes below clip to that format.
                 other->dropCachedMetadataDownstream();
                 other->refreshMetadataSideEffects();
+                other->onFilesReloaded();
             } else if (other->refreshFileDependencies(paths)) {
                 (*it)->markHashDirty();
             }
@@ -287,6 +289,7 @@ KnobOutputFile::KnobOutputFile(KnobHolder* holder,
     , _isOutputImage(false)
     , _sequenceDialog(true)
     , _showsRewriteButton(true)
+    , _fileExtensions()
 {
 }
 

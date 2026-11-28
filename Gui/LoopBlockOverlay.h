@@ -48,9 +48,9 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief Paints the loop blocks of a node graph under its nodes: a hull around each block's
- * nodes in the colour the loop's nodes share, a downward wedge under each LoopBegin and an upward
- * one over the LoopEnd, and, while any of them is selected, the hull's outline and a ring round
+ * @brief Paints the loop blocks of a node graph under its nodes, image loops, geometry for-each
+ * loops and solvers alike: a hull around each block's nodes in the colour the block's nodes
+ * share, a downward wedge under each begin and an upward one over the end, and, while any of them is selected, the hull's outline and a ring round
  * each.
  **/
 class LoopBlockItem
@@ -111,8 +111,8 @@ public:
     static QColor pairColor(const std::string& loopName);
 
     /**
-     * @brief The nodes LoopEnd::bodyNodes() gives for end: those on the paths from its LoopBegin
-     * and the side branches feeding them, nested loops included, in one walk up from end.
+     * @brief The nodes of end's block: those on the paths from its begins to its first input
+     * and the side branches feeding them, nested blocks included, in one walk up from end.
      **/
     static std::vector<NodePtr> bodyNodes(const NodePtr& end);
 
@@ -139,7 +139,7 @@ private:
     NodeGraph* _graph;
     QPointer<LoopBlockItem> _item;
     std::vector<Membership> _blocks;
-    // The LoopEnd name knobs, which colour the blocks.
+    // The block ends' name knobs, which colour the blocks.
     std::vector<KnobIWPtr> _watchedNames;
     bool _pending;
     bool _topologyDirty;

@@ -42,9 +42,12 @@
 #include "Engine/AppManager.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/GeoDetail.h"
+#include "Engine/KnobDriver.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Geometry/GeoTransform.h"
 #include "Engine/ParallelRenderArgs.h"
+#include "Engine/RenderContext.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewIdx.h"
 
@@ -67,6 +70,14 @@ expectTriangleAt(const GeoDetail& detail,
         EXPECT_DOUBLE_EQ(expected[i][1], p[1]) << "point " << i;
         EXPECT_DOUBLE_EQ(expected[i][2], p[2]) << "point " << i;
     }
+}
+
+#define kGeoRenderTestVariable "geoRenderTestOffset"
+
+RenderContextPtr
+offsetContext(double offset)
+{
+    return RenderContext::Builder().set(RenderContextName::plain(kGeoRenderTestVariable), RenderContextValue(offset)).build();
 }
 
 } // namespace
@@ -121,7 +132,8 @@ protected:
                                           GeoDetailConstPtr* detail,
                                           std::string* error,
                                           bool abortBeforeRendering = false,
-                                          AbortableRenderInfoPtr* abortInfoOut = 0)
+                                          AbortableRenderInfoPtr* abortInfoOut = 0,
+                                          const RenderContextPtr& context = RenderContextPtr())
     {
         AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
 
@@ -146,7 +158,33 @@ protected:
             abortInfo->setAborted();
         }
 
-        return node->getEffectInstance()->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(time, ViewIdx(0)), detail, error);
+        return node->getEffectInstance()->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(time, ViewIdx(0), false /*byPassCache*/, context), detail, error);
+    }
+
+    EffectInstance::RenderRoIRetCode pullUnder(const NodePtr& node,
+                                               const RenderContextPtr& context,
+                                               GeoDetailConstPtr* detail,
+                                               std::string* error)
+    {
+        return pull(node, 1., detail, error, false, 0, context);
+    }
+
+    // A GeoTransform below the test translate whose X translation is the test variable.
+    NodePtr createDrivenTransform()
+    {
+        NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_GEOTRANSFORM));
+        if (!transform) {
+            return NodePtr();
+        }
+        KnobDoublePtr translate = std::dynamic_pointer_cast<KnobDouble>(transform->getKnobByName(kGeoTransformParamTranslate));
+        if (!translate || !translate->setDriver(0, std::make_shared<const KnobDriver>(kGeoRenderTestVariable, 0., 1., KnobDriver::eEasingLinear))) {
+            transform->destroyNode(false, false);
+
+            return NodePtr();
+        }
+        connectNodes(_translate, transform, 0, true);
+
+        return transform;
     }
 
     NodePtr _triangle;
@@ -318,4 +356,94 @@ TEST_F(GeoRenderTest, ADirectCallOutsideARenderWorks)
         << error;
     ASSERT_TRUE(detail != NULL);
     expectTriangleAt(*detail, kGeoRenderTestOffsetX);
+}
+
+TEST_F(GeoRenderTest, AContextDrivenTransformCooksPerContextAndHitsTheCacheOnARepeat)
+{
+    NodePtr transform = createDrivenTransform();
+    ASSERT_TRUE(transform != NULL);
+
+    std::string error;
+    GeoDetailConstPtr underTwo;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, pullUnder(transform, offsetContext(2.), &underTwo, &error)) << error;
+    ASSERT_TRUE(underTwo != NULL);
+    expectTriangleAt(*underTwo, kGeoRenderTestOffsetX + 2.);
+
+    GeoDetailConstPtr underFive;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, pullUnder(transform, offsetContext(5.), &underFive, &error)) << error;
+    ASSERT_TRUE(underFive != NULL);
+    expectTriangleAt(*underFive, kGeoRenderTestOffsetX + 5.);
+
+    GeoDetailConstPtr underTwoAgain;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, pullUnder(transform, offsetContext(2.), &underTwoAgain, &error)) << error;
+    EXPECT_EQ(underTwo.get(), underTwoAgain.get());
+
+    GeoDetailConstPtr underNone;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, pull(transform, 1., &underNone, &error)) << error;
+    ASSERT_TRUE(underNone != NULL);
+    expectTriangleAt(*underNone, kGeoRenderTestOffsetX);
+
+    // Upstream of the transform nothing reads the variable: one cook for every context.
+    EXPECT_EQ(1, geoRenderTestTriangleRenderCount().load());
+    EXPECT_EQ(1, geoRenderTestTranslateRenderCount().load());
+
+    appPTR->removeAllCacheEntriesForHolder(transform.get(), true);
+    transform->destroyNode(false, false);
+}
+
+TEST_F(GeoRenderTest, ANodeThatReadsNoVariableKeepsOneEntryForEveryContext)
+{
+    std::string error;
+    GeoDetailConstPtr underTwo;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, pullUnder(_translate, offsetContext(2.), &underTwo, &error)) << error;
+
+    GeoDetailConstPtr underFive;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, pullUnder(_translate, offsetContext(5.), &underFive, &error)) << error;
+
+    GeoDetailConstPtr underNone;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, pull(_translate, 1., &underNone, &error)) << error;
+
+    ASSERT_TRUE(underTwo != NULL);
+    EXPECT_EQ(underTwo.get(), underFive.get());
+    EXPECT_EQ(underTwo.get(), underNone.get());
+    EXPECT_EQ(1, geoRenderTestTranslateRenderCount().load());
+}
+
+TEST_F(GeoRenderTest, ADirectCallCarriesTheContextUpstream)
+{
+    NodePtr transform = createDrivenTransform();
+    ASSERT_TRUE(transform != NULL);
+    NodePtr below = createNode(QString::fromUtf8(PLUGINID_NATRON_DOT));
+    ASSERT_TRUE(below != NULL);
+    connectNodes(transform, below, 0, true);
+
+    std::string error;
+    GeoDetailConstPtr underScope;
+    {
+        ActionContextScope scope(true, offsetContext(3.));
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+                  below->getEffectInstance()->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(1., ViewIdx(0)), &underScope, &error))
+            << error;
+    }
+    ASSERT_TRUE(underScope != NULL);
+    expectTriangleAt(*underScope, kGeoRenderTestOffsetX + 3.);
+
+    GeoDetailConstPtr underArgs;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              below->getEffectInstance()->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(1., ViewIdx(0), false /*byPassCache*/, offsetContext(4.)), &underArgs, &error))
+        << error;
+    ASSERT_TRUE(underArgs != NULL);
+    expectTriangleAt(*underArgs, kGeoRenderTestOffsetX + 4.);
+
+    GeoDetailConstPtr underNone;
+    ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk,
+              below->getEffectInstance()->evaluateGeometry(EffectInstance::EvaluateGeometryArgs(1., ViewIdx(0)), &underNone, &error))
+        << error;
+    ASSERT_TRUE(underNone != NULL);
+    expectTriangleAt(*underNone, kGeoRenderTestOffsetX);
+
+    appPTR->removeAllCacheEntriesForHolder(below.get(), true);
+    below->destroyNode(false, false);
+    appPTR->removeAllCacheEntriesForHolder(transform.get(), true);
+    transform->destroyNode(false, false);
 }

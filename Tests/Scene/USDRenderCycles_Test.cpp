@@ -69,6 +69,7 @@
 #include <pxr/usd/usdGeom/points.h>
 
 #include "BaseTest.h"
+#include "CyclesTestUtils.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -362,15 +363,20 @@ protected:
     // Renders node's rgba, depth, primId and normal planes, in that order. Bypassing the cache
     // empties the caches after the render too, which releases the render engines, so with
     // keepEngine they are emptied before only, and the engine is there to ask for its settings.
+    // Emptying them before releases the engine of the render before too, so with liveEngine only
+    // the node cache is emptied, and the engine of the render before makes this one.
     static bool renderAll(const NodePtr& node,
                           std::vector<RenderedPlane>* planes,
-                          bool keepEngine = false)
+                          bool keepEngine = false,
+                          bool liveEngine = false)
     {
         std::string error;
-        if (keepEngine) {
+        if (liveEngine) {
+            appPTR->clearNodeCache();
+        } else if (keepEngine) {
             appPTR->clearAllCaches();
         }
-        const bool ok = renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), allPlanes(), planes, &error, !keepEngine);
+        const bool ok = renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), allPlanes(), planes, &error, !keepEngine && !liveEngine);
         EXPECT_TRUE(ok) << error;
         EXPECT_FALSE(node->hasPersistentMessage());
         if (!ok) {
@@ -1582,17 +1588,8 @@ protected:
                      const std::map<std::string, PXR_NS::VtValue>& settings,
                      std::vector<float>* rgba)
     {
-        std::map<std::string, PXR_NS::VtValue> all = fixedSampling(16);
-        all.insert(settings.begin(), settings.end());
-        HydraRender::setRendererSettings(kRenderDelegateCyclesId, all);
         HydraRender::releaseAllCpuEngines();
-        const QString file = _dir.path() + QString::fromUtf8("/subdivision") + QString::number(_files++) + QString::fromUtf8(".usda");
-        if (!_dir.isValid() || !writeSubdivisionStage(file, meshes)) {
-            ADD_FAILURE() << "cannot write " << file.toStdString();
-
-            return false;
-        }
-        NodePtr node = createGraph(nullptr, file.toStdString().c_str());
+        NodePtr node = subdivisionGraph(meshes, settings);
         if (!node) {
             return false;
         }
@@ -1603,6 +1600,31 @@ protected:
         *rgba = planes[0].pixels;
 
         return true;
+    }
+
+    // Puts fixedSampling() and settings on every engine of Cycles'.
+    static void setCyclesSettings(const std::map<std::string, PXR_NS::VtValue>& settings)
+    {
+        std::map<std::string, PXR_NS::VtValue> all = fixedSampling(16);
+        all.insert(settings.begin(), settings.end());
+        HydraRender::setRendererSettings(kRenderDelegateCyclesId, all);
+    }
+
+    // The render node of a graph reading the stage of meshes, with setCyclesSettings(settings);
+    // null after a gtest failure. *reader gets the USDRead.
+    NodePtr subdivisionGraph(const std::string& meshes,
+                             const std::map<std::string, PXR_NS::VtValue>& settings,
+                             NodePtr* reader = nullptr)
+    {
+        setCyclesSettings(settings);
+        const QString file = _dir.path() + QString::fromUtf8("/subdivision") + QString::number(_files++) + QString::fromUtf8(".usda");
+        if (!_dir.isValid() || !writeSubdivisionStage(file, meshes)) {
+            ADD_FAILURE() << "cannot write " << file.toStdString();
+
+            return NodePtr();
+        }
+
+        return createGraph(reader, file.toStdString().c_str());
     }
 
     static std::map<std::string, PXR_NS::VtValue> on(std::map<std::string, PXR_NS::VtValue> settings = std::map<std::string, PXR_NS::VtValue>())
@@ -1686,6 +1708,61 @@ TEST_F(USDRenderCyclesSubdivisionTest, DicingRateSetsTheFacetSize)
     // The coarse surface is a polygon inside the smooth one, so it covers less.
     EXPECT_LT(coverage(coarseRgba), coverage(fineRgba));
     EXPECT_LE(differingPixels(fineRgba, defaultRgba), differingPixels(coarseRgba, defaultRgba));
+}
+
+// A dicing rate changed on a live engine dices its subdivided mesh again on that engine, with no
+// dirtying Hydra rejects under a scene index. Natron makes an engine again under changed settings,
+// so only a test changes them on a live one. The renders go to HydraRender directly, under one
+// thread count: a node's render asks for as many threads as the pool has free, and a count other
+// than its engine's makes that Cycles engine again.
+TEST_F(USDRenderCyclesSubdivisionTest, ALiveDicingRateChangeRedicesOnTheSameEngine)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    std::map<std::string, PXR_NS::VtValue> fine, coarse;
+    fine["natron:dicingRate"] = PXR_NS::VtValue(0.5f);
+    coarse["natron:dicingRate"] = PXR_NS::VtValue(8.f);
+    HydraRender::releaseAllCpuEngines();
+    NodePtr reader;
+    NodePtr node = subdivisionGraph(subdivisionCube("Cube", "catmullClark"), on(fine), &reader);
+    ASSERT_TRUE(node != nullptr);
+    static const int owner = 0;
+    HydraRender::Request request;
+    ASSERT_TRUE(cyclesRequest(reader, &owner, &request));
+    HydraRender::Result fineRender, coarseRender;
+    std::string fineErrors, coarseErrors, error;
+    {
+        const CyclesTestUtils::CodingErrors errors;
+        ASSERT_TRUE(HydraRender::render(request, &fineRender, &error)) << error;
+        fineErrors = errors.text();
+    }
+    ASSERT_TRUE(fineRender.trace.converged);
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+    setCyclesSettings(on(coarse));
+    ASSERT_TRUE(HydraRender::setEngineSetting(&owner, "natron:dicingRate", coarse["natron:dicingRate"]));
+    {
+        const CyclesTestUtils::CodingErrors errors;
+        ASSERT_TRUE(HydraRender::render(request, &coarseRender, &error)) << error;
+        coarseErrors = errors.text();
+    }
+    const std::uint64_t rebuilds = HydraRender::getEngineBuildCount() - builds;
+    HydraRender::releaseAllCpuEngines();
+
+    EXPECT_FALSE(CyclesTestUtils::hasHydraDirtyingError(fineErrors)) << fineErrors;
+    EXPECT_FALSE(CyclesTestUtils::hasHydraDirtyingError(coarseErrors)) << coarseErrors;
+    // A fresh engine is a settings or thread-count rebuild; a remake is a restart Cycles never showed.
+    EXPECT_FALSE(coarseRender.trace.freshEngine);
+    EXPECT_EQ(0, coarseRender.trace.remakes);
+    EXPECT_TRUE(coarseRender.trace.watched);
+    EXPECT_TRUE(coarseRender.trace.converged);
+    EXPECT_EQ(0u, rebuilds);
+    const std::size_t pixels = (std::size_t)kSize * (std::size_t)kSize;
+    ASSERT_EQ(pixels * 4, fineRender.rgba.size());
+    ASSERT_EQ(pixels * 4, coarseRender.rgba.size());
+    EXPECT_GT(differingPixels(fineRender.rgba, coarseRender.rgba), 0u);
+    // The coarse surface is a polygon inside the smooth one, so it covers less.
+    EXPECT_LT(coverage(coarseRender.rgba), coverage(fineRender.rgba));
 }
 
 // A cycles:max_level primvar of 1 coarsens its own mesh only, and cycles:dicing_rate scales the

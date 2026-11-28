@@ -47,6 +47,7 @@
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_USING
@@ -243,6 +244,194 @@ coverageDifferences(const std::vector<float>& a,
 }
 } // anon namespace
 
+namespace {
+// The camera's shutter, closed, authored in a layer of its own for a live edit to open.
+const char* const kShutterOver = "over \"World\"\n"
+                                 "{\n"
+                                 "    over \"Cam\"\n"
+                                 "    {\n"
+                                 "        double shutter:open = 0\n"
+                                 "        double shutter:close = 0\n"
+                                 "    }\n"
+                                 "}\n";
+
+struct LiveRender {
+    std::vector<float> rgba;
+    // Every TfError posted while it rendered, on any thread, function first.
+    std::string codingErrors;
+    HydraRender::RenderTrace trace;
+};
+
+// For a failure that may be a render the delegate cut short.
+std::string
+traceOf(const LiveRender& render)
+{
+    const HydraRender::RenderTrace& t = render.trace;
+
+    return std::string(" (") + (t.freshEngine ? "fresh" : "reused") + " engine, " + std::to_string(t.passes) + " passes, " + std::to_string(t.remakes) + " remakes, " + (t.converged ? "converged" : "not converged") + ")";
+}
+
+// Renders of text at frame 1 through kCamera with an overrides layer on top, by one owner whose
+// engine and stage last from one render to the next: an edit of the overrides in place reaches
+// the delegate as a change of the prims it holds, not as a new scene.
+class LiveScene {
+public:
+    LiveScene(const std::string& text,
+              const std::string& overrides)
+    {
+        PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::CreateAnonymous(".usda");
+        if (!layer->ImportFromString(text)) {
+            ADD_FAILURE() << "the scene does not parse:\n"
+                          << text;
+
+            return;
+        }
+        _overrides = PXR_NS::SdfLayer::CreateAnonymous(".usda");
+        if (!_overrides->ImportFromString("#usda 1.0\n" + overrides)) {
+            ADD_FAILURE() << "the overrides do not parse:\n"
+                          << overrides;
+
+            return;
+        }
+        _stage = PXR_NS::UsdStage::Open(layer);
+        if (!_stage) {
+            ADD_FAILURE() << "the scene did not open";
+
+            return;
+        }
+        _scene = SceneOps::appendLayer(ScenePayload(), layer, (U64)std::hash<std::string>()(text) | 1);
+        _scene = SceneOps::appendLayer(_scene, _overrides, (U64)std::hash<std::string>()(overrides) | 2);
+        _valid = true;
+    }
+
+    ~LiveScene()
+    {
+        HydraRender::release(this);
+    }
+
+    LiveScene(const LiveScene&) = delete;
+    LiveScene& operator=(const LiveScene&) = delete;
+
+    // False after a gtest failure.
+    bool render(LiveRender* render)
+    {
+        if (!_valid) {
+            return false;
+        }
+        HydraRender::Request request;
+        request.owner = this;
+        request.scene = _scene;
+        request.time = PXR_NS::UsdTimeCode(1.);
+        request.width = kSize;
+        request.height = kSize;
+        request.renderer = kRenderDelegateCyclesId;
+        std::string error;
+        if (!HydraRender::cameraFrustum(_stage, PXR_NS::SdfPath(kCamera), request.time, 1., HydraRender::eFitModeExpand, &request.frustum, &error)) {
+            ADD_FAILURE() << error;
+
+            return false;
+        }
+        request.camera = PXR_NS::SdfPath(kCamera);
+        request.fit = HydraRender::eFitModeExpand;
+        request.pixelAspect = 1.;
+        HydraRender::Result result;
+        bool rendered = false;
+        {
+            const CyclesTestUtils::CodingErrors codingErrors;
+            rendered = HydraRender::render(request, &result, &error);
+            render->codingErrors = codingErrors.text();
+        }
+        if (!rendered) {
+            ADD_FAILURE() << error;
+
+            return false;
+        }
+        if (result.rgba.size() != (std::size_t)kSize * (std::size_t)kSize * 4) {
+            ADD_FAILURE() << "rendered " << result.rgba.size() << " values";
+
+            return false;
+        }
+        render->rgba = result.rgba;
+        render->trace = result.trace;
+
+        return true;
+    }
+
+    // Authors the camera's shutter in the overrides layer behind the write barrier, as a reload
+    // edits a layer read from a file. False after a gtest failure.
+    bool setShutter(double open,
+                    double close)
+    {
+        if (!_valid) {
+            return false;
+        }
+        const PXR_NS::SdfLayerRefPtr overrides = _overrides;
+        const std::function<void()> write = [&]() {
+            overrides->SetField(PXR_NS::SdfPath("/World/Cam.shutter:open"), PXR_NS::SdfFieldKeys->Default, PXR_NS::VtValue(open));
+            overrides->SetField(PXR_NS::SdfPath("/World/Cam.shutter:close"), PXR_NS::SdfFieldKeys->Default, PXR_NS::VtValue(close));
+        };
+        std::string error;
+        if (!SceneWriteBarrier::runExclusive(write, &error)) {
+            ADD_FAILURE() << error;
+
+            return false;
+        }
+
+        return true;
+    }
+
+private:
+    PXR_NS::UsdStageRefPtr _stage;
+    PXR_NS::SdfLayerRefPtr _overrides;
+    ScenePayload _scene;
+    bool _valid = false;
+};
+
+// render was made by the engine of the render before it, after a live edit.
+void
+expectTheSameEngine(const LiveRender& render,
+                    const char* what)
+{
+    EXPECT_FALSE(CyclesTestUtils::hasHydraDirtyingError(render.codingErrors)) << what << ": " << render.codingErrors;
+    EXPECT_FALSE(render.trace.freshEngine) << what << traceOf(render);
+    EXPECT_EQ(0, render.trace.remakes) << what << traceOf(render);
+}
+
+void
+expectALiveShutterEditToBlurOnTheSameEngine(const char* body)
+{
+    const FixedSampling sampling;
+    LiveRender closed;
+    LiveRender open;
+    LiveRender wide;
+    LiveRender reclosed;
+    {
+        LiveScene live(sceneOf("", body), kShutterOver);
+        ASSERT_TRUE(live.render(&closed));
+        ASSERT_TRUE(live.setShutter(-0.25, 0.25));
+        ASSERT_TRUE(live.render(&open));
+        ASSERT_TRUE(live.setShutter(-0.5, 0.5));
+        ASSERT_TRUE(live.render(&wide));
+        ASSERT_TRUE(live.setShutter(0, 0));
+        ASSERT_TRUE(live.render(&reclosed));
+    }
+    EXPECT_FALSE(CyclesTestUtils::hasHydraDirtyingError(closed.codingErrors)) << "closed: " << closed.codingErrors;
+    expectTheSameEngine(open, "opened");
+    expectTheSameEngine(wide, "widened");
+    expectTheSameEngine(reclosed, "closed again");
+
+    EXPECT_GE(partlyCovered(open.rgba, true), partlyCovered(closed.rgba, true) + 4)
+        << "row: opened " << partlyCovered(open.rgba, true) << ", closed " << partlyCovered(closed.rgba, true) << traceOf(open);
+    EXPECT_LE(partlyCovered(open.rgba, false), partlyCovered(closed.rgba, false) + 1)
+        << "column: opened " << partlyCovered(open.rgba, false) << ", closed " << partlyCovered(closed.rgba, false) << traceOf(open);
+    EXPECT_GE(partlyCovered(wide.rgba, true), partlyCovered(open.rgba, true) + 4)
+        << "row: widened " << partlyCovered(wide.rgba, true) << ", opened " << partlyCovered(open.rgba, true) << traceOf(wide);
+    EXPECT_LE(partlyCovered(reclosed.rgba, true), partlyCovered(closed.rgba, true) + 1)
+        << "row: closed again " << partlyCovered(reclosed.rgba, true) << ", closed " << partlyCovered(closed.rgba, true) << traceOf(reclosed);
+    EXPECT_LE(coverageDifferences(reclosed.rgba, closed.rgba), (std::size_t)kSize / 16) << traceOf(reclosed);
+}
+} // anon namespace
+
 TEST(USDRenderCyclesMotion, TheShutterBlursAMovingTransform)
 {
     if (!CyclesTestUtils::cyclesOrSkip()) {
@@ -317,4 +506,24 @@ TEST(USDRenderCyclesMotion, EveryFitAndOffsetFramesAsTheFrustum)
         ASSERT_TRUE(renderScene(text, width, height, c.fit, 2., true, &path)) << c.what;
         EXPECT_LE(coverageDifferences(frustum, path), pixels / 50) << c.what;
     }
+}
+
+// Opening the shutter on the live stage, then widening it, blurs body more each time on the same
+// engine, and closing it again leaves body as sharp as before. Cycles samples motion over a
+// shutter of its own, so its rprims have to sync again over each new one, which under a scene
+// index takes dirtying Hydra does not reject.
+TEST(USDRenderCyclesMotion, ALiveShutterEditBlursATransformOnTheSameEngine)
+{
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    expectALiveShutterEditToBlurOnTheSameEngine(kMovingCube);
+}
+
+TEST(USDRenderCyclesMotion, ALiveShutterEditBlursPointsOnTheSameEngine)
+{
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    expectALiveShutterEditToBlurOnTheSameEngine(kMovingPoints);
 }

@@ -1181,6 +1181,22 @@ public:
         return true;
     }
 
+    // Sets key on owner's engine as if it had been made with it; false if owner has none.
+    bool setEngineSetting(const void* owner,
+                          const TfToken& key,
+                          const VtValue& value)
+    {
+        std::map<const void*, EngineEntry>::iterator found = _engines.find(owner);
+        if ((found == _engines.end()) || !found->second.engine) {
+            return false;
+        }
+        found->second.engine->SetRendererSetting(key, value);
+        found->second.settings[key.GetString()] = value;
+        found->second.rendered = false;
+
+        return true;
+    }
+
     void releaseEngine(const void* owner)
     {
         std::map<const void*, EngineEntry>::iterator found = _engines.find(owner);
@@ -3773,6 +3789,23 @@ engineSetting(const void* owner,
         std::promise<bool> read;
         std::future<bool> done = read.get_future();
         if (thread->post([thread, owner, &key, value, &read]() { read.set_value(thread->engineSetting(owner, TfToken(key), value)); }, false) && done.get()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool
+setEngineSetting(const void* owner,
+                 const std::string& key,
+                 const VtValue& value)
+{
+    for (RenderThread* thread : { &RenderThread::storm(), &RenderThread::cpu() }) {
+        // Posted without starting a thread that never ran, which holds no engine.
+        std::promise<bool> set;
+        std::future<bool> done = set.get_future();
+        if (thread->post([thread, owner, &key, &value, &set]() { set.set_value(thread->setEngineSetting(owner, TfToken(key), value)); }, false) && done.get()) {
             return true;
         }
     }

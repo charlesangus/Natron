@@ -835,10 +835,14 @@ TEST_F(USDRenderNodeTest, ARenderReusesItsSetupUntilAKnobOrTheTimeMoves)
     const std::list<ImageLayerDesc> colour(1, ImageLayerDesc::getRGBAComponents());
     std::vector<RenderedPlane> planes;
     std::string error;
+    // Clearing every cache, as a render bypassing them does, would purge the node's setups too: only the
+    // images go, so that each render runs again.
     auto render = [&](double time) {
         planes.clear();
+        appPTR->clearNodeCache();
+        appPTR->clearDiskCache();
 
-        return renderNodePlanesDirect(node, time, ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), colour, &planes, &error);
+        return renderNodePlanesDirect(node, time, ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), colour, &planes, &error, false /*byPassCache*/);
     };
 
     ASSERT_TRUE(render(1.)) << error;

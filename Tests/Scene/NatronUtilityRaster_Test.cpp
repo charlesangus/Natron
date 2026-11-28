@@ -1863,9 +1863,10 @@ GPU_TEST_F(NatronUtilityRaster, PicksPublishedEveryPassStayAsTheyWere)
     const std::atomic<bool> stop(false);
     WavefrontFrame frame = perspectiveFrame();
 
-    frame.raster = true;
-    frame.rasterSamples = 4;
-    // A filter weighing each pass's samples differently, so that later passes replace some of the first's.
+    // Ray mode, whose filter weighs each pass's samples differently, so that later passes replace some of the
+    // first's: every Raster pass weighs the same, and a pixel keeps the first of equal samples.
+    frame.raster = false;
+    frame.sampling.samplesPerSide = 2;
     frame.sampling.filter = eKernelPixelFilterBlackmanHarris;
     frame.sampling.filterWidth = 2.f;
 

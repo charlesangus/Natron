@@ -60,7 +60,9 @@ namespace {
 const int kRefineWidth = 256;
 const int kRefineHeight = 192;
 // Enough passes that the frame is still refining when its first one is shown.
-const int kRefineSamples = 256;
+// The pixel samples setting counts samples along a side of the pixel: a frame draws its square, one pass each.
+const int kRefineSamplesPerSide = 16;
+const int kRefinePasses = kRefineSamplesPerSide * kRefineSamplesPerSide;
 
 void
 defineTriangle(const UsdStageRefPtr& stage,
@@ -129,7 +131,7 @@ refineRequest(const void* owner,
     request.renderer = kRenderDelegateUtilityId;
     request.frustum = refineCamera();
     request.settings[kUtilitySettingDevice] = VtValue(TfToken(kUtilityDeviceCpu));
-    request.settings[kUtilitySettingPixelSamples] = VtValue(kRefineSamples);
+    request.settings[kUtilitySettingPixelSamples] = VtValue(kRefineSamplesPerSide);
     request.interactive = true;
     request.refine = refine;
     request.sequence = sequence;
@@ -217,7 +219,7 @@ TEST(NatronUtilityRefine, OneRequestSeesOnePassAndTheNextAdvancesIt)
 
     HydraRender::Result converged;
 
-    ASSERT_TRUE(refineToConvergence(refineRequest(&owner, false, true, sequence), 2 * kRefineSamples, &sequence, &converged, &error)) << error;
+    ASSERT_TRUE(refineToConvergence(refineRequest(&owner, false, true, sequence), 2 * kRefinePasses, &sequence, &converged, &error)) << error;
     EXPECT_FALSE(converged.partial);
 
     HydraRender::Result again;

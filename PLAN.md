@@ -643,11 +643,11 @@ future core work has solid ground to build on.
 | M579 | USD Value Clip Sequences | todo | - |  | E27 | F38 | | [M579-usd-value-clip-sequences.md](PLAN/MILESTONES/M579-usd-value-clip-sequences.md) |
 | M580 | Scene Load Masks | todo | M520 |  | E27 | F38 | | [M580-scene-load-masks.md](PLAN/MILESTONES/M580-scene-load-masks.md) |
 | M581 | Edit Scope Design | todo | - |  | E27 | F38 | | [M581-edit-scope-design.md](PLAN/MILESTONES/M581-edit-scope-design.md) |
-| M582 | Look Layers | todo |  |  | E27 | | | [M582-look-layers.md](PLAN/MILESTONES/M582-look-layers.md) |
+| M582 | Look Layers | todo | M448, M449, M450 |  | E27 | F43 | | [M582-look-layers.md](PLAN/MILESTONES/M582-look-layers.md) |
 | M583 | Wedge And Task Dispatch | todo |  |  | E27 | | | [M583-wedge-and-task-dispatch.md](PLAN/MILESTONES/M583-wedge-and-task-dispatch.md) |
 | M584 | Layout Instance Painting | todo | M576 |  | E27 | | | [M584-layout-instance-painting.md](PLAN/MILESTONES/M584-layout-instance-painting.md) |
-| M585 | USD Asset Gallery | todo |  |  | E27 | | | [M585-usd-asset-gallery.md](PLAN/MILESTONES/M585-usd-asset-gallery.md) |
-| M586 | USD Component Builder | todo |  |  | E27 | | | [M586-usd-component-builder.md](PLAN/MILESTONES/M586-usd-component-builder.md) |
+| M585 | USD Asset Gallery | todo | M586 |  | E27 | F43 | | [M585-usd-asset-gallery.md](PLAN/MILESTONES/M585-usd-asset-gallery.md) |
+| M586 | USD Component Builder | todo | M582, M448, M449 |  | E27 | F43 | | [M586-usd-component-builder.md](PLAN/MILESTONES/M586-usd-component-builder.md) |
 | M587 | Physics Drop Layout | todo |  |  | E27 | | | [M587-physics-drop-layout.md](PLAN/MILESTONES/M587-physics-drop-layout.md) |
 | M588 | Light Linker Drag And Drop Panel | todo | M567 |  | E27 | | | [M588-light-linker-drag-and-drop-panel.md](PLAN/MILESTONES/M588-light-linker-drag-and-drop-panel.md) |
 | M589 | Scene Graph Restructure Commands | todo | M575 |  | E27 | | | [M589-scene-graph-restructure-commands.md](PLAN/MILESTONES/M589-scene-graph-restructure-commands.md) |
@@ -783,6 +783,7 @@ future core work has solid ground to build on.
 | F40 | 3D Viewer Tools | open | bosley-executor |  | feature/f40-3d-viewer-tools | Three-bar 3D viewer toolbars, a combined transform handle, geometry handles and component transforms, snapping, marker controls and group pickers, accepted in one UAT. |
 | F41 | Native Geometry Scene Index | open | bosley-executor |  | feature/f41-native-geometry-scene-index | Storm draws native geometry from a Hydra scene index built from GeoUsdConvert, with no USD staging in the viewer, no flash frames and faster drags on heavy geometry. Waits for F15 - Native Geometry to land. |
 | F42 | Geometry USD Bridge Controls | open | bosley-executor |  | feature/f42-geometry-usd-bridge-controls | GeoToUSD path, placement, attribute and material controls, USDToGeo source controls and a USDGeoModify node, accepted in one UAT. |
+| F43 | USD Asset Pipeline | open |  |  | feature/f43-usd-asset-pipeline | Hand assets from lookdev to lighting in plain USD: look layers applied across stages, published components with a material layer and variants, and an asset gallery to drop them into a graph. |
 
 # Open questions
 - **M365 - Delegate Display Transform (2026-11-27):** Lobby shots sent. (1) Cycles is ~3x brighter than Storm and MoonRay at the same exposure (its Hydra plugin multiplies non-distant light intensity by π): match it to Storm, or leave Cycles as Cycles? (2) MoonRay renders but reports no sample count, so the viewer HUD shows "- / 16 samples": fix in this milestone or file a follow-up?

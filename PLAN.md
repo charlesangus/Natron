@@ -705,7 +705,7 @@ future core work has solid ground to build on.
 | M644 | MoonRay Subdivision Holes | todo | M554 |  | E9 |  | | [M644-moonray-subdivision-holes.md](PLAN/MILESTONES/M644-moonray-subdivision-holes.md) |
 | M645 | Aurora Delegate Evaluation | todo | - |  | E9 |  | | [M645-aurora-delegate-evaluation.md](PLAN/MILESTONES/M645-aurora-delegate-evaluation.md) |
 | M646 | Template Node And Versioning | todo | M103, M104 | | E12 | F33 | | [M646-template-node-and-versioning.md](PLAN/MILESTONES/M646-template-node-and-versioning.md) |
-| M647 | Template Compare Layout | todo | M104 | | E12 | F33 | | [M647-template-compare-layout.md](PLAN/MILESTONES/M647-template-compare-layout.md) |
+| M647 | Template Compare Layout | doing | M104 | bosley-executor | E12 | F33 | | [M647-template-compare-layout.md](PLAN/MILESTONES/M647-template-compare-layout.md) |
 | M648 | Cycles Live Volume Refresh | todo | M554 | | E9 | F1 | | [M648-cycles-live-volume-refresh.md](PLAN/MILESTONES/M648-cycles-live-volume-refresh.md) |
 
 # Epics

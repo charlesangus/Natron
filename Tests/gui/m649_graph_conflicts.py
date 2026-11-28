@@ -204,23 +204,36 @@ try:
         return [b.text() for b in p.findChildren(QPushButton)
                 if b.objectName().startswith("mergePopoverChoice_") and b.isVisible()]
 
-    def popover_button(text):
-        p = popover()
-        if p is None:
-            return None
+    def choice_in(p, text):
         for b in p.findChildren(QPushButton):
             if b.objectName().startswith("mergePopoverChoice_") and b.text() == text and b.isVisible():
                 return b
         return None
 
-    def popover_named(name):
-        p = popover()
-        if p is None:
-            return None
+    def named_in(p, name):
         for b in p.findChildren(QPushButton):
             if b.objectName() == name and b.isVisible():
                 return b
         return None
+
+    def popover_has(name):
+        p = popover()
+        return p is not None and named_in(p, name) is not None
+
+    def click_popover_choice(text, label):
+        p = popover()
+        return click_button(choice_in(p, text) if p is not None else None, label)
+
+    def click_popover_named(name, label):
+        p = popover()
+        return click_button(named_in(p, name) if p is not None else None, label)
+
+    def hover_popover_choice(text, entering):
+        p = popover()
+        b = choice_in(p, text) if p is not None else None
+        if b is not None:
+            hover(b, entering)
+        return b is not None
 
     def click_button(b, label):
         if not check(b is not None and b.isEnabled(), "%s is shown and enabled" % label):
@@ -365,12 +378,12 @@ try:
         require(len(val_conflicts) == 1, "Val has one conflict (%r)" % (val_conflicts,))
         labels = [str(l) for l in val_conflicts[0]["choiceLabels"]]
         check(popover_buttons() == labels, "the popover offers the conflict's choices %r (got %r)" % (labels, popover_buttons()))
-        check(popover_named("mergePopoverAllMine") is not None and popover_named("mergePopoverAllTheirs") is not None,
+        check(popover_has("mergePopoverAllMine") and popover_has("mergePopoverAllTheirs"),
               "the popover offers All Mine and All Theirs")
         check(QApplication.activeModalWidget() is None, "the popover is not modal")
         gt.shot("m649_merge_popover.png")
         for attempt in ("first", "again"):
-            require(click_button(popover_button("Theirs"), "Theirs on Val's popover"), "resolve Val with Theirs")
+            require(click_popover_choice("Theirs", "Theirs on Val's popover"), "resolve Val with Theirs")
             yield ("sleep", SETTLE_MS)
             check(size_is(val, SUPERVISOR_SIZE), "Theirs gives Val the template's size (%r)" % (size_of(val),))
             check(len(conflicts_on("Val")) == 0, "Theirs resolves Val's conflict")
@@ -403,7 +416,7 @@ try:
         texts = popover_buttons()
         check(len(texts) > 0 and not any("both" in t.lower() for t in texts), "Key's popover offers no Keep Both Keys (%r)" % texts)
         key_count = len(conflicts_on("Key"))
-        require(click_button(popover_named("mergePopoverAllMine"), "All Mine on Key's popover"), "All Mine on Key")
+        require(click_popover_named("mergePopoverAllMine", "All Mine on Key's popover"), "All Mine on Key")
         yield ("sleep", SETTLE_MS)
         check(len(conflicts_on("Key")) == 0, "All Mine resolves every conflict of Key")
         check(abs(key_at(key) - ARTIST_SIZE) < 1e-9, "All Mine keeps the artist's key at frame %g (%r)" % (KEY_FRAME, key_at(key)))
@@ -446,16 +459,12 @@ try:
         theirs_start, theirs_end = wire(feed, rd)
         middle = ((theirs_start[0] + theirs_end[0]) / 2.0, (theirs_start[1] + theirs_end[1]) / 2.0)
         faint = pixels_around(graph, middle)
-        b = popover_button("Theirs")
-        require(b is not None, "Rd's popover offers Theirs (%r)" % popover_buttons())
-        hover(b, True)
+        require(hover_popover_choice("Theirs", True), "Rd's popover offers Theirs (%r)" % popover_buttons())
         yield ("sleep", SETTLE_MS)
         full = pixels_around(graph, middle)
         check(len(faint) > 0 and faint != full, "hovering Theirs draws its wire from Feed in full")
         gt.shot("m649_structural_preview.png")
-        b = popover_button("Theirs")
-        if b is not None:
-            hover(b, False)
+        hover_popover_choice("Theirs", False)
         yield ("sleep", SETTLE_MS)
         click_at(graph, theirs_end)
         yield ("sleep", SETTLE_MS)

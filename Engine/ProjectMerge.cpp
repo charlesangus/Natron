@@ -1183,6 +1183,7 @@ recompare(const ProjectPtr& project,
         return ChangeSummary();
     }
     ChangeSummary all = compare(project, *previous.other);
+    all.other = previous.other;
     if (!previous.scope) {
         return all;
     }

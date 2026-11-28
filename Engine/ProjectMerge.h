@@ -180,7 +180,8 @@ struct ChangeSummary {
 
 /**
  * @brief The comparison previous made, made again against the same other version and scope, as
- * after an edit of the live project. An empty summary when previous has no other version.
+ * after an edit of the live project. It shares previous's other snapshot, so a pick recorded
+ * against that snapshot still finds it. An empty summary when previous has no other version.
  **/
 ChangeSummary recompare(const ProjectPtr& project,
                         const ChangeSummary& previous);

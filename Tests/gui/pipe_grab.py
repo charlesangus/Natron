@@ -220,7 +220,9 @@ try:
         return None
 
     def pipe_item(src_end, dst, tol):
-        """The pipe item into dst whose source end is within tol of the scene point src_end, or None."""
+        """The pipe item into dst whose source end is within tol of the scene point src_end, or None.
+        The pipe's destination end lies on dst's outline, so it is tested against the outline's reach
+        from dst's centre (half the larger side) rather than a fixed height."""
         graph = root_graph()
         for it in (list(graph.items()) if graph is not None else []):
             try:
@@ -229,7 +231,7 @@ try:
                 line = it.line()
                 p1 = it.mapToScene(line.p1())
                 p2 = it.mapToScene(line.p2())
-                if near((p2.x(), p2.y()), src_end, tol) and near((p1.x(), p1.y()), centre(dst), dst.getSize()[1]):
+                if near((p2.x(), p2.y()), src_end, tol) and near((p1.x(), p1.y()), centre(dst), max(dst.getSize()) / 2.0 + tol):
                     return it
             except RuntimeError:
                 continue

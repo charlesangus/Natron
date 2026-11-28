@@ -609,8 +609,15 @@ try:
         set_lighting(LIGHTING_SCENE)
         yield ("sleep", SETTLE_MS * 3)
         yield from repaint()
-        scene_dark = mean_around(capture("m365-scene-lightless", "Cycles, Scene Lights on a stage with no light: black"), centre)
-        check(sum(scene_dark) < sum(auto_dark), "Scene Lights leaves the lightless card darker than Auto (%r vs %r)" % (scene_dark, auto_dark))
+        # Cycles lights a stage with no light by a grey world of its own, as USDRender's Cycles output
+        # shows it; only Storm leaves the card black.
+        scene_dark = mean_around(capture("m365-scene-lightless", "Cycles, Scene Lights on a stage with no light: Cycles' own grey world"),
+                                 centre)
+        check(prop("natronSceneLightingEffective") == "scene", "Scene Lights on a stage with no light adds no headlight (%r)"
+              % (prop("natronSceneLightingEffective"),))
+        check(sum(scene_dark) > COLOUR_SLACK * 3, "Cycles' grey world lights the lightless card under Scene Lights (%r)" % (scene_dark,))
+        check(differs(scene_dark, auto_dark, COLOUR_SLACK), "Scene Lights renders the lightless card otherwise than Auto's headlight (%r vs %r)"
+              % (scene_dark, auto_dark))
         set_lighting(LIGHTING_AUTO)
 
         section("camera exposure")

@@ -79,8 +79,8 @@ try:
                 return True
         return False
 
-    # The fixture has no light, and the default Scene Lights mode shows its lit cube black, hiding the
-    # displayColor the checks below read.
+    # The fixture has no light: Headlight lights the cube whatever the preference was left at, showing
+    # the displayColor the checks below read.
     lighting = NatronEngine.natron.getSettings().getParam("viewer3DLighting")
     require(lighting is not None and set_choice(lighting, "headlight"), "the Viewer 3D Lighting preference offers Headlight")
 
@@ -94,6 +94,8 @@ try:
 
     read = make("USDRead", 0, 0)
     param(read, "filename").setValue(layer_path)
+    # The default Initial Draw boxes each top-level prim, which would hide the cube's colour.
+    require(set_choice(param(read, "initialDraw"), "full"), "USDRead1's Initial Draw offers Full")
     probe = make("USDWrite", 600, 0)
     layered = make("USDWrite", 600, 100)
     edit = make("USDEditPrim", 0, 100)

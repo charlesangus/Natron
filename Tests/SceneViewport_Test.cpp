@@ -673,6 +673,8 @@ TEST_F(SceneViewportStorm, PicksAndHighlightsAProjectedCard)
     ASSERT_TRUE(_renderer.setScene(scene, 1., 24., &error)) << error;
     // Unshaded draws display colours and leaves every surface shader out.
     _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+    // Auto's headlight would add its diffuse and specular to the plate.
+    _renderer.setLightingMode(SceneViewportRenderer::eLightingModeScene);
 
     const QImage unselected = render();
     const Rgb projected = pixel(unselected, 97, 128);
@@ -1761,7 +1763,8 @@ TEST_F(SceneViewportStorm, AShaderSettingIsTakenInByABackgroundFrame)
     _renderer.renderBackgroundFrame(_fbo->handle());
     EXPECT_FALSE(_renderer.needsBackgroundFrame()) << "the frame took the draw mode in";
 
-    _renderer.setLightingMode(SceneViewportRenderer::eLightingModeHeadlight);
+    // The fixture has no light, so Auto already lights it as Headlight would: Scene Lights changes it.
+    _renderer.setLightingMode(SceneViewportRenderer::eLightingModeScene);
     EXPECT_TRUE(_renderer.needsBackgroundFrame());
     ASSERT_TRUE(_renderer.prepareBackgroundFrame(kSize, kSize));
     _renderer.renderBackgroundFrame(_fbo->handle());

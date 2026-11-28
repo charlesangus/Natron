@@ -345,6 +345,7 @@ ParitySourceTestEffect::ParitySourceTestEffect(NodePtr n)
     , _origin()
     , _noise()
     , _nonFinite()
+    , _bitDepth()
 {
     setSupportsRenderScaleMaybe(eSupportsYes);
 }
@@ -352,6 +353,8 @@ ParitySourceTestEffect::ParitySourceTestEffect(NodePtr n)
 void
 ParitySourceTestEffect::addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const
 {
+    depths->push_back(eImageBitDepthByte);
+    depths->push_back(eImageBitDepthShort);
     depths->push_back(eImageBitDepthFloat);
 }
 
@@ -406,6 +409,21 @@ ParitySourceTestEffect::initializeKnobs()
     }
     page->addKnob(nonFinite);
     _nonFinite = nonFinite;
+
+    KnobChoicePtr bitDepth = createKnob<KnobChoice>(std::string("Bit Depth"));
+    bitDepth->setName(kParitySourceParamBitDepth);
+    bitDepth->setAnimationEnabled(false);
+    {
+        std::vector<ChoiceOption> options;
+        options.push_back(ChoiceOption("float"));
+        options.push_back(ChoiceOption("short"));
+        options.push_back(ChoiceOption("byte"));
+        bitDepth->populateChoices(options);
+    }
+    bitDepth->setDefaultValue(0);
+    bitDepth->setIsMetadataSlave(true);
+    page->addKnob(bitDepth);
+    _bitDepth = bitDepth;
 
     _blackOutside = createBlackOutsideKnob(this, page);
 }
@@ -464,6 +482,22 @@ ParitySourceTestEffect::getNonFinite() const
     return RectI(nonFinite->getValue(0), nonFinite->getValue(1), nonFinite->getValue(2), nonFinite->getValue(3));
 }
 
+ImageBitDepthEnum
+ParitySourceTestEffect::outputBitDepth() const
+{
+    KnobChoicePtr bitDepth = _bitDepth.lock();
+    const int index = bitDepth ? bitDepth->getValue() : 0;
+
+    switch (index) {
+    case 1:
+        return eImageBitDepthShort;
+    case 2:
+        return eImageBitDepthByte;
+    default:
+        return eImageBitDepthFloat;
+    }
+}
+
 StatusEnum
 ParitySourceTestEffect::getRegionOfDefinition(U64 /*hash*/,
                                               double /*time*/,
@@ -488,7 +522,7 @@ ParitySourceTestEffect::getPreferredMetadataAt(double time,
 {
     metadata.setEdgeMode(readBlackOutside(_blackOutside, time, view));
     metadata.setNComps(-1, colorNComps());
-    metadata.setBitDepth(-1, eImageBitDepthFloat);
+    metadata.setBitDepth(-1, outputBitDepth());
     metadata.setIsFrameVarying(true);
 
     return eStatusOK;
@@ -530,7 +564,8 @@ ParitySourceTestEffect::render(const RenderActionArgs& args)
         if (!image) {
             continue;
         }
-        if (image->getBitDepth() != eImageBitDepthFloat) {
+        const ImageBitDepthEnum depth = image->getBitDepth();
+        if ((depth != eImageBitDepthFloat) && (depth != eImageBitDepthShort) && (depth != eImageBitDepthByte)) {
             return eStatusFailed;
         }
         const bool isColor = layer.isColorLayer();
@@ -549,7 +584,7 @@ ParitySourceTestEffect::render(const RenderActionArgs& args)
             const int cy = y * step + step / 2 - oy;
             for (int x = args.roi.x1; x < args.roi.x2; ++x) {
                 const int cx = x * step + step / 2 - ox;
-                float* pixel = reinterpret_cast<float*>(access.pixelAt(x, y));
+                unsigned char* pixel = access.pixelAt(x, y);
                 if (!pixel) {
                     return eStatusFailed;
                 }
@@ -567,7 +602,16 @@ ParitySourceTestEffect::render(const RenderActionArgs& args)
                     if (isColor && (channel < 3) && nonFinite.contains(cx, cy)) {
                         v = nonFiniteValues[channel];
                     }
-                    pixel[c] = v;
+                    if (depth == eImageBitDepthFloat) {
+                        reinterpret_cast<float*>(pixel)[c] = v;
+                    } else {
+                        const float clamped = (v > 0.f) ? std::min(v, 1.f) : 0.f;
+                        if (depth == eImageBitDepthShort) {
+                            reinterpret_cast<unsigned short*>(pixel)[c] = static_cast<unsigned short>(std::lround(clamped * 65535.f));
+                        } else {
+                            pixel[c] = static_cast<unsigned char>(std::lround(clamped * 255.f));
+                        }
+                    }
                 }
             }
         }
@@ -816,6 +860,13 @@ setParitySourceNonFinite(const NodePtr& source,
                          const RectI& rect)
 {
     setKnobValues(source, kParitySourceParamNonFinite, { (double)rect.x1, (double)rect.y1, (double)rect.x2, (double)rect.y2 });
+}
+
+void
+setParitySourceBitDepth(const NodePtr& source,
+                        const std::string& depthID)
+{
+    setKnobValue(source, kParitySourceParamBitDepth, depthID);
 }
 
 void

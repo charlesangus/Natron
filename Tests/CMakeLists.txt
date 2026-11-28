@@ -163,6 +163,10 @@ set(Tests_SOURCES
     RotoOverlayHomography_Test.cpp
     RotoDragRenderThrottle_Test.cpp
     RotoKeyDuringRender_Test.cpp
+    RotoRenderProfile_Test.cpp
+    RotoMaskCache_Test.cpp
+    RotoPaintDirectComposite_Test.cpp
+    RotoStrokeBands_Test.cpp
     RotoPaintExtraBgRoD_Test.cpp
     StrokeRenderCoalescer_Test.cpp
     Knob_Test.cpp
@@ -281,6 +285,7 @@ set(Tests_SOURCES
     OverlayDrawList_Test.cpp
     OverlayImage_Test.cpp
     OverlayPath_Test.cpp
+    TestExitReport.cpp
     wmain.cpp
 )
 # Per-node native tests are picked up without editing this list; CONFIGURE_DEPENDS re-globs on
@@ -318,6 +323,8 @@ natron_link_embedded_python(Tests)
 # Ai/OrtTelemetry_Test.cpp defines these to watch the dlopen()ed ONNX Runtime's network calls; an
 # executable only exports what a linked library happens to reference unless told to.
 target_link_options(Tests PRIVATE "LINKER:--export-dynamic-symbol=getaddrinfo,--export-dynamic-symbol=connect")
+# TestExitReport.cpp replaces these for the libraries too.
+target_link_options(Tests PRIVATE "LINKER:--export-dynamic-symbol=_exit,--export-dynamic-symbol=_Exit")
 if(NATRON_GPU)
     include(${CMAKE_SOURCE_DIR}/cmake/FetchSlang.cmake)
     include(${CMAKE_SOURCE_DIR}/cmake/SlangKernels.cmake)
@@ -443,6 +450,7 @@ set(GuiTests_SOURCES
     ViewerStaleCueTiming_Test.cpp
     ViewerZoomLadder_Test.cpp
     WindowPlacement_Test.cpp
+    TestExitReport.cpp
     guimain.cpp
 )
 # QAbstractItemModelTester checks the item models.
@@ -461,6 +469,8 @@ target_link_libraries(GuiTests
         ${NATRON_USD_ENGINE_LIBRARIES}
 )
 natron_link_embedded_python(GuiTests)
+# TestExitReport.cpp replaces these for the libraries too.
+target_link_options(GuiTests PRIVATE "LINKER:--export-dynamic-symbol=_exit,--export-dynamic-symbol=_Exit")
 target_compile_definitions(GuiTests
     PRIVATE
         NATRON_TESTS_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/fixtures"

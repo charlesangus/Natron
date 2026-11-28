@@ -115,16 +115,35 @@ try:
             return None
 
         def white_bbox(self, step=2):
-            """Widget-space bbox of the near-white pixels: the rendered square."""
-            xs, ys = [], []
+            """Widget-space bbox of the largest near-white region: the rendered square."""
+            white = set()
             for y in range(0, self.h, step):
                 for x in range(0, self.w, step):
-                    c = self.colour(QPointF(x, y))
-                    if is_white(c):
-                        xs.append(x)
-                        ys.append(y)
-            if not xs:
+                    if is_white(self.colour(QPointF(x, y))):
+                        white.add((x, y))
+            if not white:
                 return None
+            # Viewer text such as the format's name is also near-white; taken into one bbox with
+            # the square, it moves the centre lines the edges are walked along off the square.
+            best = []
+            seen = set()
+            for start in white:
+                if start in seen:
+                    continue
+                seen.add(start)
+                region = [start]
+                i = 0
+                while i < len(region):
+                    cx, cy = region[i]
+                    i += 1
+                    for n in ((cx - step, cy), (cx + step, cy), (cx, cy - step), (cx, cy + step)):
+                        if n in white and n not in seen:
+                            seen.add(n)
+                            region.append(n)
+                if len(region) > len(best):
+                    best = region
+            xs = [p[0] for p in best]
+            ys = [p[1] for p in best]
             x0, y0, x1, y1 = min(xs), min(ys), max(xs), max(ys)
 
             def half(x, y):

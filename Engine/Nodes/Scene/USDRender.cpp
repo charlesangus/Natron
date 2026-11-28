@@ -630,7 +630,7 @@ USDRender::getSettingsSummary(double time,
     // Never more than one posted job: one that replaced another would drop it, and the drop
     // would be taken for the node's end.
     const std::weak_ptr<const EffectInstance> weakThis = weak_from_this();
-    _settingsWorker.post([weakThis]() {
+    _settingsWorker.post(getApp(), [weakThis]() {
         std::shared_ptr<const EffectInstance> effect = weakThis.lock();
         if (const USDRender* render = dynamic_cast<const USDRender*>(effect.get())) {
             render->readGivenSettingsSummaries();

@@ -22,7 +22,9 @@
 #include <string>
 #include <thread>
 
+#include <dlfcn.h>
 #include <signal.h>
+#include <unistd.h>
 
 #include <gtest/gtest.h>
 
@@ -136,4 +138,37 @@ TEST_F(TestWatchdogTest, TheStallDumpComesAheadOfTheCtestTimeout)
     } else {
         unsetenv("NATRON_TEST_CTEST_TIMEOUT_S");
     }
+}
+
+TEST_F(TestWatchdogTest, ANonZeroExitSaysSoWithTheCallingThread)
+{
+    ASSERT_EXIT({
+        TestWatchdog::reportNonZeroExits();
+        std::exit(3); }, ::testing::ExitedWithCode(3), "watchdog: the process is exiting with status 3 through exit\\(\\) on thread [0-9]+ \\(the main thread\\), phase 'start'");
+}
+
+TEST_F(TestWatchdogTest, ANonZeroExitFromAnotherThreadSaysSo)
+{
+    ASSERT_EXIT({
+        TestWatchdog::reportNonZeroExits();
+        std::thread([] { std::exit(5); }).join(); }, ::testing::ExitedWithCode(5), "watchdog: the process is exiting with status 5 through exit\\(\\) on thread [0-9]+ \\(not the main thread\\)");
+}
+
+// Looked up the way a library binds it, so this fails if the executable stops exporting it.
+TEST_F(TestWatchdogTest, ALibrarysNonZeroUnderscoreExitSaysSo)
+{
+    ASSERT_EXIT({
+        TestWatchdog::reportNonZeroExits();
+        auto libraryExit = reinterpret_cast<void (*)(int)>(dlsym(RTLD_DEFAULT, "_exit"));
+        if (libraryExit) {
+            libraryExit(4);
+        }
+        std::abort(); }, ::testing::ExitedWithCode(4), "watchdog: the process is exiting with status 4 through _exit\\(\\) on thread [0-9]+ \\(the main thread\\)");
+}
+
+TEST_F(TestWatchdogTest, AQuickExitWithAStatusSaysSo)
+{
+    ASSERT_EXIT({
+        TestWatchdog::reportNonZeroExits();
+        std::_Exit(6); }, ::testing::ExitedWithCode(6), "watchdog: the process is exiting with status 6 through _exit\\(\\)");
 }

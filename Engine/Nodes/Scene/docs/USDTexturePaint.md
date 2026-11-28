@@ -8,13 +8,22 @@ texture set, laid out by the UV Primvar (`st` by default): tile 1001 covers 0
 to 1 in u and v, each tile further in u adds 1 and each row up in v adds 10.
 Their UV layouts should not overlap.
 
-Strokes are drawn into a paint buffer through the view camera they are painted
-through, then projected into the tiles with occlusion, so a stroke only lands on
-the surfaces the camera sees. The strokes painted through one camera form a
-session. Each session is a layer under the node's base layer, and carries its
-camera (Camera To World, View Height, Aspect, Orthographic, Near Clip and Far
-Clip) and whether it is Frozen. Sessions and their strokes are saved with the
-project.
+The strokes painted through one camera form a session. Each session is a layer
+under the node's base layer, and carries its camera (Camera To World, View
+Height, Aspect, Orthographic, Near Clip and Far Clip), its Paint Model, its
+Footprint and whether it is Frozen. Sessions and their strokes are saved with
+the project, and sessions are laid over one another in the order they were
+painted, whatever their models.
+
+A session reaches the texture through one of two paint models:
+
+- Buffer: strokes are drawn into a paint buffer through the session's camera,
+  then projected into the tiles with occlusion when the session closes, so a
+  stroke only lands on the surfaces the camera sees.
+- Direct: every dab lands straight in the texels of the meshes under it while
+  it is painted, so the texture updates live as the pen moves and there is
+  nothing to project when the session closes. Dabs only land on surfaces the
+  camera sees, and wrap across UV seams and onto every UDIM tile they reach.
 
 Controls:
 
@@ -34,6 +43,9 @@ Controls:
   centre, measured on the mesh, so a dab keeps its size on a surface seen at a
   grazing angle. View paints exactly what the dab's disc covers on screen. Each
   session keeps the footprint it was started under.
+- Paint Model: how the strokes of a new session reach the texture, Buffer
+  (the default) or Direct, as described above. Each session keeps the model it
+  was started under; changing it closes the open session.
 - Output Mode: Over Base (the default) paints over the look of the meshes and
   outputs the painted texture. Paint Only paints over transparent black: every
   session's view is transparent, so the output's alpha is the strokes' coverage

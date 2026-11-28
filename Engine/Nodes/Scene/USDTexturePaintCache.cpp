@@ -295,6 +295,12 @@ composeTile(const TileArgs& args,
     }
 
     for (const PaintSession& session : sessions) {
+        if (session.layDirect) {
+            if (isCancelled(args, error) || !session.layDirect(rgba, error)) {
+                return false;
+            }
+            continue;
+        }
         if (!session.renderBuffer) {
             continue;
         }

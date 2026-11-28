@@ -36,6 +36,8 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
+#include <list>
 #include <map>
 #include <memory>
 #include <set>
@@ -53,6 +55,7 @@
 #include <QDateTime>
 #include <QString>
 #include <QStringList>
+#include <QtCore/QTimer>
 
 #include <SequenceParsing.h>
 
@@ -72,11 +75,15 @@
 #include "Engine/NodeColorSampler.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/IO/OiioReadSupport.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/MaterialBake.h"
+#include "Engine/Nodes/Scene/PaintMeshIndex.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneRaster.h"
+#include "Engine/Nodes/Scene/TexelPages.h"
+#include "Engine/Nodes/Scene/TexelSplat.h"
 #include "Engine/Nodes/Scene/USDTexturePaintBaker.h"
 #include "Engine/Nodes/Scene/USDTexturePaintCache.h"
 #include "Engine/Nodes/Scene/USDTexturePaintInteract.h"
@@ -84,11 +91,14 @@
 #include "Engine/Nodes/Scene/USDTexturePaintView.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
+#include "Engine/RenderContext.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoDrawableItem.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/RotoPaintInteract.h"
+#include "Engine/RotoStrokeDabs.h"
+#include "Engine/RotoStrokeItem.h"
 #include "Engine/SceneLoadSet.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/TimeLine.h"
@@ -204,6 +214,23 @@ resolutionOptions()
         const std::string id = std::to_string(1 << i) + "K";
         options.push_back(ChoiceOption(id, id, QObject::tr("%1 pixels.").arg(size).toStdString()));
     }
+
+    return options;
+}
+
+std::vector<ChoiceOption>
+paintModelOptions()
+{
+    std::vector<ChoiceOption> options;
+
+    options.push_back(ChoiceOption("buffer", QObject::tr("Buffer").toStdString(),
+                                   QObject::tr("Strokes land in a paint buffer seen through the session camera, "
+                                               "projected onto the meshes when the session closes.")
+                                       .toStdString()));
+    options.push_back(ChoiceOption("direct", QObject::tr("Direct").toStdString(),
+                                   QObject::tr("Every dab lands straight in the texels of the meshes under it, live, "
+                                               "with no projection when the session closes.")
+                                       .toStdString()));
 
     return options;
 }
@@ -536,6 +563,17 @@ USDTexturePaint::initializeKnobs()
     page->addKnob(footprint);
     _footprint = footprint;
 
+    KnobChoicePtr paintModel = createKnob<KnobChoice>(tr("Paint Model"));
+    paintModel->setName(kUSDTexturePaintParamPaintModel);
+    paintModel->setHintToolTip(tr("How the strokes of a new session reach the texture. A session keeps the "
+                                  "model it was started under; changing it closes the open session.")
+                                   .toStdString());
+    paintModel->populateChoices(paintModelOptions());
+    paintModel->setDefaultValue((int)ePaintModelBuffer);
+    paintModel->setAnimationEnabled(false);
+    page->addKnob(paintModel);
+    _paintModel = paintModel;
+
     KnobChoicePtr outputMode = createKnob<KnobChoice>(tr("Output Mode"));
     outputMode->setName(kUSDTexturePaintParamOutputMode);
     outputMode->setHintToolTip(tr("What the strokes are laid over. Locked while a Bake Output is in effect: undo the bake to "
@@ -635,7 +673,9 @@ USDTexturePaint::initializeKnobs()
 
     KnobIntPtr outputTile = createKnob<KnobInt>(tr("Output Tile"));
     outputTile->setName(kUSDTexturePaintParamOutputTile);
-    outputTile->setHintToolTip(tr("The UDIM tile the node outputs as its image.").toStdString());
+    outputTile->setHintToolTip(tr("The UDIM tile the node outputs as its image, when the render names none: a "
+                                  "material reading the node per UDIM tile gets each tile the meshes cover.")
+                                   .toStdString());
     outputTile->setDefaultValue(1001);
     outputTile->setMinimum(1001);
     outputTile->setDisplayMinimum(1001);
@@ -737,6 +777,11 @@ USDTexturePaint::onCurveLayerCreated(const RotoLayerPtr& layer)
                                                           tr("Where the session's dabs land in the texture."));
     footprint->populateChoices(footprintOptions());
     footprint->setDefaultValue((int)eFootprintSurface);
+
+    KnobChoicePtr paintModel = makeSessionKnob<KnobChoice>(layer, kUSDTexturePaintSessionParamPaintModel, tr("Paint Model"), 1,
+                                                           tr("How the session's strokes reach the texture."));
+    paintModel->populateChoices(paintModelOptions());
+    paintModel->setDefaultValue((int)ePaintModelBuffer);
 } // USDTexturePaint::onCurveLayerCreated
 
 void
@@ -925,8 +970,73 @@ USDTexturePaint::deriveOutputMetadata(double time,
             metadata.setString(kUSDTexturePaintMetadataPurposePrefix + plane.getLayerID(), plane.getLayerID());
         }
     }
+    std::set<int> tiles;
+    std::string error;
+    if (getCoveredTiles(time, view, &tiles, &error) && !tiles.empty()) {
+        metadata.setIntVector(kNatronMetadataKeyUdimTiles, std::vector<int>(tiles.begin(), tiles.end()));
+    }
 
     return metadata;
+}
+
+bool
+USDTexturePaint::getCoveredTiles(double time,
+                                 ViewIdx view,
+                                 std::set<int>* tiles,
+                                 std::string* error)
+{
+    tiles->clear();
+    time = getTextureTime(time);
+    AppInstancePtr app = getApp();
+    const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
+    KnobStringPtr uvPrimvar = _uvPrimvar.lock();
+    const std::string primvar = uvPrimvar ? uvPrimvar->getValue() : std::string();
+    InputScene scene;
+    if (!openInputScene(getInput(0), time, view, fps, &scene, error)) {
+        return false;
+    }
+    if (!scene.stage) {
+        return true;
+    }
+    const PXR_NS::TfToken stName(primvar.empty() ? std::string("st") : primvar);
+    std::vector<PXR_NS::SdfPath> meshes;
+    if (!USDTexturePaintCache::matchedMeshes(scene.stage, _primPattern.getExpression(), stName, &meshes, error)) {
+        return false;
+    }
+    for (const PXR_NS::SdfPath& mesh : meshes) {
+        if (!SceneRaster::udimTiles(scene.stage, mesh, stName, scene.time, tiles, error)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+RenderContextReadSet
+USDTexturePaint::getExtraContextReads() const
+{
+    RenderContextReadSet reads;
+
+    reads.add(RenderContextName::udimTile());
+
+    return reads;
+}
+
+int
+USDTexturePaint::getRenderTile() const
+{
+    const RenderContextPtr context = getCurrentRenderContext();
+    const RenderContextValue* value = context ? context->find(RenderContextName::udimTile()) : nullptr;
+    if (value) {
+        if (const std::int64_t* tile = std::get_if<std::int64_t>(value)) {
+            if ((*tile >= 1001) && (*tile <= 9999)) {
+                return (int)*tile;
+            }
+        }
+    }
+    KnobIntPtr outputTile = _outputTile.lock();
+
+    return outputTile ? outputTile->getValue() : 1001;
 }
 
 StatusEnum
@@ -983,7 +1093,8 @@ USDTexturePaint::getBakedFilesDigest() const
 
 std::vector<RotoLayerPtr>
 USDTexturePaint::getLaidSessions(const std::vector<RotoLayerPtr>* only,
-                                 bool* narrowed) const
+                                 bool* narrowed,
+                                 const RotoLayer* stopAt) const
 {
     // Frozen sessions are in the Bake Output files; while those are the base they are not laid
     // over again.
@@ -994,6 +1105,12 @@ USDTexturePaint::getLaidSessions(const std::vector<RotoLayerPtr>* only,
         *narrowed = false;
     }
     for (const RotoLayerPtr& session : getSessions()) {
+        if (session.get() == stopAt) {
+            if (narrowed) {
+                *narrowed = true;
+            }
+            break;
+        }
         if (!sessionHasStrokes(session)) {
             continue;
         }
@@ -1017,9 +1134,12 @@ U64
 USDTexturePaint::getTileCacheKey(double time,
                                  ViewIdx view,
                                  const std::vector<RotoLayerPtr>* only,
-                                 bool* narrowed) const
+                                 bool* narrowed,
+                                 const RotoLayer* stopAt) const
 {
     ContentHasher hasher;
+    bool narrower = false;
+    const std::vector<RotoLayerPtr> laid = (only || stopAt) ? getLaidSessions(only, &narrower, stopAt) : std::vector<RotoLayerPtr>();
 
     hasher.appendString(PLUGINID_NATRON_USDTEXTUREPAINT);
     hasher.appendI64(view.value());
@@ -1028,7 +1148,22 @@ USDTexturePaint::getTileCacheKey(double time,
     }
     hasher.appendU64(_tileEpoch->load());
     RotoCurveContextPtr context = getNode()->getCurveContext();
-    hasher.appendU64(context ? context->getContentHash() : 0);
+    // Tiles that lay every session there is keep the key of the unrestricted ones, which the
+    // session bakes have cached already. Others hash only what the sessions they lay hold, so
+    // that the tiles under a Direct session keep their key while its strokes change.
+    if (narrower) {
+        const RotoLayerPtr base = context ? context->getBaseLayer() : RotoLayerPtr();
+        if (base) {
+            base->appendTransformContentHash(hasher);
+        }
+        hasher.appendBool(true);
+        for (const RotoLayerPtr& session : laid) {
+            hasher.appendString(session->getScriptName());
+            hasher.appendU64(session->getContentHash());
+        }
+    } else {
+        hasher.appendU64(context ? context->getContentHash() : 0);
+    }
     const KnobIPtr knobs[] = {
         _primPattern.getKnob(),
         _uvPrimvar.lock(),
@@ -1046,6 +1181,8 @@ USDTexturePaint::getTileCacheKey(double time,
 
     for (const RotoLayerPtr& session : getSessions()) {
         hasher.appendBool(isSessionFrozen(session));
+        hasher.appendI64((int)getSessionPaintModel(session));
+        hasher.appendI64((int)getSessionFootprint(session));
     }
 
     const KnobIPtr bakeKnobs[] = { _bakedInputs.lock(), _bakeInputsPath.lock(), _bakedOutput.lock(), _bakeOutputPath.lock() };
@@ -1054,18 +1191,6 @@ USDTexturePaint::getTileCacheKey(double time,
     }
     hasher.appendU64(getBakedFilesDigest());
 
-    bool narrower = false;
-    if (only) {
-        // Tiles that lay every session there is keep the key of the unrestricted ones, which the
-        // session bakes have cached already.
-        const std::vector<RotoLayerPtr> laid = getLaidSessions(only, &narrower);
-        if (narrower) {
-            hasher.appendBool(true);
-            for (const RotoLayerPtr& session : laid) {
-                hasher.appendString(session->getScriptName());
-            }
-        }
-    }
     if (narrowed) {
         *narrowed = narrower;
     }
@@ -2961,7 +3086,8 @@ USDTexturePaint::ensureTiles(double time,
                              std::string* error,
                              const std::function<bool()>& cancel,
                              std::shared_ptr<void>* lease,
-                             const std::vector<RotoLayerPtr>* only)
+                             const std::vector<RotoLayerPtr>* only,
+                             const RotoLayer* stopAt)
 {
     const int size = getTileResolution();
     const bool animated = getTextureMode() == eTextureModeAnimated;
@@ -2982,7 +3108,13 @@ USDTexturePaint::ensureTiles(double time,
         (void)input->evaluateScene(EffectInstance::EvaluateSceneArgs(time, view), &scene, &ignored);
     }
     bool narrowed = false;
-    const U64 key = getTileCacheKey(time, view, only, &narrowed);
+    const U64 key = getTileCacheKey(time, view, only, &narrowed, stopAt);
+    // The tiles under a Direct session on top are those render() shows, its texels laid over them.
+    bool shown = !narrowed;
+    if (!shown && !only && stopAt) {
+        const std::vector<RotoLayerPtr> all = getLaidSessions(nullptr, nullptr);
+        shown = !all.empty() && (all.back().get() == stopAt);
+    }
 
     paths->clear();
     note->clear();
@@ -2994,8 +3126,8 @@ USDTexturePaint::ensureTiles(double time,
     {
         std::unique_lock<std::mutex> lock(_tilesMutex);
         ++_tileReaders[key];
-        // Tiles of fewer sessions than there are are a bake's alone, kept by its lease.
-        if (!narrowed) {
+        // Other tiles of fewer sessions than there are are a bake's alone, kept by its lease.
+        if (shown) {
             _liveTileKeys[view.value()] = key;
         }
         // A prune that took the key for unused before this reader came is deleting its files:
@@ -3063,7 +3195,7 @@ USDTexturePaint::ensureTiles(double time,
             _tileBuilds[id] = build;
         }
 
-        const bool ok = buildTiles(time, view, tile, planes, *paths, note, error, cancelled, only);
+        const bool ok = buildTiles(time, view, tile, planes, *paths, note, error, cancelled, only, stopAt);
         {
             std::lock_guard<std::mutex> lock(_tilesMutex);
             build->done = true;
@@ -3092,7 +3224,8 @@ USDTexturePaint::buildTiles(double time,
                             std::string* note,
                             std::string* error,
                             const std::function<bool()>& cancelled,
-                            const std::vector<RotoLayerPtr>* only)
+                            const std::vector<RotoLayerPtr>* only,
+                            const RotoLayer* stopAt)
 {
     const int size = getTileResolution();
     AppInstancePtr app = getApp();
@@ -3137,6 +3270,39 @@ USDTexturePaint::buildTiles(double time,
         }
     }
 
+    const ImageLayerDesc painted = getPaintedPlane(time, view);
+    const auto paints = [&painted](const ImageLayerDesc& plane) -> bool {
+        return (plane.isColorLayer() && painted.isColorLayer()) || (plane.getLayerID() == painted.getLayerID());
+    };
+    const std::vector<RotoLayerPtr> laid = getLaidSessions(only, nullptr, stopAt);
+    if (!laid.empty() && (getSessionPaintModel(laid.back()) == ePaintModelDirect)) {
+        // The tiles under a Direct session keep their key while it is painted, so only its texels
+        // are laid again.
+        const RotoLayerPtr direct = laid.back();
+        const RectI whole(0, 0, size, size);
+        std::vector<std::string> below;
+        std::shared_ptr<void> lease;
+        if (!ensureTiles(time, view, tile, planes, &below, note, error, cancelled, &lease, only, direct.get())) {
+            return false;
+        }
+        std::size_t planeIndex = 0;
+        for (const ImageLayerDesc& plane : planes) {
+            std::vector<float> rgba;
+            if (!USDTexturePaintCache::readTile(below[planeIndex], whole, &rgba, error)) {
+                return false;
+            }
+            if (paints(plane) && !layDirectPaint(direct, only, time, view, tile, whole, &rgba, cancelled, error)) {
+                return false;
+            }
+            if (!USDTexturePaintCache::writeTile(paths[planeIndex], size, rgba, *note, error)) {
+                return false;
+            }
+            ++planeIndex;
+        }
+
+        return true;
+    }
+
     InputScene scene;
     EffectInstancePtr input = getInput(0);
     const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
@@ -3159,9 +3325,12 @@ USDTexturePaint::buildTiles(double time,
         }
     }
 
-    const ImageLayerDesc painted = getPaintedPlane(time, view);
     std::vector<std::pair<RotoLayerPtr, NodePtr>> sessions;
-    for (const RotoLayerPtr& session : getLaidSessions(only, nullptr)) {
+    for (const RotoLayerPtr& session : laid) {
+        if (getSessionPaintModel(session) == ePaintModelDirect) {
+            sessions.push_back(std::make_pair(session, NodePtr()));
+            continue;
+        }
         NodePtr viewNode = findSessionView(session.get());
         if (!viewNode) {
             *error = tr("The session %1 has no view to paint over.").arg(QString::fromUtf8(session->getScriptName().c_str())).toStdString();
@@ -3176,14 +3345,20 @@ USDTexturePaint::buildTiles(double time,
     std::size_t index = 0;
     for (const ImageLayerDesc& plane : planes) {
         const std::string& path = paths[index++];
-        const bool paints = (plane.isColorLayer() && painted.isColorLayer()) || (plane.getLayerID() == painted.getLayerID());
         std::vector<USDTexturePaintCache::PaintSession> layered;
-        if (paints) {
+        if (paints(plane)) {
             for (const std::pair<RotoLayerPtr, NodePtr>& session : sessions) {
                 USDTexturePaintCache::PaintSession entry;
                 (void)getSessionCamera(session.first, &entry.camera);
                 const RotoLayerPtr layer = session.first;
                 const NodePtr viewNode = session.second;
+                if (!viewNode) {
+                    entry.layDirect = [this, layer, only, time, view, tile, size, cancelled](std::vector<float>* rgba, std::string* layError) -> bool {
+                        return layDirectPaint(layer, only, time, view, tile, RectI(0, 0, size, size), rgba, cancelled, layError);
+                    };
+                    layered.push_back(entry);
+                    continue;
+                }
                 entry.renderBuffer = [this, layer, viewNode, plane, time, view, cancelled, parentAbort](SessionBuffer* buffer, std::string* bufferError) -> bool {
                     // A bake has no render of its own to abort the session's with, so it gets one
                     // this thread aborts when the bake is cancelled.
@@ -3252,8 +3427,7 @@ USDTexturePaint::buildTiles(double time,
 StatusEnum
 USDTexturePaint::render(const RenderActionArgs& args)
 {
-    KnobIntPtr outputTile = _outputTile.lock();
-    const int tile = outputTile ? outputTile->getValue() : 1001;
+    const int tile = getRenderTile();
     const int size = getTileResolution();
 
     std::list<ImageLayerDesc> planes;
@@ -3265,11 +3439,26 @@ USDTexturePaint::render(const RenderActionArgs& args)
     if (planes.empty()) {
         return eStatusOK;
     }
+    // A Direct session on top is laid from its live texels over the tiles under it, so that a
+    // stroke being painted never has the whole tile composed and written again.
+    const std::vector<RotoLayerPtr> laid = getLaidSessions(nullptr, nullptr);
+    const RotoLayerPtr direct = (!laid.empty() && (getSessionPaintModel(laid.back()) == ePaintModelDirect)) ? laid.back() : RotoLayerPtr();
+    const ImageLayerDesc painted = getPaintedPlane(args.time, args.view);
+    // The splat's workers have no render state of their own, as in ensureTiles().
+    const AbortableRenderInfoPtr parentAbort = callerAbortInfo(*this);
+    const std::thread::id caller = std::this_thread::get_id();
+    const std::function<bool()> cancelled = [this, parentAbort, caller]() -> bool {
+        if (parentAbort && parentAbort->isAborted()) {
+            return true;
+        }
+
+        return (std::this_thread::get_id() == caller) && aborted();
+    };
     std::vector<std::string> paths;
     std::string note;
     std::string error;
     std::shared_ptr<void> lease;
-    if (!ensureTiles(args.time, args.view, tile, planes, &paths, &note, &error, std::function<bool()>(), &lease)) {
+    if (!ensureTiles(args.time, args.view, tile, planes, &paths, &note, &error, std::function<bool()>(), &lease, nullptr, direct.get())) {
         if (!error.empty()) {
             setPersistentMessage(eMessageTypeError, error);
         }
@@ -3307,7 +3496,7 @@ USDTexturePaint::render(const RenderActionArgs& args)
                 rebuilt = true;
                 lease.reset();
                 error.clear();
-                if (!ensureTiles(args.time, args.view, tile, planes, &paths, &note, &error, std::function<bool()>(), &lease)) {
+                if (!ensureTiles(args.time, args.view, tile, planes, &paths, &note, &error, std::function<bool()>(), &lease, nullptr, direct.get())) {
                     if (!error.empty()) {
                         setPersistentMessage(eMessageTypeError, error);
                     }
@@ -3321,6 +3510,14 @@ USDTexturePaint::render(const RenderActionArgs& args)
 
                 return eStatusFailed;
             }
+        }
+        const bool paints = (layer.first.isColorLayer() && painted.isColorLayer()) || (layer.first.getLayerID() == painted.getLayerID());
+        if (direct && paints && !window.isNull() && !layDirectPaint(direct, nullptr, args.time, args.view, tile, window, &texels, cancelled, &error)) {
+            if (!error.empty()) {
+                setPersistentMessage(eMessageTypeError, error);
+            }
+
+            return eStatusFailed;
         }
         const bool color = layer.first.isColorLayer();
         const int nComps = (int)image->getComponentsCount();
@@ -3353,6 +3550,566 @@ USDTexturePaint::render(const RenderActionArgs& args)
 
     return eStatusOK;
 } // USDTexturePaint::render
+
+struct USDTexturePaintDirect {
+    // A stroke laid into the pages, and the pages as they were before it, to take it off again.
+    struct Laid {
+        const RotoDrawableItem* item = nullptr;
+        std::weak_ptr<RotoDrawableItem> weak;
+        U64 hash = 0;
+        bool journalled = true;
+        std::vector<TexelPages::Snapshot> journal;
+    };
+
+    U64 key = 0;
+    const RotoLayer* session = nullptr;
+    double time = 0.;
+    ViewIdx view;
+    int size = 0;
+    ImageLayerDesc plane;
+    std::mutex mutex;
+    bool prepared = false;
+    PaintMeshIndex index;
+    std::shared_ptr<const TexelSplat::Coverage> coverage;
+    SceneRaster::ExplicitCamera camera;
+    TexelSplat::FootprintEnum footprint = TexelSplat::eFootprintSurface;
+    // What Reveal and Clone from the background read: the base the tiles are composed over.
+    std::unique_ptr<TexelPages> base;
+    // What Eraser restores: the tiles of the sessions under this one, as is every page's start.
+    std::unique_ptr<TexelPages> below;
+    std::unique_ptr<TexelPages> pages;
+    // The pages' fills read these from the painting threads.
+    std::mutex belowMutex;
+    std::map<int, std::string> belowPaths;
+    std::set<int> missing;
+    std::vector<std::shared_ptr<void>> leases;
+    std::vector<Laid> laid;
+    std::size_t journalBytes = 0;
+};
+
+static bool holdForBake(const std::shared_ptr<USDTexturePaint>& self, USDTexturePaintBaker::Context& context);
+
+namespace {
+// The Direct sessions whose texels a node keeps, so that a few frames or views each keep theirs.
+const std::size_t kDirectPaintsKept = 4;
+// Past this, the oldest strokes' journals go, and undoing those replays the strokes.
+const std::size_t kDirectJournalBudget = (std::size_t)512 << 20;
+const std::chrono::milliseconds kDirectLandInterval(100);
+const char* const kDirectTileNotReady = "The tile under the session is not built yet.";
+
+std::size_t
+journalSize(const std::vector<TexelPages::Snapshot>& journal)
+{
+    std::size_t bytes = 0;
+
+    for (const TexelPages::Snapshot& snapshot : journal) {
+        bytes += sizeof(TexelPages::Snapshot) + snapshot.texels.size() * sizeof(PXR_NS::GfHalf);
+    }
+
+    return bytes;
+}
+
+// What item paints at time, as the buffer model's stroke render reads it. False when it draws nothing.
+bool
+directStrokeOf(const RotoDrawableItem& item,
+               double time,
+               const bool channels[4],
+               TexelSplat::Stroke* stroke)
+{
+    const RotoStrokeItem* strokeItem = dynamic_cast<const RotoStrokeItem*>(&item);
+
+    if (!strokeItem || !RotoStrokeDabs::readBrushParams(&item, time, 0, &stroke->brush)) {
+        return false;
+    }
+    strokeItem->evaluateStroke(0, time, &stroke->points);
+    if (stroke->points.empty()) {
+        return false;
+    }
+    stroke->type = strokeItem->getBrushType();
+    const KnobBoolPtr buildUp = item.getBuildupKnob();
+    stroke->buildUp = buildUp && buildUp->getValueAtTime(time);
+    stroke->opacity = item.getOpacity(time);
+    item.getColor(time, stroke->color);
+    std::copy_n(channels, 4, stroke->channels);
+    const KnobDoublePtr effect = item.getBrushEffectKnob();
+    if (effect) {
+        stroke->effectStrength = effect->getValueAtTime(time);
+    }
+    const KnobDoublePtr translate = item.getBrushCloneTranslateKnob();
+    if (translate) {
+        stroke->sourceTransform[2] = -translate->getValueAtTime(time, 0);
+        stroke->sourceTransform[5] = -translate->getValueAtTime(time, 1);
+    }
+    const KnobChoicePtr source = item.getBrushSourceTypeKnob();
+    stroke->cloneFromBase = source && (source->getValue() >= 1);
+
+    return true;
+}
+} // anon namespace
+
+bool
+USDTexturePaint::prepareDirectPaint(USDTexturePaintDirect& direct,
+                                    const RotoLayerPtr& session,
+                                    std::string* error)
+{
+    const AppInstancePtr app = getApp();
+    const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
+    InputScene scene;
+
+    if (!openInputScene(getInput(0), direct.time, direct.view, fps, &scene, error)) {
+        return false;
+    }
+    if (!scene.stage) {
+        return true;
+    }
+    PaintMeshIndex::Key key;
+    const NodePtr input = getNode()->getInput(0);
+    key.sceneHash = input ? input->getHashValue() : 0;
+    KnobStringPtr uvPrimvar = _uvPrimvar.lock();
+    const std::string primvar = uvPrimvar ? uvPrimvar->getValue() : std::string();
+    key.stName = PXR_NS::TfToken(primvar.empty() ? std::string("st") : primvar);
+    key.time = scene.time;
+    if (!USDTexturePaintCache::matchedMeshes(scene.stage, _primPattern.getExpression(), key.stName, &key.meshes, error)) {
+        return false;
+    }
+    if (key.meshes.empty()) {
+        return true;
+    }
+    if (!direct.index.buildFromStage(scene.stage, key, 0, error)) {
+        return false;
+    }
+    (void)getSessionCamera(session, &direct.camera);
+    direct.footprint = (getSessionFootprint(session) == eFootprintView) ? TexelSplat::eFootprintView : TexelSplat::eFootprintSurface;
+    direct.coverage = std::make_shared<TexelSplat::Coverage>(direct.index, direct.size);
+
+    // The base buildTiles() composes over: the baked output, else the baked input unless Paint
+    // Only, else the meshes' own colour on the colour plane.
+    const bool paintOnly = getOutputMode() == eOutputModePaintOnly;
+    const std::string purpose = planePurpose(direct.plane);
+    std::map<int, std::string> basePaths;
+    for (int tile : direct.coverage->tiles()) {
+        const std::string output = getBakedOutputPath(purpose, tile, direct.time);
+        const std::string path = (output.empty() && !paintOnly) ? getBakedInputPath(purpose, tile, direct.time) : output;
+        if (!path.empty()) {
+            basePaths[tile] = path;
+        }
+    }
+    TexelPages::BaseFill colours;
+    if (!paintOnly && direct.plane.isColorLayer()) {
+        std::vector<PXR_NS::GfVec3f> meshColours;
+        for (const PXR_NS::SdfPath& path : key.meshes) {
+            meshColours.push_back(USDTexturePaintCache::meshBaseColor(scene.stage->GetPrimAtPath(path), scene.time));
+        }
+        colours = TexelSplat::meshColourBase(direct.coverage, meshColours);
+    }
+    const int size = direct.size;
+    const TexelPages::BaseFill baseFill = [basePaths, colours, size](int tile, int plane, const RectI& texels, float* rgba, std::string* fillError) -> bool {
+        const std::map<int, std::string>::const_iterator it = basePaths.find(tile);
+        if (it != basePaths.end()) {
+            return TexelPages::readFileRegion(it->second, size, texels, rgba, fillError);
+        }
+        if (colours) {
+            return colours(tile, plane, texels, rgba, fillError);
+        }
+        std::fill_n(rgba, (std::size_t)texels.width() * (std::size_t)texels.height() * 4, 0.f);
+
+        return true;
+    };
+    // A tile not built yet is noted for the painting thread to build, outside the splat's workers.
+    USDTexturePaintDirect* const owner = &direct;
+    const TexelPages::BaseFill belowFill = [owner, size](int tile, int /*plane*/, const RectI& texels, float* rgba, std::string* fillError) -> bool {
+        std::string path;
+        {
+            std::lock_guard<std::mutex> lock(owner->belowMutex);
+            const std::map<int, std::string>::const_iterator it = owner->belowPaths.find(tile);
+            if (it == owner->belowPaths.end()) {
+                owner->missing.insert(tile);
+                *fillError = kDirectTileNotReady;
+
+                return false;
+            }
+            path = it->second;
+        }
+
+        return TexelPages::readFileRegion(path, size, texels, rgba, fillError);
+    };
+    const std::size_t budget = TexelPages::defaultBudget();
+    direct.base.reset(new TexelPages(size, baseFill, budget / 16));
+    direct.below.reset(new TexelPages(size, belowFill, budget / 16));
+    direct.pages.reset(new TexelPages(size, belowFill, budget / 4));
+
+    return true;
+} // USDTexturePaint::prepareDirectPaint
+
+bool
+USDTexturePaint::reconcileDirectPaint(USDTexturePaintDirect& direct,
+                                      const RotoLayerPtr& session,
+                                      const std::vector<RotoLayerPtr>* only,
+                                      const std::function<bool()>& cancelled,
+                                      std::string* error)
+{
+    if (!direct.pages) {
+        return true;
+    }
+    std::vector<RotoDrawableItemPtr> items;
+    if (RotoCurveContextPtr context = getNode()->getCurveContext()) {
+        for (const RotoDrawableItemPtr& item : context->getCurvesByRenderOrder(false)) {
+            if (item && (getSessionOf(*item) == session)) {
+                items.push_back(item);
+            }
+        }
+    }
+    std::vector<U64> hashes;
+    for (const RotoDrawableItemPtr& item : items) {
+        hashes.push_back(item->getContentHash());
+    }
+
+    std::size_t prefix = 0;
+    while ((prefix < direct.laid.size()) && (prefix < items.size()) && (direct.laid[prefix].item == items[prefix].get()) && !direct.laid[prefix].weak.expired() && (direct.laid[prefix].hash == hashes[prefix])) {
+        ++prefix;
+    }
+    bool replay = false;
+    while (direct.laid.size() > prefix) {
+        USDTexturePaintDirect::Laid& last = direct.laid.back();
+        std::string restoreError;
+        if (!last.journalled || !direct.pages->restore(last.journal, &restoreError)) {
+            replay = true;
+            break;
+        }
+        direct.journalBytes -= std::min(direct.journalBytes, journalSize(last.journal));
+        direct.laid.pop_back();
+    }
+    if (replay) {
+        direct.pages->clear();
+        direct.laid.clear();
+        direct.journalBytes = 0;
+        ++_directReplays;
+    }
+
+    bool channels[4] = { true, true, true, true };
+    KnobLayerSelect* layerKnob = dynamic_cast<KnobLayerSelect*>(getNode()->getLayerKnob().get());
+    const std::vector<std::string> selected = layerKnob ? layerKnob->getChannels() : std::vector<std::string>();
+    if (!selected.empty()) {
+        const std::vector<std::string>& names = direct.plane.getChannels();
+        for (int c = 0; c < 4; ++c) {
+            channels[c] = ((std::size_t)c < names.size()) && (std::find(selected.begin(), selected.end(), names[(std::size_t)c]) != selected.end());
+        }
+    }
+
+    TexelSplat::Context context;
+    context.index = &direct.index;
+    context.coverage = direct.coverage.get();
+    context.camera = direct.camera;
+    context.footprint = direct.footprint;
+    context.pages = direct.pages.get();
+    context.plane = 0;
+    context.cancelled = cancelled;
+    const std::size_t attempts = direct.coverage->tiles().size() + 1;
+    for (std::size_t i = direct.laid.size(); i < items.size(); ++i) {
+        if (cancelled && cancelled()) {
+            error->clear();
+
+            return false;
+        }
+        USDTexturePaintDirect::Laid entry;
+        entry.item = items[i].get();
+        entry.weak = items[i];
+        entry.hash = hashes[i];
+        TexelSplat::Stroke stroke;
+        if (directStrokeOf(*items[i], direct.time, channels, &stroke)) {
+            context.base = (stroke.type == eRotoStrokeTypeEraser) ? direct.below.get() : direct.base.get();
+            for (std::size_t attempt = 0;; ++attempt) {
+                std::vector<TexelPages::Snapshot> journal;
+                TexelPages* const pages = direct.pages.get();
+                context.beforeWrite = [pages, &journal](const std::vector<TexelPages::PageKey>& keys, std::string* writeError) -> bool {
+                    std::vector<TexelPages::Snapshot> snapshots;
+                    if (!pages->snapshot(keys, &snapshots, writeError)) {
+                        return false;
+                    }
+                    std::move(snapshots.begin(), snapshots.end(), std::back_inserter(journal));
+
+                    return true;
+                };
+                std::string paintError;
+                if (TexelSplat::paint(context, stroke, &paintError)) {
+                    entry.journal.swap(journal);
+                    break;
+                }
+                std::string ignored;
+                (void)pages->restore(journal, &ignored);
+                if (cancelled && cancelled()) {
+                    error->clear();
+
+                    return false;
+                }
+                std::set<int> missing;
+                {
+                    std::lock_guard<std::mutex> lock(direct.belowMutex);
+                    missing.swap(direct.missing);
+                }
+                if (missing.empty() || (attempt >= attempts)) {
+                    *error = paintError;
+
+                    return false;
+                }
+                const std::list<ImageLayerDesc> planes(1, direct.plane);
+                for (int tile : missing) {
+                    std::vector<std::string> paths;
+                    std::string note;
+                    std::shared_ptr<void> lease;
+                    if (!ensureTiles(direct.time, direct.view, tile, planes, &paths, &note, error, cancelled, &lease, only, session.get())) {
+                        return false;
+                    }
+                    std::lock_guard<std::mutex> lock(direct.belowMutex);
+                    direct.belowPaths[tile] = paths.front();
+                    direct.leases.push_back(lease);
+                }
+            }
+        }
+        direct.journalBytes += journalSize(entry.journal);
+        direct.laid.push_back(std::move(entry));
+        for (USDTexturePaintDirect::Laid& old : direct.laid) {
+            if (direct.journalBytes <= kDirectJournalBudget) {
+                break;
+            }
+            if (old.journalled) {
+                direct.journalBytes -= std::min(direct.journalBytes, journalSize(old.journal));
+                old.journal.clear();
+                old.journal.shrink_to_fit();
+                old.journalled = false;
+            }
+        }
+    }
+
+    return true;
+} // USDTexturePaint::reconcileDirectPaint
+
+bool
+USDTexturePaint::layDirectPaint(const RotoLayerPtr& session,
+                                const std::vector<RotoLayerPtr>* only,
+                                double time,
+                                ViewIdx view,
+                                int tile,
+                                const RectI& window,
+                                std::vector<float>* rgba,
+                                const std::function<bool()>& cancelled,
+                                std::string* error)
+{
+    if (!session) {
+        return true;
+    }
+    time = getTextureTime(time);
+    const ImageLayerDesc painted = getPaintedPlane(time, view);
+    ContentHasher hasher;
+    hasher.appendU64(getTileCacheKey(time, view, only, nullptr, session.get()));
+    hasher.appendString(session->getScriptName());
+    for (const KnobIPtr& knob : session->getKnobs()) {
+        hasher.appendU64(knob ? knob->getContentHash() : 0);
+    }
+    hasher.appendString(painted.isColorLayer() ? std::string(kNatronColorLayerID) : painted.getLayerID());
+    const U64 key = hasher.finalize();
+
+    std::shared_ptr<USDTexturePaintDirect> direct;
+    std::list<std::shared_ptr<USDTexturePaintDirect>> dropped;
+    {
+        std::lock_guard<std::mutex> lock(_directMutex);
+        for (std::list<std::shared_ptr<USDTexturePaintDirect>>::iterator it = _directPaints.begin(); it != _directPaints.end(); ++it) {
+            if (((*it)->key == key) && ((*it)->session == session.get())) {
+                direct = *it;
+                _directPaints.splice(_directPaints.begin(), _directPaints, it);
+                break;
+            }
+        }
+        if (!direct) {
+            direct = std::make_shared<USDTexturePaintDirect>();
+            direct->key = key;
+            direct->session = session.get();
+            direct->time = time;
+            direct->view = view;
+            direct->size = getTileResolution();
+            direct->plane = painted;
+            _directPaints.push_front(direct);
+            while (_directPaints.size() > kDirectPaintsKept) {
+                dropped.push_back(_directPaints.back());
+                _directPaints.pop_back();
+            }
+        }
+    }
+    dropped.clear();
+
+    std::lock_guard<std::mutex> lock(direct->mutex);
+    if (!direct->prepared) {
+        if (!prepareDirectPaint(*direct, session, error)) {
+            return false;
+        }
+        direct->prepared = true;
+    }
+    if (!reconcileDirectPaint(*direct, session, only, cancelled, error)) {
+        return false;
+    }
+    if (!rgba || !direct->pages || window.isNull()) {
+        return true;
+    }
+    const std::size_t width = (std::size_t)window.width();
+    TexelPages::PageData page;
+    for (const TexelPages::PageKey& pageKey : direct->pages->paintedPages()) {
+        if ((pageKey.tile != tile) || (pageKey.plane != 0)) {
+            continue;
+        }
+        const RectI texels = direct->pages->texelsOf(pageKey);
+        const RectI overlap = texels.intersect(window);
+        if (overlap.isNull()) {
+            continue;
+        }
+        if (!direct->pages->read(pageKey, &page, error)) {
+            return false;
+        }
+        // A painted page holds the tile under the session wherever no paint went, so it is laid whole.
+        for (int y = overlap.y1; y < overlap.y2; ++y) {
+            for (int x = overlap.x1; x < overlap.x2; ++x) {
+                const float* from = page.rgba.data() + ((std::size_t)(y - texels.y1) * TexelPages::kPageSize + (std::size_t)(x - texels.x1)) * 4;
+                float* to = rgba->data() + ((std::size_t)(y - window.y1) * width + (std::size_t)(x - window.x1)) * 4;
+                std::copy_n(from, 4, to);
+            }
+        }
+    }
+
+    return true;
+} // USDTexturePaint::layDirectPaint
+
+void
+USDTexturePaint::requestDirectPaint(const RotoLayerPtr& session,
+                                    double time,
+                                    ViewIdx view,
+                                    bool final)
+{
+    if (!session || (getSessionPaintModel(session) != ePaintModelDirect)) {
+        return;
+    }
+    _directSession = session;
+    _directTime = time;
+    _directView = view.value();
+    _directDirty = true;
+    _directFinal = _directFinal || final;
+    if (_directQueued && (_directQueuedStops != _directStops.load())) {
+        _directQueued = false;
+    }
+    if (!_directQueued) {
+        enqueueDirectPaint();
+    }
+}
+
+void
+USDTexturePaint::enqueueDirectPaint()
+{
+    const RotoLayerPtr session = _directSession.lock();
+
+    _directDirty = false;
+    if (!session) {
+        _directFinal = false;
+
+        return;
+    }
+    const bool final = _directFinal;
+    _directFinal = false;
+    const double time = _directTime;
+    const ViewIdx view(_directView);
+    const std::weak_ptr<USDTexturePaint> weak = weakSelf();
+    const RotoLayerWPtr weakSession = session;
+    const std::shared_ptr<std::string> failure = std::make_shared<std::string>();
+    USDTexturePaintBaker::Bake bake;
+    bake.label = tr("Painting");
+    bake.work = [weak, weakSession, time, view, failure](USDTexturePaintBaker::Context& context) -> bool {
+        const std::shared_ptr<USDTexturePaint> self = weak.lock();
+        if (!holdForBake(self, context)) {
+            return false;
+        }
+        const RotoLayerPtr layer = weakSession.lock();
+        if (!layer) {
+            return false;
+        }
+        context.keepAlive(layer);
+        const std::function<bool()> cancelled = [&context]() -> bool {
+            return context.cancelled();
+        };
+
+        return self->layDirectPaint(layer, nullptr, time, view, 0, RectI(), nullptr, cancelled, failure.get());
+    };
+    bake.completion = [weak, failure, final](bool ok) {
+        const std::shared_ptr<USDTexturePaint> self = weak.lock();
+        if (!self) {
+            return;
+        }
+        self->_directQueued = false;
+        if (!ok && !failure->empty()) {
+            self->setPersistentMessage(eMessageTypeError, *failure);
+        }
+        if (ok) {
+            self->landDirectPaint(final);
+        }
+        if (self->_directDirty || self->_directFinal) {
+            self->enqueueDirectPaint();
+        }
+    };
+    _directQueued = true;
+    _directQueuedStops = _directStops.load();
+    if (!getBaker()->enqueue(bake)) {
+        _directQueued = false;
+    }
+} // USDTexturePaint::enqueueDirectPaint
+
+void
+USDTexturePaint::landDirectPaint(bool final)
+{
+    const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    const std::chrono::steady_clock::duration since = now - _directLanded;
+
+    if (final || (since >= kDirectLandInterval)) {
+        _directLanded = now;
+        landBake(true);
+
+        return;
+    }
+    if (_directLandQueued) {
+        return;
+    }
+    _directLandQueued = true;
+    const std::weak_ptr<USDTexturePaint> weak = weakSelf();
+    const int wait = (int)std::chrono::duration_cast<std::chrono::milliseconds>(kDirectLandInterval - since).count() + 1;
+    QTimer::singleShot(wait, [weak]() {
+        const std::shared_ptr<USDTexturePaint> self = weak.lock();
+        if (!self) {
+            return;
+        }
+        self->_directLandQueued = false;
+        self->_directLanded = std::chrono::steady_clock::now();
+        self->landBake(true);
+    });
+}
+
+void
+USDTexturePaint::clearDirectJournalsForTesting()
+{
+    std::list<std::shared_ptr<USDTexturePaintDirect>> paints;
+    {
+        std::lock_guard<std::mutex> lock(_directMutex);
+        paints = _directPaints;
+    }
+    for (const std::shared_ptr<USDTexturePaintDirect>& direct : paints) {
+        std::lock_guard<std::mutex> lock(direct->mutex);
+        for (USDTexturePaintDirect::Laid& laid : direct->laid) {
+            laid.journal.clear();
+            laid.journalled = false;
+        }
+        direct->journalBytes = 0;
+    }
+}
+
+quint64
+USDTexturePaint::getDirectReplayCount() const
+{
+    return _directReplays.load();
+}
 
 FramesNeededMap
 USDTexturePaint::getFramesNeeded(double /*time*/,
@@ -3484,6 +4241,14 @@ USDTexturePaint::getFootprint() const
     return (knob && (knob->getValue() == (int)eFootprintView)) ? eFootprintView : eFootprintSurface;
 }
 
+USDTexturePaint::PaintModelEnum
+USDTexturePaint::getPaintModel() const
+{
+    KnobChoicePtr knob = _paintModel.lock();
+
+    return (knob && (knob->getValue() == (int)ePaintModelDirect)) ? ePaintModelDirect : ePaintModelBuffer;
+}
+
 USDTexturePaint::TextureModeEnum
 USDTexturePaint::getTextureMode() const
 {
@@ -3505,6 +4270,7 @@ USDTexturePaint::addSession(const SceneRaster::ExplicitCamera& camera)
     RotoLayerPtr layer = context->addLayer();
     setSessionCamera(layer, camera);
     setSessionFootprint(layer, getFootprint());
+    setSessionPaintModel(layer, getPaintModel());
     (void)getSessionView(layer);
 
     return layer;
@@ -3666,12 +4432,19 @@ USDTexturePaint::syncSessionViews()
 void
 USDTexturePaint::quitBackgroundWork(bool /*blocking*/)
 {
+    std::list<std::shared_ptr<USDTexturePaintDirect>> paints;
+    {
+        std::lock_guard<std::mutex> lock(_directMutex);
+        paints.swap(_directPaints);
+    }
+    paints.clear();
     if (!_baker) {
         return;
     }
     // Even a blocking quit does not wait: the bake's work keeps the node alive until it returns,
     // and Node::deactivate() calls this on the main thread.
     _baker->requestStop(true);
+    ++_directStops;
     std::lock_guard<std::mutex> lock(_pendingSessionBakesMutex);
     _pendingSessionBakes.clear();
 }
@@ -3740,6 +4513,12 @@ USDTexturePaint::knobChanged(KnobI* k,
             }
         }
         syncSessionViews();
+    }
+    KnobChoicePtr paintModel = _paintModel.lock();
+    if (paintModel && (k == paintModel.get()) && _viewInteract) {
+        (void)_viewInteract->closeSession(time);
+
+        return true;
     }
     KnobButtonPtr bakeOutputButton = _bakeOutput.lock();
     if (bakeOutputButton && (k == bakeOutputButton.get())) {
@@ -4487,6 +5266,25 @@ USDTexturePaint::setSessionFootprint(const RotoLayerPtr& layer,
 
     if (knob) {
         knob->setValue((int)footprint);
+    }
+}
+
+USDTexturePaint::PaintModelEnum
+USDTexturePaint::getSessionPaintModel(const RotoLayerPtr& layer)
+{
+    KnobChoicePtr knob = sessionKnob<KnobChoice>(layer, kUSDTexturePaintSessionParamPaintModel);
+
+    return (knob && (knob->getValue() == (int)ePaintModelDirect)) ? ePaintModelDirect : ePaintModelBuffer;
+}
+
+void
+USDTexturePaint::setSessionPaintModel(const RotoLayerPtr& layer,
+                                      PaintModelEnum model)
+{
+    KnobChoicePtr knob = sessionKnob<KnobChoice>(layer, kUSDTexturePaintSessionParamPaintModel);
+
+    if (knob) {
+        knob->setValue((int)model);
     }
 }
 

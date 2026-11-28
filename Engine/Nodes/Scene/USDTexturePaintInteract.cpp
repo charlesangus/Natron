@@ -93,6 +93,7 @@ USDTexturePaintInteract::USDTexturePaintInteract(USDTexturePaint* node)
     , _sessionPainted(false)
     , _penDown(false)
     , _strokeAspect(1.)
+    , _strokeTime(0.)
 {
 }
 
@@ -170,7 +171,8 @@ USDTexturePaintInteract::penDown(const SceneRaster::ExplicitCamera& camera,
     if (session) {
         SceneRaster::ExplicitCamera sessionCamera;
         const bool sameView = USDTexturePaint::getSessionCamera(session, &sessionCamera) && sameCamera(sessionCamera, camera);
-        if (!sameView || ((int)paint->selectedTool != _sessionTool) || !acceptsStrokes(session)) {
+        const bool sameModel = USDTexturePaint::getSessionPaintModel(session) == _node->getPaintModel();
+        if (!sameView || !sameModel || ((int)paint->selectedTool != _sessionTool) || !acceptsStrokes(session)) {
             (void)closeSession(time);
             session.reset();
         }
@@ -194,6 +196,8 @@ USDTexturePaintInteract::penDown(const SceneRaster::ExplicitCamera& camera,
     }
     _penDown = true;
     _sessionPainted = true;
+    _strokeTime = time;
+    _node->requestDirectPaint(session, time, ViewIdx(0), false);
 
     return true;
 } // USDTexturePaintInteract::penDown
@@ -211,8 +215,12 @@ USDTexturePaintInteract::penMotion(double u,
     double x = 0.;
     double y = 0.;
     toPaintSpace(u, v, &x, &y);
+    if (!paint->continuePaintStroke(QPointF(x, y), pressure, timestamp)) {
+        return false;
+    }
+    _node->requestDirectPaint(_session.lock(), _strokeTime, ViewIdx(0), false);
 
-    return paint->continuePaintStroke(QPointF(x, y), pressure, timestamp);
+    return true;
 }
 
 bool
@@ -225,6 +233,7 @@ USDTexturePaintInteract::penUp()
     if (const RotoPaintInteractPtr paint = _node->getPaintInteract()) {
         (void)paint->finishPaintStroke();
     }
+    _node->requestDirectPaint(_session.lock(), _strokeTime, ViewIdx(0), true);
 
     return true;
 }
@@ -240,6 +249,10 @@ USDTexturePaintInteract::closeSession(double time)
     // A stroke still waiting for the previous one's render lands in the session later: the bake
     // only fills the tile cache, which the session's next render rebuilds if that stroke misses it.
     if (!painted || !acceptsStrokes(session)) {
+        return false;
+    }
+    // Direct strokes are already in the texels, so closing leaves nothing to project.
+    if (USDTexturePaint::getSessionPaintModel(session) == USDTexturePaint::ePaintModelDirect) {
         return false;
     }
 

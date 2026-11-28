@@ -744,9 +744,14 @@ Gui::createMenuActions()
         QAction* importTemplateAction = new QAction(tr("Import Template..."), this);
         importTemplateAction->setObjectName(QString::fromUtf8("actionImportTemplate"));
         QObject::connect(importTemplateAction, SIGNAL(triggered()), this, SLOT(importTemplate()));
+
+        QAction* defineTemplateAction = new QAction(tr("Define Template..."), this);
+        defineTemplateAction->setObjectName(QString::fromUtf8("actionDefineTemplate"));
+        QObject::connect(defineTemplateAction, SIGNAL(triggered()), this, SLOT(defineTemplate()));
+        _imp->menuFile->addAction(defineTemplateAction);
         _imp->menuFile->addAction(importTemplateAction);
 
-        _imp->menuUpdateFromTemplate = new Menu(tr("Update from Template"), _imp->menuFile);
+        _imp->menuUpdateFromTemplate = new Menu(tr("Update Template to Latest"), _imp->menuFile);
         _imp->menuUpdateFromTemplate->setObjectName(QString::fromUtf8("menuUpdateFromTemplate"));
         QObject::connect(_imp->menuUpdateFromTemplate, SIGNAL(aboutToShow()), this, SLOT(onUpdateFromTemplateMenuAboutToShow()));
         _imp->menuFile->addAction(_imp->menuUpdateFromTemplate->menuAction());

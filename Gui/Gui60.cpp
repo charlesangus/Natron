@@ -32,14 +32,20 @@
 
 #include <QAction>
 #include <QFileInfo>
+#include <QMessageBox>
+#include <QPushButton>
 
+#include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectMerge.h"
+#include "Engine/ProjectTemplate.h"
 
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiPrivate.h"
 #include "Gui/Menu.h"
 #include "Gui/MergeConflictResolve.h"
+#include "Gui/NodeGraph.h"
+#include "Gui/NodeGui.h"
 
 #include "Serialization/ProjectSerialization.h"
 
@@ -86,35 +92,199 @@ Gui::importTemplate()
     }
 }
 
-int
-Gui::updateFromTemplate(const std::string& templateKey)
+void
+Gui::defineTemplate()
 {
     const ProjectPtr project = getApp()->getProject();
-    const std::optional<Serialization::TemplateImportSerialization> entry = findImport(project, templateKey);
-    if (!entry) {
-        errorDialog(tr("Update from Template").toStdString(),
-                    tr("The project has no template import %1.").arg(QString::fromStdString(templateKey)).toStdString(), false);
-
-        return -1;
+    NodeGraph* graph = getLastSelectedGraph();
+    if (!graph) {
+        graph = getNodeGraph();
     }
-    QString path;
-    const QString stored = QString::fromStdString(entry->path);
-    if (stored.isEmpty() || !QFileInfo::exists(stored)) {
-        const std::string dir = stored.isEmpty() ? _imp->_lastLoadProjectOpenedDir.toStdString() : QFileInfo(stored).absolutePath().toStdString();
-        const std::string chosen = popOpenFileDialog(false, projectFileFilters(), dir, false);
-        if (chosen.empty()) {
-            return -1;
+    NodeCollectionPtr group = graph->getGroup();
+    if (!group) {
+        group = project;
+    }
+    NodesList nodes;
+    for (const NodeGuiPtr& gui : graph->getSelectedNodes()) {
+        if (NodePtr node = gui->getNode()) {
+            nodes.push_back(node);
         }
-        path = QString::fromStdString(chosen);
     }
-    const ProjectMerge::UpdateResult result = MergeConflictResolve::updateFromTemplate(this, templateKey, path, true);
-    if (!result.ok) {
-        errorDialog(tr("Update from Template").toStdString(), result.error.toStdString(), false);
+    NodePtr templateNode;
+    QString error;
+    MergeConflictResolve::runTemplateEdit(this, graph, tr("Define Template"), [&](TemplateEdit* edit) {
+        if (!project->defineTemplate(nodes, std::string(), group, edit)) {
+            error = edit->error;
 
-        return -1;
+            return false;
+        }
+        templateNode = edit->templateNode;
+
+        return true;
+    });
+    if (!templateNode) {
+        getApp()->showStatusMessage(tr("Define Template: %1").arg(error));
+
+        return;
     }
+    NodeGuiPtr templateGui = std::dynamic_pointer_cast<NodeGui>(templateNode->getNodeGui());
+    if (templateGui) {
+        graph->setSelection(NodesGuiList(1, templateGui));
+        templateGui->setVisibleSettingsPanel(true);
+    }
+}
 
-    return (int)result.conflicts.size();
+void
+Gui::publishTemplate(const std::string& templateKey)
+{
+    QString path;
+    QString error;
+    MergeConflictResolve::runTemplateEdit(this, 0, tr("Publish Template"), [&](TemplateEdit* edit) {
+        if (!getApp()->getProject()->publishTemplate(templateKey, &error, edit)) {
+            return false;
+        }
+        path = edit->path;
+
+        return true;
+    });
+    if (path.isEmpty()) {
+        getApp()->showStatusMessage(tr("Publish Template: %1").arg(error));
+    } else {
+        getApp()->showStatusMessage(tr("Published %1").arg(path));
+    }
+}
+
+void
+Gui::updateTemplateToLatest(const std::string& templateKey)
+{
+    const std::optional<Serialization::TemplateImportSerialization> entry = findImport(getApp()->getProject(), templateKey);
+    if (!entry) {
+        getApp()->showStatusMessage(tr("The project has no template import %1").arg(QString::fromStdString(templateKey)));
+
+        return;
+    }
+    const QString dir = QString::fromStdString(entry->publishDir);
+    const std::optional<ProjectMerge::TemplateVersion> latest = ProjectMerge::findLatestVersion(dir, entry->templateId);
+    if (!latest) {
+        getApp()->showStatusMessage(tr("No version of the template %1 is published in \"%2\"").arg(QString::fromStdString(entry->name)).arg(dir));
+
+        return;
+    }
+    updateTemplateFromPath(templateKey, latest->path);
+}
+
+void
+Gui::updateTemplateFromFile(const std::string& templateKey)
+{
+    const std::optional<Serialization::TemplateImportSerialization> entry = findImport(getApp()->getProject(), templateKey);
+    if (!entry) {
+        getApp()->showStatusMessage(tr("The project has no template import %1").arg(QString::fromStdString(templateKey)));
+
+        return;
+    }
+    const std::string dir = entry->publishDir.empty() ? _imp->_lastLoadProjectOpenedDir.toStdString() : entry->publishDir;
+    const std::string chosen = popOpenFileDialog(false, projectFileFilters(), dir, false);
+    if (chosen.empty()) {
+        return;
+    }
+    updateTemplateFromPath(templateKey, QString::fromStdString(chosen));
+}
+
+void
+Gui::updateTemplateFromPath(const std::string& templateKey,
+                            const QString& path)
+{
+    const QString title = tr("Update from Template");
+    ProjectMerge::UpdateResult result = MergeConflictResolve::updateFromTemplate(this, templateKey, path, false);
+    if (result.status == ProjectMerge::UpdateStatus::eTemplateMismatch) {
+        QMessageBox box(QMessageBox::Warning, title, result.error, QMessageBox::Cancel, this);
+        box.setObjectName(QString::fromUtf8("templateMismatchDialog"));
+        QPushButton* mergeAnyway = box.addButton(tr("Merge Anyway"), QMessageBox::AcceptRole);
+        mergeAnyway->setObjectName(QString::fromUtf8("mergeAnywayButton"));
+        box.setDefaultButton(QMessageBox::Cancel);
+        box.exec();
+        if (box.clickedButton() != mergeAnyway) {
+            return;
+        }
+        result = MergeConflictResolve::updateFromTemplate(this, templateKey, path, true);
+    }
+    const QString name = QFileInfo(path).fileName();
+    switch (result.status) {
+    case ProjectMerge::UpdateStatus::eUpdated:
+        if (result.conflicts.empty()) {
+            getApp()->showStatusMessage(tr("Updated to %1").arg(name));
+        } else {
+            getApp()->showStatusMessage(tr("Updated to %1 with %n conflict(s)", "", (int)result.conflicts.size()).arg(name));
+        }
+        break;
+    case ProjectMerge::UpdateStatus::eUpToDate:
+        getApp()->showStatusMessage(tr("The template is up to date with %1").arg(name));
+        break;
+    case ProjectMerge::UpdateStatus::eTemplateMismatch:
+    case ProjectMerge::UpdateStatus::eLowMatch:
+        getApp()->showStatusMessage(result.error);
+        break;
+    case ProjectMerge::UpdateStatus::eError:
+        errorDialog(title.toStdString(), result.error.toStdString(), false);
+        break;
+    }
+}
+
+void
+Gui::addToTemplate(const std::string& templateKey,
+                   const NodesList& nodes)
+{
+    QString error;
+    MergeConflictResolve::runTemplateEdit(this, 0, tr("Add to Template"), [&](TemplateEdit* edit) {
+        bool ok = true;
+        for (const NodePtr& node : nodes) {
+            if (!getApp()->getProject()->addToTemplate(templateKey, node, edit) && ok) {
+                ok = false;
+                error = edit->error;
+            }
+        }
+
+        return ok;
+    });
+    if (!error.isEmpty()) {
+        getApp()->showStatusMessage(tr("Add to Template: %1").arg(error));
+    }
+}
+
+void
+Gui::removeFromTemplate(const std::string& templateKey,
+                        const NodesList& nodes)
+{
+    QString error;
+    MergeConflictResolve::runTemplateEdit(this, 0, tr("Remove from Template"), [&](TemplateEdit* edit) {
+        bool ok = true;
+        for (const NodePtr& node : nodes) {
+            if (!getApp()->getProject()->removeFromTemplate(templateKey, node, edit) && ok) {
+                ok = false;
+                error = edit->error;
+            }
+        }
+
+        return ok;
+    });
+    if (!error.isEmpty()) {
+        getApp()->showStatusMessage(tr("Remove from Template: %1").arg(error));
+    }
+}
+
+void
+Gui::detachTemplate(const std::string& templateKey)
+{
+    QString error;
+    const bool ok = MergeConflictResolve::runTemplateEdit(this, 0, tr("Detach Template"), [&](TemplateEdit* edit) {
+        const bool detached = getApp()->getProject()->detachTemplate(templateKey, edit);
+        error = edit->error;
+
+        return detached;
+    });
+    if (!ok) {
+        getApp()->showStatusMessage(tr("Detach Template: %1").arg(error));
+    }
 }
 
 void
@@ -184,7 +354,7 @@ Gui::onUpdateFromTemplateMenuAboutToShow()
         for (const Serialization::TemplateImportSerialization& entry : project->getTemplateImports()) {
             const QString key = QString::fromStdString(entry.key);
             const QString path = QString::fromStdString(entry.path);
-            QAction* action = menu->addAction(path.isEmpty() ? key : tr("%1 (%2)").arg(key, QFileInfo(path).fileName()));
+            QAction* action = menu->addAction(tr("%1 (v%2)").arg(key).arg(entry.version, 3, 10, QLatin1Char('0')));
             action->setData(key);
             action->setToolTip(path);
             QObject::connect(action, SIGNAL(triggered()), this, SLOT(onUpdateFromTemplateActionTriggered()));
@@ -201,7 +371,7 @@ Gui::onUpdateFromTemplateActionTriggered()
 {
     QAction* action = qobject_cast<QAction*>(sender());
     if (action) {
-        updateFromTemplate(action->data().toString().toStdString());
+        updateTemplateToLatest(action->data().toString().toStdString());
     }
 }
 

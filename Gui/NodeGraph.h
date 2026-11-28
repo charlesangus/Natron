@@ -84,6 +84,11 @@ public:
 
     void setSelection(const NodesGuiList& nodes);
 
+    /**
+     * @brief Selects the members and template node of the template hull under scenePos, if any.
+     **/
+    bool selectTemplateAt(const QPointF& scenePos, bool addToSelection);
+
     void clearSelection();
 
     ///The visible portion of the graph, in scene coordinates.

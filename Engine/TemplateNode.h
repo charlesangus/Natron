@@ -89,6 +89,13 @@ public:
      **/
     void setNewerVersion(const std::string& text);
 
+    /**
+     * @brief Looks for a newer published version than the version knob's in the publish folder,
+     * off the main thread, and sets the newer-version indicator from what it finds. Does nothing
+     * without a GUI.
+     **/
+    void checkForNewerVersion();
+
 public Q_SLOTS:
 
     /**
@@ -105,6 +112,7 @@ private:
                              bool originatedFromMainThread) OVERRIDE FINAL;
     virtual void initializeKnobs() OVERRIDE FINAL;
     virtual void onKnobsLoaded() OVERRIDE FINAL;
+    virtual void onSettingsPanelOpened() OVERRIDE FINAL;
     void writeThrough();
     std::unique_ptr<TemplateNodePrivate> _imp;
 };

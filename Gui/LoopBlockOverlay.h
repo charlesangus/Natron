@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <set>
+#include <string>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -51,7 +53,7 @@ NATRON_NAMESPACE_ENTER
  * @brief Paints the loop blocks of a node graph under its nodes, image loops, geometry for-each
  * loops and solvers alike: a hull around each block's nodes in the colour the block's nodes
  * share, a downward wedge under each begin and an upward one over the end, and, while any of them is selected, the hull's outline and a ring round
- * each.
+ * each. A template's block is the hull alone, around its template node and members.
  **/
 class LoopBlockItem
     : public QGraphicsObject {
@@ -63,7 +65,8 @@ public:
         QPolygonF endWedge;
         std::vector<QRectF> beginRects;
         QRectF endRect;
-        bool highlighted;
+        bool highlighted = false;
+        bool hullOnly = false;
     };
 
     explicit LoopBlockItem(QGraphicsItem* parent);
@@ -116,6 +119,21 @@ public:
      **/
     static std::vector<NodePtr> bodyNodes(const NodePtr& end);
 
+    /**
+     * @brief The members of the template hull under scenePos followed by its template node, or
+     * nothing when no template hull is there. The innermost hull wins where hulls overlap.
+     **/
+    std::vector<NodePtr> templateNodesAt(const QPointF& scenePos) const;
+
+    /**
+     * @brief The nodes of a graph a template's hull goes round, its template node left out: the
+     * nodes whose origin names the template and the nodes on a path from one of them to another,
+     * less the excluded IDs and template nodes.
+     **/
+    static std::vector<NodePtr> templateMembers(const NodesList& graphNodes,
+                                                const std::string& key,
+                                                const std::set<std::string>& excluded);
+
 public Q_SLOTS:
 
     void refresh();
@@ -123,6 +141,8 @@ public Q_SLOTS:
 private Q_SLOTS:
 
     void onLoopNameChanged();
+
+    void onTemplateMembershipChanged();
 
 private:
     struct Membership {
@@ -132,6 +152,16 @@ private:
         std::string name;
     };
 
+    struct TemplateMembership {
+        NodeWPtr templateNode;
+        std::vector<NodeWPtr> nodes;
+    };
+
+    struct TemplateHit {
+        QPainterPath hull;
+        std::vector<NodeWPtr> nodes;
+    };
+
     void recomputeMembership();
 
     void disconnectNames();
@@ -139,6 +169,9 @@ private:
     NodeGraph* _graph;
     QPointer<LoopBlockItem> _item;
     std::vector<Membership> _blocks;
+    std::vector<TemplateMembership> _templates;
+    // Smallest hull first, in scene coordinates, for clicks.
+    std::vector<TemplateHit> _templateHits;
     // The block ends' name knobs, which colour the blocks.
     std::vector<KnobIWPtr> _watchedNames;
     bool _pending;

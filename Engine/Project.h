@@ -936,6 +936,9 @@ Q_SIGNALS:
     // Emitted on the main thread when the list getTemplateImports() returns may have changed.
     void templateImportsChanged();
 
+    // Emitted when a node's origin template or node changed, from whichever thread changed it.
+    void nodeOriginsChanged();
+
 private:
     U64 computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::vector<LayerRegistryEntry>>& layers,
                                               const std::string& ocioSource,

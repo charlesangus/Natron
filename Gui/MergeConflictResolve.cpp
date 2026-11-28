@@ -36,6 +36,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
+#include "Engine/ProjectTemplate.h"
 
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
@@ -49,15 +50,15 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-// An update replaces an import's base snapshot rather than editing it, so comparing the pointers
-// is enough.
+// An update or a publish replaces an import's base snapshot rather than editing it, so comparing
+// the pointers is enough.
 bool
 sameImports(const std::list<Serialization::TemplateImportSerialization>& a,
             const std::list<Serialization::TemplateImportSerialization>& b)
 {
     return std::equal(a.begin(), a.end(), b.begin(), b.end(),
                       [](const Serialization::TemplateImportSerialization& x, const Serialization::TemplateImportSerialization& y) {
-                          return (x.key == y.key) && (x.path == y.path) && (x.contentHash == y.contentHash) && (x.importedAt == y.importedAt) && (x.base == y.base);
+                          return (x.key == y.key) && (x.templateId == y.templateId) && (x.name == y.name) && (x.version == y.version) && (x.publishDir == y.publishDir) && (x.path == y.path) && (x.contentHash == y.contentHash) && (x.importedAt == y.importedAt) && (x.excluded == y.excluded) && (x.base == y.base);
                       });
 }
 } // anon namespace
@@ -187,6 +188,71 @@ importTemplate(Gui* gui,
     }
 
     return imports.back().key;
+}
+
+bool
+runTemplateEdit(Gui* gui,
+                NodeGraph* graph,
+                const QString& text,
+                const std::function<bool(TemplateEdit*)>& edit)
+{
+    const ProjectPtr project = gui->getApp()->getProject();
+    NodeGraph* target = graph ? graph : graphOf(gui);
+    MergeStateCommand* command = new MergeStateCommand(project, text);
+    TemplateEdit templateEdit;
+    templateEdit.applier = [target, project, text, command](const std::vector<Serialization::GraphOp>& ops) {
+        return ApplyGraphOpsCommand::applyAndRecord(target, project, ops, text, command);
+    };
+    const std::vector<Serialization::MergeConflict> conflictsBefore = project->getMergeConflicts();
+    const bool ok = edit(&templateEdit);
+    const bool raisedConflicts = project->getMergeConflicts().size() > conflictsBefore.size();
+    command->captureAfter();
+    if (command->hasEffect()) {
+        target->pushUndoCommand(command, UndoScope());
+    } else {
+        delete command;
+    }
+    if (raisedConflicts) {
+        gui->ensureMergeConflictPanelVisible();
+    }
+
+    return ok;
+}
+
+bool
+deleteNodesAndTemplates(Gui* gui,
+                        NodeGraph* graph,
+                        const std::vector<std::string>& templateKeys,
+                        const NodesGuiList& nodes,
+                        QString* error)
+{
+    const ProjectPtr project = gui->getApp()->getProject();
+    MergeStateCommand* command = new MergeStateCommand(project, QCoreApplication::translate("MergeConflictResolve", "Delete"));
+    const QString text = command->text();
+    bool ok = true;
+    error->clear();
+    for (const std::string& key : templateKeys) {
+        TemplateEdit edit;
+        edit.applier = [graph, project, text, command](const std::vector<Serialization::GraphOp>& ops) {
+            return ApplyGraphOpsCommand::applyAndRecord(graph, project, ops, text, command);
+        };
+        if (!project->detachTemplate(key, &edit) && ok) {
+            ok = false;
+            *error = edit.error;
+        }
+    }
+    command->captureAfter();
+    // A child, so the push removes the nodes after the detaches the command already holds.
+    if (!nodes.empty()) {
+        new RemoveMultipleNodesCommand(graph, nodes, command);
+    }
+    if (command->hasEffect()) {
+        graph->pushUndoCommand(command, UndoScope());
+    } else {
+        delete command;
+    }
+
+    return ok;
 }
 
 ProjectMerge::UpdateResult

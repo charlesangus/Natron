@@ -107,6 +107,12 @@ bool positionAbove(const std::list<Serialization::NodeSerializationPtr>& nodes,
  **/
 bool applyOps(const ProjectPtr& project,
               TemplateEdit* edit);
+
+/**
+ * @brief The name the Python API gives an update status: "updated", "upToDate",
+ * "templateMismatch", "lowMatch" or "error".
+ **/
+QString updateStatusName(ProjectMerge::UpdateStatus status);
 } // namespace ProjectTemplateDetail
 
 NATRON_NAMESPACE_EXIT

@@ -50,6 +50,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
+#include "Engine/TemplateNode.h"
 #include "Engine/TimeLine.h"
 
 #include "Gui/ActionShortcuts.h"
@@ -651,21 +652,55 @@ NodeGraph::showMenu(const QPoint & pos)
     QObject::connect( frameAllNodes, SIGNAL(triggered()), this, SLOT(centerOnAllNodes()) );
     viewMenu->addAction(frameAllNodes);
 
+    // The template actions apply when the selection names one template, through its template
+    // node or its members' origins; the selected nodes without an origin are the ones to add.
     std::string templateKey;
-    if (selectedNodes.size() == 1) {
-        const std::string origin = selectedNodes.front()->getNode()->getOriginTemplate();
-        if (!origin.empty() && getGui()->getApp()->getProject()->hasTemplateImport(origin)) {
-            templateKey = origin;
+    bool oneTemplate = true;
+    NodesList toAdd;
+    NodesList toRemove;
+    for (const NodeGuiPtr& gui : selectedNodes) {
+        const NodePtr node = gui->getNode();
+        if (!node) {
+            continue;
         }
+        TemplateNode* isTemplate = dynamic_cast<TemplateNode*>(node->getEffectInstance().get());
+        const std::string key = isTemplate ? isTemplate->getTemplateKey() : node->getOriginTemplate();
+        if (!isTemplate) {
+            if (key.empty()) {
+                toAdd.push_back(node);
+            }
+            toRemove.push_back(node);
+        }
+        if (key.empty()) {
+            continue;
+        }
+        if (!templateKey.empty() && (templateKey != key)) {
+            oneTemplate = false;
+        }
+        templateKey = key;
     }
-    QAction* updateFromTemplateAction = 0;
+    if (!oneTemplate || !getGui()->getApp()->getProject()->hasTemplateImport(templateKey)) {
+        templateKey.clear();
+    }
+    QAction* updateToLatestAction = 0;
+    QAction* updateFromFileAction = 0;
     QAction* compareWithTemplateBaseAction = 0;
+    QAction* addToTemplateAction = 0;
+    QAction* removeFromTemplateAction = 0;
     if (!templateKey.empty()) {
         _imp->_menu->addSeparator();
-        updateFromTemplateAction = _imp->_menu->addAction(tr("Update from Template"));
-        updateFromTemplateAction->setObjectName(QString::fromUtf8("actionGraphUpdateFromTemplate"));
-        compareWithTemplateBaseAction = _imp->_menu->addAction(tr("Compare with Template Base"));
+        updateToLatestAction = _imp->_menu->addAction(tr("Update to Latest"));
+        updateToLatestAction->setObjectName(QString::fromUtf8("actionGraphUpdateToLatest"));
+        updateFromFileAction = _imp->_menu->addAction(tr("Update from File..."));
+        updateFromFileAction->setObjectName(QString::fromUtf8("actionGraphUpdateFromFile"));
+        compareWithTemplateBaseAction = _imp->_menu->addAction(tr("Compare with Base"));
         compareWithTemplateBaseAction->setObjectName(QString::fromUtf8("actionGraphCompareWithTemplateBase"));
+        addToTemplateAction = _imp->_menu->addAction(tr("Add to Template"));
+        addToTemplateAction->setObjectName(QString::fromUtf8("actionGraphAddToTemplate"));
+        addToTemplateAction->setEnabled(!toAdd.empty());
+        removeFromTemplateAction = _imp->_menu->addAction(tr("Remove from Template"));
+        removeFromTemplateAction->setObjectName(QString::fromUtf8("actionGraphRemoveFromTemplate"));
+        removeFromTemplateAction->setEnabled(!toRemove.empty());
     }
 
     QAction* clearComparisonAction = 0;
@@ -687,10 +722,16 @@ NodeGraph::showMenu(const QPoint & pos)
     if (!ret) {
         return;
     }
-    if (ret == updateFromTemplateAction) {
-        getGui()->updateFromTemplate(templateKey);
+    if (ret == updateToLatestAction) {
+        getGui()->updateTemplateToLatest(templateKey);
+    } else if (ret == updateFromFileAction) {
+        getGui()->updateTemplateFromFile(templateKey);
     } else if (ret == compareWithTemplateBaseAction) {
         getGui()->compareWithTemplateBase(templateKey);
+    } else if (ret == addToTemplateAction) {
+        getGui()->addToTemplate(templateKey, toAdd);
+    } else if (ret == removeFromTemplateAction) {
+        getGui()->removeFromTemplate(templateKey, toRemove);
     } else if (ret == clearComparisonAction) {
         getGui()->clearGraphComparison();
     } else if (ret == findAction) {

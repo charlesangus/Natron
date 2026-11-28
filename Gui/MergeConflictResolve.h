@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <functional>
 #include <list>
 #include <string>
 #include <vector>
@@ -43,6 +44,8 @@
 #include "Serialization/ProjectSerialization.h"
 
 NATRON_NAMESPACE_ENTER
+
+struct TemplateEdit;
 
 /**
  * @brief An undo step that also puts back the project's template imports and merge conflicts as
@@ -98,6 +101,28 @@ ProjectMerge::UpdateResult updateFromTemplate(Gui* gui,
                                               const std::string& templateKey,
                                               const QString& path,
                                               bool allowMismatch = false);
+
+/**
+ * @brief Calls edit with a TemplateEdit whose applier records its graph edits, with the template
+ * imports and merge conflicts, as one undo step titled text on graph, or on the graph last worked
+ * in when graph is null. What edit applied before failing is still recorded. The Merge Conflicts
+ * panel is shown when the edit raised conflicts. Returns what edit returned.
+ **/
+bool runTemplateEdit(Gui* gui,
+                     NodeGraph* graph,
+                     const QString& text,
+                     const std::function<bool(TemplateEdit*)>& edit);
+
+/**
+ * @brief Deletes nodes and detaches the template imports templateKeys, whose template nodes are
+ * deleted with them, as one undo step on graph. Returns false with error naming the first
+ * template that could not be detached.
+ **/
+bool deleteNodesAndTemplates(Gui* gui,
+                             NodeGraph* graph,
+                             const std::vector<std::string>& templateKeys,
+                             const NodesGuiList& nodes,
+                             QString* error);
 
 /**
  * @brief Gives each conflict at indices, in the project's list, the state side had, and removes

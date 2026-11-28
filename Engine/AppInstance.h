@@ -53,6 +53,7 @@
 NATRON_NAMESPACE_ENTER
 
 struct AppInstancePrivate;
+struct TemplateEdit;
 
 /**
  * @brief The Natron build that saved the project being loaded, -1 and empty strings for what
@@ -514,6 +515,14 @@ public:
     virtual void runTemplateNodeAction(const NodePtr& /*templateNode*/,
                                        const std::string& /*templateKey*/,
                                        TemplateNodeActionEnum /*action*/) { }
+
+    /**
+     * @brief Calls edit with a TemplateEdit whose applier makes its graph edits one undo step
+     * titled text, the template imports and merge conflicts included, and returns what edit
+     * returned. Without a GUI the applier is the default one and nothing is recorded.
+     **/
+    virtual bool runTemplateEdit(const QString& text,
+                                 const std::function<bool(TemplateEdit*)>& edit);
 
     bool isCreatingPythonGroup() const;
 

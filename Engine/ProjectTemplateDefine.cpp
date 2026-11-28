@@ -372,4 +372,25 @@ Project::detachTemplate(const std::string& key,
     return true;
 }
 
+namespace ProjectTemplateDetail {
+QString
+updateStatusName(ProjectMerge::UpdateStatus status)
+{
+    switch (status) {
+    case ProjectMerge::UpdateStatus::eUpdated:
+        return QString::fromUtf8("updated");
+    case ProjectMerge::UpdateStatus::eUpToDate:
+        return QString::fromUtf8("upToDate");
+    case ProjectMerge::UpdateStatus::eTemplateMismatch:
+        return QString::fromUtf8("templateMismatch");
+    case ProjectMerge::UpdateStatus::eLowMatch:
+        return QString::fromUtf8("lowMatch");
+    case ProjectMerge::UpdateStatus::eError:
+        break;
+    }
+
+    return QString::fromUtf8("error");
+}
+} // namespace ProjectTemplateDetail
+
 NATRON_NAMESPACE_EXIT

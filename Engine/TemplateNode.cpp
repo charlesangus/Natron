@@ -26,12 +26,18 @@
 #include "TemplateNode.h"
 
 #include <list>
+#include <optional>
+
+#include <QCoreApplication>
+#include <QMetaObject>
+#include <QThreadPool>
 
 #include "Engine/AppInstance.h"
 #include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Project.h"
+#include "Engine/ProjectMerge.h"
 
 #include "Serialization/ProjectSerialization.h"
 #include "Serialization/TemplateNodeSerialization.h"
@@ -211,7 +217,8 @@ TemplateNode::getTemplateKey() const
 void
 TemplateNode::setNewerVersion(const std::string& text)
 {
-    if (KnobStringPtr newer = _imp->newerVersion.lock()) {
+    KnobStringPtr newer = _imp->newerVersion.lock();
+    if (newer && (newer->getValue() != text)) {
         newer->setValue(text);
     }
 }
@@ -236,9 +243,53 @@ TemplateNode::refreshFromEntry()
         _imp->importedVersion.lock()->setValue(entry.version);
         _imp->publishDir.lock()->setValue(entry.publishDir);
         _imp->refreshing = false;
+        break;
+    }
+    checkForNewerVersion();
+}
+
+void
+TemplateNode::onSettingsPanelOpened()
+{
+    checkForNewerVersion();
+}
+
+void
+TemplateNode::checkForNewerVersion()
+{
+    AppInstancePtr app = getApp();
+    KnobPathPtr publishDir = _imp->publishDir.lock();
+    KnobStringPtr templateId = _imp->templateId.lock();
+    if (!app || app->isBackground() || !publishDir || !templateId) {
+        return;
+    }
+    const QString dir = QString::fromStdString(publishDir->getValue());
+    const std::string id = templateId->getValue();
+    if (dir.isEmpty() || id.empty()) {
+        setNewerVersion(std::string());
 
         return;
     }
+    const NodeWPtr weakNode = getNode();
+    // Reading the candidate bundles may be slow on a network share.
+    QThreadPool::globalInstance()->start([dir, id, weakNode]() {
+        const std::optional<ProjectMerge::TemplateVersion> latest = ProjectMerge::findLatestVersion(dir, id);
+        QMetaObject::invokeMethod(qApp, [dir, id, weakNode, latest]() {
+            const NodePtr node = weakNode.lock();
+            TemplateNode* self = node ? dynamic_cast<TemplateNode*>(node->getEffectInstance().get()) : 0;
+            if (!self) {
+                return;
+            }
+            KnobPathPtr currentDir = self->_imp->publishDir.lock();
+            KnobStringPtr currentId = self->_imp->templateId.lock();
+            KnobIntPtr version = self->_imp->version.lock();
+            // A check started after the knobs changed will set the indicator.
+            if (!currentDir || !currentId || !version || (QString::fromStdString(currentDir->getValue()) != dir) || (currentId->getValue() != id)) {
+                return;
+            }
+            const bool newer = latest && (latest->version > version->getValue());
+            self->setNewerVersion(newer ? latest->path.toStdString() : std::string()); }, Qt::QueuedConnection);
+    });
 }
 
 void

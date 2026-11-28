@@ -32,6 +32,8 @@ SWING = 120.0
 # Between the turning points of the slow back-and-forth: past the detector's 500 ms window for three.
 SLOW_SWING_MS = 300
 SEL_RGB_F = (0.1, 0.9, 0.2)
+# DotGui's disk, laid out from the Dot's position. A Dot cannot be resized, so getSize() can report 0 x 0.
+DOT_DIAMETER = 15.0
 
 try:
     import NatronEngine
@@ -62,6 +64,8 @@ try:
     def box(node):
         x, y = node.getPosition()
         w, h = node.getSize()
+        if w <= 0 or h <= 0:
+            w, h = DOT_DIAMETER, DOT_DIAMETER
         return x, y, w, h
 
     def centre(node):
@@ -71,7 +75,7 @@ try:
     def place_under(src, node, gap):
         """Puts node gap under src, centred on it, so the pipe between them is vertical."""
         x, y, w, h = box(src)
-        nw = node.getSize()[0]
+        nw = box(node)[2]
         node.setPosition(x + w / 2.0 - nw / 2.0, y + h + gap)
 
     def same(a, b):
@@ -303,6 +307,9 @@ try:
         pos = shake(graph, pos)
         release(graph, pos)
         yield ("sleep", SETTLE_MS)
+        report("NOTE dot: getSize %r, pressed at %r; the Dot is fed by %r, the Blur by %r"
+               % (dot.getSize(), start, dot.getInput(0) and dot.getInput(0).getScriptName(),
+                  out.getInput(0) and out.getInput(0).getScriptName()))
         check(dot.getInput(0) is None and out.getInput(0) is None, "dot: shaking the Dot cuts both its pipes")
 
         # ---- a shaken backdrop carries its contents along without cutting any of their pipes.

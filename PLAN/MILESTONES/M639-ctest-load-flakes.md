@@ -37,7 +37,7 @@ None of these suites carry a `RESOURCE_LOCK` or `LABELS` (`Tests/CMakeLists.txt:
   - approach: per T1's diagnosis: fix a teardown use-after-free in the product, give each test its own engine instead of a reused one, or add a ctest `RESOURCE_LOCK` for a GPU or engine resource that can't be shared. Prefer a product fix over test isolation when the product is wrong.
   - verify: the T1 repeat command passes 20 of 20 for these suites under load
   - size: L
-- [ ] M639.P2.T2 — Fix CyclesDelegate.DrawFilterHidesPrimsAndLights' visibility race
+- [x] M639.P2.T2 — Fix CyclesDelegate.DrawFilterHidesPrimsAndLights' visibility race
   - files: `Tests/Scene/CyclesDelegate_Test.cpp` (:140), and the draw filter path per T1
   - approach: per T1: if the check reads before the filter's edit reaches the render, wait on the render that follows the edit rather than on time. If the filter edit is lost, fix the product.
   - verify: `ctest -R CyclesDelegate --repeat until-fail:50 -j8` passes under load
@@ -59,3 +59,4 @@ None of these suites carry a `RESOURCE_LOCK` or `LABELS` (`Tests/CMakeLists.txt:
 - 2026-11-28 — m647-gate3 (run 46110002480, F33 branch without this fix): USDRenderRendererTest passed 13/13 then failed at process exit — the exit-teardown crash 8df78bf37d/6bbf2f97c9 address.
 - 2026-11-28 — PR #378 CI (M299, debug): Operators/RotoPaintDirectCompositeTest passed every case, then hung after "Thread 'Main' got the Python GIL" at exit until the 300 s timeout (log in the lane's build/m639/pr378-rotopaint-exit-hang.log). Same exit-teardown family as PR #408's ProgressiveRenderTest non-zero exit after Finalizing Python: a hang variant.
 - 2026-11-28 — m639-gate3 (a1cd3d7457): debug ctest 1080/1080 and ProgressiveRenderTest 60/60 under 8-way load. PR #408 CI run 1 on a1cd3d7457 green (46127989007); run 2 started as a full rerun.
+- 2026-11-28 — Gate met: two consecutive clean PR CI runs on a1cd3d7457 (46127989007 and its rerun). Merged to main (PR #408, squash). Open leads carried by the new exit/timeout reports: a MoonRay render that never ends (1/39 under load), exit-time hang variants.

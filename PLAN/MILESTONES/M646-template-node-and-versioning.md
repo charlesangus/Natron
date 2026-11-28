@@ -283,3 +283,4 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
 - 2026-11-28 — Phase 2 T1–T5 in d6872562d0; m646-gate2 running. Open: node.destroy() from Python bypasses Detach; undoing a Publish leaves the file (next publish numbers past it); Define Template names the node "template" and opens its panel rather than prompting.
 - 2026-11-28 — Phase 2 verified: m646-gate2 (full ctest green, m97/m104 GUI) + m646-gate4 (m646_template_versions.py green after two script fixes: wrapper lifetime, hull click clear of the mask stub). PR #411 into F33; review round 1.
 - 2026-11-28 — r1 fixed (d62835a590), F33 with M647 merged (ce8d08cefa): gate7 green (template GUI 148/148, m97/m104 green; ctest only the ProgressiveRender exit flake, M639). Threads answered; PR #411 ready.
+- 2026-11-28 — Merged into F33 (PR #411, squash). F33 UAT round 2 (M646 + M647) next.

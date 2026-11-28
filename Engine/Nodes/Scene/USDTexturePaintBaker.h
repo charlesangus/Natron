@@ -102,6 +102,8 @@ public:
         std::function<bool(Context&)> work;
         // Main thread, after work() returned, with its result. Never run for a bake that stopping dropped.
         std::function<void(bool ok)> completion;
+        // False for work the user does not wait on, such as live painting: isShowingProgress() leaves it out.
+        bool showsProgress = true;
     };
 
     USDTexturePaintBaker();
@@ -145,6 +147,12 @@ public:
     bool isBaking() const WARN_UNUSED_RETURN
     {
         return _pending.load() > 0;
+    }
+
+    // isBaking() counting only the bakes that show their progress.
+    bool isShowingProgress() const WARN_UNUSED_RETURN
+    {
+        return _shownPending.load() > 0;
     }
 
     // Bakes queued, running or awaiting their completion.
@@ -200,6 +208,8 @@ private:
 
     std::atomic<bool> _cancel;
     std::atomic<int> _pending;
+    // The part of _pending that shows its progress.
+    std::atomic<int> _shownPending;
     std::atomic<quint64> _generation;
     std::atomic<bool> _stopped;
     // Counts the stops, so that a bake enqueued before one never runs its completion after it.

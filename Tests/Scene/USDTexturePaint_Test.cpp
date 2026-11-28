@@ -1734,6 +1734,17 @@ setPaintModel(const NodePtr& paint,
     getKnob<KnobChoice>(paint, kUSDTexturePaintParamPaintModel)->setValueFromID(model == USDTexturePaint::ePaintModelDirect ? "direct" : "buffer", 0);
 }
 
+// Has the baker bring session's texels up to date, as the end of a pen stroke does, and waits for it.
+void
+catchUpDirect(const NodePtr& paint,
+              const RotoLayerPtr& session)
+{
+    USDTexturePaint* effect = getUSDTexturePaint(paint);
+
+    effect->requestDirectPaint(session, paint->getRotoContext()->getTimelineCurrentTime(), ViewIdx(0), true);
+    EXPECT_TRUE(pumpUntil([&]() { return !effect->isBaking(); }, 30000));
+}
+
 // Picks the paint brush, as the viewer's toolbar does.
 void
 pickBrush(USDTexturePaint* effect)
@@ -1951,6 +1962,7 @@ TEST_F(USDTexturePaintTest, UndoingADirectStrokeIsExactFromTheJournalAndFromARep
     USDTexturePaint* effect = getUSDTexturePaint(paint);
     USDTexturePaint::setSessionPaintModel(session, USDTexturePaint::ePaintModelDirect);
     setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "first", kRedU, 0.5), 0., 1., 0.);
+    catchUpDirect(paint, session);
     const std::vector<float> previous = tileTexels(renderTile(paint));
 
     RotoStrokeItemPtr stroke = addBrushStroke(paint, session, eRotoStrokeTypeSolid, "second", kRedU + 0.02, 0.5);
@@ -1959,26 +1971,80 @@ TEST_F(USDTexturePaintTest, UndoingADirectStrokeIsExactFromTheJournalAndFromARep
     ASSERT_TRUE(bool(interact));
     AddStrokeUndoCommand command(interact, stroke);
     command.redo();
+    catchUpDirect(paint, session);
     const std::vector<float> painted = tileTexels(renderTile(paint));
     ASSERT_GT(countDifferences(previous, painted, 0.f), 0u);
     const quint64 replays = effect->getDirectReplayCount();
+    const quint64 privateReplays = effect->getDirectPrivateReplayCount();
 
     command.undo();
+    catchUpDirect(paint, session);
     appPTR->clearAllCaches();
     EXPECT_EQ(0u, countDifferences(previous, tileTexels(renderTile(paint)), 0.f)) << "from the journal";
     EXPECT_EQ(replays, effect->getDirectReplayCount());
     command.redo();
+    catchUpDirect(paint, session);
     appPTR->clearAllCaches();
     EXPECT_EQ(0u, countDifferences(painted, tileTexels(renderTile(paint)), 0.f)) << "redone";
+    EXPECT_EQ(privateReplays, effect->getDirectPrivateReplayCount()) << "the renders read what the baker published";
 
     effect->clearDirectJournalsForTesting();
     command.undo();
+    catchUpDirect(paint, session);
     appPTR->clearAllCaches();
     EXPECT_EQ(0u, countDifferences(previous, tileTexels(renderTile(paint)), 0.f)) << "replayed";
     EXPECT_GT(effect->getDirectReplayCount(), replays);
     command.redo();
+    catchUpDirect(paint, session);
     appPTR->clearAllCaches();
     EXPECT_EQ(0u, countDifferences(painted, tileTexels(renderTile(paint)), 0.f)) << "redone after the replay";
+    EXPECT_EQ(privateReplays, effect->getDirectPrivateReplayCount());
+}
+
+TEST_F(USDTexturePaintTest, AStaleDirectRenderPaintsApartAndLeavesTheBakersTexelsAlone)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    USDTexturePaint* effect = getUSDTexturePaint(paint);
+    USDTexturePaint::setSessionPaintModel(session, USDTexturePaint::ePaintModelDirect);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "first", kRedU, 0.5), 0., 1., 0.);
+    const std::vector<float> previous = tileTexels(renderTile(paint));
+    EXPECT_GT(effect->getDirectPrivateReplayCount(), 0u) << "nothing was published yet";
+
+    RotoStrokeItemPtr stroke = addBrushStroke(paint, session, eRotoStrokeTypeSolid, "second", kRedU + 0.02, 0.5);
+    setColor(stroke, 1., 0., 1.);
+    RotoCurveInteractPtr interact = RotoCurveInteract::create(effect);
+    ASSERT_TRUE(bool(interact));
+    AddStrokeUndoCommand command(interact, stroke);
+    command.redo();
+    catchUpDirect(paint, session);
+    appPTR->clearAllCaches();
+    const std::vector<float> painted = tileTexels(renderTile(paint));
+    ASSERT_GT(countDifferences(previous, painted, 0.f), 0u);
+    const quint64 replays = effect->getDirectReplayCount();
+    quint64 privateReplays = effect->getDirectPrivateReplayCount();
+
+    // Nothing has the baker take the undo: the render finds the published texels stale.
+    command.undo();
+    appPTR->clearAllCaches();
+    EXPECT_EQ(0u, countDifferences(previous, tileTexels(renderTile(paint)), 0.f)) << "painted apart";
+    EXPECT_EQ(privateReplays + 1, effect->getDirectPrivateReplayCount());
+    privateReplays = effect->getDirectPrivateReplayCount();
+    appPTR->clearAllCaches();
+    EXPECT_EQ(0u, countDifferences(previous, tileTexels(renderTile(paint)), 0.f)) << "published for the next render";
+    EXPECT_EQ(privateReplays, effect->getDirectPrivateReplayCount());
+
+    // The baker's own texels still hold both strokes: the redo needs neither a journal nor a replay.
+    command.redo();
+    catchUpDirect(paint, session);
+    appPTR->clearAllCaches();
+    EXPECT_EQ(0u, countDifferences(painted, tileTexels(renderTile(paint)), 0.f)) << "redone";
+    EXPECT_EQ(replays, effect->getDirectReplayCount());
+    EXPECT_EQ(privateReplays, effect->getDirectPrivateReplayCount());
 }
 
 TEST_F(USDTexturePaintTest, DeletingTheNodeMidDirectStrokeIsSafe)

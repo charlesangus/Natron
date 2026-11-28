@@ -115,7 +115,8 @@ expandChannels(const float* raw,
 
 struct TexelPages::Implementation {
     struct Entry {
-        std::unique_ptr<std::vector<GfHalf>> texels;
+        // Never written in place: sharePainted() hands it out to readers on other threads.
+        std::shared_ptr<std::vector<GfHalf>> texels;
         bool painted = false;
         // The slot of the spill file holding the page, and whether it holds the page as it is now.
         std::int64_t slot = -1;
@@ -603,6 +604,46 @@ TexelPages::exportTile(int tile,
 
     return true;
 } // TexelPages::exportTile
+
+void
+TexelPages::pack(const PageData& page,
+                 std::vector<GfHalf>* halves)
+{
+    toHalves(page, halves);
+}
+
+void
+TexelPages::unpack(const GfHalf* halves,
+                   PageData* page)
+{
+    fromHalves(halves, page);
+}
+
+bool
+TexelPages::sharePainted(int plane,
+                         std::map<PageKey, SharedHalves>* pages,
+                         std::string* error) const
+{
+    pages->clear();
+    std::lock_guard<std::mutex> lock(_imp->mutex);
+
+    for (const std::pair<const PageKey, Implementation::Entry>& entry : _imp->entries) {
+        if (!entry.second.painted || (entry.first.plane != plane)) {
+            continue;
+        }
+        if (entry.second.texels) {
+            (*pages)[entry.first] = entry.second.texels;
+            continue;
+        }
+        std::shared_ptr<std::vector<GfHalf>> read = std::make_shared<std::vector<GfHalf>>();
+        if (!_imp->readSlot(entry.second.slot, read.get(), error)) {
+            return false;
+        }
+        (*pages)[entry.first] = read;
+    }
+
+    return true;
+}
 
 std::vector<TexelPages::PageKey>
 TexelPages::paintedPages() const

@@ -149,6 +149,42 @@ struct Stroke {
  * false with *error empty and the pages untouched when context.cancelled returns true first.
  **/
 bool paint(const Context& context, const Stroke& stroke, std::string* error) WARN_UNUSED_RETURN;
+
+/**
+ * @brief One stroke laid into context.pages as it grows. Each paint() lays only the dabs added since
+ * the one before, and leaves the pages exactly as paint() of the whole stroke would. When an earlier
+ * dab, a setting or the context but for its callbacks changed, the pages the stroke wrote are put
+ * back and it is laid again from its start.
+ *
+ * While the stroke lives, nothing else may write context.pages, which must outlive it.
+ **/
+class LiveStroke {
+public:
+    // Without a journal, the stroke can be laid only once.
+    explicit LiveStroke(bool keepsJournal = true);
+    ~LiveStroke();
+
+    LiveStroke(const LiveStroke&) = delete;
+    LiveStroke& operator=(const LiveStroke&) = delete;
+
+    /**
+     * As TexelSplat::paint(). Cancelled, or failing before it writes, it leaves the pages as the
+     * last paint() did; failing as it writes, it leaves the stroke to be laid again by the next.
+     **/
+    bool paint(const Context& context, const Stroke& stroke, std::string* error) WARN_UNUSED_RETURN;
+
+    // The pages the stroke wrote, as they were before it; the stroke cannot be laid after this.
+    std::vector<TexelPages::Snapshot> takeJournal();
+
+    // How many times the stroke was laid again from its start.
+    int restarts() const;
+
+    std::size_t dabCount() const;
+
+private:
+    struct Implementation;
+    std::unique_ptr<Implementation> _imp;
+};
 } // namespace TexelSplat
 
 NATRON_NAMESPACE_EXIT

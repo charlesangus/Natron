@@ -837,3 +837,139 @@ TEST(TexelSplat, PaintAtAnIslandEdgeGrowsATwoTexelGutter)
     paintStroke(contextFor(index, camera, &bare), stroke);
     EXPECT_EQ(0.f, exportOf(bare, 1001).touchedAt(edge + 1, row));
 }
+
+namespace {
+// Paint-space points of a stroke across the seam cube's corner, from the front face over the right one.
+std::vector<std::pair<double, double>>
+cornerStrokePoints(const SceneRaster::ExplicitCamera& camera)
+{
+    std::vector<std::pair<double, double>> points;
+    for (int i = 0; i <= 24; ++i) {
+        const double t = i / 24.;
+        double x = 0.;
+        double y = 0.;
+        paintSpacePoint(camera, GfVec3d(0.3 + 0.7 * t, 0.6, 1.) * (1. - t) + GfVec3d(1., 0.6, 1. - 0.7 * t) * t, &x, &y);
+        points.push_back(std::make_pair(x, y));
+    }
+
+    return points;
+}
+
+TexelSplat::Stroke
+cornerStroke(RotoStrokeType type,
+             const SceneRaster::ExplicitCamera& camera,
+             const std::vector<std::pair<double, double>>& points)
+{
+    TexelSplat::Stroke stroke;
+    stroke.type = type;
+    stroke.points = strokeThrough(points);
+    stroke.brush.brushSizePixel = brushSizeAt(camera, GfVec3d(1.), 0.5);
+    stroke.brush.brushHardness = 0.4;
+    stroke.brush.brushSpacing = 0.1;
+    stroke.buildUp = true;
+    stroke.opacity = 0.6;
+    stroke.color[1] = 0.2;
+    stroke.effectStrength = 6.;
+    stroke.sourceTransform[2] = -40.;
+
+    return stroke;
+}
+
+TexelPages::BaseFill
+stripedBase()
+{
+    return [](int tile, int, const RectI& texels, float* rgba, std::string*) {
+        for (int y = texels.y1; y < texels.y2; ++y) {
+            for (int x = texels.x1; x < texels.x2; ++x) {
+                float* texel = rgba + ((std::size_t)(x - texels.x1) + (std::size_t)(y - texels.y1) * texels.width()) * 4;
+                texel[0] = ((x / 6) % 2) ? 0.9f : 0.1f;
+                texel[1] = (tile == 1001) ? 0.3f : 0.6f;
+                texel[2] = ((y / 5) % 2) ? 0.7f : 0.2f;
+                texel[3] = 1.f;
+            }
+        }
+
+        return true;
+    };
+}
+
+void
+expectSameTiles(const TexelPages& a,
+                const TexelPages& b,
+                const std::string& what)
+{
+    for (int tile : { 1001, 1002 }) {
+        const PaintedTile x = exportOf(a, tile);
+        const PaintedTile y = exportOf(b, tile);
+        EXPECT_EQ(0, std::memcmp(x.rgba.data(), y.rgba.data(), x.rgba.size() * sizeof(float))) << what << ", tile " << tile;
+        EXPECT_EQ(0, std::memcmp(x.touched.data(), y.touched.data(), x.touched.size() * sizeof(float))) << what << ", tile " << tile;
+    }
+    EXPECT_EQ(a.paintedPages().size(), b.paintedPages().size()) << what;
+}
+} // anonymous namespace
+
+// Each brush, its stroke growing a point at a time, ends as painting the whole stroke at once does.
+TEST(TexelSplat, AStrokeLaidAsItGrowsEndsAsTheWholeStroke)
+{
+    PaintMeshIndex index;
+    buildSeamCube(&index);
+    const TexelSplat::Coverage coverage(index, kCubeTile);
+    const SceneRaster::ExplicitCamera camera = cubeCornerCamera();
+    const std::vector<std::pair<double, double>> points = cornerStrokePoints(camera);
+    const RotoStrokeType types[] = { eRotoStrokeTypeSolid, eRotoStrokeTypeEraser, eRotoStrokeTypeClone, eRotoStrokeTypeBlur, eRotoStrokeTypeSmear };
+    for (RotoStrokeType type : types) {
+        const std::string what = "brush " + std::to_string((int)type);
+        TexelPages under(kCubeTile, stripedBase());
+        TexelPages whole(kCubeTile, stripedBase());
+        TexelPages grown(kCubeTile, stripedBase());
+        TexelSplat::Context context = contextFor(index, camera, &whole);
+        context.coverage = &coverage;
+        context.base = &under;
+        paintStroke(context, cornerStroke(type, camera, points));
+
+        context.pages = &grown;
+        TexelSplat::LiveStroke live;
+        for (std::size_t n = 1; n <= points.size(); n += 3) {
+            const std::vector<std::pair<double, double>> part(points.begin(), points.begin() + (std::ptrdiff_t)n);
+            std::string error;
+            ASSERT_TRUE(live.paint(context, cornerStroke(type, camera, part), &error)) << what << ": " << error;
+        }
+        std::string error;
+        ASSERT_TRUE(live.paint(context, cornerStroke(type, camera, points), &error)) << what << ": " << error;
+        EXPECT_EQ(0, live.restarts()) << what;
+        EXPECT_GT(live.dabCount(), (std::size_t)10) << what;
+        EXPECT_FALSE(grown.paintedPages().empty()) << what;
+        expectSameTiles(whole, grown, what);
+    }
+}
+
+// A changed earlier point lays the stroke again from its start, and the journal puts the pages back.
+TEST(TexelSplat, ALiveStrokeWhoseStartChangedIsLaidAgain)
+{
+    PaintMeshIndex index;
+    buildSeamCube(&index);
+    const TexelSplat::Coverage coverage(index, kCubeTile);
+    const SceneRaster::ExplicitCamera camera = cubeCornerCamera();
+    std::vector<std::pair<double, double>> points = cornerStrokePoints(camera);
+
+    TexelPages pages(kCubeTile, stripedBase());
+    TexelSplat::Context context = contextFor(index, camera, &pages);
+    context.coverage = &coverage;
+    TexelSplat::LiveStroke live;
+    std::string error;
+    ASSERT_TRUE(live.paint(context, cornerStroke(eRotoStrokeTypeSolid, camera, points), &error)) << error;
+    points.front().first += 30.;
+    ASSERT_TRUE(live.paint(context, cornerStroke(eRotoStrokeTypeSolid, camera, points), &error)) << error;
+    EXPECT_EQ(1, live.restarts());
+
+    TexelPages whole(kCubeTile, stripedBase());
+    TexelSplat::Context wholeContext = context;
+    wholeContext.pages = &whole;
+    paintStroke(wholeContext, cornerStroke(eRotoStrokeTypeSolid, camera, points));
+    expectSameTiles(whole, pages, "laid again");
+
+    const std::vector<TexelPages::Snapshot> journal = live.takeJournal();
+    EXPECT_FALSE(journal.empty());
+    ASSERT_TRUE(pages.restore(journal, &error)) << error;
+    EXPECT_TRUE(pages.paintedPages().empty());
+}

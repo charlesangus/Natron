@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -109,6 +110,13 @@ public:
      **/
     typedef std::function<bool(int tile, int plane, const RectI& texels, float* rgba, std::string* error)> BaseFill;
 
+    // A page as halves: the rgba of each texel, then the touched value of each texel.
+    static constexpr std::size_t kPageHalves = (std::size_t)kPageTexels * 5;
+    typedef std::shared_ptr<const std::vector<PXR_NS::GfHalf>> SharedHalves;
+
+    static void pack(const PageData& page, std::vector<PXR_NS::GfHalf>* halves);
+    static void unpack(const PXR_NS::GfHalf* halves, PageData* page);
+
     // A page as it was, to put it back: a page that was not painted goes back to the base.
     struct Snapshot {
         PageKey key;
@@ -161,6 +169,12 @@ public:
     bool exportTile(int tile, int plane, float* rgba, float* touched, std::string* error) const WARN_UNUSED_RETURN;
 
     std::vector<PageKey> paintedPages() const;
+
+    /**
+     * @brief The painted pages of plane, without copying those in memory: a page is never changed
+     * in place, so what this hands out stays as it was when the pages are written again.
+     **/
+    bool sharePainted(int plane, std::map<PageKey, SharedHalves>* pages, std::string* error) const WARN_UNUSED_RETURN;
 
     // Pages that exist, in memory or spilled.
     std::size_t pageCount() const;

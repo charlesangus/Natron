@@ -702,29 +702,82 @@ namespace {
         return page;
     }
 
+    // A page the stroke wrote: as the pages held it before, to put it back, and as the stroke found it.
+    struct Written {
+        TexelPages::Snapshot journal;
+        std::vector<GfHalf> pre;
+    };
+
+    // Pages as they were before the stroke, though it may have written some of them since; zero when null.
+    class PageSource {
+    public:
+        explicit PageSource(TexelPages* pages,
+                            const std::map<PageKey, Written>* written = nullptr)
+            : _pages(pages)
+            , _written(written)
+        {
+        }
+
+        bool empty() const
+        {
+            return !_pages;
+        }
+
+        bool read(const PageKey& key,
+                  PageData* page,
+                  std::string* error) const
+        {
+            if (_written) {
+                const std::map<PageKey, Written>::const_iterator it = _written->find(key);
+                if (it != _written->end()) {
+                    TexelPages::unpack(it->second.pre.data(), page);
+
+                    return true;
+                }
+            }
+            if (!_pages) {
+                *page = PageData();
+
+                return true;
+            }
+
+            return _pages->read(key, page, error);
+        }
+
+    private:
+        TexelPages* _pages;
+        const std::map<PageKey, Written>* _written;
+    };
+
     struct PageWork {
         PageKey key;
-        // The hits on the page in dab order: (dab, index in its footprint).
+        // This update's hits on the page in dab order: (dab, index in its footprint).
         std::vector<std::pair<int, int>> entries;
         std::vector<float> mask;
-        std::vector<const TexelHit*> geometry;
-        // Texels the stroke changed.
+        // Per texel, the index in hits of the first hit over it, or -1; 0 when the brush needs no geometry.
+        std::vector<int> first;
+        std::vector<TexelHit> hits;
+        // Texels the brush changed.
         std::vector<std::uint8_t> laid;
         PageData data;
         std::string error;
     };
+    typedef std::map<PageKey, PageWork> Works;
 
     // Reads texels of some pages, through a cache of its own, so that each thread needs one.
     class Sampler {
     public:
-        Sampler(TexelPages* pages,
+        // Reads overlay's pages, then under's, then source's.
+        Sampler(const PageSource& source,
                 int plane,
                 int size,
-                const std::map<PageKey, PageWork>* overlay = nullptr)
-            : _pages(pages)
+                const Works* overlay = nullptr,
+                const Works* under = nullptr)
+            : _source(source)
             , _plane(plane)
             , _size(size)
             , _overlay(overlay)
+            , _under(under)
         {
         }
 
@@ -735,20 +788,22 @@ namespace {
                 return _last;
             }
             const PageData* found = nullptr;
-            if (_overlay) {
-                const std::map<PageKey, PageWork>::const_iterator it = _overlay->find(key);
-                if (it != _overlay->end()) {
-                    found = &it->second.data;
+            for (const Works* works : { _overlay, _under }) {
+                if (!found && works) {
+                    const Works::const_iterator it = works->find(key);
+                    if (it != works->end()) {
+                        found = &it->second.data;
+                    }
                 }
             }
-            if (!found && !_pages) {
+            if (!found && _source.empty()) {
                 found = &zeroPage();
             }
             if (!found) {
                 std::unique_ptr<PageData>& cached = _cache[key];
                 if (!cached) {
                     std::unique_ptr<PageData> read(new PageData);
-                    if (!_pages->read(key, read.get(), error)) {
+                    if (!_source.read(key, read.get(), error)) {
                         _cache.erase(key);
 
                         return nullptr;
@@ -816,10 +871,11 @@ namespace {
         }
 
     private:
-        TexelPages* _pages;
+        PageSource _source;
         int _plane;
         int _size;
-        const std::map<PageKey, PageWork>* _overlay;
+        const Works* _overlay;
+        const Works* _under;
         std::map<PageKey, std::unique_ptr<PageData>> _cache;
         PageKey _lastKey;
         const PageData* _last = nullptr;
@@ -1080,80 +1136,121 @@ namespace {
         return true;
     }
 
-    // Builds each touched page's mask from the dabs' footprints, then lays the brush through it.
+    // Clone, Blur and Sharpen read the surface around a texel; the other brushes only the texel.
     bool
-    paintMasked(const Setup& s,
-                const Stroke& stroke,
-                const std::vector<Dab>& dabs,
-                const std::vector<std::vector<TexelHit>>& hits,
-                std::map<PageKey, PageWork>* works,
-                std::string* error)
+    needsGeometry(RotoStrokeType type)
+    {
+        return (type == eRotoStrokeTypeClone) || (type == eRotoStrokeTypeBlur) || (type == eRotoStrokeTypeSharpen);
+    }
+
+    /**
+     * Adds dabs to the masks of the pages under them, each page copied into changed from works when
+     * there, and lays the brush again from before on the texels whose mask they changed. Laying a
+     * stroke's dabs in any number of runs ends with the same pages as laying them in one.
+     **/
+    bool
+    layMasked(const Setup& s,
+              const Stroke& stroke,
+              const PageSource& before,
+              const Works& works,
+              const std::vector<Dab>& dabs,
+              Works* changed,
+              std::string* error)
     {
         const int plane = s.context->plane;
+        std::unique_ptr<ScreenBins> bins;
+        if (s.context->footprint == eFootprintView) {
+            bins.reset(new ScreenBins);
+            bins->build(s, dabArea(dabs));
+        }
+        const std::vector<std::vector<TexelHit>> hits = footprints(s, dabs, bins.get());
+        if (s.cancelled()) {
+            return false;
+        }
         for (int d = 0; d < (int)dabs.size(); ++d) {
             for (int h = 0; h < (int)hits[d].size(); ++h) {
                 const TexelHit& hit = hits[d][h];
                 const PageKey key = TexelPages::pageOf(hit.tile, plane, hit.x, hit.y);
-                PageWork& work = (*works)[key];
-                work.key = key;
-                work.entries.push_back(std::make_pair(d, h));
+                Works::iterator it = changed->find(key);
+                if (it == changed->end()) {
+                    const Works::const_iterator old = works.find(key);
+                    it = changed->insert(std::make_pair(key, (old != works.end()) ? old->second : PageWork())).first;
+                    it->second.key = key;
+                }
+                it->second.entries.push_back(std::make_pair(d, h));
             }
         }
         std::vector<PageWork*> list;
-        for (std::map<PageKey, PageWork>::iterator it = works->begin(); it != works->end(); ++it) {
+        for (Works::iterator it = changed->begin(); it != changed->end(); ++it) {
             list.push_back(&it->second);
         }
-        if (s.cancelled()) {
-            return false;
-        }
 
-        TexelPages* source = (stroke.type == eRotoStrokeTypeClone) && stroke.cloneFromBase ? s.context->base : s.context->pages;
+        const bool geometry = needsGeometry(stroke.type);
+        const PageSource source = (stroke.type == eRotoStrokeTypeClone) && stroke.cloneFromBase ? PageSource(s.context->base) : before;
+        const PageSource base(s.context->base);
         const bool needsBase = (stroke.type == eRotoStrokeTypeEraser) || (stroke.type == eRotoStrokeTypeReveal);
         parallelForOnGlobalPool((int)list.size(), s.threads, [&](int p) {
             PageWork& work = *list[p];
-            work.mask.assign(TexelPages::kPageTexels, 0.f);
-            work.geometry.assign(TexelPages::kPageTexels, nullptr);
-            work.laid.assign(TexelPages::kPageTexels, 0);
+            PageData pre;
+            if (!before.read(work.key, &pre, &work.error)) {
+                return;
+            }
+            if (work.mask.empty()) {
+                work.mask.assign(TexelPages::kPageTexels, 0.f);
+                work.first.assign(TexelPages::kPageTexels, -1);
+                work.laid.assign(TexelPages::kPageTexels, 0);
+                work.data = pre;
+            }
+            std::vector<std::uint8_t> hit((std::size_t)TexelPages::kPageTexels, 0);
             for (const std::pair<int, int>& entry : work.entries) {
-                const TexelHit& hit = hits[entry.first][entry.second];
-                const int i = localIndex(hit.x, hit.y);
-                const float m = hit.alpha;
+                const TexelHit& texel = hits[entry.first][entry.second];
+                const int i = localIndex(texel.x, texel.y);
+                const float m = texel.alpha;
                 float& mask = work.mask[i];
-                if (!work.geometry[i]) {
-                    work.geometry[i] = &hit;
+                if (work.first[i] < 0) {
+                    if (geometry) {
+                        work.first[i] = (int)work.hits.size();
+                        work.hits.push_back(texel);
+                    } else {
+                        work.first[i] = 0;
+                    }
                     mask = m;
                 } else {
                     mask = stroke.buildUp ? m + mask * (1.f - m) : std::max(mask, m);
                 }
+                hit[i] = 1;
             }
+            work.entries.clear();
+            work.entries.shrink_to_fit();
             if (s.cancelled()) {
                 return;
             }
-            if (!s.context->pages->read(work.key, &work.data, &work.error)) {
-                return;
-            }
             PageData basePage;
-            if (needsBase && s.context->base && !s.context->base->read(work.key, &basePage, &work.error)) {
+            if (needsBase && !base.read(work.key, &basePage, &work.error)) {
                 return;
             }
+            static const TexelHit noGeometry;
             Sampler sampler(source, plane, s.size);
             for (int i = 0; i < TexelPages::kPageTexels; ++i) {
                 const float m = work.mask[i];
-                if (!work.geometry[i] || !(m > 0.f)) {
+                if (!hit[i] || !(m > 0.f)) {
                     continue;
                 }
+                const float* below = pre.rgba.data() + (std::size_t)i * 4;
                 float* rgba = work.data.rgba.data() + (std::size_t)i * 4;
-                float below[4];
-                std::copy_n(rgba, 4, below);
-                const float* base = basePage.rgba.data() + (std::size_t)i * 4;
-                if (!brushTexel(s, stroke, sampler, *work.geometry[i], below, base, m, rgba, &work.error)) {
+                float out[4];
+                if (!brushTexel(s, stroke, sampler, geometry ? work.hits[work.first[i]] : noGeometry, below, basePage.rgba.data() + (std::size_t)i * 4, m, out, &work.error)) {
                     if (!work.error.empty()) {
                         return;
                     }
+                    std::copy_n(below, 4, rgba);
+                    work.data.touched[i] = pre.touched[i];
+                    work.laid[i] = 0;
                     continue;
                 }
-                float& touched = work.data.touched[i];
-                touched = (stroke.type == eRotoStrokeTypeEraser) ? touched * (1.f - m) : m + touched * (1.f - m);
+                std::copy_n(out, 4, rgba);
+                const float touched = pre.touched[i];
+                work.data.touched[i] = (stroke.type == eRotoStrokeTypeEraser) ? touched * (1.f - m) : m + touched * (1.f - m);
                 work.laid[i] = 1;
             }
         });
@@ -1243,15 +1340,20 @@ namespace {
         return dabs;
     }
 
-    // Smear's dabs one after the other, each reading what the ones before it laid.
+    /**
+     * Smear's dabs one after the other, each reading what the ones before it laid: the pages they
+     * change are copied into changed from works when there, else read from before.
+     **/
     bool
-    paintSmear(const Setup& s,
-               const Stroke& stroke,
-               std::map<PageKey, PageWork>* works,
-               std::string* error)
+    laySmear(const Setup& s,
+             const Stroke& stroke,
+             const PageSource& before,
+             const Works& works,
+             const std::vector<SmearDab>& smears,
+             Works* changed,
+             std::string* error)
     {
         const int plane = s.context->plane;
-        const std::vector<SmearDab> smears = smearDabs(stroke.points, stroke.brush);
         std::vector<Dab> dabs(smears.size());
         for (std::size_t i = 0; i < smears.size(); ++i) {
             Dab& dab = dabs[i];
@@ -1283,10 +1385,10 @@ namespace {
             const int kChunk = 256;
             const int chunks = ((int)hits.size() + kChunk - 1) / kChunk;
             std::vector<float> values(hits.size() * 5, 0.f);
-            std::vector<std::uint8_t> changed(hits.size(), 0);
+            std::vector<std::uint8_t> laid(hits.size(), 0);
             std::vector<std::string> errors(chunks);
             parallelForOnGlobalPool(chunks, s.threads, [&](int c) {
-                Sampler sampler(s.context->pages, plane, s.size, works);
+                Sampler sampler(before, plane, s.size, changed, &works);
                 for (int h = c * kChunk; h < std::min((int)hits.size(), (c + 1) * kChunk); ++h) {
                     const TexelHit& hit = hits[h];
                     float below[4];
@@ -1304,7 +1406,7 @@ namespace {
                     }
                     blendTowards(stroke, below, copied, hit.alpha, &values[(std::size_t)h * 5]);
                     values[(std::size_t)h * 5 + 4] = hit.alpha + touched * (1.f - hit.alpha);
-                    changed[h] = 1;
+                    laid[h] = 1;
                 }
             });
             for (const std::string& message : errors) {
@@ -1315,20 +1417,25 @@ namespace {
                 }
             }
             for (std::size_t h = 0; h < hits.size(); ++h) {
-                if (!changed[h]) {
+                if (!laid[h]) {
                     continue;
                 }
                 const TexelHit& hit = hits[h];
                 const PageKey key = TexelPages::pageOf(hit.tile, plane, hit.x, hit.y);
-                std::map<PageKey, PageWork>::iterator it = works->find(key);
-                if (it == works->end()) {
-                    PageWork work;
-                    work.key = key;
-                    if (!s.context->pages->read(key, &work.data, error)) {
-                        return false;
+                Works::iterator it = changed->find(key);
+                if (it == changed->end()) {
+                    const Works::const_iterator old = works.find(key);
+                    if (old != works.end()) {
+                        it = changed->insert(*old).first;
+                    } else {
+                        PageWork work;
+                        work.key = key;
+                        if (!before.read(key, &work.data, error)) {
+                            return false;
+                        }
+                        work.laid.assign(TexelPages::kPageTexels, 0);
+                        it = changed->insert(std::make_pair(key, std::move(work))).first;
                     }
-                    work.laid.assign(TexelPages::kPageTexels, 0);
-                    it = works->insert(std::make_pair(key, std::move(work))).first;
                 }
                 const int i = localIndex(hit.x, hit.y);
                 std::copy_n(&values[h * 5], 4, it->second.data.rgba.data() + (std::size_t)i * 4);
@@ -1346,35 +1453,44 @@ namespace {
         eGutterLaid
     };
 
-    /**
-     * Grows what the stroke laid kSeamGutter texels into the texels no target covers, each taking the
-     * mean of its laid neighbours, so that filtering across an island's edge reads the paint.
-     **/
-    bool
-    growGutter(const Setup& s,
-               std::map<PageKey, PageWork>* works,
-               std::string* error)
+    // What growing the seam gutter puts on a page: (texel, rgba and touched) of each texel it fills.
+    typedef std::vector<std::pair<int, std::array<float, 5>>> Grown;
+
+    // The pages whose gutter the paint on keys feeds: theirs and their neighbours'.
+    std::vector<PageKey>
+    gutterTargets(const TexelPages& pages,
+                  const std::set<PageKey>& keys)
     {
-        const Coverage* coverage = s.context->coverage;
-        TexelPages* pages = s.context->pages;
-        const int pagesPerSide = pages->pagesPerSide();
-        std::set<PageKey> targetSet;
-        for (const std::pair<const PageKey, PageWork>& entry : *works) {
-            if (std::find(entry.second.laid.begin(), entry.second.laid.end(), 1) == entry.second.laid.end()) {
-                continue;
-            }
+        const int pagesPerSide = pages.pagesPerSide();
+        std::set<PageKey> targets;
+        for (const PageKey& page : keys) {
             for (int dy = -1; dy <= 1; ++dy) {
                 for (int dx = -1; dx <= 1; ++dx) {
-                    PageKey key = entry.first;
+                    PageKey key = page;
                     key.px += dx;
                     key.py += dy;
                     if ((key.px >= 0) && (key.py >= 0) && (key.px < pagesPerSide) && (key.py < pagesPerSide)) {
-                        targetSet.insert(key);
+                        targets.insert(key);
                     }
                 }
             }
         }
-        const std::vector<PageKey> targets(targetSet.begin(), targetSet.end());
+
+        return std::vector<PageKey>(targets.begin(), targets.end());
+    }
+
+    /**
+     * Grows the paint laidOn gives kSeamGutter texels into the texels no target covers, each taking
+     * the mean of its laid neighbours, so that filtering across an island's edge reads the paint.
+     * What each of targets takes depends only on the paint of it and its neighbours.
+     **/
+    std::vector<Grown>
+    gutterOf(const Setup& s,
+             const std::function<const PageWork*(const PageKey&)>& laidOn,
+             const std::vector<PageKey>& targets)
+    {
+        const Coverage* coverage = s.context->coverage;
+        TexelPages* pages = s.context->pages;
         const int g = TexelPages::kSeamGutter;
         // Per target page: (texel, rgba and touched) of each texel the gutter fills.
         std::vector<std::vector<std::pair<int, std::array<float, 5>>>> grown(targets.size());
@@ -1389,15 +1505,23 @@ namespace {
             std::vector<std::uint8_t> state((std::size_t)w * h, eGutterFree);
             std::vector<std::array<float, 5>> value((std::size_t)w * h);
             bool anyLaid = false;
+            PageKey workKey;
+            const PageWork* work = nullptr;
+            bool haveWork = false;
             for (int y = window.y1; y < window.y2; ++y) {
                 for (int x = window.x1; x < window.x2; ++x) {
                     const std::size_t i = (std::size_t)(x - window.x1) + (std::size_t)(y - window.y1) * w;
-                    const std::map<PageKey, PageWork>::const_iterator it = works->find(TexelPages::pageOf(key.tile, key.plane, x, y));
+                    const PageKey at = TexelPages::pageOf(key.tile, key.plane, x, y);
+                    if (!haveWork || (at != workKey)) {
+                        workKey = at;
+                        work = laidOn(at);
+                        haveWork = true;
+                    }
                     const int local = localIndex(x, y);
-                    if ((it != works->end()) && it->second.laid[local]) {
+                    if (work && !work->laid.empty() && work->laid[local]) {
                         state[i] = eGutterLaid;
-                        std::copy_n(it->second.data.rgba.data() + (std::size_t)local * 4, 4, value[i].data());
-                        value[i][4] = it->second.data.touched[local];
+                        std::copy_n(work->data.rgba.data() + (std::size_t)local * 4, 4, value[i].data());
+                        value[i][4] = work->data.touched[local];
                         anyLaid = true;
                     } else if (owner[i] >= 0) {
                         state[i] = eGutterCovered;
@@ -1454,28 +1578,7 @@ namespace {
                 }
             }
         });
-        for (std::size_t t = 0; t < targets.size(); ++t) {
-            if (grown[t].empty()) {
-                continue;
-            }
-            std::map<PageKey, PageWork>::iterator it = works->find(targets[t]);
-            if (it == works->end()) {
-                PageWork work;
-                work.key = targets[t];
-                if (!pages->read(targets[t], &work.data, error)) {
-                    return false;
-                }
-                work.laid.assign(TexelPages::kPageTexels, 0);
-                it = works->insert(std::make_pair(targets[t], std::move(work))).first;
-            }
-            for (const std::pair<int, std::array<float, 5>>& texel : grown[t]) {
-                std::copy_n(texel.second.data(), 4, it->second.data.rgba.data() + (std::size_t)texel.first * 4);
-                it->second.data.touched[texel.first] = texel.second[4];
-                it->second.laid[texel.first] = 1;
-            }
-        }
-
-        return true;
+        return grown;
     }
 } // namespace
 
@@ -1590,16 +1693,144 @@ meshColourBase(const std::shared_ptr<const Coverage>& coverage,
     };
 }
 
-bool
-paint(const Context& context,
-      const Stroke& stroke,
-      std::string* error)
-{
-    error->clear();
-    if (!context.index || !context.pages) {
-        *error = "Texel painting needs a mesh index and pages to paint.";
+namespace {
+    bool
+    sameDab(const Dab& a,
+            const Dab& b)
+    {
+        return (a.center.x == b.center.x) && (a.center.y == b.center.y) && (a.internalRadius == b.internalRadius) && (a.externalRadius == b.externalRadius) && (a.pressure == b.pressure) && (a.opacityStops == b.opacityStops) && (a.buildUp == b.buildUp) && (a.opacity == b.opacity);
+    }
+
+    bool
+    sameSmear(const SmearDab& a,
+              const SmearDab& b)
+    {
+        return (a.from.x == b.from.x) && (a.from.y == b.from.y) && (a.to.x == b.to.x) && (a.to.y == b.to.y);
+    }
+
+    // Whether laid is where now starts.
+    template <typename T, typename Same>
+    bool
+    startsWith(const std::vector<T>& now,
+               const std::vector<T>& laid,
+               Same same)
+    {
+        if (laid.size() > now.size()) {
+            return false;
+        }
+        for (std::size_t i = 0; i < laid.size(); ++i) {
+            if (!same(laid[i], now[i])) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // Whether a and b paint alike but for their points.
+    bool
+    sameSettings(const Stroke& a,
+                 const Stroke& b)
+    {
+        const RotoStrokeDabs::BrushParams& p = a.brush;
+        const RotoStrokeDabs::BrushParams& q = b.brush;
+
+        return (a.type == b.type) && (p.brushSizePixel == q.brushSizePixel) && (p.brushSpacing == q.brushSpacing) && (p.brushHardness == q.brushHardness) && (p.writeOnStart == q.writeOnStart) && (p.writeOnEnd == q.writeOnEnd) && (p.pressureAffectsOpacity == q.pressureAffectsOpacity) && (p.pressureAffectsSize == q.pressureAffectsSize) && (p.pressureAffectsHardness == q.pressureAffectsHardness) && (a.buildUp == b.buildUp) && (a.opacity == b.opacity) && std::equal(a.color, a.color + 3, b.color) && std::equal(a.channels, a.channels + 4, b.channels) && (a.effectStrength == b.effectStrength) && std::equal(a.sourceTransform, a.sourceTransform + 9, b.sourceTransform) && (a.cloneFromBase == b.cloneFromBase);
+    }
+
+    bool
+    sameContext(const Context& a,
+                const Context& b)
+    {
+        const SceneRaster::ExplicitCamera& p = a.camera;
+        const SceneRaster::ExplicitCamera& q = b.camera;
+
+        return (a.index == b.index) && (a.coverage == b.coverage) && (a.footprint == b.footprint) && (a.pages == b.pages) && (a.plane == b.plane) && (a.base == b.base) && (a.depthBias == b.depthBias) && std::equal(p.cameraToWorld, p.cameraToWorld + 16, q.cameraToWorld) && (p.viewHeight == q.viewHeight) && (p.aspect == q.aspect) && (p.orthographic == q.orthographic) && (p.nearClip == q.nearClip) && (p.farClip == q.farClip);
+    }
+
+    bool
+    fail(std::string* error,
+         const char* message)
+    {
+        *error = message;
 
         return false;
+    }
+} // namespace
+
+struct LiveStroke::Implementation {
+    explicit Implementation(bool journal)
+        : keepsJournal(journal)
+    {
+    }
+
+    // Puts back the pages the stroke wrote.
+    bool putBack(std::string* error)
+    {
+        if (written.empty()) {
+            return true;
+        }
+        if (!keepsJournal) {
+            return fail(error, "A stroke laid without a journal cannot be laid again.");
+        }
+        std::vector<TexelPages::Snapshot> journal;
+        for (const std::pair<const PageKey, Written>& entry : written) {
+            journal.push_back(entry.second.journal);
+        }
+
+        return context.pages->restore(journal, error);
+    }
+
+    void clear()
+    {
+        started = false;
+        broken = false;
+        dabs.clear();
+        smears.clear();
+        works.clear();
+        grown.clear();
+        written.clear();
+    }
+
+    bool keepsJournal;
+    // Whether context and settings hold what the stroke was laid with.
+    bool started = false;
+    // Whether a failure left the pages between two updates, so that the stroke must be laid again.
+    bool broken = false;
+    // Whether takeJournal() has been called, or a stroke with no journal was written.
+    bool settled = false;
+    int restarts = 0;
+    Context context;
+    Stroke settings;
+    std::vector<Dab> dabs;
+    std::vector<SmearDab> smears;
+    // What the brush laid on each page it touched, the gutter aside.
+    Works works;
+    std::map<PageKey, Grown> grown;
+    std::map<PageKey, Written> written;
+};
+
+LiveStroke::LiveStroke(bool keepsJournal)
+    : _imp(new Implementation(keepsJournal))
+{
+}
+
+LiveStroke::~LiveStroke()
+{
+}
+
+bool
+LiveStroke::paint(const Context& context,
+                  const Stroke& stroke,
+                  std::string* error)
+{
+    error->clear();
+    Implementation& st = *_imp;
+    if (st.settled) {
+        return fail(error, "A settled stroke cannot be laid again.");
+    }
+    if (!context.index || !context.pages) {
+        return fail(error, "Texel painting needs a mesh index and pages to paint.");
     }
     Setup s;
     s.context = &context;
@@ -1610,64 +1841,228 @@ paint(const Context& context,
         return false;
     }
     if (context.coverage && (context.coverage->tileSize() != s.size)) {
-        *error = "The texel coverage is not at the painted tiles' resolution.";
-
-        return false;
+        return fail(error, "The texel coverage is not at the painted tiles' resolution.");
     }
 
-    std::map<PageKey, PageWork> works;
-    if (stroke.type == eRotoStrokeTypeSmear) {
-        if (!paintSmear(s, stroke, &works, error)) {
-            return false;
-        }
+    const bool smear = stroke.type == eRotoStrokeTypeSmear;
+    std::vector<Dab> dabs;
+    std::vector<SmearDab> smears;
+    if (smear) {
+        smears = smearDabs(stroke.points, stroke.brush);
     } else {
-        std::vector<Dab> dabs;
         RotoStrokeDabs::walk(stroke.points, 0., stroke.brush, stroke.buildUp, stroke.opacity, [&dabs](const Dab& dab) {
             dabs.push_back(dab);
         });
-        if (dabs.empty()) {
-            return true;
-        }
-        std::unique_ptr<ScreenBins> bins;
-        if (context.footprint == eFootprintView) {
-            bins.reset(new ScreenBins);
-            bins->build(s, dabArea(dabs));
-        }
-        const std::vector<std::vector<TexelHit>> hits = footprints(s, dabs, bins.get());
-        if (s.cancelled()) {
+    }
+    bool restart = st.broken;
+    if (st.started && !restart) {
+        restart = !sameContext(st.context, context) || !sameSettings(st.settings, stroke) || !startsWith(dabs, st.dabs, sameDab) || !startsWith(smears, st.smears, sameSmear);
+    }
+    if (restart) {
+        if (!st.putBack(error)) {
+            st.broken = true;
+
             return false;
         }
-        if (!paintMasked(s, stroke, dabs, hits, &works, error)) {
+        st.clear();
+        ++st.restarts;
+    }
+    if (!st.started) {
+        st.context = context;
+        st.context.beforeWrite = nullptr;
+        st.context.cancelled = nullptr;
+        st.settings = stroke;
+        st.settings.points.clear();
+    }
+
+    const PageSource before(context.pages, &st.written);
+    Works changed;
+    if (smear && (smears.size() > st.smears.size())) {
+        if (!laySmear(s, stroke, before, st.works, std::vector<SmearDab>(smears.begin() + (std::ptrdiff_t)st.smears.size(), smears.end()), &changed, error)) {
+            return false;
+        }
+    } else if (!smear && (dabs.size() > st.dabs.size())) {
+        if (!layMasked(s, stroke, before, st.works, std::vector<Dab>(dabs.begin() + (std::ptrdiff_t)st.dabs.size(), dabs.end()), &changed, error)) {
             return false;
         }
     }
-    if (context.coverage && !growGutter(s, &works, error)) {
-        return false;
+    std::set<PageKey> dirty;
+    for (const std::pair<const PageKey, PageWork>& entry : changed) {
+        dirty.insert(entry.first);
+    }
+    const std::function<const PageWork*(const PageKey&)> laidOn = [&changed, &st](const PageKey& key) -> const PageWork* {
+        Works::const_iterator it = changed.find(key);
+        if (it != changed.end()) {
+            return &it->second;
+        }
+        it = st.works.find(key);
+
+        return (it != st.works.end()) ? &it->second : nullptr;
+    };
+    std::map<PageKey, Grown> grown;
+    std::set<PageKey> keys = dirty;
+    if (context.coverage && !dirty.empty()) {
+        const std::vector<PageKey> targets = gutterTargets(*context.pages, dirty);
+        std::vector<Grown> found = gutterOf(s, laidOn, targets);
+        for (std::size_t t = 0; t < targets.size(); ++t) {
+            grown[targets[t]] = std::move(found[t]);
+            keys.insert(targets[t]);
+        }
     }
     if (s.cancelled()) {
         return false;
     }
 
-    std::vector<PageKey> keys;
-    for (const std::pair<const PageKey, PageWork>& entry : works) {
-        if (std::find(entry.second.laid.begin(), entry.second.laid.end(), 1) != entry.second.laid.end()) {
-            keys.push_back(entry.first);
-        }
-    }
-    if (keys.empty()) {
-        return true;
-    }
-    if (context.beforeWrite && !context.beforeWrite(keys, error)) {
-        return false;
-    }
+    // Every page the update may change, as the stroke now leaves it; one laid nowhere is put back.
+    struct Out {
+        PageKey key;
+        bool laid = false;
+        PageData data;
+    };
+    std::vector<Out> outs;
     for (const PageKey& key : keys) {
-        if (!context.pages->write(key, works[key].data, error)) {
+        const PageWork* work = laidOn(key);
+        std::map<PageKey, Grown>::const_iterator fresh = grown.find(key);
+        const Grown* g = nullptr;
+        if (fresh != grown.end()) {
+            g = &fresh->second;
+        } else {
+            const std::map<PageKey, Grown>::const_iterator kept = st.grown.find(key);
+            g = (kept != st.grown.end()) ? &kept->second : nullptr;
+        }
+        const bool brushed = work && (std::find(work->laid.begin(), work->laid.end(), 1) != work->laid.end());
+        const bool gutter = g && !g->empty();
+        Out out;
+        out.key = key;
+        if (!brushed && !gutter) {
+            if (st.written.count(key)) {
+                outs.push_back(std::move(out));
+            }
+            continue;
+        }
+        out.laid = true;
+        if (work) {
+            out.data = work->data;
+        } else if (!before.read(key, &out.data, error)) {
             return false;
         }
+        if (gutter) {
+            for (const std::pair<int, std::array<float, 5>>& texel : *g) {
+                std::copy_n(texel.second.data(), 4, out.data.rgba.data() + (std::size_t)texel.first * 4);
+                out.data.touched[texel.first] = texel.second[4];
+            }
+        }
+        outs.push_back(std::move(out));
+    }
+
+    // The pages written for the first time: journalled, and kept as they were for what reads under the stroke.
+    std::vector<PageKey> first;
+    for (const Out& out : outs) {
+        if (out.laid && !st.written.count(out.key)) {
+            first.push_back(out.key);
+        }
+    }
+    std::map<PageKey, Written> added;
+    if (st.keepsJournal && !first.empty()) {
+        std::vector<TexelPages::Snapshot> snapshots;
+        if (!context.pages->snapshot(first, &snapshots, error)) {
+            return false;
+        }
+        for (std::size_t i = 0; i < first.size(); ++i) {
+            Written& entry = added[first[i]];
+            entry.journal = std::move(snapshots[i]);
+            if (entry.journal.painted) {
+                entry.pre = entry.journal.texels;
+            } else {
+                PageData pre;
+                if (!before.read(first[i], &pre, error)) {
+                    return false;
+                }
+                TexelPages::pack(pre, &entry.pre);
+            }
+        }
+    }
+    if (context.beforeWrite && !first.empty() && !context.beforeWrite(first, error)) {
+        return false;
+    }
+
+    // From here the pages change, and a failure leaves the stroke to be laid again from its start.
+    st.broken = true;
+    for (std::pair<const PageKey, PageWork>& entry : changed) {
+        st.works[entry.first] = std::move(entry.second);
+    }
+    for (std::pair<const PageKey, Grown>& entry : grown) {
+        if (entry.second.empty()) {
+            st.grown.erase(entry.first);
+        } else {
+            st.grown[entry.first] = std::move(entry.second);
+        }
+    }
+    for (std::pair<const PageKey, Written>& entry : added) {
+        st.written[entry.first] = std::move(entry.second);
+    }
+    std::vector<TexelPages::Snapshot> putBack;
+    for (const Out& out : outs) {
+        if (out.laid) {
+            if (!context.pages->write(out.key, out.data, error)) {
+                return false;
+            }
+            continue;
+        }
+        const std::map<PageKey, Written>::iterator it = st.written.find(out.key);
+        putBack.push_back(std::move(it->second.journal));
+        st.written.erase(it);
+    }
+    if (!putBack.empty() && !context.pages->restore(putBack, error)) {
+        return false;
+    }
+    st.dabs.swap(dabs);
+    st.smears.swap(smears);
+    st.started = true;
+    st.broken = false;
+    if (!st.keepsJournal && !outs.empty()) {
+        st.settled = true;
     }
 
     return true;
-} // paint
+} // LiveStroke::paint
+
+std::vector<TexelPages::Snapshot>
+LiveStroke::takeJournal()
+{
+    Implementation& st = *_imp;
+    std::vector<TexelPages::Snapshot> journal;
+
+    for (std::pair<const PageKey, Written>& entry : st.written) {
+        journal.push_back(std::move(entry.second.journal));
+    }
+    st.clear();
+    st.settled = true;
+
+    return journal;
+}
+
+int
+LiveStroke::restarts() const
+{
+    return _imp->restarts;
+}
+
+std::size_t
+LiveStroke::dabCount() const
+{
+    return _imp->dabs.size() + _imp->smears.size();
+}
+
+bool
+paint(const Context& context,
+      const Stroke& stroke,
+      std::string* error)
+{
+    LiveStroke live(false);
+
+    return live.paint(context, stroke, error);
+}
 } // namespace TexelSplat
 
 NATRON_NAMESPACE_EXIT

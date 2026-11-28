@@ -95,6 +95,7 @@ USDTexturePaintBaker::USDTexturePaintBaker()
     : GenericSchedulerThread()
     , _cancel(false)
     , _pending(0)
+    , _shownPending(0)
     , _generation(0)
     , _stopped(false)
     , _epoch(0)
@@ -133,6 +134,9 @@ USDTexturePaintBaker::enqueue(const Bake& bake)
     std::lock_guard<std::mutex> lock(_mutex);
     task->epoch = _epoch.load();
     ++_pending;
+    if (bake.showsProgress) {
+        ++_shownPending;
+    }
     // A quitting thread refuses tasks until it has resolved the quit, and strands those given
     // after that until it is started again.
     if (_quitting.load() || !_deferred.empty()) {
@@ -142,6 +146,9 @@ USDTexturePaintBaker::enqueue(const Bake& bake)
     }
     if (!startTask(task)) {
         --_pending;
+        if (bake.showsProgress) {
+            --_shownPending;
+        }
 
         return false;
     }
@@ -161,6 +168,7 @@ USDTexturePaintBaker::requestStop(bool allowRestart)
         }
         ++_epoch;
         _pending = 0;
+        _shownPending = 0;
         _cancel = true;
         dropped.swap(_deferred);
         quitting = _quitting.load();
@@ -211,6 +219,9 @@ USDTexturePaintBaker::onThreadFinished()
         }
         if (!startTask(task)) {
             --_pending;
+            if (task->bake.showsProgress) {
+                --_shownPending;
+            }
         }
     }
 }
@@ -358,7 +369,9 @@ USDTexturePaintBaker::threadLoopOnce(const GenericThreadStartArgsPtr& inArgs)
     bool ok = false;
     if (task && !_cancel.load()) {
         Context context(this, task.get());
-        context.progress(0., task->bake.label);
+        if (task->bake.showsProgress) {
+            context.progress(0., task->bake.label);
+        }
         ok = task->bake.work && task->bake.work(context) && !_cancel.load();
     }
     appPTR->getAppTLS()->cleanupTLSForThread();
@@ -402,6 +415,9 @@ USDTexturePaintBaker::onWorkDone()
         }
         if (done.bake.completion) {
             done.bake.completion(done.ok);
+        }
+        if (done.bake.showsProgress) {
+            --_shownPending;
         }
         const int left = --_pending;
         Q_EMIT bakeFinished(done.ok, _generation.load());

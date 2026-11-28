@@ -1155,6 +1155,61 @@ GPU_TEST_F(NatronUtilityRaster, SmallTilesEqualOneTile)
     }
 }
 
+namespace {
+// Counts the tiles of a frame of any size, each of which is one batch of the executor's.
+class BatchCountingFilm : public WavefrontFilm {
+public:
+    virtual void writeTile(const WavefrontTile& tile) override
+    {
+        ++tiles;
+        rows += tile.rect.height;
+    }
+
+    virtual WavefrontAovs aovs() const override
+    {
+        WavefrontAovs wanted;
+
+        wanted.depth = false;
+        wanted.primId = false;
+        wanted.instanceId = false;
+
+        return wanted;
+    }
+
+    int tiles = 0;
+    int rows = 0;
+};
+} // anon namespace
+
+// A frame of more rays than the smallest batch, on a device with the memory for all of them, draws each pass
+// in one batch: one compute submission in Ray mode, and one visibility submission before it in Raster mode.
+GPU_TEST_F(NatronUtilityRaster, APassThatFitsInMemoryIsOneSubmission)
+{
+    UtilityScene scene;
+
+    cardAndCube(scene);
+
+    WavefrontGpu executor(*_registry, *_pool, std::make_shared<int>(0));
+    const std::atomic<bool> stop(false);
+    const int side = 576;
+
+    for (const bool raster : { false, true }) {
+        SCOPED_TRACE(raster ? "Raster" : "Ray");
+
+        WavefrontFrame frame = perspectiveFrame();
+        BatchCountingFilm film;
+
+        frame.window.width = side;
+        frame.window.height = side;
+        frame.raster = raster;
+        frame.rasterPass = WavefrontRasterPass();
+        ASSERT_TRUE(executor.render(scene.snapshot(), frame, film, stop, 2)) << executor.status().message;
+        EXPECT_EQ(1, film.tiles);
+        EXPECT_EQ(side, film.rows);
+        EXPECT_EQ(raster ? 2u : 1u, executor.submissions());
+    }
+}
+
 // The camera rays' hits come from the visibility buffer, and the shadow rays from them are traced: the panel
 // above the frame shades the floor as in Ray mode.
 GPU_TEST_F(NatronUtilityRaster, ShadowsShowAsInRayMode)

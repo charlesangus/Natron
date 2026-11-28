@@ -30,6 +30,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -133,6 +134,10 @@ public:
     // Lowers the widest and tallest tile a raster pass draws in one visibility buffer, so that tests split small
     // frames. Never raises it past the device's image limit; 0 removes the limit.
     void limitRasterTile(std::uint32_t texels);
+
+    // The compute and graphics queue submissions the last render() drew its pass in, the uploads of the scene and
+    // of the frame's settings aside.
+    std::size_t submissions() const;
 
 private:
     struct Implementation;

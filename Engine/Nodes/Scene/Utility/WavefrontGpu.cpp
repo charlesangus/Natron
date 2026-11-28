@@ -160,18 +160,28 @@ static_assert(sizeof(KernelMaterialRecord) == 144 && sizeof(KernelTextureBinding
 const std::size_t kRayArrays = kUtilityRayArrays;
 const std::size_t kHitArrays = kUtilityHitArrays;
 
-// Bounds how long a stop waits for the batch in flight, which on an integrated GPU or lavapipe is the
-// time of this many rays.
-const std::uint64_t kMaxBatchRays = std::min<std::uint64_t>(kUtilityMaxDispatchRays, std::uint64_t(1) << 18);
+// The fewest rays a batch takes while the device's speed is unknown, short enough on an integrated GPU or
+// lavapipe that the device is not kept busy for long by work a stop has made useless.
+const std::uint64_t kMinBatchRays = std::min<std::uint64_t>(kUtilityMaxDispatchRays, std::uint64_t(1) << 18);
 // Lights sampled per shading pass. A full batch of rays then needs a few tens of megabytes of shadow
-// rays, and more lights take more passes over the same hits rather than more memory.
+// rays per light, and more lights take more passes over the same hits rather than more memory.
 const std::uint32_t kLightBatch = 4;
-// Bounds the work, in kernel threads, one submission records beyond its first dispatch, so that neither many
-// lights nor many cutout layers make a submission whose stop waits longer than that, or that runs into
-// submitAndWait()'s time limit. A full batch with one light batch and no holes still takes one submission.
-const std::uint64_t kMaxSubmitWork = 8 * kMaxBatchRays;
+// The work, in kernel threads, one submission records beyond its first dispatch until the executor has timed
+// its device: a stop that lands while the device runs it returns at once, but leaves the device busy with it.
+// A batch of kMinBatchRays with one light batch and no holes takes one submission.
+const std::uint64_t kMaxSubmitWork = 8 * kMinBatchRays;
+// The most a submission's work is allowed to grow to on a fast device, which bounds the submissions that a
+// scene far costlier per thread than the one the device was timed on makes.
+const std::uint64_t kMaxLearnedSubmitWork = std::uint64_t(1) << 32;
+// How long a submission is meant to keep the device busy, as the work it holds is learned. A frame that fits
+// this goes in one submission; one that does not is split, so that the device leaves a stopped frame soon.
+const std::uint64_t kSubmitTargetNs = 50'000'000ull;
+// The threads one ray of a batch costs at most in its largest dispatches, the camera rays and their hits
+// then a full light batch of shadow rays, so that a batch's first submission stays near the learned work.
+const std::uint64_t kWorkPerBatchRay = 2 + kLightBatch;
 // As long as the compute submissions may take: a visibility pass draws the whole scene once per tile.
 const std::uint64_t kRasterSubmitTimeoutNs = 30'000'000'000ull;
+const std::uint64_t kSubmitTimeoutNs = 30'000'000'000ull;
 
 // Vulkan has no zero-sized buffer, and a scene without colours or triangles still binds all of them.
 const VkDeviceSize kMinTableBytes = 16;
@@ -544,9 +554,10 @@ struct WavefrontGpu::Implementation {
     }
 
     /**
-     * @brief Records a batch's work into as many submissions as kMaxSubmitWork asks for, each submitted and
-     * waited for before the next is recorded, the stop flag looked at between them. The contexts submitted
-     * are kept until the recorder goes away, as they hold the scratch buffers later submissions bind.
+     * @brief Records a batch's work into as many submissions as submitWork asks for, each submitted and
+     * waited for before the next is recorded, the stop flag looked at between them and during each wait. The
+     * contexts submitted are kept until the recorder goes away, as they hold the scratch buffers later
+     * submissions bind. A stop during a wait leaves that submission to finish on the device on its own.
      **/
     class Recorder {
     public:
@@ -560,7 +571,7 @@ struct WavefrontGpu::Implementation {
         bool begin();
         gpu::GpuRecordContext& ctx() { return *_current; }
         // Makes room for `work` more kernel threads, submitting what is recorded first when it would take the
-        // submission past kMaxSubmitWork. False when the frame was stopped or a submission failed.
+        // submission past submitWork. False when the frame was stopped or a submission failed.
         bool reserve(std::uint64_t work);
         // Submits what is recorded and waits for it, so that the host may read what it wrote, then goes on
         // recording. False when the frame was stopped or the submission failed.
@@ -570,6 +581,7 @@ struct WavefrontGpu::Implementation {
 
     private:
         bool next();
+        bool submit(const std::string& what);
 
         Implementation& _imp;
         const std::atomic<bool>& _stop;
@@ -634,6 +646,10 @@ struct WavefrontGpu::Implementation {
                      UtilityRenderBuffer* deviceColor,
                      UtilityDeviceAovs* deviceAovs,
                      std::uint32_t& deepest);
+    void learnSubmitWork(std::uint64_t work,
+                         std::uint64_t ns);
+    std::uint64_t batchBytesPerRay(const WavefrontFrame& frame) const;
+    std::uint64_t batchRaysFor(const WavefrontFrame& frame) const;
     bool haveFilmKernels();
     UtilityRenderBuffer* deviceColorOf(const WavefrontFilm& film);
     UtilityDeviceAovs* deviceAovsOf(const WavefrontFilm& film,
@@ -685,6 +701,9 @@ struct WavefrontGpu::Implementation {
     // RayGen's cameraSteps, kept while the frames draw the same camera.
     std::vector<float> cameraSteps;
     gpu::GpuBufferHandle cameraStepsBuffer;
+    // The kernel threads a submission holds, learned from how long the frames' submissions take on this device.
+    std::uint64_t submitWork = kMaxSubmitWork;
+    std::size_t submissions = 0;
 };
 
 /**
@@ -1113,17 +1132,34 @@ WavefrontGpu::Implementation::Recorder::begin()
 }
 
 bool
-WavefrontGpu::Implementation::Recorder::next()
+WavefrontGpu::Implementation::Recorder::submit(const std::string& what)
 {
     gpu::GpuStatus submitted;
+    const auto begin = std::chrono::steady_clock::now();
 
     {
         const utilityProfile::Scope timed(utilityProfile::Stage::GpuSubmitWait);
 
-        submitted = _current->submitAndWait();
+        submitted = _current->submitAndWait(kSubmitTimeoutNs, [this]() { return _stop.load(std::memory_order_relaxed); });
     }
+    ++_imp.submissions;
     if (!submitted) {
-        return _imp.fail("WavefrontGpu could not render part of a batch", submitted);
+        if (submitted.result == VK_INCOMPLETE && _stop.load(std::memory_order_relaxed)) {
+            return _imp.stopped();
+        }
+
+        return _imp.fail(what, submitted);
+    }
+    _imp.learnSubmitWork(_recorded, static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - begin).count()));
+
+    return true;
+}
+
+bool
+WavefrontGpu::Implementation::Recorder::next()
+{
+    if (!submit("WavefrontGpu could not render part of a batch")) {
+        return false;
     }
     _submitted.push_back(std::move(_current));
     if (_stop.load(std::memory_order_relaxed)) {
@@ -1144,7 +1180,7 @@ WavefrontGpu::Implementation::Recorder::reserve(std::uint64_t work)
     if (_stop.load(std::memory_order_relaxed)) {
         return _imp.stopped();
     }
-    if (_recorded > 0 && _recorded + work > kMaxSubmitWork && !next()) {
+    if (_recorded > 0 && _recorded + work > _imp.submitWork && !next()) {
         return false;
     }
     _recorded += work;
@@ -1155,18 +1191,65 @@ WavefrontGpu::Implementation::Recorder::reserve(std::uint64_t work)
 bool
 WavefrontGpu::Implementation::Recorder::finish(const std::string& what)
 {
-    gpu::GpuStatus submitted;
+    return submit(what);
+}
 
-    {
-        const utilityProfile::Scope timed(utilityProfile::Stage::GpuSubmitWait);
-
-        submitted = _current->submitAndWait();
+void
+WavefrontGpu::Implementation::learnSubmitWork(std::uint64_t work,
+                                              std::uint64_t ns)
+{
+    // A submission far below the budget is mostly the fixed cost of a submit and a wait, which would teach a budget
+    // smaller than the device can take.
+    if (ns == 0 || work == 0 || work < submitWork / 4) {
+        return;
     }
-    if (!submitted) {
-        return _imp.fail(what, submitted);
-    }
 
-    return true;
+    const double sample = static_cast<double>(work) * static_cast<double>(kSubmitTargetNs) / static_cast<double>(ns);
+    const std::uint64_t measured = sample >= static_cast<double>(kMaxLearnedSubmitWork) ? kMaxLearnedSubmitWork : std::max(kMaxSubmitWork, static_cast<std::uint64_t>(sample));
+
+    submitWork = (submitWork * 3 + measured) / 4;
+}
+
+// The device bytes renderBatch() asks for per ray of a batch, an upper bound for the frame's settings.
+std::uint64_t
+WavefrontGpu::Implementation::batchBytesPerRay(const WavefrontFrame& frame) const
+{
+    const std::uint64_t f = sizeof(float);
+    const bool holes = shadeTables.hasHoles();
+    const bool transmission = shadeTables.hasTransmission();
+    const bool resolveShadows = holes || transmission;
+    const std::uint32_t limit = wavefrontBounceLimit(frame, transmission);
+    const std::uint64_t lights = std::min<std::uint64_t>(shadeTables.lightCount(), kLightBatch);
+    const std::uint64_t resolve = kRayArrays * f + 2 * kHitArrays * f;
+    // The rays, weights, hits, hit ids, colours, depths, prim and instance ids, and the visibility buffer.
+    std::uint64_t bytes = kRayArrays * f + f + 2 * kHitArrays * f + 4 * f + 3 * f + 2 * sizeof(std::uint32_t);
+
+    if (holes) {
+        bytes += resolve;
+    }
+    if (limit > 0) {
+        bytes += (limit > 1 ? 2 : 1) * (kRayArrays * f + sizeof(KernelPathState)) + 2 * kHitArrays * f;
+    }
+    bytes += lights * (kRayArrays * f + 4 * f + 2 * sizeof(std::uint32_t) + (resolveShadows ? 2 * kHitArrays * f + resolve : 0));
+
+    return bytes;
+}
+
+/**
+ * @brief The rays a batch takes: the whole window when the device's free memory and the learned submission work
+ * allow it, so that a pass is one submission, else fewer, each batch a submission of its own at least.
+ **/
+std::uint64_t
+WavefrontGpu::Implementation::batchRaysFor(const WavefrontFrame& frame) const
+{
+    const std::uint64_t window = static_cast<std::uint64_t>(frame.window.width) * static_cast<std::uint64_t>(frame.window.height);
+    const std::uint64_t budget = pool.budget();
+    const std::uint64_t live = pool.stats().liveBytes;
+    // Half the free memory, as the pool rounds each request up to a size class and other nodes need some too.
+    const std::uint64_t memoryRays = (budget > live ? (budget - live) / 2 : 0) / std::max<std::uint64_t>(batchBytesPerRay(frame), 1);
+    const std::uint64_t latencyRays = std::max(kMinBatchRays, submitWork / kWorkPerBatchRay);
+
+    return std::min({ window, memoryRays, latencyRays });
 }
 
 bool
@@ -1279,7 +1362,7 @@ WavefrontGpu::Implementation::recordResolve(Recorder& rec,
 /**
  * @brief Fills the batch's camera rays and their hits as RayGen and recordIntersect() would for one sample of
  * every pixel, at the pass's jitter and time: each tile of the batch, at most the device's image limit on a side,
- * is drawn into a visibility buffer and its hits rebuilt from it, in a raster context of its own submitted
+ * is drawn into a visibility buffer and its hits rebuilt from it, every tile in one raster context submitted
  * before the batch's compute context, which then takes the buffers back.
  **/
 bool
@@ -1340,24 +1423,35 @@ WavefrontGpu::Implementation::rasterHits(const WavefrontFrame& frame,
         return (s.aborted || stop.load(std::memory_order_relaxed)) ? stopped() : fail(what, s);
     };
 
+    std::unique_ptr<gpu::GpuRecordContext> ctx;
+
+    if (stop.load(std::memory_order_relaxed)) {
+        return stopped();
+    }
+    if (gpu::GpuStatus s = gpu::GpuRecordContext::createRaster(registry, ctx, &pool, pipelines); !s) {
+        return fail("WavefrontGpu could not create a raster context", s);
+    }
+    ctx->setAbortCheck([&stop]() {
+        return stop.load(std::memory_order_relaxed);
+    });
     for (int tileY = 0; tileY < rect.height; tileY += step) {
         for (int tileX = 0; tileX < rect.width; tileX += step) {
             const int tileWidth = std::min(step, rect.width - tileX);
             const int tileHeight = std::min(step, rect.height - tileY);
             const bool last = tileX + tileWidth >= rect.width && tileY + tileHeight >= rect.height;
             const std::size_t texels = static_cast<std::size_t>(tileWidth) * tileHeight;
-            std::unique_ptr<gpu::GpuRecordContext> ctx;
 
             if (stop.load(std::memory_order_relaxed)) {
                 return stopped();
             }
-            if (gpu::GpuStatus s = gpu::GpuRecordContext::createRaster(registry, ctx, &pool, pipelines); !s) {
-                return fail("WavefrontGpu could not create a raster context", s);
-            }
-            ctx->setAbortCheck([&stop]() {
-                return stop.load(std::memory_order_relaxed);
-            });
             if (!visibilityColour || visibilityColour->desc().width != static_cast<std::uint32_t>(tileWidth) || visibilityColour->desc().height != static_cast<std::uint32_t>(tileHeight)) {
+                // The tiles before this one drew into the attachments the context has recorded so far.
+                if (visibilityColour) {
+                    ctx->hold(std::shared_ptr<gpu::GpuTexture>(std::move(visibilityColour)));
+                }
+                if (visibilityDepth) {
+                    ctx->hold(std::shared_ptr<gpu::GpuTexture>(std::move(visibilityDepth)));
+                }
                 visibilityColour.reset();
                 visibilityDepth.reset();
                 if (gpu::GpuStatus s = gpu::GpuTexture::createAttachment(device, tileWidth, tileHeight, VK_FORMAT_R32G32_UINT, visibilityColour); !s) {
@@ -1420,17 +1514,19 @@ WavefrontGpu::Implementation::rasterHits(const WavefrontFrame& frame,
                     }
                 }
             }
-            gpu::GpuStatus submitted;
-
-            {
-                const utilityProfile::Scope timed(utilityProfile::Stage::RasterSubmitWait);
-
-                submitted = ctx->submitAndWait(kRasterSubmitTimeoutNs, [&stop]() { return stop.load(std::memory_order_relaxed); });
-            }
-            if (!submitted) {
-                return failUnlessStopped("WavefrontGpu could not draw a visibility pass", submitted);
-            }
         }
+    }
+
+    gpu::GpuStatus submitted;
+
+    {
+        const utilityProfile::Scope timed(utilityProfile::Stage::RasterSubmitWait);
+
+        submitted = ctx->submitAndWait(kRasterSubmitTimeoutNs, [&stop]() { return stop.load(std::memory_order_relaxed); });
+    }
+    ++submissions;
+    if (!submitted) {
+        return failUnlessStopped("WavefrontGpu could not draw a visibility pass", submitted);
     }
     for (const auto& [buffer, bytes] : handed) {
         if (gpu::GpuStatus s = rec.ctx().acquireFromOtherQueue(*buffer, 0, bytes); !s) {
@@ -1993,6 +2089,7 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
     wavefrontRequireUnwrap(frame);
     imp.outcome = Tracer::Outcome();
     imp.sceneFailed = false;
+    imp.submissions = 0;
     resetBouncesTraced();
     if (!imp.usable) {
         imp.outcome = imp.unusable;
@@ -2083,7 +2180,7 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
             bool superseded = false;
             const utilityProfile::Scope timed(utilityProfile::Stage::FilmBegin);
 
-            if (gpu::GpuStatus s = deviceColor->beginDeviceFrame(record, kMaxSubmitWork, imp.registry, imp.pool, imp.filmKernels, imp.runtimeHold, &superseded); !s) {
+            if (gpu::GpuStatus s = deviceColor->beginDeviceFrame(record, imp.submitWork, imp.registry, imp.pool, imp.filmKernels, imp.runtimeHold, &superseded); !s) {
                 // The recorder has already said why: the frame was stopped or a submission failed.
                 if (halted) {
                     return false;
@@ -2104,8 +2201,8 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
         }
 
         const std::uint64_t bindable = std::min(rec.ctx().maxScratchBytes(), rec.ctx().maxStorageBufferBytes()) / (kRayArrays * sizeof(float));
-        // A row too wide for the latency cap still goes in one batch, so that any width renders.
-        const std::uint64_t wanted = std::max(kMaxBatchRays, static_cast<std::uint64_t>(window.width));
+        // A row too wide for the memory or the latency cap still goes in one batch, so that any width renders.
+        const std::uint64_t wanted = std::max(imp.batchRaysFor(frame), static_cast<std::uint64_t>(window.width));
         const std::uint64_t batchRays = std::min({ bindable, kUtilityMaxDispatchRays, wanted });
         const std::uint64_t rows = std::min<std::uint64_t>(batchRays / static_cast<std::uint64_t>(window.width), window.height - row);
 
@@ -2134,6 +2231,12 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
     }
 
     return true;
+}
+
+std::size_t
+WavefrontGpu::submissions() const
+{
+    return _imp->submissions;
 }
 
 Tracer::Outcome

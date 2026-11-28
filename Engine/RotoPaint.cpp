@@ -25,28 +25,51 @@
 
 #include "RotoPaint.h"
 
-#include <sstream> // stringstream
+#include <algorithm>
+#include <atomic>
 #include <cassert>
+#include <functional>
+#include <map>
+#include <memory>
+#include <optional>
+#include <sstream> // stringstream
 #include <stdexcept>
+#include <vector>
+
+#include <QThread>
+
+#include <ofxNatron.h>
 
 #include "Engine/AppInstance.h"
+#include "Engine/AppManager.h"
 #include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
+#include "Engine/CacheTier.h"
+#include "Engine/FrameArgsOverlay.h"
 #include "Engine/Image.h"
+#include "Engine/IsolatedJob.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/MergingEnum.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Image/EdgeModeKnob.h"
+#include "Engine/Nodes/Image/EdgeSample.h"
+#include "Engine/Nodes/Image/PassExecutor.h"
+#include "Engine/Nodes/Image/PixelKernel.h"
+#include "Engine/Nodes/Image/StagePlan.h"
+#include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/RotoContext.h"
 #include "Engine/RotoDrawableItem.h"
+#include "Engine/RotoLatencyProbe.h"
 #include "Engine/RotoObjectSelect.h"
 #include "Engine/RotoPaintInteract.h"
 #include "Engine/RotoPoint.h"
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/RotoUndoCommand.h"
+#include "Engine/TLSHolder.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Transform.h"
 #include "Engine/VectorFollowKnobs.h"
@@ -900,11 +923,585 @@ RotoPaint::isIdentity(double time,
     return false;
 }
 
+namespace {
+
+std::atomic<bool> gDirectCompositeEnabled(true);
+std::atomic<unsigned long long> gDirectCompositeRenders(0);
+std::atomic<int> gMaskFetchThreads(0);
+std::function<void()> gDirectMaskFetchHook;
+
+// Rows between abort checks of a direct composite band.
+const int kDirectAbortCheckRows = 16;
+
+// An input of one Merge's fold as the Merge reads it. An item's input is its mask: its Roto
+// effect, having no source, outputs the mask with its source merged under, which leaves a
+// non-negative mask value unchanged, and zero where the mask has no pixel. A Merge reads that
+// output past the effect's region by edgeMode, so the region, not the mask's bounds, is where
+// reads clamp to or stop.
+struct DirectFoldInput {
+    ImagePtr image;
+    std::shared_ptr<Image::ReadAccess> access;
+    RectI bounds;
+    int nComps = 0;
+    EdgeMode edgeMode = EdgeMode::Black;
+    bool isItem = false;
+    RectI region;
+    // The channel of the input that is the alpha of every channel, -1 for an alpha of zero.
+    int alphaChannel = -1;
+
+    void lock()
+    {
+        if (image) {
+            bounds = image->getBounds();
+            nComps = (int)image->getComponentsCount();
+            access = std::make_shared<Image::ReadAccess>(image.get());
+        }
+    }
+
+    void readItemSpan(int x0,
+                      int y,
+                      int width,
+                      float* row) const
+    {
+        PassExec::readSourceRow(image.get(), access.get(), bounds, nComps, x0, y, width, 4, EdgeMode::Black, row);
+        // The effect's over of its empty source, kept so that -0 and NaN come out as it writes them.
+        for (int x = 0; x < width; ++x) {
+            float* pix = row + (std::size_t)x * 4;
+            const double under = 0.0 * (1.0 - double(pix[3]));
+            for (int c = 0; c < 4; ++c) {
+                pix[c] = float(double(pix[c]) + under);
+            }
+        }
+    }
+
+    void readRow(int x0,
+                 int y,
+                 int width,
+                 float* row) const
+    {
+        const std::size_t rowSize = (std::size_t)width * 4;
+        if (!isItem) {
+            PassExec::readSourceRow(image.get(), access.get(), bounds, nComps, x0, y, width, 4, edgeMode, row);
+
+            return;
+        }
+        int sy = 0;
+        if (!image || !EdgeSample::coord(y, region.y1, region.y2, edgeMode, &sy) || (region.x2 <= region.x1)) {
+            std::fill(row, row + rowSize, 0.f);
+
+            return;
+        }
+        const int x2 = x0 + width;
+        const int inX1 = std::max(x0, region.x1);
+        const int inX2 = std::min(x2, region.x2);
+        if (inX1 < inX2) {
+            readItemSpan(inX1, sy, inX2 - inX1, row + (std::size_t)(inX1 - x0) * 4);
+        }
+        const auto fillOutside = [&](int from, int to, int edgeX) {
+            if (from >= to) {
+                return;
+            }
+            float* out = row + (std::size_t)(from - x0) * 4;
+            const std::size_t count = (std::size_t)(to - from) * 4;
+            if (edgeMode == EdgeMode::Black) {
+                std::fill(out, out + count, 0.f);
+
+                return;
+            }
+            float edge[4];
+            readItemSpan(edgeX, sy, 1, edge);
+            for (std::size_t i = 0; i < count; i += 4) {
+                std::copy(edge, edge + 4, out + i);
+            }
+        };
+        fillOutside(x0, std::min(x2, region.x1), region.x1);
+        fillOutside(std::max(x0, region.x2), x2, region.x2 - 1);
+    }
+
+    RowIO::Alpha alphaOf(const float* row,
+                         const float* zeroAlpha) const
+    {
+        RowIO::Alpha span;
+        if (alphaChannel < 0) {
+            span.data = zeroAlpha;
+            span.pixelStride = 1;
+        } else {
+            span.data = row + alphaChannel;
+            span.pixelStride = 4;
+        }
+
+        return span;
+    }
+};
+
+// One global Merge of the tree as its CPU render folds its inputs over window.
+struct DirectMerge {
+    NativeMerge* merge = nullptr;
+    NativeMergeOp::Params params;
+    std::vector<DirectFoldInput> inputs;
+    bool foldAlpha = false;
+    RectI window;
+    RectD rod;
+    double par = 1.;
+};
+
+bool
+isFloatRGBA(const ImagePtr& image)
+{
+    return !image || (PassExec::isFloatImage(image) && (image->getComponentsCount() == 4));
+}
+
+// Whether the Roto effect of an item writes every channel of its output.
+bool
+rotoEffectProcessesEveryChannel(const NodePtr& effectNode,
+                                double time)
+{
+    const char* names[] = { kNatronOfxParamProcessR, kNatronOfxParamProcessG, kNatronOfxParamProcessB, kNatronOfxParamProcessA };
+    for (const char* name : names) {
+        KnobBoolPtr knob = std::dynamic_pointer_cast<KnobBool>(effectNode->getKnobByName(name));
+        if (knob && !knob->getValueAtTime(time)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+enum class DirectTreeResult {
+    NodePath,
+    Done,
+    Aborted
+};
+
+// An item's mask a direct composite folds as input `input` of Merge `merge`.
+struct DirectMaskJob {
+    std::size_t merge = 0;
+    std::size_t input = 0;
+    RotoDrawableItemPtr item;
+    ImageLayerDesc components;
+    ImageBitDepthEnum depth = eImageBitDepthFloat;
+    RectD rotoSrcRod;
+};
+
+/*
+ * Fetches every job's mask from the cache or rasterises it, and hands each to its fold input.
+ * The masks do not depend on one another, so they may be fetched in any order and on any thread,
+ * as long as each fetch sees the render thread's frame and context: those are what its cache key
+ * is made of. The first failure or exception stops the fetches not yet started.
+ */
+DirectTreeResult
+fetchItemMasks(RotoPaint& self,
+               const std::vector<DirectMaskJob>& jobs,
+               double time,
+               ViewIdx view,
+               unsigned int mipmapLevel,
+               std::vector<DirectMerge>* merges)
+{
+    std::vector<ImagePtr> masks(jobs.size());
+    std::atomic<bool> failed(false);
+    const auto fetch = [&](std::size_t i) {
+        const DirectMaskJob& job = jobs[i];
+        if (gDirectMaskFetchHook) {
+            gDirectMaskFetchHook();
+        }
+        masks[i] = job.item->renderMaskFromStroke(job.components, time, view, job.depth, mipmapLevel, job.rotoSrcRod);
+        if (!masks[i]) {
+            failed = true;
+        }
+    };
+
+    const int forcedThreads = gMaskFetchThreads;
+    const int nThreads = std::max(1, (forcedThreads > 0) ? forcedThreads : appPTR->getNCPUsAvailableForEffect());
+    const int nWorkers = (int)std::min(jobs.size(), (std::size_t)nThreads);
+    {
+        // Each mask's raster is timed as a render nested in this one and left out of its cost;
+        // timing the fetches as one block leaves out the lookups and the wait for helpers as well,
+        // whichever way they are fetched.
+        CacheRecomputeStopwatch masksAreNotThisRender;
+        if (nWorkers < 2) {
+            for (std::size_t i = 0; i < jobs.size(); ++i) {
+                if (self.aborted()) {
+                    return DirectTreeResult::Aborted;
+                }
+                fetch(i);
+                if (failed) {
+                    break;
+                }
+            }
+        } else {
+            if (self.aborted()) {
+                return DirectTreeResult::Aborted;
+            }
+            QThread* const callingThread = QThread::currentThread();
+            const FrameRenderContext* const frameContext = AppTLS::currentFrameContext();
+            const FrameArgsOverlayPtr frameArgsHead = FrameArgsOverlay::currentHead();
+            const IsolatedJob* const isolatedJob = IsolatedJob::current();
+            const bool scheduledTask = AppTLS::isRunningScheduledTask();
+            RenderContextPtr actingContext;
+            const bool acting = ActionContextScope::current(&actingContext);
+            bool userInteraction = false;
+            AbortableRenderInfoPtr abortInfo;
+            EffectInstancePtr treeRoot;
+            const bool lendsAbort = self.getAbortState(&userInteraction, &abortInfo, &treeRoot);
+            RenderCancellation cancel(&self);
+            std::atomic<std::size_t> nextJob(0);
+            const std::function<void(int)> worker = [&](int) {
+                const bool helper = (QThread::currentThread() != callingThread);
+                // A mask fetch reads the effects' frame args and abort state as an action of the
+                // render would, so a helper inherits all of the render thread's data.
+                AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, frameContext, frameArgsHead, isolatedJob, AppTLS::eSpawnKindMultiThreadSuite, scheduledTask);
+                // The lent abort and the acting context are plain thread_locals that no spawn
+                // copies; the mask key folds in the context the Merge answers under.
+                std::optional<EffectInstance::InheritedAbortScope> abortScope;
+                if (helper && lendsAbort) {
+                    abortScope.emplace(userInteraction, abortInfo, treeRoot);
+                }
+                ActionContextScope actionContext(acting && helper, actingContext);
+                // A large stroke or feather splits its rows only as far as its thread's budget.
+                // With the whole budget on every worker, a raster that outlasts the others spreads
+                // over the threads they free, as it would fetched alone; its bands queue on the
+                // same pool, so this starts no more threads than the pool has.
+                AppTLS::ThreadBudgetScope rasterBudget(nThreads);
+                for (;;) {
+                    // Only the render thread publishes the abort to cancel, and it may be
+                    // rasterising a large mask itself, so a worker asks too between masks.
+                    if (failed || cancel.check() || self.aborted()) {
+                        return;
+                    }
+                    const std::size_t i = nextJob.fetch_add(1);
+                    if (i >= jobs.size()) {
+                        return;
+                    }
+                    try {
+                        fetch(i);
+                    } catch (...) {
+                        failed = true;
+                        throw;
+                    }
+                }
+            };
+            parallelForCancellable(nWorkers, nWorkers, cancel, worker);
+            if (cancel.check()) {
+                return DirectTreeResult::Aborted;
+            }
+        }
+    }
+
+    for (std::size_t i = 0; i < jobs.size(); ++i) {
+        if (!masks[i]) {
+            // A mask that failed to render is not an empty one: the node path owns the failure.
+            return self.aborted() ? DirectTreeResult::Aborted : DirectTreeResult::NodePath;
+        }
+        if (!isFloatRGBA(masks[i])) {
+            return DirectTreeResult::NodePath;
+        }
+        (*merges)[jobs[i].merge].inputs[jobs[i].input].image = masks[i];
+    }
+
+    return DirectTreeResult::Done;
+} // fetchItemMasks
+
+/*
+ * Composites a concatenated tree as its global Merges would, folding each item's cached mask in
+ * place of rendering the item's Roto effect and each Merge. Anything the fold below does not
+ * reproduce exactly answers NodePath before any pixel is written.
+ */
+DirectTreeResult
+renderConcatenatedTree(RotoPaint& self,
+                       const EffectInstance::RenderActionArgs& args,
+                       const RotoContextPtr& roto,
+                       const std::list<RotoDrawableItemPtr>& items,
+                       std::map<ImageLayerDesc, ImagePtr>* images)
+{
+    if (!RotoPaint::isDirectCompositeEnabled() || (args.outputLayers.size() != 1) || roto->isDoingNeatRender() || self.isDuringPaintStrokeCreationThreadLocal()) {
+        return DirectTreeResult::NodePath;
+    }
+    const ImageLayerDesc& plane = args.outputLayers.front().first;
+    const ImagePtr& output = args.outputLayers.front().second;
+    if (!output || !plane.isColorLayer() || (plane.getNumComponents() != 4) || !PassExec::isFloatImage(output) || (output->getComponentsCount() != 4)) {
+        return DirectTreeResult::NodePath;
+    }
+    const NodesList chain = roto->getRotoPaintMergeChain(items);
+    if (chain.empty()) {
+        return DirectTreeResult::NodePath;
+    }
+    const double time = args.time;
+    const ViewIdx view = args.view;
+    const unsigned int mipmapLevel = args.mappedScale.toMipmapLevel();
+
+    std::map<const EffectInstance*, RotoDrawableItemPtr> itemOfEffect;
+    for (const RotoDrawableItemPtr& item : items) {
+        const NodePtr effectNode = item->getEffectNode();
+        if (!effectNode) {
+            return DirectTreeResult::NodePath;
+        }
+        itemOfEffect[effectNode->getEffectInstance().get()] = item;
+    }
+
+    bool bReads = false;
+    std::vector<DirectMerge> merges;
+    std::vector<DirectMaskJob> maskJobs;
+    NodePtr previousNode;
+    for (const NodePtr& node : chain) {
+        DirectMerge direct;
+        direct.merge = dynamic_cast<NativeMerge*>(node->getEffectInstance().get());
+        if (!direct.merge || direct.merge->isDuringPaintStrokeCreationThreadLocal()) {
+            return DirectTreeResult::NodePath;
+        }
+        NativeMerge& merge = *direct.merge;
+        const U64 hash = merge.getRenderHash();
+        const std::bitset<4> processChannels = merge.getProcessChannelsForPlane(hash, time, view, plane);
+        if (!processChannels.all()) {
+            return DirectTreeResult::NodePath;
+        }
+        std::optional<std::string> error;
+        const StagePlan plan = merge.resolveCompositeRenderPlan(time, view, plane, processChannels, &error);
+        if (error || plan.applyMask || (plan.mix != 1.) || (plan.divisorChannel >= 0) || plan.compositeResultIsAlpha || (plan.composite.size() < 2) || (plan.composite[0].inputNb != 0)) {
+            return DirectTreeResult::NodePath;
+        }
+        const NodeMetadataConstPtr metadata = merge.getRenderMetadata(time, view);
+        bool isProjectFormat = false;
+        if (!metadata || (metadata->getBitDepth(-1) != eImageBitDepthFloat) || (merge.getRegionOfDefinition_public(hash, time, args.mappedScale, view, &direct.rod, &isProjectFormat) == eStatusFailed)) {
+            return DirectTreeResult::NodePath;
+        }
+        direct.par = metadata->getPixelAspectRatio(-1);
+        direct.window = args.roi.intersect(direct.rod.toPixelEnclosing(mipmapLevel, direct.par));
+        if (direct.window.isNull()) {
+            return DirectTreeResult::NodePath;
+        }
+        direct.params = merge.mergeParams(time, view);
+        direct.foldAlpha = stageSourcesHaveAlpha(plan);
+        const EffectInstancePtr expectedB = previousNode ? previousNode->getEffectInstance() : self.getInput(0);
+        if (merge.getInput(0) != expectedB) {
+            return DirectTreeResult::NodePath;
+        }
+        previousNode = node;
+
+        for (std::size_t s = 0; s < plan.composite.size(); ++s) {
+            const StageSource& source = plan.composite[s];
+            const StageSourceLayers layers = resolveStageSourceLayers(merge, source, plan.plane, time, view);
+            DirectFoldInput input;
+            input.edgeMode = source.edgeMode;
+            if (layers.read && (!layers.layer.isColorLayer() || (layers.layer.getNumComponents() != 4))) {
+                return DirectTreeResult::NodePath;
+            }
+            if (direct.foldAlpha && layers.hasAlpha()) {
+                if (!layers.read || layers.alphaPerChannel() || !(layers.alphaLayer == layers.layer) || (layers.alphaChannel >= 4)) {
+                    return DirectTreeResult::NodePath;
+                }
+                input.alphaChannel = layers.alphaChannel;
+            }
+            if (s == 0) {
+                // A later Merge's B is the Merge before it, folded first; the first one's is
+                // RotoPaint's own input, fetched below unless it is disconnected.
+                if (!layers.read && !merges.empty()) {
+                    return DirectTreeResult::NodePath;
+                }
+                if (merges.empty()) {
+                    bReads = layers.read;
+                }
+                direct.inputs.push_back(input);
+                continue;
+            }
+            const EffectInstancePtr effect = merge.getInput(source.inputNb);
+            std::map<const EffectInstance*, RotoDrawableItemPtr>::const_iterator found = effect ? itemOfEffect.find(effect.get()) : itemOfEffect.end();
+            if (!layers.read || (found == itemOfEffect.end())) {
+                return DirectTreeResult::NodePath;
+            }
+            input.isItem = true;
+            const RotoDrawableItemPtr& item = found->second;
+            const NodePtr effectNode = effect->getNode();
+            if (!item->isActivated(time) || effectNode->isNodeDisabled(time)) {
+                // Bypassed, the effect shows its disconnected source: nothing.
+                direct.inputs.push_back(input);
+                continue;
+            }
+            const NodeMetadataConstPtr effectMetadata = effect->getRenderMetadata(time, view);
+            const int rotoInput = effect->getRotoBrushInputIndex();
+            if (!effectMetadata || (rotoInput < 0) || (effectMetadata->getNComps(-1) != 4) || ((mipmapLevel != 0) && !effect->supportsRenderScale()) || !rotoEffectProcessesEveryChannel(effectNode, time)) {
+                return DirectTreeResult::NodePath;
+            }
+            const ImageBitDepthEnum maskDepth = effectMetadata->getBitDepth(rotoInput);
+            ImageLayerDesc maskComps, maskPairedComps;
+            EffectInstance::getLayersFromMetadata(*effectMetadata, rotoInput, &maskComps, &maskPairedComps);
+            if ((maskDepth != eImageBitDepthFloat) || (maskComps.getNumComponents() != 4)) {
+                return DirectTreeResult::NodePath;
+            }
+            RectD effectRod;
+            if (effect->getRegionOfDefinition_public(effect->getRenderHash(), time, args.mappedScale, view, &effectRod, &isProjectFormat) == eStatusFailed) {
+                return DirectTreeResult::NodePath;
+            }
+            input.region = effectRod.toPixelEnclosing(mipmapLevel, effectMetadata->getPixelAspectRatio(-1));
+            RectD rotoSrcRod;
+            if (item->getInverted(time)) {
+                const EffectInstancePtr rotoSource = effect->getInput(0);
+                if (rotoSource) {
+                    bool sourceIsProjectFormat = false;
+                    StatusEnum st = rotoSource->getRegionOfDefinition_public(rotoSource->getRenderHash(), time, args.mappedScale, view, &rotoSrcRod, &sourceIsProjectFormat);
+                    (void)st;
+                }
+            }
+            DirectMaskJob job;
+            job.merge = merges.size();
+            job.input = direct.inputs.size();
+            job.item = item;
+            job.components = maskComps;
+            job.depth = maskDepth;
+            job.rotoSrcRod = rotoSrcRod;
+            maskJobs.push_back(job);
+            direct.inputs.push_back(input);
+        }
+        merges.push_back(direct);
+    }
+
+    const DirectTreeResult fetched = fetchItemMasks(self, maskJobs, time, view, mipmapLevel, &merges);
+    if (fetched != DirectTreeResult::Done) {
+        return fetched;
+    }
+
+    if (bReads) {
+        RectI bgRoI;
+        DirectFoldInput& b = merges.front().inputs.front();
+        b.image = self.getImage(0, time, args.mappedScale, view, 0, &plane, false /*mapToClipPrefs*/, false /*dontUpscale*/, eStorageModeRAM, 0, &bgRoI);
+        if (!isFloatRGBA(b.image)) {
+            return DirectTreeResult::NodePath;
+        }
+        // Read past its edge, B clamps to the bounds of what was rendered of it, its own region's
+        // edge only while that rendering meets the window.
+        if ((b.edgeMode == EdgeMode::Stretch) && b.image && b.image->getBounds().intersect(merges.front().window).isNull()) {
+            return DirectTreeResult::NodePath;
+        }
+    }
+
+    const int nThreads = appPTR->getNCPUsAvailableForEffect();
+    RenderCancellation cancel(&self);
+    ImagePtr previous;
+    for (DirectMerge& direct : merges) {
+        if (previous) {
+            direct.inputs.front().image = previous;
+        }
+        for (DirectFoldInput& input : direct.inputs) {
+            input.lock();
+        }
+        const RectI& window = direct.window;
+        ImagePtr result = std::make_shared<Image>(output->getComponents(), direct.rod, window, mipmapLevel, direct.par, eImageBitDepthFloat, output->getFieldingOrder(), false, eStorageModeRAM);
+        {
+            Image::WriteAccess resultAccess(result.get());
+            std::vector<RectI> bands;
+            makeStageRowBands(window, nThreads, &bands);
+            const int width = window.width();
+            const std::size_t rowSize = (std::size_t)width * 4;
+            const std::size_t nFolded = direct.inputs.size();
+            const std::function<void(int)> renderBand = [&](int bandIndex) {
+                const RectI& band = bands[bandIndex];
+                std::vector<float> foldRows[2] = { std::vector<float>(rowSize), std::vector<float>(rowSize) };
+                std::vector<float> inputRow(rowSize);
+                std::vector<float> alphaRows[2];
+                const std::vector<float> zeroAlpha(direct.foldAlpha ? width : 0, 0.f);
+                if (direct.foldAlpha) {
+                    alphaRows[0].resize(rowSize);
+                    alphaRows[1].resize(rowSize);
+                }
+                RowIO io;
+                io.x0 = window.x1;
+                io.width = width;
+                io.nComps = 4;
+                io.channels.set();
+                for (int y = band.y1; y < band.y2; ++y) {
+                    if ((((y - band.y1) % kDirectAbortCheckRows) == 0) && cancel.check()) {
+                        return;
+                    }
+                    float* dstPix = (float*)resultAccess.pixelAt(window.x1, y);
+                    direct.inputs[0].readRow(window.x1, y, width, foldRows[0].data());
+                    const float* resultRow = foldRows[0].data();
+                    if (direct.foldAlpha) {
+                        io.alpha[0] = direct.inputs[0].alphaOf(resultRow, zeroAlpha.data());
+                    }
+                    io.y = y;
+                    int next = 1;
+                    for (std::size_t s = 1; s < nFolded; ++s) {
+                        direct.inputs[s].readRow(window.x1, y, width, inputRow.data());
+                        float* stepRow = ((s + 1) == nFolded) ? dstPix : foldRows[next].data();
+                        io.src[0] = resultRow;
+                        io.src[1] = inputRow.data();
+                        io.nSrc = 2;
+                        io.dst = stepRow;
+                        if (direct.foldAlpha) {
+                            io.alpha[1] = direct.inputs[s].alphaOf(inputRow.data(), zeroAlpha.data());
+                            io.dstAlpha = alphaRows[s & 1].data();
+                        }
+                        direct.merge->step(direct.params, io);
+                        resultRow = stepRow;
+                        next = 1 - next;
+                        if (direct.foldAlpha) {
+                            io.alpha[0].data = io.dstAlpha;
+                            io.alpha[0].pixelStride = 4;
+                            io.alpha[0].channelStride = 1;
+                        }
+                    }
+                }
+            };
+            parallelForCancellable((int)bands.size(), nThreads, cancel, renderBand);
+        }
+        if (cancel.check()) {
+            return DirectTreeResult::Aborted;
+        }
+        for (DirectFoldInput& input : direct.inputs) {
+            input.access.reset();
+        }
+        previous = result;
+    }
+    (*images)[plane] = previous;
+    ++gDirectCompositeRenders;
+
+    return DirectTreeResult::Done;
+} // renderConcatenatedTree
+} // anonymous namespace
+
+void
+RotoPaint::setDirectCompositeEnabled(bool enabled)
+{
+    gDirectCompositeEnabled = enabled;
+}
+
+bool
+RotoPaint::isDirectCompositeEnabled()
+{
+    return gDirectCompositeEnabled;
+}
+
+unsigned long long
+RotoPaint::getDirectCompositeRenderCount()
+{
+    return gDirectCompositeRenders;
+}
+
+void
+RotoPaint::setMaskFetchThreadCount(int threads)
+{
+    gMaskFetchThreads = std::max(0, threads);
+}
+
+void
+RotoPaint::setDirectMaskFetchHook(const std::function<void()>& hook)
+{
+    gDirectMaskFetchHook = hook;
+}
+
 StatusEnum
 RotoPaint::render(const RenderActionArgs& args)
 {
+    RotoRenderProfile::Scope profile(RotoRenderProfile::eKindRotoPaint, args.time, args.mappedScale.toMipmapLevel());
+    std::optional<RotoRenderProfile::StageTimer> setupTimer;
+    setupTimer.emplace(RotoRenderProfile::eStageSetup);
     RotoContextPtr roto = getNode()->getRotoContext();
     std::list<RotoDrawableItemPtr> items = roto->getCurvesByRenderOrder(false /*onlyActiveItems*/);
+    setupTimer.reset();
+    if (profile.active()) {
+        profile.setNames(getNode()->getScriptName_mt_safe(), std::string(), std::string());
+        profile.setItems((int)items.size());
+        profile.setPixels((long long)args.roi.area());
+    }
     ImageBitDepthEnum bgDepth = getRenderMetadata(args.time, args.view)->getBitDepth(0);
     std::list<ImageLayerDesc> neededComps;
 
@@ -930,6 +1527,7 @@ RotoPaint::render(const RenderActionArgs& args)
         }
     } else {
         NodesList rotoPaintNodes;
+        setupTimer.emplace(RotoRenderProfile::eStageSetup);
         {
             bool ok = getThreadLocalRotoPaintTreeNodes(&rotoPaintNodes);
             if (!ok) {
@@ -937,6 +1535,7 @@ RotoPaint::render(const RenderActionArgs& args)
             }
         }
         NodePtr bottomMerge = roto->getRotoPaintBottomMergeNode();
+        setupTimer.reset();
         RenderingFlagSetter flagIsRendering(bottomMerge);
 
         unsigned int mipmapLevel = args.mappedScale.toMipmapLevel();
@@ -954,7 +1553,18 @@ RotoPaint::render(const RenderActionArgs& args)
                                     eStorageModeRAM /*returnOpenGLtex*/,
                                     args.time);
         std::map<ImageLayerDesc, ImagePtr> rotoPaintImages;
-        RenderRoIRetCode code = renderInputOrTakeFromStore(bottomMerge->getEffectInstance(), -1, &rotoPaintArgs, &rotoPaintImages, this);
+        RenderRoIRetCode code = eRenderRoIRetCodeOk;
+        {
+            RotoRenderProfile::StageTimer tree(RotoRenderProfile::eStageTree);
+            const DirectTreeResult direct = renderConcatenatedTree(*this, args, roto, items, &rotoPaintImages);
+            if (direct == DirectTreeResult::Aborted) {
+                return eStatusOK;
+            }
+            if (direct == DirectTreeResult::NodePath) {
+                rotoPaintImages.clear();
+                code = renderInputOrTakeFromStore(bottomMerge->getEffectInstance(), -1, &rotoPaintArgs, &rotoPaintImages, this);
+            }
+        }
         if (code == eRenderRoIRetCodeFailed) {
             return eStatusFailed;
         } else if (code == eRenderRoIRetCodeAborted) {

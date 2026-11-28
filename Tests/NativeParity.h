@@ -53,6 +53,7 @@
 #define kParitySourceParamOrigin "origin"
 #define kParitySourceParamNoise "noise"
 #define kParitySourceParamNonFinite "nonFinite"
+#define kParitySourceParamBitDepth "bitDepth"
 #define kParitySourceWidth 64
 #define kParitySourceHeight 48
 #define kParitySourceExtraLayerID "spec"
@@ -86,7 +87,8 @@ float paritySourceNoise(int channel, int cx, int cy);
  * full-resolution picture at each pixel's centre, so mipmap levels show the same image.
  * `nonFinite` is a canonical rectangle (x1, y1, x2, y2), counted from the origin, where the colour
  * plane's R, G and B are NaN, +Inf and -Inf. No node can compute those on a render thread of a
- * debug build, which traps the invalid and overflow exceptions.
+ * debug build, which traps the invalid and overflow exceptions. `bitDepth` ("float", "short" or
+ * "byte") is the depth it outputs; the integer depths hold the picture clamped to [0, 1].
  **/
 class ParitySourceTestEffect
     : public NativeEffectBase {
@@ -152,12 +154,14 @@ private:
     bool hasNoise() const;
     void getOrigin(int* x, int* y) const;
     RectI getNonFinite() const;
+    ImageBitDepthEnum outputBitDepth() const;
 
     KnobChoiceWPtr _components;
     KnobBoolWPtr _extraLayer;
     KnobIntWPtr _origin;
     KnobBoolWPtr _noise;
     KnobIntWPtr _nonFinite;
+    KnobChoiceWPtr _bitDepth;
     KnobBoolWPtr _blackOutside;
 };
 
@@ -262,6 +266,7 @@ void setParitySourceExtraLayer(const NodePtr& source, bool extraLayer);
 void setParitySourceOrigin(const NodePtr& source, int x, int y);
 void setParitySourceNoise(const NodePtr& source, bool noise);
 void setParitySourceNonFinite(const NodePtr& source, const RectI& rect);
+void setParitySourceBitDepth(const NodePtr& source, const std::string& depthID);
 // Turns the Black Outside knob of a parity source, a generator or a Read on or off.
 void setBlackOutside(const NodePtr& source, bool blackOutside);
 

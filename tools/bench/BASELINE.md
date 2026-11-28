@@ -1126,3 +1126,123 @@ Comp wall, frames 1-6 (s)
 | defocus_retime | 52.08 | 51.28 | -1.5% | 49.65–53.39 | 50.24–55.94 | 11% | 3/3 | noise |
 
 Conclusion. No scenario shows a regression beyond run-to-run noise. The matrix frame times of the two builds agree to within 1.5% on both tiny configurations and `chain:30`; the larger frame deltas (`mixed:100` -40%, `comp:100` -9%, `wide:100` +6%) all sit inside a spread of 12% to 88%, driven by single outlier batches (batch 1 and 3 `mixed:100` main at 6.8 and 9.8 s against 3.9 s in batch 2) on a 4-core host with intermittent foreign load. The three comps are within 1.5% to 5.7% of each other and inside their spreads, so ordinary composites are unchanged. The only deltas that pass the spread test are `chain:30` frame time (-3.2%, from two batches whose spread is 2%) and `comp:100` range wall (-21.7%, where m180's two batches agree to 0.5% and main's differ by 20%), both in M180's favour and neither a result to rely on with two batches; the graph-build rows that pass (`chain:1000` tiny +2.9%, `chain:30` hd +11%, 3 to 6 ms) are a few percent of an already small, sub-second-to-6 s phase. M180 therefore adds no measurable cost to graphs that contain no loop block; this comparison says nothing about footage-backed comps (no data) or graphs that use the loop block itself.
+
+## Roto render (2026-11-21, 48f1f34a7)
+
+M299 - Roto Render Performance baseline, `tools/bench/roto_render_bench.sh` with its default matrix (12 frames per scenario, 8-frame checkerboard plate, uncompressed EXR Write), on a Vast.ai VM: AMD EPYC 7C13, 30 vCPUs, 49 GB RAM, RTX 4090 (driver 580.95.05). Build: the release AppImage of 48f1f34a7 (sha256 f1bf90d1…2d1824d), run dir `.local/vast/runs/cloud-gpu-20261121T005440Z`. The records are `baselines/roto-render.jsonl`, the unprofiled pass; a second pass with `BENCH_ROTO_PROFILE=1` gave the stage profile below.
+
+Columns: the cold first frame, the median and p95 of frames 2-12, and frame 12 rendered again after one shape's colour changes and after the upstream Grade's multiply changes. The same scenario differed by up to 7% between the two passes (11% with one shape), so read smaller deltas as noise.
+
+Six records are left out of the baseline file: RotoPaint with 300 shapes at UHD (all four), and keyed RotoPaint with 300 shapes at 2K (feather 0 and 20). Each ran right after the identical Roto scene, and the disk cache tier persists across processes, so those runs reused whole global Merge outputs: their frames fall to 1.2-1.4 s, 2.3 s or 3.3 s, depending on how many of the five Merges hit, where the Roto runs take a steady 5.0-5.5 s. Until the bench gives each run its own empty disk cache (`NATRON_DISK_CACHE_PATH`), compare only scenarios that ran first in their pass.
+
+The stroke scenarios are missing: `tools/bench/gui/make_roto_strokes.py` exited 1 twice on the VM without writing results, so no stroke project was painted.
+
+Roto, 2K (2048x1080), seconds
+
+| shapes | feather | motion | cold | median | p95 | edit colour | edit Grade | peak RSS (GB) |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 0 | still | 0.183 | 0.145 | 0.162 | 0.131 | 0.140 | 3.1 |
+| 1 | 0 | keyed | 0.185 | 0.152 | 0.167 | 0.108 | 0.137 | 3.1 |
+| 1 | 20 | still | 0.181 | 0.136 | 0.159 | 0.132 | 0.176 | 3.2 |
+| 1 | 20 | keyed | 0.174 | 0.139 | 0.152 | 0.123 | 0.126 | 3.1 |
+| 30 | 0 | still | 0.380 | 0.391 | 0.419 | 0.250 | 0.242 | 3.9 |
+| 30 | 0 | keyed | 0.402 | 0.373 | 0.415 | 0.212 | 0.226 | 4.0 |
+| 30 | 20 | still | 0.416 | 0.418 | 0.433 | 0.201 | 0.201 | 4.0 |
+| 30 | 20 | keyed | 0.492 | 0.394 | 0.433 | 0.215 | 0.216 | 4.0 |
+| 100 | 0 | still | 0.897 | 0.865 | 0.884 | 0.383 | 0.380 | 6.5 |
+| 100 | 0 | keyed | 0.855 | 0.848 | 0.891 | 0.371 | 0.362 | 6.6 |
+| 100 | 20 | still | 1.013 | 1.014 | 1.061 | 0.355 | 0.380 | 7.6 |
+| 100 | 20 | keyed | 0.992 | 0.988 | 1.065 | 0.417 | 0.387 | 7.6 |
+| 300 | 0 | still | 2.188 | 2.244 | 2.345 | 0.761 | 0.769 | 14.3 |
+| 300 | 0 | keyed | 2.194 | 2.187 | 2.267 | 0.792 | 0.744 | 14.4 |
+| 300 | 20 | still | 2.594 | 2.637 | 2.723 | 0.890 | 0.901 | 16.9 |
+| 300 | 20 | keyed | 2.610 | 2.669 | 2.739 | 0.825 | 0.828 | 17.2 |
+
+Roto, UHD (3840x2160), seconds
+
+| shapes | feather | motion | cold | median | p95 | edit colour | edit Grade | peak RSS (GB) |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 0 | still | 0.393 | 0.461 | 0.495 | 0.348 | 0.456 | 8.6 |
+| 1 | 0 | keyed | 0.427 | 0.459 | 0.708 | 0.336 | 0.455 | 8.6 |
+| 1 | 20 | still | 0.426 | 0.391 | 0.505 | 0.451 | 0.342 | 8.6 |
+| 1 | 20 | keyed | 0.413 | 0.402 | 0.548 | 0.459 | 0.456 | 8.6 |
+| 30 | 0 | still | 1.018 | 0.943 | 0.965 | 0.647 | 0.631 | 12.0 |
+| 30 | 0 | keyed | 0.987 | 0.939 | 1.010 | 0.683 | 0.579 | 11.9 |
+| 30 | 20 | still | 1.112 | 0.985 | 1.065 | 0.674 | 0.580 | 12.6 |
+| 30 | 20 | keyed | 0.916 | 0.855 | 0.969 | 0.637 | 0.650 | 12.5 |
+| 100 | 0 | still | 1.989 | 1.937 | 1.986 | 1.063 | 0.957 | 22.0 |
+| 100 | 0 | keyed | 1.929 | 1.977 | 2.111 | 1.059 | 0.977 | 22.1 |
+| 100 | 20 | still | 2.136 | 2.180 | 2.238 | 0.961 | 0.973 | 23.8 |
+| 100 | 20 | keyed | 2.082 | 2.024 | 2.181 | 0.950 | 1.036 | 23.9 |
+| 300 | 0 | still | 5.113 | 5.113 | 5.213 | 2.327 | 2.208 | 38.8 |
+| 300 | 0 | keyed | 5.114 | 5.004 | 5.126 | 3.424 | 2.771 | 37.7 |
+| 300 | 20 | still | 5.502 | 5.516 | 5.869 | 2.160 | 2.152 | 37.5 |
+| 300 | 20 | keyed | 5.429 | 5.409 | 5.609 | 2.337 | 2.245 | 37.8 |
+
+RotoPaint, 2K (2048x1080), seconds
+
+| shapes | feather | motion | cold | median | p95 | edit colour | edit Grade | peak RSS (GB) |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 0 | still | 0.157 | 0.134 | 0.140 | 0.097 | 0.103 | 3.0 |
+| 1 | 0 | keyed | 0.183 | 0.130 | 0.149 | 0.124 | 0.123 | 3.1 |
+| 1 | 20 | still | 0.170 | 0.137 | 0.159 | 0.131 | 0.122 | 3.1 |
+| 1 | 20 | keyed | 0.164 | 0.131 | 0.153 | 0.098 | 0.126 | 3.1 |
+| 30 | 0 | still | 0.382 | 0.373 | 0.387 | 0.197 | 0.221 | 3.9 |
+| 30 | 0 | keyed | 0.411 | 0.358 | 0.393 | 0.188 | 0.197 | 3.9 |
+| 30 | 20 | still | 0.440 | 0.400 | 0.421 | 0.232 | 0.215 | 4.0 |
+| 30 | 20 | keyed | 0.397 | 0.400 | 0.456 | 0.191 | 0.196 | 4.0 |
+| 100 | 0 | still | 0.876 | 0.878 | 0.906 | 0.365 | 0.329 | 6.6 |
+| 100 | 0 | keyed | 0.880 | 0.856 | 0.894 | 0.362 | 0.349 | 6.7 |
+| 100 | 20 | still | 0.984 | 1.021 | 1.061 | 0.396 | 0.381 | 7.6 |
+| 100 | 20 | keyed | 1.018 | 0.982 | 1.053 | 0.368 | 0.373 | 7.4 |
+| 300 | 0 | still | 2.213 | 2.281 | 2.375 | 0.773 | 0.759 | 14.2 |
+| 300 | 20 | still | 2.522 | 2.623 | 2.694 | 0.793 | 0.789 | 17.1 |
+
+RotoPaint, UHD (3840x2160), seconds
+
+| shapes | feather | motion | cold | median | p95 | edit colour | edit Grade | peak RSS (GB) |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 0 | still | 0.403 | 0.452 | 0.489 | 0.343 | 0.450 | 8.6 |
+| 1 | 0 | keyed | 0.430 | 0.460 | 0.508 | 0.435 | 0.333 | 8.6 |
+| 1 | 20 | still | 0.413 | 0.377 | 0.493 | 0.374 | 0.339 | 8.6 |
+| 1 | 20 | keyed | 0.384 | 0.371 | 0.461 | 0.448 | 0.353 | 8.6 |
+| 30 | 0 | still | 0.936 | 0.944 | 0.976 | 0.551 | 0.558 | 12.0 |
+| 30 | 0 | keyed | 0.927 | 0.927 | 0.958 | 0.642 | 0.620 | 12.0 |
+| 30 | 20 | still | 0.922 | 0.934 | 0.976 | 0.633 | 0.569 | 12.5 |
+| 30 | 20 | keyed | 1.006 | 0.876 | 0.980 | 0.618 | 0.642 | 12.5 |
+| 100 | 0 | still | 1.990 | 1.953 | 2.041 | 1.170 | 1.112 | 22.0 |
+| 100 | 0 | keyed | 2.045 | 2.038 | 2.119 | 1.193 | 1.126 | 22.1 |
+| 100 | 20 | still | 2.192 | 2.127 | 2.184 | 1.210 | 1.194 | 23.8 |
+| 100 | 20 | keyed | 2.166 | 2.080 | 2.328 | 0.973 | 1.001 | 23.8 |
+
+### Profile: 100 shapes at UHD
+
+`NATRON_ROTO_RENDER_PROFILE` stage times, averaged over the frames of the profiled pass that rasterised all 100 masks (11 of 11 later frames for Roto). The `tree` stage contains the mask renders. The Merge compositing row is the `tree` time of the edit-Grade render, which fetches no masks, minus about 25 ms for the Grade (the one-shape edit-Grade `tree` time). The per-item node row is what remains of `tree` after the masks and the Merge: each item's Roto effect node copying its mask into an RGBA output, plus the per-node render overhead. Shares are of the unprofiled median frame (2.180 s still, 2.024 s keyed).
+
+| stage | still f20 (ms) | share | keyed f20 (ms) | share |
+|---|---|---|---|---|
+| Merge compositing (global Merge, 100 A inputs) | 658 | 30% | 649 | 32% |
+| outside RotoPaint (Read, Write encode, render call) | 490 | 22% | 355 | 18% |
+| per-item effect nodes (inferred) | 409 | 19% | 404 | 20% |
+| mask conversion (alpha to RGBA with colour) | 303 | 14% | 301 | 15% |
+| feather raster | 82 | 3.7% | 82 | 4.0% |
+| mask, unattributed | 77 | 3.5% | 77 | 3.8% |
+| fill raster | 39 | 1.8% | 38 | 1.9% |
+| feather quads and rasteriser setup | 36 | 1.6% | 39 | 1.9% |
+| polygon evaluation | 31 | 1.4% | 24 | 1.2% |
+| Grade | ~25 | 1.1% | ~25 | 1.2% |
+| mask allocation | 21 | 0.9% | 21 | 1.0% |
+| RotoPaint copy-out | 8 | 0.4% | 8 | 0.4% |
+| mask cache lookup | 1.8 | 0.1% | 1.8 | 0.1% |
+| per-render setup (tree nodes, bottom Merge) | 0.33 | <0.1% | 0.33 | <0.1% |
+
+The 100 masks together take 590 ms (27%) still and 583 ms keyed. Feather 0 changes only the raster rows (feather 37 ms, conversion 255 ms). RotoPaint matches Roto to within the noise.
+
+Cache behaviour, from the profile records:
+
+- Every mask lookup missed: 0 hits in all 32 profiled scenarios. Still shapes rasterise again on every frame, as the frame in the mask key predicts.
+- After a Grade edit no mask is requested at all: the global Merge renders again and takes each item's effect-node output from the cache, whose hash does not follow the Grade. The colour edit rasterises exactly one mask.
+- An unchanged re-render of frame 12 takes 0.29 s at UHD: Write and the render call with everything cached.
+- Peak RSS reaches 22-24 GB with 100 shapes at UHD and 38-40 GB with 300: every item caches an RGBA float mask and an RGBA float effect output per frame.
+
+Stack samples (`sample_stacks_gdb.sh`, 25 samples each on the 100-shape UHD still and keyed cases) carry no Natron symbols, because the AppImage is stripped, so they rank nothing. They do show occupancy: 1.6 busy threads per sample (still) and 4.1 (keyed) of 30, so the Roto tree renders almost serially. The 300-stroke sample did not run, for want of its project.

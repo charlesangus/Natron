@@ -370,31 +370,22 @@ EffectInstance::convertLayersFormatsIfNeeded(const ImagePtr& inputImage,
          * Lock the downscaled image so it cannot be resized while creating the temp image and calling convertToFormat.
          **/
         Image::ReadAccess acc = inputImage->getReadRights();
-        RectI bounds = inputImage->getBounds();
-#if 0 //def BOOST_NO_CXX11_VARIADIC_TEMPLATES
-       ImagePtr tmp( new Image(targetComponents,
-                                inputImage->getRoD(),
-                                bounds,
-                                inputImage->getMipmapLevel(),
-                                inputImage->getPixelAspectRatio(),
-                                targetDepth,
-                                inputImage->getFieldingOrder(),
-                                false) );
-#else
+        const RectI& bounds = inputImage->getBounds();
+        // The copy is keyed like the source and carries no bitmap, so its bounds must be exactly what it holds.
+        RectI convertedBounds = roi.intersect(bounds);
+        if (convertedBounds.isNull()) {
+            convertedBounds = bounds;
+        }
         ImagePtr tmp = std::make_shared<Image>(targetComponents,
                                                inputImage->getRoD(),
-                                               bounds,
+                                               convertedBounds,
                                                inputImage->getMipmapLevel(),
                                                inputImage->getPixelAspectRatio(),
                                                targetDepth,
                                                inputImage->getFieldingOrder(),
                                                false);
-
-#endif
         tmp->setKey(inputImage->getKey());
-        const RectI clippedRoi = roi.intersect(bounds);
-
-        inputImage->convertToFormat(clippedRoi, channelForAlpha, false, tmp.get());
+        inputImage->convertToFormat(convertedBounds, channelForAlpha, false, tmp.get());
 
         return tmp;
     }

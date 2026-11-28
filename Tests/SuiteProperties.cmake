@@ -12,6 +12,9 @@ set(_natron_serial_suites
     StagedImageEffectTiming
     BezierEditScalingTiming
     AiAbortTiming
+    # About 147 s alone, but every render clears the whole cache, which walks a 70-node Merge chain,
+    # so beside other suites under `ctest -j` it passes the default timeout.
+    RotoPaintDirectCompositeTest
 )
 
 # Each suite below keeps every core busy for minutes: whole-frame darktable-parity denoises of
@@ -51,6 +54,8 @@ set(_natron_long_suite_timeouts
     StagedResampleTest 900
     # Debug: about 234 s on a quiet runner, 28 to 38 s per case under load.
     GraphScalingConnectTest 900
+    # About 147 s alone; see the serial list above.
+    RotoPaintDirectCompositeTest 600
 )
 
 set(_natron_long_suites "")

@@ -3134,6 +3134,18 @@ EffectInstance::getImageFromCacheAndConvertIfNeeded(bool /*useCache*/,
                 continue;
             }
 
+            // Without a bitmap nothing records which pixels were written: such an image holds its whole bounds
+            // and can only serve a request it covers at its own level.
+            if ((*it)->getStorageMode() == eStorageModeRAM && !(*it)->usesBitMap()) {
+                if (candidate._mipmapLevel != mipmapLevel) {
+                    continue;
+                }
+                const RectI needed = boundsParam ? roi.intersect(*boundsParam) : roi;
+                if (!needed.isNull() && !(*it)->getBounds().contains(needed)) {
+                    continue;
+                }
+            }
+
             if (candidate._mipmapLevel == mipmapLevel) {
                 *image = *it;
 
@@ -3842,6 +3854,34 @@ findInputImageForPlane(const EffectInstance::InputImagesMap& inputImages,
     return found->second.front();
 }
 
+// Input images reach this render in the depth their own node rendered them at, and only a fetch that maps to
+// the clip preferences converts them. The unprocessed-channel copy, the mask/mix and the mipmap upscale read the
+// source in the depth of the image they write, so a source of another depth is converted over rect first.
+static ImagePtr
+inputImageInDepth(const ImagePtr& input,
+                  ImageBitDepthEnum depth,
+                  const RectI& rect)
+{
+    if (!input || (input->getBitDepth() == depth) || (input->getStorageMode() != eStorageModeRAM)) {
+        return input;
+    }
+    RectI window = rect.intersect(input->getBounds());
+    if (window.isNull()) {
+        window = input->getBounds();
+    }
+    ImagePtr converted = std::make_shared<Image>(input->getComponents(),
+                                                 input->getRoD(),
+                                                 window,
+                                                 input->getMipmapLevel(),
+                                                 input->getPixelAspectRatio(),
+                                                 depth,
+                                                 input->getFieldingOrder(),
+                                                 false);
+    input->convertToFormat(window, -1, false, converted.get());
+
+    return converted;
+}
+
 // Reads what a plug-in rendered into an OpenGL texture back into the RAM layer image. The context that holds
 // the texture must be current. glReadPixels() writes RGBA float, so a layer of another depth goes through a
 // float temporary, the same way the CPU path converts its temporary image.
@@ -4318,7 +4358,10 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
 
                 assert(it->second.fullscaleImage != it->second.downscaleImage && it->second.renderMappedImage == it->second.fullscaleImage);
 
-                ImagePtr mappedOriginalInputImage = originalInputImage;
+                const ImagePtr originalInTmpDepth = (originalInputImage && (originalInputImage->getMipmapLevel() != 0))
+                    ? inputImageInDepth(originalInputImage, it->second.tmpImage->getBitDepth(), originalInputImage->getBounds())
+                    : inputImageInDepth(originalInputImage, it->second.tmpImage->getBitDepth(), renderMappedRectToRender);
+                ImagePtr mappedOriginalInputImage = originalInTmpDepth;
                 const std::bitset<4> tmpProcessChannels = processChannelsForImage(it->first, *it->second.tmpImage, planeProcessChannels);
 
                 if ( originalInputImage && (originalInputImage->getMipmapLevel() != 0) ) {
@@ -4336,7 +4379,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                                                                it->second.tmpImage->getBitDepth(),
                                                                it->second.tmpImage->getFieldingOrder(),
                                                                false);
-                        originalInputImage->upscaleMipmap( downscaledRectToRender, originalInputImage->getMipmapLevel(), 0, tmp.get() );
+                        originalInTmpDepth->upscaleMipmap(downscaledRectToRender, originalInTmpDepth->getMipmapLevel(), 0, tmp.get());
                         mappedOriginalInputImage = tmp;
                     }
                 }
@@ -4421,12 +4464,14 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     it->second.downscaleImage->premultiplyByChannel(actionArgs.roi, unPremultDivisorImage.get(), unPremultDivisorChannel, planeProcessChannels, unPremultSkipChannel);
                 }
 
+                const bool readsOriginal = useMaskMix || (!rendersUnprocessed && it->second.downscaleImage->canCallCopyUnProcessedChannels(planeProcessChannels));
+                const ImagePtr originalInOutputDepth = readsOriginal ? inputImageInDepth(originalInputImage, it->second.downscaleImage->getBitDepth(), actionArgs.roi) : originalInputImage;
                 // Mix first: it blends every channel in float and would round a channel copied back from the source.
                 if (useMaskMix) {
-                    it->second.downscaleImage->applyMaskMix(actionArgs.roi, maskImage.get(), originalInputImage.get(), doMask, false, mix);
+                    it->second.downscaleImage->applyMaskMix(actionArgs.roi, maskImage.get(), originalInOutputDepth.get(), doMask, false, mix);
                 }
                 if (!rendersUnprocessed) {
-                    it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, planeProcessChannels, originalInputImage);
+                    it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, planeProcessChannels, originalInOutputDepth);
                 }
             } // if (renderFullScaleThenDownscale) {
         } // if (it->second.isAllocatedOnTheFly) {

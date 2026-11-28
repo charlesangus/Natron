@@ -55,7 +55,10 @@
 //   0 disables), since ctest kills a stuck suite without a word;
 // - one stack dump, the process left running, when it has not finished exiting some time after
 //   the last test, for a hang in process teardown (NATRON_TEST_EXIT_WATCHDOG_S, default 60,
-//   0 disables).
+//   0 disables);
+// - a report of any non-zero exit status, through exit() or _exit() (TestExitReport.cpp), with the
+//   calling thread and every thread's stack, since ctest shows only "Failed" for a suite whose
+//   tests all passed and then something ended the process with a status of its own.
 // A stall, its dump before ctest's timeout or a slow exit also dumps the stacks of this process's
 // execComp children, MoonRay's render processes, within the same budget; where ptrace on them is
 // refused, each of their threads' state and kernel wait channel instead.
@@ -156,6 +159,23 @@ public:
         for (const int sig : { SIGSEGV, SIGBUS, SIGFPE, SIGILL, SIGABRT }) {
             sigaction(sig, &action, nullptr);
         }
+    }
+
+    // Has to run after AppManager::load(): on_exit handlers run last registered first, and the
+    // manager's own ends the process with _exit() before the ones registered ahead of it.
+    static void reportNonZeroExits()
+    {
+        reportingPid().store(getpid());
+        static std::atomic<bool> registered { false };
+        if (!registered.exchange(true)) {
+            on_exit(&onExit, nullptr);
+        }
+    }
+
+    // Called by the test binaries' _exit() before the process ends.
+    static void reportDirectExit(int status)
+    {
+        reportExit("_exit", status);
     }
 
     // Seconds after the process started at which the one stall dump is taken: ctest's timeout for
@@ -394,6 +414,59 @@ private:
         dumpStacks(deadline);
         dumpRenderProcessStacks(deadline);
         writeStderr("watchdog: exit dump done\n");
+    }
+
+    static void onExit(int status,
+                       void*)
+    {
+        reportExit("exit", status);
+    }
+
+    // Only the process that asked: a forked child that never reached exec, or a vfork child,
+    // ends through the same exit() and _exit() and must stay silent.
+    static void reportExit(const char* how,
+                           int status)
+    {
+        if (status == 0 || reportingPid().load() != getpid() || exitReported().exchange(true)) {
+            return;
+        }
+        // gtest's own status for a run with failed tests, already explained in its summary.
+        if (status == 1 && ::testing::UnitTest::GetInstance()->Failed()) {
+            return;
+        }
+        const pid_t thread = static_cast<pid_t>(syscall(SYS_gettid));
+        Line line;
+        line.addText("watchdog: the process is exiting with status ");
+        line.addNumber(status);
+        line.addText(" through ");
+        line.addText(how);
+        line.addText("() on thread ");
+        line.addNumber(thread);
+        line.addText(thread == getpid() ? " (the main thread)" : " (not the main thread)");
+        line.addText(", phase '");
+        line.addText(phase().load());
+        line.addText("'; its stack, then every thread's, follows\n");
+        writeStderr(line.c_str(), line.length());
+        void* frames[64];
+        backtrace_symbols_fd(frames, backtrace(frames, 64), STDERR_FILENO);
+        const long deadline = monotonicMilliseconds() + kDumpBudgetSeconds * 1000L;
+        dumpStacks(deadline);
+        dumpRenderProcessStacks(deadline);
+        writeStderr("watchdog: exit report done\n");
+    }
+
+    static std::atomic<pid_t>& reportingPid()
+    {
+        static std::atomic<pid_t> p { 0 };
+
+        return p;
+    }
+
+    static std::atomic<bool>& exitReported()
+    {
+        static std::atomic<bool> r { false };
+
+        return r;
     }
 
     static inline const std::chrono::steady_clock::time_point processStartTime = std::chrono::steady_clock::now();
@@ -806,6 +879,7 @@ public:
         TestWatchdog::installCrashHandler();
         TestWatchdog::listenForCurrentTest();
         TestWatchdog::armStallDump(TestWatchdog::stallDumpSeconds());
+        TestWatchdog::reportNonZeroExits();
     }
 
     virtual void TearDown() override

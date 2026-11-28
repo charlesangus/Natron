@@ -151,6 +151,7 @@
 #include "Engine/ProcessHandler.h" // ProcessInputChannel
 #include "Engine/Project.h"
 #include "Engine/RenderScheduler.h"
+#include "Engine/RotoLatencyProbe.h"
 #include "Engine/RotoPaint.h"
 #include "Engine/RotoSmear.h"
 #include "Engine/StandardPaths.h"
@@ -1522,6 +1523,8 @@ openNodeCacheDiskTier(const Settings& settings)
 bool
 AppManager::loadInternalAfterInitGui(const CLArgs& cl)
 {
+    // Never stopped: render threads may still hold it at exit, and each line is flushed as written.
+    RotoRenderProfile::startFromEnvironment();
     try {
         size_t maxCacheRAM = _imp->_settings->getRamMaximumPercent() * getSystemTotalRAM();
         U64 viewerCacheSize = _imp->_settings->getMaximumViewerDiskCacheSize();
@@ -3921,10 +3924,21 @@ AppManager::tearDownPython()
 #endif
 
     Py_DECREF(_imp->mainModule);
+    // The stream catchers only feed the script editor, so an error raised while Python finalizes
+    // (an atexit callback, a thread left running) would be lost in them.
+    const char* const streams[][2] = { { "stdout", "__stdout__" }, { "stderr", "__stderr__" } };
+    for (const auto& stream : streams) {
+        PyObject* original = PySys_GetObject(stream[1]);
+        if (original && (original != Py_None)) {
+            PySys_SetObject(stream[0], original);
+        }
+    }
 #if !defined(NDEBUG)
     qDebug() << "Finalizing Python";
 #endif
-    Py_Finalize();
+    if (Py_FinalizeEx() < 0) {
+        qWarning() << "Natron: Python could not flush its buffered output while finalizing";
+    }
 }
 
 PyObject*

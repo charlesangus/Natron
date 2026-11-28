@@ -363,15 +363,20 @@ protected:
     // Renders node's rgba, depth, primId and normal planes, in that order. Bypassing the cache
     // empties the caches after the render too, which releases the render engines, so with
     // keepEngine they are emptied before only, and the engine is there to ask for its settings.
+    // Emptying them before releases the engine of the render before too, so with liveEngine only
+    // the node cache is emptied, and the engine of the render before makes this one.
     static bool renderAll(const NodePtr& node,
                           std::vector<RenderedPlane>* planes,
-                          bool keepEngine = false)
+                          bool keepEngine = false,
+                          bool liveEngine = false)
     {
         std::string error;
-        if (keepEngine) {
+        if (liveEngine) {
+            appPTR->clearNodeCache();
+        } else if (keepEngine) {
             appPTR->clearAllCaches();
         }
-        const bool ok = renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), allPlanes(), planes, &error, !keepEngine);
+        const bool ok = renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kSize, kSize), allPlanes(), planes, &error, !keepEngine && !liveEngine);
         EXPECT_TRUE(ok) << error;
         EXPECT_FALSE(node->hasPersistentMessage());
         if (!ok) {
@@ -1731,7 +1736,7 @@ TEST_F(USDRenderCyclesSubdivisionTest, ALiveDicingRateChangeRedicesOnTheSameEngi
     ASSERT_TRUE(HydraRender::setEngineSetting(owner, "natron:dicingRate", coarse["natron:dicingRate"]));
     {
         const CyclesTestUtils::CodingErrors errors;
-        ASSERT_TRUE(renderAll(node, &coarsePlanes, true));
+        ASSERT_TRUE(renderAll(node, &coarsePlanes, true, true));
         coarseErrors = errors.text();
     }
     const std::uint64_t rebuilds = HydraRender::getEngineBuildCount() - builds;

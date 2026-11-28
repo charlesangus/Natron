@@ -659,7 +659,7 @@ future core work has solid ground to build on.
 | M595 | Native EdgeDetail | todo | M238 |  | E3 | F39 | | [M595-native-edgedetail.md](PLAN/MILESTONES/M595-native-edgedetail.md) |
 | M596 | Remove Old User Knob Dialogs | todo | M247 |  | E10 | | | [M596-remove-old-user-knob-dialogs.md](PLAN/MILESTONES/M596-remove-old-user-knob-dialogs.md) |
 | M597 | Curve Editor Expanded Knob Rows | todo | - |  | E10 | | | [M597-curve-editor-expanded-knob-rows.md](PLAN/MILESTONES/M597-curve-editor-expanded-knob-rows.md) |
-| M598 | Progressive Render GIL Flake | doing | - | bosley-executor | E14 | | | [M598-progressive-render-gil-flake.md](PLAN/MILESTONES/M598-progressive-render-gil-flake.md) |
+| M598 | Progressive Render GIL Flake | done | - | | E14 | | | [M598-progressive-render-gil-flake.md](PLAN/MILESTONES/M598-progressive-render-gil-flake.md) |
 | M599 | Runner Efficiency | done | - | bosley-executor | E2 | | | [M599-runner-efficiency.md](PLAN/MILESTONES/M599-runner-efficiency.md) |
 | M600 | Native Geometry UAT Round 2 | done | - | bosley-executor | E9 | F15 | | [M600-native-geometry-uat-round-2.md](PLAN/MILESTONES/M600-native-geometry-uat-round-2.md) |
 | M616 | Packed Instances In Viewer Cycles | done | M600 | bosley-executor | E9 | |  | [M616-packed-instances-in-viewer-cycles.md](PLAN/MILESTONES/M616-packed-instances-in-viewer-cycles.md) |

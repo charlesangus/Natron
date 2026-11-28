@@ -24,3 +24,4 @@
 
 **Verification gate:** full build and ctest green; the 200-repeat run under load passes; the revert check fails as expected, and that is noted in the PR.
 - 2026-11-27 (PM) — Revert check done (run 46099786942, branch check/m598-revert, since deleted): with `PythonUnlockedWhileWaiting unlocked;` removed from `registerParticipant`, the test fails with "the GIL and the writer lock deadlocked waiting for the reader, writer and registrant to end (registrant /proc state: S)", as expected.
+- 2026-11-28 — Merged to main (PR #410, squash).

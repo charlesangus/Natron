@@ -43,7 +43,8 @@ inline constexpr std::string_view kMergeConflictsMember = "merge/conflicts.yaml"
 
 /**
  * @brief Writes conflicts in their order. A side's knob is written as project.yaml writes it,
- * with its type and dimension count beside it; a side's key as a one-key curve, its other keys
+ * with its type and dimension count beside it and, for a plug-in knob, the defaults and choice
+ * entries it was recorded with; a side's key as a one-key curve, its other keys
  * as a curve; its connections as node, input and source IDs; its knobs as a list, each with its
  * name, type and dimension count; its roto and tracker data as project.yaml writes them, with
  * every blob inline. A handler option is written with its name, label and the same state keys.
@@ -55,8 +56,8 @@ std::string encodeMergeConflictsYaml(const std::vector<MergeConflict>& conflicts
  * is not a conflict list or holds a malformed conflict, YamlNewerFormatError for one from a newer
  * Natron; unknown keys are reported in warnings.
  *
- * A side's knob is completed with its recorded type, so a choice knob carries its option ID and
- * index 0 until it is matched against the live knob's entries.
+ * A side's knob is completed with its recorded type and entries, so a choice knob recorded
+ * without entries carries its option ID and index 0 until it is matched against the live knob's.
  **/
 std::vector<MergeConflict> decodeMergeConflictsYaml(std::string_view text, YamlWarnings* warnings = nullptr);
 

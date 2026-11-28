@@ -19,6 +19,8 @@
 
 #include "Serialization/Merge/MergeConflict.h"
 
+#include <algorithm>
+
 #include "Serialization/Merge/MergeRules.h"
 #include "Serialization/Ops/SnapshotDiff.h"
 #include "Serialization/ProjectSerialization.h"
@@ -60,13 +62,47 @@ namespace {
         return diffSnapshots(editableState(left), editableState(right)).empty();
     }
 
+    // A user knob's label, tooltip, layout and flags are its definition, a plug-in knob's come
+    // from the plug-in.
+    KnobSerialization
+    knobState(const KnobSerialization& knob)
+    {
+        if (knob.isUserKnob) {
+            return knob;
+        }
+        KnobSerialization state = knob;
+        const KnobSerialization blank;
+        state.label = blank.label;
+        state.tooltip = blank.tooltip;
+        state.triggerNewLine = blank.triggerNewLine;
+        state.evaluatesOnChange = blank.evaluatesOnChange;
+        state.animationEnabled = blank.animationEnabled;
+        state.isPersistent = blank.isPersistent;
+
+        return state;
+    }
+
+    bool
+    sameKnobs(const std::list<KnobSerialization>& a,
+              const std::list<KnobSerialization>& b)
+    {
+        return std::equal(a.begin(), a.end(), b.begin(), b.end(), sameKnobState);
+    }
+
 } // namespace
+
+bool
+sameKnobState(const KnobSerialization& a,
+              const KnobSerialization& b)
+{
+    return knobState(a) == knobState(b);
+}
 
 bool
 operator==(const MergeConflictValue& a,
            const MergeConflictValue& b)
 {
-    return (a.knob == b.knob) && (a.key == b.key) && (a.otherKeys == b.otherKeys) && (a.connections == b.connections) && (a.removedNodes == b.removedNodes) && (a.parent == b.parent) && (a.knobs == b.knobs)
+    return sameOptional(a.knob, b.knob, sameKnobState) && (a.connections == b.connections) && (a.removedNodes == b.removedNodes) && (a.parent == b.parent) && sameOptional(a.knobs, b.knobs, sameKnobs)
         && sameNode(a.node, b.node) && sameOptional(a.roto, b.roto, MergeDetail::sameRotoContexts) && sameOptional(a.tracker, b.tracker, MergeDetail::sameTrackerContexts)
         && (a.itemsBefore == b.itemsBefore);
 }

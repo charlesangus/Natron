@@ -57,9 +57,9 @@ merges:
       - {node: Grade1, knob: multiply, kind: value}
 ```
 
-Conflict kinds: `value`, `curve-key`, `input`, `structural-insert`, `delete-modify`, `reparent`,
-`adopted`, `roto-shape`. Each conflict names the base node, or no node for a node without one,
-plus `knob`, `dim`, `time`, `input` or `item` where they apply. An `adopted` conflict lists, as `defaulted` (space-separated), the knobs
+Conflict kinds: `value`, `input`, `structural-insert`, `delete-modify`, `reparent`, `adopted`,
+`roto-shape`. Each conflict names the base node, or no node for a node without one, plus `knob`,
+`dim`, `input` or `item` where they apply. An `adopted` conflict lists, as `defaulted` (space-separated), the knobs
 the adopted node leaves at their default while the base node sets them.
 
 ## Checking

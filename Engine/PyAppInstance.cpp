@@ -38,6 +38,7 @@
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
+#include "Engine/GraphOpApply.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
@@ -53,6 +54,8 @@
 
 #include "Engine/EngineFwd.h"
 
+#include "Serialization/Merge/MergeConflict.h"
+#include "Serialization/Ops/SnapshotDiff.h"
 #include "Serialization/ProjectSerialization.h"
 
 NATRON_NAMESPACE_ENTER
@@ -562,6 +565,67 @@ App::loadProject(const QString& filename)
 }
 
 namespace {
+bool
+setDictString(PyObject* dict,
+              const char* key,
+              const std::string& value)
+{
+    PyObject* item = PyUnicode_FromStringAndSize(value.data(), (Py_ssize_t)value.size());
+    const bool ok = item && (PyDict_SetItemString(dict, key, item) == 0);
+    Py_XDECREF(item);
+
+    return ok;
+}
+
+PyObject*
+stringList(const std::vector<std::string>& values)
+{
+    PyObject* list = PyList_New((Py_ssize_t)values.size());
+    for (std::size_t i = 0; list && (i < values.size()); ++i) {
+        PyObject* item = PyUnicode_FromStringAndSize(values[i].data(), (Py_ssize_t)values[i].size());
+        if (!item) {
+            Py_DECREF(list);
+
+            return 0;
+        }
+        PyList_SetItem(list, (Py_ssize_t)i, item);
+    }
+
+    return list;
+}
+
+PyObject*
+conflictDict(const ProjectPtr& project,
+             std::size_t index,
+             const Serialization::MergeConflict& conflict)
+{
+    PyObject* dict = PyDict_New();
+    if (!dict) {
+        return 0;
+    }
+    const NodePtr node = conflict.nodeId.empty() ? NodePtr() : project->findNodeById(conflict.nodeId);
+    std::vector<std::string> names;
+    std::vector<std::string> labels;
+    for (const ProjectMerge::ConflictChoice& choice : ProjectMerge::availableChoices(project, conflict)) {
+        names.push_back(ProjectMerge::choiceName(choice));
+        labels.push_back(choice.label.toStdString());
+    }
+    PyObject* indexItem = PyLong_FromSize_t(index);
+    PyObject* choices = stringList(names);
+    PyObject* choiceLabels = stringList(labels);
+    const bool ok = indexItem && choices && choiceLabels && (PyDict_SetItemString(dict, "index", indexItem) == 0) && setDictString(dict, "node", node ? node->getFullyQualifiedName() : std::string()) && setDictString(dict, "nodeId", conflict.nodeId) && setDictString(dict, "kind", std::string(Serialization::mergeConflictKindName(conflict.kind))) && setDictString(dict, "label", ProjectMerge::conflictLabel(conflict).toStdString()) && (PyDict_SetItemString(dict, "choices", choices) == 0) && (PyDict_SetItemString(dict, "choiceLabels", choiceLabels) == 0);
+    Py_XDECREF(indexItem);
+    Py_XDECREF(choices);
+    Py_XDECREF(choiceLabels);
+    if (!ok) {
+        Py_DECREF(dict);
+
+        return 0;
+    }
+
+    return dict;
+}
+
 // The collection group names in app, the project's root for None. False with error set when it
 // is not a group of app, or is a PyPlug that is not unlocked for editing.
 bool
@@ -607,6 +671,79 @@ targetCollection(const AppInstancePtr& app,
     return true;
 }
 } // anon namespace
+
+PyObject*
+App::getMergeConflicts() const
+{
+    const ProjectPtr project = getInternalApp()->getProject();
+    const std::vector<Serialization::MergeConflict> conflicts = project ? project->getMergeConflicts() : std::vector<Serialization::MergeConflict>();
+    PyObject* list = PyList_New((Py_ssize_t)conflicts.size());
+    for (std::size_t i = 0; list && (i < conflicts.size()); ++i) {
+        PyObject* dict = conflictDict(project, i, conflicts[i]);
+        if (!dict) {
+            Py_DECREF(list);
+
+            return 0;
+        }
+        PyList_SetItem(list, (Py_ssize_t)i, dict);
+    }
+
+    return list;
+}
+
+bool
+App::resolveMergeConflict(int index,
+                          const QString& choice)
+{
+    const AppInstancePtr app = getInternalApp();
+    const ProjectPtr project = app->getProject();
+    const std::vector<Serialization::MergeConflict> conflicts = project->getMergeConflicts();
+    const auto fail = [&app](const QString& message) {
+        app->appendToScriptEditor(message.toStdString());
+
+        return false;
+    };
+    if ((index < 0) || ((std::size_t)index >= conflicts.size())) {
+        return fail(tr("There is no merge conflict %1.").arg(index));
+    }
+    const Serialization::MergeConflict& conflict = conflicts[(std::size_t)index];
+    ProjectMerge::ConflictChoice found;
+    if (!ProjectMerge::findChoice(project, conflict, choice.toStdString(), &found)) {
+        return fail(tr("Merge conflict %1 offers no choice %2.").arg(index).arg(choice));
+    }
+    std::vector<Serialization::GraphOp> ops;
+    QString error;
+    const bool built = found.option.empty() ? ProjectMerge::sideOperations(project, conflict, found.side, &ops, &error)
+                                            : ProjectMerge::optionOperations(project, conflict, found.option, &ops, &error);
+    if (!built) {
+        return fail(error);
+    }
+    if (!ops.empty()) {
+        Serialization::ProjectSerialization before;
+        project->toSerialization(&before);
+        const std::vector<Serialization::OpResult> results = applyGraphOps(project, ops);
+        bool applied = (results.size() == ops.size());
+        for (const Serialization::OpResult& result : results) {
+            if (!result.applied()) {
+                applied = false;
+                error = QString::fromStdString(result.message);
+                break;
+            }
+        }
+        if (!applied) {
+            Serialization::ProjectSerialization live;
+            project->toSerialization(&live);
+            ignore_result(applyGraphOps(project, Serialization::diffSnapshots(Serialization::editableState(live), Serialization::editableState(before))));
+
+            return fail(error.isEmpty() ? tr("The resolution was not applied.") : error);
+        }
+    }
+    std::vector<Serialization::MergeConflict> kept = conflicts;
+    kept.erase(kept.begin() + index);
+    project->setMergeConflicts(kept);
+
+    return true;
+} // App::resolveMergeConflict
 
 std::list<Effect*>
 App::importTemplateChecked(const QString& filename,

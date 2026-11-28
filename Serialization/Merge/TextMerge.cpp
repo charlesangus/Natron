@@ -234,16 +234,14 @@ TextKnobMergeHandler::mergeDimension(const KnobSerialization* base,
                                      const KnobSerialization* mine,
                                      const KnobSerialization* theirs,
                                      std::size_t index,
-                                     KnobDimensionSerialization* merged,
-                                     std::vector<MergeConflict>* conflicts) const
+                                     KnobDimensionSerialization* merged) const
 {
     const std::optional<KnobDimensionSerialization> b = dimensionState(base, index);
     const std::optional<KnobDimensionSerialization> m = dimensionState(mine, index);
     const std::optional<KnobDimensionSerialization> t = dimensionState(theirs, index);
-    const bool animated = (b && b->curve) || (m && m->curve) || (t && t->curve);
-    const Pick rest = animated ? Pick::eConflict : pick(withoutValue(b), withoutValue(m), withoutValue(t));
+    const Pick rest = pick(withoutValue(b), withoutValue(m), withoutValue(t));
     if (rest == Pick::eConflict) {
-        return ScalarKnobMergeHandler::mergeDimension(base, mine, theirs, index, merged, conflicts);
+        return false;
     }
     const KnobSerialization* frame = mine ? mine : theirs;
     const std::optional<std::string> baseText = stringValue(b, base ? base : frame, index);

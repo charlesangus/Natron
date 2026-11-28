@@ -213,9 +213,6 @@ describeConflict(const MergeConflict& conflict,
             where += "[" + std::to_string(conflict.dimension) + "]";
         }
     }
-    if (conflict.time) {
-        where += " at " + formatYamlDouble(*conflict.time);
-    }
     if (!conflict.input.empty()) {
         where += " input " + conflict.input;
     }

@@ -95,8 +95,8 @@ std::string importTemplate(Gui* gui,
 /**
  * @brief ProjectMerge::updateFromTemplate() on the open project as one undo step, which also puts
  * the import's base and the saved conflicts back. An empty path is the file the import records.
- * A partly applied update is still recorded so it can be undone. The Merge Conflicts panel is
- * shown when the update raised conflicts.
+ * A partly applied update is still recorded so it can be undone. When the update raised
+ * conflicts, the graph comparison is cleared and the first conflicted node framed.
  **/
 ProjectMerge::UpdateResult updateFromTemplate(Gui* gui,
                                               const std::string& templateKey,
@@ -106,8 +106,9 @@ ProjectMerge::UpdateResult updateFromTemplate(Gui* gui,
 /**
  * @brief Calls edit with a TemplateEdit whose applier records its graph edits, with the template
  * imports and merge conflicts, as one undo step titled text on graph, or on the graph last worked
- * in when graph is null. What edit applied before failing is still recorded. The Merge Conflicts
- * panel is shown when the edit raised conflicts. Returns what edit returned.
+ * in when graph is null. What edit applied before failing is still recorded. When the edit raised
+ * conflicts, the graph comparison is cleared and the first conflicted node framed. Returns what
+ * edit returned.
  **/
 bool runTemplateEdit(Gui* gui,
                      NodeGraph* graph,
@@ -140,6 +141,14 @@ bool resolveOption(Gui* gui,
  **/
 void accept(Gui* gui,
             const std::vector<std::size_t>& indices);
+
+/**
+ * @brief Where each of conflicts is in the project's list now, in their order, skipping those no
+ * longer in it. A button or preview keeps the conflicts it was made for rather than their indices,
+ * which shift when a conflict before them is resolved.
+ **/
+std::vector<std::size_t> indicesOf(Gui* gui,
+                                   const std::vector<Serialization::MergeConflict>& conflicts);
 } // namespace MergeConflictResolve
 
 NATRON_NAMESPACE_EXIT

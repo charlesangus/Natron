@@ -313,6 +313,11 @@ public:
     bool _selectionChangeScheduled = false;
     GpuRegionOverlay* _gpuRegions;
     NodeGraphDiffOverlay* _diffOverlay;
+    MergeConflictPreview* mergePreview = nullptr;
+    MergePopover* mergePopover = nullptr;
+    NodeGraphMergeBar* mergeBar = nullptr;
+    // The node Next and Previous step from: the last one they went to.
+    std::string mergeCursorId;
     NodeGraphLowDetailLayer* lowDetailEdgeLayer;
     NodeGraphLowDetailLayer* lowDetailNodeLayer;
     QGraphicsItem* edgeLayer = nullptr;

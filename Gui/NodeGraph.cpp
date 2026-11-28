@@ -63,9 +63,12 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/LoopBlockOverlay.h"
 #include "Gui/Menu.h"
+#include "Gui/MergeConflictPreview.h"
+#include "Gui/MergePopover.h"
 #include "Gui/NodeDiffPanel.h"
 #include "Gui/NodeGraphDiffOverlay.h"
 #include "Gui/NodeGraphLowDetailLayer.h"
+#include "Gui/NodeGraphMergeBar.h"
 #include "Gui/NodeGraphTextItem.h"
 #include "Gui/NodeGui.h"
 #include "Gui/UndoHistory.h"
@@ -162,6 +165,17 @@ NodeGraph::NodeGraph(Gui* gui,
     _imp->_loopBlocks = new LoopBlockOverlay(this, _imp->_nodeRoot);
     _imp->_gpuRegions = new GpuRegionOverlay(this, _imp->_nodeRoot);
     _imp->_diffOverlay = new NodeGraphDiffOverlay(this, _imp->_nodeRoot);
+    _imp->mergePreview = new MergeConflictPreview(this, _imp->_nodeRoot);
+    _imp->mergePopover = new MergePopover(this);
+    _imp->mergeBar = new NodeGraphMergeBar(this);
+    _imp->mergeBar->refresh();
+    if (gui && gui->getApp() && gui->getApp()->getProject()) {
+        MergeConflictPreview* preview = _imp->mergePreview;
+        // A hovered index from before the change may name another conflict now.
+        QObject::connect(gui->getApp()->getProject().get(), &Project::mergeConflictsChanged, preview, [preview]() {
+            preview->clearHover();
+            preview->redraw(); }, Qt::QueuedConnection);
+    }
 
     _imp->_navigator = new Navigator(&_imp->isDoingPreviewRender);
     scene->addItem(_imp->_navigator);
@@ -431,6 +445,7 @@ NodeGraph::resizeEvent(QResizeEvent* e)
     // scene coordinates and the low-detail caches drop themselves on a size change.
     invalidateNavigatorImage();
     QGraphicsView::resizeEvent(e);
+    layoutMergeBar();
     refreshOverlays();
 }
 
@@ -491,6 +506,9 @@ NodeGraph::refreshOverlays()
 
     _imp->_navigator->refreshPosition(navTopLeftScene, navWidth, navHeight);
     updateNavigator();
+    if (_imp->mergePopover) {
+        _imp->mergePopover->reposition();
+    }
 }
 
 bool

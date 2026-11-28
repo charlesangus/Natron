@@ -25,17 +25,25 @@
 
 #include "PyGuiApp.h"
 
+#include <functional>
 #include <initializer_list>
+#include <map>
+#include <set>
 #include <stdexcept>
+#include <utility>
+#include <vector>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QColorDialog>
+#include <QFileInfo>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Project.h"
+#include "Engine/ProjectMerge.h"
 #include "Engine/ProjectTemplate.h"
 #include "Engine/PyNode.h"
 #include "Engine/PyNodeGroup.h"
@@ -48,9 +56,11 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Gui/Gui.h"
 #include "Gui/MergeConflictResolve.h"
+#include "Gui/MergePicks.h"
 #include "Gui/NodeDiffPanel.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGraphDiffOverlay.h"
+#include "Gui/NodeGraphMergeBar.h"
 #include "Gui/NodeGui.h"
 #include "Gui/PythonPanels.h"
 #include "Gui/SequenceFileDialog.h"
@@ -1007,7 +1017,7 @@ GuiApp::compareWithFile(const QString& filePath)
 
         return false;
     }
-    getInternalGuiApp()->getGui()->setGraphComparison(summary);
+    getInternalGuiApp()->getGui()->setGraphComparison(summary, QFileInfo(filePath).fileName());
 
     return true;
 }
@@ -1022,7 +1032,7 @@ GuiApp::compareWithTemplateBase(const QString& templateKey)
 
         return false;
     }
-    getInternalGuiApp()->getGui()->setGraphComparison(summary);
+    getInternalGuiApp()->getGui()->setGraphComparison(summary, Gui::templateBaseDescription(getInternalGuiApp()->getProject(), templateKey.toStdString()));
 
     return true;
 }
@@ -1100,6 +1110,327 @@ GuiApp::getNodeDiffRows() const
     NodeDiffPanel* panel = getInternalGuiApp()->getGui()->getNodeDiffPanel();
 
     return panel ? panel->getRows() : QStringList();
+}
+
+namespace {
+// The graph that draws change: its group's, or the top level's.
+NodeGraph*
+graphOfChange(Gui* gui,
+              const ProjectPtr& project,
+              const ProjectMerge::NodeChange& change)
+{
+    if (change.parentId.empty()) {
+        return gui->getNodeGraph();
+    }
+    const NodePtr parent = project->findNodeById(change.parentId);
+    NodeGroup* group = parent ? parent->isEffectGroup() : 0;
+
+    return group ? dynamic_cast<NodeGraph*>(group->getNodeGraph()) : 0;
+}
+
+// The removed nodes of the comparison drawn as ghosts, each with the graph drawing it.
+std::vector<std::pair<const ProjectMerge::NodeChange*, NodeGraph*>>
+drawnGhosts(Gui* gui,
+            const ProjectPtr& project)
+{
+    std::vector<std::pair<const ProjectMerge::NodeChange*, NodeGraph*>> ghosts;
+    const ProjectMerge::ChangeSummary* summary = gui->getGraphComparison();
+    if (!summary) {
+        return ghosts;
+    }
+    for (const ProjectMerge::NodeChange& change : summary->nodes) {
+        if (change.kind != ProjectMerge::NodeChange::eRemoved) {
+            continue;
+        }
+        NodeGraph* graph = graphOfChange(gui, project, change);
+        if (graph && graph->getDiffOverlay() && !graph->getDiffOverlay()->ghostRectOf(change.nodeId).isEmpty()) {
+            ghosts.push_back(std::make_pair(&change, graph));
+        }
+    }
+
+    return ghosts;
+}
+
+bool
+namedIn(const QStringList& names,
+        const ProjectMerge::NodeChange& change)
+{
+    return names.contains(QString::fromStdString(change.scriptName)) || names.contains(QString::fromStdString(change.nodeId));
+}
+
+// The node IDs of effects by the graph holding each, in the order the graphs first appear.
+std::vector<std::pair<NodeGraph*, std::vector<std::string>>>
+idsByGraph(const std::list<Effect*>& effects)
+{
+    std::vector<std::pair<NodeGraph*, std::vector<std::string>>> byGraph;
+    for (Effect* effect : effects) {
+        const NodePtr node = effect ? effect->getInternalNode() : NodePtr();
+        const NodeGuiPtr nodeUi = node ? std::dynamic_pointer_cast<NodeGui>(node->getNodeGui()) : NodeGuiPtr();
+        NodeGraph* graph = nodeUi ? nodeUi->getDagGui() : 0;
+        if (!graph) {
+            continue;
+        }
+        std::vector<std::pair<NodeGraph*, std::vector<std::string>>>::iterator found = byGraph.begin();
+        while ((found != byGraph.end()) && (found->first != graph)) {
+            ++found;
+        }
+        if (found == byGraph.end()) {
+            found = byGraph.insert(byGraph.end(), std::make_pair(graph, std::vector<std::string>()));
+        }
+        found->second.push_back(node->getNodeId());
+    }
+
+    return byGraph;
+}
+
+// pick on each graph's nodes in turn, stopping at the first failure. True when any pick recorded
+// a step.
+bool
+pickByGraph(const std::vector<std::pair<NodeGraph*, std::vector<std::string>>>& byGraph,
+            const std::function<bool(NodeGraph*, const std::vector<std::string>&, QString*)>& pick,
+            QString* error)
+{
+    error->clear();
+    bool picked = false;
+    for (const std::pair<NodeGraph*, std::vector<std::string>>& graph : byGraph) {
+        picked = pick(graph.first, graph.second, error) || picked;
+        if (!error->isEmpty()) {
+            return false;
+        }
+    }
+
+    return picked;
+}
+} // anon namespace
+
+bool
+GuiApp::restoreFromComparisonChecked(const QStringList& nodeNames,
+                                     const QString& splice,
+                                     QString* error)
+{
+    Gui* gui = getInternalGuiApp()->getGui();
+    ProjectMerge::SpliceMode mode = ProjectMerge::SpliceMode::eAsk;
+    if (splice == QString::fromUtf8("keepMine")) {
+        mode = ProjectMerge::SpliceMode::eKeepMine;
+    } else if (splice == QString::fromUtf8("everywhere")) {
+        mode = ProjectMerge::SpliceMode::eEverywhere;
+    } else if (!splice.isEmpty() && (splice != QString::fromUtf8("ask"))) {
+        *error = tr("Unknown splice mode %1: use \"ask\", \"keepMine\" or \"everywhere\".").arg(splice);
+
+        return false;
+    }
+    std::vector<std::pair<NodeGraph*, std::vector<std::string>>> byGraph;
+    for (const std::pair<const ProjectMerge::NodeChange*, NodeGraph*>& ghost : drawnGhosts(gui, getInternalGuiApp()->getProject())) {
+        const bool picked = nodeNames.isEmpty() ? ghost.second->getDiffOverlay()->isGhostSelected(ghost.first->nodeId) : namedIn(nodeNames, *ghost.first);
+        if (!picked) {
+            continue;
+        }
+        std::vector<std::pair<NodeGraph*, std::vector<std::string>>>::iterator found = byGraph.begin();
+        while ((found != byGraph.end()) && (found->first != ghost.second)) {
+            ++found;
+        }
+        if (found == byGraph.end()) {
+            found = byGraph.insert(byGraph.end(), std::make_pair(ghost.second, std::vector<std::string>()));
+        }
+        found->second.push_back(ghost.first->nodeId);
+    }
+    if (byGraph.empty()) {
+        *error = tr("No ghost of the comparison was named or selected.");
+
+        return false;
+    }
+
+    return pickByGraph(byGraph, [mode](NodeGraph* graph, const std::vector<std::string>& ids, QString* e) { return MergePicks::restore(graph, ids, mode, e); }, error);
+}
+
+bool
+GuiApp::restoreFromComparison(const QStringList& nodeNames,
+                              const QString& splice)
+{
+    QString error;
+
+    return restoreFromComparisonChecked(nodeNames, splice, &error);
+}
+
+bool
+GuiApp::revertFromComparisonChecked(const std::list<Effect*>& effects,
+                                    QString* error)
+{
+    return pickByGraph(idsByGraph(effects), MergePicks::revert, error);
+}
+
+bool
+GuiApp::revertFromComparison(const std::list<Effect*>& effects)
+{
+    QString error;
+
+    return revertFromComparisonChecked(effects, &error);
+}
+
+bool
+GuiApp::takeKnobFromComparisonChecked(Effect* effect,
+                                      const QString& knobName,
+                                      QString* error)
+{
+    const std::string knob = knobName.toStdString();
+    const std::vector<std::pair<NodeGraph*, std::vector<std::string>>> byGraph = idsByGraph(std::list<Effect*>(1, effect));
+    if (byGraph.empty()) {
+        *error = tr("No node given.");
+
+        return false;
+    }
+
+    return pickByGraph(byGraph, [knob](NodeGraph* graph, const std::vector<std::string>& ids, QString* e) { return MergePicks::takeKnob(graph, ids.front(), knob, e); }, error);
+}
+
+bool
+GuiApp::takeKnobFromComparison(Effect* effect,
+                               const QString& knobName)
+{
+    QString error;
+
+    return takeKnobFromComparisonChecked(effect, knobName, &error);
+}
+
+bool
+GuiApp::removeAddedFromComparisonChecked(const std::list<Effect*>& effects,
+                                         QString* error)
+{
+    return pickByGraph(idsByGraph(effects), MergePicks::removeAdded, error);
+}
+
+bool
+GuiApp::removeAddedFromComparison(const std::list<Effect*>& effects)
+{
+    QString error;
+
+    return removeAddedFromComparisonChecked(effects, &error);
+}
+
+bool
+GuiApp::restorePositionFromComparisonChecked(const std::list<Effect*>& effects,
+                                             QString* error)
+{
+    return pickByGraph(idsByGraph(effects), MergePicks::restorePosition, error);
+}
+
+bool
+GuiApp::restorePositionFromComparison(const std::list<Effect*>& effects)
+{
+    QString error;
+
+    return restorePositionFromComparisonChecked(effects, &error);
+}
+
+void
+GuiApp::selectComparisonGhosts(const QStringList& nodeNames)
+{
+    Gui* gui = getInternalGuiApp()->getGui();
+    std::map<NodeGraph*, std::set<std::string>> selection;
+    for (const std::pair<const ProjectMerge::NodeChange*, NodeGraph*>& ghost : drawnGhosts(gui, getInternalGuiApp()->getProject())) {
+        std::set<std::string>& ids = selection[ghost.second];
+        if (namedIn(nodeNames, *ghost.first)) {
+            ids.insert(ghost.first->nodeId);
+        }
+    }
+    for (const std::pair<NodeGraph* const, std::set<std::string>>& graph : selection) {
+        graph.first->setSelectedGhostIds(graph.second);
+    }
+}
+
+PyObject*
+GuiApp::getComparisonGhosts() const
+{
+    const ProjectPtr project = getInternalGuiApp()->getProject();
+    const std::vector<std::pair<const ProjectMerge::NodeChange*, NodeGraph*>> ghosts = drawnGhosts(getInternalGuiApp()->getGui(), project);
+    PyObject* list = PyList_New((Py_ssize_t)ghosts.size());
+    for (std::size_t i = 0; list && (i < ghosts.size()); ++i) {
+        const ProjectMerge::NodeChange& change = *ghosts[i].first;
+        const NodePtr parent = change.parentId.empty() ? NodePtr() : project->findNodeById(change.parentId);
+        PyObject* dict = PyDict_New();
+        PyObject* name = PyUnicode_FromString(change.scriptName.c_str());
+        PyObject* nodeId = PyUnicode_FromString(change.nodeId.c_str());
+        PyObject* group = PyUnicode_FromString(parent ? parent->getFullyQualifiedName().c_str() : "");
+        PyObject* selected = PyBool_FromLong(ghosts[i].second->getDiffOverlay()->isGhostSelected(change.nodeId));
+        const bool ok = dict && name && nodeId && group && selected && (PyDict_SetItemString(dict, "name", name) == 0) && (PyDict_SetItemString(dict, "nodeId", nodeId) == 0) && (PyDict_SetItemString(dict, "group", group) == 0) && (PyDict_SetItemString(dict, "selected", selected) == 0);
+        Py_XDECREF(name);
+        Py_XDECREF(nodeId);
+        Py_XDECREF(group);
+        Py_XDECREF(selected);
+        if (!ok) {
+            Py_XDECREF(dict);
+            Py_DECREF(list);
+
+            return 0;
+        }
+        PyList_SetItem(list, (Py_ssize_t)i, dict);
+    }
+
+    return list;
+}
+
+bool
+GuiApp::openMergePopover(Effect* effect)
+{
+    const NodePtr node = effect ? effect->getInternalNode() : NodePtr();
+    const NodeGuiPtr nodeUi = node ? std::dynamic_pointer_cast<NodeGui>(node->getNodeGui()) : NodeGuiPtr();
+    NodeGraph* graph = nodeUi ? nodeUi->getDagGui() : 0;
+
+    return graph && graph->openMergePopover(nodeUi);
+}
+
+bool
+GuiApp::isMergePopoverOpen() const
+{
+    Gui* gui = getInternalGuiApp()->getGui();
+    const ProjectPtr project = getInternalGuiApp()->getProject();
+    std::set<NodeGraph*> graphs;
+    graphs.insert(gui->getNodeGraph());
+    NodesList nodes;
+    project->getNodes_recursive(nodes, true);
+    for (const NodePtr& node : nodes) {
+        if (NodeGroup* group = node->isEffectGroup()) {
+            graphs.insert(dynamic_cast<NodeGraph*>(group->getNodeGraph()));
+        }
+    }
+    for (NodeGraph* graph : graphs) {
+        if (graph && graph->isMergePopoverOpen()) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+QString
+GuiApp::mergeBarMode(Group* group) const
+{
+    NodeGraph* graph = diffGraphOf(getInternalGuiApp().get(), group);
+    NodeGraphMergeBar* bar = graph ? graph->getMergeBar() : 0;
+
+    return NodeGraphMergeBar::modeName(bar ? bar->mode() : NodeGraphMergeBar::eModeNone);
+}
+
+bool
+GuiApp::resolveMergeConflict(int index,
+                             const QString& choice)
+{
+    Gui* gui = getInternalGuiApp()->getGui();
+    const ProjectPtr project = getInternalGuiApp()->getProject();
+    const std::vector<Serialization::MergeConflict> conflicts = project->getMergeConflicts();
+    ProjectMerge::ConflictChoice found;
+    QString error;
+    if ((index < 0) || ((std::size_t)index >= conflicts.size())) {
+        error = tr("There is no merge conflict %1.").arg(index);
+    } else if (!ProjectMerge::findChoice(project, conflicts[(std::size_t)index], choice.toStdString(), &found)) {
+        error = tr("Merge conflict %1 offers no choice %2.").arg(index).arg(choice);
+    } else if (found.option.empty() ? MergeConflictResolve::resolve(gui, std::vector<std::size_t>(1, (std::size_t)index), found.side, &error)
+                                    : MergeConflictResolve::resolveOption(gui, (std::size_t)index, found.option, &error)) {
+        return true;
+    }
+    getInternalGuiApp()->appendToScriptEditor(error.toStdString());
+
+    return false;
 }
 
 NATRON_PYTHON_NAMESPACE_EXIT

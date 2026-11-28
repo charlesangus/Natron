@@ -22,7 +22,9 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <string>
+#include <vector>
 
 #include "Serialization/KnobSerialization.h"
 #include "Serialization/Merge/MergeConflict.h"
@@ -40,9 +42,9 @@ enum class ResolutionSide {
 const MergeConflictValue& sideState(const MergeConflict& conflict, ResolutionSide side);
 
 /**
- * @brief Gives knob, the state of the conflicted knob, value's conflicted dimension, extra state
- * or curve key, and value's other keys at their own times. Returns false with error set when the
- * knob has no such dimension or curve.
+ * @brief Gives knob, the state of the conflicted knob, value's conflicted dimension, or all of
+ * value's knob for a whole-knob conflict. Returns false with error set when the conflict is not
+ * about a value or the knob has no such dimension.
  **/
 bool applyConflictKnobValue(const MergeConflict& conflict,
                             const MergeConflictValue& value,
@@ -82,6 +84,31 @@ bool applyConflictOption(const MergeConflict& conflict,
                          std::string* error);
 
 const MergeConflictOption* conflictOption(const MergeConflict& conflict, const std::string& name);
+
+/**
+ * @brief One way to resolve a conflict: a side, or a handler option.
+ **/
+struct MergeConflictChoice {
+    ResolutionSide side = ResolutionSide::eMine;
+    // The option's name, empty for a side.
+    std::string option;
+    std::string label;
+
+    bool operator==(const MergeConflictChoice&) const = default;
+};
+
+const MergeConflictValue& choiceState(const MergeConflict& conflict, const MergeConflictChoice& choice);
+
+typedef std::function<bool(const MergeConflictChoice& choice)> ChoiceFilter;
+
+/**
+ * @brief The choices to offer for conflict, in Mine, Theirs, Base, options order: each one with
+ * state to put back that applicable (when set) accepts, less any whose result equals that of an
+ * earlier choice offered. A choice's result is compared from the recorded state alone, so a
+ * caller that knows the live graph can drop more through applicable.
+ **/
+std::vector<MergeConflictChoice> availableChoices(const MergeConflict& conflict,
+                                                  const ChoiceFilter& applicable = ChoiceFilter());
 
 } // namespace Serialization
 NATRON_NAMESPACE_EXIT

@@ -484,7 +484,6 @@ TEST(StructuralMerge, EveryScenarioListsTheExpectedConflicts)
                 entry.kind = std::string(Serialization::mergeConflictKindName(conflict.kind));
                 entry.knob = conflict.knob;
                 entry.dimension = conflict.dimension;
-                entry.time = conflict.time;
                 entry.item = conflict.item;
                 entry.input = conflict.input;
                 entry.defaulted = conflict.defaultedKnobs;
@@ -493,7 +492,7 @@ TEST(StructuralMerge, EveryScenarioListsTheExpectedConflicts)
             EXPECT_TRUE(got == expected) << [&] {
                 std::string text = "got:";
                 for (const ExpectedConflict& c : got) {
-                    text += " {" + c.node + " " + c.kind + " " + c.knob + " " + std::to_string(c.dimension) + " " + (c.time ? std::to_string(*c.time) : std::string()) + " " + c.item + " " + c.input;
+                    text += " {" + c.node + " " + c.kind + " " + c.knob + " " + std::to_string(c.dimension) + " " + c.item + " " + c.input;
                     for (const std::string& knob : c.defaulted) {
                         text += " " + knob;
                     }

@@ -59,27 +59,6 @@ namespace {
         return dimension;
     }
 
-    // Times are compared as the curve merge stores them: copied, never computed.
-    void
-    setKeyAt(CurveSerialization* curve,
-             double time,
-             const std::optional<KeyFrameSerialization>& key)
-    {
-        std::vector<KeyFrameSerialization>& keys = curve->keyframes;
-        keys.erase(std::remove_if(keys.begin(), keys.end(), [time](const KeyFrameSerialization& k) {
-                       return k.time == time;
-                   }),
-                   keys.end());
-        if (key) {
-            KeyFrameSerialization placed = *key;
-            placed.time = time;
-            keys.insert(std::upper_bound(keys.begin(), keys.end(), placed, [](const KeyFrameSerialization& a, const KeyFrameSerialization& b) {
-                            return a.time < b.time;
-                        }),
-                        placed);
-        }
-    }
-
     // What a side stands for in a delete-modify conflict, whose side is the one that deleted.
     enum class Role {
         eDeleter,
@@ -539,6 +518,7 @@ namespace {
         switch (conflict.kind) {
         case MergeConflictKind::eInput:
         case MergeConflictKind::eStructuralInsert:
+        case MergeConflictKind::eSpliceChoice:
             if (value.connections.empty()) {
                 return failWith(error, "this side's connection cannot be put back");
             }
@@ -650,13 +630,9 @@ namespace {
 
             return true;
         case MergeConflictKind::eValue:
-        case MergeConflictKind::eCurveKey:
             break;
         }
 
-        if ((conflict.kind == MergeConflictKind::eCurveKey) && !conflict.time) {
-            return failWith(error, "this key conflict has no time");
-        }
         std::list<KnobSerialization>* knobs = nullptr;
         if (conflict.nodeId.empty() && conflict.baseNodeId.empty()) {
             knobs = &snapshot->projectKnobs;
@@ -688,6 +664,126 @@ namespace {
         return true;
     }
 
+    // Whether value, the state of choice, has anything to put back for conflict.
+    bool
+    hasState(const MergeConflict& conflict,
+             const MergeConflictChoice& choice,
+             const MergeConflictValue& value)
+    {
+        switch (conflict.kind) {
+        case MergeConflictKind::eInput:
+        case MergeConflictKind::eStructuralInsert:
+        case MergeConflictKind::eSpliceChoice:
+            return !value.connections.empty();
+        case MergeConflictKind::eReparent:
+            return value.parent.has_value();
+        case MergeConflictKind::eAdopted:
+            return value.knobs.has_value();
+        case MergeConflictKind::eDeleteModify:
+            if (choice.option.empty() && conflict.item.empty() && conflict.knob.empty() && (roleOf(conflict, choice.side) == Role::eBase)) {
+                return value.knobs.has_value();
+            }
+
+            return true;
+        case MergeConflictKind::eValue:
+        case MergeConflictKind::eRotoShape:
+            break;
+        }
+
+        return true;
+    }
+
+    // The knob the conflicted knob becomes under value, from a recorded state of it.
+    std::optional<KnobSerialization>
+    knobResult(const MergeConflict& conflict,
+               const MergeConflictValue& value)
+    {
+        const std::optional<KnobSerialization>& like = conflict.mine.knob ? conflict.mine.knob : conflict.theirs.knob ? conflict.theirs.knob
+                                                                                                                      : conflict.base.knob;
+        if (!like) {
+            return std::nullopt;
+        }
+        KnobSerialization state = *like;
+        std::string ignored;
+        if (!applyConflictKnobValue(conflict, value, &state, &ignored)) {
+            return std::nullopt;
+        }
+
+        return state;
+    }
+
+    bool
+    sameKnobs(const std::list<KnobSerialization>& a,
+              const std::list<KnobSerialization>& b,
+              const std::vector<std::string>& names)
+    {
+        return std::all_of(names.begin(), names.end(), [&a, &b](const std::string& name) {
+            const KnobSerialization* left = knobNamed(a, name);
+            const KnobSerialization* right = knobNamed(b, name);
+
+            return (!left && !right) || (left && right && sameKnobState(*left, *right));
+        });
+    }
+
+    bool
+    sameOptionalKnob(const std::optional<KnobSerialization>& a,
+                     const std::optional<KnobSerialization>& b)
+    {
+        return (a.has_value() == b.has_value()) && (!a || sameKnobState(*a, *b));
+    }
+
+    // Whether choosing a and choosing b give the same graph, as far as the recorded state tells.
+    bool
+    sameResult(const MergeConflict& conflict,
+               const MergeConflictChoice& a,
+               const MergeConflictChoice& b)
+    {
+        const MergeConflictValue& left = choiceState(conflict, a);
+        const MergeConflictValue& right = choiceState(conflict, b);
+        switch (conflict.kind) {
+        case MergeConflictKind::eValue: {
+            if (!conflict.mine.knob && !conflict.theirs.knob && !conflict.base.knob) {
+                return sameOptionalKnob(left.knob, right.knob);
+            }
+            const std::optional<KnobSerialization> leftKnob = knobResult(conflict, left);
+            const std::optional<KnobSerialization> rightKnob = knobResult(conflict, right);
+
+            return leftKnob && rightKnob && sameKnobState(*leftKnob, *rightKnob);
+        }
+        case MergeConflictKind::eInput:
+        case MergeConflictKind::eSpliceChoice:
+            return left.connections == right.connections;
+        case MergeConflictKind::eStructuralInsert:
+            return (left.connections == right.connections) && (left.removedNodes == right.removedNodes);
+        case MergeConflictKind::eReparent:
+            return (left.parent == right.parent) && (left.connections == right.connections);
+        case MergeConflictKind::eAdopted:
+            return left.knobs && right.knobs && sameKnobs(*left.knobs, *right.knobs, conflict.defaultedKnobs);
+        case MergeConflictKind::eRotoShape:
+            return left == right;
+        case MergeConflictKind::eDeleteModify:
+            break;
+        }
+
+        if (!conflict.item.empty() || !a.option.empty() || !b.option.empty()) {
+            return left == right;
+        }
+        const Role leftRole = roleOf(conflict, a.side);
+        const Role rightRole = roleOf(conflict, b.side);
+        if (leftRole == rightRole) {
+            return true;
+        }
+        if ((leftRole == Role::eDeleter) || (rightRole == Role::eDeleter) || conflict.knob.empty()) {
+            // Whether a node's base state is what the kept node already holds depends on the live graph.
+            return false;
+        }
+        const MergeConflictValue& kept = (leftRole == Role::eKeeper) ? left : right;
+        const MergeConflictValue& base = (leftRole == Role::eBase) ? left : right;
+
+        // The kept knob is as the merge left it, and a base without the knob leaves it so too.
+        return !base.knob || sameOptionalKnob(base.knob, kept.knob);
+    }
+
 } // anon namespace
 
 const MergeConflictValue&
@@ -712,6 +808,9 @@ applyConflictKnobValue(const MergeConflict& conflict,
                        KnobSerialization* state,
                        std::string* error)
 {
+    if (conflict.kind != MergeConflictKind::eValue) {
+        return failWith(error, "this conflict is not about a knob value");
+    }
     const int dimension = conflict.dimension;
     // One saved dimension stands for all of the knob's, as the merge compared them.
     if ((dimension >= 0) && (state->dimensions.size() == 1) && (state->dimension > 1)) {
@@ -723,89 +822,54 @@ applyConflictKnobValue(const MergeConflict& conflict,
             return failWith(error, quoted(conflict.knob) + " has no dimension");
         }
         for (KnobDimensionSerialization& target : state->dimensions) {
-            if (conflict.kind == MergeConflictKind::eValue) {
-                if (value.knob && !value.knob->dimensions.empty()) {
-                    KnobDimensionSerialization recorded = value.knob->dimensions.front();
-                    if (!recorded.defaultValue) {
-                        recorded.defaultValue = target.defaultValue;
-                    }
-                    target = std::move(recorded);
-                } else {
-                    target = defaultDimensionLike(target);
-                }
-                continue;
-            }
-            if (!conflict.time) {
-                return failWith(error, "this key conflict has no time");
-            }
-            if (!target.curve) {
-                target.curve = CurveSerialization();
-            }
-            setKeyAt(&*target.curve, *conflict.time, value.key);
-            for (const KeyFrameSerialization& key : value.otherKeys) {
-                setKeyAt(&*target.curve, key.time, key);
-            }
-            if (target.curve->keyframes.empty()) {
-                target.curve.reset();
-            }
-        }
-
-        return true;
-    }
-    if (conflict.kind == MergeConflictKind::eValue) {
-        if (dimension < 0) {
-            state->parametricCurves = value.knob ? value.knob->parametricCurves : std::nullopt;
-            state->stringAnimation = value.knob ? value.knob->stringAnimation : std::nullopt;
-            state->choiceOptionID = value.knob ? value.knob->choiceOptionID : std::nullopt;
-        } else {
-            if (dimension >= int(state->dimensions.size())) {
-                return failWith(error, quoted(conflict.knob) + " has no dimension " + std::to_string(dimension));
-            }
-            if (value.knob && !value.knob->dimensions.empty() && ((dimension < int(value.knob->dimensions.size())) || (value.knob->dimensions.size() == 1))) {
-                // A plug-in knob's default is not saved with the side it came from, so the live one stays.
-                KnobDimensionSerialization recorded = value.knob->dimensions[std::min(dimension, int(value.knob->dimensions.size()) - 1)];
+            if (value.knob && !value.knob->dimensions.empty()) {
+                KnobDimensionSerialization recorded = value.knob->dimensions.front();
                 if (!recorded.defaultValue) {
-                    recorded.defaultValue = state->dimensions[dimension].defaultValue;
+                    recorded.defaultValue = target.defaultValue;
                 }
-                state->dimensions[dimension] = std::move(recorded);
+                target = std::move(recorded);
             } else {
-                state->dimensions[dimension] = defaultDimensionLike(state->dimensions[dimension]);
+                target = defaultDimensionLike(target);
             }
         }
 
         return true;
     }
+    if (dimension < 0) {
+        // The whole knob: every dimension, with its animation, and the parametric curves, string
+        // animation and choice option.
+        if (value.knob && !value.knob->dimensions.empty()) {
+            std::vector<KnobDimensionSerialization> dimensions = value.knob->dimensions;
+            for (std::size_t i = 0; i < dimensions.size(); ++i) {
+                if (!dimensions[i].defaultValue && !state->dimensions.empty()) {
+                    // A plug-in knob's default is not saved with the side it came from, so the live one stays.
+                    dimensions[i].defaultValue = state->dimensions[std::min(i, state->dimensions.size() - 1)].defaultValue;
+                }
+            }
+            state->dimensions = std::move(dimensions);
+        } else {
+            for (KnobDimensionSerialization& target : state->dimensions) {
+                target = defaultDimensionLike(target);
+            }
+        }
+        state->parametricCurves = value.knob ? value.knob->parametricCurves : std::nullopt;
+        state->stringAnimation = value.knob ? value.knob->stringAnimation : std::nullopt;
+        state->choiceOptionID = value.knob ? value.knob->choiceOptionID : std::nullopt;
 
-    if (!conflict.time) {
-        return failWith(error, "this key conflict has no time");
+        return true;
     }
-    CurveSerialization* curve = nullptr;
-    if (state->parametricCurves) {
-        if ((dimension < 0) || (dimension >= int(state->parametricCurves->size()))) {
-            return failWith(error, quoted(conflict.knob) + " has no curve " + std::to_string(dimension));
+    if (dimension >= int(state->dimensions.size())) {
+        return failWith(error, quoted(conflict.knob) + " has no dimension " + std::to_string(dimension));
+    }
+    if (value.knob && !value.knob->dimensions.empty() && ((dimension < int(value.knob->dimensions.size())) || (value.knob->dimensions.size() == 1))) {
+        // A plug-in knob's default is not saved with the side it came from, so the live one stays.
+        KnobDimensionSerialization recorded = value.knob->dimensions[std::min(dimension, int(value.knob->dimensions.size()) - 1)];
+        if (!recorded.defaultValue) {
+            recorded.defaultValue = state->dimensions[dimension].defaultValue;
         }
-        std::list<CurveSerialization>::iterator found = state->parametricCurves->begin();
-        std::advance(found, dimension);
-        curve = &*found;
+        state->dimensions[dimension] = std::move(recorded);
     } else {
-        if ((dimension < 0) || (dimension >= int(state->dimensions.size()))) {
-            return failWith(error, quoted(conflict.knob) + " has no dimension " + std::to_string(dimension));
-        }
-        KnobDimensionSerialization& target = state->dimensions[dimension];
-        if (!target.curve) {
-            target.curve = CurveSerialization();
-        }
-        curve = &*target.curve;
-    }
-    setKeyAt(curve, *conflict.time, value.key);
-    for (const KeyFrameSerialization& key : value.otherKeys) {
-        setKeyAt(curve, key.time, key);
-    }
-    if (!state->parametricCurves) {
-        KnobDimensionSerialization& target = state->dimensions[dimension];
-        if (target.curve->keyframes.empty()) {
-            target.curve.reset();
-        }
+        state->dimensions[dimension] = defaultDimensionLike(state->dimensions[dimension]);
     }
 
     return true;
@@ -817,6 +881,9 @@ applyConflictSide(const MergeConflict& conflict,
                   ProjectSerialization* snapshot,
                   std::string* error)
 {
+    if ((conflict.kind == MergeConflictKind::eSpliceChoice) && (side == ResolutionSide::eMine)) {
+        return true;
+    }
     return applyState(conflict, sideState(conflict, side), roleOf(conflict, side), snapshot, error);
 }
 
@@ -845,6 +912,56 @@ applyConflictOption(const MergeConflict& conflict,
     }
 
     return applyState(conflict, found->state, std::nullopt, snapshot, error);
+}
+
+const MergeConflictValue&
+choiceState(const MergeConflict& conflict,
+            const MergeConflictChoice& choice)
+{
+    if (!choice.option.empty()) {
+        const MergeConflictOption* found = conflictOption(conflict, choice.option);
+        if (found) {
+            return found->state;
+        }
+    }
+
+    return sideState(conflict, choice.side);
+}
+
+std::vector<MergeConflictChoice>
+availableChoices(const MergeConflict& conflict,
+                 const ChoiceFilter& applicable)
+{
+    const bool splice = (conflict.kind == MergeConflictKind::eSpliceChoice);
+    std::vector<MergeConflictChoice> candidates;
+    candidates.push_back(MergeConflictChoice { ResolutionSide::eMine, std::string(), splice ? "Keep My Wiring" : "Mine" });
+    candidates.push_back(MergeConflictChoice { ResolutionSide::eTheirs, std::string(), splice ? "Splice In" : "Theirs" });
+    if (!splice) {
+        candidates.push_back(MergeConflictChoice { ResolutionSide::eBase, std::string(), "Base" });
+    }
+    for (const MergeConflictOption& option : conflict.options) {
+        candidates.push_back(MergeConflictChoice { ResolutionSide::eMine, option.name, option.label });
+    }
+
+    std::vector<MergeConflictChoice> offered;
+    for (const MergeConflictChoice& choice : candidates) {
+        // Keeping my wiring leaves the graph as it is, so there is always something to choose.
+        const bool keepsGraph = splice && choice.option.empty() && (choice.side == ResolutionSide::eMine);
+        if (!keepsGraph && !hasState(conflict, choice, choiceState(conflict, choice))) {
+            continue;
+        }
+        if (applicable && !applicable(choice)) {
+            continue;
+        }
+        const bool repeats = std::any_of(offered.begin(), offered.end(), [&conflict, &choice](const MergeConflictChoice& earlier) {
+            return sameResult(conflict, earlier, choice);
+        });
+        if (!repeats) {
+            offered.push_back(choice);
+        }
+    }
+
+    return offered;
 }
 
 } // namespace Serialization

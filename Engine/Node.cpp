@@ -5778,6 +5778,36 @@ Node::notifyOutputsOfDeletion()
     }
 }
 
+int
+Node::getInputReconnectedOnDelete() const
+{
+    int firstNonOptionalInput = -1;
+    int firstOptionalInput = -1;
+    bool hasOnlyOneInputConnected = false;
+    // guiInputs is only written on the main thread.
+    for (std::size_t i = 0; i < _imp->guiInputs.size(); ++i) {
+        if (!_imp->guiInputs[i].lock()) {
+            continue;
+        }
+        if (!_imp->effect->isInputOptional(i)) {
+            if (firstNonOptionalInput == -1) {
+                firstNonOptionalInput = (int)i;
+                hasOnlyOneInputConnected = true;
+            } else {
+                hasOnlyOneInputConnected = false;
+            }
+        } else if (firstOptionalInput == -1) {
+            firstOptionalInput = (int)i;
+            hasOnlyOneInputConnected = !hasOnlyOneInputConnected;
+        }
+    }
+    if (!hasOnlyOneInputConnected) {
+        return -1;
+    }
+
+    return (firstNonOptionalInput != -1) ? firstNonOptionalInput : firstOptionalInput;
+}
+
 void
 Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
                  bool disconnectAll,
@@ -5918,42 +5948,11 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
         }
     }
 
-    ///if the node has 1 non-optional input, attempt to connect the outputs to the input of the current node
-    ///this node is the node the outputs should attempt to connect to
     NodePtr inputToConnectTo;
-    NodePtr firstOptionalInput;
-    int firstNonOptionalInput = -1;
     if (reconnect) {
-        bool hasOnlyOneInputConnected = false;
-
-        ///No need to lock guiInputs is only written to by the mainthread
-        for (std::size_t i = 0; i < _imp->guiInputs.size(); ++i) {
-            NodePtr input = _imp->guiInputs[i].lock();
-            if (input) {
-                if ( !_imp->effect->isInputOptional(i) ) {
-                    if (firstNonOptionalInput == -1) {
-                        firstNonOptionalInput = i;
-                        hasOnlyOneInputConnected = true;
-                    } else {
-                        hasOnlyOneInputConnected = false;
-                    }
-                } else if (!firstOptionalInput) {
-                    firstOptionalInput = input;
-                    if (hasOnlyOneInputConnected) {
-                        hasOnlyOneInputConnected = false;
-                    } else {
-                        hasOnlyOneInputConnected = true;
-                    }
-                }
-            }
-        }
-
-        if (hasOnlyOneInputConnected) {
-            if (firstNonOptionalInput != -1) {
-                inputToConnectTo = getRealGuiInput(firstNonOptionalInput);
-            } else if (firstOptionalInput) {
-                inputToConnectTo = firstOptionalInput;
-            }
+        const int bridged = getInputReconnectedOnDelete();
+        if (bridged != -1) {
+            inputToConnectTo = _imp->effect->isInputOptional(bridged) ? _imp->guiInputs[bridged].lock() : getRealGuiInput(bridged);
         }
     }
     /*Removing this node from the output of all inputs*/

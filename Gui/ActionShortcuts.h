@@ -661,6 +661,18 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionGraphFrameNodes "frameNodes"
 #define kShortcutDescActionGraphFrameNodes "Center on All Nodes"
 
+#define kShortcutIDActionGraphNextMergeConflict "nextMergeConflict"
+#define kShortcutDescActionGraphNextMergeConflict "Next Conflict"
+
+#define kShortcutIDActionGraphPreviousMergeConflict "previousMergeConflict"
+#define kShortcutDescActionGraphPreviousMergeConflict "Previous Conflict"
+
+#define kShortcutIDActionGraphNextComparisonChange "nextComparisonChange"
+#define kShortcutDescActionGraphNextComparisonChange "Next Change"
+
+#define kShortcutIDActionGraphPreviousComparisonChange "previousComparisonChange"
+#define kShortcutDescActionGraphPreviousComparisonChange "Previous Change"
+
 #define kShortcutIDActionGraphFindNode "findNode"
 #define kShortcutDescActionGraphFindNode "Find"
 

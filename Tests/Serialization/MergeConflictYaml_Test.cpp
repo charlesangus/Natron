@@ -185,27 +185,21 @@ everyKind()
     folded.mine.knob = colorKnob("black: 0.25\n");
     conflicts.push_back(folded);
 
-    MergeConflict curveKey;
-    curveKey.kind = MergeConflictKind::eCurveKey;
-    curveKey.templateKey = "grade_tpl";
-    curveKey.baseNodeId = "base-grade";
-    curveKey.nodeId = "grade";
-    curveKey.knob = "gamma";
-    curveKey.dimension = 0;
-    curveKey.time = 10.5;
-    curveKey.base.key = key(10.5, 2., 1);
+    MergeConflict animated = value;
+    animated.knob = "gamma";
+    animated.dimension = -1;
+    animated.base.knob = colorKnob("gamma: [1, 1, 1, 1]\n");
+    animated.base.knob->dimensions[0].value.reset();
+    animated.base.knob->dimensions[0].curve = Serialization::CurveSerialization();
+    animated.base.knob->dimensions[0].curve->keyframes = { key(1., 1., 1), key(10.5, 2., 1) };
     Serialization::KeyFrameSerialization broken = key(10.5, 2.5, 7);
     broken.leftDerivative = -0.25;
     broken.rightDerivative = 0.75;
-    curveKey.mine.key = broken;
-    curveKey.theirs.key = key(10.5, 1.8, 1);
-    Serialization::MergeConflictOption keepBoth;
-    keepBoth.name = std::string(Serialization::kMergeOptionKeepBothKeys);
-    keepBoth.label = "Keep Both Keys";
-    keepBoth.state.key = broken;
-    keepBoth.state.otherKeys = { key(11.5, 1.8, 1) };
-    curveKey.options.push_back(keepBoth);
-    conflicts.push_back(curveKey);
+    animated.mine.knob = animated.base.knob;
+    animated.mine.knob->dimensions[0].curve->keyframes.back() = broken;
+    animated.theirs.knob = animated.base.knob;
+    animated.theirs.knob->dimensions[0].curve->keyframes.front() = key(1., 1.8, 1);
+    conflicts.push_back(animated);
 
     MergeConflict shape;
     shape.kind = MergeConflictKind::eRotoShape;
@@ -320,6 +314,14 @@ everyKind()
     adopted.mine.knobs = std::list<Serialization::KnobSerialization>();
     adopted.theirs.knobs = std::list<Serialization::KnobSerialization>({ colorKnob("white: [0.8, 0.9, 0.9, 1]\n"), doubleKnob("gamma", 1.2) });
     conflicts.push_back(adopted);
+
+    MergeConflict splice;
+    splice.kind = MergeConflictKind::eSpliceChoice;
+    splice.nodeId = "grade";
+    splice.input = "Source";
+    splice.mine.connections = { connection("grade", "Source", "plate") };
+    splice.theirs.connections = { connection("grade", "Source", "restored-blur") };
+    conflicts.push_back(splice);
 
     return conflicts;
 }

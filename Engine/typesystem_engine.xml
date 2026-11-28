@@ -861,6 +861,21 @@
             </modify-argument>
         </modify-function>
         <modify-function signature="importTemplateChecked(QString,Group*,QString*,App::ImportTemplateError*)" remove="all"/>
+        <modify-function signature="getMergeConflicts()const">
+            <modify-argument index="return">
+                <replace-type modified-type="PyObject"/>
+            </modify-argument>
+            <inject-code class="target" position="beginning">
+                %PYARG_0 = %CPPSELF.%FUNCTION_NAME();
+                if (!%PYARG_0) {
+                    if (!PyErr_Occurred()) {
+                        PyErr_SetString(PyExc_RuntimeError, "could not list the merge conflicts.");
+                    }
+                    return 0;
+                }
+                return %PYARG_0;
+            </inject-code>
+        </modify-function>
         <modify-function signature="importTemplate(QString,Group*)">
             <inject-code class="target" position="beginning">
                 QString importError;

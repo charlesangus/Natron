@@ -38,7 +38,8 @@ NATRON_NAMESPACE_ENTER
 namespace Serialization {
 
 enum class MergeConflictKind {
-    // Both sides changed one knob dimension differently; the merge kept mine.
+    // Both sides changed one knob dimension differently, an animation curve counting as one
+    // state however many of its keys differ; the merge kept mine.
     eValue,
     // Both sides connected one input differently; the merge kept mine. Also an input of a node
     // only mine has whose source theirs deleted without one clear replacement in the node's group,
@@ -59,13 +60,14 @@ enum class MergeConflictKind {
     eReparent,
     // A side's node stands for a base node by structure, not by identity.
     eAdopted,
-    // Both sides changed one key of an animation curve differently, or added different keys at
-    // one time; the merge kept mine's key, or no key when mine has none there.
-    eCurveKey,
     // Both sides changed one roto shape's points differently, or the two sides hold different
     // kinds of item under one name; the merge kept mine's. An empty item stands for the node's
     // spline-warp data.
     eRotoShape,
+    // A node restored from a compared version used to feed one of the reader's inputs, which the
+    // artist has since wired elsewhere; the restore left it. Mine keeps that wiring, theirs
+    // connects the input to the restored node.
+    eSpliceChoice,
 };
 
 enum class MergeSide {
@@ -89,10 +91,10 @@ mergeConflictKindName(MergeConflictKind kind)
         return "reparent";
     case MergeConflictKind::eAdopted:
         return "adopted";
-    case MergeConflictKind::eCurveKey:
-        return "curve-key";
     case MergeConflictKind::eRotoShape:
         return "roto-shape";
+    case MergeConflictKind::eSpliceChoice:
+        return "splice-choice";
     }
 
     return "?";
@@ -101,7 +103,7 @@ mergeConflictKindName(MergeConflictKind kind)
 inline std::optional<MergeConflictKind>
 mergeConflictKindFromName(std::string_view name)
 {
-    for (MergeConflictKind kind : { MergeConflictKind::eValue, MergeConflictKind::eInput, MergeConflictKind::eStructuralInsert, MergeConflictKind::eDeleteModify, MergeConflictKind::eReparent, MergeConflictKind::eAdopted, MergeConflictKind::eCurveKey, MergeConflictKind::eRotoShape }) {
+    for (MergeConflictKind kind : { MergeConflictKind::eValue, MergeConflictKind::eInput, MergeConflictKind::eStructuralInsert, MergeConflictKind::eDeleteModify, MergeConflictKind::eReparent, MergeConflictKind::eAdopted, MergeConflictKind::eRotoShape, MergeConflictKind::eSpliceChoice }) {
         if (mergeConflictKindName(kind) == name) {
             return kind;
         }
@@ -130,11 +132,7 @@ struct MergeConflictValue {
     // eValue, and eDeleteModify of a user knob: the knob, absent when the side leaves it at its
     // default or has no such knob.
     std::optional<KnobSerialization> knob;
-    // eCurveKey: the key at the conflict's time, absent when the side has no key there.
-    std::optional<KeyFrameSerialization> key;
-    // eCurveKey: keys at other times that the choice adds beside key.
-    std::vector<KeyFrameSerialization> otherKeys;
-    // eInput, eStructuralInsert and eReparent: the connections that give the graph this side's
+    // eInput, eStructuralInsert, eReparent and eSpliceChoice: the connections that give the graph this side's
     // wiring. Empty when it cannot be put back, as when the side's source is not in the merged
     // snapshot.
     std::vector<MergeConflictConnection> connections;
@@ -162,24 +160,28 @@ struct MergeConflictValue {
     std::vector<std::string> itemsBefore;
 };
 
-// Roto and tracker data compare by state, as the merge compares them.
+/**
+ * @brief Whether a and b hold the same state: values, defaults, choice entries and selected
+ * option, expressions and animation. A plug-in knob's label, tooltip, new-line, evaluates,
+ * animates and persistent flags come from the plug-in and are left out; a user knob's count.
+ **/
+bool sameKnobState(const KnobSerialization& a, const KnobSerialization& b);
+
+// Knobs compare by sameKnobState(), roto and tracker data by state, as the merge compares them.
 bool operator==(const MergeConflictValue& a, const MergeConflictValue& b);
 
 /**
- * @brief An extra choice a handler offers for a conflict beside Mine, Theirs and Base, such as
- * keeping both keys of a curve-key conflict. Choosing it puts its state back as choosing a side
- * puts back that side's.
+ * @brief An extra choice a handler offers for a conflict beside Mine, Theirs and Base. Choosing it
+ * puts its state back as choosing a side puts back that side's.
  **/
 struct MergeConflictOption {
-    // Stable across saves, e.g. "keep-both-keys".
+    // Stable across saves.
     std::string name;
     std::string label;
     MergeConflictValue state;
 
     bool operator==(const MergeConflictOption&) const = default;
 };
-
-inline constexpr std::string_view kMergeOptionKeepBothKeys = "keep-both-keys";
 
 // The dimension of a conflict on a knob every side saved folded, as one dimension standing for
 // all of them: its side's single dimension goes to every dimension.
@@ -198,11 +200,8 @@ struct MergeConflict {
     // That node in the merged snapshot, or empty when the merge left it out.
     std::string nodeId;
     std::string knob;
-    // -1 for the whole knob, kMergeConflictAllDimensions for every dimension of a folded knob. For
-    // a parametric knob's curve-key conflict, the curve's index.
+    // -1 for the whole knob, kMergeConflictAllDimensions for every dimension of a folded knob.
     int dimension = -1;
-    // eCurveKey: the key's time.
-    std::optional<double> time;
     // The roto item or track the conflict is about, by script name, or empty for the node itself.
     std::string item;
     std::string input;

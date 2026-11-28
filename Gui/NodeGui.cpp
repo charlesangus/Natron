@@ -218,6 +218,20 @@ mergeConflictBadgeCenter(const QPointF& topRight)
     return QPointF(topRight.x() - offset, topRight.y());
 }
 
+// A delta, for what changed.
+static QPainterPath
+makeChangeIcon(double diameter)
+{
+    const double rad = diameter / 2.;
+    QPainterPath icon;
+    icon.moveTo(0., -0.42 * rad);
+    icon.lineTo(0.42 * rad, 0.32 * rad);
+    icon.lineTo(-0.42 * rad, 0.32 * rad);
+    icon.closeSubpath();
+
+    return icon;
+}
+
 static QColor
 missingPluginColor()
 {
@@ -478,6 +492,8 @@ NodeGui::NodeGui(QGraphicsItem* parent)
     , _availableViewsIndicator()
     , _passThroughIndicator()
     , _mergeConflictIndicator()
+    , _mergeConflictCount(0)
+    , _changeMarkerIndicator()
     , identityStateSet(false)
 {
 }
@@ -1294,6 +1310,11 @@ NodeGui::createGui()
     _mergeConflictIndicator.reset(new NodeGuiIndicator(_indicatorLayer, makeWarningIcon(linkDiam), mergeConflictBadgeCenter(bbox.topRight()), linkDiam,
                                                        QColor(232, 160, 20), QColor(30, 30, 30)));
     _mergeConflictIndicator->setActive(false);
+    _changeMarkerIndicator.reset(new NodeGuiIndicator(_indicatorLayer, makeChangeIcon(linkDiam), mergeConflictBadgeCenter(bbox.topRight()), linkDiam,
+                                                      QColor(255, 176, 30), QColor(30, 30, 30)));
+    _changeMarkerIndicator->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("This node differs from the compared version. Click to review the changes."),
+                                                                              NATRON_NAMESPACE::WhiteSpaceNormal));
+    _changeMarkerIndicator->setActive(false);
     {
         const std::string nodeId = node->getNodeId();
         std::size_t conflicts = 0;
@@ -1707,6 +1728,9 @@ NodeGui::resize(int width,
     }
     if (_mergeConflictIndicator) {
         _mergeConflictIndicator->refreshPosition(mergeConflictBadgeCenter(topRight));
+    }
+    if (_changeMarkerIndicator) {
+        _changeMarkerIndicator->refreshPosition(mergeConflictBadgeCenter(topRight));
     }
 
     refreshUserColorBorderGeometry();
@@ -4190,6 +4214,20 @@ NodeGuiIndicator::isActive() const
     return _layer->badge(_index).active;
 }
 
+bool
+NodeGuiIndicator::containsScenePos(const QPointF& scenePos) const
+{
+    const NodeGuiDecorations::Badge& b = _layer->badge(_index);
+    if (!b.active || !_layer->isVisible()) {
+        return false;
+    }
+    const QPointF local = _layer->mapFromScene(scenePos);
+    const double rad = b.ellipseRect.width() / 2. + b.ellipsePen.widthF();
+    const QPointF d = local - b.ellipseRect.center();
+
+    return (d.x() * d.x() + d.y() * d.y()) <= rad * rad;
+}
+
 void
 NodeGuiIndicator::refreshPosition(const QPointF & center)
 {
@@ -5671,22 +5709,58 @@ NodeGui::isMergeConflictBadgeShown() const
 void
 NodeGui::setMergeConflictCount(std::size_t count)
 {
+    _mergeConflictCount = count;
+    refreshMergeConflictBadge();
+}
+
+void
+NodeGui::refreshMergeConflictBadge()
+{
     if (!_mergeConflictIndicator) {
         return;
     }
-    if (count == 0) {
+    NodeGraph* graph = getDagGui();
+    Gui* gui = graph ? graph->getGui() : 0;
+    const bool comparing = gui && gui->getGraphComparison();
+    if ((_mergeConflictCount == 0) || comparing) {
         if (_mergeConflictIndicator->isActive()) {
             _mergeConflictIndicator->setActive(false);
         }
 
         return;
     }
-    const QString tooltip = (count == 1) ? tr("This node has an unresolved merge conflict. Review it in the Merge Conflicts panel.")
-                                         : tr("This node has %1 unresolved merge conflicts. Review them in the Merge Conflicts panel.").arg(count);
+    const QString tooltip = (_mergeConflictCount == 1) ? tr("This node has an unresolved merge conflict. Click to resolve.")
+                                                       : tr("This node has %1 unresolved merge conflicts. Click to resolve.").arg(_mergeConflictCount);
     _mergeConflictIndicator->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tooltip, NATRON_NAMESPACE::WhiteSpaceNormal));
     if (!_mergeConflictIndicator->isActive()) {
         _mergeConflictIndicator->setActive(true);
     }
+}
+
+bool
+NodeGui::isMergeConflictBadgeAt(const QPointF& scenePos) const
+{
+    return _mergeConflictIndicator && _mergeConflictIndicator->containsScenePos(scenePos);
+}
+
+void
+NodeGui::setChangeMarkerShown(bool shown)
+{
+    if (_changeMarkerIndicator && (_changeMarkerIndicator->isActive() != shown)) {
+        _changeMarkerIndicator->setActive(shown);
+    }
+}
+
+bool
+NodeGui::isChangeMarkerShown() const
+{
+    return _changeMarkerIndicator && _changeMarkerIndicator->isActive();
+}
+
+bool
+NodeGui::isChangeMarkerAt(const QPointF& scenePos) const
+{
+    return _changeMarkerIndicator && _changeMarkerIndicator->containsScenePos(scenePos);
 }
 
 void

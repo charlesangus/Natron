@@ -62,10 +62,9 @@ public:
  * its value, animation, expression, link and driver together. The parametric curves, string
  * animation and choice option merge as one more unit.
  *
- * A dimension both sides animated, and changed in nothing but its curve, merges key by key (see
- * mergeCurves()) and conflicts per key; one side animating or un-animating it while the other
- * edits it conflicts for the whole dimension. Parametric curves merge key by key the same way
- * when every side has the same number of curves. Expressions and links conflict as a whole.
+ * A knob any side animates (a curve on a dimension, parametric curves or a string animation) merges
+ * as one unit instead: any change to its curves is a change to the whole knob, which takes the
+ * side that changed it, and conflicts once, keeping mine, when both changed it differently.
  **/
 class ScalarKnobMergeHandler
     : public KnobMergeHandler {
@@ -78,16 +77,15 @@ public:
 
 protected:
     /**
-     * @brief Called for a dimension both sides changed differently. Sets *merged and returns true
-     * when it can merge the two changes, appending any finer conflicts it raised; returns false
-     * for a conflict on the whole dimension. merged starts as mine's dimension.
+     * @brief Called for a dimension of a knob no side animates that both sides changed differently.
+     * Sets *merged and returns true when it can merge the two changes; returns false for a conflict
+     * on the dimension. merged starts as mine's dimension.
      **/
     virtual bool mergeDimension(const KnobSerialization* base,
                                 const KnobSerialization* mine,
                                 const KnobSerialization* theirs,
                                 std::size_t index,
-                                KnobDimensionSerialization* merged,
-                                std::vector<MergeConflict>* conflicts) const;
+                                KnobDimensionSerialization* merged) const;
 };
 
 /**
@@ -101,8 +99,7 @@ protected:
                         const KnobSerialization* mine,
                         const KnobSerialization* theirs,
                         std::size_t index,
-                        KnobDimensionSerialization* merged,
-                        std::vector<MergeConflict>* conflicts) const override;
+                        KnobDimensionSerialization* merged) const override;
 };
 
 class MergeHandlerRegistry;
@@ -203,26 +200,6 @@ bool sameNodeContent(const NodeSerialization& a,
                      const NodeSerialization& b);
 
 /**
- * @brief A key both sides changed differently, or added differently at one time.
- **/
-struct CurveKeyConflict {
-    double time = 0.;
-    std::optional<KeyFrameSerialization> base;
-    std::optional<KeyFrameSerialization> mine;
-    std::optional<KeyFrameSerialization> theirs;
-};
-
-/**
- * @brief Merges three curves as maps from key time to key: a key that one side added, changed or
- * removed takes that side; keys at one time that both sides changed differently keep mine's key,
- * or no key when mine removed it, and are listed in conflicts in time order.
- **/
-CurveSerialization mergeCurves(const CurveSerialization& base,
-                               const CurveSerialization& mine,
-                               const CurveSerialization& theirs,
-                               std::vector<CurveKeyConflict>* conflicts);
-
-/**
  * @brief A line-based three-way merge (diff3). The lines that each side keeps from the base split
  * the texts into hunks; a hunk takes the side that changed it, and one both sides changed
  * differently is a conflict. Returns false, leaving *merged alone, on any conflict.
@@ -251,7 +228,7 @@ RotoContextSerialization mergeRotoContexts(const RotoContextSerialization* base,
  * @brief Merges tracker contexts track by track, matching tracks by script name. Whether a track
  * exists follows the side that differs from the base, except that a track one side removed and
  * the other edited is kept, with a delete-modify conflict. Tracks both sides kept merge their knobs through handlers, so
- * their curves merge key by key, and their user keyframes as sets. Tracks follow theirs' order,
+ * an animated knob merges as a whole, and their user keyframes as sets. Tracks follow theirs' order,
  * with mine's own tracks after the track they follow in mine. base is null when the base has no
  * tracker context.
  **/

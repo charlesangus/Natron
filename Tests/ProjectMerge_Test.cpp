@@ -29,6 +29,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -48,6 +49,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectMerge.h"
 #include "Engine/ProjectTemplate.h"
@@ -188,6 +190,52 @@ protected:
             EXPECT_TRUE(result.applied()) << result.message;
         }
         EXPECT_TRUE(Serialization::diffSnapshots(state(), before).empty());
+    }
+
+    // Applies ops as one batch, runs check, then applies the reverse diff, as undo does, and
+    // expects the project as it was.
+    void applyAndUndo(const std::vector<Serialization::GraphOp>& ops,
+                      const std::function<void()>& check)
+    {
+        const Serialization::ProjectSerialization before = state();
+        bool restored = false;
+        for (const Serialization::OpResult& result : ProjectMerge::applyAllOrNothing(project(), ops, &restored)) {
+            EXPECT_TRUE(result.applied()) << result.message;
+        }
+        check();
+        const Serialization::ProjectSerialization after = state();
+        for (const Serialization::OpResult& result : applyGraphOps(project(), Serialization::diffSnapshots(after, before))) {
+            EXPECT_TRUE(result.applied()) << result.message;
+        }
+        EXPECT_TRUE(Serialization::diffSnapshots(state(), before).empty());
+    }
+
+    // Blur1 -> Blur2 -> ... -> Blur<count>, 100 units apart down the graph.
+    std::vector<NodePtr> createChain(int count)
+    {
+        std::vector<NodePtr> chain;
+        for (int i = 1; i <= count; ++i) {
+            NodePtr blur = createBlur("Blur" + std::to_string(i));
+            EXPECT_NE(blur, nullptr);
+            if (!blur) {
+                return std::vector<NodePtr>();
+            }
+            blur->setPosition(0., 100. * (i - 1));
+            if (!chain.empty()) {
+                EXPECT_TRUE(NodeCollection::connectNodes(0, chain.back(), blur, false));
+            }
+            chain.push_back(blur);
+        }
+
+        return chain;
+    }
+
+    Serialization::ProjectSerialization snapshot() const
+    {
+        Serialization::ProjectSerialization saved;
+        project()->toSerialization(&saved);
+
+        return saved;
     }
 
     const Serialization::MergeConflict* conflictOf(const ProjectMerge::UpdateResult& result,
@@ -681,7 +729,28 @@ TEST_F(ProjectMergeTest, ADeleteModifyConflictDeletesOnlyForTheDeletingSideAndUn
     EXPECT_DOUBLE_EQ(blurSize(nodeNamed("Blur2"))->getValue(0), 7.);
 }
 
-TEST_F(ProjectMergeTest, ACurveKeyConflictResolvesToEachSideOrKeepsBothKeysAndUndoes)
+TEST_F(ProjectMergeTest, AKeyAddedInTheTemplateOnlyMergesAsTheTemplatesWholeCurve)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    QString v1;
+    QString v2;
+    saveTemplateVersions(dir, [this] {
+        NodePtr first = nodeNamed("Blur1");
+        ASSERT_NE(first, nullptr);
+        blurSize(first)->setValueAtTime(10, 4., ViewSpec::all(), 0); }, &v1, &v2);
+    importShot(v1);
+    const std::string key = project()->getTemplateImports().front().key;
+    const ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project(), key, v2);
+    ASSERT_TRUE(result.ok) << result.error.toStdString();
+    EXPECT_TRUE(result.conflicts.empty());
+    NodePtr blur1 = nodeNamed("Blur1");
+    ASSERT_NE(blur1, nullptr);
+    EXPECT_EQ(blurSize(blur1)->getKeyFramesCount(ViewSpec::all(), 0), 1);
+    EXPECT_DOUBLE_EQ(blurSize(blur1)->getValueAtTime(10, 0), 4.);
+}
+
+TEST_F(ProjectMergeTest, KeysAddedAtDifferentFramesOnBothSidesGiveOneKnobConflictAndUndo)
 {
     QTemporaryDir dir;
     ASSERT_TRUE(dir.isValid());
@@ -694,30 +763,38 @@ TEST_F(ProjectMergeTest, ACurveKeyConflictResolvesToEachSideOrKeepsBothKeysAndUn
     importShot(v1);
     const std::string key = project()->getTemplateImports().front().key;
     NodePtr blur1 = nodeNamed("Blur1");
-    blurSize(blur1)->setValueAtTime(10, 7., ViewSpec::all(), 0);
+    blurSize(blur1)->setValueAtTime(5, 7., ViewSpec::all(), 0);
     const ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project(), key, v2);
     ASSERT_TRUE(result.ok) << result.error.toStdString();
-    const Serialization::MergeConflict* conflict = conflictOf(result, Serialization::MergeConflictKind::eCurveKey, 0);
-    ASSERT_NE(conflict, nullptr);
-    ASSERT_EQ(conflict->options.size(), 1u);
-    const std::string keepBoth(Serialization::kMergeOptionKeepBothKeys);
-    EXPECT_EQ(conflict->options.front().name, keepBoth);
+    ASSERT_EQ(result.conflicts.size(), 1u);
+    const Serialization::MergeConflict* conflict = &result.conflicts.front();
+    EXPECT_EQ(conflict->kind, Serialization::MergeConflictKind::eValue);
+    EXPECT_EQ(conflict->knob, "size");
+    EXPECT_EQ(conflict->dimension, -1);
+    EXPECT_TRUE(conflict->options.empty());
+    const std::vector<ProjectMerge::ConflictChoice> choices = ProjectMerge::availableChoices(project(), *conflict);
+    ASSERT_EQ(choices.size(), 3u);
+    EXPECT_TRUE(choices[0].option.empty() && (choices[0].side == ProjectMerge::ConflictSide::eMine));
+    EXPECT_TRUE(choices[1].option.empty() && (choices[1].side == ProjectMerge::ConflictSide::eTheirs));
+    EXPECT_TRUE(choices[2].option.empty() && (choices[2].side == ProjectMerge::ConflictSide::eBase));
 
     const auto keys = [&] {
         return blurSize(blur1)->getKeyFramesCount(ViewSpec::all(), 0);
     };
-    choose(*conflict, ProjectMerge::ConflictSide::eMine, [&] { EXPECT_DOUBLE_EQ(blurSize(blur1)->getValueAtTime(10, 0), 7.); });
+    // The merge kept mine's whole curve: the key at 5, and not the template's key at 10.
+    EXPECT_EQ(keys(), 1);
+    EXPECT_DOUBLE_EQ(blurSize(blur1)->getValueAtTime(5, 0), 7.);
+    choose(*conflict, ProjectMerge::ConflictSide::eMine, [&] {
+        EXPECT_EQ(keys(), 1);
+        EXPECT_DOUBLE_EQ(blurSize(blur1)->getValueAtTime(5, 0), 7.);
+    });
     choose(*conflict, ProjectMerge::ConflictSide::eTheirs, [&] {
         EXPECT_EQ(keys(), 1);
         EXPECT_DOUBLE_EQ(blurSize(blur1)->getValueAtTime(10, 0), 4.);
     });
     choose(*conflict, ProjectMerge::ConflictSide::eBase, [&] { EXPECT_EQ(keys(), 0); });
-    choose(*conflict, ProjectMerge::ConflictSide::eMine, [&] {
-        EXPECT_EQ(keys(), 2);
-        EXPECT_DOUBLE_EQ(blurSize(blur1)->getValueAtTime(10, 0), 7.);
-        EXPECT_DOUBLE_EQ(blurSize(blur1)->getValueAtTime(11, 0), 4.); }, keepBoth);
     EXPECT_EQ(keys(), 1);
-    EXPECT_FALSE(ProjectMerge::canChooseOption(project(), *conflict, "no-such-choice"));
+    EXPECT_FALSE(ProjectMerge::canChooseOption(project(), *conflict, "keep-both-keys"));
 }
 
 TEST_F(ProjectMergeTest, AShotUpdatesToTheLatestPublishedVersionThenIsUpToDate)
@@ -1099,4 +1176,476 @@ TEST_F(ProjectMergeTest, ANodeAnUpdateAddsKeepsTheUpdatesLayoutWhenTheUpdateMove
     NodePtr added = nodeNamed("Blur4");
     ASSERT_NE(added, nullptr);
     expectAt(added, 400., 550.);
+}
+
+TEST_F(ProjectMergeTest, ACompareKeepsTheOtherVersionsDeletedNodesWithWhatTheyHold)
+{
+    NodePtr blur = createBlur("Blur1");
+    ASSERT_NE(blur, nullptr);
+    NodePtr group = createIn(PLUGINID_NATRON_GROUP, project(), "Look");
+    ASSERT_NE(group, nullptr);
+    NodeGroupPtr collection = std::dynamic_pointer_cast<NodeGroup>(group->getEffectInstance());
+    ASSERT_NE(collection, nullptr);
+    NodePtr inner = createIn(PLUGINID_NATRON_BLUR, collection, "Inner1");
+    ASSERT_NE(inner, nullptr);
+    const std::string blurId = blur->getNodeId();
+    const std::string groupId = group->getNodeId();
+    const std::string innerId = inner->getNodeId();
+    const Serialization::ProjectSerialization before = snapshot();
+    blur->destroyNode(true, false);
+    group->destroyNode(true, false);
+
+    const ProjectMerge::ChangeSummary summary = ProjectMerge::compare(project(), before);
+    ASSERT_TRUE(summary.other != nullptr);
+    ASSERT_TRUE(summary.live != nullptr);
+    const Serialization::NodeSerialization* deletedBlur = summary.otherNode(blurId);
+    ASSERT_TRUE(deletedBlur != nullptr);
+    EXPECT_EQ(deletedBlur->scriptName, "Blur1");
+    const Serialization::NodeSerialization* deletedGroup = summary.otherNode(groupId);
+    ASSERT_TRUE(deletedGroup != nullptr);
+    ASSERT_EQ(deletedGroup->children.size(), 1u);
+    EXPECT_EQ(deletedGroup->children.front()->scriptName, "Inner1");
+    const Serialization::NodeSerialization* deletedInner = summary.otherNode(innerId);
+    ASSERT_TRUE(deletedInner != nullptr);
+    EXPECT_EQ(deletedInner->scriptName, "Inner1");
+    EXPECT_TRUE(summary.otherNode("no-such-node") == nullptr);
+}
+
+TEST_F(ProjectMergeTest, RestoringADeletedMiddleNodeSplicesItBackIn)
+{
+    std::vector<NodePtr> chain = createChain(3);
+    ASSERT_EQ(chain.size(), 3u);
+    const std::string middleId = chain[1]->getNodeId();
+    const Serialization::ProjectSerialization before = snapshot();
+    chain[1]->destroyNode(true, false);
+    ASSERT_TRUE(chain[2]->replaceInput(chain[0], 0));
+
+    const ProjectMerge::ChangeSummary summary = ProjectMerge::compare(project(), before);
+    std::vector<Serialization::GraphOp> ops;
+    std::vector<ProjectMerge::PendingSplice> pending;
+    QString error;
+    ASSERT_TRUE(ProjectMerge::restoreOperations(project(), summary, std::vector<std::string>(1, middleId), ProjectMerge::SpliceMode::eAsk, &ops, &pending, &error)) << error.toStdString();
+    EXPECT_TRUE(pending.empty());
+    applyAndUndo(ops, [&]() {
+        NodePtr restored = project()->findNodeById(middleId);
+        ASSERT_NE(restored, nullptr);
+        EXPECT_EQ(restored->getScriptName(), "Blur2");
+        EXPECT_EQ(restored->getInput(0), chain[0]);
+        EXPECT_EQ(chain[2]->getInput(0), restored);
+        double x = 0.;
+        double y = 0.;
+        restored->getPosition(&x, &y);
+        EXPECT_DOUBLE_EQ(x, 0.);
+        EXPECT_DOUBLE_EQ(y, 100.);
+        EXPECT_TRUE(ProjectMerge::compare(project(), before).nodes.empty());
+    });
+}
+
+TEST_F(ProjectMergeTest, RestoringTwoAdjacentDeletedNodesRestoresTheChain)
+{
+    std::vector<NodePtr> chain = createChain(4);
+    ASSERT_EQ(chain.size(), 4u);
+    const std::vector<std::string> ids = { chain[1]->getNodeId(), chain[2]->getNodeId() };
+    const Serialization::ProjectSerialization before = snapshot();
+    chain[1]->destroyNode(true, false);
+    chain[2]->destroyNode(true, false);
+    ASSERT_TRUE(chain[3]->replaceInput(chain[0], 0));
+
+    const ProjectMerge::ChangeSummary summary = ProjectMerge::compare(project(), before);
+    std::vector<Serialization::GraphOp> ops;
+    std::vector<ProjectMerge::PendingSplice> pending;
+    QString error;
+    ASSERT_TRUE(ProjectMerge::restoreOperations(project(), summary, ids, ProjectMerge::SpliceMode::eAsk, &ops, &pending, &error)) << error.toStdString();
+    EXPECT_TRUE(pending.empty());
+    applyAndUndo(ops, [&]() {
+        NodePtr second = project()->findNodeById(ids[0]);
+        NodePtr third = project()->findNodeById(ids[1]);
+        ASSERT_NE(second, nullptr);
+        ASSERT_NE(third, nullptr);
+        EXPECT_EQ(second->getInput(0), chain[0]);
+        EXPECT_EQ(third->getInput(0), second);
+        EXPECT_EQ(chain[3]->getInput(0), third);
+        EXPECT_TRUE(ProjectMerge::compare(project(), before).nodes.empty());
+    });
+}
+
+TEST_F(ProjectMergeTest, RestoringANodeWhoseReaderWasRewiredFollowsTheSpliceMode)
+{
+    std::vector<NodePtr> chain = createChain(3);
+    ASSERT_EQ(chain.size(), 3u);
+    NodePtr other = createBlur("Other");
+    ASSERT_NE(other, nullptr);
+    const std::string middleId = chain[1]->getNodeId();
+    const Serialization::ProjectSerialization before = snapshot();
+    chain[1]->destroyNode(true, false);
+    ASSERT_TRUE(chain[2]->replaceInput(other, 0));
+    const ProjectMerge::ChangeSummary summary = ProjectMerge::compare(project(), before);
+    const std::vector<std::string> ids(1, middleId);
+
+    std::vector<Serialization::GraphOp> ops;
+    std::vector<ProjectMerge::PendingSplice> pending;
+    QString error;
+    ASSERT_TRUE(ProjectMerge::restoreOperations(project(), summary, ids, ProjectMerge::SpliceMode::eAsk, &ops, &pending, &error)) << error.toStdString();
+    ASSERT_EQ(pending.size(), 1u);
+    EXPECT_EQ(pending[0].readerId, chain[2]->getNodeId());
+    EXPECT_EQ(pending[0].restoredId, middleId);
+    EXPECT_EQ(pending[0].sourceId, other->getNodeId());
+    EXPECT_FALSE(pending[0].input.empty());
+    applyAndUndo(ops, [&]() {
+        NodePtr restored = project()->findNodeById(middleId);
+        ASSERT_NE(restored, nullptr);
+        EXPECT_EQ(restored->getInput(0), chain[0]);
+        EXPECT_EQ(chain[2]->getInput(0), other);
+    });
+
+    ASSERT_TRUE(ProjectMerge::restoreOperations(project(), summary, ids, ProjectMerge::SpliceMode::eKeepMine, &ops, &pending, &error)) << error.toStdString();
+    EXPECT_TRUE(pending.empty());
+    applyAndUndo(ops, [&]() {
+        ASSERT_NE(project()->findNodeById(middleId), nullptr);
+        EXPECT_EQ(chain[2]->getInput(0), other);
+    });
+
+    ASSERT_TRUE(ProjectMerge::restoreOperations(project(), summary, ids, ProjectMerge::SpliceMode::eEverywhere, &ops, &pending, &error)) << error.toStdString();
+    EXPECT_TRUE(pending.empty());
+    applyAndUndo(ops, [&]() {
+        NodePtr restored = project()->findNodeById(middleId);
+        ASSERT_NE(restored, nullptr);
+        EXPECT_EQ(chain[2]->getInput(0), restored);
+    });
+}
+
+TEST_F(ProjectMergeTest, ARestoredNodeWhoseNameIsTakenGetsAFreshName)
+{
+    std::vector<NodePtr> chain = createChain(2);
+    ASSERT_EQ(chain.size(), 2u);
+    const std::string deletedId = chain[1]->getNodeId();
+    const Serialization::ProjectSerialization before = snapshot();
+    chain[1]->destroyNode(true, false);
+    NodePtr newcomer = createBlur("Blur2");
+    ASSERT_NE(newcomer, nullptr);
+    ASSERT_EQ(newcomer->getScriptName(), "Blur2");
+
+    const ProjectMerge::ChangeSummary summary = ProjectMerge::compare(project(), before);
+    std::vector<Serialization::GraphOp> ops;
+    std::vector<ProjectMerge::PendingSplice> pending;
+    QString error;
+    ASSERT_TRUE(ProjectMerge::restoreOperations(project(), summary, std::vector<std::string>(1, deletedId), ProjectMerge::SpliceMode::eAsk, &ops, &pending, &error)) << error.toStdString();
+    applyAndUndo(ops, [&]() {
+        NodePtr restored = project()->findNodeById(deletedId);
+        ASSERT_NE(restored, nullptr);
+        EXPECT_EQ(restored->getScriptName(), "Blur3");
+        EXPECT_EQ(restored->getInput(0), chain[0]);
+        EXPECT_EQ(newcomer->getScriptName(), "Blur2");
+    });
+}
+
+TEST_F(ProjectMergeTest, RestoringADeletedGroupBringsBackWhatItHeld)
+{
+    NodePtr group = createIn(PLUGINID_NATRON_GROUP, project(), "Look");
+    ASSERT_NE(group, nullptr);
+    NodeGroupPtr collection = std::dynamic_pointer_cast<NodeGroup>(group->getEffectInstance());
+    ASSERT_NE(collection, nullptr);
+    NodePtr inner = createIn(PLUGINID_NATRON_BLUR, collection, "Inner1");
+    ASSERT_NE(inner, nullptr);
+    const std::string groupId = group->getNodeId();
+    const std::string innerId = inner->getNodeId();
+    const Serialization::ProjectSerialization before = snapshot();
+    group->destroyNode(true, false);
+
+    const ProjectMerge::ChangeSummary summary = ProjectMerge::compare(project(), before);
+    std::vector<Serialization::GraphOp> ops;
+    std::vector<ProjectMerge::PendingSplice> pending;
+    QString error;
+    ASSERT_TRUE(ProjectMerge::restoreOperations(project(), summary, std::vector<std::string>(1, groupId), ProjectMerge::SpliceMode::eAsk, &ops, &pending, &error)) << error.toStdString();
+    applyAndUndo(ops, [&]() {
+        ASSERT_NE(project()->findNodeById(groupId), nullptr);
+        ASSERT_NE(project()->findNodeById(innerId), nullptr);
+        EXPECT_NE(nodeNamed("Look.Inner1"), nullptr);
+        EXPECT_TRUE(ProjectMerge::compare(project(), before).nodes.empty());
+    });
+}
+
+TEST_F(ProjectMergeTest, RevertingAChangedNodeGivesItTheOtherVersionsKnobsAndInputs)
+{
+    std::vector<NodePtr> chain = createChain(2);
+    ASSERT_EQ(chain.size(), 2u);
+    const Serialization::ProjectSerialization before = snapshot();
+    setSize(chain[1], 5.);
+    chain[1]->disconnectInput(0);
+
+    const ProjectMerge::ChangeSummary summary = ProjectMerge::compare(project(), before);
+    const std::string id = chain[1]->getNodeId();
+    ASSERT_NE(summary.find(id), nullptr);
+    applyAndUndo(ProjectMerge::revertOperations(project(), summary, std::vector<std::string>(1, id)), [&]() {
+        EXPECT_DOUBLE_EQ(blurSize(chain[1])->getValue(0), blurSize(chain[0])->getValue(0));
+        EXPECT_EQ(chain[1]->getInput(0), chain[0]);
+        EXPECT_EQ(ProjectMerge::compare(project(), before).find(id), nullptr);
+    });
+}
+
+TEST_F(ProjectMergeTest, TakingOneKnobLeavesTheNodesOtherChanges)
+{
+    std::vector<NodePtr> chain = createChain(2);
+    ASSERT_EQ(chain.size(), 2u);
+    const Serialization::ProjectSerialization before = snapshot();
+    setSize(chain[1], 5.);
+    chain[1]->disconnectInput(0);
+
+    const ProjectMerge::ChangeSummary summary = ProjectMerge::compare(project(), before);
+    const std::string id = chain[1]->getNodeId();
+    std::vector<Serialization::GraphOp> ops;
+    EXPECT_FALSE(ProjectMerge::takeKnobOperations(project(), summary, id, "noSuchKnob", &ops));
+    ASSERT_TRUE(ProjectMerge::takeKnobOperations(project(), summary, id, kBlurParamSize, &ops));
+    applyAndUndo(ops, [&]() {
+        EXPECT_DOUBLE_EQ(blurSize(chain[1])->getValue(0), blurSize(chain[0])->getValue(0));
+        EXPECT_EQ(chain[1]->getInput(0), nullptr);
+        const ProjectMerge::NodeChange* change = ProjectMerge::compare(project(), before).find(id);
+        ASSERT_NE(change, nullptr);
+        EXPECT_TRUE(change->knobs.empty());
+        EXPECT_EQ(change->inputs.size(), 1u);
+    });
+}
+
+TEST_F(ProjectMergeTest, RemovingAnAddedNodeReconnectsItsReaders)
+{
+    std::vector<NodePtr> chain = createChain(2);
+    ASSERT_EQ(chain.size(), 2u);
+    const Serialization::ProjectSerialization before = snapshot();
+    NodePtr extra = createBlur("Extra");
+    ASSERT_NE(extra, nullptr);
+    ASSERT_TRUE(NodeCollection::connectNodes(0, chain[0], extra, false));
+    ASSERT_TRUE(chain[1]->replaceInput(extra, 0));
+
+    const ProjectMerge::ChangeSummary summary = ProjectMerge::compare(project(), before);
+    const std::string id = extra->getNodeId();
+    extra.reset();
+    applyAndUndo(ProjectMerge::removeAddedOperations(project(), summary, std::vector<std::string>(1, id)), [&]() {
+        EXPECT_EQ(project()->findNodeById(id), nullptr);
+        EXPECT_EQ(chain[1]->getInput(0), chain[0]);
+        EXPECT_TRUE(ProjectMerge::compare(project(), before).nodes.empty());
+    });
+}
+
+TEST_F(ProjectMergeTest, RestoringATemplateNodeInTwoImportsGivesEachAFreshIdAndItsOrigin)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    QString v1;
+    QString v2;
+    saveTemplateVersions(dir, &v1, &v2);
+    QString error;
+    ASSERT_EQ(project()->importTemplate(v1, NodeCollectionPtr(), &error).size(), 2u) << error.toStdString();
+    ASSERT_EQ(project()->importTemplate(v1, NodeCollectionPtr(), &error).size(), 2u) << error.toStdString();
+    ASSERT_EQ(project()->getTemplateImports().size(), 2u);
+    std::vector<std::string> keys;
+    for (const Serialization::TemplateImportSerialization& entry : project()->getTemplateImports()) {
+        keys.push_back(entry.key);
+    }
+    ASSERT_NE(keys[0], keys[1]);
+    NodePtr first = nodeNamed("Blur1");
+    ASSERT_NE(first, nullptr);
+    const std::string templateNode = first->getOriginNode();
+    ASSERT_FALSE(templateNode.empty());
+    first.reset();
+
+    const auto fromImport = [&](const std::string& key) {
+        NodesList found;
+        for (const NodePtr& node : project()->getNodes()) {
+            if ((node->getOriginTemplate() == key) && (node->getOriginNode() == templateNode)) {
+                found.push_back(node);
+            }
+        }
+
+        return found;
+    };
+    std::vector<std::string> deletedIds;
+    for (const std::string& key : keys) {
+        const NodesList members = fromImport(key);
+        ASSERT_EQ(members.size(), 1u);
+        deletedIds.push_back(members.front()->getNodeId());
+        members.front()->destroyNode(true, false);
+    }
+
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        ProjectMerge::ChangeSummary summary;
+        ASSERT_TRUE(ProjectMerge::compareWithTemplateBase(project(), keys[i], &summary, &error)) << error.toStdString();
+        const ProjectMerge::NodeChange* removed = summary.find(templateNode);
+        ASSERT_NE(removed, nullptr);
+        EXPECT_EQ(removed->kind, ProjectMerge::NodeChange::eRemoved);
+        std::vector<Serialization::GraphOp> ops;
+        std::vector<ProjectMerge::PendingSplice> pending;
+        ASSERT_TRUE(ProjectMerge::restoreOperations(project(), summary, std::vector<std::string>(1, templateNode), ProjectMerge::SpliceMode::eAsk, &ops, &pending, &error)) << error.toStdString();
+        bool restoredAll = false;
+        for (const Serialization::OpResult& result : ProjectMerge::applyAllOrNothing(project(), ops, &restoredAll)) {
+            EXPECT_TRUE(result.applied()) << result.message;
+        }
+        const NodesList restored = fromImport(keys[i]);
+        ASSERT_EQ(restored.size(), 1u);
+        const std::string restoredId = restored.front()->getNodeId();
+        EXPECT_NE(restoredId, templateNode);
+        EXPECT_NE(restoredId, deletedIds[0]);
+        EXPECT_NE(restoredId, deletedIds[1]);
+    }
+    EXPECT_NE(fromImport(keys[0]).front()->getNodeId(), fromImport(keys[1]).front()->getNodeId());
+    // Each import's two members and its template node.
+    ASSERT_EQ(project()->getNodes().size(), 6u);
+
+    const ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project(), keys[0], v2);
+    ASSERT_TRUE(result.ok) << result.error.toStdString();
+    const NodesList updated = fromImport(keys[0]);
+    ASSERT_EQ(updated.size(), 1u);
+    EXPECT_DOUBLE_EQ(blurSize(updated.front())->getValue(0), 4.);
+    EXPECT_EQ(project()->getNodes().size(), 6u);
+}
+
+TEST_F(ProjectMergeTest, RecomparingATemplateComparisonAfterAPickAndItsUndoKeepsTheCounts)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    QString v1;
+    QString v2;
+    saveTemplateVersions(dir, &v1, &v2);
+    importShot(v1);
+    NodePtr blur1 = nodeNamed("Blur1");
+    ASSERT_NE(blur1, nullptr);
+    const double baseSize = blurSize(blur1)->getValue(0);
+    setSize(blur1, baseSize + 7.);
+    NodePtr blur2 = nodeNamed("Blur2");
+    ASSERT_NE(blur2, nullptr);
+    blur2->destroyNode(true, false);
+    blur2.reset();
+    ASSERT_NE(createBlur("Outsider"), nullptr);
+
+    const auto kinds = [](const ProjectMerge::ChangeSummary& summary) {
+        std::multiset<std::pair<std::string, int>> listed;
+        for (const ProjectMerge::NodeChange& change : summary.nodes) {
+            listed.insert(std::make_pair(change.nodeId, static_cast<int>(change.kind)));
+        }
+
+        return listed;
+    };
+    const ProjectMerge::ChangeSummary summary = compareWithBase();
+    ASSERT_FALSE(summary.templateKey.empty());
+    ASSERT_FALSE(summary.nodes.empty());
+    const ProjectMerge::NodeChange* changed = summary.find(blur1->getNodeId());
+    ASSERT_NE(changed, nullptr);
+    EXPECT_EQ(changed->kind, ProjectMerge::NodeChange::eChanged);
+    EXPECT_EQ(kinds(ProjectMerge::recompare(project(), summary)), kinds(summary));
+
+    std::vector<Serialization::GraphOp> ops;
+    ASSERT_TRUE(ProjectMerge::takeKnobOperations(project(), summary, changed->nodeId, kBlurParamSize, &ops));
+    applyAndUndo(ops, [&]() {
+        EXPECT_DOUBLE_EQ(blurSize(blur1)->getValue(0), baseSize);
+        const ProjectMerge::ChangeSummary picked = ProjectMerge::recompare(project(), summary);
+        EXPECT_EQ(picked.source, summary.source);
+        EXPECT_EQ(picked.templateKey, summary.templateKey);
+        EXPECT_EQ(picked.nodes.size(), summary.nodes.size() - 1);
+    });
+    const ProjectMerge::ChangeSummary undone = ProjectMerge::recompare(project(), summary);
+    EXPECT_EQ(undone.source, summary.source);
+    EXPECT_EQ(kinds(undone), kinds(summary));
+    EXPECT_EQ(kinds(undone), kinds(compareWithBase()));
+}
+
+TEST_F(ProjectMergeTest, RemovingAnAddedMergeBridgesItsReaderAsDeletingItDoes)
+{
+    NodePtr b = createBlur("B");
+    NodePtr a = createBlur("A");
+    NodePtr reader = createBlur("Reader");
+    ASSERT_NE(b, nullptr);
+    ASSERT_NE(a, nullptr);
+    ASSERT_NE(reader, nullptr);
+    const Serialization::ProjectSerialization before = snapshot();
+    // One connected input, then two: the readers follow the graph's delete each time.
+    for (int connected = 1; connected <= 2; ++connected) {
+        NodePtr merge = createIn(PLUGINID_NATRON_NATIVE_MERGE, project(), "Merge" + std::to_string(connected));
+        ASSERT_NE(merge, nullptr);
+        ASSERT_GE(merge->getNInputs(), 2);
+        ASSERT_TRUE(merge->connectInput(b, 0));
+        if (connected == 2) {
+            ASSERT_TRUE(merge->connectInput(a, 1));
+        }
+        ASSERT_TRUE(reader->replaceInput(merge, 0));
+        const int bridged = merge->getInputReconnectedOnDelete();
+        const NodePtr expected = (bridged == -1) ? NodePtr() : merge->getInput(bridged);
+        if (connected == 1) {
+            EXPECT_EQ(expected, b);
+        }
+
+        const ProjectMerge::ChangeSummary summary = ProjectMerge::compare(project(), before);
+        const std::string id = merge->getNodeId();
+        merge.reset();
+        applyAndUndo(ProjectMerge::removeAddedOperations(project(), summary, std::vector<std::string>(1, id)), [&]() {
+            EXPECT_EQ(project()->findNodeById(id), nullptr);
+            EXPECT_EQ(reader->getInput(0), expected);
+        });
+
+        NodePtr restored = project()->findNodeById(id);
+        ASSERT_NE(restored, nullptr);
+        ASSERT_EQ(reader->getInput(0), restored);
+        // As the graph's Delete does; destroyNode() drops autoReconnect when it can tear down at once.
+        restored->deactivate(NodesList(), true, true, true, false);
+        restored->destroyNode(true, false);
+        restored.reset();
+        EXPECT_EQ(reader->getInput(0), expected);
+    }
+}
+
+TEST_F(ProjectMergeTest, RestoringAPositionPutsAMovedNodeBack)
+{
+    std::vector<NodePtr> chain = createChain(3);
+    ASSERT_EQ(chain.size(), 3u);
+    const Serialization::ProjectSerialization before = snapshot();
+    chain[1]->setPosition(300., 100.);
+
+    const ProjectMerge::ChangeSummary summary = ProjectMerge::compare(project(), before);
+    const std::string id = chain[1]->getNodeId();
+    const ProjectMerge::NodeChange* change = summary.find(id);
+    ASSERT_NE(change, nullptr);
+    ASSERT_TRUE(change->moved);
+    applyAndUndo(ProjectMerge::restorePositionOperations(project(), summary, std::vector<std::string>(1, id)), [&]() {
+        double x = 0.;
+        double y = 0.;
+        chain[1]->getPosition(&x, &y);
+        EXPECT_DOUBLE_EQ(x, 0.);
+        EXPECT_DOUBLE_EQ(y, 100.);
+        EXPECT_TRUE(ProjectMerge::compare(project(), before).nodes.empty());
+    });
+}
+
+TEST_F(ProjectMergeTest, RestorePositionIsNotOfferedWhenTheOtherVersionHasNoPosition)
+{
+    std::vector<NodePtr> chain = createChain(2);
+    ASSERT_EQ(chain.size(), 2u);
+    Serialization::ProjectSerialization before = snapshot();
+    for (const Serialization::NodeSerializationPtr& node : before.nodes.nodes) {
+        if (node && (node->scriptName == "Blur2")) {
+            node->layout.hasPosition = false;
+        }
+    }
+    chain[1]->setPosition(300., 100.);
+
+    const ProjectMerge::ChangeSummary summary = ProjectMerge::compare(project(), before);
+    const std::string id = chain[1]->getNodeId();
+    EXPECT_FALSE(ProjectMerge::canRestorePosition(summary, id));
+    EXPECT_TRUE(ProjectMerge::restorePositionOperations(project(), summary, std::vector<std::string>(1, id)).empty());
+}
+TEST_F(ProjectMergeTest, PendingSplicesBecomeSpliceChoicesThatReplaceEarlierOnes)
+{
+    std::vector<NodePtr> chain = createChain(2);
+    ASSERT_EQ(chain.size(), 2u);
+    const ProjectMerge::PendingSplice splice { chain[1]->getNodeId(), "Source", "restored-id", chain[0]->getNodeId() };
+    ProjectMerge::addSpliceChoices(project(), std::vector<ProjectMerge::PendingSplice>(1, splice));
+    ProjectMerge::addSpliceChoices(project(), std::vector<ProjectMerge::PendingSplice>(1, splice));
+    const std::vector<Serialization::MergeConflict> conflicts = project()->getMergeConflicts();
+    ASSERT_EQ(conflicts.size(), 1u);
+    const Serialization::MergeConflict& conflict = conflicts[0];
+    EXPECT_EQ(conflict.kind, Serialization::MergeConflictKind::eSpliceChoice);
+    EXPECT_EQ(conflict.nodeId, splice.readerId);
+    EXPECT_EQ(conflict.input, splice.input);
+    ASSERT_EQ(conflict.mine.connections.size(), 1u);
+    EXPECT_EQ(conflict.mine.connections[0].sourceId, splice.sourceId);
+    ASSERT_EQ(conflict.theirs.connections.size(), 1u);
+    EXPECT_EQ(conflict.theirs.connections[0].sourceId, splice.restoredId);
+    project()->setMergeConflicts(std::vector<Serialization::MergeConflict>());
 }

@@ -99,6 +99,9 @@ protected:
 private:
     void resolveAll(ProjectMerge::ConflictSide side);
 
+    // Previews side of the first selected conflict that has a preview, or stops when left.
+    void previewSide(bool entered, ProjectMerge::ConflictSide side);
+
     struct Implementation;
     std::unique_ptr<Implementation> _imp;
 };

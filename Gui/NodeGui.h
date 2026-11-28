@@ -109,6 +109,9 @@ public:
 
     void refreshPosition(const QPointF & center);
 
+    // Whether the badge is shown and its disc, rim included, holds scenePos.
+    bool containsScenePos(const QPointF& scenePos) const;
+
 private:
     NodeGuiDecorations* _layer;
     std::size_t _index;
@@ -151,6 +154,11 @@ public:
     std::size_t addBadge(const Badge& badge);
 
     Badge& badge(std::size_t index)
+    {
+        return _badges[index];
+    }
+
+    const Badge& badge(std::size_t index) const
     {
         return _badges[index];
     }
@@ -549,6 +557,14 @@ public:
      **/
     void setMergeConflictCount(std::size_t count);
     bool isMergeConflictBadgeShown() const;
+    // Hides the merge conflict badge while the Gui shows a graph comparison, shows it again after.
+    void refreshMergeConflictBadge();
+    bool isMergeConflictBadgeAt(const QPointF& scenePos) const;
+
+    // The marker on a node the graph comparison shows as changed, clicked to review the changes.
+    void setChangeMarkerShown(bool shown);
+    bool isChangeMarkerShown() const;
+    bool isChangeMarkerAt(const QPointF& scenePos) const;
 
     virtual void refreshStateIndicator();
     virtual void exportGroupAsPythonScript() OVERRIDE FINAL;
@@ -1102,6 +1118,8 @@ private:
     NodeGuiIndicatorPtr _availableViewsIndicator;
     NodeGuiIndicatorPtr _passThroughIndicator;
     NodeGuiIndicatorPtr _mergeConflictIndicator;
+    std::size_t _mergeConflictCount;
+    NodeGuiIndicatorPtr _changeMarkerIndicator;
     NodeWPtr _identityInput;
     bool identityStateSet;
     NATRON_PYTHON_NAMESPACE::PyModalDialog* _activeNodeCustomModalDialog;

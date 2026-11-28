@@ -233,6 +233,53 @@ public:
 
     // The rows of the Node Diff panel, headings included.
     QStringList getNodeDiffRows() const;
+
+    /**
+     * @brief Brings back the removed nodes the comparison draws as ghosts named in nodeNames (script
+     * names or node IDs), or the selected ghosts when it is empty, as one undo step on each graph
+     * that draws them. splice is "ask" (the default; inputs rewired since become splice choices
+     * among the merge conflicts), "keepMine" or "everywhere". False when none of them can be
+     * restored; raises RuntimeError when no ghost is named or selected or the restore fails.
+     **/
+    bool restoreFromComparison(const QStringList& nodeNames = QStringList(), const QString& splice = QString());
+
+    /**
+     * @brief Revert to Other, Take, Remove and Restore Position on the nodes of effects, each one
+     * undo step on each graph holding them. False when none of the nodes has that pick; raises
+     * RuntimeError when the pick fails.
+     **/
+    bool revertFromComparison(const std::list<Effect*>& effects);
+    bool takeKnobFromComparison(Effect* effect, const QString& knobName);
+    bool removeAddedFromComparison(const std::list<Effect*>& effects);
+    bool restorePositionFromComparison(const std::list<Effect*>& effects);
+
+    // The picks above, reporting a failure in error instead of raising it.
+    bool restoreFromComparisonChecked(const QStringList& nodeNames, const QString& splice, QString* error);
+    bool revertFromComparisonChecked(const std::list<Effect*>& effects, QString* error);
+    bool takeKnobFromComparisonChecked(Effect* effect, const QString& knobName, QString* error);
+    bool removeAddedFromComparisonChecked(const std::list<Effect*>& effects, QString* error);
+    bool restorePositionFromComparisonChecked(const std::list<Effect*>& effects, QString* error);
+
+    // Selects the ghosts named in nodeNames (script names or node IDs) in their graphs, and no other.
+    void selectComparisonGhosts(const QStringList& nodeNames);
+
+    /**
+     * @brief The removed nodes the comparison draws as ghosts, as a list of dicts: "name" (the
+     * script name the node had), "nodeId", "group" (the fully qualified name of the group whose
+     * graph draws it, empty for the top level) and "selected".
+     **/
+    PyObject* getComparisonGhosts() const;
+
+    // Opens the merge popover of effect's node; false when it has no conflict or comparison change.
+    bool openMergePopover(Effect* effect);
+    bool isMergePopoverOpen() const;
+
+    // What the merge bar of group's node graph, the top level's by default, shows: "comparison",
+    // "conflicts" or "none".
+    QString mergeBarMode(Group* group = 0) const;
+
+    // As one undo step on the graph last worked in.
+    virtual bool resolveMergeConflict(int index, const QString& choice) OVERRIDE;
 };
 
 NATRON_PYTHON_NAMESPACE_EXIT;

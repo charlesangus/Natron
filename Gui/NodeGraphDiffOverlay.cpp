@@ -33,7 +33,6 @@
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QBrush>
-#include <QColor>
 #include <QFont>
 #include <QGraphicsRectItem>
 #include <QPainter>
@@ -62,18 +61,6 @@ const char* const kTintName = "NodeDiffTint";
 // Above the edges and below the GPU region outlines.
 const double kGhostDepth = 13.;
 
-QColor
-tintColor(NodeGraphDiffOverlay::TintEnum tint)
-{
-    return (tint == NodeGraphDiffOverlay::eTintAdded) ? QColor(70, 200, 90) : QColor(255, 176, 30);
-}
-
-bool
-onlyMoved(const ProjectMerge::NodeChange& change)
-{
-    return change.moved && change.knobs.empty() && change.inputs.empty() && !change.renamed && !change.appearance && !change.userKnobs && !change.roto && !change.tracker && !change.recreated;
-}
-
 QGraphicsRectItem*
 tintItemOf(NodeGui* gui)
 {
@@ -86,8 +73,169 @@ tintItemOf(NodeGui* gui)
     return 0;
 }
 
+} // namespace
+
+NodeDiffGhostItem::NodeDiffGhostItem(QGraphicsItem* parent,
+                                     const std::string& nodeId,
+                                     const QRectF& rect,
+                                     const QString& label,
+                                     const QColor& color)
+    : QGraphicsObject(parent)
+    , _nodeId(nodeId)
+    , _rect(rect)
+    , _label(label)
+    , _color(color)
+    , _selected(false)
+{
+    setZValue(kGhostDepth);
+    setAcceptedMouseButtons(Qt::NoButton);
+    setAcceptHoverEvents(false);
+}
+
+void
+NodeDiffGhostItem::setGhostSelected(bool selected)
+{
+    if (_selected != selected) {
+        _selected = selected;
+        update();
+    }
+}
+
+QRectF
+NodeDiffGhostItem::boundingRect() const
+{
+    return _rect.adjusted(-4., -4., 4., 4.);
+}
+
+void
+NodeDiffGhostItem::paint(QPainter* painter,
+                         const QStyleOptionGraphicsItem* /*option*/,
+                         QWidget* /*widget*/)
+{
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing);
+    QColor fill = _color;
+    fill.setAlphaF(0.25);
+    QPen outline(_color);
+    outline.setWidthF(1.5);
+    outline.setStyle(Qt::DashLine);
+    outline.setCosmetic(true);
+    painter->setPen(outline);
+    painter->setBrush(fill);
+    painter->drawRect(_rect);
+    if (_selected) {
+        // White, as a selected node's outline.
+        QPen selection(Qt::white);
+        selection.setWidthF(2.);
+        selection.setCosmetic(true);
+        painter->setPen(selection);
+        painter->setBrush(Qt::NoBrush);
+        painter->drawRect(_rect.adjusted(-2., -2., 2., 2.));
+    }
+    QFont font;
+    font.setPixelSize(11);
+    painter->setFont(font);
+    painter->setPen(_color.lighter(140));
+    painter->drawText(_rect, Qt::AlignCenter, _label);
+    painter->restore();
+}
+
+NodeDiffWireItem::NodeDiffWireItem(QGraphicsItem* parent)
+    : QGraphicsObject(parent)
+    , _wires()
+    , _bounds()
+{
+    setZValue(kGhostDepth);
+    setAcceptedMouseButtons(Qt::NoButton);
+    setAcceptHoverEvents(false);
+}
+
+void
+NodeDiffWireItem::setWires(std::vector<Wire> wires)
+{
+    QRectF bounds;
+    for (const Wire& wire : wires) {
+        bounds = bounds.united(QRectF(wire.line.p1(), wire.line.p2()).normalized().adjusted(-2., -2., 2., 2.));
+    }
+    update(_bounds);
+    if (bounds != _bounds) {
+        prepareGeometryChange();
+        _bounds = bounds;
+    }
+    _wires = std::move(wires);
+    update(_bounds);
+}
+
+QRectF
+NodeDiffWireItem::boundingRect() const
+{
+    return _bounds;
+}
+
+void
+NodeDiffWireItem::paint(QPainter* painter,
+                        const QStyleOptionGraphicsItem* /*option*/,
+                        QWidget* /*widget*/)
+{
+    painter->save();
+    painter->setRenderHint(QPainter::Antialiasing);
+    for (const Wire& wire : _wires) {
+        QPen pen(wire.color);
+        pen.setWidthF(1.5);
+        pen.setStyle(Qt::DashLine);
+        pen.setCosmetic(true);
+        painter->setPen(pen);
+        painter->drawLine(wire.line);
+    }
+    painter->restore();
+}
+
+NodeGraphDiffOverlay::NodeGraphDiffOverlay(NodeGraph* graph,
+                                           QGraphicsItem* nodeRoot)
+    : QObject(graph)
+    , _graph(graph)
+    , _nodeRoot(nodeRoot)
+    , _ghosts()
+    , _wires(new NodeDiffWireItem(nodeRoot))
+    , _selectedGhosts()
+    , _tints()
+    , _neighbours()
+    , _pending(false)
+{
+    _wires->setObjectName(QString::fromUtf8("NodeDiffWireItem"));
+    _wires->hide();
+    Gui* gui = graph->getGui();
+    if (gui) {
+        QObject::connect(gui, SIGNAL(graphComparisonChanged()), this, SLOT(refresh()));
+    }
+    schedule();
+}
+
+NodeGraphDiffOverlay::~NodeGraphDiffOverlay()
+{
+    // The scene owns the items.
+}
+
+QColor
+NodeGraphDiffOverlay::tintColor(TintEnum tint)
+{
+    return (tint == eTintAdded) ? QColor(70, 200, 90) : QColor(255, 176, 30);
+}
+
+QColor
+NodeGraphDiffOverlay::removedColor()
+{
+    return QColor(230, 70, 60);
+}
+
+bool
+NodeGraphDiffOverlay::isOnlyMoved(const ProjectMerge::NodeChange& change)
+{
+    return change.moved && change.knobs.empty() && change.inputs.empty() && !change.renamed && !change.appearance && !change.userKnobs && !change.roto && !change.tracker && !change.recreated;
+}
+
 // Where the segment from inside rect towards outside leaves rect.
-QPointF
+static QPointF
 edgePoint(const QRectF& rect,
           const QPointF& outside)
 {
@@ -105,110 +253,10 @@ edgePoint(const QRectF& rect,
 }
 
 QLineF
-wireBetween(const QRectF& source,
-            const QRectF& reader)
+NodeGraphDiffOverlay::wireBetween(const QRectF& source,
+                                  const QRectF& reader)
 {
     return QLineF(edgePoint(source, reader.center()), edgePoint(reader, source.center()));
-}
-
-} // namespace
-
-NodeDiffGhostItem::NodeDiffGhostItem(QGraphicsItem* parent)
-    : QGraphicsObject(parent)
-    , _ghosts()
-    , _wires()
-    , _bounds()
-{
-    setZValue(kGhostDepth);
-    setAcceptedMouseButtons(Qt::NoButton);
-    setAcceptHoverEvents(false);
-}
-
-void
-NodeDiffGhostItem::setShapes(std::vector<Ghost> ghosts,
-                             std::vector<QLineF> wires)
-{
-    QRectF bounds;
-    for (const Ghost& ghost : ghosts) {
-        bounds = bounds.united(ghost.rect.adjusted(-2., -2., 2., 2.));
-    }
-    for (const QLineF& wire : wires) {
-        bounds = bounds.united(QRectF(wire.p1(), wire.p2()).normalized().adjusted(-2., -2., 2., 2.));
-    }
-    update(_bounds);
-    if (bounds != _bounds) {
-        prepareGeometryChange();
-        _bounds = bounds;
-    }
-    _ghosts = std::move(ghosts);
-    _wires = std::move(wires);
-    update(_bounds);
-}
-
-QRectF
-NodeDiffGhostItem::boundingRect() const
-{
-    return _bounds;
-}
-
-void
-NodeDiffGhostItem::paint(QPainter* painter,
-                         const QStyleOptionGraphicsItem* /*option*/,
-                         QWidget* /*widget*/)
-{
-    const QColor removed(230, 70, 60);
-    painter->save();
-    painter->setRenderHint(QPainter::Antialiasing);
-
-    QPen wirePen(removed);
-    wirePen.setWidthF(1.5);
-    wirePen.setStyle(Qt::DashLine);
-    wirePen.setCosmetic(true);
-    painter->setPen(wirePen);
-    for (const QLineF& wire : _wires) {
-        painter->drawLine(wire);
-    }
-
-    QColor fill = removed;
-    fill.setAlphaF(0.25);
-    QPen outline(removed);
-    outline.setWidthF(1.5);
-    outline.setStyle(Qt::DashLine);
-    outline.setCosmetic(true);
-    QFont font;
-    font.setPixelSize(11);
-    painter->setFont(font);
-    for (const Ghost& ghost : _ghosts) {
-        painter->setPen(outline);
-        painter->setBrush(fill);
-        painter->drawRect(ghost.rect);
-        painter->setPen(removed.lighter(140));
-        painter->drawText(ghost.rect, Qt::AlignCenter, ghost.label);
-    }
-    painter->restore();
-}
-
-NodeGraphDiffOverlay::NodeGraphDiffOverlay(NodeGraph* graph,
-                                           QGraphicsItem* nodeRoot)
-    : QObject(graph)
-    , _graph(graph)
-    , _ghosts(new NodeDiffGhostItem(nodeRoot))
-    , _tints()
-    , _neighbours()
-    , _pending(false)
-{
-    _ghosts->setObjectName(QString::fromUtf8("NodeDiffGhostItem"));
-    _ghosts->hide();
-    Gui* gui = graph->getGui();
-    if (gui) {
-        QObject::connect(gui, SIGNAL(graphComparisonChanged()), this, SLOT(refresh()));
-    }
-    schedule();
-}
-
-NodeGraphDiffOverlay::~NodeGraphDiffOverlay()
-{
-    // The scene owns the items.
 }
 
 std::string
@@ -255,7 +303,7 @@ NodeGraphDiffOverlay::tintOf(const NodeGui* node) const
 int
 NodeGraphDiffOverlay::ghostCount() const
 {
-    return _ghosts->isVisible() ? (int)_ghosts->ghostCount() : 0;
+    return (int)_ghosts.size();
 }
 
 QRectF
@@ -265,7 +313,98 @@ NodeGraphDiffOverlay::ghostRect(int index) const
         return QRectF();
     }
 
-    return _ghosts->ghosts()[index].rect;
+    return _ghosts[index]->rect();
+}
+
+std::vector<std::string>
+NodeGraphDiffOverlay::ghostIds() const
+{
+    std::vector<std::string> ids;
+    for (const NodeDiffGhostItem* ghost : _ghosts) {
+        ids.push_back(ghost->nodeId());
+    }
+
+    return ids;
+}
+
+QRectF
+NodeGraphDiffOverlay::ghostRectOf(const std::string& nodeId) const
+{
+    for (const NodeDiffGhostItem* ghost : _ghosts) {
+        if (ghost->nodeId() == nodeId) {
+            return ghost->rect();
+        }
+    }
+
+    return QRectF();
+}
+
+std::string
+NodeGraphDiffOverlay::ghostIdAt(const QPointF& scenePos) const
+{
+    const QPointF local = _nodeRoot->mapFromScene(scenePos);
+    for (std::vector<NodeDiffGhostItem*>::const_reverse_iterator it = _ghosts.rbegin(); it != _ghosts.rend(); ++it) {
+        if ((*it)->rect().contains(local)) {
+            return (*it)->nodeId();
+        }
+    }
+
+    return std::string();
+}
+
+std::vector<std::string>
+NodeGraphDiffOverlay::ghostIdsWithin(const QRectF& sceneRect) const
+{
+    const QRectF local = _nodeRoot->mapFromScene(sceneRect).boundingRect();
+    std::vector<std::string> ids;
+    for (const NodeDiffGhostItem* ghost : _ghosts) {
+        if (local.contains(ghost->rect())) {
+            ids.push_back(ghost->nodeId());
+        }
+    }
+
+    return ids;
+}
+
+void
+NodeGraphDiffOverlay::setGhostSelection(const std::set<std::string>& nodeIds)
+{
+    std::set<std::string> kept;
+    for (const NodeDiffGhostItem* ghost : _ghosts) {
+        if (nodeIds.count(ghost->nodeId())) {
+            kept.insert(ghost->nodeId());
+        }
+    }
+    if (kept == _selectedGhosts) {
+        return;
+    }
+    _selectedGhosts = std::move(kept);
+    applyGhostSelection();
+    Q_EMIT ghostSelectionChanged();
+}
+
+void
+NodeGraphDiffOverlay::toggleGhostSelected(const std::string& nodeId)
+{
+    std::set<std::string> ids = _selectedGhosts;
+    if (!ids.erase(nodeId)) {
+        ids.insert(nodeId);
+    }
+    setGhostSelection(ids);
+}
+
+void
+NodeGraphDiffOverlay::clearGhostSelection()
+{
+    setGhostSelection(std::set<std::string>());
+}
+
+void
+NodeGraphDiffOverlay::applyGhostSelection()
+{
+    for (NodeDiffGhostItem* ghost : _ghosts) {
+        ghost->setGhostSelected(_selectedGhosts.count(ghost->nodeId()) != 0);
+    }
 }
 
 void
@@ -319,9 +458,11 @@ NodeGraphDiffOverlay::refresh()
             if (found->second->kind == ProjectMerge::NodeChange::eAdded) {
                 tint = eTintAdded;
             } else if (found->second->kind == ProjectMerge::NodeChange::eChanged) {
-                tint = onlyMoved(*found->second) ? eTintMoved : eTintChanged;
+                tint = isOnlyMoved(*found->second) ? eTintMoved : eTintChanged;
             }
         }
+        node->setChangeMarkerShown(tint == eTintChanged);
+        node->refreshMergeConflictBadge();
         QGraphicsRectItem* item = tintItemOf(node.get());
         if (tint == eTintNone) {
             if (item) {
@@ -359,7 +500,11 @@ NodeGraphDiffOverlay::refresh()
     const std::string groupId = groupIdOf(this->_graph);
     const QSizeF size(TO_DPIX(NODE_WIDTH), TO_DPIY(NODE_HEIGHT));
     std::map<std::string, QRectF> ghostRects;
-    std::vector<NodeDiffGhostItem::Ghost> ghosts;
+    for (NodeDiffGhostItem* ghost : _ghosts) {
+        delete ghost;
+    }
+    const bool hadGhosts = !_ghosts.empty() || _wires->isVisible();
+    _ghosts.clear();
     if (summary) {
         for (const ProjectMerge::NodeChange& change : summary->nodes) {
             if ((change.kind != ProjectMerge::NodeChange::eRemoved) || (change.parentId != groupId) || !change.hasPosition) {
@@ -367,10 +512,12 @@ NodeGraphDiffOverlay::refresh()
             }
             const QRectF rect(QPointF(change.placedX, change.placedY), size);
             ghostRects[change.nodeId] = rect;
-            ghosts.push_back(NodeDiffGhostItem::Ghost { rect, QString::fromStdString(change.label.empty() ? change.scriptName : change.label) });
+            NodeDiffGhostItem* ghost = new NodeDiffGhostItem(_nodeRoot, change.nodeId, rect, QString::fromStdString(change.label.empty() ? change.scriptName : change.label), removedColor());
+            ghost->setObjectName(QString::fromUtf8("NodeDiffGhostItem"));
+            _ghosts.push_back(ghost);
         }
     }
-    std::vector<QLineF> wires;
+    std::vector<NodeDiffWireItem::Wire> wires;
     std::unordered_set<const NodeGui*> neighbours;
     const auto rectOf = [&](const std::string& id, QRectF* rect) {
         std::map<std::string, QRectF>::const_iterator ghost = ghostRects.find(id);
@@ -384,7 +531,7 @@ NodeGraphDiffOverlay::refresh()
             return false;
         }
         neighbours.insert(node->second.get());
-        *rect = node->second->mapToItem(_ghosts, node->second->boundingRect()).boundingRect();
+        *rect = node->second->mapToItem(_nodeRoot, node->second->boundingRect()).boundingRect();
 
         return true;
     };
@@ -397,23 +544,34 @@ NodeGraphDiffOverlay::refresh()
             QRectF other;
             for (const ProjectMerge::NodeChange::Link& source : change.sources) {
                 if (rectOf(source.nodeId, &other)) {
-                    wires.push_back(wireBetween(other, self->second));
+                    wires.push_back(NodeDiffWireItem::Wire { wireBetween(other, self->second), removedColor() });
                 }
             }
             // A wire between two ghosts is drawn once, from the reader's sources.
             for (const ProjectMerge::NodeChange::Link& reader : change.readers) {
                 if (!ghostRects.count(reader.nodeId) && rectOf(reader.nodeId, &other)) {
-                    wires.push_back(wireBetween(self->second, other));
+                    wires.push_back(NodeDiffWireItem::Wire { wireBetween(self->second, other), removedColor() });
                 }
             }
         }
     }
     _neighbours = std::move(neighbours);
-    const bool hadGhosts = _ghosts->isVisible();
-    _ghosts->setVisible(!ghosts.empty());
-    _ghosts->setShapes(std::move(ghosts), std::move(wires));
-    if (repainted || hadGhosts || _ghosts->isVisible()) {
+    _wires->setVisible(!wires.empty());
+    _wires->setWires(std::move(wires));
+    std::set<std::string> selected;
+    for (const std::string& id : _selectedGhosts) {
+        if (ghostRects.count(id)) {
+            selected.insert(id);
+        }
+    }
+    const bool selectionChanged = (selected != _selectedGhosts);
+    _selectedGhosts = std::move(selected);
+    applyGhostSelection();
+    if (repainted || hadGhosts || !_ghosts.empty()) {
         _graph->invalidateNavigatorImage();
+    }
+    if (selectionChanged) {
+        Q_EMIT ghostSelectionChanged();
     }
 } // NodeGraphDiffOverlay::refresh
 

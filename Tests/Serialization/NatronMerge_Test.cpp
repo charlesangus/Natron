@@ -194,7 +194,6 @@ conflictsByBasePath(const std::vector<Serialization::MergeConflict>& conflicts,
         entry.kind = std::string(Serialization::mergeConflictKindName(conflict.kind));
         entry.knob = conflict.knob;
         entry.dimension = conflict.dimension;
-        entry.time = conflict.time;
         entry.item = conflict.item;
         entry.input = conflict.input;
         entry.defaulted = conflict.defaultedKnobs;

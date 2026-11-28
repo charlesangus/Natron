@@ -80,6 +80,16 @@ findImport(const ProjectPtr& project,
 }
 } // anon namespace
 
+QString
+Gui::templateBaseDescription(const ProjectPtr& project,
+                             const std::string& templateKey)
+{
+    const std::optional<Serialization::TemplateImportSerialization> entry = findImport(project, templateKey);
+    const QString name = (entry && !entry->path.empty()) ? QFileInfo(QString::fromStdString(entry->path)).fileName() : QString::fromStdString(templateKey);
+
+    return tr("the base of template %1").arg(name);
+}
+
 void
 Gui::importTemplate()
 {
@@ -316,7 +326,7 @@ Gui::compareWithFile()
 
         return;
     }
-    setGraphComparison(summary);
+    setGraphComparison(summary, QFileInfo(QString::fromStdString(path)).fileName());
 }
 
 void
@@ -329,7 +339,7 @@ Gui::compareWithTemplateBase(const std::string& templateKey)
 
         return;
     }
-    setGraphComparison(summary);
+    setGraphComparison(summary, templateBaseDescription(getApp()->getProject(), templateKey));
 }
 
 const ProjectMerge::ChangeSummary*
@@ -339,9 +349,11 @@ Gui::getGraphComparison() const
 }
 
 void
-Gui::setGraphComparison(const ProjectMerge::ChangeSummary& summary)
+Gui::setGraphComparison(const ProjectMerge::ChangeSummary& summary,
+                        const QString& description)
 {
     _imp->graphComparison = std::make_shared<ProjectMerge::ChangeSummary>(summary);
+    _imp->graphComparisonDescription = description;
     Q_EMIT graphComparisonChanged();
 }
 
@@ -352,7 +364,23 @@ Gui::clearGraphComparison()
         return;
     }
     _imp->graphComparison.reset();
+    _imp->graphComparisonDescription.clear();
     Q_EMIT graphComparisonChanged();
+}
+
+QString
+Gui::getGraphComparisonDescription() const
+{
+    return _imp->graphComparisonDescription;
+}
+
+void
+Gui::recompareGraphComparison(const std::shared_ptr<const Serialization::ProjectSerialization>& source)
+{
+    if (!_imp->graphComparison || !source || (_imp->graphComparison->source != source)) {
+        return;
+    }
+    setGraphComparison(ProjectMerge::recompare(getApp()->getProject(), *_imp->graphComparison), _imp->graphComparisonDescription);
 }
 
 void

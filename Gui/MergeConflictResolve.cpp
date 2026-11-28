@@ -192,6 +192,14 @@ namespace {
         }
         project->setMergeConflicts(kept);
     }
+
+    void
+    frameRaisedConflicts(Gui* gui)
+    {
+        // The comparison would take the graph's merge bar and hide the conflict badges.
+        gui->clearGraphComparison();
+        NodeGraph::frameFirstMergeConflict(gui);
+    }
 } // anon namespace
 
 std::string
@@ -249,7 +257,7 @@ runTemplateEdit(Gui* gui,
         delete command;
     }
     if (raisedConflicts) {
-        gui->ensureMergeConflictPanelVisible();
+        frameRaisedConflicts(gui);
     }
 
     return ok;
@@ -279,7 +287,7 @@ updateFromTemplate(Gui* gui,
     ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project, templateKey, file, applier, allowMismatch);
     push(gui, command);
     if (!result.conflicts.empty()) {
-        gui->ensureMergeConflictPanelVisible();
+        frameRaisedConflicts(gui);
     }
 
     return result;
@@ -435,6 +443,26 @@ accept(Gui* gui,
     MergeStateCommand* command = new MergeStateCommand(project, QCoreApplication::translate("MergeConflictResolve", "Accept Merge Conflict"));
     removeConflicts(project, std::set<std::size_t>(indices.begin(), indices.end()));
     push(gui, command);
+}
+
+std::vector<std::size_t>
+indicesOf(Gui* gui,
+          const std::vector<Serialization::MergeConflict>& conflicts)
+{
+    std::vector<std::size_t> indices;
+    const std::vector<Serialization::MergeConflict>& current = gui->getApp()->getProject()->getMergeConflicts();
+    std::set<std::size_t> taken;
+    for (const Serialization::MergeConflict& conflict : conflicts) {
+        for (std::size_t i = 0; i < current.size(); ++i) {
+            if (!taken.count(i) && (current[i] == conflict)) {
+                taken.insert(i);
+                indices.push_back(i);
+                break;
+            }
+        }
+    }
+
+    return indices;
 }
 } // namespace MergeConflictResolve
 

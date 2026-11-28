@@ -165,6 +165,10 @@ ActionWithShortcut::ActionWithShortcut(const std::string & group,
     (void)QT_TR_NOOP(kShortcutDescActionGraphForcePreview);
     (void)QT_TR_NOOP(kShortcutDescActionGraphShowCacheSize);
     (void)QT_TR_NOOP(kShortcutDescActionGraphFrameNodes);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphNextMergeConflict);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphPreviousMergeConflict);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphNextComparisonChange);
+    (void)QT_TR_NOOP(kShortcutDescActionGraphPreviousComparisonChange);
     (void)QT_TR_NOOP(kShortcutDescActionGraphFindNode);
     (void)QT_TR_NOOP(kShortcutDescActionGraphRenameNode);
     (void)QT_TR_NOOP(kShortcutDescActionGraphExtractNode);

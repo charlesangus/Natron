@@ -209,6 +209,7 @@ GuiPrivate::GuiPrivate(const GuiAppInstancePtr& app,
     , _nodeDiffPanel(0)
     , menuUpdateFromTemplate(0)
     , graphComparison()
+    , graphComparisonDescription()
     , _geoSpreadsheetPanel(0)
     , _dopeSheetEditor(0)
     , _toolBox(0)

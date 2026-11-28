@@ -63,6 +63,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/LoopBlockOverlay.h"
 #include "Gui/Menu.h"
+#include "Gui/MergePicks.h"
 #include "Gui/NodeGraphStacking.h"
 #include "Gui/NodeGui.h"
 #include "Gui/SequenceFileDialog.h"
@@ -657,6 +658,31 @@ NodeGraph::showMenu(const QPoint & pos)
     QObject::connect( frameAllNodes, SIGNAL(triggered()), this, SLOT(centerOnAllNodes()) );
     viewMenu->addAction(frameAllNodes);
 
+    viewMenu->addSeparator();
+    QAction* nextConflict = new ActionWithShortcut(kShortcutGroupNodegraph, kShortcutIDActionGraphNextMergeConflict,
+                                                   kShortcutDescActionGraphNextMergeConflict, viewMenu);
+    nextConflict->setObjectName(QString::fromUtf8("actionGraphNextMergeConflict"));
+    QObject::connect(nextConflict, SIGNAL(triggered()), this, SLOT(goToNextMergeConflict()));
+    viewMenu->addAction(nextConflict);
+    QAction* previousConflict = new ActionWithShortcut(kShortcutGroupNodegraph, kShortcutIDActionGraphPreviousMergeConflict,
+                                                       kShortcutDescActionGraphPreviousMergeConflict, viewMenu);
+    previousConflict->setObjectName(QString::fromUtf8("actionGraphPreviousMergeConflict"));
+    QObject::connect(previousConflict, SIGNAL(triggered()), this, SLOT(goToPreviousMergeConflict()));
+    viewMenu->addAction(previousConflict);
+    // A comparison hides the conflicts until it is cleared.
+    nextConflict->setEnabled(!getGui()->getGraphComparison());
+    previousConflict->setEnabled(!getGui()->getGraphComparison());
+    QAction* nextChange = new ActionWithShortcut(kShortcutGroupNodegraph, kShortcutIDActionGraphNextComparisonChange,
+                                                 kShortcutDescActionGraphNextComparisonChange, viewMenu);
+    nextChange->setObjectName(QString::fromUtf8("actionGraphNextComparisonChange"));
+    QObject::connect(nextChange, SIGNAL(triggered()), this, SLOT(goToNextComparisonChange()));
+    viewMenu->addAction(nextChange);
+    QAction* previousChange = new ActionWithShortcut(kShortcutGroupNodegraph, kShortcutIDActionGraphPreviousComparisonChange,
+                                                     kShortcutDescActionGraphPreviousComparisonChange, viewMenu);
+    previousChange->setObjectName(QString::fromUtf8("actionGraphPreviousComparisonChange"));
+    QObject::connect(previousChange, SIGNAL(triggered()), this, SLOT(goToPreviousComparisonChange()));
+    viewMenu->addAction(previousChange);
+
     // The template actions apply when the selected nodes that belong to a template, as its hull
     // counts them, all belong to the same one. The selected members are the ones to remove and
     // the selected nodes that belong to no template the ones to add.
@@ -762,6 +788,8 @@ NodeGraph::showMenu(const QPoint & pos)
         removeFromTemplateAction->setObjectName(QString::fromUtf8("actionGraphRemoveFromTemplate"));
         removeFromTemplateAction->setEnabled(!toRemove.empty());
     }
+
+    MergePicks::addMenuActions(_imp->_menu, this);
 
     QAction* clearComparisonAction = 0;
     if (getGui()->getGraphComparison()) {

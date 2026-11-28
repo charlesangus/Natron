@@ -993,3 +993,8 @@ Reference: Nuke 17's EdgeExtend (`.local/docs/nuke/html/content/reference_guide/
 ### 2026-11-28T02:29:57Z — info (applied 2026-11-27 by bosley-executor: F33 open, Owner and Needs cleared)
 - refs: F33
 - from: /cat-plan. F33 - Graph Diff And Merge gained two new todo members from the UAT round 1 grill: M646 - Template Node And Versioning and M647 - Template Compare Layout. Per §9b, a shipping Feature with an unfinished member goes back to `open` with `Owner` cleared, and the `response` flag can be cleared because the redesign question is answered (decisions are in both milestone files). UAT round 2 follows the landing of both members.
+
+### 2026-11-27 — change-request — Keep Both Keys is impossible for same-frame keys (user decision)
+- from: bosley-executor (cat-pm), user answer to the M104 open question
+- refs: M104, F33
+- body: **User decision:** when both sides keyed the same knob at the same frame, "Keep Both Keys" makes no sense — two keys can't share a frame — so the option must not be offered there (only Mine / Theirs). M104 - Merge Resolution UI currently moves theirs one frame after mine (or halfway to the next key). Remove that offset rule and the Keep Both choice for same-frame key conflicts; Keep Both stays only where keys are at different frames. Fold into an F33 - Graph Diff And Merge member (M646 or M647) or a small new member, since M104 is done.

@@ -707,6 +707,7 @@ future core work has solid ground to build on.
 | M646 | Template Node And Versioning | doing | M103, M104 | bosley-executor | E12 | F33 | | [M646-template-node-and-versioning.md](PLAN/MILESTONES/M646-template-node-and-versioning.md) |
 | M647 | Template Compare Layout | doing | M104 | bosley-executor | E12 | F33 | | [M647-template-compare-layout.md](PLAN/MILESTONES/M647-template-compare-layout.md) |
 | M648 | Cycles Live Volume Refresh | todo | M554 | | E9 | F1 | | [M648-cycles-live-volume-refresh.md](PLAN/MILESTONES/M648-cycles-live-volume-refresh.md) |
+| M649 | On-Graph Merge Resolution | todo | M104, M647 | | E12 | F33 | | [M649-on-graph-merge-resolution.md](PLAN/MILESTONES/M649-on-graph-merge-resolution.md) |
 
 # Epics
 

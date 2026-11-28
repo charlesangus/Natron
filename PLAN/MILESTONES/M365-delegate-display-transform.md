@@ -48,6 +48,20 @@ Cycles, MoonRay and Natron Utility frames in the viewer get the viewer's display
   - verify: GUI script: switching the lighting mode with Cycles changes a lit card's pixel and matches the table.
   - size: M
 
+## Phase 365.3: Renderer parity in the viewer
+
+- [ ] M365.P3.T1 — Cycles light-level setting that matches Storm and MoonRay
+  - files: the Cycles render-settings knobs in USDRenderSettings (Engine/Nodes/Scene/), the Cycles fork's Hydra light translation (charlesangus/cycles `src/hydra/light.cpp`, the pinned branch) or Natron's light handoff, the image pin, a Cycles light-level test in Tests/Scene/
+  - approach: add a Cycles render setting (knob label = readable script name, e.g. `cyclesMatchLightLevels` "Match Light Levels") that backs out the π multiplier Cycles' Hydra plugin applies to non-distant light intensity, so Cycles renders at the same level as Storm and MoonRay for the same scene and exposure. Check whether the dome/area/sphere/rect/disk lights all carry the factor and treat each one the plugin scales; distant lights are already unscaled.
+  - verify: a test renders a lit card with a sphere light and a dome light in Cycles with the setting on and Storm/MoonRay references, and the mean levels match within a few percent; with the setting off Cycles is ~π brighter. Lobby screenshots re-sent: Cycles beside Storm and MoonRay at matching brightness.
+  - size: M
+
+- [ ] M365.P3.T2 — MoonRay reports its sample count to the viewer
+  - files: hdMoonray fork (render pass / render buffer progress), Natron's progressive delegate path that fills the HUD sample count and convergence (Engine/Nodes/Scene/HydraRenderImpl.*, Gui/SceneViewport.cpp), the image pin
+  - approach: read MoonRay's progress (pass / samples per pixel, or the render-progress fraction the Arras/RenderContext exposes) through hdMoonray's render pass or a render-buffer/settings stat, and feed it to the same sample-count and converged state the viewer HUD and the convergence check use for Cycles.
+  - verify: the Lobby run shows "n / N samples" for MoonRay rising to convergence and the "MoonRay converges on the Lobby" check in build/m365-lobby/m365_lobby_shots.py passes; a unit test asserts a MoonRay render reports a sample count > 0 and converges.
+  - size: L
+
 **Verification gate:** `ProgressiveRender_Test`, `Tests/gui/m254_progressive_viewer.py` and `Tests/gui/m365_delegate_display_transform.py` pass. Screenshots of Lobby in Cycles and MoonRay at two OCIO views and gain 2, beside Storm, sent to the user for sign-off.
 
 ## Decisions
@@ -80,3 +94,4 @@ Cycles, MoonRay and Natron Utility frames in the viewer get the viewer's display
 - 2026-11-21 — P2.T1–T3 landed together in 79abe8726; main merged in e994456e6 (one conflict in Gui/SceneViewport.cpp: drawStormGrade, then main's M278 selection pass). Remote gate run 44940439968 (fast, both ctest legs): ProgressiveRender_Test passes with Cycles loaded (FramesAreSceneLinearWithTheirAlpha ran, no skip), m254_progressive_viewer 39/39, m365_delegate_display_transform 49/49. Lobby screenshots for sign-off are next, locally under Xvfb.
 - 2026-11-22 — **Camera exposure in the viewer (user):** pulled into M365 from M367 - USD Camera Exposure's viewer task. 4783c0d14: the look-through camera's `ComputeLinearExposureScale` multiplies the viewer gain in the display grade (display only); knob `applyCameraExposure` ("Apply Camera Exposure", default on) as a toggle right of the gain slider, plus a read-only label with the exposure in stops. GUI test section added (Cycles). Lobby screenshots to re-send after the gate.
 - 2026-11-27 (PM) — Lobby screenshots on a vast RTX GPU (fast AppImage f9bc022637): Apply Camera Exposure darkens every renderer (mean max on→off: Storm 12.9/213.3, Cycles 130.3/246.6, MoonRay 39.0/230.4); Storm+Cycles 51/51 checks, MoonRay's convergence check fails because it reports no sample count ("-" in the HUD) while its frames arrive; hdMoonray logs _MarkRprimDirty coding errors on /World/assembly_Lobby prims during payload load. Cycles renders ~3x brighter than Storm/MoonRay (π on non-distant lights in Cycles' Hydra plugin). Sent to the user with those two questions.
+- 2026-11-27 — **Cycles light level (user):** add a Cycles render setting that backs out the π multiplier on non-distant lights so Cycles matches Storm and MoonRay (P3.T1). **MoonRay sample count (user):** fix in M365 (P3.T2).

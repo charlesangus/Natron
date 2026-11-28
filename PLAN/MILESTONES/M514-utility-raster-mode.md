@@ -114,7 +114,7 @@ A raster render mode in Natron Utility that is faster on simple setups, mostly p
     - The bundled gtest is old: no GTEST_SKIP, and `INSTANTIATE_TEST_CASE_P` only.
   - verify: pass on llvmpipe in ctest.
   - size: M
-- [ ] M514.P3.T2 — Bench and node docs
+- [x] M514.P3.T2 — Bench and node docs
   - files: `Engine/Nodes/Scene/docs/` (the Utility renderer page), `tools/bench/` (an env-gated bench, like `NATRON_UTILITY_MOTION_BENCH`)
   - approach:
     - Document Render Mode, Raster Samples, the fallbacks and the stepping.
@@ -144,3 +144,4 @@ A raster render mode in Natron Utility that is faster on simple setups, mostly p
 - 2026-11-27 (PM) — First build of P1–P3 (m514-gate3) failed 5 raster tests, all test bugs (coverage edge, a texel-centre tie, an unreachable texel count, mirror/glass rendered with 0 bounces); the raster path was unchanged. m514-gate4 (4d113c5262): GpuRaster/NatronUtilityRaster/Cancel/USDRenderSettings 11/11. Effects: mirror 0.262 (Raster−Ray 0.0000), 0.267 (0.0018), 0.116 (0.0482 — close to the 0.05 bound, watch it). P3.T2's bench numbers need a real GPU: batched with M299's roto bench on one cloud GPU session.
 - 2026-11-27 (PM) — First vast run of utility_raster_bench (RTX 3060, run cloud-gpu-20261127T232121Z) is invalid: the card renders without any motion blur and each timed render wrote the whole 1-250 frame range, so Ray ≈ Raster (1.60 vs 1.56 s at 9 spp, 4.66 vs 4.66 at 36). Bench script sent back for fixing (blur must show, one frame per render, fail without blur).
 - 2026-11-27 (PM) — Bench fixed (blur shows, one frame per render, blur gate). It found a Raster-mode quality bug: with the default Blackman-Harris filter each Raster pass gets its single jitter offset's filter weight for the whole frame, so the pass nearest the pixel centre dominates and blur collapses to one or two steps (9 samples: Raster plate-edge smear 2.0 px vs Ray 5.6; Box filter 12.0 vs 9.6). PM call: fix the per-pass weighting in the renderer rather than bench with Box.
+- 2026-11-27 (PM) — Ray vs Raster bench (vast RTX 3060, cloud-gpu-20261128T024440Z, gate7 build with the per-pass weighting fix): blurred projected card at 1920x1080 — 9 spp: Ray 2.00 s vs Raster 1.56 s median (Raster 1.28x faster; p95 1.27x); 36 spp: Ray 4.62 vs Raster 4.13 s (1.12x; p95 1.23x). Both modes pass the blur gate (plate-edge smear 9 spp Ray 22.7 / Raster 33.0 px; 36 spp 38.0 / 39.2 px).

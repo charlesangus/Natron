@@ -78,8 +78,11 @@ public:
      **/
     static double grabRadiusPixels(bool dangling);
 
-    // An input with no source, or the output stub of a node that feeds nothing.
+    // An input with no source, or an output stub.
     bool isDangling() const;
+
+    // Whether scenePoint is on the drawn output nub; false for every edge not drawn as one.
+    bool isScenePointOnNub(const QPointF& scenePoint) const;
 
     // Re-reads the Pipe Width preference into the pen. The caller re-lays the line, whose arrow
     // head scales with the width.
@@ -187,12 +190,16 @@ private:
 struct EdgeNearbyCandidate {
     QLineF line;
     bool isDangling; // grabbed with danglingGrabRadius, not grabRadius
+    // scenePos is on the candidate's drawn output nub. The pipes a connected output feeds leave from
+    // under its nub, so a press there must pull a new pipe rather than pick one of them up.
+    bool onNub = false;
 };
 
 /**
  * @brief Returns the index into candidates of the one whose line is closest to scenePos, among
  * those within their own grab radius (danglingGrabRadius for an unconnected input or output stub,
- * grabRadius for everything else), or -1 if none qualify.
+ * grabRadius for everything else), or -1 if none qualify. A candidate with onNub set wins over
+ * every one without it.
  **/
 int pickNearestEdgeCandidate(const QPointF& scenePos,
                              const std::vector<EdgeNearbyCandidate>& candidates,

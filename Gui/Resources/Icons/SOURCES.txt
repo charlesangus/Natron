@@ -119,7 +119,11 @@ natron/clear-anim-fw.svg | Natron custom ("clear-anim-fw", trash can with a righ
 natron/clone-stamp.svg | Natron custom ("clone-stamp", two overlapping stamps) | GPL-2.0-or-later
 natron/cusp-point.svg | Natron custom ("cusp-point", sharp corner with a filled square point) | GPL-2.0-or-later
 natron/deep.svg | Natron custom ("Deep v3", D in a rounded square, Lucide-grid) | GPL-2.0-or-later
-natron/usd.svg | Natron custom (prim hierarchy: parent over two children, Lucide-grid) | GPL-2.0-or-later
+natron/usd.svg | Natron custom (copy of usd-option-a, Lucide-grid) | GPL-2.0-or-later
+natron/usd-option-a.svg | Natron custom (tree: trunk with two branches ending in isometric cubes, Lucide-grid; candidate, not in the qrc) | GPL-2.0-or-later
+natron/usd-option-b.svg | Natron custom (isometric cube with a U badge, Lucide-grid; candidate, not in the qrc) | GPL-2.0-or-later
+natron/usd-option-c.svg | Natron custom (isometric cube on two stacked layers, Lucide-grid; candidate, not in the qrc) | GPL-2.0-or-later
+natron/usd-option-d.svg | Natron custom (isometric cube on the front of two stacked sheets, Lucide-grid; candidate, not in the qrc) | GPL-2.0-or-later
 natron/ellipse-handles.svg | Natron custom ("ellipse-handles", circle with four corner handles) | GPL-2.0-or-later
 natron/filter.svg | Natron custom ("Filter v2", droplet with fins, after Phosphor drop-half) | GPL-2.0-or-later
 natron/gamma.svg | Natron custom ("gamma", Greek letter gamma as a single open stroke) | GPL-2.0-or-later

@@ -1550,8 +1550,8 @@ Settings::initializeKnobsNodeGraph()
 
     _pipeWidth = AppManager::createKnob<KnobInt>(this, tr("Pipe Width"));
     _pipeWidth->setName("pipeWidth");
-    _pipeWidth->setHintToolTip(tr("The width in pixels of the pipes between nodes, connected or not. Arrow heads and the "
-                                  "distance from which a pipe can be grabbed grow with it."));
+    _pipeWidth->setHintToolTip(tr("The width in pixels of the pipes between nodes, connected or not. Arrow heads are three "
+                                  "times as wide, and the distance from which a pipe can be grabbed grows with it."));
     _pipeWidth->disableSlider();
     _pipeWidth->setMinimum(1);
     _nodegraphTab->addKnob(_pipeWidth);
@@ -1565,7 +1565,8 @@ Settings::initializeKnobsNodeGraph()
 
     _outputStubLength = AppManager::createKnob<KnobInt>(this, tr("Output Stub Length"));
     _outputStubLength->setName("outputStubLength");
-    _outputStubLength->setHintToolTip(tr("How far in pixels the output pipe of a node that feeds nothing reaches below the node."));
+    _outputStubLength->setHintToolTip(tr("How far in pixels the output stub of the Arrow output style reaches below the node. The "
+                                         "nub of the Nub style is sized from it too."));
     _outputStubLength->disableSlider();
     _outputStubLength->setMinimum(1);
     _nodegraphTab->addKnob(_outputStubLength);
@@ -1574,12 +1575,16 @@ Settings::initializeKnobsNodeGraph()
     _outputStyle->setName("outputStyle");
     {
         std::vector<ChoiceOption> entries;
-        entries.push_back(ChoiceOption("arrow", "Arrow", tr("A short pipe with an arrow head, Output Stub Length long.").toStdString()));
-        entries.push_back(ChoiceOption("nub", "Nub", tr("A filled half circle under the node's bottom edge, sized from the Output Stub Length.").toStdString()));
+        entries.push_back(ChoiceOption("arrow", "Arrow", tr("A short pipe with an arrow head, Output Stub Length long, shown "
+                                                            "while the node feeds nothing.")
+                                                             .toStdString()));
+        entries.push_back(ChoiceOption("nub", "Nub", tr("A filled half circle under the node's bottom edge, sized from the "
+                                                        "Output Stub Length, shown whether or not the node feeds anything.")
+                                                         .toStdString()));
         _outputStyle->populateChoices(entries);
     }
-    _outputStyle->setHintToolTip(tr("How the output of a node that feeds nothing is drawn. Either one is grabbed to drag a new "
-                                    "connection from the node."));
+    _outputStyle->setHintToolTip(tr("How the output of a node is drawn. Either one is grabbed to drag a new connection from the "
+                                    "node; the nub also adds a connection to a node that already feeds others."));
     _nodegraphTab->addKnob(_outputStyle);
 
     _useInputAForMergeAutoConnect = AppManager::createKnob<KnobBool>( this, tr("Merge node connect to A input") );
@@ -2043,10 +2048,10 @@ Settings::setDefaultValues()
     _autoTurbo->setDefaultValue(false);
     _snapNodesToConnections->setDefaultValue(true);
     _maxUndoSteps->setDefaultValue(200, 0);
-    _pipeWidth->setDefaultValue(4);
+    _pipeWidth->setDefaultValue(3);
     _disconnectedArrowLength->setDefaultValue(40);
     _outputStubLength->setDefaultValue(20);
-    _outputStyle->setDefaultValue((int)eOutputStyleArrow);
+    _outputStyle->setDefaultValue((int)eOutputStyleNub);
     _useInputAForMergeAutoConnect->setDefaultValue(true);
     _showLinkLines->setDefaultValue(true);
     _showExpressionLines->setDefaultValue(true);

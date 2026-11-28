@@ -615,6 +615,7 @@ NodeGraph::hasItemNearbyMouse(const QPoint& mousePosViewport,
             EdgeNearbyCandidate candidate;
             candidate.line = QLineF((*it)->mapToScene((*it)->line().p1()), (*it)->mapToScene((*it)->line().p2()));
             candidate.isDangling = (*it)->isDangling();
+            candidate.onNub = (*it)->isScenePointOnNub(scenePos);
             candidates.push_back(candidate);
         }
 

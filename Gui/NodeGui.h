@@ -632,8 +632,8 @@ public:
      **/
     void refreshEdgesDataKindPen(bool force);
 
-    // Re-reads the pipe preferences (width, disconnected arrow and output stub lengths) into this
-    // node's input and output edges.
+    // Re-reads the pipe preferences (width, disconnected arrow and output stub lengths, output
+    // style) into this node's input and output edges.
     void refreshEdgesPipeStyle();
 
     // Runs the refreshes, NodeGraph::DeferredRefreshEnum flags, this node left to a node refresh

@@ -1,14 +1,19 @@
 """Checks the node graph pipe preferences: Pipe Width sets the pen of every pipe, connected or not,
 Disconnected Arrow Length and Output Stub Length set where a dangling input and an output stub end,
-and the grab radii grow with the width (16 / 32 viewport pixels for a connected / dangling pipe at
-the default width 4) but never shrink below 10 / 18. Output Style draws an output that feeds nothing
-as an arrow stub or as a nub, a half circle under the node, which is grabbed to drag a connection
-like the stub. With no button down, the pipe a click would pick up is highlighted.
+and the grab radii grow with the width (12 / 24 viewport pixels for a connected / dangling pipe at
+the default width 3) but never shrink below 10 / 18. Arrow heads are three pipe widths wide. Output
+Style draws an output that feeds nothing as an arrow stub, or any output as a nub, a half circle
+under the node (the default), which is grabbed to drag a connection like the stub; on a node that
+already feeds another, the nub adds a connection and leaves the existing one. With no button down,
+the pipe a click would pick up is highlighted.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh):
     NATRON_GUI_TEST_OUT=build/pipe-grab/out Tests/gui/run-gui-test.sh Tests/gui/pipe_grab.py build/fast/App/Natron
 Shots (the node graph viewport): pipe-grab-nub-geometry.png, pipe-grab-nub.png and pipe-grab-arrow.png
-(the two output styles), pipe-grab-hover.png (a dangling input highlighted under the cursor).
+(the two output styles), pipe-grab-defaults.png and pipe-grab-defaults-zoom2.png (every pipe
+preference at its default: a Blur feeding two others through its nub, their unconnected outputs'
+nubs and the pipes' arrow heads), pipe-grab-nub-hover.png (a connected output's nub highlighted
+under the cursor), pipe-grab-hover.png (a dangling input highlighted under the cursor).
 """
 import os
 import sys
@@ -22,7 +27,7 @@ SETTLE_MS = 400
 LINE_ITEM_TYPE = 6
 # Pipe ends are laid out from the node's outline, which can sit a pixel or two off getSize().
 POSITION_TOLERANCE = 3.0
-DEFAULTS = {"pipeWidth": 4, "disconnectedArrowLength": 40, "outputStubLength": 20}
+DEFAULTS = {"pipeWidth": 3, "disconnectedArrowLength": 40, "outputStubLength": 20}
 LABELS = {"pipeWidth": "Pipe Width", "disconnectedArrowLength": "Disconnected Arrow Length",
           "outputStubLength": "Output Stub Length", "outputStyle": "Output Style"}
 OUTPUT_STYLE_ARROW = 0
@@ -30,8 +35,10 @@ OUTPUT_STYLE_NUB = 1
 OUTPUT_STYLE_IDS = ["arrow", "nub"]
 # Edge.cpp: the nub's radius is 0.6 of the Output Stub Length.
 NUB_RADIUS = 0.6 * DEFAULTS["outputStubLength"]
-GRAB_RADIUS_DEFAULT = 16.0
-DANGLING_RADIUS_DEFAULT = 32.0
+GRAB_RADIUS_DEFAULT = 12.0
+DANGLING_RADIUS_DEFAULT = 24.0
+# Edge.cpp: an arrow head is 3 pipe widths across its base; its bounds are padded a pixel each side.
+ARROW_HEAD_WIDTH_DEFAULT = 3.0 * DEFAULTS["pipeWidth"]
 GRAB_RADIUS_MIN = 10.0
 DANGLING_RADIUS_MIN = 18.0
 # Edge::kHoverHighlightDataKey
@@ -158,6 +165,43 @@ try:
                 continue
         return None
 
+    def nub_hovered(node):
+        """Whether the output nub of node is hover-highlighted, or None if no nub is shown. Told apart
+        from a pipe the node feeds straight down by its free end, NUB_RADIUS below the node."""
+        graph = root_graph()
+        c = centre(node)
+        x, y = node.getPosition()
+        w, h = node.getSize()
+        free = (c[0], y + h + NUB_RADIUS)
+        for it in (list(graph.items()) if graph is not None else []):
+            try:
+                if it.type() != LINE_ITEM_TYPE or not it.isVisible():
+                    continue
+                line = it.line()
+                p1 = it.mapToScene(line.p1())
+                p2 = it.mapToScene(line.p2())
+                if near((p2.x(), p2.y()), c) and near((p1.x(), p1.y()), free):
+                    return bool(it.data(HOVER_DATA_KEY))
+            except RuntimeError:
+                continue
+        return None
+
+    def pipe_bounds_width(src, dst, tol):
+        """The boundingRect width of the pipe item from src into dst, or None."""
+        graph = root_graph()
+        for it in (list(graph.items()) if graph is not None else []):
+            try:
+                if it.type() != LINE_ITEM_TYPE or not it.isVisible():
+                    continue
+                line = it.line()
+                p1 = it.mapToScene(line.p1())
+                p2 = it.mapToScene(line.p2())
+                if near((p2.x(), p2.y()), centre(src), tol) and near((p1.x(), p1.y()), centre(dst), tol):
+                    return it.boundingRect().width()
+            except RuntimeError:
+                continue
+        return None
+
     def connected_pipe(src, dst, tol):
         """The pipe from src into dst, as (dst end, src end), or None."""
         for p1, p2, _ in pipes():
@@ -258,7 +302,7 @@ try:
             set_pref(name, value)
         style = settings.getParam("outputStyle")
         require(style is not None, "Preferences have a parameter named outputStyle")
-        check(style.getDefaultValue() == OUTPUT_STYLE_ARROW, "outputStyle defaults to Arrow (got %r)" % style.getDefaultValue())
+        check(style.getDefaultValue() == OUTPUT_STYLE_NUB, "outputStyle defaults to Nub (got %r)" % style.getDefaultValue())
         check(style.getLabel() == LABELS["outputStyle"], "outputStyle is labelled %r (got %r)"
               % (LABELS["outputStyle"], style.getLabel()))
         options = [str(o) for o in style.getOptions()]
@@ -474,6 +518,54 @@ try:
         fed = taker.getInput(0)
         check(fed is not None and fed.getScriptName() == feeder.getScriptName(),
               "a drag from the nub onto another Blur connects it (input %r)" % (fed.getScriptName() if fed else None))
+
+        gt.section("connected-nub")
+        check(nub_hovered(feeder) is not None, "the feeder still shows its nub now that it feeds the taker")
+        second = create("Blur", 800, 250)
+        app.clearSelection()
+        yield ("sleep", SETTLE_MS)
+        sc = centre(second)
+        root_graph().centerOn((fc[0] + sc[0]) / 2.0, (fc[1] + sc[1]) / 2.0)
+        yield ("sleep", SETTLE_MS)
+        nub_press = to_view((fc[0], fy + fh + NUB_RADIUS / 2.0))
+        send_mouse(QEvent.MouseMove, nub_press, Qt.NoButton, Qt.NoButton)
+        yield ("sleep", SETTLE_MS)
+        check(nub_hovered(feeder) is True,
+              "the connected feeder's nub is highlighted with the pointer on it, over the pipe it feeds")
+        shoot("pipe-grab-nub-hover.png")
+        drag_between(nub_press, to_view(sc))
+        yield ("sleep", SETTLE_MS)
+        fed = second.getInput(0)
+        check(fed is not None and fed.getScriptName() == feeder.getScriptName(),
+              "a drag from the connected feeder's nub onto a third Blur connects it (input %r)"
+              % (fed.getScriptName() if fed else None))
+        fed = taker.getInput(0)
+        check(fed is not None and fed.getScriptName() == feeder.getScriptName(),
+              "the feeder still feeds the first taker after the second connection (input %r)"
+              % (fed.getScriptName() if fed else None))
+        check(nub_hovered(feeder) is not None, "the feeder shows its nub while feeding two Blurs")
+        check(nub_hovered(taker) is not None and nub_hovered(second) is not None,
+              "the two takers, which feed nothing, show their nubs")
+
+        gt.section("defaults-shots")
+        for name, value in sorted(DEFAULTS.items()):
+            check(settings.getParam(name).getValue() == value, "%s is at its default %d" % (name, value))
+        check(settings.getParam("outputStyle").getValue() == OUTPUT_STYLE_NUB, "outputStyle is at its default Nub")
+        tw = pipe_bounds_width(feeder, taker, fh)
+        check(tw is not None and abs(tw - (ARROW_HEAD_WIDTH_DEFAULT + 2.0)) <= 1.0,
+              "the straight-down feeder-to-taker pipe's bounds are its %g px arrow head plus a pixel each side (got %r)"
+              % (ARROW_HEAD_WIDTH_DEFAULT, tw))
+        away = to_view((fc[0] + 100.0, fy - 150.0))
+        require(nearest_pipe_px(away) > DANGLING_RADIUS_DEFAULT, "no pipe lies near the parked pointer")
+        send_mouse(QEvent.MouseMove, away, Qt.NoButton, Qt.NoButton)
+        yield ("sleep", SETTLE_MS)
+        shoot("pipe-grab-defaults.png")
+        root_graph().scale(2.0, 2.0)
+        root_graph().centerOn(fc[0], (fc[1] + tc[1]) / 2.0)
+        yield ("sleep", SETTLE_MS)
+        shoot("pipe-grab-defaults-zoom2.png")
+        root_graph().resetTransform()
+        yield ("sleep", SETTLE_MS)
 
         gt.section("hover-highlight")
         lc = centre(lone)

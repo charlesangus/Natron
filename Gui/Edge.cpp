@@ -57,11 +57,13 @@
 
 #define EDGE_LENGTH_MIN 0.1
 #define ARROW_OFFSET 3 // offset of the arrow tip from the object border
-#define ARROW_SIZE_CONNECTED 14
-#define ARROW_SIZE_DISCONNECTED 10
-// The arrow sizes above are for a pipe this wide; arrow heads scale with the Pipe Width preference.
-#define ARROW_SIZE_PEN_WIDTH 2.
+// Pipe arrow heads are this many pipe widths across their base, so they stay as bold as the pipe.
+#define ARROW_HEAD_WIDTH_PER_PIPE_WIDTH 3.
+#define ARROW_HEAD_WIDTH_MIN 6.
+#define ARROW_HEAD_LENGTH_PER_WIDTH 1.6
 #define ARROW_HEAD_ANGLE ( (2 * M_PI) / 15 ) // 24 degrees opening angle is a nice thin arrow
+// Dash lengths are in pen widths; they are scaled to stay the pixel lengths of a pipe this wide.
+#define DASH_PEN_WIDTH 2.
 
 // Grab radii in viewport pixels. The minimums are the fixed radii used before the radius followed
 // the pipe width, so a thin pipe is never harder to grab than it was.
@@ -69,8 +71,7 @@
 #define GRAB_RADIUS_PER_WIDTH 4.
 #define DANGLING_GRAB_RADIUS_MIN 18.
 #define DANGLING_GRAB_RADIUS_PER_WIDTH 8.
-// The nub's radius as a fraction of the Output Stub Length, so that it reaches about as far below
-// the node as the arrow stub's shaft without its head.
+// The nub's radius as a fraction of the Output Stub Length.
 #define OUTPUT_NUB_RADIUS_PER_STUB_LENGTH 0.6
 
 NATRON_NAMESPACE_ENTER
@@ -80,6 +81,23 @@ pipeWidthPreference()
 {
     // Knob::setValue does not enforce the knob minimum, so a Python script can still store 0 or less.
     return std::max(1, appPTR->getCurrentSettings()->getPipeWidth());
+}
+
+static void
+layArrowHead(const QPointF& tip,
+             double angle,
+             double pipeWidth,
+             double scale,
+             QPolygonF* head)
+{
+    const double width = std::max(TO_DPIX(ARROW_HEAD_WIDTH_MIN), ARROW_HEAD_WIDTH_PER_PIPE_WIDTH * pipeWidth) * scale;
+    const double length = width * ARROW_HEAD_LENGTH_PER_WIDTH;
+    const QPointF along(std::cos(angle), std::sin(angle));
+    const QPointF across(-along.y(), along.x());
+    const QPointF base = tip + along * length;
+
+    head->clear();
+    *head << tip << (base + across * (width / 2.)) << (base - across * (width / 2.));
 }
 
 struct EdgePrivate
@@ -726,26 +744,13 @@ Edge::initLineNow()
         arrowIntersect = dst;
     }
 
-    qreal arrowSize;
-    if (source && dest) {
-        arrowSize = TO_DPIX(ARROW_SIZE_CONNECTED) * sc;
-    } else {
-        arrowSize = TO_DPIX(ARROW_SIZE_DISCONNECTED) * sc;
-    }
-    arrowSize *= pen().widthF() / ARROW_SIZE_PEN_WIDTH;
-    QPointF arrowP1 = arrowIntersect + QPointF(std::cos(a + ARROW_HEAD_ANGLE / 2) * arrowSize,
-                                               std::sin(a + ARROW_HEAD_ANGLE / 2) * arrowSize);
-    QPointF arrowP2 = arrowIntersect + QPointF(std::cos(a - ARROW_HEAD_ANGLE / 2) * arrowSize,
-                                               std::sin(a - ARROW_HEAD_ANGLE / 2) * arrowSize);
-    //_drawLine = QLineF((arrowP1+arrowP2)/2, line().p2());
-
     // The arrow head is part of boundingRect() and shape(), and setLine() above has already
     // announced the geometry change the line itself makes.
     prepareGeometryChange();
     _imp->arrowHead.clear();
     _imp->nubRect = nubRect;
     if (nubRect.isNull()) {
-        _imp->arrowHead << arrowIntersect << arrowP1 << arrowP2;
+        layArrowHead(arrowIntersect, a, pen().widthF(), sc, &_imp->arrowHead);
     }
     reportGeometryToGraph(this);
 } // initLine
@@ -763,15 +768,14 @@ strokedLineBounds(const QLineF& line,
 QRectF
 Edge::boundingRect() const
 {
-    // The arrow head is painted, stroked with the same pen, outside the line's own rect, exactly
-    // as shape() below already accounts for.
+    // The arrow head is painted outside the line's own rect, exactly as shape() below already
+    // accounts for.
     QRectF rect = strokedLineBounds(line(), pen().widthF());
     QRectF headRect = _imp->arrowHead.boundingRect();
 
     if (!headRect.isNull()) {
-        // The head is stroked with a miter join, which pokes out up to miterLimit pen widths.
-        const qreal margin = pen().widthF() * pen().miterLimit();
-        rect = rect.united(headRect.adjusted(-margin, -margin, margin, margin));
+        // Padded a pixel for antialiasing.
+        rect = rect.united(headRect.adjusted(-1., -1., 1., 1.));
     }
     if (!_imp->nubRect.isNull()) {
         // The lower half only, padded a pixel for antialiasing.
@@ -865,6 +869,12 @@ Edge::isDangling() const
     return !_imp->source.lock() || !_imp->dest.lock();
 }
 
+bool
+Edge::isScenePointOnNub(const QPointF& scenePoint) const
+{
+    return !_imp->nubRect.isNull() && nubPath(_imp->nubRect).contains(mapFromScene(scenePoint));
+}
+
 void
 Edge::refreshPipeWidth()
 {
@@ -893,7 +903,8 @@ pickNearestEdgeCandidate(const QPointF& scenePos,
         if (d2 > radius * radius) {
             continue;
         }
-        if ((nearestIndex == -1) || (d2 < nearestDist2)) {
+        const bool beatsNearest = (nearestIndex == -1) || (candidates[i].onNub && !candidates[nearestIndex].onNub) || ((candidates[i].onNub == candidates[nearestIndex].onNub) && (d2 < nearestDist2));
+        if (beatsNearest) {
             nearestIndex = (int)i;
             nearestDist2 = d2;
         }
@@ -912,16 +923,9 @@ Edge::dragSource(const QPointF & src)
         a = 2 * M_PI - a;
     }
 
-    double arrowSize = TO_DPIX(ARROW_SIZE_DISCONNECTED) * pen().widthF() / ARROW_SIZE_PEN_WIDTH;
-    QPointF arrowP1 = line().p1() + QPointF(std::cos(a + ARROW_HEAD_ANGLE / 2) * arrowSize,
-                                            std::sin(a + ARROW_HEAD_ANGLE / 2) * arrowSize);
-    QPointF arrowP2 = line().p1() + QPointF(std::cos(a - ARROW_HEAD_ANGLE / 2) * arrowSize,
-                                            std::sin(a - ARROW_HEAD_ANGLE / 2) * arrowSize);
     prepareGeometryChange();
     _imp->nubRect = QRectF();
-    _imp->arrowHead.clear();
-    _imp->arrowHead << line().p1() << arrowP1 << arrowP2;
-
+    layArrowHead(line().p1(), a, pen().widthF(), 1., &_imp->arrowHead);
 
     if (_imp->label) {
         QPointF pos( ( ( line().p1().x() + src.x() ) / 2. ) - 5, ( ( line().p1().y() + src.y() ) / 2. ) - 5 );
@@ -941,15 +945,9 @@ Edge::dragDest(const QPointF & dst)
         a = 2 * M_PI - a;
     }
 
-    double arrowSize = TO_DPIX(ARROW_SIZE_DISCONNECTED) * pen().widthF() / ARROW_SIZE_PEN_WIDTH;
-    QPointF arrowP1 = line().p1() + QPointF(std::cos(a + ARROW_HEAD_ANGLE / 2) * arrowSize,
-                                            std::sin(a + ARROW_HEAD_ANGLE / 2) * arrowSize);
-    QPointF arrowP2 = line().p1() + QPointF(std::cos(a - ARROW_HEAD_ANGLE / 2) * arrowSize,
-                                            std::sin(a - ARROW_HEAD_ANGLE / 2) * arrowSize);
     prepareGeometryChange();
     _imp->nubRect = QRectF();
-    _imp->arrowHead.clear();
-    _imp->arrowHead << line().p1() << arrowP1 << arrowP2;
+    layArrowHead(line().p1(), a, pen().widthF(), 1., &_imp->arrowHead);
 
     if (_imp->label) {
         QPointF pos(((dst.x() + line().p2().x()) / 2.) - 5, ((dst.y() + line().p2().y()) / 2.) - 5);
@@ -1048,8 +1046,7 @@ Edge::getDrawnPen() const
     QPen myPen = pen();
     if (_imp->paintWithDash) {
         QVector<qreal> dashStyle;
-        // Dash lengths are in pen widths; scale so they stay the pixel lengths of a 2-pixel pipe.
-        const qreal unit = ARROW_SIZE_PEN_WIDTH / std::max(myPen.widthF(), 1.);
+        const qreal unit = DASH_PEN_WIDTH / std::max(myPen.widthF(), 1.);
         dashStyle << 3 * unit << 4 * unit;
         myPen.setDashPattern(dashStyle);
     } else {
@@ -1106,22 +1103,22 @@ Edge::paint(QPainter* painter,
 
     painter->setPen(myPen);
 
+    const bool drawHead = (_imp->arrowHead.size() == 3) && !(graph && graph->isLowDetail());
+    QLineF drawnLine = line();
+    if (drawHead) {
+        // The pipe stops at the head's base: past it, its width and cap would blunt the head's tip.
+        drawnLine.setP1((_imp->arrowHead[1] + _imp->arrowHead[2]) / 2.);
+    }
+    painter->drawLine(drawnLine);
 
-    painter->drawLine( line() );
-
-    if (graph && graph->isLowDetail()) {
+    if (!drawHead) {
         return;
     }
-
-    myPen.setStyle(Qt::SolidLine);
-    painter->setPen(myPen);
 
     QPainterPath headPath;
     headPath.addPolygon(_imp->arrowHead);
     headPath.closeSubpath();
-    myPen.setJoinStyle(Qt::MiterJoin);
     painter->fillPath(headPath, color);
-    painter->strokePath(headPath, myPen); // also draw the outline, or arrows are too small
 
     if (_imp->paintBendPoint) {
         QRectF arcRect(_imp->middlePoint.x() - 5, _imp->middlePoint.y() - 5, 10, 10);

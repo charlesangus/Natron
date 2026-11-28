@@ -2017,6 +2017,7 @@ NodeGui::refreshEdgesPipeStyle()
         _outputEdge->refreshPipeWidth();
         _outputEdge->initLine();
     }
+    refreshOutputEdgeVisibility();
 }
 
 void
@@ -3777,7 +3778,9 @@ NodeGui::refreshOutputEdgeVisibility()
 {
     if (_outputEdge) {
         NodePtr node = getNode();
-        if (node && node->getGuiOutputs().empty() && isVisibleTo(parentItem())) {
+        // The nub stays on a connected output too, as the handle for pulling another pipe from it.
+        const bool showStub = node && (node->getGuiOutputs().empty() || (appPTR->getCurrentSettings()->getOutputStyle() == Settings::eOutputStyleNub));
+        if (showStub && isVisibleTo(parentItem())) {
             if ( !_outputEdge->isVisible() ) {
                 _outputEdge->setActive(true);
                 _outputEdge->show();

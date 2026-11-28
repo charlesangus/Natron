@@ -95,6 +95,28 @@ TEST(EdgeNearbyGrab, ADanglingEdgeGetsTheLargerRadius)
     EXPECT_EQ(0, pickNearestEdgeCandidate(QPointF(5, 0), candidates, 10., 18.));
 }
 
+TEST(EdgeNearbyGrab, ACandidateOnItsNubBeatsANearerPipe)
+{
+    std::vector<EdgeNearbyCandidate> candidates;
+
+    candidates.push_back(makeCandidate(QPointF(5, -10), QPointF(5, 10), false)); // 0 away
+    candidates.push_back(makeCandidate(QPointF(0, 4), QPointF(10, 4), true)); // 4 away
+    candidates[1].onNub = true;
+
+    EXPECT_EQ(1, pickNearestEdgeCandidate(QPointF(5, 0), candidates, 20., 20.));
+}
+
+TEST(EdgeNearbyGrab, ACandidateOnItsNubStillNeedsToBeWithinItsRadius)
+{
+    std::vector<EdgeNearbyCandidate> candidates;
+
+    candidates.push_back(makeCandidate(QPointF(5, -10), QPointF(5, 10), false));
+    candidates.push_back(makeCandidate(QPointF(0, 30), QPointF(10, 30), true));
+    candidates[1].onNub = true;
+
+    EXPECT_EQ(0, pickNearestEdgeCandidate(QPointF(5, 0), candidates, 20., 20.));
+}
+
 TEST(EdgeNearbyGrab, NoCandidatesReturnsNone)
 {
     std::vector<EdgeNearbyCandidate> candidates;

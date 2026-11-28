@@ -151,7 +151,7 @@ Raster replaces only raygen and intersect; each pass still runs the shared wavef
   - approach: reuse the shutter snapshot and tables when the stage version and render settings are unchanged; check whether a Seed change forces a Hydra resync or BVH rebuild and avoid it if so.
   - verify: tests unchanged; profile shows the fixed cost drop on a second identical-stage frame.
   - size: M
-- [ ] M514.P4.T6 — Emissive fast path: shade in the fragment shader into a float accumulation attachment
+- [x] M514.P4.T6 — Emissive fast path: shade in the fragment shader into a float accumulation attachment (014faa42f7; as built: visibility raster + one ShadeSurface pass with no light batch, bounces, BVH or Resolve; cutout raster discards hole texels; existing film accumulates — an additive blend mis-orders overlapping surfaces)
   - files: the Raster pipeline (`GpuRaster*`, the raster shaders), `WavefrontGpu.cpp` Raster path
   - approach: when the bounce limit is 0 and there are no shadow-casting lights or holes, the fragment shader shades directly (emissive/flat, projections) and additively blends into an RGBA32F accumulation attachment (`rasterFloatBlend` is already required); skip RasterHits/Shade and readback per pass. Other cases keep the shared pipeline.
   - verify: fast-path images match the shared-pipeline Raster render within noise (unit test); bench shows the per-pass cost at 1080p in single-digit ms on the vast RTX 3060.

@@ -139,6 +139,12 @@ public:
 
     NodePtr getRotoPaintBottomMergeNode() const;
 
+    /**
+     * @brief The global Merges a concatenated tree of items composites them with, first to
+     * bottom, each one's B the one before it; empty when items do not concatenate.
+     **/
+    NodesList getRotoPaintMergeChain(const std::list<RotoDrawableItemPtr>& items) const;
+
     void setWhileCreatingPaintStrokeOnMergeNodes(bool b);
 
     /**

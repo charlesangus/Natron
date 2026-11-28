@@ -86,6 +86,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/Nodes/Merge/Dissolve.h"
 #include "Engine/Nodes/Merge/Merge.h"
 #include "Engine/Nodes/Merge/Switch.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
 #include "Engine/ProcessHandler.h"
@@ -2615,6 +2616,11 @@ AppInstance::aboutToQuit()
     ///Clear nodes now, not in the destructor of the project as
     ///deleting nodes might reference the project.
     _imp->_currentProject->reset(true /*aboutToQuit*/, /*blocking*/true);
+
+    // A scene job that already started still holds its node and reads this app through it.
+    if (!SceneWorker::retireApp(shared_from_this(), 5000)) {
+        std::cerr << "A scene job of a closed project still runs after 5 s; the project stays in memory until Natron exits." << std::endl;
+    }
 
     // Queued renders never start now, no task can restart, and a running render process dies
     // with this app, possibly before loading its file.

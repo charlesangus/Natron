@@ -164,6 +164,12 @@ walk(const Strokes& strokes,
     const bool pressureAffectsSize = params.pressureAffectsSize;
     const bool pressureAffectsHardness = params.pressureAffectsHardness;
 
+    // One dab reused for every placement keeps the stop vector's capacity instead of allocating per dab.
+    Dab dab;
+    dab.buildUp = buildUp;
+    dab.opacity = alpha;
+    double spacing;
+
     for (Strokes::const_iterator strokeIt = strokes.begin(); strokeIt != strokes.end(); ++strokeIt) {
         int firstPoint = (int)std::floor((strokeIt->size() * writeOnStart));
         int endPoint = (int)std::ceil((strokeIt->size() * writeOnEnd));
@@ -184,13 +190,9 @@ walk(const Strokes& strokes,
         StrokePoints::iterator it = visiblePortion.begin();
 
         if (visiblePortion.size() == 1) {
-            Dab dab;
-            double spacing;
             getRenderDotParams(alpha, brushSizePixel, brushHardness, brushSpacing, it->second, pressureAffectsOpacity, pressureAffectsSize, pressureAffectsHardness, &dab.internalRadius, &dab.externalRadius, &spacing, &dab.opacityStops);
             dab.center = it->first;
             dab.pressure = it->second;
-            dab.buildUp = buildUp;
-            dab.opacity = alpha;
             sink(dab);
             continue;
         }
@@ -213,13 +215,9 @@ walk(const Strokes& strokes,
                 };
                 double pressure = it->second * (1 - a) + next->second * a;
 
-                Dab dab;
-                double spacing;
                 getRenderDotParams(alpha, brushSizePixel, brushHardness, brushSpacing, pressure, pressureAffectsOpacity, pressureAffectsSize, pressureAffectsHardness, &dab.internalRadius, &dab.externalRadius, &spacing, &dab.opacityStops);
                 dab.center = center;
                 dab.pressure = pressure;
-                dab.buildUp = buildUp;
-                dab.opacity = alpha;
                 sink(dab);
 
                 distToNext += spacing;

@@ -25,6 +25,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -165,6 +166,9 @@ struct ChangeSummary {
     // other version, under the IDs of the live nodes its nodes stand for, and the live project.
     std::shared_ptr<const Serialization::ProjectSerialization> other;
     std::shared_ptr<const Serialization::ProjectSerialization> live;
+    // For a template version, the live nodes the comparison covers besides those other has; null
+    // when it covers every node.
+    std::shared_ptr<const std::set<std::string>> scope;
 
     const NodeChange* find(const std::string& nodeId) const;
 
@@ -173,6 +177,13 @@ struct ChangeSummary {
      **/
     const Serialization::NodeSerialization* otherNode(const std::string& nodeId) const;
 };
+
+/**
+ * @brief The comparison previous made, made again against the same other version and scope, as
+ * after an edit of the live project. An empty summary when previous has no other version.
+ **/
+ChangeSummary recompare(const ProjectPtr& project,
+                        const ChangeSummary& previous);
 
 /**
  * @brief How the live project differs from other, node by node, matched by ID: nodes the live
@@ -300,6 +311,11 @@ void addSpliceChoices(const ProjectPtr& project,
  **/
 Serialization::MergeConflict spliceChoice(const PendingSplice& splice);
 
+/**
+ * @brief What conflict is about, in a line, as the conflict lists show it.
+ **/
+QString conflictLabel(const Serialization::MergeConflict& conflict);
+
 enum class ConflictSide {
     eMine,
     eTheirs,
@@ -326,6 +342,18 @@ struct ConflictChoice {
  **/
 std::vector<ConflictChoice> availableChoices(const ProjectPtr& project,
                                              const Serialization::MergeConflict& conflict);
+
+// "mine", "theirs" or "base" for a side, else the option's name: how scripts name a choice.
+std::string choiceName(const ConflictChoice& choice);
+
+/**
+ * @brief The choice of availableChoices() that choiceName() calls name. False when it offers none
+ * by that name.
+ **/
+bool findChoice(const ProjectPtr& project,
+                const Serialization::MergeConflict& conflict,
+                const std::string& name,
+                ConflictChoice* choice);
 
 /**
  * @brief Whether availableChoices() offers side: the knob, node, roto item or track it names is

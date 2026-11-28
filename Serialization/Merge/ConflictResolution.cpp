@@ -754,8 +754,15 @@ namespace {
             const KnobSerialization* left = knobNamed(a, name);
             const KnobSerialization* right = knobNamed(b, name);
 
-            return (!left && !right) || (left && right && (*left == *right));
+            return (!left && !right) || (left && right && sameKnobState(*left, *right));
         });
+    }
+
+    bool
+    sameOptionalKnob(const std::optional<KnobSerialization>& a,
+                     const std::optional<KnobSerialization>& b)
+    {
+        return (a.has_value() == b.has_value()) && (!a || sameKnobState(*a, *b));
     }
 
     // Whether choosing a and choosing b give the same graph, as far as the recorded state tells.
@@ -770,12 +777,12 @@ namespace {
         case MergeConflictKind::eValue:
         case MergeConflictKind::eCurveKey: {
             if (!conflict.mine.knob && !conflict.theirs.knob && !conflict.base.knob) {
-                return (left.knob == right.knob) && (left.key == right.key) && (left.otherKeys == right.otherKeys);
+                return sameOptionalKnob(left.knob, right.knob) && (left.key == right.key) && (left.otherKeys == right.otherKeys);
             }
             const std::optional<KnobSerialization> leftKnob = knobResult(conflict, left);
             const std::optional<KnobSerialization> rightKnob = knobResult(conflict, right);
 
-            return leftKnob && rightKnob && (*leftKnob == *rightKnob);
+            return leftKnob && rightKnob && sameKnobState(*leftKnob, *rightKnob);
         }
         case MergeConflictKind::eInput:
         case MergeConflictKind::eSpliceChoice:
@@ -808,7 +815,7 @@ namespace {
         const MergeConflictValue& base = (leftRole == Role::eBase) ? left : right;
 
         // The kept knob is as the merge left it, and a base without the knob leaves it so too.
-        return !base.knob || (base.knob == kept.knob);
+        return !base.knob || sameOptionalKnob(base.knob, kept.knob);
     }
 
 } // anon namespace

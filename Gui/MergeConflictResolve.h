@@ -91,7 +91,8 @@ std::string importTemplate(Gui* gui,
 /**
  * @brief ProjectMerge::updateFromTemplate() on the open project as one undo step, which also puts
  * the import's base and the saved conflicts back. A partly applied update is still recorded so it
- * can be undone. The Merge Conflicts panel is shown when the update raised conflicts.
+ * can be undone. When the update raised conflicts, the graph comparison is cleared and the first
+ * conflicted node framed.
  **/
 ProjectMerge::UpdateResult updateFromTemplate(Gui* gui,
                                               const std::string& templateKey,

@@ -720,6 +720,10 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
         }
     }
 
+    if (groupEdited && handleMergePress(e, lastMousePosScene)) {
+        return;
+    }
+
     NodeGui* nearbyNode = NULL;
     Edge* nearbyEdge = NULL;
     NearbyItemEnum nearbyItemCode = hasItemNearbyMouse(e->pos(), &nearbyNode, &nearbyEdge);

@@ -796,8 +796,21 @@ public:
      * @brief The comparison the node graph shows, or null for none. Main thread only.
      **/
     const ProjectMerge::ChangeSummary* getGraphComparison() const;
-    void setGraphComparison(const ProjectMerge::ChangeSummary& summary);
+    // description names the version compared with, as the merge bar shows it.
+    void setGraphComparison(const ProjectMerge::ChangeSummary& summary,
+                            const QString& description = QString());
     void clearGraphComparison();
+    QString getGraphComparisonDescription() const;
+
+    /**
+     * @brief Makes the comparison again, after an edit of the project, while it is still one
+     * against other; does nothing otherwise.
+     **/
+    void recompareGraphComparison(const std::shared_ptr<const Serialization::ProjectSerialization>& other);
+
+    // What the merge bar calls the comparison with the base of the template import templateKey.
+    static QString templateBaseDescription(const ProjectPtr& project,
+                                           const std::string& templateKey);
 
 private:
 

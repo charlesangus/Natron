@@ -1079,6 +1079,10 @@ GuiApplicationManager::populateShortcuts()
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoPreview, kShortcutDescActionGraphToggleAutoPreview, Qt::NoModifier, (Qt::Key)0);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphToggleAutoTurbo, kShortcutDescActionGraphToggleAutoTurbo, Qt::NoModifier, (Qt::Key)0);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFrameNodes, kShortcutDescActionGraphFrameNodes, Qt::NoModifier, Qt::Key_F);
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphNextMergeConflict, kShortcutDescActionGraphNextMergeConflict, Qt::AltModifier, Qt::Key_Down);
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphPreviousMergeConflict, kShortcutDescActionGraphPreviousMergeConflict, Qt::AltModifier, Qt::Key_Up);
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphNextComparisonChange, kShortcutDescActionGraphNextComparisonChange, Qt::AltModifier | Qt::ShiftModifier, Qt::Key_Down);
+    registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphPreviousComparisonChange, kShortcutDescActionGraphPreviousComparisonChange, Qt::AltModifier | Qt::ShiftModifier, Qt::Key_Up);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphShowCacheSize, kShortcutDescActionGraphShowCacheSize, Qt::NoModifier, (Qt::Key)0);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFindNode, kShortcutDescActionGraphFindNode, Qt::ControlModifier, Qt::Key_F);
     registerKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphCreateNode, kShortcutDescActionGraphCreateNode, Qt::NoModifier, Qt::Key_Tab);

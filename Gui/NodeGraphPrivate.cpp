@@ -45,6 +45,7 @@
 #include "Gui/GuiApplicationManager.h" // appPTR
 #include "Gui/NodeClipBoard.h"
 #include "Gui/NodeGraph.h"
+#include "Gui/NodeGraphDiffOverlay.h"
 #include "Gui/NodeGui.h"
 #include "Gui/ThemedIcon.h"
 
@@ -196,6 +197,17 @@ NodeGraphPrivate::editSelectionFromSelectionRectangle(bool addToSelection)
         if ( selection.contains(bbox) ) {
             inside.push_back(*it);
         }
+    }
+
+    if (_diffOverlay) {
+        std::set<std::string> ghosts;
+        if (addToSelection) {
+            ghosts = _diffOverlay->selectedGhostIds();
+        }
+        for (const std::string& id : _diffOverlay->ghostIdsWithin(selection)) {
+            ghosts.insert(id);
+        }
+        _diffOverlay->setGhostSelection(ghosts);
     }
 
     if (!addToSelection) {

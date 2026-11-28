@@ -452,6 +452,22 @@ public:
      **/
     std::list<Effect*> importTemplateChecked(const QString& filename, Group* group, QString* error, ImportTemplateError* errorKind);
 
+    /**
+     * @brief The project's unresolved merge conflicts, in order, as a list of dicts: "index" (what
+     * resolveMergeConflict() takes), "node" (the fully qualified name of the node, empty when it
+     * is gone or the conflict is on the project), "nodeId", "kind", "label" and "choices", the
+     * names resolveMergeConflict() takes ("mine", "theirs", "base" or an option's name), with
+     * their labels in "choiceLabels".
+     **/
+    PyObject* getMergeConflicts() const;
+
+    /**
+     * @brief Resolves the merge conflict at index with the choice getMergeConflicts() names choice.
+     * Returns false, with the reason in the script editor, when there is no such conflict or
+     * choice or it could not be applied; the graph is then left as it was.
+     **/
+    virtual bool resolveMergeConflict(int index, const QString& choice);
+
     ///Close the current project but keep the window
     bool resetProject();
 

@@ -191,6 +191,7 @@ public:
     NodeDiffPanel* _nodeDiffPanel;
     Menu* menuUpdateFromTemplate;
     std::shared_ptr<ProjectMerge::ChangeSummary> graphComparison;
+    QString graphComparisonDescription;
     GeoSpreadsheetPanel* _geoSpreadsheetPanel;
     std::list<SceneGraphPanel*> _extraSceneGraphPanels;
 

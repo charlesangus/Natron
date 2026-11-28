@@ -177,6 +177,33 @@ public:
 
     NodeGraphDiffOverlay* getDiffOverlay() const;
 
+    MergeConflictPreview* getMergePreview() const;
+
+    MergePopover* getMergePopover() const;
+
+    NodeGraphMergeBar* getMergeBar() const;
+
+    /**
+     * @brief Opens the popover listing the node's merge conflicts and, while a comparison shows it
+     * as changed, its changed knobs. Returns false when it has neither.
+     **/
+    bool openMergePopover(const NodeGuiPtr& node);
+
+    void closeMergePopover();
+
+    bool isMergePopoverOpen() const;
+
+    // The ids of the comparison's ghosts that are selected, apart from the node selection.
+    std::set<std::string> getSelectedGhostIds() const;
+
+    void setSelectedGhostIds(const std::set<std::string>& ids);
+
+    // Gives the merge bar its room below the view, or none while it is hidden.
+    void layoutMergeBar();
+
+    // Shows the first node with a merge conflict in its graph and opens its popover.
+    static bool frameFirstMergeConflict(Gui* gui);
+
     // Call when a node of this graph was selected or deselected.
     void noteSelectionChanged();
 
@@ -380,6 +407,12 @@ public Q_SLOTS:
 
     void deleteSelection();
 
+    // Each frames the node in its graph and opens its popover.
+    void goToNextMergeConflict();
+    void goToPreviousMergeConflict();
+    void goToNextComparisonChange();
+    void goToPreviousComparisonChange();
+
     void onTimelineFrameChanged(SequenceTime time, int reason);
 
     void connectCurrentViewerToSelection(int inputNB, bool isASide);
@@ -478,6 +511,13 @@ public Q_SLOTS:
     void onSettingsSaved();
 
 private:
+    void goToMergeConflict(int step);
+    void goToComparisonChange(int step);
+
+    // Handles a press on a merge conflict pick, badge, change marker or comparison ghost; returns
+    // whether it did.
+    bool handleMergePress(QMouseEvent* e, const QPointF& scenePos);
+
     void armPanelBuildWait();
     void postPanelBuildFlush();
     void flushPanelBuilds();

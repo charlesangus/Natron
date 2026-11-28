@@ -492,6 +492,14 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
         createLinkedNodes();
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphUnlinkNode, modifiers, key)) {
         unlinkSelectedNodes();
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphNextMergeConflict, modifiers, key)) {
+        goToNextMergeConflict();
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphPreviousMergeConflict, modifiers, key)) {
+        goToPreviousMergeConflict();
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphNextComparisonChange, modifiers, key)) {
+        goToNextComparisonChange();
+    } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphPreviousComparisonChange, modifiers, key)) {
+        goToPreviousComparisonChange();
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphFrameNodes, modifiers, key)) {
         centerOnAllNodes();
     } else if (isKeybind(kShortcutGroupNodegraph, kShortcutIDActionGraphSwitchInputs, modifiers, key)) {

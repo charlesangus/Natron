@@ -1164,6 +1164,7 @@ namespace {
         ChangeSummary summary;
         summary.other = all.other;
         summary.live = all.live;
+        summary.scope = std::make_shared<const std::set<std::string>>(plan.scope);
         for (NodeChange& change : all.nodes) {
             if ((change.kind == NodeChange::eRemoved) || (plan.scope.find(change.nodeId) != plan.scope.end())) {
                 summary.nodes.push_back(std::move(change));
@@ -1173,6 +1174,31 @@ namespace {
         return summary;
     }
 } // anon namespace
+
+ChangeSummary
+recompare(const ProjectPtr& project,
+          const ChangeSummary& previous)
+{
+    if (!previous.other) {
+        return ChangeSummary();
+    }
+    ChangeSummary all = compare(project, *previous.other);
+    if (!previous.scope) {
+        return all;
+    }
+    ChangeSummary summary;
+    summary.other = all.other;
+    summary.live = all.live;
+    summary.scope = previous.scope;
+    // A node restored since is in other under its own ID, so it is matched and stays listed.
+    for (NodeChange& change : all.nodes) {
+        if ((change.kind != NodeChange::eAdded) || previous.scope->count(change.nodeId)) {
+            summary.nodes.push_back(std::move(change));
+        }
+    }
+
+    return summary;
+}
 
 bool
 compareWithFile(const ProjectPtr& project,
@@ -1228,6 +1254,52 @@ compareWithTemplateBase(const ProjectPtr& project,
     return true;
 }
 
+QString
+conflictLabel(const Serialization::MergeConflict& conflict)
+{
+    const QString knob = QString::fromStdString(conflict.knob);
+    const QString item = QString::fromStdString(conflict.item);
+    switch (conflict.kind) {
+    case Serialization::MergeConflictKind::eValue:
+        if (conflict.dimension == Serialization::kMergeConflictAllDimensions) {
+            return QCoreApplication::translate("ProjectMerge", "%1, all dimensions").arg(knob);
+        }
+        if (conflict.dimension < 0) {
+            return QCoreApplication::translate("ProjectMerge", "%1 (animation, options)").arg(knob);
+        }
+
+        return QCoreApplication::translate("ProjectMerge", "%1, dimension %2").arg(knob).arg(conflict.dimension);
+    case Serialization::MergeConflictKind::eCurveKey:
+        return QCoreApplication::translate("ProjectMerge", "%1, key at %2").arg(knob).arg(conflict.time ? *conflict.time : 0.);
+    case Serialization::MergeConflictKind::eInput:
+        return QCoreApplication::translate("ProjectMerge", "Input %1 connected differently").arg(QString::fromStdString(conflict.input));
+    case Serialization::MergeConflictKind::eSpliceChoice:
+        return QCoreApplication::translate("ProjectMerge", "Input %1 rewired since the restored node was removed").arg(QString::fromStdString(conflict.input));
+    case Serialization::MergeConflictKind::eStructuralInsert:
+        return QCoreApplication::translate("ProjectMerge", "Nodes inserted on the same link on both sides");
+    case Serialization::MergeConflictKind::eDeleteModify: {
+        const QString who = (conflict.side == Serialization::MergeSide::eMine) ? QCoreApplication::translate("ProjectMerge", "this project") : QCoreApplication::translate("ProjectMerge", "the template");
+        if (!knob.isEmpty()) {
+            return QCoreApplication::translate("ProjectMerge", "%1 deleted in %2 and changed in the other").arg(knob, who);
+        }
+        if (!item.isEmpty()) {
+            return QCoreApplication::translate("ProjectMerge", "%1 deleted in %2 and changed in the other").arg(item, who);
+        }
+
+        return QCoreApplication::translate("ProjectMerge", "Node deleted in %1 and changed in the other").arg(who);
+    }
+    case Serialization::MergeConflictKind::eReparent:
+        return QCoreApplication::translate("ProjectMerge", "Moved into different groups on both sides");
+    case Serialization::MergeConflictKind::eAdopted:
+        return QCoreApplication::translate("ProjectMerge", "Matched to the template node by structure");
+    case Serialization::MergeConflictKind::eRotoShape:
+        return item.isEmpty() ? QCoreApplication::translate("ProjectMerge", "Spline warp changed on both sides")
+                              : QCoreApplication::translate("ProjectMerge", "Shape %1 changed on both sides").arg(item);
+    }
+
+    return QString();
+}
+
 std::vector<ConflictChoice>
 availableChoices(const ProjectPtr& project,
                  const Serialization::MergeConflict& conflict)
@@ -1252,6 +1324,41 @@ availableChoices(const ProjectPtr& project,
     }
 
     return choices;
+}
+
+std::string
+choiceName(const ConflictChoice& choice)
+{
+    if (!choice.option.empty()) {
+        return choice.option;
+    }
+    switch (choice.side) {
+    case ConflictSide::eMine:
+        return "mine";
+    case ConflictSide::eTheirs:
+        return "theirs";
+    case ConflictSide::eBase:
+        break;
+    }
+
+    return "base";
+}
+
+bool
+findChoice(const ProjectPtr& project,
+           const Serialization::MergeConflict& conflict,
+           const std::string& name,
+           ConflictChoice* choice)
+{
+    for (const ConflictChoice& offered : availableChoices(project, conflict)) {
+        if (choiceName(offered) == name) {
+            *choice = offered;
+
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool

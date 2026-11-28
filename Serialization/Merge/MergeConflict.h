@@ -168,7 +168,14 @@ struct MergeConflictValue {
     std::vector<std::string> itemsBefore;
 };
 
-// Roto and tracker data compare by state, as the merge compares them.
+/**
+ * @brief Whether a and b hold the same state: values, defaults, choice entries and selected
+ * option, expressions and animation. A plug-in knob's label, tooltip, new-line, evaluates,
+ * animates and persistent flags come from the plug-in and are left out; a user knob's count.
+ **/
+bool sameKnobState(const KnobSerialization& a, const KnobSerialization& b);
+
+// Knobs compare by sameKnobState(), roto and tracker data by state, as the merge compares them.
 bool operator==(const MergeConflictValue& a, const MergeConflictValue& b);
 
 /**

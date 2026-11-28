@@ -52,6 +52,21 @@
                 %PYARG_0 = %CONVERTTOPYTHON[%RETURN_TYPE](%0);
             </inject-code>
         </modify-function>
+        <modify-function signature="getComparisonGhosts()const">
+            <modify-argument index="return">
+                <replace-type modified-type="PyObject"/>
+            </modify-argument>
+            <inject-code class="target" position="beginning">
+                %PYARG_0 = %CPPSELF.%FUNCTION_NAME();
+                if (!%PYARG_0) {
+                    if (!PyErr_Occurred()) {
+                        PyErr_SetString(PyExc_RuntimeError, "could not list the comparison's ghosts.");
+                    }
+                    return 0;
+                }
+                return %PYARG_0;
+            </inject-code>
+        </modify-function>
         <modify-function signature="getSelectedNodes(Group*)const">
             <inject-code class="target" position="beginning">
                 std::list&lt;Effect*&gt; effects = %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);

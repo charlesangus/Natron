@@ -204,7 +204,9 @@ updateFromTemplate(Gui* gui,
     ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project, templateKey, path, applier);
     push(gui, command);
     if (!result.conflicts.empty()) {
-        gui->ensureMergeConflictPanelVisible();
+        // The comparison would take the graph's merge bar and hide the conflict badges.
+        gui->clearGraphComparison();
+        NodeGraph::frameFirstMergeConflict(gui);
     }
 
     return result;

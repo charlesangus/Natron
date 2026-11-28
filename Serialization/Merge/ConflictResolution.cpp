@@ -539,6 +539,7 @@ namespace {
         switch (conflict.kind) {
         case MergeConflictKind::eInput:
         case MergeConflictKind::eStructuralInsert:
+        case MergeConflictKind::eSpliceChoice:
             if (value.connections.empty()) {
                 return failWith(error, "this side's connection cannot be put back");
             }
@@ -688,6 +689,128 @@ namespace {
         return true;
     }
 
+    // Whether value, the state of choice, has anything to put back for conflict.
+    bool
+    hasState(const MergeConflict& conflict,
+             const MergeConflictChoice& choice,
+             const MergeConflictValue& value)
+    {
+        switch (conflict.kind) {
+        case MergeConflictKind::eInput:
+        case MergeConflictKind::eStructuralInsert:
+        case MergeConflictKind::eSpliceChoice:
+            return !value.connections.empty();
+        case MergeConflictKind::eReparent:
+            return value.parent.has_value();
+        case MergeConflictKind::eAdopted:
+            return value.knobs.has_value();
+        case MergeConflictKind::eDeleteModify:
+            if (choice.option.empty() && conflict.item.empty() && conflict.knob.empty() && (roleOf(conflict, choice.side) == Role::eBase)) {
+                return value.knobs.has_value();
+            }
+
+            return true;
+        case MergeConflictKind::eCurveKey:
+            if (!conflict.time) {
+                return false;
+            }
+            // One key replaces the other at a shared time, so the choice could not keep both.
+            return std::none_of(value.otherKeys.begin(), value.otherKeys.end(), [&conflict](const KeyFrameSerialization& key) {
+                return key.time == *conflict.time;
+            });
+        case MergeConflictKind::eValue:
+        case MergeConflictKind::eRotoShape:
+            break;
+        }
+
+        return true;
+    }
+
+    // The knob the conflicted knob becomes under value, from a recorded state of it.
+    std::optional<KnobSerialization>
+    knobResult(const MergeConflict& conflict,
+               const MergeConflictValue& value)
+    {
+        const std::optional<KnobSerialization>& like = conflict.mine.knob ? conflict.mine.knob : conflict.theirs.knob ? conflict.theirs.knob
+                                                                                                                      : conflict.base.knob;
+        if (!like) {
+            return std::nullopt;
+        }
+        KnobSerialization state = *like;
+        std::string ignored;
+        if (!applyConflictKnobValue(conflict, value, &state, &ignored)) {
+            return std::nullopt;
+        }
+
+        return state;
+    }
+
+    bool
+    sameKnobs(const std::list<KnobSerialization>& a,
+              const std::list<KnobSerialization>& b,
+              const std::vector<std::string>& names)
+    {
+        return std::all_of(names.begin(), names.end(), [&a, &b](const std::string& name) {
+            const KnobSerialization* left = knobNamed(a, name);
+            const KnobSerialization* right = knobNamed(b, name);
+
+            return (!left && !right) || (left && right && (*left == *right));
+        });
+    }
+
+    // Whether choosing a and choosing b give the same graph, as far as the recorded state tells.
+    bool
+    sameResult(const MergeConflict& conflict,
+               const MergeConflictChoice& a,
+               const MergeConflictChoice& b)
+    {
+        const MergeConflictValue& left = choiceState(conflict, a);
+        const MergeConflictValue& right = choiceState(conflict, b);
+        switch (conflict.kind) {
+        case MergeConflictKind::eValue:
+        case MergeConflictKind::eCurveKey: {
+            if (!conflict.mine.knob && !conflict.theirs.knob && !conflict.base.knob) {
+                return (left.knob == right.knob) && (left.key == right.key) && (left.otherKeys == right.otherKeys);
+            }
+            const std::optional<KnobSerialization> leftKnob = knobResult(conflict, left);
+            const std::optional<KnobSerialization> rightKnob = knobResult(conflict, right);
+
+            return leftKnob && rightKnob && (*leftKnob == *rightKnob);
+        }
+        case MergeConflictKind::eInput:
+        case MergeConflictKind::eSpliceChoice:
+            return left.connections == right.connections;
+        case MergeConflictKind::eStructuralInsert:
+            return (left.connections == right.connections) && (left.removedNodes == right.removedNodes);
+        case MergeConflictKind::eReparent:
+            return (left.parent == right.parent) && (left.connections == right.connections);
+        case MergeConflictKind::eAdopted:
+            return left.knobs && right.knobs && sameKnobs(*left.knobs, *right.knobs, conflict.defaultedKnobs);
+        case MergeConflictKind::eRotoShape:
+            return left == right;
+        case MergeConflictKind::eDeleteModify:
+            break;
+        }
+
+        if (!conflict.item.empty() || !a.option.empty() || !b.option.empty()) {
+            return left == right;
+        }
+        const Role leftRole = roleOf(conflict, a.side);
+        const Role rightRole = roleOf(conflict, b.side);
+        if (leftRole == rightRole) {
+            return true;
+        }
+        if ((leftRole == Role::eDeleter) || (rightRole == Role::eDeleter) || conflict.knob.empty()) {
+            // Whether a node's base state is what the kept node already holds depends on the live graph.
+            return false;
+        }
+        const MergeConflictValue& kept = (leftRole == Role::eKeeper) ? left : right;
+        const MergeConflictValue& base = (leftRole == Role::eBase) ? left : right;
+
+        // The kept knob is as the merge left it, and a base without the knob leaves it so too.
+        return !base.knob || (base.knob == kept.knob);
+    }
+
 } // anon namespace
 
 const MergeConflictValue&
@@ -817,6 +940,9 @@ applyConflictSide(const MergeConflict& conflict,
                   ProjectSerialization* snapshot,
                   std::string* error)
 {
+    if ((conflict.kind == MergeConflictKind::eSpliceChoice) && (side == ResolutionSide::eMine)) {
+        return true;
+    }
     return applyState(conflict, sideState(conflict, side), roleOf(conflict, side), snapshot, error);
 }
 
@@ -845,6 +971,56 @@ applyConflictOption(const MergeConflict& conflict,
     }
 
     return applyState(conflict, found->state, std::nullopt, snapshot, error);
+}
+
+const MergeConflictValue&
+choiceState(const MergeConflict& conflict,
+            const MergeConflictChoice& choice)
+{
+    if (!choice.option.empty()) {
+        const MergeConflictOption* found = conflictOption(conflict, choice.option);
+        if (found) {
+            return found->state;
+        }
+    }
+
+    return sideState(conflict, choice.side);
+}
+
+std::vector<MergeConflictChoice>
+availableChoices(const MergeConflict& conflict,
+                 const ChoiceFilter& applicable)
+{
+    const bool splice = (conflict.kind == MergeConflictKind::eSpliceChoice);
+    std::vector<MergeConflictChoice> candidates;
+    candidates.push_back(MergeConflictChoice { ResolutionSide::eMine, std::string(), splice ? "Keep My Wiring" : "Mine" });
+    candidates.push_back(MergeConflictChoice { ResolutionSide::eTheirs, std::string(), splice ? "Splice In" : "Theirs" });
+    if (!splice) {
+        candidates.push_back(MergeConflictChoice { ResolutionSide::eBase, std::string(), "Base" });
+    }
+    for (const MergeConflictOption& option : conflict.options) {
+        candidates.push_back(MergeConflictChoice { ResolutionSide::eMine, option.name, option.label });
+    }
+
+    std::vector<MergeConflictChoice> offered;
+    for (const MergeConflictChoice& choice : candidates) {
+        // Keeping my wiring leaves the graph as it is, so there is always something to choose.
+        const bool keepsGraph = splice && choice.option.empty() && (choice.side == ResolutionSide::eMine);
+        if (!keepsGraph && !hasState(conflict, choice, choiceState(conflict, choice))) {
+            continue;
+        }
+        if (applicable && !applicable(choice)) {
+            continue;
+        }
+        const bool repeats = std::any_of(offered.begin(), offered.end(), [&conflict, &choice](const MergeConflictChoice& earlier) {
+            return sameResult(conflict, earlier, choice);
+        });
+        if (!repeats) {
+            offered.push_back(choice);
+        }
+    }
+
+    return offered;
 }
 
 } // namespace Serialization

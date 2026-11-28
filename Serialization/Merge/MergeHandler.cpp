@@ -144,44 +144,10 @@ namespace {
         return conflict;
     }
 
-    // Theirs' key moves to one frame later, or halfway to the next key when that comes sooner, so
-    // it lands where neither the merged curve nor another conflict has a key.
-    std::optional<MergeConflictOption>
-    keepBothKeys(const CurveKeyConflict& key,
-                 const CurveSerialization& merged,
-                 const std::vector<CurveKeyConflict>& keys)
-    {
-        if (!key.mine || !key.theirs) {
-            return std::nullopt;
-        }
-        std::optional<double> next;
-        auto consider = [&](double time) {
-            if ((time > key.time) && (!next || (time < *next))) {
-                next = time;
-            }
-        };
-        for (const KeyFrameSerialization& existing : merged.keyframes) {
-            consider(existing.time);
-        }
-        for (const CurveKeyConflict& other : keys) {
-            consider(other.time);
-        }
-        MergeConflictOption option;
-        option.name = std::string(kMergeOptionKeepBothKeys);
-        option.label = "Keep Both Keys";
-        option.state.key = key.mine;
-        KeyFrameSerialization moved = *key.theirs;
-        moved.time = (next && (*next <= key.time + 1.)) ? (key.time + *next) / 2. : key.time + 1.;
-        option.state.otherKeys.push_back(moved);
-
-        return option;
-    }
-
     void
     addKeyConflicts(const std::string& name,
                     int dimension,
                     const std::vector<CurveKeyConflict>& keys,
-                    const CurveSerialization& merged,
                     std::vector<MergeConflict>* conflicts)
     {
         for (const CurveKeyConflict& key : keys) {
@@ -193,9 +159,6 @@ namespace {
             conflict.base.key = key.base;
             conflict.mine.key = key.mine;
             conflict.theirs.key = key.theirs;
-            if (std::optional<MergeConflictOption> both = keepBothKeys(key, merged, keys)) {
-                conflict.options.push_back(std::move(*both));
-            }
             conflicts->push_back(conflict);
         }
     }
@@ -225,7 +188,7 @@ namespace {
         for (int index = 0; m != mine->parametricCurves->end(); ++b, ++m, ++t, ++index) {
             std::vector<CurveKeyConflict> keys;
             merged->push_back(mergeCurves(*b, *m, *t, &keys));
-            addKeyConflicts(mine->name, index, keys, merged->back(), conflicts);
+            addKeyConflicts(mine->name, index, keys, conflicts);
         }
 
         return true;
@@ -476,7 +439,7 @@ ScalarKnobMergeHandler::mergeDimension(const KnobSerialization* base,
     const CurveSerialization none;
     CurveSerialization curve = mergeCurves((b && b->curve) ? *b->curve : none, *m->curve, *t->curve, &keys);
     *merged = (rest == Pick::eTheirs) ? theirs->dimensions[index] : mine->dimensions[index];
-    addKeyConflicts(mine->name, int(index), keys, curve, conflicts);
+    addKeyConflicts(mine->name, int(index), keys, conflicts);
     merged->curve = std::move(curve);
 
     return true;

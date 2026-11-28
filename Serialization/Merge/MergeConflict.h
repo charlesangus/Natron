@@ -66,6 +66,10 @@ enum class MergeConflictKind {
     // kinds of item under one name; the merge kept mine's. An empty item stands for the node's
     // spline-warp data.
     eRotoShape,
+    // A node restored from a compared version used to feed one of the reader's inputs, which the
+    // artist has since wired elsewhere; the restore left it. Mine keeps that wiring, theirs
+    // connects the input to the restored node.
+    eSpliceChoice,
 };
 
 enum class MergeSide {
@@ -93,6 +97,8 @@ mergeConflictKindName(MergeConflictKind kind)
         return "curve-key";
     case MergeConflictKind::eRotoShape:
         return "roto-shape";
+    case MergeConflictKind::eSpliceChoice:
+        return "splice-choice";
     }
 
     return "?";
@@ -101,7 +107,7 @@ mergeConflictKindName(MergeConflictKind kind)
 inline std::optional<MergeConflictKind>
 mergeConflictKindFromName(std::string_view name)
 {
-    for (MergeConflictKind kind : { MergeConflictKind::eValue, MergeConflictKind::eInput, MergeConflictKind::eStructuralInsert, MergeConflictKind::eDeleteModify, MergeConflictKind::eReparent, MergeConflictKind::eAdopted, MergeConflictKind::eCurveKey, MergeConflictKind::eRotoShape }) {
+    for (MergeConflictKind kind : { MergeConflictKind::eValue, MergeConflictKind::eInput, MergeConflictKind::eStructuralInsert, MergeConflictKind::eDeleteModify, MergeConflictKind::eReparent, MergeConflictKind::eAdopted, MergeConflictKind::eCurveKey, MergeConflictKind::eRotoShape, MergeConflictKind::eSpliceChoice }) {
         if (mergeConflictKindName(kind) == name) {
             return kind;
         }
@@ -134,7 +140,7 @@ struct MergeConflictValue {
     std::optional<KeyFrameSerialization> key;
     // eCurveKey: keys at other times that the choice adds beside key.
     std::vector<KeyFrameSerialization> otherKeys;
-    // eInput, eStructuralInsert and eReparent: the connections that give the graph this side's
+    // eInput, eStructuralInsert, eReparent and eSpliceChoice: the connections that give the graph this side's
     // wiring. Empty when it cannot be put back, as when the side's source is not in the merged
     // snapshot.
     std::vector<MergeConflictConnection> connections;

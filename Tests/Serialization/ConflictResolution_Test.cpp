@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <functional>
+#include <list>
 #include <map>
 #include <memory>
 #include <string>
@@ -42,6 +43,7 @@
 #include "Serialization/Merge/ThreeWayMerge.h"
 #include "Serialization/Ops/ApplyOps.h"
 #include "Serialization/Ops/SnapshotDiff.h"
+#include "Serialization/Yaml/MergeConflictYaml.h"
 
 NATRON_NAMESPACE_USING
 using namespace MergeScenarios;
@@ -304,6 +306,17 @@ userKnob(const std::string& name,
     return knob;
 }
 
+std::vector<std::string>
+labelsOf(const MergeConflict& conflict)
+{
+    std::vector<std::string> labels;
+    for (const Serialization::MergeConflictChoice& choice : Serialization::availableChoices(conflict)) {
+        labels.push_back(choice.label);
+    }
+
+    return labels;
+}
+
 } // namespace
 
 TEST(ConflictResolution, AValueConflictTakesTheChosenSidesDimension)
@@ -482,7 +495,7 @@ TEST(ConflictResolution, AnAdoptedNodeTakesTheChosenSidesDefaultedKnobs)
     }
 }
 
-TEST(ConflictResolution, ACurveKeyConflictTakesTheChosenKeyOrKeepsBoth)
+TEST(ConflictResolution, ACurveKeyConflictTakesTheChosenKey)
 {
     const Serialization::MergeResult result = Projects(scenarios().at("keyframes-both-sides")).merge();
     const MergeConflict* conflict = conflictOn(result, MergeConflictKind::eCurveKey, "Grade1");
@@ -491,18 +504,157 @@ TEST(ConflictResolution, ACurveKeyConflictTakesTheChosenKeyOrKeepsBoth)
     EXPECT_EQ(keysOf(resolved(result.merged, side(*conflict, ResolutionSide::eTheirs)), "Grade1", "multiply").at(10.), 1.8);
     EXPECT_EQ(keysOf(resolved(result.merged, side(*conflict, ResolutionSide::eBase)), "Grade1", "multiply").at(10.), 2.);
 
-    ASSERT_EQ(conflict->options.size(), 1u);
-    EXPECT_EQ(conflict->options.front().name, std::string(Serialization::kMergeOptionKeepBothKeys));
-    const std::map<double, double> both = keysOf(resolved(result.merged, option(*conflict, std::string(Serialization::kMergeOptionKeepBothKeys))), "Grade1", "multiply");
-    EXPECT_EQ(both.at(10.), 2.5);
-    EXPECT_EQ(both.at(11.), 1.8);
-    EXPECT_EQ(both.at(20.), 3.);
-    EXPECT_EQ(both.at(30.), 0.5);
-
     std::string error;
     ProjectSerialization snapshot = Serialization::editableState(result.merged);
     EXPECT_FALSE(Serialization::applyConflictOption(*conflict, "no-such-choice", &snapshot, &error));
     EXPECT_FALSE(error.empty());
+}
+
+TEST(ConflictResolution, ASameFrameKeyConflictOffersNoKeepBothKeys)
+{
+    const Serialization::MergeResult result = Projects(scenarios().at("keyframes-both-sides")).merge();
+    const MergeConflict* merged = conflictOn(result, MergeConflictKind::eCurveKey, "Grade1");
+    ASSERT_TRUE(merged != nullptr);
+    EXPECT_TRUE(merged->options.empty());
+    EXPECT_EQ(labelsOf(*merged), std::vector<std::string>({ "Mine", "Theirs", "Base" }));
+
+    MergeConflict conflict = *merged;
+    ASSERT_TRUE(conflict.time && conflict.theirs.key);
+    Serialization::MergeConflictOption both;
+    both.name = std::string(Serialization::kMergeOptionKeepBothKeys);
+    both.label = "Keep Both Keys";
+    both.state.key = conflict.mine.key;
+    both.state.otherKeys.push_back(*conflict.theirs.key);
+    both.state.otherKeys.back().time = *conflict.time;
+    conflict.options.push_back(both);
+    EXPECT_EQ(labelsOf(conflict), std::vector<std::string>({ "Mine", "Theirs", "Base" }));
+
+    conflict.base.key = conflict.mine.key;
+    EXPECT_EQ(labelsOf(conflict), std::vector<std::string>({ "Mine", "Theirs" }));
+}
+
+TEST(ConflictResolution, KeepBothKeysAtDifferentFramesIsOfferedAndKeepsBoth)
+{
+    const Serialization::MergeResult result = Projects(scenarios().at("keyframes-both-sides")).merge();
+    const MergeConflict* merged = conflictOn(result, MergeConflictKind::eCurveKey, "Grade1");
+    ASSERT_TRUE(merged != nullptr);
+    MergeConflict conflict = *merged;
+    ASSERT_TRUE(conflict.time && conflict.theirs.key);
+    Serialization::MergeConflictOption both;
+    both.name = std::string(Serialization::kMergeOptionKeepBothKeys);
+    both.label = "Keep Both Keys";
+    both.state.key = conflict.mine.key;
+    both.state.otherKeys.push_back(*conflict.theirs.key);
+    both.state.otherKeys.back().time = 15.;
+    conflict.options.push_back(both);
+    EXPECT_EQ(labelsOf(conflict), std::vector<std::string>({ "Mine", "Theirs", "Base", "Keep Both Keys" }));
+
+    const std::map<double, double> keys = keysOf(resolved(result.merged, option(conflict, both.name)), "Grade1", "multiply");
+    EXPECT_EQ(keys.at(10.), 2.5);
+    EXPECT_EQ(keys.at(15.), 1.8);
+    EXPECT_EQ(keys.at(20.), 3.);
+}
+
+TEST(ConflictResolution, AValueConflictHidesBaseWhereItEqualsMine)
+{
+    const Serialization::MergeResult result = Projects(scenarios().at("supervisor-replaces-node")).merge();
+    const MergeConflict* merged = conflictOn(result, MergeConflictKind::eValue, "Blur2", [](const MergeConflict& c) { return c.knob == "size" && c.dimension == 0; });
+    ASSERT_TRUE(merged != nullptr);
+    EXPECT_EQ(labelsOf(*merged), std::vector<std::string>({ "Mine", "Theirs", "Base" }));
+    MergeConflict conflict = *merged;
+    conflict.base = conflict.mine;
+    EXPECT_EQ(labelsOf(conflict), std::vector<std::string>({ "Mine", "Theirs" }));
+    conflict.base = conflict.theirs;
+    EXPECT_EQ(labelsOf(conflict), std::vector<std::string>({ "Mine", "Theirs" }));
+}
+
+TEST(ConflictResolution, AnInputConflictOffersOnlySidesWithAConnectionOfTheirOwn)
+{
+    const Serialization::MergeResult result = Projects(scenarios().at("reconnect")).merge();
+    const MergeConflict* merged = conflictOn(result, MergeConflictKind::eInput, "Merge1");
+    ASSERT_TRUE(merged != nullptr);
+    EXPECT_EQ(labelsOf(*merged), std::vector<std::string>({ "Mine", "Theirs", "Base" }));
+    MergeConflict conflict = *merged;
+    conflict.base.connections.clear();
+    EXPECT_EQ(labelsOf(conflict), std::vector<std::string>({ "Mine", "Theirs" }));
+    conflict.base = conflict.theirs;
+    conflict.theirs = conflict.mine;
+    EXPECT_EQ(labelsOf(conflict), std::vector<std::string>({ "Mine", "Base" }));
+}
+
+TEST(ConflictResolution, AStructuralInsertOffersEverySideWhileTheyDiffer)
+{
+    const Serialization::MergeResult result = Projects(scenarios().at("both-insert-input0")).merge();
+    const MergeConflict* conflict = conflictOn(result, MergeConflictKind::eStructuralInsert, "Blur1");
+    ASSERT_TRUE(conflict != nullptr);
+    EXPECT_EQ(labelsOf(*conflict), std::vector<std::string>({ "Mine", "Theirs", "Base" }));
+}
+
+TEST(ConflictResolution, AReparentOffersNoSideWhoseGroupWasNotKept)
+{
+    MergeConflict conflict;
+    conflict.kind = MergeConflictKind::eReparent;
+    conflict.nodeId = "node";
+    conflict.mine.parent = std::string("groupA");
+    conflict.theirs.parent = std::string("groupB");
+    conflict.base.parent = std::string();
+    EXPECT_EQ(labelsOf(conflict), std::vector<std::string>({ "Mine", "Theirs", "Base" }));
+    conflict.theirs.parent.reset();
+    EXPECT_EQ(labelsOf(conflict), std::vector<std::string>({ "Mine", "Base" }));
+    conflict.base.parent = std::string("groupA");
+    EXPECT_EQ(labelsOf(conflict), std::vector<std::string>({ "Mine" }));
+}
+
+TEST(ConflictResolution, AnAdoptedNodeHidesBaseWhereTheirsLeftTheKnobsAsTheBaseHasThem)
+{
+    MergeConflict conflict;
+    conflict.kind = MergeConflictKind::eAdopted;
+    conflict.nodeId = "node";
+    conflict.defaultedKnobs = { "size" };
+    conflict.mine.knobs = std::list<Serialization::KnobSerialization>();
+    conflict.theirs.knobs = std::list<Serialization::KnobSerialization>(1, userKnob("size", 4.));
+    conflict.base.knobs = std::list<Serialization::KnobSerialization>(1, userKnob("size", 4.));
+    EXPECT_EQ(labelsOf(conflict), std::vector<std::string>({ "Mine", "Theirs" }));
+    conflict.base.knobs->front() = userKnob("size", 2.);
+    EXPECT_EQ(labelsOf(conflict), std::vector<std::string>({ "Mine", "Theirs", "Base" }));
+    conflict.theirs.knobs.reset();
+    EXPECT_EQ(labelsOf(conflict), std::vector<std::string>({ "Mine", "Base" }));
+}
+
+TEST(ConflictResolution, ADeleteModifyOffersBaseOnlyWhereItDiffersFromTheKeptSide)
+{
+    MergeConflict node;
+    node.kind = MergeConflictKind::eDeleteModify;
+    node.nodeId = "node";
+    node.side = Serialization::MergeSide::eTheirs;
+    EXPECT_EQ(labelsOf(node), std::vector<std::string>({ "Mine", "Theirs" }));
+    node.base.knobs = std::list<Serialization::KnobSerialization>();
+    EXPECT_EQ(labelsOf(node), std::vector<std::string>({ "Mine", "Theirs", "Base" }));
+
+    MergeConflict knob = node;
+    knob.knob = "amount";
+    knob.base = Serialization::MergeConflictValue();
+    knob.mine.knob = userKnob("amount", 3.);
+    EXPECT_EQ(labelsOf(knob), std::vector<std::string>({ "Mine", "Theirs" }));
+    knob.base.knob = userKnob("amount", 3.);
+    EXPECT_EQ(labelsOf(knob), std::vector<std::string>({ "Mine", "Theirs" }));
+    knob.base.knob = userKnob("amount", 2.);
+    EXPECT_EQ(labelsOf(knob), std::vector<std::string>({ "Mine", "Theirs", "Base" }));
+}
+
+TEST(ConflictResolution, AFilterDropsAChoiceBeforeLaterOnesAreComparedWithIt)
+{
+    const Serialization::MergeResult result = Projects(scenarios().at("reconnect")).merge();
+    const MergeConflict* merged = conflictOn(result, MergeConflictKind::eInput, "Merge1");
+    ASSERT_TRUE(merged != nullptr);
+    MergeConflict conflict = *merged;
+    conflict.base = conflict.mine;
+    const std::vector<Serialization::MergeConflictChoice> choices = Serialization::availableChoices(conflict, [](const Serialization::MergeConflictChoice& choice) {
+        return choice.side != ResolutionSide::eMine;
+    });
+    ASSERT_EQ(choices.size(), 2u);
+    EXPECT_EQ(choices[0].side, ResolutionSide::eTheirs);
+    EXPECT_EQ(choices[1].side, ResolutionSide::eBase);
 }
 
 TEST(ConflictResolution, ARotoShapeConflictTakesTheChosenSidesShape)
@@ -752,4 +904,88 @@ TEST(ConflictResolution, ARestoredTrackGoesBackWhereItWas)
         names.push_back(entry.scriptName);
     }
     EXPECT_EQ(names, std::vector<std::string>({ "a", "b", "c" }));
+}
+
+TEST(ConflictResolution, ASpliceChoiceKeepsMyWiringOrSplicesTheRestoredNodeIn)
+{
+    ProjectSerialization project = Projects(scenarios().at("reconnect")).merge().merged;
+    const Serialization::NodeSerializationPtr reader = nodeAt(project, "Merge1");
+    const Serialization::NodeSerializationPtr restored = nodeAt(project, "Blur1");
+    ASSERT_TRUE(reader != nullptr);
+    ASSERT_TRUE(restored != nullptr);
+    std::string label;
+    std::string current;
+    for (const std::pair<const std::string, std::string>& input : reader->inputs) {
+        if (input.second != "Blur1") {
+            label = input.first;
+            current = input.second;
+            break;
+        }
+    }
+    ASSERT_FALSE(label.empty());
+    const Serialization::NodeSerializationPtr source = nodeAt(project, current);
+    ASSERT_TRUE(source != nullptr);
+
+    MergeConflict conflict;
+    conflict.kind = MergeConflictKind::eSpliceChoice;
+    conflict.nodeId = reader->id;
+    conflict.input = label;
+    conflict.mine.connections = { Serialization::MergeConflictConnection { reader->id, label, source->id } };
+    conflict.theirs.connections = { Serialization::MergeConflictConnection { reader->id, label, restored->id } };
+    EXPECT_EQ(labelsOf(conflict), std::vector<std::string>({ "Keep My Wiring", "Splice In" }));
+
+    const ProjectSerialization mine = resolved(project, side(conflict, ResolutionSide::eMine));
+    EXPECT_TRUE(Serialization::diffSnapshots(Serialization::editableState(project), Serialization::editableState(mine)).empty());
+    const ProjectSerialization theirs = resolved(project, side(conflict, ResolutionSide::eTheirs));
+    EXPECT_EQ(inputOf(theirs, "Merge1", label), "Blur1");
+
+    MergeConflict unchanged = conflict;
+    unchanged.theirs = unchanged.mine;
+    EXPECT_EQ(labelsOf(unchanged), std::vector<std::string>({ "Keep My Wiring" }));
+
+    const std::vector<MergeConflict> decoded = Serialization::decodeMergeConflictsYaml(Serialization::encodeMergeConflictsYaml(std::vector<MergeConflict>(1, conflict)));
+    ASSERT_EQ(decoded.size(), 1u);
+    EXPECT_TRUE(decoded[0] == conflict);
+}
+
+TEST(ConflictResolution, StructuralConflictsFromAMergeRoundTripThroughYaml)
+{
+    std::vector<MergeConflict> conflicts;
+    const struct {
+        const char* scenario;
+        MergeConflictKind kind;
+        const char* path;
+    } cases[] = { { "reconnect", MergeConflictKind::eInput, "Merge1" },
+                  { "both-insert-input0", MergeConflictKind::eStructuralInsert, "Blur1" },
+                  { "both-sides-reparent", MergeConflictKind::eReparent, "ArtistLook.Blur1" },
+                  { "delete-recreate-grade", MergeConflictKind::eAdopted, "Grade2" } };
+    for (const auto& c : cases) {
+        SCOPED_TRACE(c.scenario);
+        const Serialization::MergeResult result = Projects(scenarios().at(c.scenario)).merge();
+        const MergeConflict* conflict = conflictOn(result, c.kind, c.path);
+        ASSERT_TRUE(conflict != nullptr);
+        conflicts.push_back(*conflict);
+    }
+    {
+        Scenario scenario = groupedScenario();
+        removeGroup(&scenario.mine, "Look");
+        scenario.theirs.add("Sharpen", "Sharpen", "t:Sharpen", { { "Source", "Blur1" } }, "Look");
+        scenario.theirs.get("LookOut", "Look").inputs = { { "Source", "Sharpen" } };
+        const Serialization::MergeResult result = Projects(scenario).merge();
+        const MergeConflict* conflict = conflictOn(result, MergeConflictKind::eDeleteModify, "Look");
+        ASSERT_TRUE(conflict != nullptr);
+        conflicts.push_back(*conflict);
+    }
+
+    const std::string text = Serialization::encodeMergeConflictsYaml(conflicts);
+    Serialization::YamlWarnings warnings;
+    const std::vector<MergeConflict> decoded = Serialization::decodeMergeConflictsYaml(text, &warnings);
+    EXPECT_TRUE(warnings.empty());
+    ASSERT_EQ(decoded.size(), conflicts.size());
+    for (std::size_t i = 0; i < conflicts.size(); ++i) {
+        SCOPED_TRACE(Serialization::mergeConflictKindName(conflicts[i].kind));
+        EXPECT_TRUE(decoded[i] == conflicts[i]);
+        EXPECT_EQ(labelsOf(decoded[i]), labelsOf(conflicts[i]));
+    }
+    EXPECT_EQ(Serialization::encodeMergeConflictsYaml(decoded), text);
 }

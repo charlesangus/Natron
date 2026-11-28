@@ -23,6 +23,7 @@
 #include "Global/Macros.h"
 
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -160,8 +161,17 @@ struct ChangeSummary {
     // The project knobs that differ, by name, and whether its formats, layers or variables do.
     std::vector<std::string> projectKnobs;
     bool projectData = false;
+    // The two snapshots compared, in their editable state with knobs in their saved form: the
+    // other version, under the IDs of the live nodes its nodes stand for, and the live project.
+    std::shared_ptr<const Serialization::ProjectSerialization> other;
+    std::shared_ptr<const Serialization::ProjectSerialization> live;
 
     const NodeChange* find(const std::string& nodeId) const;
+
+    /**
+     * @brief The node of the other snapshot with that ID, with its children for a group, or null.
+     **/
+    const Serialization::NodeSerialization* otherNode(const std::string& nodeId) const;
 };
 
 /**
@@ -193,6 +203,103 @@ bool compareWithTemplateBase(const ProjectPtr& project,
                              ChangeSummary* summary,
                              QString* error);
 
+/**
+ * @brief What restoring a node does to an input that read from it in the other version and that
+ * the artist has since wired to something else. An input left empty, or still on what the node
+ * read from in the other version, always goes back to the restored node.
+ **/
+enum class SpliceMode {
+    // Leave the input, and report it so the artist can choose.
+    eAsk,
+    // Leave the input.
+    eKeepMine,
+    // Connect the input to the restored node.
+    eEverywhere,
+};
+
+/**
+ * @brief An input that a restore left wired as the artist has it, by node IDs: reader's input
+ * read from restored in the other version and reads from source (empty when unconnected) now.
+ **/
+struct PendingSplice {
+    std::string readerId;
+    std::string input;
+    std::string restoredId;
+    std::string sourceId;
+};
+
+/**
+ * @brief The operations that bring back nodes of summary's other version that the live project no
+ * longer has, by ID, under their IDs: each at its placed position with its knobs, a group with
+ * everything inside it. A node takes a fresh script name when a live node of its group has its
+ * name, and the inputs and expressions of the restored nodes that name it follow. An input of a
+ * restored node connects to its source when that is live in the same group or restored with it,
+ * and stays empty otherwise. Restored nodes that read from each other are wired as in the other
+ * version. A live node that read from a restored node in the other version is connected to it
+ * again on that input, as mode says when the artist has rewired the input since; under eAsk each
+ * such input is added to pending. An ID the live project has, or that the other version does not,
+ * is skipped, as is a node inside a group restored with it. Returns false with error set, and no
+ * operations, when a node's group is neither live nor restored with it.
+ **/
+bool restoreOperations(const ProjectPtr& project,
+                       const ChangeSummary& summary,
+                       const std::vector<std::string>& nodeIds,
+                       SpliceMode mode,
+                       std::vector<Serialization::GraphOp>* ops,
+                       std::vector<PendingSplice>* pending,
+                       QString* error);
+
+/**
+ * @brief The operations that give changed nodes, by ID, their other version's state of each
+ * changed knob, input and appearance (size, colour and overlay colour). An input goes back to its
+ * source in the other version when that is live in the node's group, and is disconnected
+ * otherwise. Nodes that are not changed in summary are skipped.
+ **/
+std::vector<Serialization::GraphOp> revertOperations(const ProjectPtr& project,
+                                                     const ChangeSummary& summary,
+                                                     const std::vector<std::string>& nodeIds);
+
+/**
+ * @brief The operation that gives one changed knob of a changed node its other version's state,
+ * or false when summary lists no such change.
+ **/
+bool takeKnobOperations(const ProjectPtr& project,
+                        const ChangeSummary& summary,
+                        const std::string& nodeId,
+                        const std::string& knobName,
+                        std::vector<Serialization::GraphOp>* ops);
+
+/**
+ * @brief The operations that delete added nodes, by ID. As deleting a node in the graph does, the
+ * nodes reading from one with a single connected input are connected to that input's source, and
+ * are disconnected otherwise. Nodes that are not added in summary are skipped.
+ **/
+std::vector<Serialization::GraphOp> removeAddedOperations(const ProjectPtr& project,
+                                                          const ChangeSummary& summary,
+                                                          const std::vector<std::string>& nodeIds);
+
+/**
+ * @brief The operations that move moved nodes, by ID, back to their position in the other
+ * version, shifted by their group's offset so a whole template moved stays where it is. Nodes
+ * that are not moved in summary are skipped.
+ **/
+std::vector<Serialization::GraphOp> restorePositionOperations(const ProjectPtr& project,
+                                                              const ChangeSummary& summary,
+                                                              const std::vector<std::string>& nodeIds);
+
+/**
+ * @brief A splice choice for each of pending, appended to the project's merge conflicts in place
+ * of any for the same input: Mine (Keep My Wiring) leaves the input as it is, Theirs (Splice In)
+ * connects it to the restored node.
+ **/
+void addSpliceChoices(const ProjectPtr& project,
+                      const std::vector<PendingSplice>& pending);
+
+/**
+ * @brief The splice choice for one pending input.
+ **/
+Serialization::MergeConflict spliceChoice(const PendingSplice& splice);
+
 enum class ConflictSide {
     eMine,
     eTheirs,
@@ -200,9 +307,30 @@ enum class ConflictSide {
 };
 
 /**
- * @brief Whether the state side recorded for conflict can be put back in the project: the knob,
- * node, roto item or track it names is still there, and the side has a state of its own (a side
- * whose input source or group the merge did not keep has none).
+ * @brief One way to resolve a conflict: a side, or the handler option named option.
+ **/
+struct ConflictChoice {
+    ConflictSide side = ConflictSide::eMine;
+    // Empty for a side.
+    std::string option;
+    QString label;
+};
+
+/**
+ * @brief The choices to offer for conflict, in Mine, Theirs, Base, options order: each one whose
+ * state can be put back in the project, less any whose result equals that of an earlier choice
+ * offered. A side without state of its own is not offered (Base for a node only mine has, a group
+ * the merge did not keep), nor a Keep Both Keys whose keys share a time, nor Base where it is what
+ * Mine or Theirs already gives. A splice choice offers Keep My Wiring (Mine, always) and Splice
+ * In (Theirs). Every UI and binding offers these and only these.
+ **/
+std::vector<ConflictChoice> availableChoices(const ProjectPtr& project,
+                                             const Serialization::MergeConflict& conflict);
+
+/**
+ * @brief Whether availableChoices() offers side: the knob, node, roto item or track it names is
+ * still there, the side has a state of its own (a side whose input source or group the merge did
+ * not keep has none), and it gives a result no earlier side gives.
  *
  * The state is, by kind: a value or curve key on a knob of a node, of a roto item or track, or of
  * the project; an input's source; an inserted chain's connections; a node's group and inputs
@@ -219,7 +347,8 @@ bool canChooseSide(const ProjectPtr& project,
  * graph as it is now, possibly none when it already has it. A node moved back into a group keeps
  * its ID; the nodes that read from it in the group it left are disconnected. A roto item or
  * track the node lost goes back at the end of its list. Returns false with error set when
- * canChooseSide() is false or the state no longer fits the graph.
+ * canChooseSide() is false or the state no longer fits the graph. Keep My Wiring of a splice
+ * choice gives none.
  **/
 bool sideOperations(const ProjectPtr& project,
                     const Serialization::MergeConflict& conflict,
@@ -228,7 +357,7 @@ bool sideOperations(const ProjectPtr& project,
                     QString* error);
 
 /**
- * @brief Whether conflict offers the handler option named option and its state can be applied.
+ * @brief Whether availableChoices() offers conflict's handler option named option.
  **/
 bool canChooseOption(const ProjectPtr& project,
                      const Serialization::MergeConflict& conflict,

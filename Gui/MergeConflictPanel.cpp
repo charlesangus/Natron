@@ -25,6 +25,7 @@
 
 #include "MergeConflictPanel.h"
 
+#include <algorithm>
 #include <map>
 #include <set>
 #include <string>
@@ -126,6 +127,7 @@ sideText(const ProjectPtr& project,
     const Serialization::MergeConflictValue& side = sideValue(conflict, which);
     switch (conflict.kind) {
     case Serialization::MergeConflictKind::eInput:
+    case Serialization::MergeConflictKind::eSpliceChoice:
         if (side.connections.empty()) {
             return QString();
         }
@@ -211,6 +213,8 @@ conflictText(const Serialization::MergeConflict& conflict)
         return MergeConflictPanel::tr("%1, key at %2").arg(knob).arg(conflict.time ? *conflict.time : 0.);
     case Serialization::MergeConflictKind::eInput:
         return MergeConflictPanel::tr("Input %1 connected differently").arg(QString::fromStdString(conflict.input));
+    case Serialization::MergeConflictKind::eSpliceChoice:
+        return MergeConflictPanel::tr("Input %1 rewired since the restored node was removed").arg(QString::fromStdString(conflict.input));
     case Serialization::MergeConflictKind::eStructuralInsert:
         return MergeConflictPanel::tr("Nodes inserted on the same link on both sides");
     case Serialization::MergeConflictKind::eDeleteModify: {
@@ -234,6 +238,15 @@ conflictText(const Serialization::MergeConflict& conflict)
     }
 
     return QString();
+}
+
+bool
+offersSide(const std::vector<ProjectMerge::ConflictChoice>& choices,
+           ProjectMerge::ConflictSide side)
+{
+    return std::any_of(choices.begin(), choices.end(), [side](const ProjectMerge::ConflictChoice& choice) {
+        return choice.option.empty() && (choice.side == side);
+    });
 }
 
 // Conflicts about one node are grouped under its ID in the merged graph, or its base ID when the
@@ -449,11 +462,12 @@ MergeConflictPanel::refresh()
         row->setData(eColumnConflict, kConflictIndexRole, (qulonglong)i);
         row->setText(eColumnConflict, conflictText(conflict));
         bool choosable = false;
+        const std::vector<ProjectMerge::ConflictChoice> choices = project ? ProjectMerge::availableChoices(project, conflict) : std::vector<ProjectMerge::ConflictChoice>();
         const std::pair<int, ProjectMerge::ConflictSide> columns[] = { { eColumnMine, ProjectMerge::ConflictSide::eMine },
                                                                        { eColumnTheirs, ProjectMerge::ConflictSide::eTheirs },
                                                                        { eColumnBase, ProjectMerge::ConflictSide::eBase } };
         for (const std::pair<int, ProjectMerge::ConflictSide>& column : columns) {
-            if (project && ProjectMerge::canChooseSide(project, conflict, column.second)) {
+            if (offersSide(choices, column.second)) {
                 choosable = true;
                 row->setText(column.first, sideText(project, conflict, column.second));
             } else {
@@ -560,20 +574,37 @@ MergeConflictPanel::onSelectionChanged()
     const std::vector<std::size_t> selected = getSelectedConflicts();
     bool choosable[3] = { false, false, false };
     const ProjectMerge::ConflictSide sides[3] = { ProjectMerge::ConflictSide::eMine, ProjectMerge::ConflictSide::eTheirs, ProjectMerge::ConflictSide::eBase };
+    QPushButton* const sideButtons[3] = { _imp->mine, _imp->theirs, _imp->base };
+    QString labels[3] = { tr("Mine"), tr("Theirs"), tr("Base") };
     std::vector<Serialization::MergeConflict> conflicts;
+    std::vector<ProjectMerge::ConflictChoice> single;
     if (project) {
         conflicts = project->getMergeConflicts();
         for (std::size_t index : selected) {
+            if (index >= conflicts.size()) {
+                continue;
+            }
+            const std::vector<ProjectMerge::ConflictChoice> choices = ProjectMerge::availableChoices(project, conflicts[index]);
             for (int i = 0; i < 3; ++i) {
-                if ((index < conflicts.size()) && !choosable[i] && ProjectMerge::canChooseSide(project, conflicts[index], sides[i])) {
-                    choosable[i] = true;
-                }
+                choosable[i] = choosable[i] || offersSide(choices, sides[i]);
+            }
+            if (selected.size() == 1) {
+                single = choices;
             }
         }
     }
-    _imp->mine->setEnabled(choosable[0]);
-    _imp->theirs->setEnabled(choosable[1]);
-    _imp->base->setEnabled(choosable[2]);
+    // One conflict's buttons read as its own choices, such as Keep My Wiring and Splice In.
+    for (const ProjectMerge::ConflictChoice& choice : single) {
+        for (int i = 0; i < 3; ++i) {
+            if (choice.option.empty() && (choice.side == sides[i])) {
+                labels[i] = choice.label;
+            }
+        }
+    }
+    for (int i = 0; i < 3; ++i) {
+        sideButtons[i]->setText(labels[i]);
+        sideButtons[i]->setEnabled(choosable[i]);
+    }
     _imp->accept->setEnabled(!selected.empty());
 
     // The clicked button may be the one whose resolution got here.
@@ -584,12 +615,14 @@ MergeConflictPanel::onSelectionChanged()
     _imp->optionButtons.clear();
     if ((selected.size() == 1) && (selected.front() < conflicts.size())) {
         const std::size_t index = selected.front();
-        for (const Serialization::MergeConflictOption& option : conflicts[index].options) {
-            const std::string name = option.name;
-            QPushButton* button = new QPushButton(QString::fromStdString(option.label), _imp->optionRow);
+        for (const ProjectMerge::ConflictChoice& choice : single) {
+            if (choice.option.empty()) {
+                continue;
+            }
+            const std::string name = choice.option;
+            QPushButton* button = new QPushButton(choice.label, _imp->optionRow);
             button->setObjectName(QString::fromUtf8("mergeConflictOption_") + QString::fromStdString(name));
-            button->setToolTip(tr("Resolves the selected conflict with %1.").arg(QString::fromStdString(option.label)));
-            button->setEnabled(ProjectMerge::canChooseOption(project, conflicts[index], name));
+            button->setToolTip(tr("Resolves the selected conflict with %1.").arg(choice.label));
             _imp->optionLayout->insertWidget(_imp->optionLayout->count() - 1, button);
             QObject::connect(button, &QPushButton::clicked, this, [this, index, name]() {
                 resolveOption(index, name);

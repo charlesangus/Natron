@@ -321,6 +321,14 @@ everyKind()
     adopted.theirs.knobs = std::list<Serialization::KnobSerialization>({ colorKnob("white: [0.8, 0.9, 0.9, 1]\n"), doubleKnob("gamma", 1.2) });
     conflicts.push_back(adopted);
 
+    MergeConflict splice;
+    splice.kind = MergeConflictKind::eSpliceChoice;
+    splice.nodeId = "grade";
+    splice.input = "Source";
+    splice.mine.connections = { connection("grade", "Source", "plate") };
+    splice.theirs.connections = { connection("grade", "Source", "restored-blur") };
+    conflicts.push_back(splice);
+
     return conflicts;
 }
 

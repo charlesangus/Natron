@@ -22,7 +22,9 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <string>
+#include <vector>
 
 #include "Serialization/KnobSerialization.h"
 #include "Serialization/Merge/MergeConflict.h"
@@ -82,6 +84,32 @@ bool applyConflictOption(const MergeConflict& conflict,
                          std::string* error);
 
 const MergeConflictOption* conflictOption(const MergeConflict& conflict, const std::string& name);
+
+/**
+ * @brief One way to resolve a conflict: a side, or a handler option.
+ **/
+struct MergeConflictChoice {
+    ResolutionSide side = ResolutionSide::eMine;
+    // The option's name, empty for a side.
+    std::string option;
+    std::string label;
+
+    bool operator==(const MergeConflictChoice&) const = default;
+};
+
+const MergeConflictValue& choiceState(const MergeConflict& conflict, const MergeConflictChoice& choice);
+
+typedef std::function<bool(const MergeConflictChoice& choice)> ChoiceFilter;
+
+/**
+ * @brief The choices to offer for conflict, in Mine, Theirs, Base, options order: each one with
+ * state to put back that applicable (when set) accepts, less any whose result equals that of an
+ * earlier choice offered. A choice's result is compared from the recorded state alone, so a
+ * caller that knows the live graph can drop more through applicable. A curve-key choice that
+ * puts two keys at one time has none to put back.
+ **/
+std::vector<MergeConflictChoice> availableChoices(const MergeConflict& conflict,
+                                                  const ChoiceFilter& applicable = ChoiceFilter());
 
 } // namespace Serialization
 NATRON_NAMESPACE_EXIT

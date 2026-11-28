@@ -53,6 +53,7 @@
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/ScenePayload.h"
 
 NATRON_NAMESPACE_USING
@@ -179,6 +180,22 @@ const char* const kDilatedVelocityOpenShutter = "over \"World\"\n"
                                                 "        }\n"
                                                 "    }\n"
                                                 "}\n";
+
+// The density field's frame 1 grid, authored in a layer of its own so that a test can edit it in
+// place.
+const char* const kDensityPath = "/World/Smoke/density.filePath";
+const char* const kFrame1Grid = NATRON_TESTS_FIXTURES_DIR "/volume-sphere.0001.vdb";
+const char* const kFrame2Grid = NATRON_TESTS_FIXTURES_DIR "/volume-sphere.0002.vdb";
+const char* const kDensityOnFrame1 = "over \"World\"\n"
+                                     "{\n"
+                                     "    over \"Smoke\"\n"
+                                     "    {\n"
+                                     "        over \"density\"\n"
+                                     "        {\n"
+                                     "            asset filePath.timeSamples = { 1: @" NATRON_TESTS_FIXTURES_DIR "/volume-sphere.0001.vdb@ }\n"
+                                     "        }\n"
+                                     "    }\n"
+                                     "}\n";
 
 // kDilatedVelocity on a stage of timeCodesPerSecond, the shutter open halfShutter frames either
 // side of the frame.
@@ -372,14 +389,14 @@ public:
         }
         _scene = SceneOps::appendLayer(ScenePayload(), _stage->GetRootLayer(), 1);
         if (!overrides.empty()) {
-            PXR_NS::SdfLayerRefPtr layer = PXR_NS::SdfLayer::CreateAnonymous(".usda");
-            if (!layer->ImportFromString("#usda 1.0\n" + overrides)) {
+            _overrides = PXR_NS::SdfLayer::CreateAnonymous(".usda");
+            if (!_overrides->ImportFromString("#usda 1.0\n" + overrides)) {
                 ADD_FAILURE() << "the overrides do not parse:\n"
                               << overrides;
 
                 return;
             }
-            _scene = SceneOps::appendLayer(_scene, layer, (U64)std::hash<std::string>()(overrides) | 2);
+            _scene = SceneOps::appendLayer(_scene, _overrides, (U64)std::hash<std::string>()(overrides) | 2);
         }
         _valid = true;
     }
@@ -440,9 +457,33 @@ public:
         return true;
     }
 
+    /**
+     * Edits the overrides layer in place behind the write barrier, as a reload edits a layer read
+     * from a file: the engine's stage keeps its layer stack and hears only of the specs edit
+     * touches, so the delegate sees a change to the prims it holds rather than new ones. False
+     * after a gtest failure.
+     **/
+    bool editOverrides(const std::function<void(const PXR_NS::SdfLayerRefPtr& layer)>& edit)
+    {
+        if (!_valid || !_overrides) {
+            ADD_FAILURE() << "the session has no overrides layer to edit";
+
+            return false;
+        }
+        std::string error;
+        if (!SceneWriteBarrier::runExclusive([&]() { edit(_overrides); }, &error)) {
+            ADD_FAILURE() << error;
+
+            return false;
+        }
+
+        return true;
+    }
+
 private:
     std::string _renderer;
     PXR_NS::UsdStageRefPtr _stage;
+    PXR_NS::SdfLayerRefPtr _overrides;
     ScenePayload _scene;
     bool _valid = false;
 };
@@ -548,6 +589,45 @@ expectTheVolumeDarkensItsSide(const std::string& renderer)
     EXPECT_GT(rightOf(frame1), 0.9f * rightOf(card)) << renderer << ": frame 1 right " << rightOf(frame1) << ", card " << rightOf(card) << traceOf(frame1);
     EXPECT_GT(leftOf(frame2), 0.9f * leftOf(card)) << renderer << ": frame 2 left " << leftOf(frame2) << ", card " << leftOf(card) << traceOf(frame2);
     EXPECT_LT(rightOf(frame2), 0.6f * rightOf(card)) << renderer << ": frame 2 right " << rightOf(frame2) << ", card " << rightOf(card) << traceOf(frame2);
+}
+
+/**
+ * Pointing the density field at the frame 2 grid on the live stage moves the sphere from the left
+ * to the right without a change of frame, on frame 1's engine: only the edited field reaching the
+ * volume it binds can move it. The field must dirty that volume in a way Hydra accepts while it
+ * syncs from a scene index, which rejects marking a single rprim dirty with a coding error.
+ **/
+void
+expectALiveFieldEditMovesTheVolume(const std::string& renderer)
+{
+    const RendererSettings settings(renderer);
+    Render before;
+    Render after;
+    {
+        Session live(renderer, kDensityOnFrame1);
+        ASSERT_TRUE(live.render(1., &before));
+        ASSERT_TRUE(live.editOverrides([](const PXR_NS::SdfLayerRefPtr& layer) {
+            layer->SetTimeSample(PXR_NS::SdfPath(kDensityPath), 1., PXR_NS::VtValue(PXR_NS::SdfAssetPath(kFrame2Grid)));
+        }));
+        ASSERT_TRUE(live.render(1., &after));
+    }
+    EXPECT_FALSE(hasVolumeWarning(before)) << before.warning;
+    EXPECT_FALSE(hasVolumeWarning(after)) << after.warning;
+    expectNoFailedGet(renderer, before);
+    expectNoFailedGet(renderer, after);
+    EXPECT_EQ(std::string::npos, before.codingErrors.find("emulation")) << renderer << ": before the edit: " << before.codingErrors;
+    EXPECT_EQ(std::string::npos, after.codingErrors.find("emulation")) << renderer << ": after the edit: " << after.codingErrors;
+    EXPECT_FALSE(after.trace.freshEngine) << renderer << ": after the edit" << traceOf(after);
+    EXPECT_EQ(0, after.trace.remakes) << renderer << ": after the edit" << traceOf(after);
+    Render card;
+    ASSERT_TRUE(renderScene(renderer, 1., kMeshOnly, &card));
+    ASSERT_GT(leftOf(card), 0.1f) << renderer << " does not draw the card";
+    ASSERT_GT(rightOf(card), 0.1f) << renderer << " does not draw the card";
+
+    EXPECT_LT(leftOf(before), 0.6f * leftOf(card)) << renderer << ": " << kFrame1Grid << " left " << leftOf(before) << ", card " << leftOf(card) << traceOf(before);
+    EXPECT_GT(rightOf(before), 0.9f * rightOf(card)) << renderer << ": " << kFrame1Grid << " right " << rightOf(before) << ", card " << rightOf(card) << traceOf(before);
+    EXPECT_GT(leftOf(after), 0.9f * leftOf(card)) << renderer << ": edited left " << leftOf(after) << ", card " << leftOf(card) << traceOf(after);
+    EXPECT_LT(rightOf(after), 0.6f * rightOf(card)) << renderer << ": edited right " << rightOf(after) << ", card " << rightOf(card) << traceOf(after);
 }
 
 // A density field naming a grid its file lacks draws nothing, and the render warns of it.
@@ -665,6 +745,14 @@ TEST(VolumeRenderCycles, TheVolumeDarkensItsSide)
     expectTheVolumeDarkensItsSide(kRenderDelegateCyclesId);
 }
 
+TEST(VolumeRenderCycles, ALiveFieldEditMovesTheVolume)
+{
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    expectALiveFieldEditMovesTheVolume(kRenderDelegateCyclesId);
+}
+
 TEST(VolumeRenderCycles, AWrongGridNameDrawsNothing)
 {
     if (!CyclesTestUtils::cyclesOrSkip()) {
@@ -705,6 +793,14 @@ TEST(VolumeRenderMoonRay, TheVolumeDarkensItsSide)
         return;
     }
     expectTheVolumeDarkensItsSide(kMoonRayRendererId);
+}
+
+TEST(VolumeRenderMoonRay, ALiveFieldEditMovesTheVolume)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    expectALiveFieldEditMovesTheVolume(kMoonRayRendererId);
 }
 
 TEST(VolumeRenderMoonRay, AWrongGridNameDrawsNothing)

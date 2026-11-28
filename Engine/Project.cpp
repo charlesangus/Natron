@@ -1412,13 +1412,16 @@ Project::onNodeOriginChanged(const NodePtr& node,
     }
     const std::string originTemplate = node->getOriginTemplate();
     const std::string originNode = node->getOriginNode();
-    QMutexLocker k(&_imp->nodesByIdMutex);
-    if (!previousTemplate.empty()) {
-        ProjectPrivate::eraseOrigin(&_imp->nodesByOrigin, ProjectPrivate::originKey(previousTemplate, previousNode), node.get());
+    {
+        QMutexLocker k(&_imp->nodesByIdMutex);
+        if (!previousTemplate.empty()) {
+            ProjectPrivate::eraseOrigin(&_imp->nodesByOrigin, ProjectPrivate::originKey(previousTemplate, previousNode), node.get());
+        }
+        if (!originTemplate.empty()) {
+            _imp->nodesByOrigin.emplace(ProjectPrivate::originKey(originTemplate, originNode), node);
+        }
     }
-    if (!originTemplate.empty()) {
-        _imp->nodesByOrigin.emplace(ProjectPrivate::originKey(originTemplate, originNode), node);
-    }
+    Q_EMIT nodeOriginsChanged();
 }
 
 std::list<Serialization::TemplateImportSerialization>

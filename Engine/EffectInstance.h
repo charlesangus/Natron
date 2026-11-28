@@ -83,6 +83,7 @@
 #define PLUGINID_NATRON_WRITE "Write"
 #define PLUGINID_NATRON_MISSING_PLUGIN "MissingPlugin"
 #define PLUGINID_NATRON_ONEVIEW "OneView"
+#define PLUGINID_NATRON_TEMPLATE "Template"
 
 #define kReaderParamNameOriginalFrameRange "originalFrameRange"
 

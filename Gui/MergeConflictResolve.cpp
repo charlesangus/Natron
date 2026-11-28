@@ -36,6 +36,7 @@
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
+#include "Engine/ProjectTemplate.h"
 
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
@@ -49,16 +50,51 @@
 NATRON_NAMESPACE_ENTER
 
 namespace {
-// An update replaces an import's base snapshot rather than editing it, so comparing the pointers
-// is enough.
+// An update or a publish replaces an import's base snapshot rather than editing it, so comparing
+// the pointers is enough.
 bool
 sameImports(const std::list<Serialization::TemplateImportSerialization>& a,
             const std::list<Serialization::TemplateImportSerialization>& b)
 {
     return std::equal(a.begin(), a.end(), b.begin(), b.end(),
                       [](const Serialization::TemplateImportSerialization& x, const Serialization::TemplateImportSerialization& y) {
-                          return (x.key == y.key) && (x.path == y.path) && (x.contentHash == y.contentHash) && (x.importedAt == y.importedAt) && (x.base == y.base);
+                          return (x.key == y.key) && (x.templateId == y.templateId) && (x.name == y.name) && (x.version == y.version) && (x.publishDir == y.publishDir) && (x.path == y.path) && (x.contentHash == y.contentHash) && (x.importedAt == y.importedAt) && (x.excluded == y.excluded) && (x.base == y.base);
                       });
+}
+
+const Serialization::TemplateImportSerialization*
+findEntry(const std::list<Serialization::TemplateImportSerialization>& imports,
+          const std::string& key)
+{
+    for (const Serialization::TemplateImportSerialization& entry : imports) {
+        if (entry.key == key) {
+            return &entry;
+        }
+    }
+
+    return nullptr;
+}
+
+// A publish is not undoable: an import a publish moved past reference, the state this step left or
+// started from, keeps the published version, file and base when the step is undone or redone.
+std::list<Serialization::TemplateImportSerialization>
+keepPublished(std::list<Serialization::TemplateImportSerialization> target,
+              const std::list<Serialization::TemplateImportSerialization>& reference,
+              const std::list<Serialization::TemplateImportSerialization>& current)
+{
+    for (Serialization::TemplateImportSerialization& entry : target) {
+        const Serialization::TemplateImportSerialization* before = findEntry(reference, entry.key);
+        const Serialization::TemplateImportSerialization* now = findEntry(current, entry.key);
+        if (now && (now->templateId == entry.templateId) && (!before || (now->version > before->version)) && (now->version > entry.version)) {
+            entry.version = now->version;
+            entry.path = now->path;
+            entry.contentHash = now->contentHash;
+            entry.importedAt = now->importedAt;
+            entry.base = now->base;
+        }
+    }
+
+    return target;
 }
 } // anon namespace
 
@@ -92,13 +128,14 @@ MergeStateCommand::hasEffect() const
 
 void
 MergeStateCommand::restore(const std::list<Serialization::TemplateImportSerialization>& imports,
+                           const std::list<Serialization::TemplateImportSerialization>& reference,
                            const std::vector<Serialization::MergeConflict>& conflicts)
 {
     ProjectPtr project = _project.lock();
     if (!project) {
         return;
     }
-    project->setTemplateImports(imports);
+    project->setTemplateImports(keepPublished(imports, reference, project->getTemplateImports()));
     project->setMergeConflicts(conflicts);
 }
 
@@ -108,14 +145,14 @@ void
 MergeStateCommand::undo()
 {
     QUndoCommand::undo();
-    restore(_importsBefore, _conflictsBefore);
+    restore(_importsBefore, _importsAfter, _conflictsBefore);
 }
 
 void
 MergeStateCommand::redo()
 {
     QUndoCommand::redo();
-    restore(_importsAfter, _conflictsAfter);
+    restore(_importsAfter, _importsBefore, _conflictsAfter);
 }
 
 namespace MergeConflictResolve {
@@ -155,6 +192,14 @@ namespace {
         }
         project->setMergeConflicts(kept);
     }
+
+    void
+    frameRaisedConflicts(Gui* gui)
+    {
+        // The comparison would take the graph's merge bar and hide the conflict badges.
+        gui->clearGraphComparison();
+        NodeGraph::frameFirstMergeConflict(gui);
+    }
 } // anon namespace
 
 std::string
@@ -189,24 +234,60 @@ importTemplate(Gui* gui,
     return imports.back().key;
 }
 
+bool
+runTemplateEdit(Gui* gui,
+                NodeGraph* graph,
+                const QString& text,
+                const std::function<bool(TemplateEdit*)>& edit)
+{
+    const ProjectPtr project = gui->getApp()->getProject();
+    NodeGraph* target = graph ? graph : graphOf(gui);
+    MergeStateCommand* command = new MergeStateCommand(project, text);
+    TemplateEdit templateEdit;
+    templateEdit.applier = [target, project, text, command](const std::vector<Serialization::GraphOp>& ops) {
+        return ApplyGraphOpsCommand::applyAndRecord(target, project, ops, text, command);
+    };
+    const std::vector<Serialization::MergeConflict> conflictsBefore = project->getMergeConflicts();
+    const bool ok = edit(&templateEdit);
+    const bool raisedConflicts = project->getMergeConflicts().size() > conflictsBefore.size();
+    command->captureAfter();
+    if (command->hasEffect()) {
+        target->pushUndoCommand(command, UndoScope());
+    } else {
+        delete command;
+    }
+    if (raisedConflicts) {
+        frameRaisedConflicts(gui);
+    }
+
+    return ok;
+}
+
 ProjectMerge::UpdateResult
 updateFromTemplate(Gui* gui,
                    const std::string& templateKey,
-                   const QString& path)
+                   const QString& path,
+                   bool allowMismatch)
 {
     const ProjectPtr project = gui->getApp()->getProject();
+    QString file = path;
+    if (file.isEmpty()) {
+        for (const Serialization::TemplateImportSerialization& entry : project->getTemplateImports()) {
+            if (entry.key == templateKey) {
+                file = QString::fromStdString(entry.path);
+            }
+        }
+    }
     NodeGraph* graph = graphOf(gui);
     MergeStateCommand* command = new MergeStateCommand(project, QCoreApplication::translate("MergeConflictResolve", "Update from Template"));
     const QString text = command->text();
     const ProjectMerge::OpApplier applier = [graph, project, text, command](const std::vector<Serialization::GraphOp>& ops) {
         return ApplyGraphOpsCommand::applyAndRecord(graph, project, ops, text, command);
     };
-    ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project, templateKey, path, applier);
+    ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project, templateKey, file, applier, allowMismatch);
     push(gui, command);
     if (!result.conflicts.empty()) {
-        // The comparison would take the graph's merge bar and hide the conflict badges.
-        gui->clearGraphComparison();
-        NodeGraph::frameFirstMergeConflict(gui);
+        frameRaisedConflicts(gui);
     }
 
     return result;

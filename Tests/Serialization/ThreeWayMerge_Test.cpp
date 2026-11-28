@@ -580,3 +580,38 @@ TEST(ConflictsToSave, ASavedConflictMergesThreeWay)
 }
 
 } // namespace
+
+TEST(ThreeWayMerge, ATemplateRebuiltWithNoSharedIdentityIsRefused)
+{
+    Scenario scenario = templateScenario();
+    scenario.theirs = templateGraph("r:");
+    scenario.theirs.set("Blur1", "size", { 4., 4. });
+    const Projects projects(scenario);
+    const Serialization::MergePlan plan = Serialization::planMerge(projects.base, projects.mine, projects.theirs, "grade_tpl");
+    EXPECT_TRUE(plan.baseToTheirs.baseToOther.empty());
+    EXPECT_TRUE(Serialization::sharesTooFewNodes(plan));
+    const Serialization::MergeResult result = projects.merge();
+    EXPECT_FALSE(result.error.empty());
+    EXPECT_NE(result.error.find("0 of " + std::to_string(scenario.base.nodes.size())), std::string::npos) << result.error;
+    EXPECT_TRUE(result.merged.nodes.nodes.empty());
+    EXPECT_TRUE(result.conflicts.empty());
+
+    // A whole-project merge has no template base to guard.
+    EXPECT_FALSE(Serialization::sharesTooFewNodes(Serialization::planProjectMerge(projects.base, projects.mine, projects.theirs)));
+}
+
+TEST(ThreeWayMerge, AQuarterOfTheBaseIsEnoughToMerge)
+{
+    Scenario scenario = templateScenario();
+    const std::size_t baseCount = scenario.base.nodes.size();
+    // Keep base's IDs on the first quarter of the nodes, rounded up, and rebuild the rest.
+    const std::size_t kept = (baseCount + 3) / 4;
+    for (std::size_t i = kept; i < scenario.theirs.nodes.size(); ++i) {
+        scenario.theirs.nodes[i].id = hexId("r:" + scenario.theirs.nodes[i].name);
+    }
+    const Projects projects(scenario);
+    const Serialization::MergePlan plan = Serialization::planMerge(projects.base, projects.mine, projects.theirs, "grade_tpl");
+    EXPECT_GE(plan.baseToTheirs.baseToOther.size() * 4, baseCount);
+    EXPECT_FALSE(Serialization::sharesTooFewNodes(plan));
+    EXPECT_TRUE(projects.merge().error.empty());
+}

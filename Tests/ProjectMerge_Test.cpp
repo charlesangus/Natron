@@ -26,6 +26,7 @@
 #include "Global/Macros.h"
 
 #include <functional>
+#include <optional>
 #include <set>
 #include <string>
 #include <variant>
@@ -33,6 +34,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QFileInfo>
 #include <QString>
 #include <QTemporaryDir>
 
@@ -48,6 +50,7 @@
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectMerge.h"
+#include "Engine/ProjectTemplate.h"
 
 #include "Serialization/Merge/MergeConflict.h"
 #include "Serialization/Ops/GraphOp.h"
@@ -108,6 +111,13 @@ protected:
         return project()->getNodeByFullySpecifiedName(name);
     }
 
+    // Both versions a helper writes carry the same template node, so they are one template.
+    void defineTemplate(const NodesList& members)
+    {
+        TemplateEdit edit;
+        ASSERT_TRUE(project()->defineTemplate(members, "tpl", NodeCollectionPtr(), &edit)) << edit.error.toStdString();
+    }
+
     // Writes template version 1 (Blur1 -> Blur2) as tpl.ntpz and version 2, where the supervisor
     // set Blur1's size to 4, as tpl_v2.ntpz.
     void saveTemplateVersions(const QTemporaryDir& dir,
@@ -119,6 +129,7 @@ protected:
         ASSERT_NE(first, nullptr);
         ASSERT_NE(second, nullptr);
         ASSERT_TRUE(NodeCollection::connectNodes(0, first, second, false));
+        defineTemplate({ first, second });
         ASSERT_TRUE(project()->saveProject(dir.path() + QLatin1Char('/'), QString::fromUtf8("tpl.ntpz"), v1));
         setSize(first, 4.);
         ASSERT_TRUE(project()->saveProject(dir.path() + QLatin1Char('/'), QString::fromUtf8("tpl_v2.ntpz"), v2));
@@ -136,6 +147,7 @@ protected:
         ASSERT_NE(first, nullptr);
         ASSERT_NE(second, nullptr);
         ASSERT_TRUE(NodeCollection::connectNodes(0, first, second, false));
+        defineTemplate({ first, second });
         ASSERT_TRUE(project()->saveProject(dir.path() + QLatin1Char('/'), QString::fromUtf8("tpl.ntpz"), v1));
         edit();
         ASSERT_TRUE(project()->saveProject(dir.path() + QLatin1Char('/'), QString::fromUtf8("tpl_v2.ntpz"), v2));
@@ -260,16 +272,18 @@ protected:
                            QString* v1,
                            QString* v2)
     {
-        NodePtr previous;
+        NodesList chain;
         for (int i = 1; i <= 3; ++i) {
             NodePtr blur = createBlur("Blur" + std::to_string(i));
             ASSERT_NE(blur, nullptr);
             blur->setPosition(0., 100. * (i - 1));
-            if (previous) {
-                ASSERT_TRUE(NodeCollection::connectNodes(0, previous, blur, false));
+            if (!chain.empty()) {
+                ASSERT_TRUE(NodeCollection::connectNodes(0, chain.back(), blur, false));
             }
-            previous = blur;
+            chain.push_back(blur);
         }
+        defineTemplate(chain);
+        chain.clear();
         ASSERT_TRUE(project()->saveProject(dir.path() + QLatin1Char('/'), QString::fromUtf8("tpl.ntpz"), v1));
         edit();
         ASSERT_TRUE(project()->saveProject(dir.path() + QLatin1Char('/'), QString::fromUtf8("tpl_v2.ntpz"), v2));
@@ -750,6 +764,83 @@ TEST_F(ProjectMergeTest, ASameFrameCurveKeyConflictResolvesToEachSideWithoutKeep
     EXPECT_EQ(keys(), 1);
     EXPECT_FALSE(ProjectMerge::canChooseOption(project(), *conflict, std::string(Serialization::kMergeOptionKeepBothKeys)));
     EXPECT_FALSE(ProjectMerge::canChooseOption(project(), *conflict, "no-such-choice"));
+}
+
+TEST_F(ProjectMergeTest, AShotUpdatesToTheLatestPublishedVersionThenIsUpToDate)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    NodePtr first = createBlur("Blur1");
+    NodePtr second = createBlur("Blur2");
+    ASSERT_NE(first, nullptr);
+    ASSERT_NE(second, nullptr);
+    ASSERT_TRUE(NodeCollection::connectNodes(0, first, second, false));
+    TemplateEdit edit;
+    ASSERT_TRUE(project()->defineTemplate({ first, second }, "tpl", NodeCollectionPtr(), &edit)) << edit.error.toStdString();
+    Serialization::TemplateImportSerialization defined = project()->getTemplateImports().front();
+    defined.publishDir = dir.path().toStdString();
+    project()->setTemplateImport(defined);
+    const std::string templateId = defined.templateId;
+    QString error;
+    ASSERT_TRUE(project()->publishTemplate(edit.key, &error)) << error.toStdString();
+    const QString v1 = QString::fromStdString(project()->getTemplateImports().front().path);
+    setSize(first, 4.);
+    ASSERT_TRUE(project()->publishTemplate(edit.key, &error)) << error.toStdString();
+    const QString v2 = QString::fromStdString(project()->getTemplateImports().front().path);
+    ASSERT_NE(v1, v2);
+    project()->reset(false, true);
+
+    importShot(v1);
+    const Serialization::TemplateImportSerialization imported = project()->getTemplateImports().front();
+    EXPECT_EQ(imported.templateId, templateId);
+    EXPECT_EQ(imported.version, 1);
+    const std::optional<ProjectMerge::TemplateVersion> latest = ProjectMerge::findLatestVersion(dir.path(), templateId);
+    ASSERT_TRUE(latest.has_value());
+    EXPECT_EQ(latest->version, 2);
+    EXPECT_EQ(QFileInfo(latest->path).canonicalFilePath(), QFileInfo(v2).canonicalFilePath());
+    EXPECT_FALSE(ProjectMerge::findLatestVersion(dir.path(), "no_such_template").has_value());
+
+    const ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project(), imported.key, latest->path);
+    ASSERT_TRUE(result.ok) << result.error.toStdString();
+    EXPECT_EQ(result.status, ProjectMerge::UpdateStatus::eUpdated);
+    EXPECT_DOUBLE_EQ(blurSize(nodeNamed("Blur1"))->getValue(0), 4.);
+    EXPECT_EQ(project()->getTemplateImports().front().version, 2);
+
+    const ProjectMerge::UpdateResult again = ProjectMerge::updateFromTemplate(project(), imported.key, latest->path);
+    ASSERT_TRUE(again.ok) << again.error.toStdString();
+    EXPECT_EQ(again.status, ProjectMerge::UpdateStatus::eUpToDate);
+    EXPECT_TRUE(again.ops.empty());
+}
+
+TEST_F(ProjectMergeTest, AFileOfAnotherTemplateIsRefusedUnlessAllowedThenFailsOnLowMatch)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    QString v1;
+    QString v2;
+    saveTemplateVersions(dir, &v1, &v2);
+    QString other;
+    ASSERT_NE(createBlur("Blur1"), nullptr);
+    ASSERT_NE(createBlur("Blur2"), nullptr);
+    ASSERT_TRUE(project()->saveProject(dir.path() + QLatin1Char('/'), QString::fromUtf8("other.ntpz"), &other));
+    project()->reset(false, true);
+    importShot(v1);
+    const Serialization::TemplateImportSerialization entry = project()->getTemplateImports().front();
+    const Serialization::ProjectSerialization before = state();
+
+    const ProjectMerge::UpdateResult refused = ProjectMerge::updateFromTemplate(project(), entry.key, other);
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.status, ProjectMerge::UpdateStatus::eTemplateMismatch);
+    EXPECT_FALSE(refused.error.isEmpty());
+    EXPECT_TRUE(Serialization::diffSnapshots(state(), before).empty());
+
+    const ProjectMerge::UpdateResult forced = ProjectMerge::updateFromTemplate(project(), entry.key, other, ProjectMerge::OpApplier(), true);
+    EXPECT_FALSE(forced.ok);
+    EXPECT_EQ(forced.status, ProjectMerge::UpdateStatus::eLowMatch);
+    EXPECT_TRUE(Serialization::diffSnapshots(state(), before).empty());
+    EXPECT_EQ(project()->getTemplateImports().front().contentHash, entry.contentHash);
+
+    EXPECT_FALSE(ProjectMerge::updateFromTemplate(project(), entry.key, QString()).ok);
 }
 
 TEST_F(ProjectMergeTest, MovingTheWholeTemplateIsNoChange)

@@ -902,6 +902,44 @@
                 return ret;
             </inject-code>
         </modify-function>
+        <modify-function signature="defineTemplateChecked(std::list&lt;Effect*&gt;,QString,Group*,QString*)" remove="all"/>
+        <modify-function signature="publishTemplateChecked(QString,QString*)" remove="all"/>
+        <modify-function signature="updateTemplateToLatestChecked(QString,QString*)" remove="all"/>
+        <modify-function signature="defineTemplate(std::list&lt;Effect*&gt;,QString,Group*)">
+            <inject-code class="target" position="beginning">
+                QString defineError;
+                Effect* templateNode = %CPPSELF.defineTemplateChecked(%1, %2, %3, &amp;defineError);
+                if (!templateNode) {
+                    PyErr_SetString(PyExc_RuntimeError, defineError.toUtf8().constData());
+                    return 0;
+                }
+                PyObject* item = %CONVERTTOPYTHON[Effect*](templateNode);
+                Shiboken::Object::getOwnership(item);
+                return item;
+            </inject-code>
+        </modify-function>
+        <modify-function signature="publishTemplate(QString)">
+            <inject-code class="target" position="beginning">
+                QString publishError;
+                QString publishedPath = %CPPSELF.publishTemplateChecked(%1, &amp;publishError);
+                if (publishedPath.isEmpty()) {
+                    PyErr_SetString(PyExc_RuntimeError, publishError.toUtf8().constData());
+                    return 0;
+                }
+                return %CONVERTTOPYTHON[QString](publishedPath);
+            </inject-code>
+        </modify-function>
+        <modify-function signature="updateTemplateToLatest(QString)">
+            <inject-code class="target" position="beginning">
+                QString updateError;
+                QString updateStatus = %CPPSELF.updateTemplateToLatestChecked(%1, &amp;updateError);
+                if (updateStatus.isEmpty()) {
+                    PyErr_SetString(PyExc_RuntimeError, updateError.toUtf8().constData());
+                    return 0;
+                }
+                return %CONVERTTOPYTHON[QString](updateStatus);
+            </inject-code>
+        </modify-function>
         <modify-function signature="getProjectLayer(QString)const">
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>

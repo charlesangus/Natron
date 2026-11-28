@@ -171,6 +171,11 @@ public:
     virtual void updateProjectLoadStatus(const QString& str) OVERRIDE FINAL;
     virtual void closeLoadProjectSplashScreen() OVERRIDE FINAL;
     virtual void showStatusMessage(const QString& message) OVERRIDE FINAL;
+    virtual void runTemplateNodeAction(const NodePtr& templateNode,
+                                       const std::string& templateKey,
+                                       TemplateNodeActionEnum action) OVERRIDE FINAL;
+    virtual bool runTemplateEdit(const QString& text,
+                                 const std::function<bool(TemplateEdit*)>& edit) OVERRIDE FINAL;
     virtual void setNodeGraphSelection(const NodesList& nodes) OVERRIDE FINAL;
     virtual void renderAllViewers(bool canAbort) OVERRIDE FINAL;
     virtual void refreshAllPreviews() OVERRIDE FINAL;

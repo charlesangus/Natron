@@ -26,6 +26,7 @@
 #include "NodeGraph.h"
 #include "NodeGraphPrivate.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <stdexcept>
@@ -55,6 +56,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/GuiMacros.h"
+#include "Gui/LoopBlockOverlay.h"
 #include "Gui/NodeGraphDiffOverlay.h"
 #include "Gui/NodeGraphLowDetailLayer.h"
 #include "Gui/NodeGui.h"
@@ -855,6 +857,11 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
             clearCutLine();
             _imp->_evtState = eEventStateCutting;
             extendCutLine(lastMousePosScene);
+        } else if (buttonDownIsLeft(e) && selectTemplateAt(lastMousePosScene, modCASIsShift(e))) {
+            _imp->_nodesWithinBDAtPenDown.clear();
+            if (groupEdited) {
+                _imp->_evtState = eEventStateDraggingNode;
+            }
         } else if (buttonDownIsLeft(e)) {
             if ( !modCASIsShift(e) ) {
                 deselect();
@@ -868,5 +875,32 @@ NodeGraph::mousePressEvent(QMouseEvent* e)
         }
     }
 } // mousePressEvent
+
+bool
+NodeGraph::selectTemplateAt(const QPointF& scenePos,
+                            bool addToSelection)
+{
+    const std::vector<NodePtr> nodes = _imp->_loopBlocks ? _imp->_loopBlocks->templateNodesAt(scenePos) : std::vector<NodePtr>();
+    NodesGuiList guis;
+    for (const NodePtr& node : nodes) {
+        NodeGuiPtr gui = std::dynamic_pointer_cast<NodeGui>(node->getNodeGui());
+        if (gui) {
+            guis.push_back(gui);
+        }
+    }
+    if (guis.empty()) {
+        return false;
+    }
+    if (addToSelection) {
+        for (NodesGuiList::const_iterator it = _imp->_selection.begin(); it != _imp->_selection.end(); ++it) {
+            if (std::find(guis.begin(), guis.end(), *it) == guis.end()) {
+                guis.push_back(*it);
+            }
+        }
+    }
+    setSelection(guis);
+
+    return true;
+}
 
 NATRON_NAMESPACE_EXIT

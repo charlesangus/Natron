@@ -29,8 +29,11 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <iterator>
 #include <limits>
+#include <list>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -50,6 +53,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Node.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
+#include "Engine/TemplateNode.h"
 #include "Engine/TimeLine.h"
 
 #include "Gui/ActionShortcuts.h"
@@ -57,6 +61,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
+#include "Gui/LoopBlockOverlay.h"
 #include "Gui/Menu.h"
 #include "Gui/MergePicks.h"
 #include "Gui/NodeGraphStacking.h"
@@ -64,6 +69,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/SequenceFileDialog.h"
 
 #include "Global/QtCompat.h"
+#include "Serialization/ProjectSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 const NodesGuiList &
@@ -674,21 +680,110 @@ NodeGraph::showMenu(const QPoint & pos)
     QObject::connect(previousChange, SIGNAL(triggered()), this, SLOT(goToPreviousComparisonChange()));
     viewMenu->addAction(previousChange);
 
-    std::string templateKey;
-    if (selectedNodes.size() == 1) {
-        const std::string origin = selectedNodes.front()->getNode()->getOriginTemplate();
-        if (!origin.empty() && getGui()->getApp()->getProject()->hasTemplateImport(origin)) {
-            templateKey = origin;
+    // The template actions apply when the selected nodes that belong to a template, as its hull
+    // counts them, all belong to the same one. The selected members are the ones to remove and
+    // the selected nodes that belong to no template the ones to add.
+    std::map<std::string, std::set<Node*>> hullMembers;
+    {
+        NodesList graphNodes;
+        const NodesGuiList& all = getAllActiveNodes();
+        for (NodesGuiList::const_iterator it = all.begin(); it != all.end(); ++it) {
+            if (NodePtr node = (*it)->getNode()) {
+                graphNodes.push_back(node);
+            }
+        }
+        const std::list<Serialization::TemplateImportSerialization> imports = getGui()->getApp()->getProject()->getTemplateImports();
+        for (const NodePtr& node : graphNodes) {
+            TemplateNode* isTemplate = dynamic_cast<TemplateNode*>(node->getEffectInstance().get());
+            const std::string key = isTemplate ? isTemplate->getTemplateKey() : std::string();
+            if (key.empty()) {
+                continue;
+            }
+            std::set<std::string> excluded;
+            for (const Serialization::TemplateImportSerialization& entry : imports) {
+                if (entry.key == key) {
+                    excluded = entry.excluded;
+                    break;
+                }
+            }
+            std::set<Node*>& members = hullMembers[key];
+            for (const NodePtr& member : LoopBlockOverlay::templateMembers(graphNodes, key, excluded)) {
+                members.insert(member.get());
+            }
         }
     }
-    QAction* updateFromTemplateAction = 0;
+    std::string templateKey;
+    std::set<std::string> candidates;
+    bool anyMember = false;
+    NodesList unowned;
+    NodesList owned;
+    for (const NodeGuiPtr& gui : selectedNodes) {
+        const NodePtr node = gui->getNode();
+        if (!node) {
+            continue;
+        }
+        TemplateNode* isTemplate = dynamic_cast<TemplateNode*>(node->getEffectInstance().get());
+        std::set<std::string> keys;
+        if (isTemplate) {
+            if (!isTemplate->getTemplateKey().empty()) {
+                keys.insert(isTemplate->getTemplateKey());
+            }
+        } else {
+            if (!node->getOriginTemplate().empty()) {
+                keys.insert(node->getOriginTemplate());
+            }
+            for (const std::pair<const std::string, std::set<Node*>>& hull : hullMembers) {
+                if (hull.second.count(node.get())) {
+                    keys.insert(hull.first);
+                }
+            }
+        }
+        if (keys.empty()) {
+            if (!isTemplate) {
+                unowned.push_back(node);
+            }
+            continue;
+        }
+        if (!anyMember) {
+            candidates = keys;
+            anyMember = true;
+        } else {
+            std::set<std::string> common;
+            std::set_intersection(candidates.begin(), candidates.end(), keys.begin(), keys.end(), std::inserter(common, common.end()));
+            candidates.swap(common);
+        }
+        if (!isTemplate) {
+            owned.push_back(node);
+        }
+    }
+    if ((candidates.size() == 1) && getGui()->getApp()->getProject()->hasTemplateImport(*candidates.begin())) {
+        templateKey = *candidates.begin();
+    }
+    NodesList toAdd;
+    NodesList toRemove;
+    if (!templateKey.empty()) {
+        toAdd = unowned;
+        toRemove = owned;
+    }
+    QAction* updateToLatestAction = 0;
+    QAction* updateFromFileAction = 0;
     QAction* compareWithTemplateBaseAction = 0;
+    QAction* addToTemplateAction = 0;
+    QAction* removeFromTemplateAction = 0;
     if (!templateKey.empty()) {
         _imp->_menu->addSeparator();
-        updateFromTemplateAction = _imp->_menu->addAction(tr("Update from Template"));
-        updateFromTemplateAction->setObjectName(QString::fromUtf8("actionGraphUpdateFromTemplate"));
-        compareWithTemplateBaseAction = _imp->_menu->addAction(tr("Compare with Template Base"));
+        updateToLatestAction = _imp->_menu->addAction(tr("Update to Latest"));
+        updateToLatestAction->setObjectName(QString::fromUtf8("actionGraphUpdateToLatest"));
+        updateFromFileAction = _imp->_menu->addAction(tr("Update from File..."));
+        updateFromFileAction->setObjectName(QString::fromUtf8("actionGraphUpdateFromFile"));
+        compareWithTemplateBaseAction = _imp->_menu->addAction(tr("Compare with Base"));
         compareWithTemplateBaseAction->setObjectName(QString::fromUtf8("actionGraphCompareWithTemplateBase"));
+        addToTemplateAction = _imp->_menu->addAction(tr("Add to Template"));
+        addToTemplateAction->setObjectName(QString::fromUtf8("actionGraphAddToTemplate"));
+        addToTemplateAction->setEnabled(!toAdd.empty());
+        removeFromTemplateAction = _imp->_menu->addAction(tr("Remove from Template"));
+        removeFromTemplateAction->setObjectName(QString::fromUtf8("actionGraphRemoveFromTemplate"));
+        removeFromTemplateAction->setEnabled(!toRemove.empty());
     }
 
     MergePicks::addMenuActions(_imp->_menu, this);
@@ -712,10 +807,16 @@ NodeGraph::showMenu(const QPoint & pos)
     if (!ret) {
         return;
     }
-    if (ret == updateFromTemplateAction) {
-        getGui()->updateFromTemplate(templateKey);
+    if (ret == updateToLatestAction) {
+        getGui()->updateTemplateToLatest(templateKey);
+    } else if (ret == updateFromFileAction) {
+        getGui()->updateTemplateFromFile(templateKey);
     } else if (ret == compareWithTemplateBaseAction) {
         getGui()->compareWithTemplateBase(templateKey);
+    } else if (ret == addToTemplateAction) {
+        getGui()->addToTemplate(templateKey, toAdd);
+    } else if (ret == removeFromTemplateAction) {
+        getGui()->removeFromTemplate(templateKey, toRemove);
     } else if (ret == clearComparisonAction) {
         getGui()->clearGraphComparison();
     } else if (ret == findAction) {

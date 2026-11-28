@@ -26,6 +26,7 @@
 #include "Project.h"
 
 #include <memory>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -37,10 +38,13 @@
 #include <QUuid>
 
 #include "Engine/AppInstance.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/GraphOpApply.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/ProjectPrivate.h"
+#include "Engine/ProjectTemplate.h"
+#include "Engine/TemplateNode.h"
 
 #include "Serialization/Bundle/ProjectBundle.h"
 #include "Serialization/Merge/NodeReferences.h"
@@ -49,18 +53,60 @@
 #include "Serialization/Ops/OpsPrivate.h"
 #include "Serialization/ProjectSerialization.h"
 #include "Serialization/Sha256.h"
+#include "Serialization/TemplateNodeSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 
 namespace {
 
-std::string
-templateKeyStem(const QString& filePath)
+QString
+fileStem(const QString& filePath)
 {
     QString name = QFileInfo(filePath).fileName();
     if (name.endsWith(QString::fromUtf8(".ntpz"), Qt::CaseInsensitive)) {
         name.chop(5);
     }
+
+    return name;
+}
+
+void
+stampImportedNode(Serialization::NodeSerialization* node,
+                  const std::string& key)
+{
+    node->origin.templateKey = key;
+    node->origin.nodeId = node->id;
+    if (node->id.empty()) {
+        node->origin = Serialization::NodeOriginSerialization();
+    }
+    node->id = ProjectTemplateDetail::newId();
+    node->cacheID.clear();
+    for (const Serialization::NodeSerializationPtr& child : node->children) {
+        stampImportedNode(child.get(), key);
+    }
+}
+
+void
+collectInputOps(const std::list<Serialization::NodeSerializationPtr>& topLevel,
+                std::vector<Serialization::GraphOp>* ops)
+{
+    Serialization::OpsDetail::InputRefs refs;
+    Serialization::OpsDetail::resolveInputs(topLevel, &refs);
+    for (const auto& entry : refs) {
+        for (const auto& input : entry.second) {
+            if (!input.second.sourceId.empty()) {
+                ops->push_back(Serialization::SetInputOp { entry.first->id, input.first, input.second.sourceId });
+            }
+        }
+    }
+}
+
+} // namespace
+
+namespace ProjectTemplateDetail {
+std::string
+keyStem(const QString& name)
+{
     std::string stem;
     for (QChar c : name) {
         const char ascii = c.toLatin1();
@@ -73,11 +119,20 @@ templateKeyStem(const QString& filePath)
 
 std::string
 uniqueTemplateKey(const std::string& stem,
-                  const std::list<Serialization::TemplateImportSerialization>& existing)
+                  const Project& project)
 {
     std::set<std::string> taken;
-    for (const Serialization::TemplateImportSerialization& entry : existing) {
+    for (const Serialization::TemplateImportSerialization& entry : project.getTemplateImports()) {
         taken.insert(entry.key);
+        taken.insert(keyStem(QString::fromStdString(entry.name)));
+    }
+    // A removed template node keeps its key until its removal can no longer be undone.
+    NodesList nodes;
+    project.getNodes_recursive(nodes, false);
+    for (const NodePtr& node : nodes) {
+        if (TemplateNode* isTemplate = dynamic_cast<TemplateNode*>(node->getEffectInstance().get())) {
+            taken.insert(isTemplate->getTemplateKey());
+        }
     }
     if (taken.find(stem) == taken.end()) {
         return stem;
@@ -117,43 +172,81 @@ uniqueScriptName(const std::string& name,
 }
 
 std::string
-newNodeId()
+newId()
 {
     return QUuid::createUuid().toString(QUuid::Id128).toStdString();
 }
 
-void
-stampImportedNode(Serialization::NodeSerialization* node,
-                  const std::string& key)
+Serialization::NodeSerializationPtr
+makeTemplateNode(const Serialization::TemplateNodeState& state,
+                 const std::string& scriptName,
+                 bool hasPosition,
+                 double x,
+                 double y)
 {
-    node->origin.templateKey = key;
-    node->origin.nodeId = node->id;
-    if (node->id.empty()) {
-        node->origin = Serialization::NodeOriginSerialization();
-    }
-    node->id = newNodeId();
-    node->cacheID.clear();
-    for (const Serialization::NodeSerializationPtr& child : node->children) {
-        stampImportedNode(child.get(), key);
-    }
+    Serialization::NodeSerializationPtr node = std::make_shared<Serialization::NodeSerialization>();
+    node->id = newId();
+    node->pluginID = PLUGINID_NATRON_TEMPLATE;
+    node->scriptName = scriptName;
+    node->label = scriptName;
+    node->layout.hasPosition = hasPosition;
+    node->layout.x = x;
+    node->layout.y = y;
+    Serialization::writeTemplateNode(state, node.get());
+
+    return node;
 }
 
-void
-collectInputOps(const std::list<Serialization::NodeSerializationPtr>& topLevel,
-                std::vector<Serialization::GraphOp>* ops)
+bool
+positionAbove(const std::list<Serialization::NodeSerializationPtr>& nodes,
+              double* x,
+              double* y)
 {
-    Serialization::OpsDetail::InputRefs refs;
-    Serialization::OpsDetail::resolveInputs(topLevel, &refs);
-    for (const auto& entry : refs) {
-        for (const auto& input : entry.second) {
-            if (!input.second.sourceId.empty()) {
-                ops->push_back(Serialization::SetInputOp { entry.first->id, input.first, input.second.sourceId });
-            }
+    // Room for the template node's own height between it and the top member.
+    const double gap = 100.;
+    bool found = false;
+    for (const Serialization::NodeSerializationPtr& node : nodes) {
+        if (!node || !node->layout.hasPosition) {
+            continue;
+        }
+        if (!found || (node->layout.x < *x)) {
+            *x = node->layout.x;
+        }
+        if (!found || (node->layout.y - gap < *y)) {
+            *y = node->layout.y - gap;
+        }
+        found = true;
+    }
+
+    return found;
+}
+
+bool
+applyOps(const ProjectPtr& project,
+         TemplateEdit* edit)
+{
+    if (edit->ops.empty()) {
+        return true;
+    }
+    edit->results = edit->applier ? edit->applier(edit->ops) : ProjectMerge::applyAllOrNothing(project, edit->ops);
+    QStringList problems;
+    for (const Serialization::OpResult& result : edit->results) {
+        if (!result.applied()) {
+            problems.push_back(QString::fromStdString(result.message));
         }
     }
-}
+    if (edit->results.size() != edit->ops.size()) {
+        problems.push_back(Project::tr("the operations were not all applied"));
+    }
+    if (!problems.isEmpty()) {
+        edit->error = Project::tr("The template could not be changed: %1").arg(problems.join(QString::fromUtf8("; ")));
 
-} // namespace
+        return false;
+    }
+
+    return true;
+}
+} // namespace ProjectTemplateDetail
 
 bool
 Project::isLockedPyPlug(const NodeCollectionPtr& group)
@@ -213,9 +306,24 @@ Project::importTemplate(const QString& filePath,
     }
     // A template's own imports are its business: only its nodes are the merge base here.
     imported.templates.clear();
-    entry.key = uniqueTemplateKey(templateKeyStem(filePath), getTemplateImports());
+    entry.key = ProjectTemplateDetail::uniqueTemplateKey(ProjectTemplateDetail::keyStem(fileStem(filePath)), *this);
     entry.path = QFileInfo(filePath).absoluteFilePath().toStdString();
+    entry.publishDir = QFileInfo(filePath).absolutePath().toStdString();
     entry.importedAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODate).toStdString();
+    std::optional<Serialization::NodeLayoutSerialization> templateNodeLayout;
+    if (const Serialization::NodeSerialization* templateNode = Serialization::findTemplateNode(imported.nodes.nodes)) {
+        const Serialization::TemplateNodeState state = Serialization::readTemplateNode(*templateNode);
+        entry.templateId = state.templateId;
+        entry.name = state.name;
+        entry.version = state.version;
+        templateNodeLayout = templateNode->layout;
+    }
+    if (entry.templateId.empty()) {
+        entry.templateId = ProjectTemplateDetail::newId();
+        entry.name = fileStem(filePath).toStdString();
+        entry.version = 1;
+    }
+    Serialization::eraseTemplateNodes(&imported.nodes.nodes);
     entry.base = std::make_shared<Serialization::ProjectSerialization>(imported);
 
     std::list<Serialization::NodeSerializationPtr> nodes;
@@ -226,7 +334,7 @@ Project::importTemplate(const QString& filePath,
     Serialization::NodeRenames& renames = scoped[std::string()];
     std::set<std::string> picked;
     for (const Serialization::NodeSerializationPtr& node : nodes) {
-        const std::string name = uniqueScriptName(node->scriptName, target, picked);
+        const std::string name = ProjectTemplateDetail::uniqueScriptName(node->scriptName, target, picked);
         picked.insert(name);
         if (name != node->scriptName) {
             renames[node->scriptName] = name;
@@ -250,11 +358,30 @@ Project::importTemplate(const QString& filePath,
         stampImportedNode(node.get(), entry.key);
     }
 
+    Serialization::TemplateNodeState state;
+    state.key = entry.key;
+    state.templateId = entry.templateId;
+    state.name = entry.name;
+    state.version = entry.version;
+    state.publishDir = entry.publishDir;
+    double x = 0.;
+    double y = 0.;
+    bool hasPosition = false;
+    if (templateNodeLayout && templateNodeLayout->hasPosition) {
+        hasPosition = true;
+        x = templateNodeLayout->x;
+        y = templateNodeLayout->y;
+    } else {
+        hasPosition = ProjectTemplateDetail::positionAbove(nodes, &x, &y);
+    }
+    const Serialization::NodeSerializationPtr templateNode = ProjectTemplateDetail::makeTemplateNode(state, ProjectTemplateDetail::uniqueScriptName("Template1", target, picked), hasPosition, x, y);
+
     std::vector<Serialization::GraphOp> ops;
     for (const Serialization::NodeSerializationPtr& node : nodes) {
         ops.push_back(Serialization::CreateNodeOp { parentId, node });
     }
     const std::size_t createCount = ops.size();
+    ops.push_back(Serialization::CreateNodeOp { parentId, templateNode });
     collectInputOps(nodes, &ops);
 
     {
@@ -279,6 +406,9 @@ Project::importTemplate(const QString& filePath,
         ++i;
     }
     if (created.empty() && !nodes.empty()) {
+        if (NodePtr made = findNodeById(templateNode->id)) {
+            made->destroyNode(true, false);
+        }
         {
             QMutexLocker k(&_imp->mergeStateMutex);
             _imp->templateImports.pop_back();

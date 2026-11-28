@@ -61,7 +61,8 @@ namespace {
 
 std::set<std::string>
 mergeScope(const MergeGraph& mine,
-           const NodeCorrespondence& baseToMine)
+           const NodeCorrespondence& baseToMine,
+           const std::set<std::string>& excluded)
 {
     const std::set<std::string> seeds = baseToMine.matchedOther();
     const std::set<std::string> downstream = reach(mine, seeds, true);
@@ -79,6 +80,14 @@ mergeScope(const MergeGraph& mine,
                 scope.insert(entry.first);
                 break;
             }
+        }
+    }
+    for (std::set<std::string>::iterator it = scope.begin(); it != scope.end();) {
+        const MergeGraph::Node* node = mine.find(*it);
+        if (excluded.count(*it) || (node && isTemplateNode(*node->node))) {
+            it = scope.erase(it);
+        } else {
+            ++it;
         }
     }
 

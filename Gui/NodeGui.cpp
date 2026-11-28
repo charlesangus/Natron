@@ -4974,6 +4974,10 @@ NodeGui::setCurrentColor(const QColor & c)
     Q_EMIT colorChanged(c);
     refreshCurrentBrush();
     refreshPanelColorIndicator();
+    // A template's hull takes its template node's colour.
+    if (_graph && (QThread::currentThread() == qApp->thread())) {
+        _graph->scheduleLoopBlockRefresh(false);
+    }
 }
 
 void

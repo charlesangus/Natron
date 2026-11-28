@@ -95,6 +95,18 @@ namespace {
             const TemplateImportSerialization& entry = *item.second;
             emitKey(em, entry.key);
             em << YAML::Value << YAML::BeginMap;
+            emitKey(em, "id");
+            em << YAML::Value;
+            emitString(em, entry.templateId);
+            emitKey(em, "name");
+            em << YAML::Value;
+            emitString(em, entry.name);
+            emitKey(em, "version");
+            em << YAML::Value;
+            emitInt(em, entry.version);
+            emitKey(em, "publishDir");
+            em << YAML::Value;
+            emitString(em, entry.publishDir);
             emitKey(em, "path");
             em << YAML::Value;
             emitString(em, entry.path);
@@ -104,6 +116,11 @@ namespace {
             emitKey(em, "importedAt");
             em << YAML::Value;
             emitString(em, entry.importedAt);
+            if (!entry.excluded.empty()) {
+                emitKey(em, "excluded");
+                em << YAML::Value;
+                emitStringList(em, std::vector<std::string>(entry.excluded.begin(), entry.excluded.end()));
+            }
             em << YAML::EndMap;
             if (entry.base) {
                 PrefixedBlobSink baseSink(sink, templateFolder(entry.key));
@@ -133,9 +150,23 @@ namespace {
                 fail(item.first, context, "a template key is made of letters, digits and underscores");
             }
             MapReader entryReader(item.second, context, warnings);
+            const YAML::Node id = entryReader.get("id");
+            if (!id) {
+                warn(warnings, "template " + entry.key + " has no template ID: it is not loaded as a template");
+                continue;
+            }
+            entry.templateId = readString(id, context + ".id");
+            entry.name = readString(entryReader.get("name"), context + ".name");
+            entry.version = readInt(entryReader.get("version"), context + ".version");
+            entry.publishDir = readString(entryReader.get("publishDir"), context + ".publishDir");
             entry.path = readString(entryReader.get("path"), context + ".path");
             entry.contentHash = readString(entryReader.get("hash"), context + ".hash");
             entry.importedAt = readString(entryReader.get("importedAt"), context + ".importedAt");
+            if (const YAML::Node excluded = entryReader.get("excluded")) {
+                for (const std::string& nodeId : readStringVector(excluded, context + ".excluded")) {
+                    entry.excluded.insert(nodeId);
+                }
+            }
             entryReader.finish();
             const std::optional<std::span<const std::byte>> baseBytes = source.findMember(templateBaseMember(entry.key));
             if (baseBytes) {

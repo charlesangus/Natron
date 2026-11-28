@@ -81,6 +81,18 @@
                 return ret;
             </inject-code>
         </modify-function>
+        <modify-function signature="updateFromTemplateChecked(QString,QString,bool,QString*)" remove="all"/>
+        <modify-function signature="updateFromTemplate(QString,QString,bool)">
+            <inject-code class="target" position="beginning">
+                QString updateError;
+                QString updateStatus = %CPPSELF.updateFromTemplateChecked(%1, %2, %3, &amp;updateError);
+                if (updateStatus.isEmpty()) {
+                    PyErr_SetString(PyExc_RuntimeError, updateError.toUtf8().constData());
+                    return 0;
+                }
+                return %CONVERTTOPYTHON[QString](updateStatus);
+            </inject-code>
+        </modify-function>
         <modify-function signature="getViewer(QString)const">
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>

@@ -156,6 +156,7 @@
 #include "Engine/StandardPaths.h"
 #include "Engine/StartupGLDiag.h"
 #include "Engine/TLSHolder.h"
+#include "Engine/TemplateNode.h"
 #include "Engine/ThreadPool.h"
 #include "Engine/TrackerNode.h"
 
@@ -2256,6 +2257,7 @@ void
 AppManager::loadBuiltinNodePlugins()
 {
     registerBuiltInPlugin<Backdrop>(QString::fromUtf8(NATRON_IMAGES_PATH "backdrop_icon.png"), false, false);
+    registerBuiltInPlugin<TemplateNode>(QString(), false, true);
     registerBuiltInPlugin<GroupOutput>(QString::fromUtf8(NATRON_IMAGES_PATH "output_icon.png"), false, false);
     registerBuiltInPlugin<GroupInput>(QString::fromUtf8(NATRON_IMAGES_PATH "input_icon.png"), false, false);
     registerBuiltInPlugin<NodeGroup>(QString::fromUtf8(NATRON_IMAGES_PATH "group_icon.png"), false, false);

@@ -653,6 +653,13 @@ public Q_SLOTS:
     void importTemplate();
 
     /**
+     * @brief Makes a template of the nodes selected in the graph last worked in, or of all its
+     * nodes without an origin when none is selected, as one undo step, and opens the panel of
+     * its template node to name it and set its publish folder.
+     **/
+    void defineTemplate();
+
+    /**
      * @brief Asks for a project file and compares the open project with it.
      **/
     void compareWithFile();
@@ -780,12 +787,41 @@ public Q_SLOTS:
 
 public:
     /**
-     * @brief Merges the current version of the template import templateKey into the project, as one
-     * undo step. Asks for the template file when the one the import recorded is gone. Returns the
-     * number of conflicts the update raised, or -1 when it was cancelled or failed, which a dialog
-     * reports.
+     * @brief Writes the template import templateKey as its next version in its publish folder.
+     * A refusal is reported in the status bar.
      **/
-    int updateFromTemplate(const std::string& templateKey);
+    void publishTemplate(const std::string& templateKey);
+
+    /**
+     * @brief Merges the newest version with the template's ID in its publish folder into the
+     * project, as one undo step. Only a template ID mismatch asks before merging; the other
+     * outcomes are reported in the status bar, errors in a dialog.
+     **/
+    void updateTemplateToLatest(const std::string& templateKey);
+
+    /**
+     * @brief updateTemplateToLatest() with a file the user picks, starting in the publish folder.
+     **/
+    void updateTemplateFromFile(const std::string& templateKey);
+
+    /**
+     * @brief updateTemplateToLatest() with the file at path.
+     **/
+    void updateTemplateFromPath(const std::string& templateKey,
+                                const QString& path);
+
+    /**
+     * @brief Tags nodes as members of the template import templateKey, or takes them out of it,
+     * as one undo step.
+     **/
+    void addToTemplate(const std::string& templateKey, const NodesList& nodes);
+    void removeFromTemplate(const std::string& templateKey, const NodesList& nodes);
+
+    /**
+     * @brief Makes the members of the template import templateKey ordinary nodes and removes its
+     * template node, as one undo step.
+     **/
+    void detachTemplate(const std::string& templateKey);
 
     /**
      * @brief Compares the nodes of the template import templateKey with its stored base.

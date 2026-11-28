@@ -404,3 +404,47 @@ TEST(NodeMatcher, AnOriginNamingAnotherImportIsNeverAdopted)
     EXPECT_TRUE(match.otherFor(hexId("b:Grade1")).empty());
     EXPECT_EQ(match.otherFor(hexId("b:Blur1")), hexId("m:Blur1"));
 }
+
+TEST(NodeMatcher, AVersionSavedFromAnImportMatchesEveryNodeThroughItsOrigins)
+{
+    // The supervisor imported the template, changed it and saved it: fresh IDs, origins naming base.
+    Scenario scenario = templateScenario();
+    scenario.theirs = SimGraph();
+    importTemplate(&scenario.theirs, "t:", "supervisor_tpl", Names(), false, "Plate", "ShotOut", false);
+    scenario.theirs.set("Blur1", "size", { 4., 4. });
+    const Serialization::ProjectSerialization baseProject = scenario.base.project();
+    const Serialization::ProjectSerialization mineProject = scenario.mine.project();
+    const Serialization::ProjectSerialization theirsProject = scenario.theirs.project();
+    const Serialization::MergePlan plan = Serialization::planMerge(baseProject, mineProject, theirsProject, "grade_tpl");
+    for (const SimNode& node : scenario.base.nodes) {
+        EXPECT_EQ(plan.baseToTheirs.otherFor(node.id), hexId("t:" + node.name)) << node.name;
+    }
+    EXPECT_TRUE(plan.baseToTheirs.adopted.empty());
+    EXPECT_FALSE(Serialization::sharesTooFewNodes(plan));
+
+    // Without following origins nothing has a seed to adopt from.
+    const Serialization::NodeCorrespondence byId = Serialization::matchNodes(Serialization::MergeGraph(baseProject), Serialization::MergeGraph(theirsProject), std::string());
+    EXPECT_TRUE(byId.baseToOther.empty());
+}
+
+TEST(NodeMatcher, ARemovedNodeNeverMatchesAndLeavesTheScope)
+{
+    // The artist inserted ArtistBlur between members, then removed Blur1 from the template.
+    Scenario scenario = templateScenario();
+    insertBefore(&scenario.mine, "ArtistBlur", "Blur", "m:new", "Blur1", "Source");
+    Serialization::ProjectSerialization baseProject = scenario.base.project();
+    Serialization::ProjectSerialization mineProject = scenario.mine.project();
+    const Serialization::ProjectSerialization theirsProject = scenario.theirs.project();
+    const std::string artistBlur = hexId("m:new");
+    const std::string blur1 = hexId("m:Blur1");
+    Serialization::TemplateImportSerialization entry;
+    entry.key = "grade_tpl";
+    entry.excluded = { artistBlur, blur1 };
+    mineProject.templates.push_back(entry);
+    const Serialization::MergePlan plan = Serialization::planMerge(baseProject, mineProject, theirsProject, "grade_tpl");
+    EXPECT_TRUE(plan.baseToMine.otherFor(hexId("b:Blur1")).empty());
+    EXPECT_EQ(plan.scope.count(artistBlur), 0u);
+    EXPECT_EQ(plan.scope.count(blur1), 0u);
+    EXPECT_EQ(plan.scope.count(hexId("m:Grade1")), 1u);
+    EXPECT_EQ(plan.scope.count(hexId("m:Merge1")), 1u);
+}

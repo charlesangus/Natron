@@ -343,7 +343,10 @@ try:
         require(rd.connectInput(0, artist), "connect Artist to Rd")
         check(app.mergeBarMode() == "none", "the merge bar is hidden before the update (%r)" % app.mergeBarMode())
 
-        count = app.updateFromTemplate(template, v2)
+        # The versions are plain scripts, not published versions of the template.
+        status = app.updateFromTemplate(template, v2, True)
+        require(status == "updated", "the update to version 2 merges (got %r)" % status)
+        count = len(conflicts())
         require(count >= 3, "the update raises a conflict on each of Val, Key and Rd (got %d)" % count)
         report("NOTE conflicts %r" % ([(str(c["node"]), str(c["kind"]), str(c["label"])) for c in conflicts()],))
         names = conflicted_names()

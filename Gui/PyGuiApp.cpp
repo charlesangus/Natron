@@ -41,6 +41,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
 #include "Engine/ProjectMerge.h"
+#include "Engine/ProjectTemplate.h"
 #include "Engine/PyNode.h"
 #include "Engine/PyNodeGroup.h"
 #include "Engine/PyParameter.h" // ColorTuple
@@ -967,18 +968,29 @@ GuiApp::importTemplateAsUndoStep(const QString& filePath)
     return QString::fromStdString(key);
 }
 
-int
-GuiApp::updateFromTemplate(const QString& templateKey,
-                           const QString& filePath)
+QString
+GuiApp::updateFromTemplateChecked(const QString& templateKey,
+                                  const QString& filePath,
+                                  bool allowMismatch,
+                                  QString* error)
 {
-    const ProjectMerge::UpdateResult result = MergeConflictResolve::updateFromTemplate(getInternalGuiApp()->getGui(), templateKey.toStdString(), filePath);
-    if (!result.ok) {
-        getInternalGuiApp()->appendToScriptEditor(result.error.toStdString());
+    const ProjectMerge::UpdateResult result = MergeConflictResolve::updateFromTemplate(getInternalGuiApp()->getGui(), templateKey.toStdString(), filePath, allowMismatch);
+    if (result.status == ProjectMerge::UpdateStatus::eError) {
+        *error = result.error;
 
-        return -1;
+        return QString();
     }
 
-    return (int)result.conflicts.size();
+    return ProjectTemplateDetail::updateStatusName(result.status);
+}
+
+QString
+GuiApp::updateFromTemplate(const QString& /*templateKey*/,
+                           const QString& /*filePath*/,
+                           bool /*allowMismatch*/)
+{
+    // The binding's inject code calls updateFromTemplateChecked() and never reaches this body.
+    return QString();
 }
 
 bool

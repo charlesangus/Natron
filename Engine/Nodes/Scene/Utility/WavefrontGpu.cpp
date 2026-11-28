@@ -43,6 +43,7 @@
 #include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <system_error>
 #include <thread>
@@ -60,6 +61,7 @@
 #include "Engine/Nodes/Scene/Utility/GpuTracer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityGpuLimits.h"
 #include "Engine/Nodes/Scene/Utility/UtilityKernels.h"
+#include "Engine/Nodes/Scene/Utility/UtilityProfile.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 
 #include "utility_raster_hits_spirv.h"
@@ -1086,8 +1088,15 @@ WavefrontGpu::Implementation::Recorder::begin()
 bool
 WavefrontGpu::Implementation::Recorder::next()
 {
-    if (gpu::GpuStatus s = _current->submitAndWait(); !s) {
-        return _imp.fail("WavefrontGpu could not render part of a batch", s);
+    gpu::GpuStatus submitted;
+
+    {
+        const utilityProfile::Scope timed(utilityProfile::Stage::GpuSubmitWait);
+
+        submitted = _current->submitAndWait();
+    }
+    if (!submitted) {
+        return _imp.fail("WavefrontGpu could not render part of a batch", submitted);
     }
     _submitted.push_back(std::move(_current));
     if (_stop.load(std::memory_order_relaxed)) {
@@ -1119,8 +1128,15 @@ WavefrontGpu::Implementation::Recorder::reserve(std::uint64_t work)
 bool
 WavefrontGpu::Implementation::Recorder::finish(const std::string& what)
 {
-    if (gpu::GpuStatus s = _current->submitAndWait(); !s) {
-        return _imp.fail(what, s);
+    gpu::GpuStatus submitted;
+
+    {
+        const utilityProfile::Scope timed(utilityProfile::Stage::GpuSubmitWait);
+
+        submitted = _current->submitAndWait();
+    }
+    if (!submitted) {
+        return _imp.fail(what, submitted);
     }
 
     return true;
@@ -1377,8 +1393,15 @@ WavefrontGpu::Implementation::rasterHits(const WavefrontFrame& frame,
                     }
                 }
             }
-            if (gpu::GpuStatus s = ctx->submitAndWait(kRasterSubmitTimeoutNs, [&stop]() { return stop.load(std::memory_order_relaxed); }); !s) {
-                return failUnlessStopped("WavefrontGpu could not draw a visibility pass", s);
+            gpu::GpuStatus submitted;
+
+            {
+                const utilityProfile::Scope timed(utilityProfile::Stage::RasterSubmitWait);
+
+                submitted = ctx->submitAndWait(kRasterSubmitTimeoutNs, [&stop]() { return stop.load(std::memory_order_relaxed); });
+            }
+            if (!submitted) {
+                return failUnlessStopped("WavefrontGpu could not draw a visibility pass", submitted);
             }
         }
     }
@@ -1451,6 +1474,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         return false;
     }
     if (frame.mapping == WavefrontMapping::UvUnwrap) {
+        const utilityProfile::Scope timed(utilityProfile::Stage::RayGenIntersect);
         const std::array<gpu::GpuBinding, 5> bindings = {
             gpu::GpuBinding::storage(0, *rays), gpu::GpuBinding::storage(1, *weights), gpu::GpuBinding::storage(2, *hitValues),
             gpu::GpuBinding::storage(3, *hitIds), gpu::GpuBinding::storage(4, unwrapAddresses.buffer())
@@ -1460,10 +1484,13 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
             return fail("WavefrontGpu could not generate rays", s);
         }
     } else if (frame.raster) {
+        const utilityProfile::Scope timed(utilityProfile::Stage::Raster);
+
         if (!rasterHits(frame, rect, rec, *rays, *weights, *hitValues, *hitIds)) {
             return false;
         }
     } else {
+        const utilityProfile::Scope timed(utilityProfile::Stage::RayGenIntersect);
         const std::array<gpu::GpuBinding, 3> bindings = { gpu::GpuBinding::storage(0, *rays), gpu::GpuBinding::storage(1, *weights), gpu::GpuBinding::storage(2, cameraStepsBuffer.buffer()) };
 
         if (gpu::GpuStatus s = rec.ctx().dispatchBindings(rayGenKernel, bindings, std::as_bytes(std::span(&rayGenParams, 1)), threads); !s) {
@@ -1491,6 +1518,8 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
 
     resolveParams.linkWords = shadeTables.linkWords();
     if (holes) {
+        const utilityProfile::Scope timed(utilityProfile::Stage::Resolve);
+
         std::copy(std::begin(shadeParams.pixelFootprint), std::end(shadeParams.pixelFootprint), std::begin(resolveParams.pixelFootprint));
         if (!reserveResolve(rec.ctx(), count, frame.maxCutouts, scratch) || !recordResolve(rec, scratch, resolveParams, count, frame.maxCutouts, *rays, *hitValues, *hitIds, *rays, *rays, *rays)) {
             return false;
@@ -1673,8 +1702,12 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         return true;
     };
 
-    if (!shade(shadeParams, shadeBindingsOf(*rays, *hitValues, *hitIds, *rays, *queueRays[0], *queuePaths[0]))) {
-        return false;
+    {
+        const utilityProfile::Scope timed(utilityProfile::Stage::Shade);
+
+        if (!shade(shadeParams, shadeBindingsOf(*rays, *hitValues, *hitIds, *rays, *queueRays[0], *queuePaths[0]))) {
+            return false;
+        }
     }
 
     KernelResolveParams bounceResolve {};
@@ -1682,7 +1715,11 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     bounceResolve.linkWords = shadeTables.linkWords();
     // Bounce 1 goes ahead unread, so that a scene of one bounce waits only for the read after it.
     std::uint32_t ran = 0;
+    std::optional<utilityProfile::Scope> timedBounces;
 
+    if (limit > 0) {
+        timedBounces.emplace(utilityProfile::Stage::Bounces);
+    }
     for (std::uint32_t bounce = 1; bounce <= limit; ++bounce) {
         const std::size_t from = (bounce - 1) % 2;
         const std::size_t to = bounce % 2;
@@ -1715,7 +1752,10 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         }
         ran = bounce;
     }
+    timedBounces.reset();
     if (deviceColor) {
+        const utilityProfile::Scope timed(utilityProfile::Stage::FilmAccumulate);
+
         if (gpu::GpuStatus s = deviceColor->recordDeviceBatch(rec.ctx(), *hitIds, *color, *weights, rect.x, rect.y, rect.width, rect.height, wavefrontShowsBackground(frame, shadeTables)); !s) {
             return fail("WavefrontGpu could not write a batch's colours to the film", s);
         }
@@ -1738,12 +1778,16 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         { ran > 0, liveBounces, &flagReadback, ran * sizeof(std::uint32_t) },
     };
 
-    for (const auto& copy : copies) {
-        if (!copy.wanted) {
-            continue;
-        }
-        if (gpu::GpuStatus s = rec.ctx().copyBuffer(*copy.source, 0, *copy.target, 0, copy.bytes); !s) {
-            return fail("WavefrontGpu could not read a batch back", s);
+    {
+        const utilityProfile::Scope timed(utilityProfile::Stage::Readback);
+
+        for (const auto& copy : copies) {
+            if (!copy.wanted) {
+                continue;
+            }
+            if (gpu::GpuStatus s = rec.ctx().copyBuffer(*copy.source, 0, *copy.target, 0, copy.bytes); !s) {
+                return fail("WavefrontGpu could not read a batch back", s);
+            }
         }
     }
     if (!rec.finish("WavefrontGpu could not render a batch of " + rayCount)) {
@@ -1770,6 +1814,9 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     tile.primId = aovs.primId ? static_cast<const std::int32_t*>(readback.primId.mapped()) : nullptr;
     tile.instanceId = aovs.instanceId ? static_cast<const std::int32_t*>(readback.instanceId.mapped()) : nullptr;
     tile.background = wavefrontShowsBackground(frame, shadeTables);
+
+    const utilityProfile::Scope timed(utilityProfile::Stage::WriteTile);
+
     film.writeTile(tile);
 
     return true;
@@ -1911,7 +1958,14 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
     if (!imp.warm(stop)) {
         return false;
     }
-    if (!imp.tracer.update(snapshot, threads, &stop)) {
+    bool updated = false;
+
+    {
+        const utilityProfile::Scope timed(utilityProfile::Stage::TracerUpdate);
+
+        updated = imp.tracer.update(snapshot, threads, &stop);
+    }
+    if (!updated) {
         imp.outcome = imp.tracer.status();
         if (imp.outcome.status == Tracer::Status::Ok) {
             return imp.stopped();
@@ -1920,21 +1974,29 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
 
         return false;
     }
-    if (!imp.shadeTables.update(snapshot, &stop)) {
-        return imp.stopped();
-    }
-    if (!imp.uploadTables(snapshot.version, stop)) {
-        return false;
-    }
-    if (frame.mapping == WavefrontMapping::UvUnwrap) {
-        if (stop.load(std::memory_order_relaxed)) {
+    {
+        const utilityProfile::Scope timed(utilityProfile::Stage::ShadeTables);
+
+        if (!imp.shadeTables.update(snapshot, &stop)) {
             return imp.stopped();
         }
-        if (!imp.uploadUnwrap(frame.unwrap)) {
+    }
+    {
+        const utilityProfile::Scope timed(utilityProfile::Stage::Uploads);
+
+        if (!imp.uploadTables(snapshot.version, stop)) {
             return false;
         }
-    } else if (!imp.uploadCameraSteps(frame.cameraSteps)) {
-        return false;
+        if (frame.mapping == WavefrontMapping::UvUnwrap) {
+            if (stop.load(std::memory_order_relaxed)) {
+                return imp.stopped();
+            }
+            if (!imp.uploadUnwrap(frame.unwrap)) {
+                return false;
+            }
+        } else if (!imp.uploadCameraSteps(frame.cameraSteps)) {
+            return false;
+        }
     }
     if (frame.raster && frame.mapping != WavefrontMapping::Camera) {
         imp.outcome = Tracer::Outcome { Tracer::Status::Unsupported, "WavefrontGpu draws only the Camera projection in Raster mode" };
@@ -1974,6 +2036,7 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
             };
 
             bool superseded = false;
+            const utilityProfile::Scope timed(utilityProfile::Stage::FilmBegin);
 
             if (gpu::GpuStatus s = deviceColor->beginDeviceFrame(record, kMaxSubmitWork, imp.registry, imp.pool, imp.filmKernels, imp.runtimeHold, &superseded); !s) {
                 // The recorder has already said why: the frame was stopped or a submission failed.

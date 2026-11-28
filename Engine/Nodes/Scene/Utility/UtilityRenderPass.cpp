@@ -53,6 +53,7 @@
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/Utility/Tracer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityLight.h"
+#include "Engine/Nodes/Scene/Utility/UtilityProfile.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
@@ -717,14 +718,19 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
                     rasterWarning = "Render Mode is Raster, but the frame was rendered in Ray mode: " + reason + ".";
                 }
             };
+            std::string renderedOn = "CPU";
             const auto drawSamples = [&](WavefrontExecutor& executor) {
                 const std::size_t wanted = static_cast<std::size_t>(drawn.raster ? drawn.rasterSamples : drawn.sampling.samplesPerPixel());
+                UtilityProfileFrame profile(drawn.raster ? "Raster" : "Ray", renderedOn, drawn.window.width, drawn.window.height, static_cast<int>(wanted));
 
                 _renderParam->setSampleProgress(0, wanted);
 
-                return wavefrontDrawSamples(executor, *snapshot, drawn, motion, film, cancel, threads, [this, wanted](std::size_t done) { _renderParam->setSampleProgress(done, wanted); });
+                const bool drew = wavefrontDrawSamples(executor, *snapshot, drawn, motion, film, cancel, threads, [this, wanted](std::size_t done) { _renderParam->setSampleProgress(done, wanted); });
+
+                profile.setFinished(drew && !cancel.load());
+
+                return drew;
             };
-            std::string renderedOn = "CPU";
             std::string warning;
             bool onCpu = device == Device::Cpu;
 

@@ -43,6 +43,7 @@
 
 #include "Engine/Nodes/Scene/Utility/UtilityLight.h"
 #include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
+#include "Engine/Nodes/Scene/Utility/UtilityProfile.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -1687,8 +1688,12 @@ wavefrontDrawSamples(WavefrontExecutor& executor,
     const bool blurred = !unwrapping && motion.isOpen() && UtilityScene::moves(snapshot);
     UtilityScene::Snapshot shuttered;
 
-    if (blurred && !UtilityScene::atShutter(snapshot, motion.open, motion.close, std::max(1, motion.segments), stop, &shuttered)) {
-        return false;
+    if (blurred) {
+        const utilityProfile::Scope timed(utilityProfile::Stage::ShutterSnapshot);
+
+        if (!UtilityScene::atShutter(snapshot, motion.open, motion.close, std::max(1, motion.segments), stop, &shuttered)) {
+            return false;
+        }
     }
     const UtilityScene::Snapshot& scene = blurred ? shuttered : snapshot;
     WavefrontFrame drawn = frame;
@@ -1708,6 +1713,7 @@ wavefrontDrawSamples(WavefrontExecutor& executor,
         const int passes = std::max(1, frame.rasterSamples);
 
         for (int i = 0; i < passes; ++i) {
+            const utilityProfile::Pass timedPass;
             WavefrontRasterPass pass = wavefrontRasterPass(frame.sampling, i, passes);
 
             if (!motion.isOpen()) {
@@ -1721,7 +1727,11 @@ wavefrontDrawSamples(WavefrontExecutor& executor,
             if (!executor.render(scene, atPass, film, stop, threads)) {
                 return false;
             }
-            film.passDrawn();
+            {
+                const utilityProfile::Scope timed(utilityProfile::Stage::PublishPass);
+
+                film.passDrawn();
+            }
             if (progress) {
                 progress(static_cast<std::size_t>(i) + 1);
             }
@@ -1735,11 +1745,17 @@ wavefrontDrawSamples(WavefrontExecutor& executor,
     const int samples = std::max(1, frame.sampling.samplesPerPixel());
 
     for (int i = 0; i < samples; ++i) {
+        const utilityProfile::Pass timedPass;
+
         drawn.sampling.sampleIndex = i;
         if (!executor.render(scene, drawn, film, stop, threads)) {
             return false;
         }
-        film.passDrawn();
+        {
+            const utilityProfile::Scope timed(utilityProfile::Stage::PublishPass);
+
+            film.passDrawn();
+        }
         if (progress) {
             progress(static_cast<std::size_t>(i) + 1);
         }

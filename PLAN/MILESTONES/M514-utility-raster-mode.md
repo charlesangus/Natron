@@ -199,6 +199,26 @@ After P4 the per-pass cost is 5.6 ms (Raster) and 10.8 ms (Ray), but every frame
   - files: Tests/gui (natron_utility_viewer.py or a new script), `UtilityRenderBuffer.cpp` (~1239)
   - size: S
 
+- [ ] M514.P5.T13 — Instrument the edit loop end to end: stamps at knob change, viewer render request, task-graph build, region begin, prepareRender begin/end, hydra_profile start, SceneStage::sync, viewer paint/swap; GPU timestamp queries per submit; the bench samples nvidia-smi clocks/pstate
+  - size: M
+- [ ] M514.P5.T14 — Colour-only viewer renders skip the pick-film copy and its submit (picks lazy)
+  - files: `UtilityRenderBuffer.cpp` (~1278-1330), `UtilityRenderPass.cpp` (~266)
+  - size: S
+- [ ] M514.P5.T15 — prepareRender without recomposition: cache active settings and frustum by key; skip primIdTableOf on colour-only renders
+  - files: `USDRender.cpp` (~1164-1327)
+  - size: M
+- [ ] M514.P5.T16 — After converge take the AOV without extra Render() calls
+  - files: `HydraRenderImpl.cpp` render loop
+  - size: S
+- [ ] M514.P5.T17 — Progressive frames on the GPU viewer path: the device window returns after the first published pass, the viewer re-requests until converged; partial frames never cached as final
+  - files: `HydraRenderImpl.cpp` (~2082-2150, DeviceFrame cache), `USDRender.cpp` renderGpu, `ViewerInstance.cpp`
+  - size: L
+- [ ] M514.P5.T18 — Cut the ~30 ms before the region once P5.T13 names it
+  - size: M
+- [ ] M514.P5.T19 — No full stage resync per transform edit (stable edit-layer identity / TransferContent so only the edited prim's notices fire) — check pxr notice granularity first
+  - files: `SceneOps.cpp` (~265), SceneLayerMemo, `SceneStage.cpp` sync
+  - size: L
+
 **Phase 514.5 target (user, 2026-11-28):** Raster interactive at 20–30 fps until IO-bound — ≤50 ms per steady frame at 1080p for an RGB render in the viewer path (stretch ≤33 ms); the GPU does the resolve, the CPU only copies colour; Ray keeps ≤33 ms per pass. Replaces "Raster ≥5× Ray at 32 passes".
 
 **Verification gate:**
@@ -236,3 +256,4 @@ After P4 the per-pass cost is 5.6 ms (Raster) and 10.8 ms (Ray), but every frame
 - 2026-11-28 — P5.T1–T4 in 3ce490ce24; m514-gate10 green. Bench deferred until P5.T8–T12 (GPU viewer path) land, one sitting.
 - 2026-11-28 — VM run (cloud-gpu-20261128T103501Z, gate12 AppImage c4b3da5307): device path confirmed — Ray and Raster, 4/4 viewer frames as device roots at the zerocopy rung, 0 fallbacks, 0 colour downloads. The viewer-loop bench failed at setup (camera menu never listed /World/Cam); fixing the driver, then rerun for timings.
 - 2026-11-28 — Viewer-loop bench on a real GPU (cloud-gpu-20261128T104320Z, RTX 3060, 1080p, camera edits, zerocopy, 30/30 device roots, 0 downloads): edit→frame median 101.8 ms at 1 pass (p95 259; Hydra call 40.8 ms, render_call ~9.6 ms), 195.9 ms at 16 passes (Hydra 132 ms). ~5× better than the 0.5 s CPU path; target ≤50 ms not yet met. Consultant attributing the rest.
+- 2026-11-28 — Breakdown (consultant) at 1 pass ≈ 30 ms before the region (unrecorded) + 19 ms prepareRender + 41 ms Hydra call (render_call ~10, delegate frame ~28: uploads 4–6, two blocking submits 13–16, publish with pick copy 10–13) + ~10 ms tail. p95 from GPU-wide slowdowns in a sawtooth (likely clocks/P-state). Per pass at 16 passes ≈ 6.7 ms of CPU-side waits. Plan: P5.T13–T19, with P5.T7 batching.

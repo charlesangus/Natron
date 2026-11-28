@@ -205,23 +205,31 @@ delegateStallError(std::chrono::milliseconds bound)
     return std::string("MoonRay's render session stopped answering: its progress held still, and once its session was made again held still for ") + seconds + " s.";
 }
 
+// MoonRay's progress in percent, -1 when its stats carry none. hdMoonray moves it only when an image
+// arrives from the render process, so a new value means a new image.
+double
+moonRayPercentOf(const VtDictionary& stats)
+{
+    const VtDictionary::const_iterator percent = stats.find("percentDone");
+    if (percent == stats.end()) {
+        return -1.;
+    }
+    if (percent->second.IsHolding<float>()) {
+        return percent->second.UncheckedGet<float>();
+    }
+    if (percent->second.IsHolding<double>()) {
+        return percent->second.UncheckedGet<double>();
+    }
+
+    return -1.;
+}
+
 // Whether MoonRay's stats show a frame from its render process: hdMoonray's percentDone stays 0 until
 // the first one arrives.
 bool
 moonRayProgressed(const VtDictionary& stats)
 {
-    const VtDictionary::const_iterator percent = stats.find("percentDone");
-    if (percent == stats.end()) {
-        return false;
-    }
-    if (percent->second.IsHolding<float>()) {
-        return percent->second.UncheckedGet<float>() > 0.f;
-    }
-    if (percent->second.IsHolding<double>()) {
-        return percent->second.UncheckedGet<double>() > 0.;
-    }
-
-    return false;
+    return moonRayPercentOf(stats) > 0.;
 }
 
 /**
@@ -295,11 +303,12 @@ samplesOf(const VtDictionary& stats,
     return -1;
 }
 
-// MoonRay's samples per pixel out of a cap of its pixel samples, read off the progress of a pass
-// that rendered, -1 when there is none. A frame with any pixels counts at least one, so that it is
-// shown. hdMoonray reports no stats exactly when its frame is complete, which is the cap: its
-// IsConverged says so only on the call after that, so a fast render's first frame may be complete
-// and not yet converged.
+// MoonRay's samples per pixel out of a cap in samples per pixel, read off the progress of a pass
+// that rendered, -1 when there is none. It renders the square of the pixel samples the cap takes,
+// which may be more than the cap: the count stays under the cap until the frame is complete, so
+// that n of n means done. A frame with any pixels counts at least one, so that it is shown.
+// hdMoonray reports no stats exactly when its frame is complete: its IsConverged says so only on
+// the call after that, so a fast render's first frame may be complete and not yet converged.
 int
 moonRaySamplesOf(const VtDictionary& stats,
                  int cap,
@@ -308,24 +317,21 @@ moonRaySamplesOf(const VtDictionary& stats,
     if ((cap <= 0) || !rendered) {
         return -1;
     }
-    const VtDictionary::const_iterator percent = stats.find("percentDone");
-    if (percent == stats.end()) {
+    if (stats.find("percentDone") == stats.end()) {
         return cap;
     }
-    double done = 0.;
-    if (percent->second.IsHolding<float>()) {
-        done = percent->second.UncheckedGet<float>();
-    } else if (percent->second.IsHolding<double>()) {
-        done = percent->second.UncheckedGet<double>();
-    } else {
+    const double done = moonRayPercentOf(stats);
+    if (done < 0.) {
         return -1;
     }
-    if (done <= 0.) {
+    if (done == 0.) {
         return 0;
     }
-    const int samples = (int)std::floor(done / 100. * cap + 1e-6);
+    const int side = MoonRaySettings::pixelSamplesFor(cap);
+    const double rendering = (double)side * side;
+    const int samples = (int)std::lround(std::min(100., done) / 100. * rendering);
 
-    return std::min(cap, std::max(1, samples));
+    return std::min(std::max(1, cap - 1), std::max(1, samples));
 }
 
 std::int64_t
@@ -4167,7 +4173,8 @@ struct ProgressiveRender::Implementation {
             return false;
         }
         const UsdImagingGLRendererSettingsList list = made->GetRendererSettingsList();
-        // MoonRay's samples per pixel is a scene variable its delegate does not declare.
+        // MoonRay's pixel samples are a scene variable its delegate does not declare, and the square
+        // root of the samples per pixel the cap counts.
         const TfToken key = moonRay ? TfToken(MoonRaySettings::samplesKey()) : samplesSettingKey(list);
         int cap = 0;
         if (!key.IsEmpty()) {
@@ -4177,6 +4184,9 @@ struct ProgressiveRender::Implementation {
                     cap = intOf(setting.defValue, 0);
                 }
             }
+        }
+        if (moonRay && (cap > 0)) {
+            cap *= cap;
         }
         // Before the first render, which populates the render index, so seeding sends nothing.
         const SceneDrawFilter::WeakPtr filter = filterId.empty() ? SceneDrawFilter::WeakPtr() : SceneDrawFilter::find(filterId);
@@ -4549,6 +4559,8 @@ void
 ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
 {
     int lastSamples = -1;
+    // MoonRay's image refines between whole samples per pixel: a move of its progress is a new one.
+    double lastProgress = -1.;
     std::size_t lastUtilitySamples = 0;
     RestartWatch restartWatch;
     bool lastConverged = false;
@@ -4657,6 +4669,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
             keepFrame = false;
             lastSamples = -1;
+            lastProgress = -1.;
             lastUtilitySamples = 0;
             lastConverged = false;
             engineRendered = false;
@@ -4857,7 +4870,8 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 }
                 if (!samplesKey.IsEmpty() && (cap > 0) && (cap != appliedCap)) {
                     // A change of a setting restarts the delegate's render.
-                    engine->SetRendererSetting(samplesKey, VtValue(cap));
+                    const int value = MoonRayAovs::isMoonRay(engineRenderer) ? MoonRaySettings::pixelSamplesFor(cap) : cap;
+                    engine->SetRendererSetting(samplesKey, VtValue(value));
                     appliedCap = cap;
                 }
                 const bool viewMoved = !engineHasView || (engineView != v);
@@ -4919,7 +4933,9 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 }
             }
         }
-        const int samples = MoonRayAovs::isMoonRay(engineRenderer) ? moonRaySamplesOf(stats, cap, rendered) : samplesOf(stats, cap);
+        const bool moonRay = MoonRayAovs::isMoonRay(engineRenderer);
+        const int samples = moonRay ? moonRaySamplesOf(stats, cap, rendered) : samplesOf(stats, cap);
+        const double progress = moonRay ? moonRayPercentOf(stats) : -1.;
         lock.lock();
         engineRendered = engineRendered || rendered;
         if (hasStage) {
@@ -5006,11 +5022,12 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             keepFrame = true;
             continue;
         }
-        const bool changed = (samples != lastSamples) || (converged != lastConverged);
+        const bool changed = (samples != lastSamples) || (converged != lastConverged) || (progress != lastProgress);
         if (samples != lastSamples) {
             stallSince = now;
         }
         lastSamples = samples;
+        lastProgress = progress;
         lastConverged = converged;
         status.samples = samples;
         status.maxSamples = cap;

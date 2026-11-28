@@ -920,7 +920,8 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->mainLayout->addWidget(_imp->sceneRenderRow);
 
     const QString maxSamplesTt = NATRON_NAMESPACE::convertFromPlainText(tr("The samples per pixel the renderer refines the 3D view to; "
-                                                                           "0 uses the renderer's default. A change restarts the render."),
+                                                                           "0 uses the renderer's default. MoonRay renders a square number "
+                                                                           "of samples, the next one up when this is not one. A change restarts the render."),
                                                                         NATRON_NAMESPACE::WhiteSpaceNormal);
     Label* maxSamplesLabel = new Label(tr("Max Samples"), _imp->sceneRenderRow);
     maxSamplesLabel->setToolTip(maxSamplesTt);

@@ -628,7 +628,10 @@ public:
      **/
     void setSettings(const std::map<std::string, PXR_NS::VtValue>& settings);
 
-    // The sample cap; <= 0 for the delegate's default, the prim's samples if it sets them. A change restarts.
+    // The sample cap in samples per pixel on every delegate; <= 0 for the delegate's default, the
+    // prim's samples if it sets them. MoonRay takes it as the pixel samples whose square reaches it
+    // (MoonRaySettings::pixelSamplesFor), so it may render more than the cap while counting up to it.
+    // A change restarts.
     void setMaxSamples(int samples);
 
     // The cap in force: the one set, or the delegate's default once its engine is made, else 0.

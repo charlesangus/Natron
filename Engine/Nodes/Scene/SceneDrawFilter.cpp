@@ -721,7 +721,15 @@ HdSceneIndexPrim
 SceneDrawFilter::GetPrim(const SdfPath& primPath) const
 {
     HdSceneIndexPrim prim = _GetInputSceneIndex()->GetPrim(primPath);
-    if (!isFiltering() || !isHideable(prim.primType)) {
+    if (!isFiltering()) {
+        return prim;
+    }
+    if (!isHideable(prim.primType)) {
+        // Out of Hydra with its mesh, which it would dirty.
+        if ((prim.primType == HdPrimTypeTokens->geomSubset) && subsetOfAbsent(primPath)) {
+            return HdSceneIndexPrim();
+        }
+
         return prim;
     }
     const auto node = _nodes.find(primPath);
@@ -1004,15 +1012,26 @@ SceneDrawFilter::sendChanges()
     }
     HdSceneIndexObserver::AddedPrimEntries added;
     added.reserve(addedCount);
+    // Hydra holds a mesh's geomSubsets only while it holds the mesh, as each dirties its mesh: they
+    // leave ahead of it and come back after it.
+    const auto addSubsets = [&added](const Node& mesh, bool typed) {
+        for (const Node* child = mesh.firstChild; child; child = child->next) {
+            if (child->type == HdPrimTypeTokens->geomSubset) {
+                added.emplace_back(*child->path, typed ? child->type : TfToken());
+            }
+        }
+    };
     for (const Node* node : _changes) {
         if (node->output == node->before) {
             continue;
         }
         if (node->output == eOutputAbsent) {
+            addSubsets(*node, false);
             added.emplace_back(*node->path, TfToken());
             ++_hiddenSent;
         } else if (node->before == eOutputAbsent) {
             added.emplace_back(*node->path, node->type);
+            addSubsets(*node, true);
             ++_insertedSent;
             if (node->output == eOutputShown) {
                 ++_shownSent;
@@ -1261,6 +1280,14 @@ SceneDrawFilter::finishRevealIfDone()
     _revealFrom.clear();
 }
 
+bool
+SceneDrawFilter::subsetOfAbsent(const SdfPath& subsetPath) const
+{
+    const auto mesh = _nodes.find(subsetPath.GetParentPath());
+
+    return (mesh != _nodes.end()) && (mesh->second.output == eOutputAbsent);
+}
+
 void
 SceneDrawFilter::_PrimsAdded(const HdSceneIndexBase& /*sender*/,
                              const HdSceneIndexObserver::AddedPrimEntries& entries)
@@ -1319,6 +1346,16 @@ SceneDrawFilter::_PrimsAdded(const HdSceneIndexBase& /*sender*/,
         }
         setOutput(*node, output);
         if (output == eOutputAbsent) {
+            if (rewritten.empty()) {
+                rewritten = entries;
+            }
+            rewritten[i].primType = TfToken();
+        }
+    }
+    // A geomSubset dirties its mesh in Hydra: one whose mesh is kept out goes in with no type, and
+    // sendChanges() brings it in after its mesh.
+    for (std::size_t i = 0; i < std::size_t(entries.size()); ++i) {
+        if ((entries[i].primType == HdPrimTypeTokens->geomSubset) && subsetOfAbsent(entries[i].primPath)) {
             if (rewritten.empty()) {
                 rewritten = entries;
             }
@@ -1387,8 +1424,10 @@ SceneDrawFilter::_PrimsDirtied(const HdSceneIndexBase& /*sender*/,
     for (const HdSceneIndexObserver::DirtiedPrimEntry& entry : entries) {
         const auto node = _nodes.find(entry.primPath);
         // Storm defers an invisible prim's sync, keeping the dirty bits for when it shows again, so
-        // only a prim out of Hydra can do without them.
-        if ((node == _nodes.end()) || !node->second.hideable || (node->second.output != eOutputAbsent)) {
+        // only a prim out of Hydra can do without them, a geomSubset of a mesh out of Hydra too.
+        if (node == _nodes.end()) {
+            kept.push_back(entry);
+        } else if (node->second.hideable ? (node->second.output != eOutputAbsent) : !((node->second.type == HdPrimTypeTokens->geomSubset) && subsetOfAbsent(entry.primPath))) {
             kept.push_back(entry);
         }
     }

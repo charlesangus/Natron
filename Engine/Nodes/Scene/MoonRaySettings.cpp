@@ -284,6 +284,20 @@ samplesKey()
 {
     return "moonray:sceneVariable:pixel_samples";
 }
+
+int
+pixelSamplesFor(int samplesPerPixel)
+{
+    if (samplesPerPixel <= 0) {
+        return 0;
+    }
+    int side = 1;
+    while ((long long)side * side < samplesPerPixel) {
+        ++side;
+    }
+
+    return side;
+}
 } // namespace MoonRaySettings
 
 NATRON_NAMESPACE_EXIT

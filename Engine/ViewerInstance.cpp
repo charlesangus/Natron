@@ -1004,7 +1004,8 @@ ViewerInstance::initializeKnobs()
 
     KnobIntPtr maxSamples = createViewerKnob<KnobInt>(this, page, tr("Max Samples"), kViewerParamMaxSamples,
                                                       tr("The samples per pixel a progressive renderer refines the 3D view to; "
-                                                         "0 uses the renderer's default. A change restarts the render."));
+                                                         "0 uses the renderer's default. MoonRay renders a square number "
+                                                         "of samples, the next one up when this is not one. A change restarts the render."));
     maxSamples->setMinimum(0);
     maxSamples->setDisplayMinimum(0);
     maxSamples->setDisplayMaximum(4096);

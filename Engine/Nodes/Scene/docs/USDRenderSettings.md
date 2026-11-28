@@ -168,9 +168,14 @@ prim switches the renderer the view uses.
 
 The view applies the active prim's settings for its renderer. A Cycles view
 therefore refines to the prim's `cycles:samples`, and a MoonRay view to its
-`moonray:sceneVariable:pixel_samples`. The Viewer's Max Samples
+`moonray:sceneVariable:pixel_samples`, which is the square root of the
+samples per pixel, so 8 refines to 64. The Viewer's Max Samples
 (`maxSamples`), when it is not 0, applies last and overrides the prim's
-samples. The view's refinement restarts only when an edit touches the
+samples. It counts samples per pixel on every renderer. MoonRay gets the
+square root rounded up as its pixel samples, so Max Samples 16 renders 16
+samples per pixel and Max Samples 8 renders 9. The sample count the view
+shows stops at Max Samples, and reaches it only once MoonRay's render is
+complete. The view's refinement restarts only when an edit touches the
 settings of the view's own renderer or something outside `/Render`. An edit
 on another renderer's tab leaves the refinement alone.
 

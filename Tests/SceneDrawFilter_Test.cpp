@@ -46,6 +46,7 @@
 #define NATRON_SCENEDRAWFILTER_TEST_RESTORE_EMIT
 #undef emit
 #endif
+#include <pxr/base/tf/errorMark.h>
 #include <pxr/imaging/hd/changeTracker.h>
 #include <pxr/imaging/hd/filteringSceneIndex.h>
 #include <pxr/imaging/hd/instancerTopologySchema.h>
@@ -952,6 +953,36 @@ TEST_F(SceneDrawFilterTest, HiddenPrimsLeaveARealRenderIndex)
 
     EXPECT_TRUE(index->GetRprim(mesh));
     EXPECT_TRUE(index->GetSprim(HdPrimTypeTokens->rectLight, light));
+}
+
+// A geomSubset dirties its mesh in Hydra: while the mesh is out of the render index, its subset is
+// out too, so that neither a change to the subset nor its resync dirties a mesh Hydra lacks.
+TEST_F(SceneDrawFilterTest, AGeomSubsetLeavesHydraWithItsMesh)
+{
+    const SdfPath mesh("/World/a/m1");
+    const SdfPath subset("/World/a/m1/faces");
+    scene->AddPrims({ { subset, HdPrimTypeTokens->geomSubset, someData() } });
+    CountingRenderDelegate delegate;
+    std::unique_ptr<HdRenderIndex> index(HdRenderIndex::New(&delegate, HdDriverVector()));
+    ASSERT_TRUE(index != nullptr);
+    index->InsertSceneIndex(filter, SdfPath::AbsoluteRootPath());
+    ASSERT_TRUE(index->GetRprim(mesh));
+    const HdDataSourceLocatorSet all { HdDataSourceLocator::EmptyLocator() };
+
+    TfErrorMark mark;
+    filter->applyDelta(states.setState("/World/a", eSceneDrawStateHidden));
+    EXPECT_FALSE(index->GetRprim(mesh));
+    EXPECT_TRUE(filter->GetPrim(subset).primType.IsEmpty());
+    scene->DirtyPrims({ { subset, all } });
+    scene->AddPrims({ { subset, HdPrimTypeTokens->geomSubset, someData() } });
+    EXPECT_TRUE(mark.IsClean()) << "Hydra was told of the subset of a mesh it does not hold";
+
+    filter->applyDelta(states.clearState("/World/a"));
+    EXPECT_TRUE(index->GetRprim(mesh));
+    EXPECT_EQ(HdPrimTypeTokens->geomSubset, filter->GetPrim(subset).primType);
+    scene->DirtyPrims({ { subset, all } });
+    EXPECT_TRUE(mark.IsClean());
+    mark.Clear();
 }
 
 // What makes boxing a row cheap in Storm: no rprim enters or leaves the render index, so the draw

@@ -675,8 +675,8 @@ protected:
     {
         ASSERT_TRUE(start(std::map<std::string, PXR_NS::VtValue>(), renderer));
         if (std::string(renderer) != kRenderDelegateCyclesId) {
-            // MoonRay's cap is its pixel_samples, the square root of the samples per pixel: 8 takes 64.
-            _render->setMaxSamples(8);
+            // MoonRay's pixel samples 8.
+            _render->setMaxSamples(64);
         }
         SceneDrawFilter::Rules rules;
         rules[PXR_NS::SdfPath("/World/Far")] = SceneDrawFilter::eRuleHidden;
@@ -809,8 +809,10 @@ protected:
         std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
         ASSERT_TRUE(collectUntilDone(mark, &frames));
         ASSERT_FALSE(frames.empty());
-        EXPECT_EQ(3, _render->getMaxSamples());
-        EXPECT_EQ(3, frames.back()->maxSamples);
+        // MoonRay's pixel samples are the square root of the samples per pixel the cap counts.
+        const int capOfThree = (renderer == kMoonRayRendererId) ? 9 : 3;
+        EXPECT_EQ(capOfThree, _render->getMaxSamples());
+        EXPECT_EQ(capOfThree, frames.back()->maxSamples);
 
         settings[samplesKey] = PXR_NS::VtValue(4);
         ASSERT_TRUE(heavyPass(settings));
@@ -2234,18 +2236,35 @@ TEST_F(ProgressiveRenderTest, MoonRayReturnsAtOnceFromChangesMidPass)
     interruptsMidPass(kMoonRayRendererId, MoonRaySettings::samplesKey(), cycles ? std::string(kRenderDelegateCyclesId) : std::string());
 }
 
-// MoonRay counts its samples off its progress against its pixel samples, as the viewer's sample
-// count shows them, and its render ends converged at the cap.
+// Max Samples counts samples per pixel on MoonRay too: it gets the pixel samples whose square
+// reaches the cap.
+TEST(MoonRaySettingsTest, MaxSamplesTakeThePixelSamplesWhoseSquareReachesThem)
+{
+    EXPECT_EQ(0, MoonRaySettings::pixelSamplesFor(0));
+    EXPECT_EQ(1, MoonRaySettings::pixelSamplesFor(1));
+    EXPECT_EQ(2, MoonRaySettings::pixelSamplesFor(2));
+    EXPECT_EQ(2, MoonRaySettings::pixelSamplesFor(4));
+    EXPECT_EQ(3, MoonRaySettings::pixelSamplesFor(8));
+    EXPECT_EQ(3, MoonRaySettings::pixelSamplesFor(9));
+    EXPECT_EQ(4, MoonRaySettings::pixelSamplesFor(16));
+    EXPECT_EQ(64, MoonRaySettings::pixelSamplesFor(4096));
+}
+
+// MoonRay counts its samples per pixel off its progress against the square of its pixel samples,
+// as the viewer's sample count shows them, stays under the cap until its render is complete, and
+// ends converged at the cap: 8 renders 9 under pixel samples 3. Without a cap, the prim's pixel
+// samples 4 refine to 16.
 TEST_F(ProgressiveRenderTest, AMoonRayRenderCountsItsSamplesToConvergence)
 {
     if (!moonRayOrSkip()) {
         return;
     }
-    const int kPixelSamples = 4;
+    const int kPrimPixelSamples = 4;
+    const int kMaxSamples = 8;
     std::map<std::string, PXR_NS::VtValue> settings;
-    settings[MoonRaySettings::samplesKey()] = PXR_NS::VtValue(kPixelSamples);
+    settings[MoonRaySettings::samplesKey()] = PXR_NS::VtValue(kPrimPixelSamples);
     ASSERT_TRUE(start(settings, kMoonRayRendererId));
-    _render->setMaxSamples(kPixelSamples);
+    _render->setMaxSamples(kMaxSamples);
     sync(withKey(_base));
     std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
     ASSERT_TRUE(collectUntilDone(0, &frames));
@@ -2260,19 +2279,76 @@ TEST_F(ProgressiveRenderTest, AMoonRayRenderCountsItsSamplesToConvergence)
         }
         std::cout << " " << frames[i]->samples;
         EXPECT_GT(frames[i]->samples, 0) << "frame " << i;
-        EXPECT_LE(frames[i]->samples, kPixelSamples) << "frame " << i;
+        if (frames[i]->converged) {
+            EXPECT_EQ(kMaxSamples, frames[i]->samples) << "frame " << i;
+        } else {
+            EXPECT_LE(frames[i]->samples, kMaxSamples) << "frame " << i;
+        }
         EXPECT_GE(frames[i]->samples, previous) << "frame " << i;
-        EXPECT_EQ(kPixelSamples, frames[i]->maxSamples) << "frame " << i;
+        EXPECT_EQ(kMaxSamples, frames[i]->maxSamples) << "frame " << i;
         previous = frames[i]->samples;
     }
     std::cout << std::endl;
     EXPECT_TRUE(last.converged);
-    EXPECT_EQ(kPixelSamples, last.samples);
+    EXPECT_EQ(kMaxSamples, last.samples);
 
-    const ProgressiveRender::Status status = _render->getStatus();
+    ProgressiveRender::Status status = _render->getStatus();
     EXPECT_TRUE(status.converged);
-    EXPECT_EQ(kPixelSamples, status.samples);
-    EXPECT_EQ(kPixelSamples, status.maxSamples);
+    EXPECT_EQ(kMaxSamples, status.samples);
+    EXPECT_EQ(kMaxSamples, status.maxSamples);
+
+    const int kPrimSamples = kPrimPixelSamples * kPrimPixelSamples;
+    const std::size_t mark = publishedCount();
+    _render->setMaxSamples(0);
+    frames.clear();
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    ASSERT_FALSE(frames.empty());
+    EXPECT_TRUE(frames.back()->converged);
+    EXPECT_EQ(kPrimSamples, frames.back()->samples);
+    EXPECT_EQ(kPrimSamples, frames.back()->maxSamples);
+    status = _render->getStatus();
+    EXPECT_EQ(kPrimSamples, status.samples);
+    EXPECT_EQ(kPrimSamples, status.maxSamples);
+    EXPECT_EQ(kPrimSamples, _render->getMaxSamples());
+}
+
+// MoonRay's image refines between whole samples per pixel, and each image its session sends is shown.
+// A cap of 2 renders 4 and counts 1 until the render is complete; light and material samples far
+// over their defaults keep it from completing while its frames go on.
+TEST_F(ProgressiveRenderTest, AMoonRayRenderShowsItsImagesBetweenSampleCounts)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const int kMaxSamples = 2;
+    const std::size_t kFrames = 3;
+    std::map<std::string, PXR_NS::VtValue> settings;
+    settings["moonray:sceneVariable:light_samples"] = PXR_NS::VtValue(16);
+    settings["moonray:sceneVariable:bsdf_samples"] = PXR_NS::VtValue(16);
+    ASSERT_TRUE(start(settings, kMoonRayRendererId));
+    _render->setMaxSamples(kMaxSamples);
+    // Under _signalMutex, as waitUntil reads it.
+    const auto sameCount = [this]() {
+        if (_published.empty()) {
+            return std::size_t(0);
+        }
+        const ProgressiveRender::Frame& last = *_published.back();
+        std::size_t count = 0;
+        for (const std::shared_ptr<const ProgressiveRender::Frame>& frame : _published) {
+            if ((frame->restart == last.restart) && (frame->samples == last.samples)) {
+                ++count;
+            }
+        }
+
+        return count;
+    };
+    ASSERT_TRUE(waitUntil([&sameCount, kFrames]() { return sameCount() >= kFrames; }, "three frames of one sample count"));
+
+    std::lock_guard<std::mutex> lock(_signalMutex);
+    const ProgressiveRender::Frame& last = *_published.back();
+    EXPECT_EQ(1, last.samples);
+    EXPECT_FALSE(last.converged);
+    EXPECT_EQ(kMaxSamples, last.maxSamples);
 }
 
 // MoonRay reports no reset counts: an edit restarts its render in place, and its frames are

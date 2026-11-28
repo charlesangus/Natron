@@ -46,6 +46,7 @@
 #include "Global/FStreamsSupport.h"
 
 #include "Engine/AppManager.h" // Dialogs
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/Settings.h"
 #include "Engine/ViewIdx.h"
 
@@ -690,12 +691,34 @@ Gui::addVisibleDockablePanel(DockablePanel* panel)
         putSettingsPanelFirst(panel);
     } else {
         if (!panel->isFloating()) {
-            panel->setParent( _imp->_layoutPropertiesBin->parentWidget() );
+            NodeCreationStageLog::Scope stage("panelDockInsert");
+            QWidget* bin = _imp->_layoutPropertiesBin->parentWidget();
+            // setParent() re-inherits the style even when the parent is unchanged, which unpolishes and
+            // repolishes every already-polished widget of the panel.
+            if (panel->parentWidget() != bin) {
+                panel->setParent(bin);
+            }
             _imp->_layoutPropertiesBin->insertWidget(0, panel);
             _imp->_propertiesScrollArea->verticalScrollBar()->setValue(0);
         }
         if ( !panel->isVisible() ) {
+            if (NodeCreationStageLog::enabled()) {
+                // setVisible() polishes first anyway; doing it here splits style resolution from the show.
+                NodeCreationStageLog::Scope stage("panelDockPolish");
+                panel->ensurePolished();
+            }
+            NodeCreationStageLog::Scope stage("panelDockShow");
             panel->setVisible(true);
+            // Showing posts a LayoutRequest that the event loop only handles after the next repaint, so
+            // that frame would go out without the panel and it would appear one frame later. Laying out
+            // now lets the very next frame paint it.
+            NodeCreationStageLog::Scope layoutStage("panelDockLayout");
+            if (QLayout* panelLayout = panel->layout()) {
+                panelLayout->activate();
+            }
+            if (!panel->isFloating()) {
+                _imp->_layoutPropertiesBin->activate();
+            }
         }
 
         {

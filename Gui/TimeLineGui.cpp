@@ -47,6 +47,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/Nodes/Loop/GeoSolverEnd.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
@@ -429,6 +430,7 @@ typedef std::set<TimeLineKey, TimeLineKey_compare> TimeLineKeysSet;
 void
 TimeLineGui::paintGL()
 {
+    NodeCreationStageLog::Scope creationStage("timelinePaint");
     if (!_imp->gui) {
         return;
     }

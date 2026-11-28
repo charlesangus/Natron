@@ -35,11 +35,13 @@
 #include "Engine/Knob.h"
 #include "Engine/KnobLinkGroup.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/Project.h"
 #include "Engine/Utils.h" // convertFromPlainText
 #include "Engine/ViewIdx.h"
 
 #include "Gui/KnobDriverRow.h"
+#include "Gui/KnobGuiContainerHelper.h"
 #include "Gui/KnobGuiPrivate.h"
 #include "Gui/KnobUndoCommand.h" // SetExpressionCommand...
 
@@ -698,6 +700,7 @@ KnobGui::getScriptNameHtml() const
 QString
 KnobGui::toolTip() const
 {
+    NodeCreationStageLog::Scope stage("knobToolTip");
     KnobIPtr knob = getKnob();
     KnobChoice* isChoice = dynamic_cast<KnobChoice*>( knob.get() );
     bool isMarkdown = knob.get()->isHintInMarkdown();
@@ -824,10 +827,16 @@ KnobGui::getKnobsCountOnSameLine() const
 void
 KnobGui::hide()
 {
-    if (!_imp->customInteract) {
-        _hide();
-    } else {
-        _imp->customInteract->hide();
+    if (_imp->deferredRowBuild) {
+        _imp->hiddenWhileUnbuilt = true;
+    }
+    // Nothing of an unbuilt row is in its page.
+    if (_imp->widgetCreated) {
+        if (!_imp->customInteract) {
+            _hide();
+        } else {
+            _imp->customInteract->hide();
+        }
     }
 
     //also  hide the curve from the curve editor if there's any and the knob is not inside a group
@@ -882,13 +891,35 @@ KnobGui::show(int /*index*/)
     if ( !getGui() ) {
         return;
     }
-    if (!_imp->customInteract) {
-        _show();
-        if (_imp->driverRow && _imp->driverRow->isDriving()) {
-            _hide();
+    _imp->hiddenWhileUnbuilt = false;
+    if (_imp->deferredRowBuild) {
+        // The row is built in the event that reveals it, before its page is next painted.
+        if (isSecretRecursive()) {
+            return;
         }
-    } else {
-        _imp->customInteract->show();
+        KnobPageGuiPtr page = _imp->deferredRowPage.lock();
+        if (page && !page->shown) {
+            // Its curves are shown with the knob, not with its row.
+            KnobIPtr knob = getKnob();
+            if (knob && knob->getHolder() && knob->getHolder()->getApp()) {
+                getGui()->getCurveEditor()->showCurves(shared_from_this());
+            }
+
+            return;
+        }
+        std::function<void()> build;
+        build.swap(_imp->deferredRowBuild);
+        build();
+    }
+    if (_imp->widgetCreated) {
+        if (!_imp->customInteract) {
+            _show();
+            if (_imp->driverRow && _imp->driverRow->isDriving()) {
+                _hide();
+            }
+        } else {
+            _imp->customInteract->show();
+        }
     }
     onLinkStateChanged();
 
@@ -899,24 +930,115 @@ KnobGui::show(int /*index*/)
     }
 
     //if (_imp->isOnNewLine) {
-    if (_imp->field) {
-        _imp->field->show();
-    }
+    showWidget(_imp->field);
     if (_imp->container) {
         _imp->container->refreshTabWidgetMaxHeight();
     }
     //}
 
     if (_imp->labelContainer) {
-        _imp->labelContainer->show();
+        showWidget(_imp->labelContainer);
     } else if (_imp->descriptionLabel) {
-        _imp->descriptionLabel->show();
+        showWidget(_imp->descriptionLabel);
     }
+}
+
+void
+KnobGui::showWidget(QWidget* w)
+{
+    if (!w || !w->isHidden()) {
+        return;
+    }
+    QWidget* parent = w->parentWidget();
+    if (!parent || parent->isVisible() || w->testAttribute(Qt::WA_WState_ExplicitShowHide)) {
+        w->show();
+    }
+}
+
+void
+KnobGui::setDeferredRow(const KnobPageGuiPtr& page,
+                        int firstRow,
+                        const std::function<void()>& build)
+{
+    _imp->deferredRowPage = page;
+    _imp->deferredRowIndex = firstRow;
+    _imp->deferredRowBuild = build;
+}
+
+bool
+KnobGui::isRowDeferred() const
+{
+    return (bool)_imp->deferredRowBuild;
+}
+
+void
+KnobGui::buildDeferredRowIfShown()
+{
+    if (_imp->deferredRowBuild && !_imp->hiddenWhileUnbuilt && !isSecretRecursive()) {
+        show();
+    }
+}
+
+void
+KnobGui::ensureRowBuilt()
+{
+    if (!_imp->deferredRowBuild) {
+        return;
+    }
+    KnobPageGuiPtr page = _imp->deferredRowPage.lock();
+    if (page && !page->shown) {
+        return;
+    }
+    if (!_imp->hiddenWhileUnbuilt && !isSecretRecursive()) {
+        show();
+
+        return;
+    }
+    std::function<void()> build;
+    build.swap(_imp->deferredRowBuild);
+    build();
+    hide();
+}
+
+void
+KnobGui::setPreviousFocusRow(const KnobGuiPtr& previous)
+{
+    if (_imp->focusRowLinked) {
+        return;
+    }
+    _imp->focusRowLinked = true;
+    _imp->previousFocusRow = previous;
+}
+
+void
+KnobGui::setLastFocusable(QWidget* w)
+{
+    _imp->lastFocusable = w;
+}
+
+QWidget*
+KnobGui::getFocusChainAnchor() const
+{
+    if (_imp->lastFocusable) {
+        return _imp->lastFocusable.data();
+    }
+    KnobGuiPtr row = _imp->previousFocusRow.lock();
+    while (row) {
+        if (row->_imp->lastFocusable) {
+            return row->_imp->lastFocusable.data();
+        }
+        row = row->_imp->previousFocusRow.lock();
+    }
+
+    return 0;
 }
 
 int
 KnobGui::getActualIndexInLayout() const
 {
+    if (!_imp->widgetCreated) {
+        return _imp->deferredRowIndex;
+    }
     QWidget* parent = isLabelOnSameColumn() ? _imp->labelContainer->parentWidget() : _imp->field->parentWidget();
 
     if (!parent) {
@@ -956,17 +1078,12 @@ KnobGui::isOnNewLine() const
 void
 KnobGui::setEnabledSlot()
 {
-    // A toolbar page's knobs get a KnobGui in the settings panel but no widgets.
-    if (!getGui() || !_imp->widgetCreated) {
+    // A toolbar page's knobs get a KnobGui in the settings panel but no widgets, and no row to build.
+    if (!getGui() || (!_imp->widgetCreated && !_imp->deferredRowBuild)) {
         return;
     }
-    if (!_imp->customInteract) {
-        setEnabled();
-    }
     KnobIPtr knob = getKnob();
-    if (_imp->descriptionLabel) {
-        _imp->descriptionLabel->setReadOnly( !knob->isEnabled(0) );
-    }
+    // An unbuilt row's curves follow its knob too.
     KnobGuiPtr thisShared = shared_from_this();
     if ( knob->getHolder() && knob->getHolder()->getApp() ) {
         for (int i = 0; i < knob->getDimension(); ++i) {
@@ -976,6 +1093,15 @@ KnobGui::setEnabledSlot()
                 getGui()->getCurveEditor()->showCurve(thisShared, i);
             }
         }
+    }
+    if (!_imp->widgetCreated) {
+        return;
+    }
+    if (!_imp->customInteract) {
+        setEnabled();
+    }
+    if (_imp->descriptionLabel) {
+        _imp->descriptionLabel->setReadOnly(!knob->isEnabled(0));
     }
 }
 

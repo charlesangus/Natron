@@ -683,20 +683,19 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
 
     bool isViewer = node->isEffectViewer() != 0;
     if (isViewer) {
+        NodeCreationStageLog::Scope stage("viewerGui");
         _imp->_gui->createViewerGui(node);
     }
 
-    // Must be done after the viewer gui has been created
-    _imp->_gui->createNodeViewerInterface(nodegui);
-
-
     NodeGroup* isGroup = node->isEffectGroup();
     if ( isGroup && isGroup->isSubGraphUserVisible() ) {
+        NodeCreationStageLog::Scope stage("groupGui");
         _imp->_gui->createGroupGui(node, args);
     }
 
     ///Don't initialize inputs if it is a multi-instance child since it is not part of  the graph
     if (!parentMultiInstance) {
+        NodeCreationStageLog::Scope stage("inputsAndEdges");
         nodegui->initializeInputs();
 
         // This node's own GUI may have appeared after an existing output's edge already tried

@@ -153,16 +153,6 @@ Gui::showErrorLog()
 }
 
 void
-Gui::createNodeViewerInterface(const NodeGuiPtr& n)
-{
-    QMutexLocker l(&_imp->_viewerTabsMutex);
-
-    for (std::list<ViewerTab*>::iterator it = _imp->_viewerTabs.begin(); it != _imp->_viewerTabs.end(); ++it) {
-        (*it)->createNodeViewerInterface(n);
-    }
-}
-
-void
 Gui::removeNodeViewerInterface(const NodeGuiPtr& n,
                                bool permanently)
 {
@@ -179,6 +169,8 @@ Gui::setNodeViewerInterface(const NodeGuiPtr& n)
     QMutexLocker l(&_imp->_viewerTabsMutex);
 
     for (std::list<ViewerTab*>::iterator it = _imp->_viewerTabs.begin(); it != _imp->_viewerTabs.end(); ++it) {
+        // Built here rather than with the node: a heavy toolbar costs a node whose panel never opens nothing.
+        (*it)->createNodeViewerInterface(n);
         (*it)->setPluginViewerInterface(n);
     }
 }

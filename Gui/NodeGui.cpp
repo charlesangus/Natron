@@ -40,7 +40,6 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QApplication>
 #include <QCursor>
 #include <QDebug>
-#include <QElapsedTimer>
 #include <QFile>
 #include <QFontMetrics>
 #include <QGraphicsPathItem>
@@ -746,11 +745,9 @@ void
 NodeGui::ensurePanelCreated(bool minimized, bool hideUnmodified)
 {
     if (_panelCreated) {
-        runPanelTail(true);
-
         return;
     }
-    startPanelBuild(false);
+    buildPanel(false);
 
     if (hideUnmodified && _settingsPanel) {
         _settingsPanel->restoreHideUnmodifiedState(true);
@@ -762,7 +759,7 @@ NodeGui::ensurePanelCreated(bool minimized, bool hideUnmodified)
 } // NodeGui::ensurePanelCreated
 
 void
-NodeGui::startPanelBuild(bool incremental)
+NodeGui::buildPanel(bool reselect)
 {
     _panelCreated = true;
     NodeCreationStageLog::Scope stage("panelBuild");
@@ -775,81 +772,101 @@ NodeGui::startPanelBuild(bool incremental)
     QVBoxLayout* propsLayout = gui->getPropertiesLayout();
     assert(propsLayout);
     NodeGuiPtr thisShared = shared_from_this();
-    // The multi-instance panels are set up from the knob GUIs as soon as they exist.
-    const bool buildIncrementally = incremental && shownNode && !shownNode->isMultiInstance() && shownNode->getParentMultiInstanceName().empty();
-    // Docking the panel costs about as much as creating it, so an incremental build does it in a pass of its own.
-    _settingsPanel = createPanel(propsLayout, thisShared, !buildIncrementally);
+    // Every row is built while the panel is still hidden and the panel is docked once it is complete:
+    // a row shown inside a visible panel pays for its own restyle and its ancestors' relayout.
+    _settingsPanel = createPanel(propsLayout, thisShared);
     if (_settingsPanel && shownNode && shownNode->hasOverlayColor()) {
         double r, g, b;
         shownNode->getStoredOverlayColor(&r, &g, &b);
         _settingsPanel->setOverlayColor(QColor::fromRgbF(r, g, b));
     }
-    _panelTailPending = true;
-    _panelTailStep = 0;
-    _panelDockPending = buildIncrementally && _settingsPanel;
-
-    if (_panelDockPending && !_mainInstancePanel) {
-        QTimer::singleShot(0, this, [this]() {
-            dockPendingPanel();
-        });
-        NodeGuiWPtr weakThis = thisShared;
-        _settingsPanel->initializeKnobsIncrementally([weakThis]() {
-            NodeGuiPtr self = weakThis.lock();
-            if (self) {
-                self->schedulePanelTail();
-            }
-        });
-        beginEditKnobs();
-        connectSettingsPanel();
-
-        return;
-    }
 
     initializeKnobs();
     beginEditKnobs();
     connectSettingsPanel();
-    runPanelTail(true);
-} // NodeGui::startPanelBuild
-
-void
-NodeGui::dockPendingPanel()
-{
-    if (!_panelDockPending) {
+    if (_settingsPanel && !_settingsPanel->isClosed() && _graph) {
+        NodeCreationStageLog::Scope dockStage("panelDock");
+        gui->addVisibleDockablePanel(_settingsPanel);
+    }
+    if (!_graph) {
         return;
     }
-    _panelDockPending = false;
-    if (_settingsPanel && !_settingsPanel->isClosed() && _graph) {
-        _graph->getGui()->addVisibleDockablePanel(_settingsPanel);
-    }
-}
 
-bool
-NodeGui::dropUnbuiltPanel()
-{
-    if (!_panelCreated || !_panelTailPending || _panelTailRunning || (_panelTailStep > 0) || !_settingsPanel || !_settingsPanel->isKnobBuildPending()) {
-        return false;
+    NodeCreationStageLog::Scope tailStage("panelBuildTail");
+    {
+        NodeCreationStageLog::Scope curveStage("panelTailCurveEditor");
+        gui->addNodeGuiToCurveEditor(thisShared);
     }
-    NodeSettingsPanel* panel = _settingsPanel;
-    _settingsPanel = 0;
-    _panelCreated = false;
-    if (NodePtr node = getNode()) {
-        node->noteSettingsPanelVisibility(false);
+    {
+        NodeCreationStageLog::Scope dopeStage("panelTailDopeSheet");
+        gui->addNodeGuiToDopeSheetEditor(thisShared);
     }
-    _panelDockPending = false;
-    _panelTailPending = false;
-    _panelTailStep = 0;
-    _panelTailReselect = false;
-    panel->cancelKnobBuild();
-    QObject::disconnect(panel, nullptr, this, nullptr);
-    if (_graph && _graph->getGui()) {
-        _graph->getGui()->removeVisibleDockablePanel(panel);
-    }
-    panel->setVisible(false);
-    // The undo that drops it may have been started from one of its widgets.
-    panel->deleteLater();
+    // The viewer interface reflows the viewer, which costs a heavy node's toolbar tens of milliseconds:
+    // an open panel is shown before it. The selection below must not install it either.
+    _panelViewerStepPending = (_settingsPanel != 0);
+    {
+        NodeCreationStageLog::Scope finishStage("panelTailFinish");
+        // Ensure panel for all children if multi-instance
+        MultiInstancePanelPtr panel = getMultiInstancePanel();
+        if (_mainInstancePanel && panel) {
+            panel->setRedrawOnSelectionChanged(false);
 
-    return true;
-}
+            /*
+             * If there are many children, each children may request for a redraw of the viewer which may
+             * very well freeze the UI.
+             * We just do one redraw when all children are created
+             */
+            NodesList children;
+            if (shownNode) {
+                shownNode->getChildrenMultiInstance(&children);
+            }
+            for (NodesList::iterator it = children.begin(); it != children.end(); ++it) {
+                NodeGuiIPtr gui_i = (*it)->getNodeGui();
+                assert(gui_i);
+                NodeGui* childGui = dynamic_cast<NodeGui*>(gui_i.get());
+                assert(childGui);
+                childGui->ensurePanelCreated();
+
+                panel->onChildCreated(*it);
+            }
+            panel->setRedrawOnSelectionChanged(true);
+        }
+
+        // A panel created open never goes through setClosed(false), which refreshes an opened panel.
+        AppInstancePtr shownApp = shownNode ? shownNode->getApp() : AppInstancePtr();
+        if (_settingsPanel && !_settingsPanel->isClosed() && shownApp && shownApp->getTimeLine()) {
+            shownNode->getEffectInstance()->refreshAfterTimeChange(false, shownApp->getTimeLine()->currentFrame());
+            shownNode->getEffectInstance()->onSettingsPanelOpened();
+        }
+
+        // The selection reached this node before its panel existed.
+        if (reselect && _settingsPanel && getIsSelected()) {
+            setUserSelected(true);
+        }
+    }
+    if (!_panelViewerStepPending) {
+        return;
+    }
+    if (_settingsPanel->isClosed()) {
+        runPanelViewerStep();
+
+        return;
+    }
+    NodeGuiWPtr weakThis = thisShared;
+    _settingsPanel->runAfterNextFrame([weakThis]() {
+        NodeGuiPtr self = weakThis.lock();
+        if (!self) {
+            return;
+        }
+        // Closed or minimized while it waited: reopening installs it.
+        if (!self->isSettingsPanelVisible()) {
+            self->_panelViewerStepPending = false;
+
+            return;
+        }
+        self->runPanelViewerStep();
+    });
+} // NodeGui::buildPanel
 
 void
 NodeGui::connectSettingsPanel()
@@ -868,109 +885,28 @@ NodeGui::connectSettingsPanel()
 }
 
 void
-NodeGui::schedulePanelTail()
+NodeGui::runPanelViewerStep()
 {
-    QTimer::singleShot(0, this, [this]() {
-        runPanelTail(false);
-    });
+    if (!_panelViewerStepPending) {
+        return;
+    }
+    _panelViewerStepPending = false;
+    if (!_settingsPanel || !_graph || !_graph->getGui()) {
+        return;
+    }
+    NodeCreationStageLog::Scope stage("panelTailViewerInterface");
+    _graph->getGui()->setNodeViewerInterface(shared_from_this());
 }
 
 void
-NodeGui::runPanelTail(bool all)
+NodeGui::showViewerInterfaceIfPanelShown()
 {
-    if (!_panelTailPending || _panelTailRunning) {
-        return;
+    // The viewer interface is built on first use, so a node whose panel opens for the first time has
+    // none yet to answer the signals below.
+    if (!_panelViewerStepPending && isSettingsPanelVisible() && _graph && _graph->getGui()) {
+        _graph->getGui()->setNodeViewerInterface(shared_from_this());
     }
-    dockPendingPanel();
-    if (_settingsPanel) {
-        _settingsPanel->ensureKnobGuisCreated();
-        // Asked for by a knob GUI of this panel while it is being built: the build's end runs the rest.
-        if (_settingsPanel->isKnobBuildPending()) {
-            return;
-        }
-    }
-    NodePtr node = getNode();
-    if (!_graph || (!all && (!node || !node->isActivated()))) {
-        // A node deleted before its panel was done is not put back in the editors; opening its panel does that.
-        _panelTailPending = false;
-
-        return;
-    }
-
-    _panelTailRunning = true;
-    NodeCreationStageLog::Scope stage("panelBuildTail");
-    QElapsedTimer timer;
-    timer.start();
-    const int stepCount = 4;
-    const qint64 passBudgetMs = 8;
-    Gui* gui = getDagGui()->getGui();
-    NodeGuiPtr thisShared = shared_from_this();
-    while (_panelTailStep < stepCount) {
-        if (!all && (timer.elapsed() >= passBudgetMs)) {
-            break;
-        }
-        switch (_panelTailStep++) {
-        case 0:
-            if (_settingsPanel) {
-                _graph->getGui()->setNodeViewerInterface(thisShared);
-            }
-            break;
-        case 1:
-            gui->addNodeGuiToCurveEditor(thisShared);
-            break;
-        case 2:
-            gui->addNodeGuiToDopeSheetEditor(thisShared);
-            break;
-        default: {
-            // Ensure panel for all children if multi-instance
-            MultiInstancePanelPtr panel = getMultiInstancePanel();
-            if (_mainInstancePanel && panel) {
-                panel->setRedrawOnSelectionChanged(false);
-
-                /*
-                 * If there are many children, each children may request for a redraw of the viewer which may
-                 * very well freeze the UI.
-                 * We just do one redraw when all children are created
-                 */
-                NodesList children;
-                if (node) {
-                    node->getChildrenMultiInstance(&children);
-                }
-                for (NodesList::iterator it = children.begin(); it != children.end(); ++it) {
-                    NodeGuiIPtr gui_i = (*it)->getNodeGui();
-                    assert(gui_i);
-                    NodeGui* childGui = dynamic_cast<NodeGui*>(gui_i.get());
-                    assert(childGui);
-                    childGui->ensurePanelCreated();
-
-                    panel->onChildCreated(*it);
-                }
-                panel->setRedrawOnSelectionChanged(true);
-            }
-
-            // A panel created open never goes through setClosed(false), which refreshes an opened panel.
-            AppInstancePtr shownApp = node ? node->getApp() : AppInstancePtr();
-            if (_settingsPanel && !_settingsPanel->isClosed() && shownApp && shownApp->getTimeLine()) {
-                node->getEffectInstance()->refreshAfterTimeChange(false, shownApp->getTimeLine()->currentFrame());
-                node->getEffectInstance()->onSettingsPanelOpened();
-            }
-
-            // The selection reached this node before its panel existed.
-            if (_panelTailReselect && _settingsPanel && getIsSelected()) {
-                setUserSelected(true);
-            }
-            break;
-        }
-        }
-    }
-    _panelTailRunning = false;
-    if (_panelTailStep < stepCount) {
-        schedulePanelTail();
-
-        return;
-    }
-    _panelTailPending = false;
-} // NodeGui::runPanelTail
+}
 
 void
 NodeGui::buildDeferredPanel()
@@ -982,8 +918,7 @@ NodeGui::buildDeferredPanel()
     if (!node || !node->isActivated()) {
         return;
     }
-    _panelTailReselect = true;
-    startPanelBuild(true);
+    buildPanel(true);
 }
 
 void
@@ -1011,6 +946,9 @@ NodeGui::onSettingsPanelClosed(bool closed)
     if (node) {
         node->refreshPanelInputRelatedData();
     }
+    if (!closed) {
+        showViewerInterfaceIfPanelShown();
+    }
     Q_EMIT settingsPanelClosed(closed);
 }
 
@@ -1029,13 +967,13 @@ NodeGui::onSettingsPanelMaximized()
     if (NodePtr node = getNode()) {
         node->noteSettingsPanelVisibility(isSettingsPanelVisible());
     }
+    showViewerInterfaceIfPanelShown();
     Q_EMIT settingsPanelMaximized();
 }
 
 NodeSettingsPanel*
 NodeGui::createPanel(QVBoxLayout* container,
-                     const NodeGuiPtr& thisAsShared,
-                     bool dock)
+                     const NodeGuiPtr& thisAsShared)
 {
     NodeSettingsPanel* panel = 0;
     NodePtr node = getNode();
@@ -1065,8 +1003,6 @@ NodeGui::createPanel(QVBoxLayout* container,
                  ( isCreatingPythonGroup && ( pluginID != PLUGINID_NATRON_GROUP) ) ||
                  !node->getParentMultiInstanceName().empty() ) {
                 panel->setClosed(true);
-            } else if (dock) {
-                _graph->getGui()->addVisibleDockablePanel(panel);
             }
         }
     }
@@ -1396,8 +1332,7 @@ NodeGui::removeSettingsPanel(NodeSettingsPanel* panel)
         return;
     }
     _settingsPanel = NULL;
-    _panelTailPending = false;
-    _panelDockPending = false;
+    _panelViewerStepPending = false;
 }
 
 void
@@ -2690,7 +2625,7 @@ NodeGui::setUserSelected(bool b)
     if (_settingsPanel) {
         _settingsPanel->setSelected(b);
         _settingsPanel->update();
-        if ( b && isSettingsPanelVisible() ) {
+        if (b && isSettingsPanelVisible() && !_panelViewerStepPending) {
             NodeGuiPtr thisShared = shared_from_this();
             _graph->getGui()->setNodeViewerInterface(thisShared);
         }
@@ -2926,9 +2861,8 @@ NodeGui::hideGui()
     // A node whose panel is still waiting to be built would have had it open: redo queues it again.
     const bool panelBuildQueued = _graph->cancelPanelBuild(shared_from_this());
     _panelOpenedBeforeDeactivate = isSettingsPanelVisible() || (panelBuildQueued && !_panelCreated);
-    // Finishing a panel still being built only to close it would stall the undo: it is dropped, and built
-    // again when the node is shown.
-    if (!dropUnbuiltPanel() && _panelOpenedBeforeDeactivate) {
+    // A panel still waiting to be built is not built only to be closed.
+    if (_panelCreated && _panelOpenedBeforeDeactivate) {
         setVisibleSettingsPanel(false);
     }
     ViewerInstance* isViewer = node ? node->isEffectViewer() : NULL;
@@ -3889,8 +3823,7 @@ NodeGui::destroyGui()
     }
     delete _settingsPanel;
     _settingsPanel = 0;
-    _panelTailPending = false;
-    _panelDockPending = false;
+    _panelViewerStepPending = false;
 } // NodeGui::destroyGui
 
 QSize

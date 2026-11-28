@@ -83,6 +83,9 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/KnobGuiFactory.h"
 #include "Gui/LensBrowser.h"
 #include "Gui/Menu.h"
+#include "Gui/NodeCreationTrace.h"
+#include "Gui/NodeGraph.h"
+#include "Gui/NodeGui.h"
 #include "Gui/PreviewThread.h"
 #include "Gui/QtEnumConvert.h"
 #include "Gui/SplashScreen.h"
@@ -1210,6 +1213,7 @@ GuiApplicationManager::initGui(const CLArgs& args)
     // Never stopped: render threads may still hold it at exit, and each line is flushed as written.
     RotoLatencyProbe::startFromEnvironment();
     NodeCreationStageLog::startFromEnvironment();
+    NodeCreationTrace::startFromEnvironment();
 
     Optics::LensKnobs::setBrowseHandler([](const KnobStringPtr& lens, const Optics::LensPreviewContext& context) { LensBrowser::open(lens, context); });
 
@@ -1866,11 +1870,18 @@ GuiApplicationManagerPrivate::createNodeFromNodesMenu(const QString& pluginID,
     if (!getNodesMenuCreationTarget(&app, &group)) {
         return;
     }
+    NodeCreationTrace::begin(app->getNodeCreationContextCollection() ? "the Tab menu" : "a nodes menu or the toolbar", pluginID);
     CreateNodeArgs args(pluginID.toStdString(), group);
     args.setProperty<int>(kCreateNodeArgsPropPluginVersion, major, 0);
     args.setProperty<int>(kCreateNodeArgsPropPluginVersion, minor, 1);
     makeNodesMenuCreateNodeArgs(args, group);
-    app->createNode(args);
+    NodePtr node = app->createNode(args);
+    // The panel is built before any event runs, so the node and its panel are shown in one frame.
+    NodeGuiPtr nodeGui = node ? std::dynamic_pointer_cast<NodeGui>(node->getNodeGui()) : NodeGuiPtr();
+    NodeGraph* graph = nodeGui ? nodeGui->getDagGui() : 0;
+    if (graph) {
+        graph->buildScheduledPanels();
+    }
 }
 
 void

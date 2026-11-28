@@ -1611,9 +1611,10 @@ protected:
     }
 
     // The render node of a graph reading the stage of meshes, with setCyclesSettings(settings);
-    // null after a gtest failure.
+    // null after a gtest failure. *reader gets the USDRead.
     NodePtr subdivisionGraph(const std::string& meshes,
-                             const std::map<std::string, PXR_NS::VtValue>& settings)
+                             const std::map<std::string, PXR_NS::VtValue>& settings,
+                             NodePtr* reader = nullptr)
     {
         setCyclesSettings(settings);
         const QString file = _dir.path() + QString::fromUtf8("/subdivision") + QString::number(_files++) + QString::fromUtf8(".usda");
@@ -1623,7 +1624,7 @@ protected:
             return NodePtr();
         }
 
-        return createGraph(nullptr, file.toStdString().c_str());
+        return createGraph(reader, file.toStdString().c_str());
     }
 
     static std::map<std::string, PXR_NS::VtValue> on(std::map<std::string, PXR_NS::VtValue> settings = std::map<std::string, PXR_NS::VtValue>())
@@ -1711,7 +1712,9 @@ TEST_F(USDRenderCyclesSubdivisionTest, DicingRateSetsTheFacetSize)
 
 // A dicing rate changed on a live engine dices its subdivided mesh again on that engine, with no
 // dirtying Hydra rejects under a scene index. Natron makes an engine again under changed settings,
-// so only a test changes them on a live one.
+// so only a test changes them on a live one. The renders go to HydraRender directly, under one
+// thread count: a node's render asks for as many threads as the pool has free, and a count other
+// than its engine's makes that Cycles engine again.
 TEST_F(USDRenderCyclesSubdivisionTest, ALiveDicingRateChangeRedicesOnTheSameEngine)
 {
     if (!cyclesOrSkip()) {
@@ -1721,22 +1724,26 @@ TEST_F(USDRenderCyclesSubdivisionTest, ALiveDicingRateChangeRedicesOnTheSameEngi
     fine["natron:dicingRate"] = PXR_NS::VtValue(0.5f);
     coarse["natron:dicingRate"] = PXR_NS::VtValue(8.f);
     HydraRender::releaseAllCpuEngines();
-    NodePtr node = subdivisionGraph(subdivisionCube("Cube", "catmullClark"), on(fine));
+    NodePtr reader;
+    NodePtr node = subdivisionGraph(subdivisionCube("Cube", "catmullClark"), on(fine), &reader);
     ASSERT_TRUE(node != nullptr);
-    const void* owner = dynamic_cast<USDRender*>(node->getEffectInstance().get());
-    std::vector<RenderedPlane> finePlanes, coarsePlanes;
-    std::string fineErrors, coarseErrors;
+    static const int owner = 0;
+    HydraRender::Request request;
+    ASSERT_TRUE(cyclesRequest(reader, &owner, &request));
+    HydraRender::Result fineRender, coarseRender;
+    std::string fineErrors, coarseErrors, error;
     {
         const CyclesTestUtils::CodingErrors errors;
-        ASSERT_TRUE(renderAll(node, &finePlanes, true));
+        ASSERT_TRUE(HydraRender::render(request, &fineRender, &error)) << error;
         fineErrors = errors.text();
     }
+    ASSERT_TRUE(fineRender.trace.converged);
     const std::uint64_t builds = HydraRender::getEngineBuildCount();
     setCyclesSettings(on(coarse));
-    ASSERT_TRUE(HydraRender::setEngineSetting(owner, "natron:dicingRate", coarse["natron:dicingRate"]));
+    ASSERT_TRUE(HydraRender::setEngineSetting(&owner, "natron:dicingRate", coarse["natron:dicingRate"]));
     {
         const CyclesTestUtils::CodingErrors errors;
-        ASSERT_TRUE(renderAll(node, &coarsePlanes, true, true));
+        ASSERT_TRUE(HydraRender::render(request, &coarseRender, &error)) << error;
         coarseErrors = errors.text();
     }
     const std::uint64_t rebuilds = HydraRender::getEngineBuildCount() - builds;
@@ -1744,12 +1751,18 @@ TEST_F(USDRenderCyclesSubdivisionTest, ALiveDicingRateChangeRedicesOnTheSameEngi
 
     EXPECT_FALSE(CyclesTestUtils::hasHydraDirtyingError(fineErrors)) << fineErrors;
     EXPECT_FALSE(CyclesTestUtils::hasHydraDirtyingError(coarseErrors)) << coarseErrors;
+    // A fresh engine is a settings or thread-count rebuild; a remake is a restart Cycles never showed.
+    EXPECT_FALSE(coarseRender.trace.freshEngine);
+    EXPECT_EQ(0, coarseRender.trace.remakes);
+    EXPECT_TRUE(coarseRender.trace.watched);
+    EXPECT_TRUE(coarseRender.trace.converged);
     EXPECT_EQ(0u, rebuilds);
-    const std::vector<float>& fineRgba = finePlanes[0].pixels;
-    const std::vector<float>& coarseRgba = coarsePlanes[0].pixels;
-    EXPECT_GT(differingPixels(fineRgba, coarseRgba), 0u);
+    const std::size_t pixels = (std::size_t)kSize * (std::size_t)kSize;
+    ASSERT_EQ(pixels * 4, fineRender.rgba.size());
+    ASSERT_EQ(pixels * 4, coarseRender.rgba.size());
+    EXPECT_GT(differingPixels(fineRender.rgba, coarseRender.rgba), 0u);
     // The coarse surface is a polygon inside the smooth one, so it covers less.
-    EXPECT_LT(coverage(coarseRgba), coverage(fineRgba));
+    EXPECT_LT(coverage(coarseRender.rgba), coverage(fineRender.rgba));
 }
 
 // A cycles:max_level primvar of 1 coarsens its own mesh only, and cycles:dicing_rate scales the

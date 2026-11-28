@@ -100,25 +100,25 @@ A second paint model for `USDTexturePaint`: each dab of a stroke is splatted str
 
 ## Phase 315.3: Node integration
 
-- [ ] M315.P3.T1 — Paint Model knob and the per-session `paintModel` knob
+- [x] M315.P3.T1 — Paint Model knob and the per-session `paintModel` knob
   - files: `Engine/Nodes/Scene/USDTexturePaint.h`/`.cpp`, `Engine/Nodes/Scene/USDTexturePaintInteract.cpp`, `Engine/Nodes/Scene/docs/USDTexturePaint.md`, `Tests/Scene/USDTexturePaint_Test.cpp`
   - approach: node knob `paintModel` ("Paint Model", Buffer | Direct, default Buffer, not animatable). Session host knob `paintModel` is added in `onCurveLayerCreated` beside `cameraToWorld` and the others (`USDTexturePaint.h:80-87`), set from the node knob when `addSession` runs and saved with the session. A knob change closes the open session. In Direct, `closeSession` queues no session bake. The doc describes both models and never names other applications.
   - verify: tests check that a session created under Direct saves and loads with `paintModel` Direct, that changing the knob closes the session, and that closing a Direct session queues no bake (`isSessionBakePending` false).
   - size: M
 
-- [ ] M315.P3.T2 — Compose, cache and Bake Output direct sessions alongside buffer sessions
+- [x] M315.P3.T2 — Compose, cache and Bake Output direct sessions alongside buffer sessions
   - files: `Engine/Nodes/Scene/USDTexturePaint.cpp` (`buildTiles` at ~3053, `getTileCacheKey`), `Engine/Nodes/Scene/USDTexturePaintCache.h`/`.cpp` (`PaintSession`, `composeTile`), `Tests/Scene/USDTexturePaint_Test.cpp`
   - approach: `PaintSession` gains a direct variant that replays the session's strokes through `TexelSplat` into TexelPages over the composed result below. It is laid by its touched mask in session order, so mixed sessions keep their order. The tile key hashes each session's paint model. Bake Output, freezing, Static/Animated, Paint Only and undo go through the existing paths unchanged. Only the per-session composition step differs.
   - verify: tests cover a buffer session followed by a direct session on one quad and the reverse, with order respected. Bake Output freezes a direct session, and its undo makes it live again with the same tile. Save, close and load rebuild tiles identical to those before. On a front-facing orthographic quad, a direct Solid stroke matches the buffer stroke within one texel of edge.
   - size: L
 
-- [ ] M315.P3.T3 — Live incremental direct painting and a page undo journal
+- [x] M315.P3.T3 — Live incremental direct painting and a page undo journal
   - files: `Engine/Nodes/Scene/USDTexturePaint.cpp`, `Engine/Nodes/Scene/USDTexturePaintBaker.h`/`.cpp`, `Engine/Nodes/Scene/USDTexturePaintInteract.cpp`, `Tests/Scene/USDTexturePaint_Test.cpp`
   - approach: in Direct, the interact hands new dabs of the open stroke to the baker, latest-wins, without blocking the main thread. They splat into the node's live TexelPages, and `render()` serves those pages for the current key without recomposing. The texture version (bakeGeneration) bumps at most every 100 ms and at pen-up. Each stroke snapshots the pages it first touches into a bounded journal, so undo and redo of recent strokes swap pages. Older ones replay from the strokes. Abort and teardown follow the baker's existing cancel and shutdown rules.
   - verify: tests show that pen-down, motion and pen-up in Direct change the output tile with no session bake, that undo restores it bit-exactly from the journal and also with the journal cleared (replay), and that redo matches. Deleting the node mid-stroke does not crash.
   - size: L
 
-- [ ] M315.P3.T4 — Serve every UDIM tile: `udim.tile` and `natron/udimTiles`
+- [x] M315.P3.T4 — Serve every UDIM tile: `udim.tile` and `natron/udimTiles`
   - files: `Engine/Nodes/Scene/USDTexturePaint.cpp` (`render` at ~3219, `getPreferredMetadataAt`/`deriveOutputMetadata`), `Tests/Scene/USDTexturePaint_Test.cpp`
   - approach: `render()` takes the tile from `RenderContextName::udimTile()` (`Engine/RenderContext.h:71-74`) when set, else Output Tile (`USDTexturePaint.cpp:607-616`). Metadata declares `kNatronMetadataKeyUdimTiles` as the tiles the matched meshes cover (`SceneRaster::udimTiles`), so `USDLayerMaterial` stops reading the node as one texture (`USDLayerMaterial.cpp:698-708`). This applies to both models.
   - verify: tests show that the seam cube's node declares 1001 and 1002, that a render under a `udim.tile`=1002 context returns tile 1002's paint, and that USDLayerMaterial raises no UDIM warning.
@@ -155,3 +155,4 @@ A second paint model for `USDTexturePaint`: each dab of a stroke is splatted str
 - 2026-11-28 — **User:** Footprint is a knob (Surface default, View); all nine brushes in Direct; M315 serves every UDIM tile (P3.T4); the 2-texel seam gutter applies to both paint models.
 - 2026-11-28 — Phase 1 in eb0d3d5c87 (m315-gate1 running). Embree 4.2.0 has rtcPointQuery/rtcOccluded16. Occluders: TextureProjection's depth buffer has no prim filter, so every drawn mesh occludes (not only matched meshes); PaintMeshIndex mirrors it — matched meshes are paint targets, all other drawn meshes only block. walk() also takes buildUp and opacity. PM: an occluder mesh that fails to triangulate is skipped with a warning rather than failing the index (fold into Phase 2).
 - 2026-11-28 — Phase 2 in 7b6b10988b (gate1 cancelled, m315-gate2 covers Phases 1–2). Choices: Sharpen is an unsharp mask (RotoPaint has no Sharpen formula) with Blur's sigma; Reveal samples the base at the texel; dab edge hard at the outer radius; a stroke's working pages stay in RAM until written (committed pages spill). Test thresholds (smear gain, blur symmetry, gutter indices) are hand-derived and may need tuning.
+- 2026-11-28 — Phase 3 in 39c9140515 (unbuilt). Follow-ups in flight with Phase 4: incremental live updates (only new dabs), baker as the only writer of working pages, no bake indication during Direct painting. Accepted limits: clone/reveal time offsets ignored in Direct; freezing a Direct session changes its cache key (rebuild from strokes).

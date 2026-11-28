@@ -710,6 +710,7 @@ future core work has solid ground to build on.
 | M649 | On-Graph Merge Resolution | doing | M104, M647 | bosley-executor | E12 | F33 | | [M649-on-graph-merge-resolution.md](PLAN/MILESTONES/M649-on-graph-merge-resolution.md) |
 | M650 | Delegate Preview Surface Refraction | todo | - | | E9 | | | [M650-delegate-preview-surface-refraction.md](PLAN/MILESTONES/M650-delegate-preview-surface-refraction.md) |
 | M651 | MoonRay Live Volume Refresh | todo | M648 | | E9 | F1 | | [M651-moonray-live-volume-refresh.md](PLAN/MILESTONES/M651-moonray-live-volume-refresh.md) |
+| M652 | Cycles Shutter Dirtying Without Emulation | todo | M648 | | E9 | F1 | | [M652-cycles-shutter-dirtying-without-emulation.md](PLAN/MILESTONES/M652-cycles-shutter-dirtying-without-emulation.md) |
 
 # Epics
 

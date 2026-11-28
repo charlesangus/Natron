@@ -170,31 +170,31 @@ Code facts (scout of 2026-11-27, on the F33 branch tip 488b376fef):
 
 ## Phase 649.2: Graph UI
 
-- [ ] M649.P2.T1 — Selectable ghost items
+- [x] M649.P2.T1 — Selectable ghost items
   - files: `Gui/NodeGraphDiffOverlay.h`, `Gui/NodeGraphDiffOverlay.cpp`, `Gui/NodeGraph.h`, `Gui/NodeGraph10.cpp`, `Gui/NodeGraphPrivate.cpp`
   - approach: replace the single `NodeDiffGhostItem` with one item per ghost plus one wire item. NodeGraph keeps a separate ghost selection set: click, shift/ctrl-click and the rubber band (extend the `_nodes` loop with ghost rects) select ghosts alongside nodes, and clicking empty canvas clears both. Selected ghosts get the normal selection outline. Delete, copy and drag ignore ghosts. Expose the ghost selection for P2.T2 and P2.T6.
   - verify: compiled at P2.T7. Exercised by P3.T1; `m104_diff_overlay.py` still passes (one ghost for the deleted Blur2).
   - size: M
 
-- [ ] M649.P2.T2 — Undoable picks and the context menu
+- [x] M649.P2.T2 — Undoable picks and the context menu
   - files: `Gui/NodeGraph35.cpp` (context menu), `Gui/NodeGraphDiffOverlay.cpp`, new `Gui/MergePicks.h`, new `Gui/MergePicks.cpp`, `Gui/CMakeLists.txt`
   - approach: `MergePicks` wraps each P1.T4/P1.T5 builder: apply through `ApplyGraphOpsCommand::applyAndPush` as one undo step named after the pick, append any pending splice choices to the conflict list, then recompute the comparison against the same other snapshot so the overlay refreshes. The context menu offers, for the selection: Restore, Restore (Keep My Wiring), Restore (Splice Everywhere) on ghosts; Revert to Other on amber nodes; Remove on green nodes; Restore Position on moved nodes. Give each QAction an objectName.
   - verify: compiled at P2.T7. Exercised by P3.T1, including undo restoring the comparison.
   - size: M
 
-- [ ] M649.P2.T3 — Merge popover from badges and change markers
+- [x] M649.P2.T3 — Merge popover from badges and change markers
   - files: new `Gui/MergePopover.h`, new `Gui/MergePopover.cpp`, `Gui/NodeGui.h`, `Gui/NodeGui.cpp`, `Gui/NodeGraph10.cpp`, `Gui/MergeConflictResolve.cpp`, `Gui/CMakeLists.txt`
   - approach: a frameless, non-modal popover anchored to a node. Conflict section: each conflict with a button per `availableChoices` entry, plus All Mine / All Theirs for the node, resolving through `MergeConflictResolve`'s undoable path. Changes section (comparison mode): each changed knob with Take, plus Revert Node, through `MergePicks`. Open it from a click on the conflict badge or on a change marker drawn on amber nodes, hit-tested in `NodeGraph::mousePressEvent` as `refreshToolTipAt` does. It refreshes after each choice, closes on Escape, outside click, or when it empties. The badge tooltip says "Click to resolve".
   - verify: compiled at P2.T7. Exercised by P3.T2.
   - size: M
 
-- [ ] M649.P2.T4 — Structural previews on the graph
+- [x] M649.P2.T4 — Structural previews on the graph
   - files: new `Gui/MergeConflictPreview.h`, new `Gui/MergeConflictPreview.cpp`, `Gui/MergePopover.cpp`, `Gui/NodeGraph.cpp`, `Gui/CMakeLists.txt`
   - approach: hovering a choice of an eInput, eStructuralInsert, eReparent, eDeleteModify or eSpliceChoice conflict in the popover or panel draws that side: dashed wires from its `connections` in the side's colour, the base node of a delete-modify as a ghost (P2.T1's item), the side's inserted nodes highlighted and the other side's dimmed. While a structural conflict's popover is open its sides stay drawn faintly, and clicking a side's preview ghost or wire end picks that side. Clears when the popover closes.
   - verify: compiled at P2.T7. Exercised by P3.T2's preview checks.
   - size: L
 
-- [ ] M649.P2.T5 — Merge toolbar, navigation and panel default
+- [x] M649.P2.T5 — Merge toolbar, navigation and panel default
   - files: new `Gui/NodeGraphMergeBar.h`, new `Gui/NodeGraphMergeBar.cpp`, `Gui/NodeGraph.cpp`, `Gui/NodeGraph35.cpp`, `Gui/Gui60.cpp`, `Gui/NodeGui.cpp`, `Gui/MergeConflictPanel.cpp`, `Gui/CMakeLists.txt`
   - approach: a bar along the bottom of the node graph, fitting 1920x1080.
     - Comparison mode: what is compared, added/changed/removed/moved counts, Previous/Next Change, Restore Selected, Revert Selected, Clear Comparison.
@@ -205,7 +205,7 @@ Code facts (scout of 2026-11-27, on the F33 branch tip 488b376fef):
   - verify: compiled at P2.T7. Exercised by P3.T1 and P3.T2; `m104_merge_conflicts.py` is updated in P3.T2 for the panel default.
   - size: M
 
-- [ ] M649.P2.T6 — Python bindings for picks and conflicts
+- [x] M649.P2.T6 — Python bindings for picks and conflicts
   - files: `Gui/PyGuiApp.h`, `Gui/PyGuiApp.cpp`, the Gui typesystem XML, `Engine/PyAppInstance.h`, `Engine/PyAppInstance.cpp` (conflict listing)
   - approach: on the GUI app: `restoreFromComparison(effects, splice="ask"|"keepMine"|"everywhere")`, `revertFromComparison(effects)`, `takeKnobFromComparison(effect, knobName)`, `removeAddedFromComparison(effects)`, `restorePositionFromComparison(effects)`, `selectComparisonGhosts(nodeNames)`, `getComparisonGhosts()`, `openMergePopover(effect)`, `isMergePopoverOpen()`, `mergeBarMode()`. On the app: `getMergeConflicts()` returning each conflict's node, kind, label and available choices, and `resolveMergeConflict(index, choice)`. Each pick is one undo step through `MergePicks`. Shiboken returns that can fail early-return in inject-code (no null returns from ownership bindings).
   - verify: compiled at P2.T7. Exercised by P3.T1 and P3.T2.
@@ -269,3 +269,4 @@ Code facts (scout of 2026-11-27, on the F33 branch tip 488b376fef):
 - 2026-11-27 — Pending splice choices are a conflict kind, so badge, panel, popover and save handle them with no new path (planner). Conflicts reloaded from a file keep structural previews, so P1.T7 makes sure side state persists (planner).
 - 2026-11-28 — Phase 1 in f00d619581; m649-gate1 (P1.T8) running. Audit table in the commit's report: a choice is hidden only when impossible or equal to an earlier one; same-frame Keep Both is gone; Base stays on a same-frame key conflict when it means "remove the key" (a distinct outcome — PM reading of P1.T2's verify). PendingSplice carries sourceId. Open: nodes restored from a template version get no template origin/key back — fold into Phase 2 once M646 lands.
 - 2026-11-28 — P1.T8: m649-gate1 (full ctest + merge GUI) green except the YAML round trip; fixed b482067c6a (plug-in knob defaults and choice entries persisted); m649-gate2 (ConflictResolution, MergeConflictYaml, ProjectMerge*, NodeMatcher*) green. Phase 2 in progress.
+- 2026-11-28 — Phase 2 in 153589397e (m649-gate3 = P2.T7 running). restoreFromComparison takes ghost script names or node IDs (default: selected ghosts), splice "" = ask; getMergeConflicts dicts carry index, nodeId, choiceLabels. Conflict knob equality is state-only.

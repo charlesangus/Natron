@@ -5,6 +5,8 @@ A second paint model for `USDTexturePaint`: each dab of a stroke is splatted str
 ## Scope
 
 **In:**
+- `footprint` knob ("Footprint", Surface | View, default Surface) for Direct: Surface paints within a 3D radius of the hit; View paints exactly what the screen disc covers, as Buffer mode does (user, 2026-11-28).
+- A 2-texel seam gutter in both paint models (user, 2026-11-28).
 - `paintModel` node knob ("Paint Model", Buffer | Direct, default Buffer) and a saved `paintModel` session knob that each session takes from it.
 - A cairo-free stroke dab walker shared by RotoPaint's renderer and direct mode, so both place dabs identically.
 - `PaintMeshIndex`: an Embree index over the matched meshes (raycast, sphere query, batched visibility), mesh-source agnostic so M427's `GeoDetail` adapter can feed it.
@@ -18,7 +20,6 @@ A second paint model for `USDTexturePaint`: each dab of a stroke is splatted str
 - A GPU splat path: none. The paint path is CPU end to end (SceneRaster, TextureProjection, cairo strokes), so a GPU port is its own E14 stub covering both models.
 - Paint-through inputs: M314 - Paint-Through Inputs.
 - Deforming geometry: none (geometry is static, as in M53).
-- A screen-projected (view) footprint option: none unless the user asks (see Decisions).
 
 **Edge cases:**
 - Dab centre ray misses every matched mesh: the dab paints nothing. The stroke is still stored and replays the same way.
@@ -91,6 +92,12 @@ A second paint model for `USDTexturePaint`: each dab of a stroke is splatted str
   - verify: a test blurs a hard edge painted across the seam cube's seam, and the edge profile is symmetric on both islands (tol 2e-2). Sharpen increases the edge contrast.
   - size: L
 
+- [ ] M315.P2.T6 — View footprint and the Buffer-mode seam gutter
+  - files: `Engine/Nodes/Scene/TexelSplat.cpp`, `Engine/Nodes/Scene/USDTexturePaintCache.cpp` (~344), `Engine/Nodes/Scene/USDTexturePaint.{h,cpp}` (`footprint` knob), `Tests/Scene/TexelSplat_Test.cpp`, `Tests/Scene/USDTexturePaint_Test.cpp`
+  - approach: Footprint = View: a texel is in the dab when its world position projects inside the dab disc in the session view (falloff by screen distance, as renderDot), still back-face and occlusion tested. The `footprint` knob is saved per session like `paintModel`. Buffer mode's projection gains the same 2-texel gutter Direct uses (extrapolate into uncovered texels within 2 of a touched island edge).
+  - verify: on an orthographic front-facing quad, View and Surface footprints agree within a texel; at a grazing quad View stretches and Surface doesn't. A Buffer stroke touching an island edge fills the 2-texel gutter and nothing beyond it.
+  - size: M
+
 ## Phase 315.3: Node integration
 
 - [ ] M315.P3.T1 — Paint Model knob and the per-session `paintModel` knob
@@ -145,3 +152,4 @@ A second paint model for `USDTexturePaint`: each dab of a stroke is splatted str
 - 2026-11-28 (planner) — CPU only: the paint path (SceneRaster, TextureProjection, cairo strokes) has no GPU stage, so a GPU splat is a separate stub covering both models.
 - 2026-11-28 (planner) — USDTexturePaint only: M427 has not landed and no shared base exists, so the engine (`PaintMeshIndex`, `TexelPages`, `TexelSplat`) takes `TriangulatedMesh` data only, for M427 to adapt.
 - 2026-11-28 (planner) — Paint model is recorded per session and the node knob applies to new sessions, so mixed projects replay unchanged after the knob moves.
+- 2026-11-28 — **User:** Footprint is a knob (Surface default, View); all nine brushes in Direct; M315 serves every UDIM tile (P3.T4); the 2-texel seam gutter applies to both paint models.

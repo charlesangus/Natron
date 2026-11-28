@@ -161,16 +161,16 @@ Raster replaces only raygen and intersect; each pass still runs the shared wavef
 
 After P4 the per-pass cost is 5.6 ms (Raster) and 10.8 ms (Ray), but every frame pays ~0.5 s fixed: ~150 ms resolving depth/primId/instanceId on the CPU (UtilityDeviceAovs::resolve, readback of the 41 MB pick buffer) that the caller often never reads, and ~310 ms outside the profiled renderer (host clears, 10 ms Render() poll, colour download, single-threaded cpuFrame/decodeIds over every plane, cpuWindow copy, per-frame texture rebuild). Diagnosis 2026-11-28 (consultant) in the progress notes.
 
-- [ ] M514.P5.T1 — Instrument the outside: clear, shutter snapshot, Render() count/time, map download, cpuFrame, cpuWindow, Write encode; the bench gains a viewer-equivalent output (colour only, no EXR encode)
+- [x] M514.P5.T1 — Instrument the outside: clear, shutter snapshot, Render() count/time, map download, cpuFrame, cpuWindow, Write encode; the bench gains a viewer-equivalent output (colour only, no EXR encode)
   - files: `Engine/Nodes/Scene/Utility/UtilityProfile.{h,cpp}`, `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `tools/bench/utility_raster_bench.{py,sh}`
   - size: M
-- [ ] M514.P5.T2 — Resolve depth and ids lazily or on the GPU; read back only planes that are mapped
+- [x] M514.P5.T2 — Resolve depth and ids lazily or on the GPU; read back only planes that are mapped
   - files: `UtilityRenderBuffer.cpp` (~883-960, ~1290-1320), `UtilityRenderPass.cpp` (~254-275), `Kernels/FilmPick.slang`
   - size: L
-- [ ] M514.P5.T3 — HydraRender converts only the requested plane, in parallel, memcpy for float32, decodeIds only when ids are asked for
+- [x] M514.P5.T3 — HydraRender converts only the requested plane, in parallel, memcpy for float32, decodeIds only when ids are asked for
   - files: `HydraRenderImpl.cpp` (~2260-2470)
   - size: M
-- [ ] M514.P5.T4 — No host clears or publish copies for device-resident buffers
+- [x] M514.P5.T4 — No host clears or publish copies for device-resident buffers
   - files: `UtilityRenderBuffer.cpp` (~1064-1135)
   - size: M
 - [ ] M514.P5.T5 — Wait on frame completion instead of the 10 ms Render() poll, keeping fast cancel
@@ -233,3 +233,4 @@ After P4 the per-pass cost is 5.6 ms (Raster) and 10.8 ms (Ray), but every frame
 - 2026-11-27 (PM) — P4.T3 (ce549ce3cd) batches sized to free memory and a learned ~50 ms submission budget, one raster context per batch, stop-aware waits; Raster still has one CPU wait per pass. P4.T4+T5 (9aade23855): raster-only tracer update (no BVH) when nothing traces, shutter-snapshot reuse, and sampling-only setting changes (seed, samples, filter, mode, depths) keep the Utility engine instead of a resync. Finding: Project3D always sets holes and the default reflection depth is 1, so T4 rarely triggers for projections — the T6 fast path must handle holes and decide by what materials need. T2-T5 checked off pending the gate.
 - 2026-11-28 (PM) — m514-gate9 (run 46107115855, 014faa42f7): build, the three fast-path gtests and GUI m514_raster_knobs / m288_projection_modes / natron_utility_viewer pass; only USDRenderMoonRayTest failed, passing on ctest rerun (M639 flake). Before/after bench (gate8 vs gate9 AppImages) staged as one vast job, queued after M299's VM.
 - 2026-11-28 — Before/after bench (vast RTX 3060, run cloud-gpu-20261128T053047Z; before 38129aefad, after 014faa42f7, 1080p): Ray 0.42 s + 109 ms/pass → 0.52 s + 10.8 ms/pass; Raster 0.38 s + 105 ms/pass → 0.52 s + 5.6 ms/pass. 64 passes: Ray 7.18 → 1.17 s, Raster 6.71 → 0.85 s. Targets: Raster per pass single-digit ms — met; Ray per pass ≤ 1/3 of 97 ms — met; Raster ≥5× Ray at 32 passes — not met (1.9× per pass, ~1.2× per frame): the fixed ~0.5 s per frame (write_tile 123 ms, ~300 ms outside the profiled renderer) dominates both. Consultant analysing the fixed cost.
+- 2026-11-28 — P5.T1–T4 in 3ce490ce24; m514-gate10 green. Bench deferred until P5.T8–T12 (GPU viewer path) land, one sitting.

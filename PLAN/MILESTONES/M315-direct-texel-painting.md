@@ -62,37 +62,37 @@ A second paint model for `USDTexturePaint`: each dab of a stroke is splatted str
 
 ## Phase 315.2: Texel splat engine
 
-- [ ] M315.P2.T1 — `TexelPages`: sparse paged UDIM working tiles with a touched mask
+- [x] M315.P2.T1 — `TexelPages`: sparse paged UDIM working tiles with a touched mask
   - files: new `Engine/Nodes/Scene/TexelPages.h`/`.cpp`, new `Tests/Scene/TexelPages_Test.cpp`
   - approach: 64x64 half-float RGBA pages plus a per-texel touched alpha, keyed by (tile, plane, page). Pages are allocated only when touched. A page's base is filled lazily from the base file by region (`OiioReadSupport`), else from `USDTexturePaintCache::meshBaseColor` on covered texels, else zero (Paint Only). Pages export into a full tile for `composeTile` and support snapshot and restore for the undo journal. Past a memory budget derived from physical RAM, the least recently touched clean pages are dropped and reloaded later. That is spill, not a cap, and no user size is trimmed.
   - verify: tests check that untouched pages are never allocated, that a base-file region round-trips, that snapshot then write then restore gives the original, and that dropping under a tiny budget reloads the same texels.
   - size: M
 
-- [ ] M315.P2.T2 — `TexelSplat`: rasterise a dab's footprint over the triangles under it (Solid, Eraser)
+- [x] M315.P2.T2 — `TexelSplat`: rasterise a dab's footprint over the triangles under it (Solid, Eraser)
   - files: new `Engine/Nodes/Scene/TexelSplat.h`/`.cpp`, new `Tests/Scene/TexelSplat_Test.cpp`, new fixture `Tests/fixtures/texture-paint-seam-cube.usda` (cube, two UV islands, one face in tile 1002)
   - approach: for each P1.T1 dab, raycast its centre through the session camera. The world radius is the dab radius in paint-space units converted at the hit depth (`viewHeight`, `kPaintSpaceSize`). `trianglesInSphere` gives the triangles, and each is clipped per UDIM tile to the UV bounding box of the footprint's intersection with its plane, then rasterised at Tile Resolution. Per texel: world position by barycentrics, falloff from the 3D distance to the hit through the dab's opacity stops and pressure (the same profile as `renderDot`), dropped if back-facing or not `visible`. Solid and Eraser write the stroke's channels and touched alpha with the same build-up rule as cairo. Gutter: texels within 2 of a touched island edge that no triangle covers take the extrapolated value. Texel lists are built in parallel over triangles and applied per page in dab order, so the result is deterministic at any thread count.
   - verify: tests on the seam cube. A dab on the shared edge paints both islands, and the texel values agree at equal 3D distances (tol 1e-3) across the seam and across tiles 1001/1002. No texel between the islands is touched. A back face is untouched. Output is bit-identical with 1 and N threads.
   - size: L
 
-- [ ] M315.P2.T3 — Texture-reading brushes in TexelSplat: Dodge, Burn, Reveal
+- [x] M315.P2.T3 — Texture-reading brushes in TexelSplat: Dodge, Burn, Reveal
   - files: `Engine/Nodes/Scene/TexelSplat.cpp`, `Tests/Scene/TexelSplat_Test.cpp`
   - approach: per texel, read the value under it from TexelPages (Dodge and Burn, with RotoPaint's formulas from the shared stroke code), or the base the buffer model reveals (`getPaintTreeRevealSource`'s source, sampled at the texel), weighted by the P2.T2 falloff.
   - verify: tests on a constant-grey quad check Dodge brightens and Burn darkens by the RotoPaint formula at the dab centre, and Reveal over painted red returns the base.
   - size: M
 
-- [ ] M315.P2.T4 — Offset-sampling brushes in TexelSplat: Clone and Smear
+- [x] M315.P2.T4 — Offset-sampling brushes in TexelSplat: Clone and Smear
   - files: `Engine/Nodes/Scene/TexelSplat.cpp`, `Tests/Scene/TexelSplat_Test.cpp`
   - approach: project each texel's world position into the session view, add the clone offset (or, for Smear, the delta from the previous dab), raycast back to a surface point, and sample TexelPages bilinearly at its st. On a miss the texel is unchanged. This works across seams because the lookup goes through the surface.
   - verify: a test clones a painted square to an offset on the quad and recovers it at that offset (tol 1e-2). A Smear drag moves colour along the stroke. A source off the mesh leaves the texels unchanged.
   - size: L
 
-- [ ] M315.P2.T5 — Neighbourhood brushes in TexelSplat: Blur and Sharpen
+- [x] M315.P2.T5 — Neighbourhood brushes in TexelSplat: Blur and Sharpen
   - files: `Engine/Nodes/Scene/TexelSplat.cpp`, `Tests/Scene/TexelSplat_Test.cpp`
   - approach: a world-space kernel. For each texel, take samples on a disc in its tangent plane with a radius tied to the brush, mapped back to st within the triangle through its UV Jacobian. Samples falling outside the triangle are resolved by a short raycast onto the surface, so the kernel crosses seams. Sharpen is unsharp mask against that blur, with RotoPaint's amounts.
   - verify: a test blurs a hard edge painted across the seam cube's seam, and the edge profile is symmetric on both islands (tol 2e-2). Sharpen increases the edge contrast.
   - size: L
 
-- [ ] M315.P2.T6 — View footprint and the Buffer-mode seam gutter
+- [x] M315.P2.T6 — View footprint and the Buffer-mode seam gutter
   - files: `Engine/Nodes/Scene/TexelSplat.cpp`, `Engine/Nodes/Scene/USDTexturePaintCache.cpp` (~344), `Engine/Nodes/Scene/USDTexturePaint.{h,cpp}` (`footprint` knob), `Tests/Scene/TexelSplat_Test.cpp`, `Tests/Scene/USDTexturePaint_Test.cpp`
   - approach: Footprint = View: a texel is in the dab when its world position projects inside the dab disc in the session view (falloff by screen distance, as renderDot), still back-face and occlusion tested. The `footprint` knob is saved per session like `paintModel`. Buffer mode's projection gains the same 2-texel gutter Direct uses (extrapolate into uncovered texels within 2 of a touched island edge).
   - verify: on an orthographic front-facing quad, View and Surface footprints agree within a texel; at a grazing quad View stretches and Surface doesn't. A Buffer stroke touching an island edge fills the 2-texel gutter and nothing beyond it.
@@ -154,3 +154,4 @@ A second paint model for `USDTexturePaint`: each dab of a stroke is splatted str
 - 2026-11-28 (planner) — Paint model is recorded per session and the node knob applies to new sessions, so mixed projects replay unchanged after the knob moves.
 - 2026-11-28 — **User:** Footprint is a knob (Surface default, View); all nine brushes in Direct; M315 serves every UDIM tile (P3.T4); the 2-texel seam gutter applies to both paint models.
 - 2026-11-28 — Phase 1 in eb0d3d5c87 (m315-gate1 running). Embree 4.2.0 has rtcPointQuery/rtcOccluded16. Occluders: TextureProjection's depth buffer has no prim filter, so every drawn mesh occludes (not only matched meshes); PaintMeshIndex mirrors it — matched meshes are paint targets, all other drawn meshes only block. walk() also takes buildUp and opacity. PM: an occluder mesh that fails to triangulate is skipped with a warning rather than failing the index (fold into Phase 2).
+- 2026-11-28 — Phase 2 in 7b6b10988b (gate1 cancelled, m315-gate2 covers Phases 1–2). Choices: Sharpen is an unsharp mask (RotoPaint has no Sharpen formula) with Blur's sigma; Reveal samples the base at the texel; dab edge hard at the outer radius; a stroke's working pages stay in RAM until written (committed pages spill). Test thresholds (smear gain, blur symmetry, gutter indices) are hand-derived and may need tuning.

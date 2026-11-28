@@ -32,8 +32,9 @@
 #include <vector>
 #include <map>
 
-#include <QPointF>
 #include <QCoreApplication>
+#include <QPointF>
+#include <QPointer>
 #include <QUndoCommand>
 
 #include "Global/GlobalDefines.h"
@@ -43,6 +44,8 @@
 #include "Gui/GuiFwd.h"
 #include "Gui/UndoGesture.h"
 
+#include "Engine/ProjectMerge.h"
+#include "Serialization/Ops/GraphOp.h"
 #include "Serialization/SerializationFwd.h"
 
 NATRON_NAMESPACE_ENTER
@@ -508,6 +511,8 @@ private:
     };
     typedef std::multimap<NodeWPtr, OutputLink, std::owner_less<NodeWPtr>> OutputLinksMap;
     OutputLinksMap _outputLinks;
+    // (original, copy): the copies hold the originals' IDs and origins while the command is done.
+    std::list<std::pair<NodeWPtr, NodeWPtr>> _identityPairs;
     NodeGuiWPtr _group;
     bool _firstRedoCalled;
     bool _isRedone;
@@ -547,6 +552,8 @@ private:
 
     NodeGraph* _graph;
     std::list<InlinedGroup> _groupNodes;
+    // (original, copy): the copies hold the originals' IDs and origins while the command is done.
+    std::list<std::pair<NodeWPtr, NodeWPtr>> _identityPairs;
     bool _firstRedoCalled;
 };
 
@@ -576,6 +583,88 @@ private:
     bool _locking;
     std::string _oldLock, _newLock;
     int _oldActiveA, _oldActiveB;
+};
+
+/**
+ * @brief A batch of graph operations applied to the open project as one undo step. Redo applies
+ * the forward operations and undo the inverse ones, both through applyGraphOps(); the nodes' GUIs
+ * come and go with the nodes the operations create and remove.
+ **/
+class ApplyGraphOpsCommand
+    : public QUndoCommand {
+    Q_DECLARE_TR_FUNCTIONS(ApplyGraphOpsCommand)
+
+public:
+    /**
+     * @brief forward turns the project as it is when the command is first redone into the one
+     * inverse turns back.
+     **/
+    ApplyGraphOpsCommand(NodeGraph* graph,
+                         const ProjectPtr& project,
+                         const std::vector<Serialization::GraphOp>& forward,
+                         const std::vector<Serialization::GraphOp>& inverse,
+                         const QString& text,
+                         QUndoCommand* parent = 0);
+
+    virtual ~ApplyGraphOpsCommand();
+
+    virtual void undo();
+    virtual void redo();
+
+    /**
+     * @brief Applies ops to the project now, all or nothing, and records the change on the node
+     * graph's undo stack without applying it again. Returns one result per operation, as
+     * applyGraphOps() does. Nothing is recorded when the operations change nothing or one fails.
+     **/
+    static std::vector<Serialization::OpResult> applyAndPush(NodeGraph* graph,
+                                                             const ProjectPtr& project,
+                                                             const std::vector<Serialization::GraphOp>& ops,
+                                                             const QString& text);
+
+    /**
+     * @brief applyAndPush() as the applier ProjectMerge::updateFromTemplate() takes.
+     **/
+    static ProjectMerge::OpApplier makeApplier(NodeGraph* graph,
+                                               const ProjectPtr& project,
+                                               const QString& text);
+
+    /**
+     * @brief applyAndPush(), recording the change as a child of parent instead of pushing it.
+     **/
+    static std::vector<Serialization::OpResult> applyAndRecord(NodeGraph* graph,
+                                                               const ProjectPtr& project,
+                                                               const std::vector<Serialization::GraphOp>& ops,
+                                                               const QString& text,
+                                                               QUndoCommand* parent);
+
+    /**
+     * @brief Records the change from before to after, project snapshots taken around an edit already
+     * made, as a child of parent. Returns false, recording nothing, when they do not differ.
+     **/
+    static bool recordChange(NodeGraph* graph,
+                             const ProjectPtr& project,
+                             const Serialization::ProjectSerialization& before,
+                             const Serialization::ProjectSerialization& after,
+                             const QString& text,
+                             QUndoCommand* parent);
+
+private:
+    static ApplyGraphOpsCommand* makeCommand(NodeGraph* graph,
+                                             const ProjectPtr& project,
+                                             const Serialization::ProjectSerialization& before,
+                                             const Serialization::ProjectSerialization& after,
+                                             const QString& text,
+                                             QUndoCommand* parent);
+
+    void apply(const std::vector<Serialization::GraphOp>& ops);
+
+    // The graph may be a group's, which the operations themselves can delete.
+    Gui* _gui;
+    QPointer<NodeGraph> _graph;
+    ProjectWPtr _project;
+    std::vector<Serialization::GraphOp> _forward;
+    std::vector<Serialization::GraphOp> _inverse;
+    bool _firstRedoCalled;
 };
 
 NATRON_NAMESPACE_EXIT

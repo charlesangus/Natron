@@ -64,6 +64,8 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/LoopBlockOverlay.h"
 #include "Gui/Menu.h"
+#include "Gui/NodeDiffPanel.h"
+#include "Gui/NodeGraphDiffOverlay.h"
 #include "Gui/NodeGraphLowDetailLayer.h"
 #include "Gui/NodeGraphTextItem.h"
 #include "Gui/NodeGui.h"
@@ -160,6 +162,7 @@ NodeGraph::NodeGraph(Gui* gui,
     scene->addItem(_imp->_root);
     _imp->_loopBlocks = new LoopBlockOverlay(this, _imp->_nodeRoot);
     _imp->_gpuRegions = new GpuRegionOverlay(this, _imp->_nodeRoot);
+    _imp->_diffOverlay = new NodeGraphDiffOverlay(this, _imp->_nodeRoot);
 
     _imp->_navigator = new Navigator(&_imp->isDoingPreviewRender);
     scene->addItem(_imp->_navigator);
@@ -345,7 +348,25 @@ NodeGraph::scheduleLoopBlockRefresh(bool topology)
         if (_imp->_gpuRegions) {
             _imp->_gpuRegions->schedule(true);
         }
+        if (_imp->_diffOverlay) {
+            _imp->_diffOverlay->schedule();
+        }
         Q_EMIT topologyChanged();
+    }
+}
+
+NodeGraphDiffOverlay*
+NodeGraph::getDiffOverlay() const
+{
+    return _imp->_diffOverlay;
+}
+
+void
+NodeGraph::noteSelectionChanged()
+{
+    Gui* gui = getGui();
+    if (gui && gui->getGraphComparison() && gui->getNodeDiffPanel()) {
+        gui->getNodeDiffPanel()->scheduleRefresh(this);
     }
 }
 

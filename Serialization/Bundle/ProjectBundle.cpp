@@ -30,6 +30,7 @@
 #include <utility>
 #include <vector>
 
+#include "Serialization/Yaml/MergeConflictYaml.h"
 #include "Serialization/Yaml/ProjectYaml.h"
 
 NATRON_NAMESPACE_ENTER
@@ -162,6 +163,11 @@ ProjectBundleWriter::setProject(const ProjectSerialization& project)
 {
     MemoryBlobStore blobs;
     std::string text = encodeProjectYaml(project, blobs);
+    if (!project.mergeConflicts.empty()) {
+        const std::string conflicts = encodeMergeConflictsYaml(project.mergeConflicts);
+        const std::span<const std::byte> bytes = textBytes(conflicts);
+        blobs.addMember(std::string(kMergeConflictsMember), std::vector<std::byte>(bytes.begin(), bytes.end()));
+    }
     _projectYaml = std::move(text);
     _blobs = std::move(blobs);
 }
@@ -395,6 +401,13 @@ ProjectBundleReader::readProject(YamlWarnings* warnings) const
     _missingLookups.clear();
     YamlWarnings decodeWarnings;
     ProjectSerialization project = decodeProjectYaml(projectYaml(), *this, &decodeWarnings);
+    if (const std::optional<std::span<const std::byte>> bytes = rawMember(_root + std::string(kMergeConflictsMember))) {
+        try {
+            project.mergeConflicts = decodeMergeConflictsYaml(bytesText(*bytes), &decodeWarnings);
+        } catch (const YamlError& e) {
+            decodeWarnings.push_back(std::string(kMergeConflictsMember) + " was ignored, so the project's unresolved merge conflicts are lost: " + e.what());
+        }
+    }
     if (!warnings) {
         return project;
     }

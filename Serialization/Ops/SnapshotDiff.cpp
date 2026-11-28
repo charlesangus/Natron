@@ -346,6 +346,9 @@ namespace {
             if (trackerText(a) != trackerText(b)) {
                 _ops.push_back(SetTrackerDataOp { b.id, b.hasTrackerContext ? std::optional<TrackerContextSerialization>(b.trackerContext) : std::nullopt });
             }
+            if (a.origin != b.origin) {
+                _ops.push_back(SetOriginOp { b.id, b.origin.templateKey, b.origin.isSet() ? b.origin.nodeId : std::string() });
+            }
         }
 
         static bool sameFormats(const std::list<FormatSerialization>& a,

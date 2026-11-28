@@ -423,6 +423,68 @@ public:
      **/
     App* loadProject(const QString& filename);
 
+    /**
+     * @brief Imports the nodes of the .ntpz project bundle (or unzipped bundle folder) at filename
+     * into group, or into the project's root when group is None, and returns the created top-level
+     * nodes. Unlike createNode(), a None group means the project root, never the node-creation
+     * context. They get new names and new persistent IDs, keep their connections among themselves,
+     * and remember the template they came from. Each created node is recorded in the script's
+     * undo step. Raises RuntimeError with the loader's message when the file is missing,
+     * unreadable or not a project (no node is created), when only part of the template could be
+     * imported (the nodes that were created stay in place, and the message lists the problems),
+     * and when called from a thread other than the main one. Raises ValueError when group is not
+     * a group of this application, is a node that is not a group, or is a PyPlug that is not
+     * unlocked for editing.
+     **/
+    std::list<Effect*> importTemplate(const QString& filename, Group* group = 0);
+
+    enum ImportTemplateError {
+        eImportTemplateErrorNone,
+        eImportTemplateErrorFailed,
+        eImportTemplateErrorBadGroup
+    };
+
+    /**
+     * @brief Internal variant of importTemplate() that reports a failure instead of raising it.
+     * errorKind is set to eImportTemplateErrorNone on success, eImportTemplateErrorFailed when the
+     * import failed in whole or in part (error holds the message) and eImportTemplateErrorBadGroup
+     * when group cannot take the nodes. The list is empty on any failure.
+     **/
+    std::list<Effect*> importTemplateChecked(const QString& filename, Group* group, QString* error, ImportTemplateError* errorKind);
+
+    /**
+     * @brief Makes a template named name of nodes, which must all be in group (the project's root
+     * when group is None), or of all the group's nodes without an origin when nodes is empty, and
+     * returns its template node. It is version 0 until published, and its publish folder is the
+     * project's folder. One undo step in the GUI. Raises RuntimeError when a node already belongs
+     * to a template, is a template node or is not in group, and when called from a thread other
+     * than the main one.
+     **/
+    Effect* defineTemplate(const std::list<Effect*>& nodes, const QString& name, Group* group = 0);
+
+    /**
+     * @brief Writes the template import templateKey as its next version, <name>_v<NNN>.ntpz in
+     * its publish folder, and returns the written path. Raises RuntimeError, writing nothing,
+     * when the folder is missing or not writable, when that version or a newer one is already
+     * there, when a file of another template has the same name, and when called from a thread
+     * other than the main one. Like a save, it is not an undo step.
+     **/
+    QString publishTemplate(const QString& templateKey);
+
+    /**
+     * @brief Merges the newest version with the template's ID in its publish folder into the
+     * project, as one undo step in the GUI, and returns the status: "updated", "upToDate" or
+     * "lowMatch", the last when too few of the base's nodes are in the file and nothing was
+     * merged. Raises RuntimeError when no version is published there, when the merge failed and
+     * when called from a thread other than the main one.
+     **/
+    QString updateTemplateToLatest(const QString& templateKey);
+
+    // Internal variants of the three above that report a failure in error instead of raising it.
+    Effect* defineTemplateChecked(const std::list<Effect*>& nodes, const QString& name, Group* group, QString* error);
+    QString publishTemplateChecked(const QString& templateKey, QString* error);
+    QString updateTemplateToLatestChecked(const QString& templateKey, QString* error);
+
     ///Close the current project but keep the window
     bool resetProject();
 

@@ -39,8 +39,9 @@ namespace Serialization {
  * version, Python module or parent changed is deleted and created again with its ID. Operations
  * come grouped, in this order: deletions; renames, through a temporary name when two nodes swap
  * names; creations, a group before what it holds; per node, its user knobs, knobs, appearance,
- * roto and tracker data; the project's knobs, then its formats, layers and variables; connections.
- * A multi-instance child gets no connection of its own: it takes its main instance's.
+ * roto and tracker data, and template origin; the project's knobs, then its formats, layers and
+ * variables; connections. A multi-instance child gets no connection of its own: it takes its main
+ * instance's.
  **/
 std::vector<GraphOp> diffSnapshots(const ProjectSerialization& before, const ProjectSerialization& after);
 

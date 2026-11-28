@@ -27,6 +27,7 @@
 
 #include <algorithm> // min, max
 #include <limits>
+#include <list>
 #include <memory>
 #include <optional>
 #include <set>
@@ -40,14 +41,19 @@ CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/GraphOpApply.h"
 #include "Engine/GroupInput.h"
 #include "Engine/GroupOutput.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
 #include "Engine/RotoLayer.h"
 #include "Engine/TimeLine.h"
 #include "Engine/ViewerInstance.h"
+
+#include "Serialization/Ops/SnapshotDiff.h"
+#include "Serialization/ProjectSerialization.h"
 
 #include "Gui/CurveEditor.h"
 #include "Gui/Edge.h"
@@ -59,6 +65,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/NodeClipBoard.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
+#include "Gui/UndoHistory.h"
 
 #include "Serialization/NodeSerialization.h"
 
@@ -1875,6 +1882,53 @@ ExtractNodeUndoRedoCommand::redo()
     _graph->getGui()->getApp()->triggerAutoSave();
 } // ExtractNodeUndoRedoCommand::redo
 
+namespace {
+
+// A copy that group from selection or ungroup makes stands in for its original, so it takes
+// the original's identity, and the copies of a group's children take its children's.
+void
+pairIdentities(const NodePtr& original,
+               const NodePtr& copy,
+               std::list<std::pair<NodeWPtr, NodeWPtr>>* pairs)
+{
+    if (!original || !copy || (original->getPluginID() != copy->getPluginID())) {
+        return;
+    }
+    pairs->push_back(std::make_pair(NodeWPtr(original), NodeWPtr(copy)));
+    NodeGroupPtr originalGroup = std::dynamic_pointer_cast<NodeGroup>(original->getEffectInstance());
+    NodeGroupPtr copyGroup = std::dynamic_pointer_cast<NodeGroup>(copy->getEffectInstance());
+    if (!originalGroup || !copyGroup) {
+        return;
+    }
+    const NodesList children = originalGroup->getNodes();
+    for (const NodePtr& child : children) {
+        pairIdentities(child, copyGroup->getNodeByName(child->getScriptName()), pairs);
+    }
+}
+
+void
+swapIdentities(const std::list<std::pair<NodeWPtr, NodeWPtr>>& pairs)
+{
+    for (const std::pair<NodeWPtr, NodeWPtr>& pair : pairs) {
+        Node::swapIdentity(pair.first.lock(), pair.second.lock());
+    }
+}
+
+NodePtr
+nodeNamed(const NodesGuiList& nodes,
+          const std::string& scriptName)
+{
+    for (const NodeGuiPtr& node : nodes) {
+        if (node && node->getNode() && (node->getNode()->getScriptName() == scriptName)) {
+            return node->getNode();
+        }
+    }
+
+    return NodePtr();
+}
+
+} // namespace
+
 GroupFromSelectionCommand::GroupFromSelectionCommand(NodeGraph* graph,
                                                      const NodesGuiList & nodes)
     : QUndoCommand()
@@ -1913,6 +1967,7 @@ GroupFromSelectionCommand::undo()
         outputNode->replaceInput(input, it->second.inputIdx);
     }
 
+    swapIdentities(_identityPairs);
 
     for (std::list<NodeGuiWPtr>::iterator it = _originalNodes.begin(); it != _originalNodes.end(); ++it) {
         NodeGuiPtr node = it->lock();
@@ -2002,6 +2057,7 @@ GroupFromSelectionCommand::redo()
 
         for (std::list<std::pair<std::string, NodeGuiPtr> >::iterator it = newNodes.begin(); it != newNodes.end(); ++it) {
             internalNewNodes.push_back( it->second->getNode() );
+            pairIdentities(nodeNamed(originalNodes, it->first), it->second->getNode(), &_identityPairs);
         }
 
         // Extract all trees from these new nodes
@@ -2168,6 +2224,7 @@ GroupFromSelectionCommand::redo()
                                      false,
                                      false);
     }
+    swapIdentities(_identityPairs);
 
     std::list<NodeGuiPtr> nodesToSelect;
     NodeGuiPtr nodeGroup = _group.lock();
@@ -2248,6 +2305,9 @@ InlineGroupCommand::InlineGroupCommand(NodeGraph* graph,
         }
         std::list<std::pair<std::string, NodeGuiPtr> > newNodes;
         _graph->pasteCliboard(cb, &newNodes);
+        for (const std::pair<std::string, NodeGuiPtr>& pasted : newNodes) {
+            pairIdentities(nodeNamed(nodesToCopy, pasted.first), pasted.second ? pasted.second->getNode() : NodePtr(), &_identityPairs);
+        }
 
         NodeGuiIPtr groupGui_i = group->getNode()->getNodeGui();
         assert(groupGui_i);
@@ -2419,6 +2479,7 @@ InlineGroupCommand::undo()
             nodesToSelect.push_back(groupNode);
         }
     }
+    swapIdentities(_identityPairs);
     _graph->setSelection(nodesToSelect);
     for (std::set<ViewerInstance*>::iterator it = viewers.begin(); it != viewers.end(); ++it) {
         (*it)->renderCurrentFrame(true);
@@ -2469,6 +2530,7 @@ InlineGroupCommand::redo()
             }
         }
     }
+    swapIdentities(_identityPairs);
     _graph->setSelection(nodesToSelect);
 
     for (std::set<ViewerInstance*>::iterator it = viewers.begin(); it != viewers.end(); ++it) {
@@ -2557,6 +2619,154 @@ ViewerInputLockCommand::redo()
         }
         viewer->refreshEdges();
     }
+}
+
+namespace {
+bool
+allApplied(const std::vector<Serialization::GraphOp>& ops,
+           const std::vector<Serialization::OpResult>& results)
+{
+    return (results.size() == ops.size()) && std::all_of(results.begin(), results.end(), [](const Serialization::OpResult& result) {
+               return result.applied();
+           });
+}
+} // anonymous namespace
+
+ApplyGraphOpsCommand::ApplyGraphOpsCommand(NodeGraph* graph,
+                                           const ProjectPtr& project,
+                                           const std::vector<Serialization::GraphOp>& forward,
+                                           const std::vector<Serialization::GraphOp>& inverse,
+                                           const QString& text,
+                                           QUndoCommand* parent)
+    : QUndoCommand(parent)
+    , _gui(graph ? graph->getGui() : 0)
+    , _graph(graph)
+    , _project(project)
+    , _forward(forward)
+    , _inverse(inverse)
+    , _firstRedoCalled(false)
+{
+    setText(text);
+}
+
+ApplyGraphOpsCommand::~ApplyGraphOpsCommand()
+{
+}
+
+void
+ApplyGraphOpsCommand::apply(const std::vector<Serialization::GraphOp>& ops)
+{
+    ProjectPtr project = _project.lock();
+    if (!project) {
+        setObsolete(true);
+
+        return;
+    }
+    applyGraphOps(project, ops);
+    if (_graph) {
+        _graph->clearSelection();
+    }
+    GuiAppInstancePtr app = _gui ? _gui->getApp() : GuiAppInstancePtr();
+    if (app) {
+        app->triggerAutoSave();
+        app->renderAllViewers(true);
+    }
+}
+
+void
+ApplyGraphOpsCommand::undo()
+{
+    apply(_inverse);
+}
+
+void
+ApplyGraphOpsCommand::redo()
+{
+    if (_firstRedoCalled) {
+        apply(_forward);
+    }
+    _firstRedoCalled = true;
+}
+
+std::vector<Serialization::OpResult>
+ApplyGraphOpsCommand::applyAndPush(NodeGraph* graph,
+                                   const ProjectPtr& project,
+                                   const std::vector<Serialization::GraphOp>& ops,
+                                   const QString& text)
+{
+    Serialization::ProjectSerialization before;
+    project->toSerialization(&before);
+    const std::vector<Serialization::OpResult> results = ProjectMerge::applyAllOrNothing(project, ops);
+
+    Serialization::ProjectSerialization after;
+    project->toSerialization(&after);
+    if (allApplied(ops, results)) {
+        if (ApplyGraphOpsCommand* command = makeCommand(graph, project, before, after, text, 0)) {
+            graph->pushUndoCommand(command, UndoScope());
+        }
+    }
+
+    return results;
+}
+
+ApplyGraphOpsCommand*
+ApplyGraphOpsCommand::makeCommand(NodeGraph* graph,
+                                  const ProjectPtr& project,
+                                  const Serialization::ProjectSerialization& before,
+                                  const Serialization::ProjectSerialization& after,
+                                  const QString& text,
+                                  QUndoCommand* parent)
+{
+    const Serialization::ProjectSerialization beforeState = Serialization::editableState(before);
+    const Serialization::ProjectSerialization afterState = Serialization::editableState(after);
+    const std::vector<Serialization::GraphOp> forward = Serialization::diffSnapshots(beforeState, afterState);
+    if (forward.empty()) {
+        return 0;
+    }
+    const std::vector<Serialization::GraphOp> inverse = Serialization::diffSnapshots(afterState, beforeState);
+
+    return new ApplyGraphOpsCommand(graph, project, forward, inverse, text, parent);
+}
+
+std::vector<Serialization::OpResult>
+ApplyGraphOpsCommand::applyAndRecord(NodeGraph* graph,
+                                     const ProjectPtr& project,
+                                     const std::vector<Serialization::GraphOp>& ops,
+                                     const QString& text,
+                                     QUndoCommand* parent)
+{
+    Serialization::ProjectSerialization before;
+    project->toSerialization(&before);
+    const std::vector<Serialization::OpResult> results = ProjectMerge::applyAllOrNothing(project, ops);
+
+    Serialization::ProjectSerialization after;
+    project->toSerialization(&after);
+    if (allApplied(ops, results)) {
+        recordChange(graph, project, before, after, text, parent);
+    }
+
+    return results;
+}
+
+bool
+ApplyGraphOpsCommand::recordChange(NodeGraph* graph,
+                                   const ProjectPtr& project,
+                                   const Serialization::ProjectSerialization& before,
+                                   const Serialization::ProjectSerialization& after,
+                                   const QString& text,
+                                   QUndoCommand* parent)
+{
+    return makeCommand(graph, project, before, after, text, parent) != 0;
+}
+
+ProjectMerge::OpApplier
+ApplyGraphOpsCommand::makeApplier(NodeGraph* graph,
+                                  const ProjectPtr& project,
+                                  const QString& text)
+{
+    return [graph, project, text](const std::vector<Serialization::GraphOp>& ops) {
+        return applyAndPush(graph, project, ops, text);
+    };
 }
 
 NATRON_NAMESPACE_EXIT

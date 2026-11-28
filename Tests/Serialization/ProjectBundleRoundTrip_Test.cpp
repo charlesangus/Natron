@@ -184,3 +184,75 @@ TEST_F(ProjectBundleRoundTripTest, RotoPaintAndTracker)
     EXPECT_TRUE(tracker->hasTrackerContext);
     EXPECT_EQ(2u, tracker->trackerContext.tracks.size());
 }
+
+TEST_F(ProjectBundleRoundTripTest, TemplateEntryKeepsItsIdentityVersionAndExclusions)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    ProjectPtr project = getApp()->getProject();
+
+    Serialization::ProjectSerialization base;
+    Serialization::NodeSerializationPtr baseNode = std::make_shared<Serialization::NodeSerialization>();
+    baseNode->scriptName = "Grade1";
+    baseNode->label = "Grade1";
+    baseNode->pluginID = "Grade";
+    baseNode->id = "0123456789abcdef0123456789abcdef";
+    base.nodes.nodes.push_back(baseNode);
+
+    Serialization::TemplateImportSerialization entry;
+    entry.key = "comp_tpl";
+    entry.templateId = "00112233445566778899aabbccddeeff";
+    entry.name = "comp";
+    entry.version = 7;
+    entry.publishDir = "/shows/templates/comp";
+    entry.path = "/shows/templates/comp/comp_v007.ntpz";
+    entry.contentHash = "abc123";
+    entry.importedAt = "2026-11-27T10:00:00Z";
+    entry.excluded = { "fedcba9876543210fedcba9876543210", "aaaabbbbccccddddeeeeffff00001111" };
+    entry.base = std::make_shared<Serialization::ProjectSerialization>(base);
+    project->setTemplateImport(entry);
+
+    QString saved;
+    ASSERT_TRUE(project->saveProject(tmp.path() + QLatin1Char('/'), QString::fromUtf8("template-entry.ntpz"), &saved));
+    project->reset(false, true);
+    ASSERT_TRUE(project->getTemplateImports().empty());
+    ASSERT_TRUE(project->loadProject(tmp.path() + QLatin1Char('/'), QString::fromUtf8("template-entry.ntpz")));
+
+    const std::list<Serialization::TemplateImportSerialization> imports = project->getTemplateImports();
+    ASSERT_EQ(1u, imports.size());
+    const Serialization::TemplateImportSerialization& read = imports.front();
+    EXPECT_EQ(entry.key, read.key);
+    EXPECT_EQ(entry.templateId, read.templateId);
+    EXPECT_EQ(entry.name, read.name);
+    EXPECT_EQ(entry.version, read.version);
+    EXPECT_EQ(entry.publishDir, read.publishDir);
+    EXPECT_EQ(entry.path, read.path);
+    EXPECT_EQ(entry.contentHash, read.contentHash);
+    EXPECT_EQ(entry.importedAt, read.importedAt);
+    EXPECT_TRUE(entry.excluded == read.excluded);
+    ASSERT_TRUE(read.base != nullptr);
+    ASSERT_EQ(1u, read.base->nodes.nodes.size());
+    EXPECT_EQ(baseNode->id, read.base->nodes.nodes.front()->id);
+}
+
+TEST_F(ProjectBundleRoundTripTest, ATemplateEntryWithoutATemplateIdIsNotLoaded)
+{
+    Serialization::ProjectSerialization project;
+    Serialization::TemplateImportSerialization entry;
+    entry.key = "comp_tpl";
+    entry.templateId = "00112233445566778899aabbccddeeff";
+    entry.name = "comp";
+    project.templates.push_back(entry);
+
+    Serialization::MemoryBlobStore blobs;
+    std::string text = Serialization::encodeProjectYaml(project, blobs);
+    const std::string idLine = "id: \"00112233445566778899aabbccddeeff\"";
+    const std::size_t at = text.find(idLine);
+    ASSERT_NE(std::string::npos, at) << text;
+    text.erase(at, idLine.size());
+
+    Serialization::YamlWarnings warnings;
+    const Serialization::ProjectSerialization decoded = Serialization::decodeProjectYaml(text, blobs, &warnings);
+    EXPECT_TRUE(decoded.templates.empty());
+    EXPECT_FALSE(warnings.empty());
+}

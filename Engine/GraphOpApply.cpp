@@ -494,6 +494,17 @@ private:
         return OpResult();
     }
 
+    OpResult applyOne(const Serialization::SetOriginOp& op)
+    {
+        NodePtr node = find(op.nodeId);
+        if (!node) {
+            return missing(op.nodeId);
+        }
+        node->setOrigin(op.templateKey, op.templateNodeId);
+
+        return OpResult();
+    }
+
     static bool sameLayer(const LayerRegistryEntry& entry,
                           const Serialization::LayerRegistryEntrySerialization& saved)
     {

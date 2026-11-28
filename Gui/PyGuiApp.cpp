@@ -36,6 +36,7 @@ CLANG_DIAG_ON(uninitialized)
 
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/ProjectTemplate.h"
 #include "Engine/PyNode.h"
 #include "Engine/PyNodeGroup.h"
 #include "Engine/PyParameter.h" // ColorTuple
@@ -46,7 +47,10 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/ViewerInstance.h"
 
 #include "Gui/Gui.h"
+#include "Gui/MergeConflictResolve.h"
+#include "Gui/NodeDiffPanel.h"
 #include "Gui/NodeGraph.h"
+#include "Gui/NodeGraphDiffOverlay.h"
 #include "Gui/NodeGui.h"
 #include "Gui/PythonPanels.h"
 #include "Gui/SequenceFileDialog.h"
@@ -943,6 +947,159 @@ PyViewer::getCurrentView() const
     }
 
     return _viewer->getCurrentView().value();
+}
+
+QString
+GuiApp::importTemplateAsUndoStep(const QString& filePath)
+{
+    QString error;
+    const std::string key = MergeConflictResolve::importTemplate(getInternalGuiApp()->getGui(), filePath, &error);
+    if (!error.isEmpty()) {
+        getInternalGuiApp()->appendToScriptEditor(error.toStdString());
+    }
+
+    return QString::fromStdString(key);
+}
+
+QString
+GuiApp::updateFromTemplateChecked(const QString& templateKey,
+                                  const QString& filePath,
+                                  bool allowMismatch,
+                                  QString* error)
+{
+    const ProjectMerge::UpdateResult result = MergeConflictResolve::updateFromTemplate(getInternalGuiApp()->getGui(), templateKey.toStdString(), filePath, allowMismatch);
+    if (result.status == ProjectMerge::UpdateStatus::eError) {
+        *error = result.error;
+
+        return QString();
+    }
+
+    return ProjectTemplateDetail::updateStatusName(result.status);
+}
+
+QString
+GuiApp::updateFromTemplate(const QString& /*templateKey*/,
+                           const QString& /*filePath*/,
+                           bool /*allowMismatch*/)
+{
+    // The binding's inject code calls updateFromTemplateChecked() and never reaches this body.
+    return QString();
+}
+
+bool
+GuiApp::isMergeConflictBadgeShown(Effect* effect) const
+{
+    if (!effect) {
+        return false;
+    }
+    NodeGuiPtr nodeUi = std::dynamic_pointer_cast<NodeGui>(effect->getInternalNode()->getNodeGui());
+
+    return nodeUi && nodeUi->isMergeConflictBadgeShown();
+}
+
+bool
+GuiApp::compareWithFile(const QString& filePath)
+{
+    ProjectMerge::ChangeSummary summary;
+    QString error;
+    if (!ProjectMerge::compareWithFile(getInternalGuiApp()->getProject(), filePath, &summary, &error)) {
+        getInternalGuiApp()->appendToScriptEditor(error.toStdString());
+
+        return false;
+    }
+    getInternalGuiApp()->getGui()->setGraphComparison(summary);
+
+    return true;
+}
+
+bool
+GuiApp::compareWithTemplateBase(const QString& templateKey)
+{
+    ProjectMerge::ChangeSummary summary;
+    QString error;
+    if (!ProjectMerge::compareWithTemplateBase(getInternalGuiApp()->getProject(), templateKey.toStdString(), &summary, &error)) {
+        getInternalGuiApp()->appendToScriptEditor(error.toStdString());
+
+        return false;
+    }
+    getInternalGuiApp()->getGui()->setGraphComparison(summary);
+
+    return true;
+}
+
+void
+GuiApp::clearGraphComparison()
+{
+    getInternalGuiApp()->getGui()->clearGraphComparison();
+}
+
+QString
+GuiApp::getDiffTint(Effect* effect) const
+{
+    if (!effect) {
+        return QString();
+    }
+    NodeGuiPtr nodeUi = std::dynamic_pointer_cast<NodeGui>(effect->getInternalNode()->getNodeGui());
+    NodeGraph* graph = nodeUi ? nodeUi->getDagGui() : 0;
+    NodeGraphDiffOverlay* overlay = graph ? graph->getDiffOverlay() : 0;
+    switch (overlay ? overlay->tintOf(nodeUi.get()) : NodeGraphDiffOverlay::eTintNone) {
+    case NodeGraphDiffOverlay::eTintAdded:
+        return QString::fromUtf8("added");
+    case NodeGraphDiffOverlay::eTintChanged:
+        return QString::fromUtf8("changed");
+    case NodeGraphDiffOverlay::eTintMoved:
+        return QString::fromUtf8("moved");
+    case NodeGraphDiffOverlay::eTintNone:
+        break;
+    }
+
+    return QString();
+}
+
+namespace {
+NodeGraph*
+diffGraphOf(GuiAppInstance* app,
+            Group* group)
+{
+    NodeGraph* graph = 0;
+    if (Effect* isEffect = dynamic_cast<Effect*>(group)) {
+        if (NodeGroup* nodeGrp = isEffect->getInternalNode()->isEffectGroup()) {
+            graph = dynamic_cast<NodeGraph*>(nodeGrp->getNodeGraph());
+        }
+    } else {
+        graph = app->getGui()->getNodeGraph();
+    }
+
+    return graph;
+}
+} // anon namespace
+
+int
+GuiApp::getDiffGhostCount(Group* group) const
+{
+    NodeGraph* graph = diffGraphOf(getInternalGuiApp().get(), group);
+    NodeGraphDiffOverlay* overlay = graph ? graph->getDiffOverlay() : 0;
+
+    return overlay ? overlay->ghostCount() : 0;
+}
+
+RectD
+GuiApp::getDiffGhostRect(int index,
+                         Group* group) const
+{
+    NodeGraph* graph = diffGraphOf(getInternalGuiApp().get(), group);
+    NodeGraphDiffOverlay* overlay = graph ? graph->getDiffOverlay() : 0;
+    const QRectF rect = overlay ? overlay->ghostRect(index) : QRectF();
+
+    return RectD(rect.left(), rect.top(), rect.right(), rect.bottom());
+}
+
+QStringList
+GuiApp::getNodeDiffRows() const
+{
+    NodeDiffPanel* panel = getInternalGuiApp()->getGui()->getNodeDiffPanel();
+
+    return panel ? panel->getRows() : QStringList();
 }
 
 NATRON_PYTHON_NAMESPACE_EXIT

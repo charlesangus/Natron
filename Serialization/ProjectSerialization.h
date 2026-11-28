@@ -23,10 +23,15 @@
 #include "Global/Macros.h"
 
 #include <list>
+#include <memory>
+#include <set>
 #include <string>
+#include <string_view>
+#include <vector>
 
 #include "Serialization/BasicSerialization.h"
 #include "Serialization/KnobSerialization.h"
+#include "Serialization/Merge/MergeConflict.h"
 #include "Serialization/NodeSerialization.h"
 #include "Serialization/SerializationFwd.h"
 
@@ -73,6 +78,67 @@ struct ProjectSavedByVersionSerialization {
 };
 
 /**
+ * @brief One template in the project, defined here or imported: its key, unique in the project and
+ * named by the member nodes' origins, the template's identity shared by every version and every
+ * import of it, its name and the version its base is, the folder its versions are published to,
+ * the template file it was last read from, the SHA-256 of that file's project.yaml, when it was
+ * read (ISO 8601, UTC), the nodes taken out of it by hand, and the snapshot that is the base of
+ * the next update merge. The base is stored as the bundle member templates/<key>/base.yaml so the
+ * merge still has it after the published file is overwritten.
+ **/
+struct TemplateImportSerialization {
+    std::string key;
+    // A UUID, 32 lowercase hex characters.
+    std::string templateId;
+    std::string name;
+    // 0 for a template defined here and not yet published.
+    int version = 0;
+    std::string publishDir;
+    std::string path;
+    std::string contentHash;
+    std::string importedAt;
+    // The IDs of the project nodes Remove from Template took out, which the merge leaves alone
+    // even when they lie between members.
+    std::set<std::string> excluded;
+    std::shared_ptr<ProjectSerialization> base;
+};
+
+/**
+ * @brief The plug-in ID of the template node, which stands for a template in the node graph and
+ * is never a member of one.
+ **/
+inline constexpr std::string_view kTemplateNodePluginId = "Template";
+
+/**
+ * @brief Whether a template key is usable: non-empty ASCII letters, digits and underscores, so it
+ * is also a safe bundle folder name.
+ **/
+inline bool
+isValidTemplateKey(std::string_view key)
+{
+    if (key.empty()) {
+        return false;
+    }
+    for (char c : key) {
+        const bool ok = ((c >= 'a') && (c <= 'z')) || ((c >= 'A') && (c <= 'Z')) || ((c >= '0') && (c <= '9')) || (c == '_');
+        if (!ok) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
+ * @brief The bundle member, relative to the bundle root, holding a template import's base.
+ **/
+inline std::string
+templateBaseMember(std::string_view key)
+{
+    return "templates/" + std::string(key) + "/base.yaml";
+}
+
+/**
  * @brief The saved state of a project: the build that saved it, its id, its nodes, its knobs, the
  * formats and layers the user added, the timeline position and when it was created.
  **/
@@ -89,6 +155,11 @@ struct ProjectSerialization {
 
     std::list<FormatSerialization> additionalFormats;
     std::list<LayerRegistryEntrySerialization> layers;
+    std::list<TemplateImportSerialization> templates;
+
+    // The conflicts the last template merge left unresolved, kept in the bundle beside
+    // project.yaml rather than in it.
+    std::vector<MergeConflict> mergeConflicts;
     int timelineCurrentTime;
 
     // Milliseconds since the epoch.
@@ -101,6 +172,8 @@ struct ProjectSerialization {
         , projectKnobs()
         , additionalFormats()
         , layers()
+        , templates()
+        , mergeConflicts()
         , timelineCurrentTime(0)
         , creationDate(0)
     {

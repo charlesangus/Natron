@@ -28,11 +28,13 @@
 
 #include "Global/Macros.h"
 
+#include <list>
 #include <memory>
 #include <string>
 
 #include "Engine/EngineFwd.h"
 #include "Engine/UndoRecorder.h"
+#include "Serialization/SerializationFwd.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -77,6 +79,15 @@ void recordRotoItemKnobEdit(const NodePtr& node, const KnobIPtr& knob);
  * @brief Call once a node created from Python exists. Undo removes it, redo brings it back.
  **/
 void recordPythonNodeCreated(const NodePtr& node);
+
+/**
+ * @brief Call once a template import made from Python has added its entry to project's template
+ * list, which held importsBefore until then. Undo puts that list back, redo the one the project
+ * holds now. created are the nodes the import made.
+ **/
+void recordPythonTemplateImport(const ProjectPtr& project,
+                                const std::list<Serialization::TemplateImportSerialization>& importsBefore,
+                                const NodesList& created);
 
 /**
  * @brief Removes node the way deleting it in the node graph does, so that undo can bring it back

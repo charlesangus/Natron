@@ -1,0 +1,28 @@
+# Hand-written: the correspondences and conflicts a correct merge of wrap-into-group/ gives.
+description: >-
+  The supervisor wraps Blur1 and Merge1 into a group, Look, with group from selection; the artist
+  changes Blur1's size. Look.Blur1 and Look.Merge1 are the same nodes moved, so the artist's size
+  change lands on Look.Blur1.
+merges:
+  - template: grade_tpl
+    base_mine:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    base_theirs:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Look.Blur1
+      Constant1: Constant1
+      Merge1: Look.Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    scope: [TplIn, Grade1, Blur1, Constant1, Merge1, ColorCorrect1, TplOut]
+    conflicts: []
+notes: >-
+  Group from selection keeps the moved nodes' IDs, so the supervisor's Look.Blur1 and Look.Merge1
+  match by identity.

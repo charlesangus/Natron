@@ -84,6 +84,11 @@ public:
 
     void setSelection(const NodesGuiList& nodes);
 
+    /**
+     * @brief Selects the members and template node of the template hull under scenePos, if any.
+     **/
+    bool selectTemplateAt(const QPointF& scenePos, bool addToSelection);
+
     void clearSelection();
 
     ///The visible portion of the graph, in scene coordinates.
@@ -174,6 +179,11 @@ public:
      * connection or a node came or went, and emits topologyChanged.
      **/
     void scheduleLoopBlockRefresh(bool topology);
+
+    NodeGraphDiffOverlay* getDiffOverlay() const;
+
+    // Call when a node of this graph was selected or deselected.
+    void noteSelectionChanged();
 
     // Emits selectionChanged once control returns to the event loop.
     void scheduleSelectionChanged();

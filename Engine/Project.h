@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <functional>
+#include <list>
 #include <map>
 #include <set>
 #include <vector>
@@ -68,6 +69,7 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 struct ProjectPrivate;
+struct TemplateEdit;
 
 class Project
     : public KnobHolder
@@ -173,6 +175,109 @@ public:
     void registerNodeId(const NodePtr& node);
     void unregisterNodeId(const Node* node);
     void onNodeIdChanged(const NodePtr& node, const std::string& previousId);
+    void onNodeIdsSwapped(const NodePtr& a, const NodePtr& b);
+
+    /**
+     * @brief An active node of the project, at any depth, whose origin is templateKey and
+     * templateNodeId, or null. MT-safe.
+     **/
+    NodePtr findActiveNodeWithOrigin(const std::string& templateKey, const std::string& templateNodeId) const;
+
+    /**
+     * @brief Index upkeep for findActiveNodeWithOrigin(), called by Node::setOrigin().
+     **/
+    void onNodeOriginChanged(const NodePtr& node, const std::string& previousTemplate, const std::string& previousNode);
+
+    /**
+     * @brief Brings the nodes of the template file at filePath into group: each gets a new ID and
+     * an origin naming the new template entry and its node in the template, and expressions that
+     * name a template node follow it when it has to be renamed. Each import makes its own entry,
+     * whose key is made from the file name and made unique, and keeps the imported snapshot as the
+     * base of the next update merge. Returns the created top-level nodes, or nothing with error
+     * set when the file cannot be read, its nodes cannot be created or group is a locked PyPlug.
+     * When only some nodes could be created, they are returned with error listing the problems.
+     **/
+    NodesList importTemplate(const QString& filePath, const NodeCollectionPtr& group, QString* error);
+
+    /**
+     * @brief Makes nodes, all of group's nodes that belong to no template when nodes is empty, a
+     * template named name: a new template ID and entry at version 0 whose base is a snapshot of
+     * them, each member's origin naming the entry and its own ID, and a template node above them.
+     * Returns false with edit->error set, changing nothing, when a node is in another group or
+     * template or none is left. Main thread only, as are the template edits below; see TemplateEdit
+     * (Engine/ProjectTemplate.h) for edit.
+     **/
+    bool defineTemplate(const NodesList& nodes, const std::string& name, const NodeCollectionPtr& group, TemplateEdit* edit);
+
+    /**
+     * @brief Makes node, and the nodes inside it, members of the template import key: their origin
+     * names it and their own ID, and they are no longer excluded from it.
+     **/
+    bool addToTemplate(const std::string& key, const NodePtr& node, TemplateEdit* edit);
+
+    /**
+     * @brief Takes node, and the nodes inside it, out of the template import key: their origin is
+     * cleared and they are excluded, so a merge leaves them alone even between members.
+     **/
+    bool removeFromTemplate(const std::string& key, const NodePtr& node, TemplateEdit* edit);
+
+    /**
+     * @brief Ends the template import key: every member's origin is cleared, its template node is
+     * deleted, and its entry, stored base and saved conflicts are removed. The members stay.
+     **/
+    bool detachTemplate(const std::string& key, TemplateEdit* edit);
+
+    /**
+     * @brief Writes the template import key as its next version, <name>_v<NNN>.ntpz in its publish
+     * folder: its members, each with the ID of the template node it stands for (its own for a node
+     * the template did not have, which becomes its origin), and a template node with the new
+     * version. The entry's base and version become the written ones. The newest version is
+     * looked for by template ID, whatever the files are named. Returns false with error set,
+     * writing nothing, when the folder is missing or not writable, when that version or a newer
+     * one is already there, and when a file of another template has the same name.
+     **/
+    bool publishTemplate(const std::string& key, QString* error, TemplateEdit* edit = nullptr);
+
+    /**
+     * @brief Gives the template nodes among pasted, the nodes a paste or a duplicate made, each with
+     * the serialization it was made from, a template of their own. A template node whose cut
+     * original removed its entry takes that entry back, so a cut and paste moves the template. A
+     * copy of a template node another one still stands for, or one from another project, becomes a
+     * new template, as Define Template makes, of the pasted nodes that came from the copied one;
+     * the original is left as it was. Main thread only.
+     **/
+    void adoptPastedTemplateNodes(const std::list<std::pair<Serialization::NodeSerializationPtr, NodePtr>>& pasted);
+
+    /**
+     * @brief The active template node standing for the template import key, at any depth, or null.
+     **/
+    NodePtr findTemplateNode(const std::string& key) const;
+
+    /**
+     * @brief Whether group is a PyPlug whose graph the user has not unlocked for editing, which
+     * nodes must not be added to.
+     **/
+    static bool isLockedPyPlug(const NodeCollectionPtr& group);
+
+    /**
+     * @brief A copy of the template imports of the project, in import order. MT-safe.
+     **/
+    std::list<Serialization::TemplateImportSerialization> getTemplateImports() const;
+    bool hasTemplateImport(const std::string& key) const;
+
+    /**
+     * @brief Replaces the entry whose key is entry.key, or adds it, as an update merge does when
+     * it moves the base to the new template version. Main thread only.
+     **/
+    void setTemplateImport(const Serialization::TemplateImportSerialization& entry);
+    void setTemplateImports(const std::list<Serialization::TemplateImportSerialization>& imports);
+
+    /**
+     * @brief The conflicts the last update merge left unresolved, saved with the project until
+     * they are resolved. The getter returns a copy and is MT-safe; the setter is main thread only.
+     **/
+    std::vector<Serialization::MergeConflict> getMergeConflicts() const;
+    void setMergeConflicts(const std::vector<Serialization::MergeConflict>& conflicts);
 
     /**
      * @brief Writes a project file at filePath without ever leaving a partial one there:
@@ -835,6 +940,16 @@ Q_SIGNALS:
     // the config was loaded again or a file default was edited.
     void fileColorSpacesChanged();
 
+    // Emitted on the main thread when the list getMergeConflicts() returns may have changed,
+    // including when a project is loaded or closed.
+    void mergeConflictsChanged();
+
+    // Emitted on the main thread when the list getTemplateImports() returns may have changed.
+    void templateImportsChanged();
+
+    // Emitted when a node's origin template or node changed, from whichever thread changed it.
+    void nodeOriginsChanged();
+
 private:
     U64 computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::vector<LayerRegistryEntry>>& layers,
                                               const std::string& ocioSource,
@@ -878,6 +993,8 @@ private:
                              bool isAutoSave, bool isUntitledAutosave, bool* mustSave);
 
     QString saveProjectInternal(const QString & path, const QString & name, bool autosave, bool updateProjectProperties);
+
+    static QString mergeConflictWarning(std::size_t count);
 
     void reportLoadWarnings();
 

@@ -58,6 +58,10 @@ CLANG_DIAG_ON(uninitialized)
 
 NATRON_NAMESPACE_ENTER
 
+namespace ProjectMerge {
+struct ChangeSummary;
+}
+
 struct GuiPrivate;
 
 class Gui
@@ -362,6 +366,8 @@ public:
 
     // The first Scene Graph panel, "sceneGraph", which closing only hides.
     SceneGraphPanel* getSceneGraphPanel() const;
+    MergeConflictPanel* getMergeConflictPanel() const;
+    NodeDiffPanel* getNodeDiffPanel() const;
 
     GeoSpreadsheetPanel* getGeoSpreadsheetPanel() const;
 
@@ -424,6 +430,15 @@ public:
 
     PanelWidget* ensureProgressPanelVisible();
     void ensureScriptEditorVisible();
+
+    /**
+     * @brief Makes the Merge Conflicts panel the current tab of its pane, docking it first, when it
+     * is in none, in a pane holding neither the node graph nor the properties, which it is used with.
+     **/
+    void ensureMergeConflictPanelVisible();
+
+    // Like ensureMergeConflictPanelVisible(), for the Node Diff panel.
+    void ensureNodeDiffPanelVisible();
 
     /*Useful function that saves on disk the image in png format.
        The name of the image will be the hash key of the image.*/
@@ -599,6 +614,9 @@ Q_SIGNALS:
 
     void s_showLogOnMainThread();
 
+    // Emitted when getGraphComparison() changes, or goes away.
+    void graphComparisonChanged();
+
 public Q_SLOTS:
 
     void onShowLogOnMainThreadReceived();
@@ -623,6 +641,23 @@ public Q_SLOTS:
     bool saveProjectAs();
     void exportProjectAsGroup();
     void saveAndIncrVersion();
+
+    /**
+     * @brief Asks for a template file and imports it into the graph last worked in.
+     **/
+    void importTemplate();
+
+    /**
+     * @brief Makes a template of the nodes selected in the graph last worked in, or of all its
+     * nodes without an origin when none is selected, as one undo step, and opens the panel of
+     * its template node to name it and set its publish folder.
+     **/
+    void defineTemplate();
+
+    /**
+     * @brief Asks for a project file and compares the open project with it.
+     **/
+    void compareWithFile();
 
     void autoSave();
 
@@ -741,10 +776,65 @@ public Q_SLOTS:
 #ifdef Q_OS_DARWIN
     void dockClicked();
 #endif
-    
+
+    void onUpdateFromTemplateMenuAboutToShow();
+    void onUpdateFromTemplateActionTriggered();
+
+public:
+    /**
+     * @brief Writes the template import templateKey as its next version in its publish folder.
+     * A refusal is reported in the status bar.
+     **/
+    void publishTemplate(const std::string& templateKey);
+
+    /**
+     * @brief Merges the newest version with the template's ID in its publish folder into the
+     * project, as one undo step. Only a template ID mismatch asks before merging; the other
+     * outcomes are reported in the status bar, errors in a dialog.
+     **/
+    void updateTemplateToLatest(const std::string& templateKey);
+
+    /**
+     * @brief updateTemplateToLatest() with a file the user picks, starting in the publish folder.
+     **/
+    void updateTemplateFromFile(const std::string& templateKey);
+
+    /**
+     * @brief updateTemplateToLatest() with the file at path.
+     **/
+    void updateTemplateFromPath(const std::string& templateKey,
+                                const QString& path);
+
+    /**
+     * @brief Tags nodes as members of the template import templateKey, or takes them out of it,
+     * as one undo step.
+     **/
+    void addToTemplate(const std::string& templateKey, const NodesList& nodes);
+    void removeFromTemplate(const std::string& templateKey, const NodesList& nodes);
+
+    /**
+     * @brief Makes the members of the template import templateKey ordinary nodes and removes its
+     * template node, as one undo step.
+     **/
+    void detachTemplate(const std::string& templateKey);
+
+    /**
+     * @brief Compares the nodes of the template import templateKey with its stored base.
+     **/
+    void compareWithTemplateBase(const std::string& templateKey);
+
+    /**
+     * @brief The comparison the node graph shows, or null for none. Main thread only.
+     **/
+    const ProjectMerge::ChangeSummary* getGraphComparison() const;
+    void setGraphComparison(const ProjectMerge::ChangeSummary& summary);
+    void clearGraphComparison();
+
 private:
 
     void setCurrentPanelFocus(PanelWidget* widget);
+
+    void ensureSidePanelVisible(PanelWidget* panel);
 
     void noteViewerFocused(ViewerTab* viewer);
 

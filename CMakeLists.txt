@@ -221,6 +221,8 @@ add_subdirectory(HostSupport)
 
 add_subdirectory(Serialization)
 
+add_subdirectory(MergeTool)
+
 add_subdirectory(Engine)
 
 add_subdirectory(PythonBin)

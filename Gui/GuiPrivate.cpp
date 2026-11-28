@@ -96,8 +96,10 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/GuiDensity.h"
 #include "Gui/Histogram.h"
 #include "Gui/Menu.h"
+#include "Gui/MergeConflictPanel.h"
 #include "Gui/MessageBox.h"
 #include "Gui/MultiInstancePanel.h"
+#include "Gui/NodeDiffPanel.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
@@ -203,6 +205,10 @@ GuiPrivate::GuiPrivate(const GuiAppInstancePtr& app,
     , _curveEditor(0)
     , _progressPanel(0)
     , _sceneGraphPanel(0)
+    , _mergeConflictPanel(0)
+    , _nodeDiffPanel(0)
+    , menuUpdateFromTemplate(0)
+    , graphComparison()
     , _geoSpreadsheetPanel(0)
     , _dopeSheetEditor(0)
     , _toolBox(0)
@@ -456,6 +462,24 @@ GuiPrivate::createSceneGraphPanelGui()
     _sceneGraphPanel->setLabel(tr("Scene Graph").toStdString());
     _sceneGraphPanel->setVisible(false);
     _gui->registerTab(_sceneGraphPanel, _sceneGraphPanel);
+}
+
+void
+GuiPrivate::createMergeConflictPanelGui()
+{
+    _mergeConflictPanel = new MergeConflictPanel(_gui);
+    _mergeConflictPanel->setScriptName("mergeConflicts");
+    _mergeConflictPanel->setVisible(false);
+    _gui->registerTab(_mergeConflictPanel, _mergeConflictPanel);
+}
+
+void
+GuiPrivate::createNodeDiffPanelGui()
+{
+    _nodeDiffPanel = new NodeDiffPanel(_gui);
+    _nodeDiffPanel->setScriptName("nodeDiff");
+    _nodeDiffPanel->setVisible(false);
+    _gui->registerTab(_nodeDiffPanel, _nodeDiffPanel);
 }
 
 void

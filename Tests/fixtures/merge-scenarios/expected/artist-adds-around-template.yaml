@@ -1,0 +1,25 @@
+# Hand-written: the correspondences and conflicts a correct merge of artist-adds-around-template/ gives.
+description: >-
+  The artist adds ArtistGrade between Blur1 and Merge1.B, ShotGrade after the template, between
+  TplOut and ShotOut, and GarbageMatte on Merge1's mask; the supervisor changes ColorCorrect1's
+  saturation. Only ArtistGrade is wired between template nodes, so only it is in the merge scope.
+merges:
+  - template: grade_tpl
+    base_mine:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    base_theirs:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    scope: [TplIn, Grade1, Blur1, Constant1, Merge1, ColorCorrect1, TplOut, ArtistGrade]
+    conflicts: []

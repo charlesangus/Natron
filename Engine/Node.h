@@ -538,6 +538,31 @@ public:
      **/
     bool adoptNodeId(const std::string& id, QString* refusal);
 
+    /**
+     * @brief The template import the node came from, by its key in the project's template list,
+     * and the ID of the node in that template; both empty for a node the artist made. Saved with
+     * the project and the clipboard, never with a preset. MT-safe.
+     **/
+    std::string getOriginTemplate() const;
+    std::string getOriginNode() const;
+    void setOrigin(const std::string& templateKey, const std::string& templateNodeId);
+
+    /**
+     * @brief Takes the origin saved with the node. A project load always does; a paste or a
+     * duplicate does only when no other active node of the project has that origin, so the copy of
+     * a template node is the artist's own node and the template keeps merging into the original.
+     * A node pasted from another shot keeps its origin, so a merge given that template's base
+     * still finds it.
+     **/
+    void restoreSerializedOrigin(const std::string& templateKey, const std::string& templateNodeId);
+
+    /**
+     * @brief Exchanges the persistent IDs and origins of a and b, which must belong to the same
+     * project. Group from selection and ungroup make copies of the nodes they move, and the copies
+     * take over the originals' identities so a template merge still finds them.
+     **/
+    static void swapIdentity(const NodePtr& a, const NodePtr& b);
+
 private:
     static bool claimCacheID(const std::string& cacheID);
     static void releaseCacheID(const std::string& cacheID);

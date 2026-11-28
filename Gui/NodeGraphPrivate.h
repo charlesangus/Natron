@@ -257,6 +257,7 @@ public:
 };
 
 class GpuRegionOverlay;
+class NodeGraphDiffOverlay;
 // An empty item that only parents a kind of item apart from the nodes, at the nodes' origin.
 // Qt keeps an item's children in one list that it renumbers or re-sorts as children come, go or
 // change z, so the edges and arrows of a large graph would make every such change to the nodes
@@ -311,6 +312,7 @@ public:
     LoopBlockOverlay* _loopBlocks;
     bool _selectionChangeScheduled = false;
     GpuRegionOverlay* _gpuRegions;
+    NodeGraphDiffOverlay* _diffOverlay;
     NodeGraphLowDetailLayer* lowDetailEdgeLayer;
     NodeGraphLowDetailLayer* lowDetailNodeLayer;
     QGraphicsItem* edgeLayer = nullptr;

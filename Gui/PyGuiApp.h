@@ -28,10 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include "Engine/EngineFwd.h"
 #include "Engine/PyAppInstance.h"
 #include "Engine/PyParameter.h" // ColorTuple
+#include "Engine/RectD.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/EngineFwd.h"
 
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiFwd.h"
@@ -184,6 +185,54 @@ public:
      * when the menu closes with no choice, ends a filtered launch without creating anything.
      **/
     void triggerTabMenuAction(QAction* action);
+
+    /**
+     * @brief Imports the template file at filePath into the graph last worked in, as one undo step,
+     * the way File > Import Template does. Returns the new import's key, or an empty string when
+     * nothing was imported; the reason, or the problems of an import that was only partly made, go
+     * to the script editor. App.importTemplate() is the scripting variant, which returns the
+     * created nodes.
+     **/
+    QString importTemplateAsUndoStep(const QString& filePath);
+
+    /**
+     * @brief Merges a version of the template import templateKey into the project as one undo
+     * step: the file at filePath, or the one the import recorded when filePath is empty. Returns
+     * the status: "updated", "upToDate", "lowMatch" when too few of the base's nodes are in the
+     * file, or "templateMismatch" when the file's template ID is not the import's and
+     * allowMismatch is not set; nothing is merged for the last two. Raises RuntimeError when the
+     * merge failed.
+     **/
+    QString updateFromTemplate(const QString& templateKey, const QString& filePath = QString(), bool allowMismatch = false);
+
+    // updateFromTemplate() reporting a failure in error, with an empty status, instead of raising it.
+    QString updateFromTemplateChecked(const QString& templateKey, const QString& filePath, bool allowMismatch, QString* error);
+
+    // Whether effect's node shows the badge of a node with unresolved merge conflicts.
+    bool isMergeConflictBadgeShown(Effect* effect) const;
+
+    /**
+     * @brief Shows over the node graphs how the project differs from the project file at filePath,
+     * or from the stored base of the template import templateKey. False when it could not be read,
+     * with the reason in the script editor.
+     **/
+    bool compareWithFile(const QString& filePath);
+    bool compareWithTemplateBase(const QString& templateKey);
+
+    void clearGraphComparison();
+
+    // "added", "changed", "moved", or an empty string when the comparison does not mark effect's node.
+    QString getDiffTint(Effect* effect) const;
+
+    // The removed nodes the comparison draws in group's node graph, the top level's by default.
+    int getDiffGhostCount(Group* group = 0) const;
+
+    // The ghost at index in group's node graph, in the coordinates of node positions, or an empty
+    // rectangle past the last.
+    RectD getDiffGhostRect(int index, Group* group = 0) const;
+
+    // The rows of the Node Diff panel, headings included.
+    QStringList getNodeDiffRows() const;
 };
 
 NATRON_PYTHON_NAMESPACE_EXIT;

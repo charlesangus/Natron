@@ -1,0 +1,28 @@
+# Hand-written: the correspondences and conflicts a correct merge of rename-plus-expression/ gives.
+description: >-
+  The artist renames Grade1 to KeyGrade, which rewrites Blur1's size expression to name KeyGrade;
+  the supervisor adds an expression on ColorCorrect1's saturation that names Grade1. The merge
+  writes the supervisor's new expression with KeyGrade, and Blur1's expression, changed only by the
+  rename, is no conflict.
+merges:
+  - template: grade_tpl
+    base_mine:
+      TplIn: TplIn
+      Grade1: KeyGrade
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    base_theirs:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    scope: [TplIn, KeyGrade, Blur1, Constant1, Merge1, ColorCorrect1, TplOut]
+    conflicts: []
+notes: >-
+  Expressions are compared and written in the merged snapshot's names.

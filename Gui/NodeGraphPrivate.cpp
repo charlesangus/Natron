@@ -67,6 +67,7 @@ NodeGraphPrivate::NodeGraphPrivate(NodeGraph* p,
     , _nodeRoot(NULL)
     , _loopBlocks(NULL)
     , _gpuRegions(NULL)
+    , _diffOverlay(NULL)
     , lowDetailEdgeLayer(NULL)
     , lowDetailNodeLayer(NULL)
     , _cacheSizeText(NULL)

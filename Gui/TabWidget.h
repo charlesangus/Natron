@@ -314,6 +314,9 @@ public Q_SLOTS:
 
     void newSceneGraphHere();
 
+    void moveMergeConflictsHere();
+
+    void moveNodeDiffHere();
     void moveGeoSpreadsheetHere();
 
     void onSplitHorizontally()

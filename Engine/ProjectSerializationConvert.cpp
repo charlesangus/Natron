@@ -198,6 +198,8 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
         serialization->knobsAge = 0;
         serialization->cacheID = getCacheID();
         serialization->id = getNodeId();
+        serialization->origin.templateKey = getOriginTemplate();
+        serialization->origin.nodeId = getOriginNode();
         serialization->inputs.clear();
         if (serializeInputs) {
             getInputNames(serialization->inputs);
@@ -256,6 +258,8 @@ Node::toSerialization(Serialization::NodeSerialization* serialization,
     serialization->scriptName = getScriptName_mt_safe();
     serialization->cacheID = getCacheID();
     serialization->id = getNodeId();
+    serialization->origin.templateKey = getOriginTemplate();
+    serialization->origin.nodeId = getOriginNode();
     serialization->pluginID = getPluginID();
 
     if (!hasPyPlugBeenEdited()) {
@@ -354,6 +358,11 @@ Project::toSerialization(Serialization::ProjectSerialization* serialization) con
     serialization->projectId = getProjectId();
 
     nodesToSerialization(&serialization->nodes);
+    {
+        QMutexLocker k(&_imp->mergeStateMutex);
+        serialization->templates = _imp->templateImports;
+        serialization->mergeConflicts = _imp->mergeConflicts;
+    }
 
     std::list<Format> additionalFormats;
     getAdditionalFormats(&additionalFormats);
@@ -452,6 +461,13 @@ ProjectPrivate::restoreFromSerialization(const Serialization::ProjectSerializati
     if (!serialization.projectId.empty()) {
         projectId = serialization.projectId;
     }
+    {
+        QMutexLocker k(&mergeStateMutex);
+        templateImports = serialization.templates;
+        mergeConflicts = serialization.mergeConflicts;
+    }
+    Q_EMIT _publicInterface->templateImportsChanged();
+    Q_EMIT _publicInterface->mergeConflictsChanged();
 
     std::list<Format> serializedAdditionalFormats;
     for (std::list<Serialization::FormatSerialization>::const_iterator it = serialization.additionalFormats.begin(); it != serialization.additionalFormats.end(); ++it) {

@@ -39,10 +39,24 @@ inline constexpr double kKeyFrameMinTangentWeight = 0.01;
 inline constexpr double kKeyFrameMaxTangentWeight = 0.99;
 
 /**
- * @brief Plain-data equivalent of a Curve keyframe. The interpolation is stored
- * as the underlying int value of Engine's KeyframeTypeEnum rather than that enum
- * itself, since Global/Enums.h (where it is defined) pulls in Qt and this
- * directory may not depend on Qt.
+ * @brief The values of Engine's KeyframeTypeEnum, which Global/Enums.h defines with Qt this
+ * directory may not depend on. Engine's Curve.cpp checks that the two agree.
+ **/
+enum class KeyFrameInterpolation : int {
+    eConstant = 0,
+    eLinear = 1,
+    eSmooth = 2,
+    eCatmullRom = 3,
+    eCubic = 4,
+    eHorizontal = 5,
+    eFree = 6,
+    eBroken = 7,
+    eNone = 8
+};
+
+/**
+ * @brief Plain-data equivalent of a Curve keyframe. The interpolation is stored as the int value
+ * of a KeyFrameInterpolation.
  **/
 struct KeyFrameSerialization {
     double time;

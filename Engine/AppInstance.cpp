@@ -91,6 +91,7 @@ CLANG_DIAG_ON(unknown-pragmas)
 #include "Engine/Plugin.h"
 #include "Engine/ProcessHandler.h"
 #include "Engine/Project.h"
+#include "Engine/ProjectTemplate.h"
 #include "Engine/RFV.h"
 #include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
@@ -3179,6 +3180,15 @@ AppInstance::getInvalidExpressionRechecksCount() const
     QMutexLocker k(&_imp->invalidExprKnobsMutex);
 
     return _imp->invalidExprRechecks;
+}
+
+bool
+AppInstance::runTemplateEdit(const QString& /*text*/,
+                             const std::function<bool(TemplateEdit*)>& edit)
+{
+    TemplateEdit templateEdit;
+
+    return edit(&templateEdit);
 }
 
 NATRON_NAMESPACE_EXIT

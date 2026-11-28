@@ -42,6 +42,16 @@
 
 NATRON_NAMESPACE_ENTER
 
+static_assert(int(eKeyframeTypeConstant) == int(Serialization::KeyFrameInterpolation::eConstant), "KeyFrameInterpolation must mirror KeyframeTypeEnum");
+static_assert(int(eKeyframeTypeLinear) == int(Serialization::KeyFrameInterpolation::eLinear), "KeyFrameInterpolation must mirror KeyframeTypeEnum");
+static_assert(int(eKeyframeTypeSmooth) == int(Serialization::KeyFrameInterpolation::eSmooth), "KeyFrameInterpolation must mirror KeyframeTypeEnum");
+static_assert(int(eKeyframeTypeCatmullRom) == int(Serialization::KeyFrameInterpolation::eCatmullRom), "KeyFrameInterpolation must mirror KeyframeTypeEnum");
+static_assert(int(eKeyframeTypeCubic) == int(Serialization::KeyFrameInterpolation::eCubic), "KeyFrameInterpolation must mirror KeyframeTypeEnum");
+static_assert(int(eKeyframeTypeHorizontal) == int(Serialization::KeyFrameInterpolation::eHorizontal), "KeyFrameInterpolation must mirror KeyframeTypeEnum");
+static_assert(int(eKeyframeTypeFree) == int(Serialization::KeyFrameInterpolation::eFree), "KeyFrameInterpolation must mirror KeyframeTypeEnum");
+static_assert(int(eKeyframeTypeBroken) == int(Serialization::KeyFrameInterpolation::eBroken), "KeyFrameInterpolation must mirror KeyframeTypeEnum");
+static_assert(int(eKeyframeTypeNone) == int(Serialization::KeyFrameInterpolation::eNone), "KeyFrameInterpolation must mirror KeyframeTypeEnum");
+
 // The project format validates weights against its own copy of these bounds.
 static_assert(Serialization::kKeyFrameDefaultTangentWeight == Interpolation::kDefaultTangentWeight, "tangent weight defaults differ");
 static_assert(Serialization::kKeyFrameMinTangentWeight == Interpolation::kMinTangentWeight, "tangent weight minimums differ");

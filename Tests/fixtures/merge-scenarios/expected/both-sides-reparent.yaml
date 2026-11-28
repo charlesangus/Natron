@@ -1,0 +1,35 @@
+# Hand-written: the correspondences and conflicts a correct merge of both-sides-reparent/ gives.
+description: >-
+  The artist wraps Blur1 into ArtistLook; the supervisor wraps it into a different group, Look, fed
+  through an input named Src. Both moved Blur1 into different groups, so the merge keeps the
+  artist's ArtistLook and lists one reparent conflict on Blur1, which also carries Blur1's
+  differently wired Source, plus an input conflict where the two sides wired Merge1 differently. The
+  supervisor's Look is added, and its LookOut keeps its name: script names only have to be free
+  within their group. LookOut's Source would reach into ArtistLook, so it is left unconnected with an
+  input conflict.
+merges:
+  - template: grade_tpl
+    base_mine:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: ArtistLook.Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    base_theirs:
+      TplIn: TplIn
+      Grade1: Grade1
+      Blur1: Look.Blur1
+      Constant1: Constant1
+      Merge1: Merge1
+      ColorCorrect1: ColorCorrect1
+      TplOut: TplOut
+    scope: [TplIn, Grade1, ArtistLook, ArtistLook.InB, ArtistLook.Blur1, ArtistLook.LookOut, Constant1, Merge1, ColorCorrect1, TplOut]
+    conflicts:
+      - {node: Blur1, kind: reparent}
+      - {node: Merge1, input: B, kind: input}
+      - {input: Source, kind: input}
+notes: >-
+  Had both sides made the same group, fed the same way, the two groups would merge into one with no
+  conflict.

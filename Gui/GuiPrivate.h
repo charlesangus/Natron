@@ -30,6 +30,7 @@
 
 #include <list>
 #include <map>
+#include <memory>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -51,6 +52,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiFwd.h"
 #include "Gui/LogWindow.h"
 
+#include "Engine/ProjectMerge.h"
 
 #define kPropertiesBinName "properties"
 
@@ -185,6 +187,10 @@ public:
     CurveEditor *_curveEditor;
     ProgressPanel* _progressPanel;
     SceneGraphPanel* _sceneGraphPanel;
+    MergeConflictPanel* _mergeConflictPanel;
+    NodeDiffPanel* _nodeDiffPanel;
+    Menu* menuUpdateFromTemplate;
+    std::shared_ptr<ProjectMerge::ChangeSummary> graphComparison;
     GeoSpreadsheetPanel* _geoSpreadsheetPanel;
     std::list<SceneGraphPanel*> _extraSceneGraphPanels;
 
@@ -303,6 +309,9 @@ public:
 
     void createSceneGraphPanelGui();
 
+    void createMergeConflictPanelGui();
+
+    void createNodeDiffPanelGui();
     void createGeoSpreadsheetPanelGui();
 
     ///If there's only 1 non-floating pane in the main window, return it, otherwise returns NULL

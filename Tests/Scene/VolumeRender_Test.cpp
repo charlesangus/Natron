@@ -795,7 +795,8 @@ TEST(VolumeRenderMoonRay, TheVolumeDarkensItsSide)
     expectTheVolumeDarkensItsSide(kMoonRayRendererId);
 }
 
-TEST(VolumeRenderMoonRay, ALiveFieldEditMovesTheVolume)
+// hdMoonray's field sync uses emulation-only dirtying; see M651 - MoonRay Live Volume Refresh.
+TEST(VolumeRenderMoonRay, DISABLED_ALiveFieldEditMovesTheVolume)
 {
     if (!moonRayOrSkip()) {
         return;

@@ -300,6 +300,36 @@ samplesOf(const VtDictionary& stats,
     return -1;
 }
 
+// What Natron Utility's stats say of the passes its running or last frame has shown.
+struct UtilityShownPasses {
+    std::uint64_t frame = 0;
+    std::size_t passes = 0;
+    std::size_t wanted = 0;
+    bool progressive = false;
+};
+
+UtilityShownPasses
+utilityShownPasses(const VtDictionary& stats)
+{
+    UtilityShownPasses shown;
+    const VtDictionary::const_iterator frame = stats.find(kUtilityStatFrame);
+    const VtDictionary::const_iterator passes = stats.find(kUtilityStatSamples);
+    const VtDictionary::const_iterator wanted = stats.find(kUtilityStatSamplesWanted);
+    const VtDictionary::const_iterator progressive = stats.find(kUtilityStatProgressive);
+    if ((frame != stats.end()) && frame->second.IsHolding<std::uint64_t>()) {
+        shown.frame = frame->second.UncheckedGet<std::uint64_t>();
+    }
+    if ((passes != stats.end()) && passes->second.IsHolding<std::size_t>()) {
+        shown.passes = passes->second.UncheckedGet<std::size_t>();
+    }
+    if ((wanted != stats.end()) && wanted->second.IsHolding<std::size_t>()) {
+        shown.wanted = wanted->second.UncheckedGet<std::size_t>();
+    }
+    shown.progressive = (progressive != stats.end()) && progressive->second.IsHolding<bool>() && progressive->second.UncheckedGet<bool>();
+
+    return shown;
+}
+
 std::int64_t
 countOf(const VtDictionary& stats,
         const char* key)
@@ -879,6 +909,13 @@ struct EngineEntry {
 
     // What the engine last rendered, which its AOVs hold until it renders again.
     bool rendered = false;
+    // Whether that render returned before Natron Utility's frame converged, for a request that refines, and the
+    // frame (kUtilityStatFrame) and passes shown it returned at: a request for the same render goes on from there.
+    bool partial = false;
+    std::uint64_t partialFrame = 0;
+    std::size_t partialPasses = 0;
+    // The request (Request::sequence) that render was for.
+    std::uint64_t partialSequence = 0;
     std::uint64_t serial = 0;
     U64 writeCount = 0;
     // What the delegate could not render of that render's stage, by DelegateSupport and by its
@@ -1946,9 +1983,13 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     const GfMatrix4d projection = request.frustum.ComputeProjectionMatrix();
     const U64 writeCount = SceneWriteBarrier::getWriteCount();
     entry.lastUse = ++_useSerial;
-    if (entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height) && (entry.framing == framing) && (entry.showRender == request.showRender) && (entry.showProxy == request.showProxy) && (entry.showGuides == request.showGuides) && (entry.cameraMotion == request.cameraMotion)) {
+    const bool sameRender = entry.rendered && !edited && (entry.writeCount == writeCount) && (entry.time == request.time) && (entry.view == view) && (entry.projection == projection) && (entry.width == width) && (entry.height == height) && (entry.framing == framing) && (entry.showRender == request.showRender) && (entry.showProxy == request.showProxy) && (entry.showGuides == request.showGuides) && (entry.cameraMotion == request.cameraMotion);
+    // The windows of one request all copy the same pass of a frame still refining.
+    if (sameRender && (!entry.partial || (request.refine && (request.sequence != 0) && (request.sequence == entry.partialSequence)))) {
         return &entry;
     }
+    // A frame left refining is still drawing in the delegate: the passes below take it further, never from the start.
+    const bool continuing = sameRender && entry.partial;
     // Cycles shows a restart in its progress only once a change reaches it: a request changing
     // nothing it sees would wait out kRestartUnseen for one, then make the engine again.
     bool watchRestart = false;
@@ -1989,6 +2030,10 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         engine->SetRendererSetting(TfToken(kRenderDelegateUtilityCameraViewsSetting), VtValue(views));
         engine->SetRendererSetting(TfToken(kRenderDelegateUtilityCameraProjectionsSetting), VtValue(projections));
         engine->SetRendererSetting(TfToken(kRenderDelegateUtilityInteractiveSetting), VtValue(request.interactive));
+        // Read as the frame starts, so the frame a continuing request takes further keeps the value it began with.
+        if (!continuing) {
+            engine->SetRendererSetting(TfToken(kRenderDelegateUtilityProgressiveSetting), VtValue(request.refine && request.interactive));
+        }
     }
 
     UsdImagingGLRenderParams params;
@@ -2052,6 +2097,22 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         const bool watchStall = MoonRayAovs::isMoonRay(renderer);
         // Natron Utility converges on its own thread and says so as it does; the others are polled.
         const bool waitsForConverged = (renderer == kRenderDelegateUtilityId);
+        // A pass counts as shown only if it is of a frame begun since this render started, or, going on with a
+        // partial render, of a later pass of its frame: the delegate's stats still describe the frame an edit
+        // cancelled until the next Render() begins the new one.
+        const bool refines = waitsForConverged && request.refine && request.interactive;
+        UtilityShownPasses base;
+        if (refines) {
+            if (continuing) {
+                base.frame = entry.partialFrame;
+                base.passes = entry.partialPasses;
+            } else {
+                base = utilityShownPasses(engine->GetRenderStats());
+                base.passes = std::numeric_limits<std::size_t>::max();
+            }
+        }
+        UtilityShownPasses shown;
+        bool partial = false;
         ProgressStall stall;
         bool stallRemade = false;
         bool passRan = false;
@@ -2114,6 +2175,15 @@ RenderThread::renderEngine(const HydraRender::Request& request,
                     cancelled = true;
                     break;
                 }
+                if (refines) {
+                    const UtilityShownPasses progress = utilityShownPasses(stats);
+                    // The last pass shown is followed at once by the frame converging, which the loop waits for.
+                    if (progress.progressive && (progress.passes > 0) && (progress.passes < progress.wanted) && ((progress.frame != base.frame) || (progress.passes > base.passes))) {
+                        shown = progress;
+                        partial = true;
+                        break;
+                    }
+                }
                 const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
                 if (watchStall && stall.stalled(stats, now)) {
                     if (stallRemade) {
@@ -2164,9 +2234,14 @@ RenderThread::renderEngine(const HydraRender::Request& request,
 
             return nullptr;
         }
+        entry.partial = partial;
+        entry.partialFrame = shown.frame;
+        entry.partialPasses = shown.passes;
+        entry.partialSequence = request.sequence;
         if (cancelled) {
             *error = "The " + entry.rendererName + " render was cancelled.";
             entry.rendered = false;
+            entry.partial = false;
             // Edits cancel constantly: an engine no pass of this render reached keeps its session,
             // which would otherwise be made again at every one, and so does one the cancel stopped,
             // whose threads stay stopped until the next render. A delegate that cannot stop would go
@@ -3272,6 +3347,9 @@ render(const Request& request,
         try {
             EngineEntry* entry = thread.renderEngine(request, &cancel, error);
             ok = entry && thread.frame(*entry, request.planes, result, error);
+            if (ok) {
+                result->partial = entry->partial;
+            }
         } catch (const std::exception& e) {
             *error = std::string("Hydra failed: ") + e.what();
             ok = false;
@@ -3477,6 +3555,9 @@ namespace {
         std::mutex mutex;
         bool valid = false;
         DeviceFrameKey key;
+        // Whether the frame is a pass of a render still refining, and the request (Request::sequence) it was taken for.
+        bool partial = false;
+        std::uint64_t sequence = 0;
         // Each plane is taken off the engine when a window first asks for it.
         UtilityDeviceResource film;
         UtilityDevicePicks depth;
@@ -3563,9 +3644,13 @@ recordDeviceWindow(const Request& request,
             frame->depth.releaseIfLost();
             frame->primId.releaseIfLost();
         }
-        if (!frame->valid || !(frame->key == key)) {
+        // A pass of a refining frame is the frame only for the request it was taken for: any other request takes the
+        // engine on to its next pass, or to convergence when it does not refine, with every plane taken again.
+        const bool samePass = !frame->partial || (request.refine && (request.sequence != 0) && (frame->sequence == request.sequence));
+        if (!frame->valid || !(frame->key == key) || !samePass) {
             // The engine's next frame goes into these films when nothing else holds them.
             frame->valid = false;
+            frame->partial = false;
             frame->film = UtilityDeviceResource();
             frame->depth = UtilityDevicePicks();
             frame->primId = UtilityDevicePicks();
@@ -3598,6 +3683,7 @@ recordDeviceWindow(const Request& request,
             const std::function<void()> whileWaiting = pollAborted(request, &cancel);
             const int threadBudget = AppTLS::currentThreadBudget();
             bool fellBack = false;
+            bool renderedPartial = false;
             const bool ran = thread.runAndWait([&]() {
                 // The budget is the waiting caller's, and a delegate parallelising on this thread must see it.
                 AppTLS::ThreadBudgetScope budget(threadBudget);
@@ -3608,6 +3694,7 @@ recordDeviceWindow(const Request& request,
                     if (!entry) {
                         return;
                     }
+                    renderedPartial = entry->partial;
                     const TfToken aov = (window.plane == ePlaneColor) ? HdAovTokens->color : (window.plane == ePlaneDepth) ? entry->depthAov
                                                                                                                            : HdAovTokens->primId;
                     HdRenderBuffer* buffer = entry->engine->GetAovRenderBuffer(aov);
@@ -3697,6 +3784,8 @@ recordDeviceWindow(const Request& request,
                 break;
             }
             frame->key = key;
+            frame->partial = renderedPartial;
+            frame->sequence = request.sequence;
             frame->warning = renderedInfo.warning;
             frame->errors = renderedInfo.errors;
             frame->device = renderedInfo.device;
@@ -3709,6 +3798,7 @@ recordDeviceWindow(const Request& request,
         info->warning = frame->warning;
         info->errors = frame->errors;
         info->device = frame->device;
+        info->partial = frame->partial;
         if (window.plane == ePlanePrimId) {
             info->primPaths = frame->primPaths;
         }

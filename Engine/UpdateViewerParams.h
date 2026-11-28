@@ -114,6 +114,7 @@ public:
         , abortInfo()
         , isSequential(false)
         , isPartialRect(false)
+        , refining(false)
         , isViewerPaused(false)
         , recenterViewport(false)
         , viewportCenter()
@@ -200,6 +201,9 @@ public:
 
     // Is this a marker overlay used when tracking ?
     bool isPartialRect;
+
+    // The frame is a pass of a render still refining: shown, never cached, and asked for again once shown.
+    bool refining;
 
     // Is the viewer paused ?
     bool isViewerPaused;

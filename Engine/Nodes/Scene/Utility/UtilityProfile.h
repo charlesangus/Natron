@@ -211,14 +211,16 @@ namespace utilityProfile {
 /**
  * @brief Writes a "viewer_frame" record as a viewer shows a frame: from a root left on the device (deviceColor) or
  * from host pixels, through the viewer's hand-off rung, with fallback when a device root was drawn from a download
- * instead. It carries the steady clock in mono_ms and the process's device download and pick readback counts, so a
- * reader can tell what each frame cost and line it up with the hydra_profile records. Does nothing unless enabled().
+ * instead, and refining when the frame is a pass of a render still refining, which the viewer asks for again. It
+ * carries the steady clock in mono_ms and the process's device download and pick readback counts, so a reader can
+ * tell what each frame cost and line it up with the hydra_profile records. Does nothing unless enabled().
  **/
 void writeViewerFrame(const std::string& viewer,
                       double time,
                       bool deviceColor,
                       bool fallback,
-                      const std::string& rung);
+                      const std::string& rung,
+                      bool refining);
 } // namespace utilityProfile
 
 namespace utilityProfile {

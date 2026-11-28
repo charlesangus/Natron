@@ -40,6 +40,7 @@
 #include <QStringList>
 #include <QThread>
 
+#include "Engine/AbortableRenderInfo.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/ChoiceOption.h"
@@ -1817,9 +1818,16 @@ USDRender::renderGpu(const GpuRenderArgs& args)
         setup.request.aborted = [this]() { return aborted(); };
         setup.request.threads = appPTR->getNCPUsAvailableForEffect();
         setup.request.interactive = rendersForViewer();
+        if (args.refinement) {
+            setup.request.refine = setup.request.interactive;
+            setup.request.sequence = args.refinement->getRenderSequence();
+        }
         HydraRender::Result info;
         if (!HydraRender::recordDeviceWindow(setup.request, window, args.context, args.output, args.outputRect, &info, &error)) {
             return eStatusFailed;
+        }
+        if (info.partial && args.refinement) {
+            args.refinement->markRefining();
         }
         showRenderMessages(setup.warning, info.warning, info.errors, info.device);
 

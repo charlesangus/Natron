@@ -4686,6 +4686,7 @@ ViewerInstance::completeViewerRender(PendingViewerRender& pending)
                 assert(colorImage);
                 inArgs.params->colorImage = colorImage;
             }
+            inArgs.params->refining = inArgs.params->abortInfo && inArgs.params->abortInfo->isRefining();
             if (!colorImage && !hasDeviceColor) {
                 if (retCode == EffectInstance::eRenderRoIRetCodeFailed) {
                     return eViewerRenderRetCodeFail;
@@ -4756,7 +4757,7 @@ ViewerInstance::completeViewerRender(PendingViewerRender& pending)
             updateParams->deviceStats = stats;
             updateParams->deviceCacheTiles.clear();
             // The tiles would be keyed by a viewer hash the upstream render may not have seen.
-            if (useTextureCache && inArgs.cleanHash && inArgs.cleanHash->allowsStoreUnder(viewerHash)) {
+            if (useTextureCache && !updateParams->refining && inArgs.cleanHash && inArgs.cleanHash->allowsStoreUnder(viewerHash)) {
                 const std::string inputToRenderName = inArgs.activeInputToRender->getNode()->getScriptName_mt_safe();
                 for (std::list<UpdateViewerParams::CachedTile>::const_iterator it = updateParams->tiles.begin(); it != updateParams->tiles.end(); ++it) {
                     UpdateViewerParams::DeviceCacheTile cacheTile;
@@ -5077,9 +5078,9 @@ ViewerInstance::completeViewerRender(PendingViewerRender& pending)
         } // if (singleThreaded)
 
         // The tiles created above were cached under viewerHash before the render: an edit or a
-        // mark that came meanwhile means they may show another state, so they leave the cache,
-        // still displayed by this update.
-        if (useTextureCache && !(inArgs.cleanHash && inArgs.cleanHash->allowsStoreUnder(viewerHash))) {
+        // mark that came meanwhile means they may show another state, and a refining frame is not
+        // yet the state, so they leave the cache, still displayed by this update.
+        if (useTextureCache && (inArgs.params->refining || !(inArgs.cleanHash && inArgs.cleanHash->allowsStoreUnder(viewerHash)))) {
             for (std::list<UpdateViewerParams::CachedTile>::const_iterator it = unCachedTiles.begin(); it != unCachedTiles.end(); ++it) {
                 if (it->cachedData) {
                     appPTR->removeFromViewerCache(it->cachedData);
@@ -6458,8 +6459,42 @@ ViewerInstance::ViewerInstancePrivate::showFrame(const UpdateViewerParamsPtr& pa
 #else
         const std::string rung = "Cpu";
 #endif
-        utilityProfile::writeViewerFrame(instance->getScriptName_mt_safe(), params->time, deviceFrame, deviceFrame && deviceDownload, rung);
+        utilityProfile::writeViewerFrame(instance->getScriptName_mt_safe(), params->time, deviceFrame, deviceFrame && deviceDownload, rung, params->refining);
     }
+    requestRefinement(params);
+}
+
+void
+ViewerInstance::ViewerInstancePrivate::requestRefinement(const UpdateViewerParamsPtr& params)
+{
+    if (!params->refining || params->isPartialRect || params->isSequential || !params->abortInfo || params->abortInfo->isSuperseded()) {
+        return;
+    }
+    const int textureIndex = params->textureIndex;
+    if ((textureIndex < 0) || (textureIndex > 1)) {
+        return;
+    }
+    refineFrom[textureIndex] = params->abortInfo;
+    if (refineScheduled) {
+        return;
+    }
+    refineScheduled = true;
+    // Forcing the render would bypass the scheduler the device frame comes through: the pass shown is in no cache,
+    // so a plain request renders it again.
+    QTimer::singleShot(0, this, [this]() {
+        refineScheduled = false;
+        bool wanted = false;
+        for (int i = 0; i < 2; ++i) {
+            const AbortableRenderInfoPtr from = refineFrom[i].lock();
+            refineFrom[i].reset();
+            wanted = wanted || (from && !from->isSuperseded());
+        }
+        ViewerInstance* viewer = const_cast<ViewerInstance*>(instance);
+        if (!wanted || viewer->isDoingSequentialRender()) {
+            return;
+        }
+        viewer->renderCurrentFrame(true);
+    });
 }
 
 bool

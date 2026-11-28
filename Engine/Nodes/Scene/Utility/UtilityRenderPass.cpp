@@ -790,7 +790,10 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
 
     const std::size_t samplesWanted = static_cast<std::size_t>(frame.raster ? frame.rasterSamples : frame.sampling.samplesPerPixel());
 
-    _renderParam->setSampleProgress(0, samplesWanted);
+    const VtValue progressiveValue = GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kRenderDelegateUtilityProgressiveSetting));
+    const bool progressive = progressiveValue.IsHolding<bool>() && progressiveValue.UncheckedGet<bool>();
+
+    _renderParam->beginFrameProgress(samplesWanted, progressive);
 
     const std::shared_ptr<const UtilityScene::Snapshot> snapshot = std::make_shared<UtilityScene::Snapshot>(scene->snapshot());
 
@@ -815,8 +818,6 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     // The thread budget belongs to this thread, not the frame's.
     const int threads = std::max(1, appPTR->getNCPUsAvailableForEffect());
     const HdRenderPassAovBindingVector frameBindings = bindings;
-    const VtValue progressiveValue = GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kRenderDelegateUtilityProgressiveSetting));
-    const bool progressive = progressiveValue.IsHolding<bool>() && progressiveValue.UncheckedGet<bool>();
     const VtValue interactiveValue = GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kRenderDelegateUtilityInteractiveSetting));
     const bool interactive = interactiveValue.IsHolding<bool>() && interactiveValue.UncheckedGet<bool>();
 
@@ -845,7 +846,13 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
 
                 _renderParam->setSampleProgress(0, wanted);
 
-                const bool drew = wavefrontDrawSamples(executor, *snapshot, drawn, motion, film, cancel, threads, [this, wanted, &film](std::size_t done) { _renderParam->setSampleProgress(film.shownPasses(done), wanted); });
+                const bool drew = wavefrontDrawSamples(executor, *snapshot, drawn, motion, film, cancel, threads, [this, wanted, &film, progressive](std::size_t done) {
+                    _renderParam->setSampleProgress(film.shownPasses(done), wanted);
+                    // A caller waiting in waitForConverged() for the next pass shown sees it at once.
+                    if (progressive) {
+                        UtilityRenderBuffer::wakeConvergedWaiters();
+                    }
+                });
 
                 if (drew) {
                     _renderParam->setSampleProgress(film.shownPasses(wanted), wanted);

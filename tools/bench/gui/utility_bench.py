@@ -37,7 +37,8 @@ Configured by the environment:
 
 Output: one host record, then per edit a "frame" record and per pass count one "summary" record:
     first_ms, last_ms   edit to the first and to the last viewer frame of the edit
-    frames              viewer frames the edit brought
+    frames              viewer frames the edit brought: with refinement, its first pass on to the converged frame
+    converged           the last of them was converged, not a pass of a frame still refining
     rung                the viewer's hand-off rung on the last frame
     device_color        the last frame came to the viewer as a device root
     fallback            a device root drawn from a download instead (the legacy path)
@@ -53,7 +54,7 @@ Output: one host record, then per edit a "frame" record and per pass count one "
     raster_fallback     the render warned that Raster fell back to Ray
 With nvidia-smi on the PATH, nvidia_smi.csv beside the output holds the GPU's clocks and power state every 100 ms.
 The summary's median_ms and p95_ms are of last_ms, the headline compare.py diffs, against the target.
-Exit status is non-zero when any edit brought no viewer frame or Raster fell back to Ray.
+Exit status is non-zero when any edit brought no viewer frame, did not converge, or Raster fell back to Ray.
 """
 import atexit
 import glob
@@ -471,7 +472,9 @@ try:
                     return len(seen) > count or mono_ms() >= quiet_until
 
                 yield ("until", more_or_quiet, QUIET_MS / 1000.0 + 1.0)
-                if len(seen) == count:
+                # A refining frame is followed by the next pass however long it takes: the edit ends at convergence.
+                refining = bool(seen[-1].get("refining"))
+                if len(seen) == count and (not refining or mono_ms() - t0 >= OP_TIMEOUT_S * 1000.0):
                     break
             message = str(render.getPersistentMessage() or "")
             stages = {}
@@ -493,6 +496,7 @@ try:
                 "first_ms": rounded(first["mono_ms"] - t0) if seen else None,
                 "last_ms": rounded(last["mono_ms"] - t0) if seen else None,
                 "frames": len(seen),
+                "converged": bool(seen) and not last.get("refining"),
                 "rung": last.get("rung"),
                 "device_color": bool(last.get("device_color")),
                 "fallback": any(bool(r.get("fallback")) for r in seen),
@@ -525,6 +529,8 @@ try:
                 frames.append(record)
                 if record["last_ms"] is None:
                     failures.append("edit %d brought no viewer frame within %g s" % (i, OP_TIMEOUT_S))
+                elif not record["converged"]:
+                    failures.append("edit %d did not converge within %g s" % (i, OP_TIMEOUT_S))
                 if record["raster_fallback"]:
                     failures.append("edit %d: %s" % (i, record["message"]))
             placement = None

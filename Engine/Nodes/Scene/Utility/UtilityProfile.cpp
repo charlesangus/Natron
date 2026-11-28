@@ -459,7 +459,8 @@ writeViewerFrame(const std::string& viewer,
                  double time,
                  bool deviceColor,
                  bool fallback,
-                 const std::string& rung)
+                 const std::string& rung,
+                 bool refining)
 {
     if (!enabled()) {
         return;
@@ -475,6 +476,7 @@ writeViewerFrame(const std::string& viewer,
     line += std::string(",\"device_color\":") + (deviceColor ? "true" : "false");
     line += std::string(",\"fallback\":") + (fallback ? "true" : "false");
     line += ",\"rung\":" + jsonString(rung);
+    line += std::string(",\"refining\":") + (refining ? "true" : "false");
     line += ",\"device_downloads\":" + std::to_string(UtilityRenderBuffer::deviceDownloadCount());
     line += ",\"pick_readbacks\":" + std::to_string(UtilityRenderBuffer::pickReadbackCount());
     line += "}\n";

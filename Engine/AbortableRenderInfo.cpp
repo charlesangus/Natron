@@ -51,6 +51,8 @@ struct AbortableRenderInfoPrivate {
     U64 age;
     U64 sequence;
     std::atomic<bool> superseded;
+    std::atomic<bool> acceptsRefinement;
+    std::atomic<bool> refining;
     mutable QMutex threadsMutex;
     ThreadSet threadsForThisRender;
     QMutex keptAliveMutex;
@@ -63,6 +65,8 @@ struct AbortableRenderInfoPrivate {
         , age(age)
         , sequence(++s_latestRenderSequence)
         , superseded(false)
+        , acceptsRefinement(false)
+        , refining(false)
         , threadsMutex()
         , threadsForThisRender()
         , keptAliveMutex()
@@ -122,6 +126,30 @@ bool
 AbortableRenderInfo::isSuperseded() const
 {
     return _imp->superseded.load();
+}
+
+void
+AbortableRenderInfo::setAcceptsRefinement()
+{
+    _imp->acceptsRefinement.store(true);
+}
+
+bool
+AbortableRenderInfo::acceptsRefinement() const
+{
+    return _imp->acceptsRefinement.load();
+}
+
+void
+AbortableRenderInfo::markRefining()
+{
+    _imp->refining.store(true);
+}
+
+bool
+AbortableRenderInfo::isRefining() const
+{
+    return _imp->refining.load();
 }
 
 bool

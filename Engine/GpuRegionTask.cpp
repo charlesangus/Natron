@@ -458,7 +458,9 @@ public:
         const EffectInstance::RenderRoIRetCode code = runPlanned(rootPlanes);
         reportIntervals();
         reportTimesByTask();
-        if (code == EffectInstance::eRenderRoIRetCodeOk) {
+        // An unfinished frame is shown once and asked for again, never cached as the output of its key.
+        const AbortableRenderInfoPtr& abortInfo = _context->getAbortInfo();
+        if ((code == EffectInstance::eRenderRoIRetCodeOk) && !(abortInfo && abortInfo->isRefining())) {
             publishToDeviceTier();
             admitToHostTier();
         }
@@ -2342,6 +2344,7 @@ private:
                 args.recordScope = this;
                 args.query = member.query;
                 args.outputRect = renderRectOf(member);
+                args.refinement = refinementOf(member);
                 if (!setInputs(member, &args)) {
                     fail(member.task, "an input is not on the device");
 
@@ -3184,6 +3187,7 @@ private:
             GpuRenderArgs args(recorder);
             args.query = member.query;
             args.outputRect = rect;
+            args.refinement = refinementOf(member);
             if (!setInputs(member, &args)) {
                 fail(member.task, "a strip of its input is not on the device");
 
@@ -3746,6 +3750,16 @@ private:
         *image = images.front();
 
         return true;
+    }
+
+    AbortableRenderInfoPtr refinementOf(const Member& member) const
+    {
+        const AbortableRenderInfoPtr& abortInfo = _context->getAbortInfo();
+        if (!abortInfo || !abortInfo->acceptsRefinement() || (member.outSlot < 0) || !_slots[member.outSlot].deviceRoot) {
+            return AbortableRenderInfoPtr();
+        }
+
+        return abortInfo;
     }
 
     // Each output task goes to the store as one entry holding all its planes.

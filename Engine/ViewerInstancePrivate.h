@@ -268,6 +268,10 @@ public:
     void scheduleStagedFlush();
 #endif
 
+    // After a refining frame is shown, asks for the current frame again so the render takes its next pass; the requests
+    // of both textures share one, and one a newer request superseded asks for nothing.
+    void requestRefinement(const UpdateViewerParamsPtr& params);
+
     // Everything updateViewer() does once the texture holds the frame of params, or before the tiles of a CPU frame.
     void showFrame(const UpdateViewerParamsPtr& params,
                    TexturePtr texture,
@@ -368,6 +372,11 @@ public:
         }
 
         AbortableRenderInfoPtr info = AbortableRenderInfo::create(canAbort, ret);
+        // A current-frame request may show a frame still refining and ask for the next pass; playback waits for each
+        // frame to finish.
+        if (!isSequential) {
+            info->setAcceptsRefinement();
+        }
 
         // Playback renders several frames at once, each still wanted: only a current-frame
         // request replaces what came before it, and a playback frame replaces a current-frame one.
@@ -537,6 +546,9 @@ public:
     OpenGLViewerI* uiContext; // written in the main thread before render thread creation, accessed from render thread
     mutable QMutex forceRenderMutex;
     bool forceRender[2]; /*!< true when we want to by-pass the cache*/
+    // Only accessed from MT
+    bool refineScheduled = false;
+    std::weak_ptr<AbortableRenderInfo> refineFrom[2];
     mutable QMutex adaptiveDraftMutex;
     AdaptiveDraft adaptiveDraft;
     mutable QMutex isViewerPausedMutex;

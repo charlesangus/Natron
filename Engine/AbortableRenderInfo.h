@@ -141,6 +141,23 @@ public:
     bool isSuperseded() const;
 
     /**
+     * @brief Lets a progressive renderer return a partial frame for this request instead of
+     * rendering to convergence; the requester then asks again until the frame converges. Set by
+     * the viewer only on current-frame requests, never on playback, writers or previews.
+     **/
+    void setAcceptsRefinement();
+
+    bool acceptsRefinement() const;
+
+    /**
+     * @brief Called by a renderer that returned a partial frame under acceptsRefinement(), so the
+     * requester knows the output is not final and must not be cached. Cannot be reversed.
+     **/
+    void markRefining();
+
+    bool isRefining() const;
+
+    /**
      * @brief Registers the thread as part of this render request. Whenever AbortableThread::setAbortInfo is called, the thread is automatically registered
      * in this class as to be part of this render. This is used to monitor running threads for a specific render and to know if a thread has stalled when
      * the user called setAborted()

@@ -64,6 +64,12 @@
 // The samples per pixel the running or last frame has drawn, and the number it draws in all.
 #define kUtilityStatSamples "utilitySamples"
 #define kUtilityStatSamplesWanted "utilitySamplesWanted"
+// A std::uint64_t counting the frames the delegate began, so a reader can tell a pass of the running frame from one
+// of a frame before it.
+#define kUtilityStatFrame "utilityFrame"
+// Whether the running or last frame shows its passes as it draws them (kRenderDelegateUtilityProgressiveSetting):
+// utilitySamples then counts the passes published, which readers already see, rather than those drawn.
+#define kUtilityStatProgressive "utilityProgressive"
 // Why some motion does not blur, naming the prims, as a std::string; empty when all of it does.
 #define kUtilityStatMotionWarning "utilityMotionWarning"
 
@@ -219,6 +225,11 @@ public:
                            std::size_t wanted);
     void sampleProgress(std::size_t* done,
                         std::size_t* wanted) const;
+    // Resets the progress for a frame about to start, and counts the frame.
+    void beginFrameProgress(std::size_t wanted,
+                            bool progressive);
+    void frameProgress(std::uint64_t* frame,
+                       bool* progressive) const;
 
     // What a running frame polls: set by stop() until restart(), and by cancelFrame() until the next
     // frame starts. MT-safe.
@@ -275,6 +286,8 @@ private:
     std::string _reportWarning;
     std::size_t _samplesDone = 0;
     std::size_t _samplesWanted = 0;
+    std::uint64_t _framesBegun = 0;
+    bool _frameProgressive = false;
     std::atomic<bool> _stop { false };
     std::atomic<bool> _cancel { false };
     std::atomic<bool> _frameRunning { false };

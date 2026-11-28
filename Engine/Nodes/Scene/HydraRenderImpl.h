@@ -193,6 +193,13 @@ struct Request {
     // Whether someone waits to see the render, as a viewer does: Natron Utility then keeps its GPU submissions
     // short rather than sized for throughput.
     bool interactive = false;
+    // Whether the caller takes a frame Natron Utility has not finished and asks again for the rest, as the viewer
+    // does for the frame on screen: recordDeviceWindow() then returns after the next pass the delegate shows rather
+    // than at convergence. Only with interactive.
+    bool refine = false;
+    // The render request the caller renders for (AbortableRenderInfo::getRenderSequence()), 0 for none. Every window
+    // of one request copies the same pass of a refining frame, and only a later request advances it.
+    std::uint64_t sequence = 0;
 };
 
 /**
@@ -225,6 +232,8 @@ struct Result {
     std::string errors;
     // The device the delegate says it rendered on; empty for a delegate that does not say.
     std::string device;
+    // Set by recordDeviceWindow() for a request that refines when the frame copied has not converged yet.
+    bool partial = false;
 };
 
 /**

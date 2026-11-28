@@ -354,6 +354,11 @@ struct GpuRenderArgs {
     // may be read by what a later one records, without a barrier. Each is its own scope unless the engine says otherwise.
     const void* recordScope;
 
+    // The request, for the member whose output is the root the viewer takes on the device, when that request takes a
+    // frame still refining (AbortableRenderInfo::acceptsRefinement()); null for any other member. Such a member may
+    // hand over an unfinished frame, saying so with markRefining().
+    AbortableRenderInfoPtr refinement;
+
     explicit GpuRenderArgs(gpu::GpuRecordContext& ctx)
         : query()
         , outputRect()
@@ -365,6 +370,7 @@ struct GpuRenderArgs {
         , output()
         , context(ctx)
         , recordScope(&ctx)
+        , refinement()
     {
     }
 

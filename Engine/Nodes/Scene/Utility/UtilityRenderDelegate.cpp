@@ -371,6 +371,28 @@ UtilityRenderParam::sampleProgress(std::size_t* done,
     *wanted = _samplesWanted;
 }
 
+void
+UtilityRenderParam::beginFrameProgress(std::size_t wanted,
+                                       bool progressive)
+{
+    const std::lock_guard<std::mutex> l(_reportMutex);
+
+    _samplesDone = 0;
+    _samplesWanted = wanted;
+    ++_framesBegun;
+    _frameProgressive = progressive;
+}
+
+void
+UtilityRenderParam::frameProgress(std::uint64_t* frame,
+                                  bool* progressive) const
+{
+    const std::lock_guard<std::mutex> l(_reportMutex);
+
+    *frame = _framesBegun;
+    *progressive = _frameProgressive;
+}
+
 const std::atomic<bool>&
 UtilityRenderParam::cancelFlag() const
 {
@@ -812,6 +834,13 @@ UtilityRenderDelegate::GetRenderStats() const
     _renderParam->sampleProgress(&samples, &samplesWanted);
     dictionary[kUtilityStatSamples] = VtValue(samples);
     dictionary[kUtilityStatSamplesWanted] = VtValue(samplesWanted);
+
+    std::uint64_t frame = 0;
+    bool progressive = false;
+
+    _renderParam->frameProgress(&frame, &progressive);
+    dictionary[kUtilityStatFrame] = VtValue(frame);
+    dictionary[kUtilityStatProgressive] = VtValue(progressive);
 
     std::string motionWarning;
 

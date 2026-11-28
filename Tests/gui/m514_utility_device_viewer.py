@@ -13,6 +13,8 @@ Checks, in Ray and then in Raster (where the device cannot rasterize the frame r
   3. every one of those frames came to the viewer as a device root (device_color);
   4. none of them was drawn from a download of the root (no legacy fallback);
   5. the renderer's colour download count did not move from the first frame to the last.
+Then in Ray at REFINE_SAMPLES pixel samples, each of EDITS Seed changes shows its first pass at once and refines:
+  6. the edit brings at least two viewer frames, every one but the last marked refining and the last converged.
 
 Meant for a host with a real GPU. Needs a GPU build and a viewer with a device hand-off; launch with
 NATRON_UTILITY_PROFILE=<path>, NATRON_GPU=force and, under Xvfb, NATRON_VIEWER_HANDOFF=hostsync, e.g. (repository
@@ -37,6 +39,7 @@ UTILITY_ID = "HdNatronUtilityRendererPlugin"
 FALLBACK_TEXT = "Render Mode is Raster, but"
 SIZE = (480, 270)
 EDITS = 3
+REFINE_SAMPLES = 16
 
 CARD_STAGE = """#usda 1.0
 (
@@ -158,6 +161,34 @@ try:
               "%s: the renderer made no colour download (%s -> %s)" % (
                   name, frames[0].get("device_downloads"), frames[-1].get("device_downloads")))
 
+    def converged_after(after):
+        """Steps that wait for a converged viewer frame past the first `after`; returns whether one came."""
+        ok = yield ("until", lambda: any(not f.get("refining") for f in viewer_frames()[after:]), POLL_TIMEOUT_S)
+        if ok:
+            yield ("sleep", SETTLE_MS)
+        return ok
+
+    def refine_session(seed):
+        """Steps of the refining check: EDITS Seed changes, each awaited until its frame converged."""
+        section("refine")
+        for i in range(EDITS):
+            count = len(viewer_frames())
+            seed.set(seed.get() + 1)
+            ok = yield from converged_after(count)
+            check(ok, "refine: edit %d converges within %g s" % (i + 1, POLL_TIMEOUT_S))
+            if not ok:
+                continue
+            frames = viewer_frames()[count:]
+            last = next(k for k, f in enumerate(frames) if not f.get("refining"))
+            shown = frames[:last + 1]
+            report("NOTE refine: edit %d showed %d frames over %.0f ms" % (
+                i + 1, len(shown), shown[-1].get("mono_ms", 0.) - shown[0].get("mono_ms", 0.)))
+            check(len(shown) >= 2, "refine: edit %d showed its first pass and then refined (%d frames)" % (i + 1, len(shown)))
+            check(all(f.get("refining") for f in shown[:-1]),
+                  "refine: edit %d marked every frame before the converged one refining" % (i + 1))
+        shot("m514-utility-device-viewer-refine.png")
+        check_frames("refine", viewer_frames()[count:])
+
     def session(name, seed):
         """Steps of one mode: a frame, then EDITS Seed changes, each awaited; checks the frames they brought."""
         section(name)
@@ -213,6 +244,15 @@ try:
         yield from session("ray", seed)
         require(choose(mode, "Raster"), "Render Mode switches to Raster")
         yield from session("raster", seed)
+        require(choose(mode, "Ray"), "Render Mode switches back to Ray")
+        if pixel_samples is not None:
+            pixel_samples.set(REFINE_SAMPLES)
+            yield ("sleep", SETTLE_MS)
+            settled = yield from converged_after(len(viewer_frames()) - 1)
+            require(settled, "refine: the frame at %d pixel samples converges" % REFINE_SAMPLES)
+            yield from refine_session(seed)
+        else:
+            check(False, "the Natron Utility settings have a Pixel Samples parameter")
         viewer.disconnectInput(0)
 
     run(main())

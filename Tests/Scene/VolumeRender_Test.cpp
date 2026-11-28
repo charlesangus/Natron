@@ -144,6 +144,76 @@ const char* const kOpenShutter = "over \"World\"\n"
                                  "        double shutter:open = -0.25\n"
                                  "    }\n"
                                  "}\n";
+// The camera's shutter of kOpenShutter, and the frame 1 sphere of volume-sphere-dilated.0001.vdb,
+// whose velocity reaches past its density.
+const char* const kDilatedVelocity = "over \"World\"\n"
+                                     "{\n"
+                                     "    over \"Smoke\"\n"
+                                     "    {\n"
+                                     "        over \"density\"\n"
+                                     "        {\n"
+                                     "            asset filePath.timeSamples = { 1: @" NATRON_TESTS_FIXTURES_DIR "/volume-sphere-dilated.0001.vdb@ }\n"
+                                     "        }\n"
+                                     "        over \"velocity\"\n"
+                                     "        {\n"
+                                     "            asset filePath.timeSamples = { 1: @" NATRON_TESTS_FIXTURES_DIR "/volume-sphere-dilated.0001.vdb@ }\n"
+                                     "        }\n"
+                                     "    }\n"
+                                     "}\n";
+const char* const kDilatedVelocityOpenShutter = "over \"World\"\n"
+                                                "{\n"
+                                                "    over \"Cam\"\n"
+                                                "    {\n"
+                                                "        double shutter:close = 0.25\n"
+                                                "        double shutter:open = -0.25\n"
+                                                "    }\n"
+                                                "    over \"Smoke\"\n"
+                                                "    {\n"
+                                                "        over \"density\"\n"
+                                                "        {\n"
+                                                "            asset filePath.timeSamples = { 1: @" NATRON_TESTS_FIXTURES_DIR "/volume-sphere-dilated.0001.vdb@ }\n"
+                                                "        }\n"
+                                                "        over \"velocity\"\n"
+                                                "        {\n"
+                                                "            asset filePath.timeSamples = { 1: @" NATRON_TESTS_FIXTURES_DIR "/volume-sphere-dilated.0001.vdb@ }\n"
+                                                "        }\n"
+                                                "    }\n"
+                                                "}\n";
+
+// kDilatedVelocity on a stage of timeCodesPerSecond, the shutter open halfShutter frames either
+// side of the frame.
+std::string
+dilatedVelocityAt(double timeCodesPerSecond,
+                  double halfShutter)
+{
+    char text[4096];
+    std::snprintf(text, sizeof(text),
+                  "(\n"
+                  "    timeCodesPerSecond = %g\n"
+                  ")\n"
+                  "over \"World\"\n"
+                  "{\n"
+                  "    over \"Cam\"\n"
+                  "    {\n"
+                  "        double shutter:close = %g\n"
+                  "        double shutter:open = %g\n"
+                  "    }\n"
+                  "    over \"Smoke\"\n"
+                  "    {\n"
+                  "        over \"density\"\n"
+                  "        {\n"
+                  "            asset filePath.timeSamples = { 1: @" NATRON_TESTS_FIXTURES_DIR "/volume-sphere-dilated.0001.vdb@ }\n"
+                  "        }\n"
+                  "        over \"velocity\"\n"
+                  "        {\n"
+                  "            asset filePath.timeSamples = { 1: @" NATRON_TESTS_FIXTURES_DIR "/volume-sphere-dilated.0001.vdb@ }\n"
+                  "        }\n"
+                  "    }\n"
+                  "}\n",
+                  timeCodesPerSecond, halfShutter, -halfShutter);
+
+    return text;
+}
 
 // The dev image's /usr/local glvnd lists only NVIDIA; the system directory holds Mesa. Set before
 // the first EGL use, as the render thread's context is made once.
@@ -337,11 +407,14 @@ public:
         request.height = kSize;
         request.renderer = _renderer;
         std::string error;
-        if (!HydraRender::cameraFrustum(_stage, PXR_NS::SdfPath(kCamera), request.time, 1., HydraRender::eFitModeFill, &request.frustum, &error)) {
+        if (!HydraRender::cameraFrustum(_stage, PXR_NS::SdfPath(kCamera), request.time, 1., HydraRender::eFitModeExpand, &request.frustum, &error)) {
             ADD_FAILURE() << error;
 
             return false;
         }
+        request.camera = PXR_NS::SdfPath(kCamera);
+        request.fit = HydraRender::eFitModeExpand;
+        request.pixelAspect = 1.;
         HydraRender::Result result;
         bool rendered = false;
         {
@@ -524,18 +597,45 @@ expectAnEmissionFieldChangesTheVolume(const std::string& renderer)
 }
 
 // With the shutter open a quarter frame either side of frame 1, the velocity field blurs the
-// sphere along its motion, into the card right of where it sits at the frame.
+// sphere along its motion, into the card right of where it sits at the frame. still and open are
+// the overrides of the render with a closed shutter and of the one with it open.
 void
-expectVelocityBlursTheVolume(const std::string& renderer)
+expectVelocityBlursTheVolume(const std::string& renderer,
+                             const std::string& still = std::string(),
+                             const std::string& open = kOpenShutter)
+{
+    const RendererSettings settings(renderer);
+    Render stillRender;
+    ASSERT_TRUE(renderScene(renderer, 1., still, &stillRender));
+    Render blurred;
+    ASSERT_TRUE(renderScene(renderer, 1., open, &blurred));
+    const float stillTrail = meanOf(stillRender, kTrailX0, kTrailX1);
+    const float blurredTrail = meanOf(blurred, kTrailX0, kTrailX1);
+    EXPECT_LT(blurredTrail, 0.95f * stillTrail) << renderer << ": blurred " << blurredTrail << ", still " << stillTrail;
+}
+
+// Velocity is in units a second, so the stage's rate decides how far a shutter in time codes
+// moves the volume: at 48 a second a shutter twice as long blurs as the 24 a second one does,
+// and one as long blurs less.
+void
+expectTheRateScalesTheVelocity(const std::string& renderer)
 {
     const RendererSettings settings(renderer);
     Render still;
-    ASSERT_TRUE(renderScene(renderer, 1., std::string(), &still));
-    Render blurred;
-    ASSERT_TRUE(renderScene(renderer, 1., kOpenShutter, &blurred));
+    ASSERT_TRUE(renderScene(renderer, 1., kDilatedVelocity, &still));
+    Render at24;
+    ASSERT_TRUE(renderScene(renderer, 1., dilatedVelocityAt(24., 0.25), &at24));
+    Render at48SameSeconds;
+    ASSERT_TRUE(renderScene(renderer, 1., dilatedVelocityAt(48., 0.5), &at48SameSeconds));
+    Render at48HalfSeconds;
+    ASSERT_TRUE(renderScene(renderer, 1., dilatedVelocityAt(48., 0.25), &at48HalfSeconds));
     const float stillTrail = meanOf(still, kTrailX0, kTrailX1);
-    const float blurredTrail = meanOf(blurred, kTrailX0, kTrailX1);
-    EXPECT_LT(blurredTrail, 0.95f * stillTrail) << renderer << ": blurred " << blurredTrail << ", still " << stillTrail;
+    const float darkened24 = stillTrail - meanOf(at24, kTrailX0, kTrailX1);
+    const float darkened48Same = stillTrail - meanOf(at48SameSeconds, kTrailX0, kTrailX1);
+    const float darkened48Half = stillTrail - meanOf(at48HalfSeconds, kTrailX0, kTrailX1);
+    ASSERT_GT(darkened24, 0.05f * stillTrail) << renderer << ": the 24 a second shutter does not blur, still " << stillTrail;
+    EXPECT_NEAR(darkened48Same, darkened24, 0.3f * darkened24) << renderer << ": the same seconds at 48 a second blur otherwise";
+    EXPECT_LT(darkened48Half, 0.8f * darkened24) << renderer << ": half the seconds at 48 a second blur as far as at 24";
 }
 } // anon namespace
 
@@ -581,14 +681,22 @@ TEST(VolumeRenderCycles, ASurfaceOnlyMaterialKeepsTheDefaultVolume)
     expectASurfaceOnlyMaterialKeepsTheDefaultVolume(kRenderDelegateCyclesId);
 }
 
-// Disabled: Hydra delegates receive only a frustum, never the scene camera, so the camera
-// shutter cannot reach the renderer and blurred and still renders come out identical.
-TEST(VolumeRenderCycles, DISABLED_VelocityBlursTheVolume)
+// Cycles reads the velocity where it shades and looks the density up back along it, so it blurs
+// the density only as far as the velocity grid reaches, as MoonRay does.
+TEST(VolumeRenderCycles, VelocityBlursTheVolume)
 {
     if (!CyclesTestUtils::cyclesOrSkip()) {
         return;
     }
-    expectVelocityBlursTheVolume(kRenderDelegateCyclesId);
+    expectVelocityBlursTheVolume(kRenderDelegateCyclesId, kDilatedVelocity, kDilatedVelocityOpenShutter);
+}
+
+TEST(VolumeRenderCycles, TheStageRateScalesTheVelocity)
+{
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    expectTheRateScalesTheVelocity(kRenderDelegateCyclesId);
 }
 
 TEST(VolumeRenderMoonRay, TheVolumeDarkensItsSide)
@@ -615,12 +723,20 @@ TEST(VolumeRenderMoonRay, AnEmissionFieldChangesTheVolume)
     expectAnEmissionFieldChangesTheVolume(kMoonRayRendererId);
 }
 
-// Disabled: Hydra delegates receive only a frustum, never the scene camera, so the camera
-// shutter cannot reach the renderer and blurred and still renders come out identical.
-TEST(VolumeRenderMoonRay, DISABLED_VelocityBlursTheVolume)
+// MoonRay blurs the density only as far as the velocity grid reaches, so this renders the sphere
+// whose velocity reaches past its density as far as the shutter moves it.
+TEST(VolumeRenderMoonRay, VelocityBlursTheVolume)
 {
     if (!moonRayOrSkip()) {
         return;
     }
-    expectVelocityBlursTheVolume(kMoonRayRendererId);
+    expectVelocityBlursTheVolume(kMoonRayRendererId, kDilatedVelocity, kDilatedVelocityOpenShutter);
+}
+
+TEST(VolumeRenderMoonRay, TheStageRateScalesTheVelocity)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    expectTheRateScalesTheVelocity(kMoonRayRendererId);
 }

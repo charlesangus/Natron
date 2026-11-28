@@ -43,8 +43,8 @@ FROM aswf/ci-vfxall:2027-clang21.1
 # compressed it adds to the AppImage.
 # NATRON_CYCLES_SHA256 is of <NATRON_CYCLES_REPO>/archive/<commit>.tar.gz.
 ARG NATRON_CYCLES_REPO=https://github.com/charlesangus/cycles
-ARG NATRON_CYCLES_COMMIT=e59bf24d2ee204f8023a3f555dcddc395b2becf9
-ARG NATRON_CYCLES_SHA256=86cd9825ea99137c2f3f8509f60f94c340211e51d654c2eb0ebb2c7832fafe3e
+ARG NATRON_CYCLES_COMMIT=9661a08191950ef9b93c4b04c9d0ddad6ef063b1
+ARG NATRON_CYCLES_SHA256=3e14e49f69662a304c739ce71b3b8e5e5520a5ee178c0d1c0fbbd6480109fc97
 ARG NATRON_CYCLES_OIDN=ON
 COPY build-cycles.sh /tmp/build-cycles.sh
 RUN NATRON_CYCLES_REPO="$NATRON_CYCLES_REPO" \
@@ -55,7 +55,7 @@ RUN NATRON_CYCLES_REPO="$NATRON_CYCLES_REPO" \
 
 # --- MoonRay: renderer and Hydra render delegate, CPU only ----------------
 # Built from Natron's fork of DreamWorks' openmoonray super-repository
-# (charlesangus/openmoonray, branch natron/f1-volumes-m496) against this image's
+# (charlesangus/openmoonray, branch natron/m554-shutter-framing) against this image's
 # USD, TBB, Boost, Embree, OpenVDB, OpenImageIO, OpenEXR and OpenImageDenoise,
 # and installed relocatably into /opt/moonray: hdMoonray's plug-ins under
 # plugin/, the rdl2 scene-object DSOs in rdl2dso/, MoonRay's own libraries in
@@ -67,7 +67,7 @@ RUN NATRON_CYCLES_REPO="$NATRON_CYCLES_REPO" \
 # is fetched for the build only. Right after Cycles: the other slow layer,
 # changed more often than Cycles, so its rebuilds leave the Cycles layer cached.
 ARG NATRON_MOONRAY_REPO=https://github.com/charlesangus/openmoonray.git
-ARG NATRON_MOONRAY_COMMIT=bf947d3ef41fe14f01f0040c76f335ec89350e05
+ARG NATRON_MOONRAY_COMMIT=fb6a35b40d681889adfc3d80f551a3a64e405776
 ARG NATRON_MOONRAY_ISPC_VERSION=v1.21.0
 ARG NATRON_MOONRAY_ISPC_SHA256=fe658893799af46c9cac0153f0bdc9a2ff93541fff9b17cf6b09ffc7576cfdcc
 COPY build-moonray.sh /tmp/build-moonray.sh

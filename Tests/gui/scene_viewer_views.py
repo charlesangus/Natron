@@ -24,6 +24,12 @@ ball show their display colours flat.
   /World/Cam again afterwards is unlocked.
 - Create Camera from View: from a tumbled free view, the menu entry makes a USDCamera; merged in
   and looked through, it shows what the free view showed.
+- Look through by path: Storm draws that look-through through the camera's path, unlocked, and it
+  matches the free camera at the camera's frustum. Free Camera then switches back and shows the
+  free view as it was.
+- Unusable camera: with the camera looked through deactivated by a USDPrune, the view keeps
+  drawing from the free camera and natronSceneCameraWarning names the camera's path and why;
+  reactivating it, or picking Free Camera, clears the warning.
 
 Mouse and key events are sent to the SceneViewport (synthesized window-system events do not reach
 Natron's widgets under Xvfb). Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go
@@ -41,6 +47,7 @@ STARTUP_TIMEOUT_S = 60.0
 NUKE = 0
 # The HUD lines at the top and bottom of the view are left out of image comparisons.
 HUD_MARGIN = 28
+STORM_ID = "HdStormRendererPlugin"
 
 try:
     import NatronEngine
@@ -560,6 +567,73 @@ try:
         if "red" in free_e and "red" in through_e:
             check(abs(free_e["red"][4] - through_e["red"][4]) <= 0.05 * free_e["red"][4] + 20,
                   "the cube covers as many pixels through the new camera (%d vs %d)" % (free_e["red"][4], through_e["red"][4]))
+
+        section("look through by path")
+        check(v.property("natronSceneActiveRenderer") == STORM_ID,
+              "Storm draws the look-through (%r)" % (v.property("natronSceneActiveRenderer"),))
+        check(look_through(v) == new_path and v.property("natronSceneLockView") is False,
+              "the view looks through %s by its path, unlocked (%r)" % (new_path, look_through(v)))
+        ok = yield from with_menu(v, "Free Camera")
+        require(ok, "pick Free Camera")
+        ok = yield ("until", lambda: bool(v.property("natronSceneSynced")) and look_through(v) == "", POLL_TIMEOUT_S)
+        check(ok, "Free Camera leaves the look-through (%r)" % (look_through(v),))
+        yield settle()
+        yield settle()
+        back_image = save_view("scene-views-free-after-path")
+        back_diff = mean_difference(free_image, back_image)
+        path_diff = mean_difference(through_image, back_image)
+        report("NOTE free before %r, through the path %r: mean differences %r and %r" % (
+            extents(free_image), extents(through_image), back_diff, path_diff))
+        check(back_diff is not None and back_diff < 1.0,
+              "back on the free camera, the view shows what it showed before the look-through (mean difference %r)" % (back_diff,))
+        check(path_diff is not None and path_diff < 6.0,
+              "the free camera at the camera's frustum shows what looking through its path did (mean difference %r)" % (path_diff,))
+
+        section("unusable camera")
+        prune = app.createNode("USDPrune")
+        require(prune is not None, "create USDPrune", plugin_problem("USDPrune"))
+        prune.setPosition(100, 190)
+        viewer.disconnectInput(0)
+        require(prune.connectInput(0, merge), "connect the USDPrune to the merge")
+        requests1 = sync_requests(v)
+        require(viewer.connectInput(0, prune), "view the USDPrune")
+        ok = yield ("until", lambda: sync_requests(v) > requests1 and scene_drawn(), STARTUP_TIMEOUT_S)
+        require(ok, "the view shows the USDPrune")
+        ok = yield from with_menu(v, new_path)
+        require(ok, "look through %s again" % new_path)
+        ok = yield ("until", lambda: bool(v.property("natronSceneSynced")) and look_through(v) == new_path, POLL_TIMEOUT_S)
+        check(ok, "the view looks through %s (%r)" % (new_path, look_through(v)))
+        yield settle()
+        yield settle()
+        check(not v.property("natronSceneCameraWarning"), "a usable camera shows no warning (%r)" % (v.property("natronSceneCameraWarning"),))
+        usable_image = save_view("scene-views-camera-usable")
+
+        prune.getParam("primPattern").setValue(new_path)
+        ok = yield ("until", lambda: bool(v.property("natronSceneCameraWarning")), POLL_TIMEOUT_S)
+        warning = str(v.property("natronSceneCameraWarning") or "")
+        report("NOTE camera warning %r" % (warning,))
+        check(ok and new_path in warning and "inactive" in warning and "free camera" in warning,
+              "deactivating %s warns in the viewer, naming it and why (%r)" % (new_path, warning))
+        yield settle()
+        yield settle()
+        unusable_image = save_view("scene-views-camera-inactive")
+        check(not v.property("natronSceneError") and bool(v.property("natronSceneShown")),
+              "the view keeps rendering with no error (%r)" % (v.property("natronSceneError"),))
+        diff = mean_difference(usable_image, unusable_image)
+        check(diff is not None and diff < 6.0,
+              "the free camera shows the scene the camera showed (mean difference %r)" % (diff,))
+
+        prune.getParam("primPattern").setValue("")
+        ok = yield ("until", lambda: not v.property("natronSceneCameraWarning"), POLL_TIMEOUT_S)
+        check(ok, "reactivating the camera clears the warning (%r)" % (v.property("natronSceneCameraWarning"),))
+
+        prune.getParam("primPattern").setValue(new_path)
+        ok = yield ("until", lambda: bool(v.property("natronSceneCameraWarning")), POLL_TIMEOUT_S)
+        check(ok, "deactivating it again warns again")
+        ok = yield from with_menu(v, "Free Camera")
+        require(ok, "pick Free Camera")
+        ok = yield ("until", lambda: look_through(v) == "" and not v.property("natronSceneCameraWarning"), POLL_TIMEOUT_S)
+        check(ok, "Free Camera clears the warning (%r)" % (v.property("natronSceneCameraWarning"),))
 
         navigation.setValue(original_navigation)
 

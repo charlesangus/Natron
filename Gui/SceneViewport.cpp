@@ -1103,6 +1103,9 @@ struct SceneViewportRenderer::Implementation {
     // to be given them. Touched only by whichever thread holds the engine.
     SdfPathVector selectedPaths;
     bool selectedPathsChanged = true;
+    // Whether the engine renders through a scene camera rather than a free one. Touched only by
+    // whichever thread holds the engine.
+    bool engineThroughCamera = false;
     // The componentHighlight applySelection() last gave the engine. Touched only by whichever
     // thread holds the engine.
     bool componentHighlightApplied = false;
@@ -1183,6 +1186,9 @@ struct SceneViewportRenderer::Implementation {
     // Why the refinement's delegate is not rendering now, from its status: unlike rendererError it
     // does not stop the refinement, which tries the delegate again at the next edit.
     std::string refineError;
+    // Why the camera looked through is not the one rendered from; written by the render path and
+    // read by paintGL under rendererErrorMutex.
+    mutable std::string cameraWarning;
     // Why the last render threw, until a paint takes it.
     std::string renderError;
     // Whether the last render that kept its renderer found Scene Default naming another.
@@ -1208,7 +1214,7 @@ struct SceneViewportRenderer::Implementation {
     struct BackgroundFrame {
         int width = 0;
         int height = 0;
-        GfFrustum frustum;
+        HydraRender::EngineCamera camera;
         UsdImagingGLRenderParams params;
         LightingModeEnum lightingMode = eLightingModeScene;
         OCIO_NAMESPACE::ConstProcessorRcPtr displayProcessor;
@@ -1870,6 +1876,43 @@ struct SceneViewportRenderer::Implementation {
         return !lookThrough.empty() && (lookThroughOverridePath == lookThrough);
     }
 
+    // The camera a delegate renders through: the one looked through, unless it is drawn from an
+    // override, a transform its prim does not have, or renderableCamera() rejects it. Empty for
+    // the free camera, with cameraWarning saying why when the camera was rejected. Needs stageMutex.
+    SdfPath renderCameraPath() const
+    {
+        const UsdGeomCamera camera = lookThroughCamera();
+        if (hasLookThroughOverride() || !camera) {
+            setCameraWarningCopy(std::string());
+
+            return SdfPath();
+        }
+        std::string error;
+        if (!HydraRender::renderableCamera(camera.GetPrim().GetStage(), camera.GetPath(), &error)) {
+            setCameraWarningCopy("Looking through " + camera.GetPath().GetString() + " failed: " + error + " Showing the free camera.");
+
+            return SdfPath();
+        }
+        setCameraWarningCopy(std::string());
+
+        return camera.GetPath();
+    }
+
+    // What a delegate renders through at width x height, as computeFrustum() frames it. Needs
+    // stageMutex.
+    HydraRender::EngineCamera engineCamera(int width,
+                                           int height) const
+    {
+        HydraRender::EngineCamera camera;
+        camera.camera = renderCameraPath();
+        camera.fit = HydraRender::eFitModeVertical;
+        camera.frustum = computeFrustum(width, height);
+        camera.width = width;
+        camera.height = height;
+
+        return camera;
+    }
+
     // The camera looked through at the shown time, drawn from the override when there is one.
     // Needs stageMutex.
     GfCamera lookThroughGfCamera(const UsdGeomCamera& camera) const
@@ -1891,7 +1934,8 @@ struct SceneViewportRenderer::Implementation {
 
         if (UsdGeomCamera camera = lookThroughCamera()) {
             GfCamera gfCamera = lookThroughGfCamera(camera);
-            // Keeps the camera's vertical aperture, as usdview does without a camera mask.
+            // Keeps the camera's vertical aperture, as usdview does without a camera mask; the
+            // fit engineCamera() gives is the same.
             CameraUtilConformWindow(&gfCamera, CameraUtilMatchVertically, aspect);
 
             return gfCamera.GetFrustum();
@@ -2117,6 +2161,7 @@ struct SceneViewportRenderer::Implementation {
                 TfErrorMark mark;
                 const SceneDrawFilter::EngineScope scope;
                 engine.reset(new SelectionEngine(parameters));
+                engineThroughCamera = false;
                 filterInstanceId = scope.getInstanceId();
                 applySelection();
                 ++engineCount;
@@ -2177,6 +2222,15 @@ struct SceneViewportRenderer::Implementation {
         std::lock_guard<std::mutex> lock(rendererErrorMutex);
 
         rendererError = error;
+    }
+
+    void setCameraWarningCopy(const std::string& warning) const
+    {
+        std::lock_guard<std::mutex> lock(rendererErrorMutex);
+
+        if (cameraWarning != warning) {
+            cameraWarning = warning;
+        }
     }
 
     void setRefineErrorCopy(const std::string& error)
@@ -2581,8 +2635,8 @@ struct SceneViewportRenderer::Implementation {
         frame.imageKept = false;
 
         return kept && sceneStage && (frame.fbo == fbo) && (frame.width == width) && (frame.height == height)
-            && (frame.frustum.ComputeViewMatrix() == frustum.ComputeViewMatrix())
-            && (frame.frustum.ComputeProjectionMatrix() == frustum.ComputeProjectionMatrix())
+            && (frame.camera.frustum.ComputeViewMatrix() == frustum.ComputeViewMatrix())
+            && (frame.camera.frustum.ComputeProjectionMatrix() == frustum.ComputeProjectionMatrix())
             && (frame.params == params)
             && std::equal(frame.background, frame.background + 3, backgroundShown)
             && (frame.displayProcessor == displayProcessor) && (frame.gain == displayTransform.gain) && (frame.gamma == displayTransform.gamma)
@@ -3129,18 +3183,14 @@ struct SceneViewportRenderer::Implementation {
         engine->SetLightingState(lit ? GlfSimpleLightVector() : GlfSimpleLightVector(1, light), material, GfVec4f(ambient, ambient, ambient, 1.f));
     }
 
-    void setCamera(const GfFrustum& frustum,
-                   int width,
-                   int height,
+    void setCamera(const HydraRender::EngineCamera& camera,
                    bool lit)
     {
         // Buffers of another size are new ones, whatever a render then draws into them.
-        if ((width != aovFrame.width) || (height != aovFrame.height)) {
+        if ((camera.width != aovFrame.width) || (camera.height != aovFrame.height)) {
             aovFrame.valid = false;
         }
-        engine->SetRenderBufferSize(GfVec2i(width, height));
-        engine->SetFraming(CameraUtilFraming(GfRect2i(GfVec2i(0, 0), width, height)));
-        engine->SetCameraState(frustum.ComputeViewMatrix(), frustum.ComputeProjectionMatrix());
+        HydraRender::setEngineCamera(engine.get(), camera, &engineThroughCamera);
         setLights(lit);
     }
 
@@ -4791,7 +4841,8 @@ SceneViewportRenderer::prepareBackgroundFrame(int width,
     view.valid = true;
     view.width = width;
     view.height = height;
-    const GfFrustum frustum = _imp->computeFrustum(width, height);
+    const HydraRender::EngineCamera camera = _imp->engineCamera(width, height);
+    const GfFrustum& frustum = camera.frustum;
     view.viewMatrix = frustum.ComputeViewMatrix();
     view.projection = frustum.ComputeProjectionMatrix();
     view.params = _imp->currentRenderParams();
@@ -4810,7 +4861,7 @@ SceneViewportRenderer::prepareBackgroundFrame(int width,
     Implementation::BackgroundFrame& frame = _imp->backgroundFrame;
     frame.width = width;
     frame.height = height;
-    frame.frustum = frustum;
+    frame.camera = camera;
     frame.params = view.params;
     frame.lightingMode = _imp->lightingMode;
     frame.displayProcessor = _imp->displayProcessor;
@@ -4889,14 +4940,14 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
         frame.params.enableSceneLights = _imp->usesSceneLights(frame.lightingMode);
         // Checked again, as the frame may have been prepared before a change the lock kept out. A
         // full frame then: one refused here would be prepared again for the same view.
-        frame.tintOnly = _imp->aovsHold(frame.width, frame.height, frame.frustum, frame.params);
+        frame.tintOnly = _imp->aovsHold(frame.width, frame.height, frame.camera.frustum, frame.params);
     }
     if (frame.tintOnly) {
         // The draw filter is not serviced: a change it took in now would need a render.
         std::string what;
         bool failed = false;
         try {
-            _imp->setCamera(frame.frustum, frame.width, frame.height, frame.params.enableSceneLights);
+            _imp->setCamera(frame.camera, frame.params.enableSceneLights);
         } catch (const std::exception& e) {
             failed = true;
             what = e.what();
@@ -4930,7 +4981,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
 
         return true;
     }
-    _imp->noteFillView(frame.frustum, frame.width, frame.height);
+    _imp->noteFillView(frame.camera.frustum, frame.width, frame.height);
     _imp->serviceDrawFilter(true);
     // A batch of the fill is shown by its first pass, so the next batch follows that image.
     const bool fillStep = _imp->drawFillStep;
@@ -4946,7 +4997,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
     bool failed = false;
     try {
         _imp->applyStormSettings();
-        _imp->setCamera(frame.frustum, frame.width, frame.height, frame.params.enableSceneLights);
+        _imp->setCamera(frame.camera, frame.params.enableSceneLights);
         for (; (passes < (fillStep ? 1 : kMaxRenderPasses)) && !converged && !ended(passes); ++passes) {
             RenderDelegates::runRenderFaultHook();
             if (passes == 0) {
@@ -4986,7 +5037,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
         return false;
     }
     converged = converged && !_imp->drawFilling;
-    _imp->noteAovs(converged, frame.width, frame.height, frame.frustum, frame.params);
+    _imp->noteAovs(converged, frame.width, frame.height, frame.camera.frustum, frame.params);
     _imp->sceneLit = frame.params.enableSceneLights;
     if (timed) {
         // Only the render thread waits here, and the image could not be shown before the GPU is
@@ -6344,7 +6395,8 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     }
 
     const UsdStageRefPtr stage = _imp->currentStage();
-    const GfFrustum frustum = _imp->computeFrustum(width, height);
+    const HydraRender::EngineCamera camera = _imp->engineCamera(width, height);
+    const GfFrustum& frustum = camera.frustum;
     _imp->sceneLit = _imp->usesSceneLights();
     UsdImagingGLRenderParams params = _imp->renderParams();
     const bool held = _imp->stageHeld;
@@ -6360,7 +6412,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         std::string what;
         bool failed = false;
         try {
-            _imp->setCamera(frustum, width, height, _imp->sceneLit);
+            _imp->setCamera(camera, _imp->sceneLit);
         } catch (const std::exception& e) {
             failed = true;
             what = e.what();
@@ -6382,7 +6434,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         }
     } else if (!kept) {
         Implementation::clearFrameTarget(_imp->backgroundShown);
-        _imp->setCamera(frustum, width, height, _imp->sceneLit);
+        _imp->setCamera(camera, _imp->sceneLit);
         SceneDrawTiming* timing = _imp->drawTiming.get();
         const bool timed = timing && timing->frameStarting(std::chrono::steady_clock::now());
         int passes = 0;
@@ -6590,7 +6642,8 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
 #ifdef NATRON_HAVE_GPU
     _imp->maintainDeviceColor(progressive);
 #endif
-    const GfFrustum frustum = _imp->computeFrustum(width, height);
+    const HydraRender::EngineCamera camera = _imp->engineCamera(width, height);
+    const GfFrustum& frustum = camera.frustum;
     const bool held = _imp->stageHeld;
     HydraRender::ProgressiveRender::Status status;
     if (!held) {
@@ -6603,6 +6656,9 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
         }
         HydraRender::ProgressiveRender::View view;
         view.frustum = frustum;
+        view.camera = camera.camera;
+        view.fit = camera.fit;
+        view.pixelAspect = camera.pixelAspect;
         view.width = width;
         view.height = height;
         view.time = UsdTimeCode(_imp->timeCode());
@@ -7180,6 +7236,14 @@ SceneViewportRenderer::takeRenderError()
     error.swap(_imp->renderError);
 
     return error;
+}
+
+std::string
+SceneViewportRenderer::getCameraWarning() const
+{
+    std::lock_guard<std::mutex> lock(_imp->rendererErrorMutex);
+
+    return _imp->cameraWarning;
 }
 
 std::string
@@ -13463,6 +13527,8 @@ SceneViewport::paintGL()
     }
     const QString rendererError = QString::fromStdString(_imp->renderer.getRendererError());
     setProperty("natronSceneRendererError", rendererError);
+    const QString cameraWarning = QString::fromStdString(_imp->renderer.getCameraWarning());
+    setProperty("natronSceneCameraWarning", cameraWarning);
     if (_imp->announcedRenderer != _imp->renderer.getActiveRendererId()) {
         // The render row shown or hidden resizes this widget, which inside its paint frees the
         // texture Qt then composes the window from.
@@ -13556,6 +13622,11 @@ SceneViewport::paintGL()
         if (!_imp->lockMessage.isEmpty()) {
             painter.setPen(QColor(230, 160, 80));
             painter.drawText(rect().adjusted(8, 6, -8, -6), Qt::AlignLeft | Qt::AlignBottom, _imp->lockMessage);
+        }
+        if (!cameraWarning.isEmpty()) {
+            painter.setPen(QColor(230, 160, 80));
+            const int above = _imp->lockMessage.isEmpty() ? 6 : 24;
+            painter.drawText(rect().adjusted(8, 6, -8, -above), Qt::AlignLeft | Qt::AlignBottom | Qt::TextWordWrap, cameraWarning);
         }
     }
     if (!_imp->armedPick.isEmpty()) {

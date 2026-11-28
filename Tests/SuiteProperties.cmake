@@ -110,6 +110,13 @@ if(NOT "TextRenderer" IN_LIST NATRON_GTEST_SUITE_TESTS)
 endif()
 set_tests_properties(TextRenderer PROPERTIES ENVIRONMENT "NATRON_TEST_REQUIRE_GL=1")
 
+# The HydraRenderCameraTest suite compares Storm renders, which skip without a GL context.
+if(NOT "HydraRenderCameraTest" IN_LIST NATRON_GTEST_SUITE_TESTS)
+    message(FATAL_ERROR "SuiteProperties.cmake: 'HydraRenderCameraTest' is not a registered test; "
+                        "update the suite name or it would silently lose its properties.")
+endif()
+set_tests_properties(HydraRenderCameraTest PROPERTIES ENVIRONMENT "NATRON_TEST_REQUIRE_GL=1")
+
 # The Storm volume suite renders through a GL context and would otherwise pass by skipping.
 if(NOT "VolumeRenderStorm" IN_LIST NATRON_GTEST_SUITE_TESTS)
     message(FATAL_ERROR "SuiteProperties.cmake: 'VolumeRenderStorm' is not a registered test; "
@@ -128,7 +135,7 @@ set_tests_properties(USDRenderSingleSampleTest PROPERTIES ENVIRONMENT "HDX_MSAA_
 # These suites skip when the MoonRay plug-in is missing, which would hide a bundling or plug-in
 # discovery regression in a build that does carry MoonRay.
 if(NATRON_MOONRAY_BUNDLED)
-    foreach(_suite MoonRayDelegate VolumeRenderMoonRay)
+    foreach(_suite MoonRayDelegate MoonRayCamera VolumeRenderMoonRay)
         if(NOT "${_suite}" IN_LIST NATRON_GTEST_SUITE_TESTS)
             message(FATAL_ERROR "SuiteProperties.cmake: '${_suite}' is not a registered test; "
                                 "update the suite name or it would silently lose its properties.")
@@ -141,7 +148,7 @@ endif()
 # discovery regression in a build that does carry Cycles.
 if(NATRON_CYCLES_BUNDLED)
     foreach(_suite CyclesDelegate USDRenderCyclesMaterialTest USDRenderCyclesInstancerTest
-                   VolumeRenderCycles)
+                   USDRenderCyclesSubdivisionTest USDRenderCyclesMotion VolumeRenderCycles)
         if(NOT "${_suite}" IN_LIST NATRON_GTEST_SUITE_TESTS)
             message(FATAL_ERROR "SuiteProperties.cmake: '${_suite}' is not a registered test; "
                                 "update the suite name or it would silently lose its properties.")

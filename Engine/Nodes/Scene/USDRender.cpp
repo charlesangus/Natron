@@ -1269,6 +1269,9 @@ USDRender::prepareRender(double time,
     if (!HydraRender::cameraFrustum(stage, cameraPath, active.time, aspect, fit, &setup->request.frustum, error)) {
         return false;
     }
+    setup->request.camera = cameraPath;
+    setup->request.fit = fit;
+    setup->request.pixelAspect = par;
     const PXR_NS::UsdGeomCamera camera(stage->GetPrimAtPath(cameraPath));
     double shutterOpen = 0.;
     double shutterClose = 0.;

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 # Regenerates the OpenVDB fixtures VolumeFields_Test.cpp and VolumeRender_Test.cpp read:
 #
-#   python3 Tests/fixtures/make-volume-fixtures.py Tests/fixtures
+#   python3 Tests/fixtures/make-volume-fixtures.py Tests/fixtures [file name ...]
+#
+# With file names, only those fixtures are written.
 #
 # volume-sphere.0001.vdb and volume-sphere.0002.vdb: a sphere of radius 0.5 centred at x = -0.625 on
 # frame 1 and x = +0.625 on frame 2 (y = z = 0), in 32^3 voxels of 1/24 around its centre, with
@@ -10,6 +12,10 @@
 #   temperature  float, 1 at the centre, 0 at the surface
 #   velocity     vec3s, (30, 0, 0) units per second wherever density is set: the 1.25 units the
 #                sphere moves between the frames at 24 frames per second
+# volume-sphere-dilated.0001.vdb: the frame 1 sphere with its velocity carried 0.5 units past the
+# density, as simulation output carries a dilated velocity band: the 0.3125 units a shutter open a
+# quarter frame either side of the frame moves the sphere, and a margin. A renderer that reads the
+# velocity where it shades blurs the density only as far as the velocity reaches.
 # Floats are saved as half and the files are zip-compressed, a few tens of KB each.
 #
 # The image has no OpenVDB Python module, so this compiles a small writer against the image's
@@ -21,6 +27,7 @@ import sys
 import tempfile
 
 WRITER = r"""
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 
@@ -28,14 +35,15 @@ WRITER = r"""
 
 int main(int argc, char** argv)
 {
-    if (argc != 3) {
+    if (argc != 4) {
         return 2;
     }
     const double centreX = std::atof(argv[2]);
+    const double band = std::atof(argv[3]);
     const double voxel = 1.0 / 24.0;
     const double radius = 0.5;
     const double speed = 30.0;
-    const int half = 16;
+    const int half = std::max(16, (int)std::ceil((radius + band) / voxel) + 1);
 
     openvdb::initialize();
     openvdb::FloatGrid::Ptr density = openvdb::FloatGrid::create(0.f);
@@ -52,6 +60,10 @@ int main(int argc, char** argv)
                 const double y = j * voxel;
                 const double z = k * voxel;
                 const double r = std::sqrt(x * x + y * y + z * z);
+                const openvdb::Coord c(i, j, k);
+                if (r < radius + band) {
+                    v.setValue(c, openvdb::Vec3s((float)speed, 0.f, 0.f));
+                }
                 if (r >= radius) {
                     continue;
                 }
@@ -61,10 +73,8 @@ int main(int argc, char** argv)
                     const double s = (r - edge) / (radius - edge);
                     falloff = 1.0 - s * s * (3.0 - 2.0 * s);
                 }
-                const openvdb::Coord c(i, j, k);
                 d.setValue(c, (float)(4.0 * falloff));
                 t.setValue(c, (float)(1.0 - r / radius));
-                v.setValue(c, openvdb::Vec3s((float)speed, 0.f, 0.f));
             }
         }
     }
@@ -90,10 +100,14 @@ int main(int argc, char** argv)
 }
 """
 
-FRAMES = ((1, -0.625), (2, 0.625))
+FIXTURES = (
+    ("volume-sphere.0001.vdb", -0.625, 0.0),
+    ("volume-sphere.0002.vdb", 0.625, 0.0),
+    ("volume-sphere-dilated.0001.vdb", -0.625, 0.5),
+)
 
 
-def main(directory):
+def main(directory, names):
     prefix = os.environ.get("NATRON_OPENVDB_PREFIX", "/usr/local")
     compiler = shutil.which("c++") or shutil.which("g++") or shutil.which("clang++")
     if compiler is None:
@@ -110,13 +124,18 @@ def main(directory):
             "-Wl,-rpath," + os.path.join(prefix, "lib"),
             "-lopenvdb", "-ltbb", "-lImath-3_2",
         ])
-        for frame, centre in FRAMES:
-            path = os.path.join(directory, "volume-sphere.%04d.vdb" % frame)
-            subprocess.check_call([binary, path, repr(centre)])
+        for name, centre, band in FIXTURES:
+            if names and name not in names:
+                continue
+            path = os.path.join(directory, name)
+            subprocess.check_call([binary, path, repr(centre), repr(band)])
             print("%s: %d bytes" % (path, os.path.getsize(path)))
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit("usage: make-volume-fixtures.py <output directory>")
-    main(sys.argv[1])
+    if len(sys.argv) < 2:
+        sys.exit("usage: make-volume-fixtures.py <output directory> [file name ...]")
+    unknown = [n for n in sys.argv[2:] if n not in [f[0] for f in FIXTURES]]
+    if unknown:
+        sys.exit("unknown fixture: " + ", ".join(unknown))
+    main(sys.argv[1], sys.argv[2:])

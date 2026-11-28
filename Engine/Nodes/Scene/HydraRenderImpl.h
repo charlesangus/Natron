@@ -57,6 +57,10 @@ class GpuRecordContext;
 }
 #endif
 
+PXR_NAMESPACE_OPEN_SCOPE
+class UsdImagingGLEngine;
+PXR_NAMESPACE_CLOSE_SCOPE
+
 NATRON_NAMESPACE_ENTER
 
 #ifdef NATRON_HAVE_GPU
@@ -126,6 +130,45 @@ bool cameraFrustum(const PXR_NS::UsdStageRefPtr& stage,
 std::vector<PXR_NS::SdfPath> cameraPaths(const PXR_NS::UsdStageRefPtr& stage) WARN_UNUSED_RETURN;
 
 /**
+ * @brief Whether a delegate can render through the prim at cameraPath on stage: a UsdGeomCamera
+ * that is active, loaded and defined, and not an instance proxy. False, with *error naming the
+ * path and what it lacks, otherwise.
+ **/
+bool renderableCamera(const PXR_NS::UsdStageRefPtr& stage,
+                      const PXR_NS::SdfPath& cameraPath,
+                      std::string* error) WARN_UNUSED_RETURN;
+
+/**
+ * @brief What an engine renders through. With a camera, the delegate reads that UsdGeomCamera of
+ * the stage it renders, shutter, lens and clipping range included, and conforms its aperture to
+ * the width x height image of pixels pixelAspect wide per fit; frustum must then be the frustum
+ * cameraFrustum() gives for it, the one depth is read back through. Without one, the delegate
+ * renders through frustum alone, as a free camera with a closed shutter.
+ **/
+struct EngineCamera {
+    PXR_NS::SdfPath camera;
+    FitModeEnum fit = eFitModeExpand;
+    // The width of a pixel over its height, the format's. The framing the delegate is given
+    // conforms to the frustum's aspect instead, which a proxy's rounded size can differ from.
+    double pixelAspect = 1.;
+    PXR_NS::GfFrustum frustum;
+    int width = 0;
+    int height = 0;
+    // The width x height image's framing, as framing() gives, the frustum framing its display
+    // window; the whole image when not valid. Its pixel aspect is setEngineCamera()'s to set.
+    PXR_NS::CameraUtilFraming framing;
+};
+
+/**
+ * @brief Points engine's next render at view. *throughCamera holds whether the engine renders
+ * through a scene camera, false for a new engine: going from one to a free camera takes the
+ * camera path and the window policy off the engine.
+ **/
+void setEngineCamera(PXR_NS::UsdImagingGLEngine* engine,
+                     const EngineCamera& view,
+                     bool* throughCamera);
+
+/**
  * @brief The primId value of a prim path, as Cryptomatte makes its IDs: MurmurHash3_x86_32 of the
  * path's text with seed 0, whose bits, when they would make an infinity, NaN or denormal float,
  * have the lowest exponent bit flipped. Never 0, the value of pixels that hit nothing.
@@ -145,6 +188,12 @@ struct Request {
     PXR_NS::GfFrustum frustum;
     int width = 0;
     int height = 0;
+    // The scene camera rendered through, as EngineCamera: frustum is then its frustum at time per
+    // fit and pixelAspect. A path renderableCamera() rejects fails the render. Empty for a free
+    // camera.
+    PXR_NS::SdfPath camera;
+    FitModeEnum fit = eFitModeExpand;
+    double pixelAspect = 1.;
     // Whether a light at the camera lights the scene too. Without it, only the scene's own lights
     // do, and a scene with none renders its lit surfaces black.
     bool headlight = false;
@@ -505,6 +554,10 @@ public:
         int width = 0;
         int height = 0;
         PXR_NS::UsdTimeCode time;
+        // The scene camera rendered through, as Request's.
+        PXR_NS::SdfPath camera;
+        FitModeEnum fit = eFitModeExpand;
+        double pixelAspect = 1.;
         bool showRender = false;
         bool showProxy = true;
         bool showGuides = false;

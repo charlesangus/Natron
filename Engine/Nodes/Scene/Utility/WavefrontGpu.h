@@ -139,6 +139,9 @@ public:
     // of the frame's settings aside.
     std::size_t submissions() const;
 
+    // What the executor's tracer has built and refit since it was made.
+    Tracer::Stats tracerStats() const;
+
 private:
     struct Implementation;
     std::unique_ptr<Implementation> _imp;

@@ -2099,12 +2099,24 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
     if (!imp.warm(stop)) {
         return false;
     }
+    {
+        const utilityProfile::Scope timed(utilityProfile::Stage::ShadeTables);
+
+        if (!imp.shadeTables.update(snapshot, &stop)) {
+            return imp.stopped();
+        }
+    }
+
+    // A Raster frame takes its camera hits from the visibility buffer, so only cutouts, shadows and bounces
+    // trace; without them the structures, whose builds outweigh the draws, are left for a frame that does.
+    const bool traces = !frame.raster || imp.shadeTables.hasHoles() || imp.shadeTables.lightCount() > 0
+        || wavefrontBounceLimit(frame, imp.shadeTables.hasTransmission()) > 0;
     bool updated = false;
 
     {
         const utilityProfile::Scope timed(utilityProfile::Stage::TracerUpdate);
 
-        updated = imp.tracer.update(snapshot, threads, &stop);
+        updated = traces ? imp.tracer.update(snapshot, threads, &stop) : imp.tracer.updateForRaster(snapshot, &stop);
     }
     if (!updated) {
         imp.outcome = imp.tracer.status();
@@ -2114,13 +2126,6 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
         imp.sceneFailed = imp.outcome.status != Tracer::Status::Stopped;
 
         return false;
-    }
-    {
-        const utilityProfile::Scope timed(utilityProfile::Stage::ShadeTables);
-
-        if (!imp.shadeTables.update(snapshot, &stop)) {
-            return imp.stopped();
-        }
     }
     {
         const utilityProfile::Scope timed(utilityProfile::Stage::Uploads);
@@ -2237,6 +2242,12 @@ std::size_t
 WavefrontGpu::submissions() const
 {
     return _imp->submissions;
+}
+
+Tracer::Stats
+WavefrontGpu::tracerStats() const
+{
+    return _imp->tracer.stats();
 }
 
 Tracer::Outcome

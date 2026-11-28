@@ -2102,6 +2102,39 @@ TEST(USDRenderRenderers, CancellingNatronUtilityStopsItKeepsItsEngineAndTheNextR
     HydraRender::releaseAll();
 }
 
+// A new seed changes only how the frame samples, so the engine, its synced scene and its structures stay; a
+// subdivision level changes what the meshes sync to, so the engine is made again.
+TEST(USDRenderRenderers, ANewSeedKeepsNatronUtilitysEngine)
+{
+    PXR_NS::UsdStageRefPtr stage = PXR_NS::UsdStage::Open(kFixture);
+    ASSERT_TRUE(stage);
+    const int owner = 0;
+    HydraRender::Request request = referenceRequest(stage, 1., &owner);
+    request.renderer = kRenderDelegateUtilityId;
+    request.settings[kUtilitySettingDevice] = PXR_NS::VtValue(PXR_NS::TfToken(kUtilityDeviceCpu));
+    request.settings[kUtilitySettingPixelSamples] = PXR_NS::VtValue(2);
+    request.settings[kUtilitySettingSeed] = PXR_NS::VtValue(1);
+    HydraRender::Result first;
+    std::string error;
+
+    ASSERT_TRUE(HydraRender::render(request, &first, &error)) << error;
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+    const std::uint64_t renders = HydraRender::getEngineRenderCount();
+
+    request.settings[kUtilitySettingSeed] = PXR_NS::VtValue(2);
+    HydraRender::Result reseeded;
+    ASSERT_TRUE(HydraRender::render(request, &reseeded, &error)) << error;
+    EXPECT_EQ(builds, HydraRender::getEngineBuildCount());
+    EXPECT_LT(renders, HydraRender::getEngineRenderCount()) << "the new seed was not rendered";
+    EXPECT_EQ(first.primId.size(), reseeded.primId.size());
+
+    request.settings[kUtilitySettingSubdivLevel] = PXR_NS::VtValue(1);
+    HydraRender::Result subdivided;
+    ASSERT_TRUE(HydraRender::render(request, &subdivided, &error)) << error;
+    EXPECT_EQ(builds + 1, HydraRender::getEngineBuildCount());
+    HydraRender::releaseAll();
+}
+
 // Free GPU Memory drops USDRender's Storm engines and the device buffers the GPU runtime's pool
 // keeps free, and the next render and allocation make what they need again.
 TEST_F(USDRenderNodeTest, FreeGpuMemoryReleasesEnginesAndPooledBuffers)

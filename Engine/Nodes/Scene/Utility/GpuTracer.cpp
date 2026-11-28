@@ -216,8 +216,10 @@ struct GeometryEntry {
     // Host-visible, because the record context has no upload of its own; the builds read them in place.
     gpu::GpuBuffer vertices;
     gpu::GpuBuffer indices;
-    // Empty for geometry that does not draw, and for a deforming one.
+    // Empty for geometry that does not draw, for a deforming one, and for one only raster updates have seen.
     gpu::GpuBlas blas;
+    // The points moved under a raster update, which leaves the structure for the next traced update to refit.
+    bool refitPending = false;
     // A deforming geometry's per-segment boxes, structures over them and one-instance structures over those,
     // built by the first update that places it.
     gpu::GpuBuffer sweptBoxes;
@@ -226,7 +228,7 @@ struct GeometryEntry {
 
     bool deforms() const { return pointSteps > 1 && triangleCount > 0; }
 
-    bool draws() const { return static_cast<bool>(blas) || deforms(); }
+    bool draws() const { return triangleCount > 0; }
 
     bool needsRebuild(const UtilityScene::Geometry& source,
                       const UtilityScene::Snapshot& snapshot) const
@@ -565,6 +567,7 @@ struct GpuTracer::Implementation {
         }
         for (const std::pair<GeometryEntryPtr, std::uint64_t>& refit : job->refitted) {
             refit.first->pointsVersion = refit.second;
+            refit.first->refitPending = false;
             ++counters.geometryRefits;
         }
 
@@ -591,6 +594,7 @@ struct GpuTracer::Implementation {
     {
         scene.reset();
         synced = false;
+        structured = false;
         record(failure);
 
         return false;
@@ -699,6 +703,8 @@ struct GpuTracer::Implementation {
     SceneStatePtr scene;
     std::uint64_t version = 0;
     bool synced = false;
+    // Whether the scene's structures match its geometry and placements; a raster update builds none.
+    bool structured = false;
     Stats counters;
     // The geometry's submission a stopped update left running; only an update touches the geometry meanwhile.
     GeometrySubmissionPtr inFlight;
@@ -719,6 +725,10 @@ GpuTracer::Implementation::recordTrace(gpu::GpuRecordContext& ctx,
 {
     if (!usable) {
         return { VK_ERROR_FEATURE_NOT_PRESENT, outcome.message };
+    }
+    // Every ray would silently miss, or hit where the geometry was; a caller that traces must update for it.
+    if (state && !structured) {
+        return { VK_ERROR_INITIALIZATION_FAILED, "GpuTracer: the scene was updated for raster passes only, so it has no structures to trace" };
     }
 
     const bool traced = state && state->traces();
@@ -1153,6 +1163,12 @@ GpuTracer::Implementation::trace(Entry entry,
         }
     };
 
+    if (state && !structured) {
+        record(Failure { Status::Failed, "GpuTracer: the scene was updated for raster passes only, so it has no structures to trace" });
+        missFrom(0);
+
+        return;
+    }
     if (!state || !state->traces()) {
         missFrom(0);
 
@@ -1425,12 +1441,27 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
                   int /*threads*/,
                   const std::atomic<bool>* stop)
 {
+    return updateScene(snapshot, stop, true);
+}
+
+bool
+GpuTracer::updateForRaster(const UtilityScene::Snapshot& snapshot,
+                           const std::atomic<bool>* stop)
+{
+    return updateScene(snapshot, stop, false);
+}
+
+bool
+GpuTracer::updateScene(const UtilityScene::Snapshot& snapshot,
+                       const std::atomic<bool>* stop,
+                       bool structures)
+{
     Implementation& imp = *_imp;
 
     if (!imp.usable) {
         return false;
     }
-    if (imp.synced && imp.version == snapshot.version) {
+    if (imp.synced && imp.version == snapshot.version && (imp.structured || !structures)) {
         return true;
     }
     imp.synced = false;
@@ -1467,6 +1498,8 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
     };
     std::vector<PendingBuild> builds;
     std::vector<PendingRefit> refits;
+    // Points a raster update moved under a structure, which the scene's structures no longer match.
+    bool staled = false;
 
     for (const auto& item : snapshot.geometries) {
         if (wasStopped(stop)) {
@@ -1521,17 +1554,38 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
             }
             // GfVec3i holds three ints, which the range check made valid as uint32 indices.
             std::memcpy(entry->indices.mapped(), source.triangles.cdata(), indexBytes);
-            if (entry->deforms()) {
-                // Swept into boxes once an update places it.
+            if (entry->deforms() || !structures) {
+                // A deforming one is swept into boxes once an update places it.
                 imp.geometries[item.first] = std::move(entry);
             } else {
                 builds.push_back(PendingBuild { item.first, std::move(entry) });
             }
-        } else if (source.pointsVersion != existing->second->pointsVersion) {
-            if (existing->second->blas) {
-                refits.push_back(PendingRefit { existing->second, &source });
-            } else {
-                existing->second->pointsVersion = source.pointsVersion;
+        } else {
+            const GeometryEntryPtr& entry = existing->second;
+            const bool moved = source.pointsVersion != entry->pointsVersion;
+
+            if (structures && entry->triangleCount > 0 && !entry->deforms() && !entry->blas) {
+                if (moved) {
+                    std::memcpy(entry->vertices.mapped(), source.points.cdata(), entry->pointCount * sizeof(GfVec3f));
+                    entry->pointsVersion = source.pointsVersion;
+                }
+                builds.push_back(PendingBuild { item.first, entry });
+                geometryReplaced = true;
+            } else if (structures && entry->blas && (moved || entry->refitPending)) {
+                refits.push_back(PendingRefit { entry, &source });
+            } else if (moved) {
+                // The raster passes draw from these vertices, so they move now even when the structure waits.
+                if (entry->triangleCount > 0) {
+                    if (wasStopped(stop)) {
+                        return imp.abandonUpdate(stopped);
+                    }
+                    std::memcpy(entry->vertices.mapped(), source.points.cdata(), entry->pointCount * sizeof(GfVec3f));
+                }
+                if (entry->blas) {
+                    entry->refitPending = true;
+                    staled = true;
+                }
+                entry->pointsVersion = source.pointsVersion;
             }
         }
     }
@@ -1544,7 +1598,7 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
 
     // The structures are compared with the whole budget, not what is left of it, as the pool can evict what
     // else it holds; a scene whose structures alone exceed it fails here rather than in the driver.
-    if (const std::uint64_t budget = imp.memoryBudget(); budget != 0) {
+    if (const std::uint64_t budget = structures ? imp.memoryBudget() : 0; budget != 0) {
         std::set<UtilityScene::GeometryId> rebuilt;
         std::uint64_t structureBytes = 0;
         std::uint64_t scratchBytes = 0;
@@ -1653,7 +1707,7 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
     }
     // Compaction gets its own submission: the copy replaces each structure as it is recorded, so it has to have
     // run before anything is built over them. A stopped update leaves the list for the next one.
-    if (!imp.uncompacted.empty() && !wasStopped(stop)) {
+    if (structures && !imp.uncompacted.empty() && !wasStopped(stop)) {
         GeometrySubmissionPtr job = std::make_shared<GeometrySubmission>();
         std::vector<GeometryEntryPtr> toCompact;
 
@@ -1707,7 +1761,7 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
         return !placements[instance].steps.empty() || drawnBy(instance)->deforms();
     };
 
-    const bool rebuildInstances = !imp.scene || geometryReplaced || !sameGeometries(placements, imp.placements);
+    const bool rebuildInstances = !imp.scene || geometryReplaced || !sameGeometries(placements, imp.placements) || (structures && !imp.structured);
     bool instancesChanged = rebuildInstances;
 
     for (std::size_t i = 0; i < placements.size() && !instancesChanged; ++i) {
@@ -1749,87 +1803,88 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
             }
         }
 
-        const std::size_t perStructure = imp.maxInstancesPerStructure;
-        // A scene one structure holds keeps each placement's index as its custom index, so it needs no order table.
-        const bool split = placements.size() > kMaxInstances || drawn.size() > perStructure;
+        // Raster passes draw from the instance table and the geometry alone.
+        if (structures) {
+            const std::size_t perStructure = imp.maxInstancesPerStructure;
+            // A scene one structure holds keeps each placement's index as its custom index, so it needs no order table.
+            const bool split = placements.size() > kMaxInstances || drawn.size() > perStructure;
 
-        if (split) {
-            sortSpatially(drawn, placements, snapshot);
-            if (wasStopped(stop)) {
-                return imp.abandonUpdate(stopped);
+            if (split) {
+                sortSpatially(drawn, placements, snapshot);
+                if (wasStopped(stop)) {
+                    return imp.abandonUpdate(stopped);
+                }
+
+                const VkDeviceSize orderBytes = drawn.size() * sizeof(std::uint32_t);
+
+                if (gpu::GpuStatus s = gpu::GpuBuffer::createStaging(imp.device, orderBytes, kAddressedUsage, state->order); !s) {
+                    return imp.abandonUpdate(imp.failure(("GpuTracer could not hold its " + std::to_string(orderBytes) + "-byte instance order"), s));
+                }
+                std::memcpy(state->order.mapped(), drawn.data(), orderBytes);
             }
 
-            const VkDeviceSize orderBytes = drawn.size() * sizeof(std::uint32_t);
+            std::vector<std::uint32_t> firstSlots;
 
-            if (gpu::GpuStatus s = gpu::GpuBuffer::createStaging(imp.device, orderBytes, kAddressedUsage, state->order); !s) {
-                return imp.abandonUpdate(imp.failure(("GpuTracer could not hold its " + std::to_string(orderBytes) + "-byte instance order"), s));
+            // One submission per structure, so that only one structure's instances are staged at a time.
+            for (std::size_t first = 0; first < drawn.size(); first += perStructure) {
+                const std::size_t end = std::min(drawn.size(), first + perStructure);
+                std::vector<gpu::GpuAccelInstance> instances;
+
+                instances.reserve(end - first);
+                for (std::size_t slot = first; slot < end; ++slot) {
+                    const std::uint32_t i = drawn[slot];
+                    gpu::GpuAccelInstance instance;
+
+                    instance.transform = objectToWorld(placements[i].transform);
+                    instance.customIndex = split ? static_cast<std::uint32_t>(slot - first) : i;
+                    instance.blas = &drawnBy(i)->blas;
+                    instances.push_back(instance);
+                }
+
+                std::unique_ptr<gpu::GpuRecordContext> ctx;
+                gpu::GpuTlas structure;
+
+                if (gpu::GpuStatus s = imp.createContext(ctx); !s) {
+                    return imp.abandonUpdate(imp.failure("GpuTracer could not create a record context", s));
+                }
+                if (gpu::GpuStatus s = gpu::GpuTlas::build(*ctx, imp.pool, instances, structure); !s) {
+                    return imp.abandonUpdate(imp.failure("GpuTracer could not build its instance structure", s));
+                }
+                if (wasStopped(stop)) {
+                    return imp.abandonUpdate(stopped);
+                }
+                if (gpu::GpuStatus s = ctx->submitAndWait(); !s) {
+                    return imp.abandonSubmission("GpuTracer could not build its instance structure", s);
+                }
+                state->structures.push_back(std::move(structure));
+                firstSlots.push_back(split ? static_cast<std::uint32_t>(first) : 0u);
             }
-            std::memcpy(state->order.mapped(), drawn.data(), orderBytes);
-        }
+            if (!state->structures.empty()) {
+                const VkDeviceSize structureBytes = (state->structures.size() + 1) * 4 * sizeof(std::uint32_t);
 
-        std::vector<std::uint32_t> firstSlots;
+                if (gpu::GpuStatus s = gpu::GpuBuffer::createStaging(imp.device, structureBytes, kAddressedUsage, state->structureTable); !s) {
+                    return imp.abandonUpdate(imp.failure("GpuTracer could not hold its structure table", s));
+                }
 
-        // One submission per structure, so that only one structure's instances are staged at a time.
-        for (std::size_t first = 0; first < drawn.size(); first += perStructure) {
-            const std::size_t end = std::min(drawn.size(), first + perStructure);
-            std::vector<gpu::GpuAccelInstance> instances;
+                std::uint32_t* words = static_cast<std::uint32_t*>(state->structureTable.mapped());
 
-            instances.reserve(end - first);
-            for (std::size_t slot = first; slot < end; ++slot) {
-                const std::uint32_t i = drawn[slot];
-                gpu::GpuAccelInstance instance;
+                std::memset(words, 0, structureBytes);
+                for (std::size_t i = 0; i < state->structures.size(); ++i) {
+                    const VkDeviceAddress address = state->structures[i].deviceAddress();
 
-                instance.transform = objectToWorld(placements[i].transform);
-                instance.customIndex = split ? static_cast<std::uint32_t>(slot - first) : i;
-                instance.blas = &drawnBy(i)->blas;
-                instances.push_back(instance);
+                    words[i * 4] = static_cast<std::uint32_t>(address & 0xffffffffull);
+                    words[i * 4 + 1] = static_cast<std::uint32_t>(address >> 32);
+                    words[i * 4 + 2] = firstSlots[i];
+                    words[i * 4 + 3] = 0;
+                }
             }
-
-            std::unique_ptr<gpu::GpuRecordContext> ctx;
-            gpu::GpuTlas structure;
-
-            if (gpu::GpuStatus s = imp.createContext(ctx); !s) {
-                return imp.abandonUpdate(imp.failure("GpuTracer could not create a record context", s));
+            if (!movers.empty() && !imp.buildMovers(snapshot, placements, movers, denseIndices, *state, stop, stopped)) {
+                return false;
             }
-            if (gpu::GpuStatus s = gpu::GpuTlas::build(*ctx, imp.pool, instances, structure); !s) {
-                return imp.abandonUpdate(imp.failure("GpuTracer could not build its instance structure", s));
-            }
-            if (wasStopped(stop)) {
-                return imp.abandonUpdate(stopped);
-            }
-            if (gpu::GpuStatus s = ctx->submitAndWait(); !s) {
-                return imp.abandonSubmission("GpuTracer could not build its instance structure", s);
-            }
-            state->structures.push_back(std::move(structure));
-            firstSlots.push_back(split ? static_cast<std::uint32_t>(first) : 0u);
-        }
-        if (!state->structures.empty()) {
-            const VkDeviceSize structureBytes = (state->structures.size() + 1) * 4 * sizeof(std::uint32_t);
-
-            if (gpu::GpuStatus s = gpu::GpuBuffer::createStaging(imp.device, structureBytes, kAddressedUsage, state->structureTable); !s) {
-                return imp.abandonUpdate(imp.failure("GpuTracer could not hold its structure table", s));
-            }
-
-            std::uint32_t* words = static_cast<std::uint32_t*>(state->structureTable.mapped());
-
-            std::memset(words, 0, structureBytes);
-            for (std::size_t i = 0; i < state->structures.size(); ++i) {
-                const VkDeviceAddress address = state->structures[i].deviceAddress();
-
-                words[i * 4] = static_cast<std::uint32_t>(address & 0xffffffffull);
-                words[i * 4 + 1] = static_cast<std::uint32_t>(address >> 32);
-                words[i * 4 + 2] = firstSlots[i];
-                words[i * 4 + 3] = 0;
-            }
-        }
-        if (!movers.empty() && !imp.buildMovers(snapshot, placements, movers, denseIndices, *state, stop, stopped)) {
-            return false;
         }
         imp.scene = std::move(state);
-        if (rebuildInstances) {
-            ++imp.counters.instanceSceneBuilds;
-        } else {
-            ++imp.counters.instanceSceneUpdates;
+        if (structures) {
+            ++(rebuildInstances ? imp.counters.instanceSceneBuilds : imp.counters.instanceSceneUpdates);
         }
     }
     imp.placements.swap(placements);
@@ -1839,6 +1894,7 @@ GpuTracer::update(const UtilityScene::Snapshot& snapshot,
 
     imp.version = snapshot.version;
     imp.synced = true;
+    imp.structured = structures || (imp.structured && !instancesChanged && !staled);
 
     return true;
 }

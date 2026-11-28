@@ -84,6 +84,15 @@ public:
     virtual bool update(const UtilityScene::Snapshot& snapshot,
                         int threads,
                         const std::atomic<bool>* stop = nullptr) OVERRIDE;
+
+    /**
+     * @brief Updates the geometry and instance tables raster passes draw from, without building or refitting
+     * any structure: a frame whose every hit comes from the visibility buffer never traces, and the builds
+     * cost far more than its draws. A trace before the next update() fails. The next update() builds what this
+     * skipped, and one of the same version builds only that.
+     **/
+    bool updateForRaster(const UtilityScene::Snapshot& snapshot,
+                         const std::atomic<bool>* stop = nullptr);
     virtual void intersect(const RayBatch& rays,
                            const HitBatch& hits) const OVERRIDE;
     virtual void occluded(const RayBatch& rays,
@@ -225,6 +234,10 @@ public:
     std::vector<std::shared_ptr<gpu::GpuKernel>> kernels() const;
 
 private:
+    bool updateScene(const UtilityScene::Snapshot& snapshot,
+                     const std::atomic<bool>* stop,
+                     bool structures);
+
     struct Implementation;
     std::unique_ptr<Implementation> _imp;
 };

@@ -1674,6 +1674,33 @@ wavefrontCameraSteps(const WavefrontFrame& frame,
     return rows;
 }
 
+const UtilityScene::Snapshot*
+WavefrontExecutor::shutterSnapshot(const UtilityScene::Snapshot& snapshot,
+                                   double open,
+                                   double close,
+                                   int segments,
+                                   const std::atomic<bool>& stop)
+{
+    if (_shutterKept && _shutterVersion == snapshot.version && _shutterOpen == open && _shutterClose == close && _shutterSegments == segments) {
+        return &_shuttered;
+    }
+    _shutterKept = false;
+    _shuttered = UtilityScene::Snapshot();
+    ++_shutterSnapshotsTaken;
+    if (!UtilityScene::atShutter(snapshot, open, close, segments, stop, &_shuttered)) {
+        _shuttered = UtilityScene::Snapshot();
+
+        return nullptr;
+    }
+    _shutterKept = true;
+    _shutterVersion = snapshot.version;
+    _shutterOpen = open;
+    _shutterClose = close;
+    _shutterSegments = segments;
+
+    return &_shuttered;
+}
+
 bool
 wavefrontDrawSamples(WavefrontExecutor& executor,
                      const UtilityScene::Snapshot& snapshot,
@@ -1686,16 +1713,17 @@ wavefrontDrawSamples(WavefrontExecutor& executor,
 {
     const bool unwrapping = frame.mapping == WavefrontMapping::UvUnwrap;
     const bool blurred = !unwrapping && motion.isOpen() && UtilityScene::moves(snapshot);
-    UtilityScene::Snapshot shuttered;
+    const UtilityScene::Snapshot* shuttered = nullptr;
 
     if (blurred) {
         const utilityProfile::Scope timed(utilityProfile::Stage::ShutterSnapshot);
 
-        if (!UtilityScene::atShutter(snapshot, motion.open, motion.close, std::max(1, motion.segments), stop, &shuttered)) {
+        shuttered = executor.shutterSnapshot(snapshot, motion.open, motion.close, std::max(1, motion.segments), stop);
+        if (!shuttered) {
             return false;
         }
     }
-    const UtilityScene::Snapshot& scene = blurred ? shuttered : snapshot;
+    const UtilityScene::Snapshot& scene = blurred ? *shuttered : snapshot;
     WavefrontFrame drawn = frame;
 
     if (unwrapping) {

@@ -603,6 +603,59 @@ rendererSettings(const std::string& renderer)
     return (found == gSettings.end()) ? RendererSettings() : found->second;
 }
 
+// Whether a and b differ only in settings the Utility render pass reads on each frame, and restarts the frame
+// under: they change how it samples and traces, not what Hydra syncs, so they must not cost a new engine,
+// whose resync and structure builds take far longer than the frame.
+bool
+onlyUtilityFrameSettingsDiffer(const RendererSettings& a,
+                               const RendererSettings& b)
+{
+    static const char* const frameSettings[] = {
+        kUtilitySettingSeed,
+        kUtilitySettingPixelSamples,
+        kUtilitySettingPixelFilter,
+        kUtilitySettingFilterWidth,
+        kUtilitySettingRenderMode,
+        kUtilitySettingRasterSamples,
+        kUtilitySettingMaxRayDepth,
+        kUtilitySettingReflectionDepth,
+        kUtilitySettingRefractionDepth,
+        kUtilitySettingMaxCutouts,
+    };
+
+    if (a.size() != b.size()) {
+        return false;
+    }
+    for (RendererSettings::const_iterator x = a.begin(), y = b.begin(); x != a.end(); ++x, ++y) {
+        if (x->first != y->first) {
+            return false;
+        }
+        if (x->second != y->second
+            && std::find_if(std::begin(frameSettings), std::end(frameSettings), [&x](const char* name) { return x->first == name; }) == std::end(frameSettings)) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+// Sets on engine each setting whose value differs from from to to, but those overrides holds, which the
+// engine already has in their place.
+void
+applyChangedSettings(UsdImagingGLEngine* engine,
+                     const RendererSettings& from,
+                     const RendererSettings& to,
+                     const RendererSettings& overrides)
+{
+    for (const std::pair<const std::string, VtValue>& setting : to) {
+        const RendererSettings::const_iterator old = from.find(setting.first);
+
+        if ((old == from.end() || old->second != setting.second) && !overrides.count(setting.first)) {
+            engine->SetRendererSetting(TfToken(setting.first), setting.second);
+        }
+    }
+}
+
 /**
  * The one thread count every Cycles session of the process is made under. Cycles' TaskScheduler is
  * process-wide and counted: the first session to live fixes the threads of every session made while
@@ -1863,11 +1916,18 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     // thread budget.
     const bool budgetChanged = MoonRayAovs::isMoonRay(renderer) && (request.threads != entry.threads);
     bool freshEngine = false;
-    if (!entry.engine || (request.headlight != entry.headlight) || (settings != entry.settings) || budgetChanged) {
+    const bool settingsChanged = settings != entry.settings;
+    const bool settingsInPlace = settingsChanged && entry.engine && (renderer == kRenderDelegateUtilityId) && onlyUtilityFrameSettingsDiffer(settings, entry.settings);
+    if (!entry.engine || (request.headlight != entry.headlight) || (settingsChanged && !settingsInPlace) || budgetChanged) {
         if (!makeEngine(entry, request, renderer, settings, cancel, error)) {
             return nullptr;
         }
         freshEngine = true;
+    } else if (settingsInPlace) {
+        applyChangedSettings(entry.engine.get(), entry.settings, settings, RendererSettings());
+        entry.settings = settings;
+        // What the buffers hold was drawn under the old settings.
+        entry.rendered = false;
     }
     UsdImagingGLEngine* engine = entry.engine.get();
     const GfMatrix4d view = request.frustum.ComputeViewMatrix();
@@ -4625,6 +4685,22 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 keepFrame = true;
                 continue;
             }
+        }
+        if ((settings != engineSettings) && (engineRenderer == kRenderDelegateUtilityId) && onlyUtilityFrameSettingsDiffer(settings, engineSettings)) {
+            const RendererSettings changed = settings;
+            const RendererSettings overrides = rendererSettings(engineRenderer);
+            lock.unlock();
+            {
+                std::lock_guard<std::mutex> l(engineMutex);
+                applyChangedSettings(engine.get(), engineSettings, changed, overrides);
+                engineSettings = changed;
+            }
+            lock.lock();
+            lastSamples = -1;
+            lastUtilitySamples = 0;
+            lastConverged = false;
+            needRestart = true;
+            continue;
         }
         if (settings != engineSettings) {
             // Some settings, such as Cycles' integrator's, restart a render only when the engine

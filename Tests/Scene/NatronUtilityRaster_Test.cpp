@@ -1254,6 +1254,155 @@ GPU_TEST_F(NatronUtilityRaster, ARefractingBallShowsAsInRayMode)
     expectRasterShowsTheEffect(scene, refracted, scene, unrefracted);
 }
 
+// With no cutouts, lights or bounces every hit comes from the visibility buffer, so the frame builds no
+// structure, and draws as it does with them built. A later frame that bounces builds them over the same scene.
+GPU_TEST_F(NatronUtilityRaster, ARasterFrameWithNothingToTraceBuildsNoStructures)
+{
+    UtilityScene scene;
+
+    cardAndCube(scene);
+
+    WavefrontGpu executor(*_registry, *_pool, std::make_shared<int>(0));
+    WavefrontGpu traced(*_registry, *_pool, std::make_shared<int>(0));
+    WavefrontFrame frame = perspectiveFrame();
+    AovFilm raster;
+    AovFilm ray;
+    AovFilm rasterAfterRay;
+
+    frame.raster = true;
+    frame.rasterSamples = 4;
+    ASSERT_TRUE(drawPasses(executor, scene, frame, WavefrontMotion(), raster));
+    EXPECT_EQ(0u, executor.tracerStats().geometryBuilds);
+    EXPECT_EQ(0u, executor.tracerStats().instanceSceneBuilds);
+
+    ASSERT_TRUE(drawRays(traced, scene, frame, 1, ray));
+    EXPECT_EQ(2u, traced.tracerStats().geometryBuilds);
+    ASSERT_TRUE(drawPasses(traced, scene, frame, WavefrontMotion(), rasterAfterRay));
+    EXPECT_EQ(2u, traced.tracerStats().geometryBuilds);
+    EXPECT_EQ(rasterAfterRay.geometry, raster.geometry);
+    EXPECT_EQ(rasterAfterRay.primId, raster.primId);
+    EXPECT_EQ(rasterAfterRay.instanceId, raster.instanceId);
+    EXPECT_LT(meanDifference(rasterAfterRay, raster), 1e-6);
+
+    WavefrontFrame bounced = frame;
+    AovFilm bouncedFilm;
+
+    bounced.maxRayDepth = kWavefrontDefaultMaxRayDepth;
+    ASSERT_TRUE(drawPasses(executor, scene, bounced, WavefrontMotion(), bouncedFilm));
+    EXPECT_EQ(2u, executor.tracerStats().geometryBuilds);
+    EXPECT_EQ(1u, executor.tracerStats().instanceSceneBuilds);
+
+    const Tracer::Stats built = executor.tracerStats();
+    AovFilm rayAfter;
+
+    ASSERT_TRUE(drawRays(executor, scene, frame, 1, rayAfter));
+    EXPECT_EQ(built.geometryBuilds, executor.tracerStats().geometryBuilds);
+    EXPECT_EQ(built.instanceSceneBuilds, executor.tracerStats().instanceSceneBuilds);
+    EXPECT_EQ(built.instanceSceneUpdates, executor.tracerStats().instanceSceneUpdates);
+}
+
+// A Raster frame that traces shadows or bounces builds the structures itself when it is the executor's first,
+// and matches Ray mode as it does after a Ray frame built them.
+GPU_TEST_F(NatronUtilityRaster, AFirstRasterFrameWithShadowsOrBouncesTracesAsRayMode)
+{
+    const int side = 4;
+
+    for (const bool shadows : { true, false }) {
+        SCOPED_TRACE(shadows ? "shadows" : "bounces");
+
+        UtilityScene scene;
+        WavefrontFrame frame = pixelFrame();
+
+        if (shadows) {
+            shadowedFloor(scene, true);
+        } else {
+            mirrorAndBall(scene);
+            frame.maxRayDepth = kWavefrontDefaultMaxRayDepth;
+        }
+
+        WavefrontGpu rasterExecutor(*_registry, *_pool, std::make_shared<int>(0));
+        WavefrontGpu rayExecutor(*_registry, *_pool, std::make_shared<int>(0));
+        WavefrontFrame rasterFrame = frame;
+        AovFilm raster;
+        AovFilm ray;
+
+        rasterFrame.raster = true;
+        rasterFrame.rasterSamples = side * side;
+        ASSERT_TRUE(drawPasses(rasterExecutor, scene, rasterFrame, WavefrontMotion(), raster));
+        EXPECT_GT(rasterExecutor.tracerStats().geometryBuilds, 0u);
+        EXPECT_EQ(1u, rasterExecutor.tracerStats().instanceSceneBuilds);
+        ASSERT_TRUE(drawRays(rayExecutor, scene, frame, side, ray));
+        EXPECT_LT(meanDifference(raster, ray), 0.05);
+    }
+}
+
+// Over a moving panel, a frame that changes only its seed takes no new shutter snapshot and builds, refits and
+// rebuilds nothing; an edit of the panel's points takes the snapshot again and refits its structure.
+GPU_TEST_F(NatronUtilityRaster, OnlyAGeometryEditRedoesTheFramesSetup)
+{
+    for (const bool raster : { false, true }) {
+        SCOPED_TRACE(raster ? "Raster" : "Ray");
+
+        UtilityScene scene;
+        const UtilityScene::GeometryId id = scene.addGeometry(SdfPath("/panel"), 1);
+
+        scene.setTopology(id, VtVec3fArray { GfVec3f(-10.f, -10.f, 0.f), GfVec3f(10.f, -10.f, 0.f), GfVec3f(10.f, 10.f, 0.f), GfVec3f(-10.f, 10.f, 0.f) }, quadTriangles());
+        scene.setColors(id, UtilityScene::eColorBindingConstant, VtVec4fArray { GfVec4f(1.f, 1.f, 1.f, 1.f) });
+        emitDisplayColor(scene, id);
+        moveInstance(scene, id, translation(0., 0., 0.), translation(4., 0., 0.));
+
+        WavefrontGpu executor(*_registry, *_pool, std::make_shared<int>(0));
+        const WavefrontMotion motion = openShutter();
+        WavefrontFrame frame = pixelFrame();
+
+        frame.raster = raster;
+        frame.rasterSamples = 4;
+        // Ray mode always traces; a light makes Raster mode trace too, so that both have structures to reuse.
+        if (raster) {
+            UtilityLightDesc sun;
+
+            sun.type = UtilityLightDesc::eTypeDistant;
+            sun.emission = GfVec3f(1.f);
+            scene.setLight(SdfPath("/Sun"), std::make_shared<const UtilityLightDesc>(sun));
+        }
+
+        const auto draw = [&](const WavefrontFrame& drawn) {
+            AovFilm film;
+            const std::atomic<bool> stop(false);
+            const bool ok = wavefrontDrawSamples(executor, scene.snapshot(), drawn, motion, film, stop, 2, std::function<void(std::size_t)>());
+
+            EXPECT_TRUE(ok) << executor.status().message;
+
+            return ok;
+        };
+
+        ASSERT_TRUE(draw(frame));
+        EXPECT_EQ(1u, executor.shutterSnapshotsTaken());
+
+        const Tracer::Stats first = executor.tracerStats();
+
+        EXPECT_EQ(1u, first.geometryBuilds);
+        EXPECT_EQ(1u, first.instanceSceneBuilds);
+
+        WavefrontFrame reseeded = frame;
+
+        reseeded.sampling.seed = frame.sampling.seed + 1;
+        ASSERT_TRUE(draw(reseeded));
+        EXPECT_EQ(1u, executor.shutterSnapshotsTaken());
+        EXPECT_EQ(first.geometryBuilds, executor.tracerStats().geometryBuilds);
+        EXPECT_EQ(first.geometryRefits, executor.tracerStats().geometryRefits);
+        EXPECT_EQ(first.instanceSceneBuilds, executor.tracerStats().instanceSceneBuilds);
+        EXPECT_EQ(first.instanceSceneUpdates, executor.tracerStats().instanceSceneUpdates);
+
+        scene.setPoints(id, VtVec3fArray { GfVec3f(-10.f, -12.f, 0.f), GfVec3f(10.f, -12.f, 0.f), GfVec3f(10.f, 8.f, 0.f), GfVec3f(-10.f, 8.f, 0.f) });
+        ASSERT_TRUE(draw(reseeded));
+        EXPECT_EQ(2u, executor.shutterSnapshotsTaken());
+        EXPECT_EQ(first.geometryRefits + 1, executor.tracerStats().geometryRefits);
+        EXPECT_EQ(first.geometryBuilds, executor.tracerStats().geometryBuilds);
+        EXPECT_EQ(first.instanceSceneBuilds + first.instanceSceneUpdates + 1, executor.tracerStats().instanceSceneBuilds + executor.tracerStats().instanceSceneUpdates);
+    }
+}
+
 namespace {
 // Writes a checkerboard of 32-texel squares, so that a smeared plate shows in the shading cost as it would in a shot.
 bool

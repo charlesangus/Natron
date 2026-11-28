@@ -281,6 +281,24 @@ public:
         return _bouncesTraced.load(std::memory_order_relaxed);
     }
 
+    /**
+     * @brief The scene at the ends of the shutter's segments, as UtilityScene::atShutter() takes it. The last
+     * one is kept and given again for the same scene version and shutter, since taking it walks every moving
+     * instance and deforming mesh, and a frame that changes only its sampling would take it whole again. Null
+     * when stop ended it. Valid until the next call; calls must not overlap.
+     **/
+    const UtilityScene::Snapshot* shutterSnapshot(const UtilityScene::Snapshot& snapshot,
+                                                  double open,
+                                                  double close,
+                                                  int segments,
+                                                  const std::atomic<bool>& stop);
+
+    // How many times shutterSnapshot() has taken the scene rather than given the kept one.
+    std::size_t shutterSnapshotsTaken() const
+    {
+        return _shutterSnapshotsTaken;
+    }
+
 protected:
     void resetBouncesTraced()
     {
@@ -297,6 +315,13 @@ protected:
 
 private:
     std::atomic<std::uint32_t> _bouncesTraced { 0 };
+    bool _shutterKept = false;
+    std::uint64_t _shutterVersion = 0;
+    double _shutterOpen = 0.;
+    double _shutterClose = 0.;
+    int _shutterSegments = 0;
+    UtilityScene::Snapshot _shuttered;
+    std::size_t _shutterSnapshotsTaken = 0;
 };
 
 // The shutter a frame is drawn over, in frames relative to it, and the camera within it.

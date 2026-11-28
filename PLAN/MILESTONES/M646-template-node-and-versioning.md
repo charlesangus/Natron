@@ -252,7 +252,7 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
   - verify: both scripts pass under `Tests/gui/run-gui-test.sh` on the phase build.
   - size: M
 
-- [ ] M646.P2.T6 — Phase 646.2 build, ctest and GUI checkpoint
+- [x] M646.P2.T6 — Phase 646.2 build, ctest and GUI checkpoint
   - files: none
   - approach: remote gate build with ctest and `--gui` for `m646_template_versions.py`, `m97_template_merge.py`, `m104_merge_conflicts.py` and `m104_diff_overlay.py`.
   - verify: green. The build is required.
@@ -281,3 +281,4 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
 - 2026-11-27 — **Claimed despite a shared file with M351 - Shader Graph Presentation (user):** `Gui/NodeGraph.cpp` overlaps; claim now, resolve conflicts when merging.
 - 2026-11-27 (PM) — Phase 646.1 T1-T8 in df1184c1ea; gate m646-gate1 (fast ctest + m97/m104 GUI). Implementer's open points (PM defaults, revisit in Phase 2/UAT): Gui60/PyGuiApp pass allowMismatch=true until Phase 2's mismatch UI; version and importedVersion hold the same number (spec doesn't distinguish); addToTemplate gives an added node its own ID as origin; republishing from an imported copy keeps member IDs but the Template node gets the shot's ID.
 - 2026-11-28 — Phase 2 T1–T5 in d6872562d0; m646-gate2 running. Open: node.destroy() from Python bypasses Detach; undoing a Publish leaves the file (next publish numbers past it); Define Template names the node "template" and opens its panel rather than prompting.
+- 2026-11-28 — Phase 2 verified: m646-gate2 (full ctest green, m97/m104 GUI) + m646-gate4 (m646_template_versions.py green after two script fixes: wrapper lifetime, hull click clear of the mask stub). PR #411 into F33; review round 1.

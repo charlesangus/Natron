@@ -9,3 +9,8 @@
 - from: bosley-executor (cat-pm)
 - refs: M365
 - body: Found while matching Cycles light levels to Storm/MoonRay in M365 - Delegate Display Transform (UsdLux used as the reference): (1) MoonRay's *normalized* distant light renders π brighter than UsdLux and Storm (unnormalized all agree) — hdMoonray fork translation; (2) Storm treats a normalized sphere light as a point light, 4× UsdLux; (3) hdCycles doesn't scale the sphere light radius by metersPerUnit, so unnormalized sphere lights are the wrong size in cm stages. Proposed small milestone "Delegate Light Unit Parity": fix each in its fork / Storm path with a per-light-type level test like Tests/Scene/CyclesLightLevels_Test.cpp.
+
+### 2026-11-27 — change-request — Quiet Info Messages: fix Node::postPersistentMessage itself (from M514)
+- from: bosley-executor (cat-pm)
+- refs: M641, M514
+- body: For M641 - Quiet Info Messages: M514 - Utility Raster Mode found the general form of the bug. In the GUI, `Node::postPersistentMessage` does not store info messages (it hands them to `message()`, which pops up on the main thread or logs off it), so any node that clears an earlier warning by posting an info message leaves the stale warning on the node (batch mode stores them, so ctest can't see it). M514 switched USDRender's clean-render path to `setQuietInfoMessage`. Consider fixing `Node::postPersistentMessage` so every caller stores info messages quietly, and verify with a GUI check (warning then clean render clears the warning).

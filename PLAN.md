@@ -478,7 +478,7 @@ future core work has solid ground to build on.
 | M312 | USDLayerMaterial Node | done | M53 | bosley-executor | E9 | F11 | | [M312-usdlayermaterial-node.md](PLAN/MILESTONES/M312-usdlayermaterial-node.md) |
 | M313 | USDBakeTextures Node | todo | M53, M234 |  | E9 | F11 | | [M313-usdbaketextures-node.md](PLAN/MILESTONES/M313-usdbaketextures-node.md) |
 | M314 | Paint-Through Inputs | todo | M53, M234 |  | E9 | F11 | | [M314-paint-through-inputs.md](PLAN/MILESTONES/M314-paint-through-inputs.md) |
-| M315 | Direct Texel Painting | doing | M53, M312 | bosley-executor | E9 | F11 | | [M315-direct-texel-painting.md](PLAN/MILESTONES/M315-direct-texel-painting.md) |
+| M315 | Direct Texel Painting | done | M53, M312 | | E9 | F11 | | [M315-direct-texel-painting.md](PLAN/MILESTONES/M315-direct-texel-painting.md) |
 | M316 | Delegate UV Baking | todo | M313, M251 |  | E9 | | | [M316-delegate-uv-baking.md](PLAN/MILESTONES/M316-delegate-uv-baking.md) |
 | M427 | Native Geometry Texture Painting | todo | M53, M358, M376, M428 |  | E9 | F11 | | [M427-native-geometry-texture-painting.md](PLAN/MILESTONES/M427-native-geometry-texture-painting.md) |
 | M428 | Native UV Operators | done | M359 | bosley-executor | E9 | F11 | | [M428-native-uv-operators.md](PLAN/MILESTONES/M428-native-uv-operators.md) |

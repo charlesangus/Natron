@@ -183,7 +183,7 @@ After P4 the per-pass cost is 5.6 ms (Raster) and 10.8 ms (Ray), but every frame
   - files: `WavefrontGpu.cpp` (~1145, ~1561)
   - size: L
 
-**Phase 514.5 target (proposed, pending user):** 1080p RTX-3060-class, emissive Project3D Raster scene, steady frames, viewer-equivalent output: ≤150 ms wall at 1 pass and ≤200 ms at 16 passes (stretch 100/150); Utility profile ≤50 ms fixed + ≤2 ms/pass; Ray ≤33 ms/pass. Replaces "Raster ≥5× Ray at 32 passes".
+**Phase 514.5 target (user, 2026-11-28):** Raster interactive at 20–30 fps until IO-bound — ≤50 ms per steady frame at 1080p for an RGB render in the viewer path (stretch ≤33 ms); the GPU does the resolve, the CPU only copies colour; Ray keeps ≤33 ms per pass. Replaces "Raster ≥5× Ray at 32 passes".
 
 **Verification gate:**
 - Build and ctest green on both legs.

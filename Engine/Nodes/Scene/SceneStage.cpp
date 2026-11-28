@@ -648,6 +648,19 @@ SceneStage::requestLoad(const PXR_NS::SdfPathVector& paths,
 
     for (const PXR_NS::SdfPath& path : paths) {
         if (path.IsAbsoluteRootOrPrimPath()) {
+            bool again = false;
+            for (const std::pair<const PXR_NS::SdfPath, PendingLoadEnum>& held : _heldLoads) {
+                const std::map<PXR_NS::SdfPath, PXR_NS::SdfPath>::const_iterator origin = _loadOrigins.find(held.first);
+                if ((held.first.HasPrefix(path)) || ((origin != _loadOrigins.end()) && origin->second.HasPrefix(path))) {
+                    again = true;
+                    break;
+                }
+            }
+            if (again) {
+                _overriddenLoads.insert(path);
+            } else {
+                _overriddenLoads.erase(path);
+            }
             _deferredLoads.erase(path);
             _deferredExclusions.erase(path);
             _loadOrigins.erase(path);
@@ -678,6 +691,7 @@ SceneStage::requestUnload(const PXR_NS::SdfPathVector& paths)
             _loadOrigins.erase(path);
             _heldLoads.erase(path);
             _heldExclusions.erase(path);
+            _overriddenLoads.erase(path);
             _pendingLoads[path] = ePendingUnload;
             _pendingExclusions.erase(path);
             _loadFailures.erase(path);
@@ -697,6 +711,7 @@ SceneStage::cancelPendingLoads()
     _loadOrigins.clear();
     _heldLoads.clear();
     _heldExclusions.clear();
+    _overriddenLoads.clear();
     if (_servicingLoads) {
         _allCancelledWhileServicing = true;
     }
@@ -715,6 +730,7 @@ SceneStage::cancelPendingLoads(const PXR_NS::SdfPathVector& paths)
         }
         _deferredLoads.erase(path);
         _deferredExclusions.erase(path);
+        _overriddenLoads.erase(path);
         if (_servicingLoads) {
             _cancelledWhileServicing.insert(path);
         }
@@ -742,7 +758,7 @@ SceneStage::setLoadChunk(std::size_t payloads)
 }
 
 void
-SceneStage::setLoadAdmission(const std::function<bool()>& admit)
+SceneStage::setLoadAdmission(const std::function<bool(bool overridden)>& admit)
 {
     std::lock_guard<std::mutex> lock(_loadMutex);
 
@@ -855,26 +871,42 @@ SceneStage::serviceLoads(const LockedSection& readLocked,
     // The request each request of the batch came from, itself for one made with requestLoad().
     std::map<PXR_NS::SdfPath, PXR_NS::SdfPath> origins;
     std::size_t chunk = 0;
-    std::function<bool()> admit;
+    std::function<bool(bool overridden)> admit;
     bool followUpsPending = false;
+    bool overriddenPending = false;
     {
         std::lock_guard<std::mutex> lock(_loadMutex);
         admit = _loadAdmission;
+        PXR_NS::SdfPathSet stillOverridden;
         for (const std::pair<const PXR_NS::SdfPath, PXR_NS::SdfPath>& origin : _loadOrigins) {
+            const bool overridden = _overriddenLoads.count(origin.second) != 0;
+            if (overridden) {
+                stillOverridden.insert(origin.second);
+            }
             if (_pendingLoads.count(origin.first) != 0) {
-                followUpsPending = true;
-                break;
+                (overridden ? overriddenPending : followUpsPending) = true;
             }
         }
+        // An override lasts as long as loads of its request remain.
+        for (const PXR_NS::SdfPath& path : _overriddenLoads) {
+            if (_pendingLoads.count(path) != 0) {
+                stillOverridden.insert(path);
+            }
+        }
+        _overriddenLoads.swap(stillOverridden);
     }
-    const bool admitted = !followUpsPending || !admit || admit();
+    const bool admitted = !followUpsPending || !admit || admit(false);
+    const bool overriddenAdmitted = !overriddenPending || !admit || admit(true);
     {
         std::lock_guard<std::mutex> lock(_loadMutex);
         takeReadyDeferredLoads();
-        if (!admitted) {
+        if (!admitted || !overriddenAdmitted) {
             for (const std::pair<const PXR_NS::SdfPath, PXR_NS::SdfPath>& origin : _loadOrigins) {
                 const std::map<PXR_NS::SdfPath, PendingLoadEnum>::iterator pending = _pendingLoads.find(origin.first);
                 if (pending == _pendingLoads.end()) {
+                    continue;
+                }
+                if ((_overriddenLoads.count(origin.second) != 0) ? overriddenAdmitted : admitted) {
                     continue;
                 }
                 _heldLoads[origin.first] = pending->second;

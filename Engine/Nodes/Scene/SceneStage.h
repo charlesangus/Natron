@@ -193,9 +193,10 @@ public:
      * @brief Asked, with no lock held, before a serviceLoads() takes follow-up loads: while it returns
      * false they are held instead, and only loads asked for with requestLoad() are serviced. A
      * requestLoad() or releaseHeldLoads() makes the held loads pending again, and a cancel drops
-     * them as it drops pending ones.
+     * them as it drops pending ones. The argument is true for the follow-ups of a request made
+     * again while some of its loads were held, which asks to go past what held them.
      **/
-    void setLoadAdmission(const std::function<bool()>& admit);
+    void setLoadAdmission(const std::function<bool(bool overridden)>& admit);
 
     void releaseHeldLoads();
 
@@ -347,7 +348,9 @@ private:
     std::map<PXR_NS::SdfPath, PXR_NS::SdfPath> _loadOrigins;
     std::map<PXR_NS::SdfPath, PendingLoadEnum> _heldLoads;
     std::map<PXR_NS::SdfPath, PXR_NS::SdfPathSet> _heldExclusions;
-    std::function<bool()> _loadAdmission;
+    std::function<bool(bool overridden)> _loadAdmission;
+    // The requests made again while some of their follow-up loads were held.
+    PXR_NS::SdfPathSet _overriddenLoads;
     std::size_t _loadChunk = 0;
     PXR_NS::SdfPathVector _committedLoads;
     PXR_NS::SdfPathVector _committedUnloads;

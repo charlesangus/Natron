@@ -996,6 +996,8 @@ TEST_F(ViewerKnobsTest, PolygonBudgetKnobsStartFromThePreferences)
     PreferencesOverride preferences;
     preferences.set<KnobBool>("viewer3DPolygonBudget", false);
     preferences.set<KnobInt>("viewer3DPolygonLimit", 1234567);
+    preferences.set<KnobBool>("viewer3DLoadBudget", true);
+    preferences.set<KnobInt>("viewer3DLoadLimit", 7654321);
     preferences.set<KnobBool>("viewer3DCountWholeScene", true);
     preferences.set<KnobDouble>("viewer3DCullDistance", 500.);
     preferences.set<KnobDouble>("viewer3DFractionDistance", 80.);
@@ -1006,6 +1008,8 @@ TEST_F(ViewerKnobsTest, PolygonBudgetKnobsStartFromThePreferences)
     ASSERT_TRUE(bool(node));
     EXPECT_FALSE(knobOf<KnobBool>(node, kViewerParamPolygonBudget)->getValue());
     EXPECT_EQ(1234567, knobOf<KnobInt>(node, kViewerParamPolygonLimit)->getValue());
+    EXPECT_TRUE(knobOf<KnobBool>(node, kViewerParamLoadBudget)->getValue());
+    EXPECT_EQ(7654321, knobOf<KnobInt>(node, kViewerParamLoadLimit)->getValue());
     EXPECT_TRUE(knobOf<KnobBool>(node, kViewerParamCountWholeScene)->getValue());
     EXPECT_DOUBLE_EQ(500., knobOf<KnobDouble>(node, kViewerParamCullDistance)->getValue());
     EXPECT_DOUBLE_EQ(80., knobOf<KnobDouble>(node, kViewerParamFractionDistance)->getValue());
@@ -1023,6 +1027,9 @@ TEST_F(ViewerKnobsTest, PolygonBudgetKnobsDefault)
     ASSERT_TRUE(budget != nullptr && limit != nullptr && budgetBoxes != nullptr);
     EXPECT_TRUE(budget->getDefaultValue(0));
     EXPECT_EQ(20000000, limit->getDefaultValue(0));
+    // Loading is not limited unless asked; its limit is ten times the draw limit.
+    EXPECT_FALSE(knobOf<KnobBool>(node, kViewerParamLoadBudget)->getDefaultValue(0));
+    EXPECT_EQ(200000000, knobOf<KnobInt>(node, kViewerParamLoadLimit)->getDefaultValue(0));
     EXPECT_FALSE(knobOf<KnobBool>(node, kViewerParamCountWholeScene)->getDefaultValue(0));
     EXPECT_DOUBLE_EQ(0., knobOf<KnobDouble>(node, kViewerParamCullDistance)->getDefaultValue(0));
     EXPECT_DOUBLE_EQ(0., knobOf<KnobDouble>(node, kViewerParamFractionDistance)->getDefaultValue(0));

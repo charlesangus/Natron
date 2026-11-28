@@ -1782,6 +1782,123 @@ TEST_F(SceneDrawFilterTest, AFilterTheBudgetIsNotBoundToIgnoresIt)
     EXPECT_EQ(0u, filter->getBudgetFacedMeshCount());
 }
 
+// A chunk of loads lands while a budget solved before it is in place: what it brings in never
+// draws whole, but waits for a budget that knows it, which then demotes it or shows it.
+TEST_F(SceneDrawFilterTest, ALoadArrivingUnderABudgetIsHeldUntilABudgetThatKnowsIt)
+{
+    filter->setBudgetBound(true);
+    filter->setBudgetHolding(true);
+    recorder.reset();
+
+    scene->AddPrims({ { SdfPath("/World/a/loaded"), HdPrimTypeTokens->mesh, someData() },
+                      { SdfPath("/World/b/loaded"), HdPrimTypeTokens->mesh, someData() },
+                      { SdfPath("/World/a/loadedMat"), HdPrimTypeTokens->material, someData() } });
+
+    EXPECT_FALSE(drawn("/World/a/loaded"));
+    EXPECT_FALSE(drawn("/World/b/loaded"));
+    EXPECT_EQ((PathSet { "/World/a/loaded", "/World/b/loaded" }), recorder.enteredInvisible);
+    EXPECT_EQ(2u, filter->getBudgetHeldCount());
+    EXPECT_EQ(kAllGeometry, drawnGeometry());
+
+    filter->stampBudgetHolds(5);
+    // A budget for an earlier epoch was solved without them.
+    filter->releaseBudgetHolds(4);
+    EXPECT_EQ(2u, filter->getBudgetHeldCount());
+    EXPECT_FALSE(drawn("/World/a/loaded"));
+    recorder.reset();
+
+    SceneDrawFilter::Budget budget;
+    budget.hidden.insert(SdfPath("/World/a/loaded"));
+    filter->applyBudget(budget);
+    filter->releaseBudgetHolds(5);
+
+    EXPECT_EQ(0u, filter->getBudgetHeldCount());
+    EXPECT_FALSE(drawn("/World/a/loaded"));
+    EXPECT_TRUE(drawn("/World/b/loaded"));
+    EXPECT_EQ(PathSet { "/World/b/loaded" }, recorder.shows);
+    EXPECT_EQ(1u, filter->getBudgetHiddenCount());
+}
+
+TEST_F(SceneDrawFilterTest, AHoldIsStampedOnlyOnceAndALaterArrivalWaitsForItsOwnEpoch)
+{
+    filter->setBudgetBound(true);
+    filter->setBudgetHolding(true);
+    scene->AddPrims({ { SdfPath("/World/a/loaded"), HdPrimTypeTokens->mesh, someData() } });
+    filter->stampBudgetHolds(3);
+    scene->AddPrims({ { SdfPath("/World/b/loaded"), HdPrimTypeTokens->mesh, someData() } });
+    filter->stampBudgetHolds(7);
+
+    filter->releaseBudgetHolds(3);
+
+    EXPECT_TRUE(drawn("/World/a/loaded"));
+    EXPECT_FALSE(drawn("/World/b/loaded"));
+    EXPECT_EQ(1u, filter->getBudgetHeldCount());
+
+    // Unstamped, a hold is released by no epoch short of everything.
+    scene->AddPrims({ { SdfPath("/World/a/later"), HdPrimTypeTokens->mesh, someData() } });
+    filter->releaseBudgetHolds(7);
+    EXPECT_TRUE(drawn("/World/b/loaded"));
+    EXPECT_FALSE(drawn("/World/a/later"));
+}
+
+TEST_F(SceneDrawFilterTest, APrimTheInputResyncsWithinARenderComesBackAsTheBudgetHadIt)
+{
+    filter->setBudgetBound(true);
+    SceneDrawFilter::Budget budget;
+    budget.hidden.insert(SdfPath("/World/c"));
+    filter->applyBudget(budget);
+    filter->setBudgetHolding(true);
+    recorder.reset();
+
+    scene->RemovePrims({ { SdfPath("/World/c") }, { SdfPath("/World/b/m3") } });
+    scene->AddPrims({ { SdfPath("/World/c"), HdPrimTypeTokens->mesh, someData() },
+                      { SdfPath("/World/b/m3"), HdPrimTypeTokens->mesh, someData() } });
+    filter->endRender();
+
+    EXPECT_FALSE(drawn("/World/c"));
+    EXPECT_TRUE(drawn("/World/b/m3"));
+    EXPECT_EQ(0u, filter->getBudgetHeldCount());
+    EXPECT_EQ(1u, filter->getBudgetHiddenCount());
+    EXPECT_EQ(0u, recorder.shows.count("/World/c"));
+
+    // Not holding, a demoted prim still comes back demoted.
+    filter->setBudgetHolding(false);
+    scene->RemovePrims({ { SdfPath("/World/c") } });
+    scene->AddPrims({ { SdfPath("/World/c"), HdPrimTypeTokens->mesh, someData() } });
+    filter->endRender();
+    EXPECT_FALSE(drawn("/World/c"));
+
+    // Gone past the end of a render, it is forgotten: what comes later is new.
+    scene->RemovePrims({ { SdfPath("/World/c") } });
+    filter->endRender();
+    EXPECT_EQ(0u, filter->getBudgetHiddenCount());
+    scene->AddPrims({ { SdfPath("/World/c"), HdPrimTypeTokens->mesh, someData() } });
+    EXPECT_TRUE(drawn("/World/c"));
+}
+
+TEST_F(SceneDrawFilterTest, HoldingOffKeepsWhatIsHeldAndUnbindingShowsIt)
+{
+    filter->setBudgetBound(true);
+    filter->setBudgetHolding(true);
+    scene->AddPrims({ { SdfPath("/World/a/loaded"), HdPrimTypeTokens->mesh, someData() } });
+
+    filter->setBudgetHolding(false);
+    scene->AddPrims({ { SdfPath("/World/b/loaded"), HdPrimTypeTokens->mesh, someData() } });
+
+    EXPECT_FALSE(drawn("/World/a/loaded"));
+    EXPECT_TRUE(drawn("/World/b/loaded"));
+    recorder.reset();
+
+    filter->setBudgetBound(false);
+
+    EXPECT_TRUE(drawn("/World/a/loaded"));
+    EXPECT_EQ(PathSet { "/World/a/loaded" }, recorder.shows);
+    EXPECT_EQ(0u, filter->getBudgetHeldCount());
+    // An unbound filter holds nothing.
+    filter->setBudgetHolding(true);
+    EXPECT_FALSE(filter->isBudgetHolding());
+}
+
 namespace {
 // The prims announced with their type, in the order they went.
 class ShowOrder

@@ -493,6 +493,13 @@ ViewerInstance::getPolygonBudgetHint(const std::string& name)
     } else if (name == kViewerParamPolygonLimit) {
         hint = tr("The faces the 3D view draws at most: mesh faces, curve segments and points, counted after "
                   "Cull Distance and Fraction Distance.");
+    } else if (name == kViewerParamLoadBudget) {
+        hint = tr("Stops Load and Load All once the loaded payloads reach Load Limit faces; what is loaded stays "
+                  "loaded. Loading the same prims again goes past the limit. Off loads everything asked for. "
+                  "Loading stops anyway while the system runs low on memory.");
+    } else if (name == kViewerParamLoadLimit) {
+        hint = tr("The faces the loaded payloads reach at most while Load Budget is on: mesh faces, curve segments "
+                  "and points of everything loaded, drawn or not.");
     } else if (name == kViewerParamCountWholeScene) {
         hint = tr("Counts every prim against Polygon Limit; off counts only those in the camera's view, so turning "
                   "the camera brings in what was out of view.");
@@ -529,6 +536,12 @@ ViewerInstance::onEffectCreated(bool /*mayCreateFileDialog*/,
     }
     if (KnobIntPtr knob = k.polygonLimit.lock()) {
         knob->setValue(settings->getViewer3DPolygonLimit());
+    }
+    if (KnobBoolPtr knob = k.loadBudget.lock()) {
+        knob->setValue(settings->getViewer3DLoadBudget());
+    }
+    if (KnobIntPtr knob = k.loadLimit.lock()) {
+        knob->setValue(settings->getViewer3DLoadLimit());
     }
     if (KnobBoolPtr knob = k.countWholeScene.lock()) {
         knob->setValue(settings->getViewer3DCountWholeScene());
@@ -1121,6 +1134,18 @@ ViewerInstance::initializeKnobs()
     polygonLimit->setDisplayMaximum(100000000);
     polygonLimit->setDefaultValue(20000000);
     k.polygonLimit = polygonLimit;
+
+    KnobBoolPtr loadBudget = createViewerKnob<KnobBool>(this, page, tr("Load Budget"), kViewerParamLoadBudget,
+                                                        hint(kViewerParamLoadBudget), 1, budgetGroup);
+    k.loadBudget = loadBudget;
+
+    KnobIntPtr loadLimit = createViewerKnob<KnobInt>(this, page, tr("Load Limit"), kViewerParamLoadLimit,
+                                                     hint(kViewerParamLoadLimit), 1, budgetGroup);
+    loadLimit->setMinimum(0);
+    loadLimit->setDisplayMinimum(0);
+    loadLimit->setDisplayMaximum(1000000000);
+    loadLimit->setDefaultValue(200000000);
+    k.loadLimit = loadLimit;
 
     KnobBoolPtr countWholeScene = createViewerKnob<KnobBool>(this, page, tr("Count Whole Scene"), kViewerParamCountWholeScene,
                                                              hint(kViewerParamCountWholeScene), 1, budgetGroup);

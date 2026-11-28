@@ -126,6 +126,8 @@ const char* const kViewerKnobNames[] = {
     kViewerParamRefinementPaused,
     kViewerParamPolygonBudget,
     kViewerParamPolygonLimit,
+    kViewerParamLoadBudget,
+    kViewerParamLoadLimit,
     kViewerParamCountWholeScene,
     kViewerParamCullDistance,
     kViewerParamFractionDistance,
@@ -1899,7 +1901,7 @@ ViewerTab::refreshFromViewerKnob(const std::string& name)
         abortViewersAndRefresh();
     } else if ((name == kViewerParamMaxSamples) || (name == kViewerParamRefinementPaused) || (name == kViewerParamRenderEverything) || (name == kViewerParamPointMarkers) || (name == kViewerParamPointNumbers) || (name == kViewerParamPrimitiveNumbers) || (name == kViewerParamNormals) || (name == kViewerParamNormalScale) || (name == kViewerParamHighlightGroup)) {
         refreshSceneRenderFromKnobs();
-    } else if ((name == kViewerParamPolygonBudget) || (name == kViewerParamPolygonLimit) || (name == kViewerParamCountWholeScene) || (name == kViewerParamCullDistance) || (name == kViewerParamFractionDistance) || (name == kViewerParamFractionPercent) || (name == kViewerParamBudgetBoxes)) {
+    } else if ((name == kViewerParamPolygonBudget) || (name == kViewerParamPolygonLimit) || (name == kViewerParamLoadBudget) || (name == kViewerParamLoadLimit) || (name == kViewerParamCountWholeScene) || (name == kViewerParamCullDistance) || (name == kViewerParamFractionDistance) || (name == kViewerParamFractionPercent) || (name == kViewerParamBudgetBoxes)) {
         if (_imp->sceneViewport) {
             _imp->sceneViewport->refreshPolygonBudget();
         }

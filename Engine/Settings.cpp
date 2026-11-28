@@ -1437,6 +1437,17 @@ Settings::initializeKnobsViewers()
     _viewer3DPolygonLimit->setDisplayMinimum(0);
     _viewer3DPolygonLimit->setDisplayMaximum(100000000);
     _viewersTab->addKnob(_viewer3DPolygonLimit);
+    _viewer3DLoadBudget = AppManager::createKnob<KnobBool>(this, tr("Viewer 3D Load Budget"));
+    _viewer3DLoadBudget->setName("viewer3DLoadBudget");
+    _viewer3DLoadBudget->setHintToolTip(ViewerInstance::getPolygonBudgetHint(kViewerParamLoadBudget) + tr(" A new Viewer starts from this.").toStdString());
+    _viewersTab->addKnob(_viewer3DLoadBudget);
+    _viewer3DLoadLimit = AppManager::createKnob<KnobInt>(this, tr("Viewer 3D Load Limit"));
+    _viewer3DLoadLimit->setName("viewer3DLoadLimit");
+    _viewer3DLoadLimit->setHintToolTip(ViewerInstance::getPolygonBudgetHint(kViewerParamLoadLimit) + tr(" A new Viewer starts from this.").toStdString());
+    _viewer3DLoadLimit->setMinimum(0);
+    _viewer3DLoadLimit->setDisplayMinimum(0);
+    _viewer3DLoadLimit->setDisplayMaximum(1000000000);
+    _viewersTab->addKnob(_viewer3DLoadLimit);
     _viewer3DCountWholeScene = AppManager::createKnob<KnobBool>(this, tr("Viewer 3D Count Whole Scene"));
     _viewer3DCountWholeScene->setName("viewer3DCountWholeScene");
     _viewer3DCountWholeScene->setHintToolTip(ViewerInstance::getPolygonBudgetHint(kViewerParamCountWholeScene) + tr(" A new Viewer starts from this.").toStdString());
@@ -2049,6 +2060,8 @@ Settings::setDefaultValues()
     _viewer3DGuideSize->setDefaultValue(3.);
     _viewer3DPolygonBudget->setDefaultValue(true);
     _viewer3DPolygonLimit->setDefaultValue(20000000);
+    _viewer3DLoadBudget->setDefaultValue(false);
+    _viewer3DLoadLimit->setDefaultValue(200000000);
     _viewer3DCountWholeScene->setDefaultValue(false);
     _viewer3DCullDistance->setDefaultValue(0.);
     _viewer3DFractionDistance->setDefaultValue(0.);
@@ -2986,6 +2999,18 @@ int
 Settings::getViewer3DPolygonLimit() const
 {
     return _viewer3DPolygonLimit->getValue();
+}
+
+bool
+Settings::getViewer3DLoadBudget() const
+{
+    return _viewer3DLoadBudget->getValue();
+}
+
+int
+Settings::getViewer3DLoadLimit() const
+{
+    return _viewer3DLoadLimit->getValue();
 }
 
 bool

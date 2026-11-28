@@ -53,6 +53,7 @@ MESH_FACES = GRID_CELLS * GRID_CELLS
 INSTANCE_FACES = INSTANCE_CELLS * INSTANCE_CELLS
 TOTAL_FACES = GRID * GRID * MESH_FACES + INSTANCES * INSTANCE_FACES
 DEFAULT_LIMIT = 20000000
+DEFAULT_LOAD_LIMIT = 200000000
 # Every unit is a 2 x 2 plane; its bounds reach this far from its centre.
 UNIT_RADIUS = math.sqrt(2.0)
 INSTANCER = "/World/Inst"
@@ -173,9 +174,14 @@ try:
         viewer = app.createNode("Viewer")
     require(viewer is not None, "a Viewer exists")
     viewer.setPosition(0, 200)
-    for name in ("polygonBudget", "polygonLimit", "countWholeScene", "cullDistance", "fractionDistance",
-                 "fractionPercent", "budgetBoxes"):
+    for name in ("polygonBudget", "polygonLimit", "loadBudget", "loadLimit", "countWholeScene", "cullDistance",
+                 "fractionDistance", "fractionPercent", "budgetBoxes"):
         require(viewer.getParam(name) is not None, "the Viewer has a %s knob" % name)
+    check(viewer.getParam("loadBudget").getValue() is False and viewer.getParam("loadBudget").getDefaultValue() is False,
+          "Load Budget is off by default")
+    check(viewer.getParam("loadLimit").getValue() == DEFAULT_LOAD_LIMIT
+          and viewer.getParam("loadLimit").getDefaultValue() == DEFAULT_LOAD_LIMIT,
+          "Load Limit defaults to ten times the Polygon Limit (%r)" % viewer.getParam("loadLimit").getValue())
 
     def view():
         views = [w for w in widgets_of("SceneViewport") if w.isVisible()]
@@ -604,7 +610,11 @@ try:
                 close_menus()
                 return
             names = set(a.objectName() for a in menu.actions())
-            check({"polygonBudget", "countWholeScene"} <= names, "the submenu has the toggles (%r)" % sorted(names))
+            check({"polygonBudget", "countWholeScene", "loadBudget"} <= names, "the submenu has the toggles (%r)" %
+                  sorted(names))
+            load_box = menu.findChild(QSpinBox, "loadLimit")
+            check(load_box is not None and load_box.value() == viewer.getParam("loadLimit").getValue(),
+                  "the submenu's Load Limit shows the knob (%r)" % (load_box.value() if load_box is not None else None))
             box = menu.findChild(QSpinBox, "polygonLimit")
             if check(box is not None and box.value() == limit, "the submenu's Polygon Limit shows the knob (%r)" %
                      (box.value() if box is not None else None)):
@@ -734,7 +744,7 @@ try:
         restored = changed_pixels(base, grab())
         check(restored == 0, "clearing the parts gives back the first image (%r pixels differ)" % (restored,))
 
-        section("loading stops at the polygon limit")
+        section("loading stops at the load limit")
 
         def loads_held():
             v = view()
@@ -748,34 +758,78 @@ try:
             v = view()
             return bool(v.property("natronSceneLoadsPending")) if v is not None else True
 
+        def held_hud():
+            return str(view().property("natronSceneLoadsHeldHud") or "")
+
+        def show_town():
+            usd.getParam("filename").setValue(town_scene_path)
+            yield settle()
+            ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+            require(ok, "the scene view shows %s" % town_scene_path)
+
+        def load_town():
+            QMetaObject.invokeMethod(view(), "setDrawState", Q_ARG("QString", "/World/Town"), Q_ARG("QString", "loadAll"))
+
+        all_faces = TOWN_HOUSES * HOUSE_FACES
+        prune.getParam("primPattern").setValue("/World/Nothing")
+
+        # A low Polygon Limit only draws less: with Load Budget off, Load All loads everything.
         viewer.getParam("polygonBudget").setValue(True)
         viewer.getParam("polygonLimit").setValue(HOUSE_FACES)
-        prune.getParam("primPattern").setValue("/World/Nothing")
-        usd.getParam("filename").setValue(town_scene_path)
+        viewer.getParam("loadBudget").setValue(False)
+        yield from show_town()
+        load_town()
+        ok = yield ("until", lambda: not loads_pending() and loaded_faces() == all_faces, POLL_TIMEOUT_S)
+        check(ok and loads_held() == "", "with Load Budget off, Load All loads the whole town past the Polygon "
+              "Limit (%d of %d faces, %r)" % (loaded_faces(), all_faces, loads_held()))
+        QMetaObject.invokeMethod(view(), "clearDrawState", Q_ARG("QString", "/World/Town"))
+        QMetaObject.invokeMethod(view(), "requestUnload", Q_ARG("QStringList", ["/World/Town"]))
+        ok = yield ("until", lambda: not loads_pending() and loaded_faces() == 0, POLL_TIMEOUT_S)
+        check(ok, "unloading the town gives back its faces (%d)" % loaded_faces())
+
+        viewer.getParam("polygonLimit").setValue(DEFAULT_LIMIT)
+        viewer.getParam("loadBudget").setValue(True)
+        viewer.getParam("loadLimit").setValue(HOUSE_FACES)
         yield settle()
-        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
-        require(ok, "the scene view shows %s" % town_scene_path)
-        QMetaObject.invokeMethod(view(), "setDrawState", Q_ARG("QString", "/World/Town"), Q_ARG("QString", "loadAll"))
+        load_town()
         ok = yield ("until", lambda: loads_held() == "budget" and not loads_pending(), POLL_TIMEOUT_S)
-        check(ok, "Load All past the Polygon Limit stops for the budget (%r)" % loads_held())
+        check(ok, "Load All past the Load Limit stops (%r)" % loads_held())
         faces = loaded_faces()
-        check(HOUSE_FACES <= faces < TOWN_HOUSES * HOUSE_FACES,
-              "loading stopped with part of the town loaded (%d of %d faces)" % (faces, TOWN_HOUSES * HOUSE_FACES))
+        check(HOUSE_FACES <= faces < all_faces,
+              "loading stopped with part of the town loaded (%d of %d faces)" % (faces, all_faces))
         yield ("sleep", 2 * SETTLE_MS)
-        held_hud = str(view().property("natronSceneLoadsHeldHud") or "")
-        check(held_hud.startswith("Loading stopped") and str(faces) in held_hud,
-              "the HUD says loading stopped (%r)" % held_hud)
+        hud = held_hud()
+        check(hud.startswith("Load limit reached") and "load again to override" in hud and str(faces) in hud,
+              "the HUD says the load limit is reached and how to override it (%r)" % hud)
         shot("scene-budget-loading-stopped.png")
         yield ("sleep", 2 * SETTLE_MS)
         check(loaded_faces() == faces and loads_held() == "budget", "held loads stay held (%d faces)" % loaded_faces())
 
-        viewer.getParam("polygonLimit").setValue(DEFAULT_LIMIT)
+        # The same load again goes past the limit.
+        load_town()
         ok = yield ("until", lambda: loads_held() == "" and not loads_pending()
-                    and loaded_faces() == TOWN_HOUSES * HOUSE_FACES, POLL_TIMEOUT_S)
-        check(ok, "a higher Polygon Limit loads the rest (%d faces, %r)" % (loaded_faces(), loads_held()))
+                    and loaded_faces() == all_faces, POLL_TIMEOUT_S)
+        check(ok, "Load All again loads the rest past the Load Limit (%d of %d faces, %r)" %
+              (loaded_faces(), all_faces, loads_held()))
         yield ("sleep", 2 * SETTLE_MS)
-        held_hud = str(view().property("natronSceneLoadsHeldHud") or "")
-        check(held_hud == "", "the HUD no longer says loading stopped (%r)" % held_hud)
+        check(held_hud() == "", "the HUD no longer says the limit is reached (%r)" % held_hud())
+
+        # The override lasts for that request only: once unloaded, a new Load All stops again.
+        QMetaObject.invokeMethod(view(), "clearDrawState", Q_ARG("QString", "/World/Town"))
+        QMetaObject.invokeMethod(view(), "requestUnload", Q_ARG("QStringList", ["/World/Town"]))
+        ok = yield ("until", lambda: not loads_pending() and loaded_faces() == 0, POLL_TIMEOUT_S)
+        check(ok, "unloading the town gives back its faces (%d)" % loaded_faces())
+        load_town()
+        ok = yield ("until", lambda: loads_held() == "budget" and not loads_pending(), POLL_TIMEOUT_S)
+        check(ok and loaded_faces() < all_faces, "after an unload, Load All stops at the Load Limit again "
+              "(%d faces, %r)" % (loaded_faces(), loads_held()))
+
+        viewer.getParam("loadLimit").setValue(DEFAULT_LOAD_LIMIT)
+        ok = yield ("until", lambda: loads_held() == "" and not loads_pending()
+                    and loaded_faces() == all_faces, POLL_TIMEOUT_S)
+        check(ok, "a higher Load Limit loads the rest (%d faces, %r)" % (loaded_faces(), loads_held()))
+
+        viewer.getParam("loadBudget").setValue(False)
 
     run(steps())
 except Exception:

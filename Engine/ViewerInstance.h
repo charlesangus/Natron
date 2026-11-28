@@ -91,6 +91,8 @@
 #define kViewerParamPolygonBudgetGroup "polygonBudgetGroup"
 #define kViewerParamPolygonBudget "polygonBudget"
 #define kViewerParamPolygonLimit "polygonLimit"
+#define kViewerParamLoadBudget "loadBudget"
+#define kViewerParamLoadLimit "loadLimit"
 #define kViewerParamCountWholeScene "countWholeScene"
 #define kViewerParamCullDistance "cullDistance"
 #define kViewerParamFractionDistance "fractionDistance"

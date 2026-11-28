@@ -1083,7 +1083,7 @@ TEST(SceneStageLoads, AChunkTheAdmissionRefusesIsHeldUntilReleased)
     stage.setLoadChunk(2);
     bool admit = false;
     int asked = 0;
-    stage.setLoadAdmission([&admit, &asked]() {
+    stage.setLoadAdmission([&admit, &asked](bool /*overridden*/) {
         ++asked;
 
         return admit;
@@ -1118,6 +1118,44 @@ TEST(SceneStageLoads, AChunkTheAdmissionRefusesIsHeldUntilReleased)
     EXPECT_EQ(city.loadedBuildings().size(), std::size_t(6));
 }
 
+TEST(SceneStageLoads, RequestingAHeldLoadAgainAdmitsItsChunksAsOverridden)
+{
+    PayloadCity city(2, 3);
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(city.payload()));
+    stage.setLoadChunk(2);
+    std::vector<bool> asked;
+    stage.setLoadAdmission([&asked](bool overridden) {
+        asked.push_back(overridden);
+
+        return overridden;
+    });
+
+    stage.requestLoad({ PXR_NS::SdfPath("/World") }, true);
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+    EXPECT_FALSE(stage.serviceLoads(kNoLock, kNoLock));
+    ASSERT_TRUE(stage.hasHeldLoads());
+    EXPECT_EQ(asked, std::vector<bool>({ false }));
+    EXPECT_EQ(city.loadedBuildings().size(), std::size_t(2));
+
+    stage.requestLoad({ PXR_NS::SdfPath("/World") }, true);
+    EXPECT_LT(serviceUntilSettled(stage, 20), 20);
+    EXPECT_EQ(city.loadedBuildings().size(), std::size_t(6));
+    EXPECT_FALSE(stage.hasHeldLoads());
+    ASSERT_FALSE(asked.size() < 2);
+    EXPECT_TRUE(asked[1]);
+
+    // The override ends with its request: a new load is held at the admission again.
+    stage.requestUnload({ PXR_NS::SdfPath("/World") });
+    EXPECT_LT(serviceUntilSettled(stage, 20), 20);
+    asked.clear();
+    stage.requestLoad({ PXR_NS::SdfPath("/World") }, true);
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+    EXPECT_FALSE(stage.serviceLoads(kNoLock, kNoLock));
+    EXPECT_TRUE(stage.hasHeldLoads());
+    EXPECT_EQ(asked, std::vector<bool>({ false }));
+}
+
 TEST(SceneStageLoads, CancellingAChunkedLoadCancelsItsFollowUpsHeldOrPending)
 {
     PayloadCity city(2, 3);
@@ -1133,7 +1171,7 @@ TEST(SceneStageLoads, CancellingAChunkedLoadCancelsItsFollowUpsHeldOrPending)
     EXPECT_LT(serviceUntilSettled(stage, 20), 20);
     EXPECT_EQ(city.loadedBuildings(), std::vector<std::string>({ "b0_0.usda", "b0_1.usda", "b1_0.usda", "b1_1.usda", "b1_2.usda" }));
 
-    stage.setLoadAdmission([]() { return false; });
+    stage.setLoadAdmission([](bool /*overridden*/) { return false; });
     stage.requestLoad({ PXR_NS::SdfPath("/World/Block_0") }, true);
     EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
     EXPECT_EQ(city.loadedBuildings().size(), std::size_t(6));
@@ -1199,7 +1237,7 @@ TEST(SceneStageLoads, ASyncToAnotherSceneDropsTheHeldLoadsItNoLongerHas)
     SceneStage stage(PXR_NS::UsdStage::LoadNone);
     ASSERT_TRUE(stage.sync(city.payload()));
     stage.setLoadChunk(2);
-    stage.setLoadAdmission([]() { return false; });
+    stage.setLoadAdmission([](bool /*overridden*/) { return false; });
     stage.requestLoad({ PXR_NS::SdfPath("/World") }, true);
     stage.serviceLoads(kNoLock, kNoLock);
     stage.serviceLoads(kNoLock, kNoLock);

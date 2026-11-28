@@ -265,6 +265,8 @@ public:
 
     // The latest request.
     U64 getGeneration() const;
+    // As Units::contentGeneration, of the latest request.
+    U64 getContentGeneration() const { return _contentGeneration; }
 
     // Whether a complete list answering generation or a later request was published within timeout.
     bool waitForList(U64 generation,

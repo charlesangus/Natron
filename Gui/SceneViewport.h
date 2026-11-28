@@ -514,6 +514,9 @@ public:
      **/
     bool setLoadFaceLimit(U64 faces);
 
+    // Ends a load chunk's wait for the budget, for good, as the view closes. Any thread.
+    void stopLoadPacing();
+
     // Why chunks are held, eLoadHoldNone while none is. Any thread.
     LoadHoldEnum getStageLoadHold() const;
 
@@ -1107,6 +1110,8 @@ public:
         // Of the filter.
         unsigned long long hidden = 0;
         unsigned long long masked = 0;
+        // Gprims a load brought in, held until a budget knows them.
+        unsigned long long held = 0;
         unsigned long long facedMeshes = 0;
         // What the last frame drew in place of what the budget took out.
         unsigned long long budgetBoxCount = 0;

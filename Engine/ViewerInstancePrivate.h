@@ -625,6 +625,8 @@ public:
         KnobBoolWPtr refinementPaused;
         KnobBoolWPtr polygonBudget;
         KnobIntWPtr polygonLimit;
+        KnobBoolWPtr loadBudget;
+        KnobIntWPtr loadLimit;
         KnobBoolWPtr countWholeScene;
         KnobDoubleWPtr cullDistance; // 0: off
         KnobDoubleWPtr fractionDistance; // 0: off

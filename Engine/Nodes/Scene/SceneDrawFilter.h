@@ -319,6 +319,31 @@ public:
     void applyBudget(const Budget& budget);
     void clearBudget() { applyBudget(Budget()); }
 
+    /**
+     * @brief While on, a gprim the input adds reaches Hydra invisible, held until
+     * releaseBudgetHolds() covers it: the budget in place was solved before it came, and would
+     * draw it whole until the next one. One the input takes away and adds again within a render,
+     * as a resync does, comes back as it was instead. Off holds nothing new and keeps what is
+     * held; unbinding shows it.
+     */
+    void setBudgetHolding(bool holding);
+    bool isBudgetHolding() const { return _budgetHolding; }
+
+    /**
+     * @brief Gives the holds made since the last call this epoch: a budget solved for this epoch or
+     * a later one knows them. The epoch never goes down.
+     */
+    void stampBudgetHolds(unsigned long long epoch);
+
+    /**
+     * @brief Shows the holds stamped with this epoch or an earlier one, other than those the budget
+     * in place hides. Call it after applyBudget() with the epoch that budget was solved for.
+     */
+    void releaseBudgetHolds(unsigned long long epoch);
+
+    // Gprims held until a budget knows them, whatever the rules make of them.
+    std::size_t getBudgetHeldCount() const { return _budgetHeld.size(); }
+
     // Gprims Hydra holds that the budget alone makes invisible.
     std::size_t getBudgetHiddenCount() const;
     // Instances the budget turns off, whether or not a rule does too.
@@ -422,7 +447,9 @@ private:
     PXR_NS::HdSceneIndexPrim withBudget(const PXR_NS::SdfPath& primPath, PXR_NS::HdSceneIndexPrim prim) const;
     // The native instance a path lies under, as its instancer and index, or null.
     const std::pair<PXR_NS::SdfPath, std::size_t>* nativeInstanceOf(const PXR_NS::SdfPath& path) const;
-    bool hasBudgetLayer() const { return !_budgetHidden.empty() || !_budgetMasks.empty() || !_budgetFaces.empty(); }
+    bool hasBudgetLayer() const { return !_budgetHidden.empty() || !_budgetMasks.empty() || !_budgetFaces.empty() || !_budgetHeld.empty(); }
+    // Sends visibility for the held paths that go, as they end shown or not.
+    void showBudgetHolds(const std::vector<PXR_NS::SdfPath>& paths);
     bool setInstanceHidden(const PXR_NS::SdfPath& instancer, Instancer& record, std::size_t index, bool hidden);
     void setInstanceWaiting(const PXR_NS::SdfPath& instancer, Instancer& record, std::size_t index, bool waiting);
     void queueMaskChange(const PXR_NS::SdfPath& instancer, Instancer& record);
@@ -534,6 +561,12 @@ private:
     std::unordered_map<PXR_NS::SdfPath, std::vector<bool>, PXR_NS::SdfPath::Hash> _budgetMasks;
     std::unordered_map<PXR_NS::SdfPath, PXR_NS::VtIntArray, PXR_NS::SdfPath::Hash> _budgetFaces;
     std::size_t _budgetMaskedCount = 0;
+    bool _budgetHolding = false;
+    // By gprim, the epoch it was stamped with, or none yet.
+    std::unordered_map<PXR_NS::SdfPath, unsigned long long, PXR_NS::SdfPath::Hash> _budgetHeld;
+    std::size_t _budgetUnstamped = 0;
+    // The gprims and instancers the input took away this render, kept to come back as they were.
+    std::unordered_set<PXR_NS::SdfPath, PXR_NS::SdfPath::Hash> _budgetForgotten;
 
     unsigned long long _inputAdded = 0;
     unsigned long long _inputRemoved = 0;

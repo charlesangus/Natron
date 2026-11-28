@@ -273,6 +273,8 @@ const double kRevealTargetMs = 33.;
 // A step looking at prims it finds nothing to show in, such as those of a subtree shown already,
 // stops here, so the frame it is part of still keeps to the target.
 const int kRevealStepDeadlineMs = 16;
+// The longest a load chunk waits for the budget to know the chunk before.
+const int kLoadPaceMs = 8000;
 // Long enough to span the gaps between the moves of one drag.
 const int kRevealCameraYieldMs = 250;
 // What a frame of the fill streams in of textures, paced between these by what frames cost.
@@ -989,10 +991,24 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<U64> loadFaceLimit { 0 };
     std::atomic<int> loadHold { SceneViewportRenderer::eLoadHoldNone };
 
-    bool admitChunk()
+    // The load thread. A chunk waits for the budget to know the one before, so that what it loads
+    // is drawn as the budget has it rather than whole; past kLoadPaceMs it goes on.
+    void paceToBudget()
     {
+        const U64 target = stageLoadEditCount;
+        const U64 serial = loadPaceSerial;
+        const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kLoadPaceMs);
+        while (budgetHolding && (budgetCoveredLoadEdits < target) && !loadPaceQuit && (loadPaceSerial == serial)
+               && (std::chrono::steady_clock::now() < deadline)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+    }
+
+    bool admitChunk(bool overridden)
+    {
+        paceToBudget();
         const U64 limit = loadFaceLimit;
-        if ((limit != 0) && (loadedFaces >= limit)) {
+        if (!overridden && (limit != 0) && (loadedFaces >= limit)) {
             loadHold = SceneViewportRenderer::eLoadHoldBudget;
 
             return false;
@@ -1175,6 +1191,13 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<bool> recordBudget { false };
     // Whether the last service had Storm's filter to take a budget, so one solved since owes a frame.
     std::atomic<bool> budgetServiceable { false };
+    // Whether a budget is in place, so loads arriving are held for the next one.
+    std::atomic<bool> budgetHolding { false };
+    // The load edits whose prims no budget hold keeps back any more, which the next chunk waits for.
+    std::atomic<U64> budgetCoveredLoadEdits { 0 };
+    // Bumped to end a chunk's wait for the budget, as when the loads are cancelled.
+    std::atomic<U64> loadPaceSerial { 0 };
+    std::atomic<bool> loadPaceQuit { false };
     // What the stats last recorded, on the render thread.
     bool recordedBudget = false;
     mutable std::mutex budgetMutex;
@@ -3992,6 +4015,38 @@ struct SceneViewportRenderer::Implementation {
         return appliedBudget;
     }
 
+    /**
+     * Needs stageMutex, before the frame's render. The prims a load brings in reach Hydra held while
+     * a budget is in place, and go once a budget solved with them in is: the one in place would
+     * draw them whole until then. The boxes are fed first, so that a hold's epoch is a request made
+     * after the stage it came in with. Returns whether the holds changed.
+     */
+    bool serviceBudgetHolds(SceneDrawFilter* filter)
+    {
+        const std::size_t heldBefore = filter->getBudgetHeldCount();
+        const bool holding = appliedBudget && appliedBudget->units && filter->isBudgetBound();
+        budgetHolding = holding;
+        if (!holding) {
+            filter->setBudgetHolding(false);
+            filter->releaseBudgetHolds((std::numeric_limits<unsigned long long>::max)());
+            budgetCoveredLoadEdits = stageLoadEditCount.load();
+
+            return filter->getBudgetHeldCount() != heldBefore;
+        }
+        feedBoxes();
+        if (heldBefore != 0) {
+            filter->stampBudgetHolds(boxes->getContentGeneration());
+            filter->releaseBudgetHolds(appliedBudget->units->contentGeneration);
+        }
+        if (filter->getBudgetHeldCount() == 0) {
+            budgetCoveredLoadEdits = absorbedLoadEditCount.load();
+        }
+        // An edit's prims come at once, as before; a load's alone wait.
+        filter->setBudgetHolding((stageLoadEditCount != absorbedLoadEditCount) && (stageEditCount == absorbedEditCount));
+
+        return filter->getBudgetHeldCount() != heldBefore;
+    }
+
     // Needs stageMutex, on the thread holding the engine. Storm's filter alone takes the budget.
     void serviceBudget(SceneDrawFilter* filter)
     {
@@ -4019,6 +4074,7 @@ struct SceneViewportRenderer::Implementation {
                 setAppliedBudget(budget);
                 changed = true;
             }
+            changed = serviceBudgetHolds(filter) || changed;
         }
         const bool record = recordBudget;
         if (!changed && (record == recordedBudget)) {
@@ -4041,6 +4097,7 @@ struct SceneViewportRenderer::Implementation {
         stats.hidden = filter ? filter->getBudgetHiddenCount() : 0;
         stats.masked = filter ? filter->getBudgetMaskedInstanceCount() : 0;
         stats.facedMeshes = filter ? filter->getBudgetFacedMeshCount() : 0;
+        stats.held = filter ? filter->getBudgetHeldCount() : 0;
         for (int axis = 0; axis < 3; ++axis) {
             stats.eye[axis] = appliedBudget ? appliedBudget->camera.eye[axis] : 0.;
         }
@@ -4881,7 +4938,7 @@ SceneViewportRenderer::syncScene(const ScenePayload& payload,
             // The viewer shows what was asked for: nothing loads until a load is requested.
             _imp->sceneStage.reset(new SceneStage(UsdStage::LoadNone));
             _imp->sceneStage->setLoadChunk(kLoadChunkPayloads);
-            _imp->sceneStage->setLoadAdmission([imp = _imp.get()]() { return imp->admitChunk(); });
+            _imp->sceneStage->setLoadAdmission([imp = _imp.get()](bool overridden) { return imp->admitChunk(overridden); });
             const std::shared_ptr<Implementation::LoadsWakeGate> gate = _imp->loadsWakeGate;
             _imp->sceneStage->setLoadsWake([gate]() {
                 std::lock_guard<std::mutex> lock(gate->mutex);
@@ -5674,6 +5731,7 @@ SceneViewportRenderer::requestStageUnload(const std::vector<std::string>& paths)
 void
 SceneViewportRenderer::cancelStageLoads()
 {
+    ++_imp->loadPaceSerial;
     SceneStage* stage = _imp->loadStage;
 
     if (!stage) {
@@ -5691,6 +5749,7 @@ SceneViewportRenderer::cancelStageLoads()
 void
 SceneViewportRenderer::cancelStageLoads(const std::vector<std::string>& paths)
 {
+    ++_imp->loadPaceSerial;
     SceneStage* stage = _imp->loadStage;
 
     if (!stage) {
@@ -5705,6 +5764,12 @@ SceneViewportRenderer::cancelStageLoads(const std::vector<std::string>& paths)
         }
     }
     stage->cancelPendingLoads(toSdfPaths(paths));
+}
+
+void
+SceneViewportRenderer::stopLoadPacing()
+{
+    _imp->loadPaceQuit = true;
 }
 
 bool
@@ -10708,6 +10773,7 @@ SceneViewport::~SceneViewport()
         std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
         _imp->loadQuit = true;
     }
+    _imp->renderer.stopLoadPacing();
     ++_imp->rendererSwitchLatest;
     _imp->renderer.cancelBackgroundFrame();
     _imp->queueChanged.notify_all();
@@ -13438,6 +13504,8 @@ SceneViewport::setViewedNodeProvider(const std::function<NodePtr()>& provider)
 namespace {
 struct PolygonBudgetKnobs {
     bool on = false;
+    bool loadBudget = false;
+    U64 loadLimit = 0;
     SceneViewportRenderer::BudgetSettings settings;
     SceneViewportRenderer::BudgetBoxesEnum budgetBoxes = SceneViewportRenderer::eBudgetBoxesBoxWire;
 };
@@ -13489,6 +13557,8 @@ readPolygonBudgetKnobs(const NodePtr& node)
     }
     knobs.on = viewerKnobNumber(node, kViewerParamPolygonBudget, 0.) != 0.;
     knobs.settings.limit = (unsigned long long)std::max(0., viewerKnobNumber(node, kViewerParamPolygonLimit, double(knobs.settings.limit)));
+    knobs.loadBudget = viewerKnobNumber(node, kViewerParamLoadBudget, 0.) != 0.;
+    knobs.loadLimit = U64(std::max(0., viewerKnobNumber(node, kViewerParamLoadLimit, 0.)));
     knobs.settings.countWholeScene = viewerKnobNumber(node, kViewerParamCountWholeScene, 0.) != 0.;
     knobs.settings.cullDistance = viewerKnobNumber(node, kViewerParamCullDistance, 0.);
     knobs.settings.fractionDistance = viewerKnobNumber(node, kViewerParamFractionDistance, 0.);
@@ -13523,7 +13593,7 @@ SceneViewport::refreshPolygonBudget()
         _imp->cameraIdleTimer->stop();
         _imp->renderer.stopBudget();
     }
-    if (_imp->renderer.setLoadFaceLimit(knobs.on ? U64(knobs.settings.limit) : U64(0))) {
+    if (_imp->renderer.setLoadFaceLimit(knobs.loadBudget ? knobs.loadLimit : U64(0))) {
         // Taking the mutex keeps the wake-up from falling between the thread's check and its wait.
         {
             std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
@@ -13607,6 +13677,7 @@ SceneViewport::publishBudget()
     published[QString::fromUtf8("hidden")] = QVariant::fromValue<qulonglong>(stats.hidden);
     published[QString::fromUtf8("masked")] = QVariant::fromValue<qulonglong>(stats.masked);
     published[QString::fromUtf8("facedMeshes")] = QVariant::fromValue<qulonglong>(stats.facedMeshes);
+    published[QString::fromUtf8("held")] = QVariant::fromValue<qulonglong>(stats.held);
     published[QString::fromUtf8("budgetBoxCount")] = QVariant::fromValue<qulonglong>(stats.budgetBoxCount);
     published[QString::fromUtf8("budgetBoxInstances")] = QVariant::fromValue<qulonglong>(stats.budgetBoxInstances);
     published[QString::fromUtf8("budgetBoxMarkers")] = QVariant::fromValue<qulonglong>(stats.budgetBoxMarkers);
@@ -14557,10 +14628,10 @@ SceneViewport::paintGL()
         QString heldHud;
         switch (_imp->renderer.getStageLoadHold()) {
         case SceneViewportRenderer::eLoadHoldBudget:
-            heldHud = tr("Loading stopped: %1 polys loaded reach the Polygon Limit").arg(_imp->renderer.getLoadedFaces());
+            heldHud = tr("Load limit reached %1 load again to override (%2 polys loaded)").arg(QChar(0x2014)).arg(_imp->renderer.getLoadedFaces());
             break;
         case SceneViewportRenderer::eLoadHoldMemory:
-            heldHud = tr("Loading stopped: system memory is low");
+            heldHud = tr("Loading stopped %1 system memory is low").arg(QChar(0x2014));
             break;
         case SceneViewportRenderer::eLoadHoldNone:
             break;
@@ -15734,6 +15805,7 @@ SceneViewport::addPolygonBudgetMenu(QMenu* menu)
     } toggles[] = {
         { kViewerParamPolygonBudget, tr("Polygon Budget") },
         { kViewerParamCountWholeScene, tr("Count Whole Scene") },
+        { kViewerParamLoadBudget, tr("Load Budget") },
     };
     for (const auto& toggle : toggles) {
         QAction* action = budget->addAction(toggle.label);
@@ -15757,17 +15829,26 @@ SceneViewport::addPolygonBudgetMenu(QMenu* menu)
         action->setDefaultWidget(row);
         budget->addAction(action);
     };
+    const struct
     {
-        const QString label = tr("Polygon Limit");
+        const char* name;
+        QString label;
+    } limits[] = {
+        { kViewerParamPolygonLimit, tr("Polygon Limit") },
+        { kViewerParamLoadLimit, tr("Load Limit") },
+    };
+    for (const auto& limit : limits) {
         QSpinBox* box = new QSpinBox;
-        box->setObjectName(QString::fromUtf8(kViewerParamPolygonLimit));
+        box->setObjectName(QString::fromUtf8(limit.name));
         box->setRange(0, std::numeric_limits<int>::max());
         box->setGroupSeparatorShown(true);
-        box->setValue(int(viewerKnobNumber(node, kViewerParamPolygonLimit, 0.)));
+        box->setValue(int(viewerKnobNumber(node, limit.name, 0.)));
         box->setKeyboardTracking(false);
-        addRow(label, box);
-        QObject::connect(box, qOverload<int>(&QSpinBox::valueChanged), this, [this, label](int value) {
-            editPolygonBudgetKnob(kViewerParamPolygonLimit, label, value);
+        addRow(limit.label, box);
+        const char* name = limit.name;
+        const QString label = limit.label;
+        QObject::connect(box, qOverload<int>(&QSpinBox::valueChanged), this, [this, name, label](int value) {
+            editPolygonBudgetKnob(name, label, value);
         });
     }
     const struct

@@ -350,6 +350,9 @@ addDifferences(const SceneDrawFilter::Rules& a,
 
 // Bounds the passes over nested native instances, so a cyclic input cannot loop.
 const int kMaxInstanceNesting = 16;
+
+// The epoch of a budget hold not yet stamped, above every real one.
+const unsigned long long kUnstamped = (std::numeric_limits<unsigned long long>::max)();
 } // anon namespace
 
 void
@@ -593,14 +596,19 @@ SceneDrawFilter::forget(Node* top)
         if (node->output == eOutputInvisible) {
             --_invisibleCount;
         }
-        // What comes back in its place waits for the next budget, which sees it as it then is.
-        if (hasBudgetLayer()) {
-            _budgetHidden.erase(*node->path);
-            _budgetFaces.erase(*node->path);
-            const auto mask = _budgetMasks.find(*node->path);
-            if (mask != _budgetMasks.end()) {
-                _budgetMaskedCount -= countSet(mask->second);
-                _budgetMasks.erase(mask);
+        // What the budget made of it stays until the render ends, for it to come back as it was.
+        // Its face subset went with it, so a mesh drawn in part comes back held, or whole.
+        if (_budgetHolding || hasBudgetLayer()) {
+            const SdfPath& path = *node->path;
+            const auto faced = _budgetFaces.find(path);
+            if (faced != _budgetFaces.end()) {
+                _budgetFaces.erase(faced);
+                if (_budgetHolding && _budgetHeld.emplace(path, kUnstamped).second) {
+                    ++_budgetUnstamped;
+                }
+            }
+            if (HdPrimTypeIsGprim(node->type) || (_budgetMasks.count(path) != 0)) {
+                _budgetForgotten.insert(path);
             }
         }
         _nodes.erase(_nodes.find(*node->path));
@@ -1076,7 +1084,7 @@ HdSceneIndexPrim
 SceneDrawFilter::withBudget(const SdfPath& primPath,
                             HdSceneIndexPrim prim) const
 {
-    if (!_budgetHidden.empty() && HdPrimTypeIsGprim(prim.primType) && (_budgetHidden.count(primPath) != 0)) {
+    if (HdPrimTypeIsGprim(prim.primType) && ((_budgetHidden.count(primPath) != 0) || (_budgetHeld.count(primPath) != 0))) {
         prim.dataSource = HdOverlayContainerDataSource::OverlayedContainerDataSources(invisibleData(), prim.dataSource);
     }
 
@@ -1581,6 +1589,25 @@ void
 SceneDrawFilter::endRender()
 {
     _removedHeld.clear();
+    for (const SdfPath& path : _budgetForgotten) {
+        if (_nodes.count(path) != 0) {
+            continue;
+        }
+        _budgetHidden.erase(path);
+        const auto held = _budgetHeld.find(path);
+        if (held != _budgetHeld.end()) {
+            if (held->second == kUnstamped) {
+                --_budgetUnstamped;
+            }
+            _budgetHeld.erase(held);
+        }
+        const auto mask = _budgetMasks.find(path);
+        if (mask != _budgetMasks.end()) {
+            _budgetMaskedCount -= countSet(mask->second);
+            _budgetMasks.erase(mask);
+        }
+    }
+    _budgetForgotten.clear();
 }
 
 void
@@ -1628,6 +1655,14 @@ SceneDrawFilter::_PrimsAdded(const HdSceneIndexBase& /*sender*/,
             // A node made only as the parent of one the input announced first was never in Hydra.
             known = (found != _nodes.end()) && (arriving || !found->second.type.IsEmpty());
             before = known ? found->second.output : eOutputShown;
+        }
+        if (!_budgetForgotten.empty() && (_budgetForgotten.erase(entry.primPath) != 0)) {
+            // Back within the render it went in, as it was.
+        } else if (_budgetHolding && HdPrimTypeIsGprim(entry.primType) && entry.primPath.IsAbsolutePath()) {
+            const auto found = _nodes.find(entry.primPath);
+            if (((found == _nodes.end()) || found->second.type.IsEmpty()) && _budgetHeld.emplace(entry.primPath, kUnstamped).second) {
+                ++_budgetUnstamped;
+            }
         }
         Node* node = indexPrim(entry.primPath, entry.primType);
         if (!node) {
@@ -1813,9 +1848,67 @@ void
 SceneDrawFilter::setBudgetBound(bool bound)
 {
     if (!bound && _budgetBound) {
+        _budgetHolding = false;
+        releaseBudgetHolds(kUnstamped);
         clearBudget();
     }
     _budgetBound = bound;
+}
+
+void
+SceneDrawFilter::setBudgetHolding(bool holding)
+{
+    _budgetHolding = holding && _budgetBound;
+}
+
+void
+SceneDrawFilter::stampBudgetHolds(unsigned long long epoch)
+{
+    if (_budgetUnstamped == 0) {
+        return;
+    }
+    for (auto& held : _budgetHeld) {
+        if (held.second == kUnstamped) {
+            held.second = epoch;
+        }
+    }
+    _budgetUnstamped = 0;
+}
+
+void
+SceneDrawFilter::releaseBudgetHolds(unsigned long long epoch)
+{
+    std::vector<SdfPath> released;
+    for (auto it = _budgetHeld.begin(); it != _budgetHeld.end();) {
+        // kUnstamped itself releases everything.
+        if ((it->second > epoch) || ((it->second == kUnstamped) && (epoch != kUnstamped))) {
+            ++it;
+            continue;
+        }
+        if (it->second == kUnstamped) {
+            --_budgetUnstamped;
+        }
+        released.push_back(it->first);
+        it = _budgetHeld.erase(it);
+    }
+    showBudgetHolds(released);
+}
+
+void
+SceneDrawFilter::showBudgetHolds(const std::vector<SdfPath>& paths)
+{
+    HdSceneIndexObserver::DirtiedPrimEntries dirtied;
+    for (const SdfPath& path : paths) {
+        const auto node = _nodes.find(path);
+        if ((node != _nodes.end()) && (node->second.output == eOutputShown) && (_budgetHidden.count(path) == 0)) {
+            dirtied.emplace_back(path, visibilityLocators());
+        }
+    }
+    const std::size_t dirtiedBatch = 4096;
+    for (std::size_t begin = 0; begin < dirtied.size(); begin += dirtiedBatch) {
+        const std::size_t end = (std::min)(begin + dirtiedBatch, dirtied.size());
+        _SendPrimsDirtied(HdSceneIndexObserver::DirtiedPrimEntries(dirtied.begin() + begin, dirtied.begin() + end));
+    }
 }
 
 const std::pair<SdfPath, std::size_t>*

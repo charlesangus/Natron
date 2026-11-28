@@ -419,6 +419,8 @@ public:
     // A new Viewer node's polygon budget knobs start from these.
     bool getViewer3DPolygonBudget() const;
     int getViewer3DPolygonLimit() const;
+    bool getViewer3DLoadBudget() const;
+    int getViewer3DLoadLimit() const;
     bool getViewer3DCountWholeScene() const;
     double getViewer3DCullDistance() const;
     double getViewer3DFractionDistance() const;
@@ -756,6 +758,8 @@ private:
     KnobDoublePtr _viewer3DGuideSize;
     KnobBoolPtr _viewer3DPolygonBudget;
     KnobIntPtr _viewer3DPolygonLimit;
+    KnobBoolPtr _viewer3DLoadBudget;
+    KnobIntPtr _viewer3DLoadLimit;
     KnobBoolPtr _viewer3DCountWholeScene;
     KnobDoublePtr _viewer3DCullDistance;
     KnobDoublePtr _viewer3DFractionDistance;

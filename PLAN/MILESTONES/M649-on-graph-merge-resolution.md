@@ -255,6 +255,7 @@ Code facts (scout of 2026-11-27, on the F33 branch tip 488b376fef):
 
 ## Decisions
 
+- 2026-11-28 (user): animated knobs are compared and merged at the knob level, not per key — any difference in the curve is a difference of the whole knob; no key reconciliation. One knob conflict (Mine / Theirs / Base) when both sides changed the curve differently; per-key conflicts and Keep Both Keys (any frame) are removed. Supersedes the earlier same-frame/different-frame Keep Both Keys rule.
 - 2026-11-27 — **One milestone for cherry-pick and on-graph conflict resolution (user):** the two overlap; the goal is full merge resolution capability on the graph.
 - 2026-11-27 — **Splice restored ghosts back in (user).** A reader the artist rewired since is asked about per input, through an on-graph pending choice rather than a dialog, and the Restore menu also offers Keep My Wiring and Splice Everywhere (user: pop-ups are to be avoided).
 - 2026-11-27 — **Badge popover plus structural ghosts (user):** clicking a badge opens a popover of choices; structural sides preview as ghosts and dashed wires that can be picked.

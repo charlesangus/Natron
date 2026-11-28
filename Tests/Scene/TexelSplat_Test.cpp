@@ -341,14 +341,11 @@ exportOf(const TexelPages& pages,
 RectI
 touchedBounds(const PaintedTile& tile)
 {
-    RectI bounds(tile.size, tile.size, 0, 0);
+    RectI bounds;
     for (int y = 0; y < tile.size; ++y) {
         for (int x = 0; x < tile.size; ++x) {
             if (tile.touchedAt(x, y) > 0.f) {
-                bounds.x1 = std::min(bounds.x1, x);
-                bounds.y1 = std::min(bounds.y1, y);
-                bounds.x2 = std::max(bounds.x2, x + 1);
-                bounds.y2 = std::max(bounds.y2, y + 1);
+                bounds.merge(x, y, x + 1, y + 1);
             }
         }
     }

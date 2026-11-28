@@ -41,6 +41,7 @@
 #include <pxr/base/tf/diagnostic.h>
 
 #include "Engine/AppManager.h"
+#include "Global/FloatingPointExceptions.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -49,11 +50,13 @@ NATRON_NAMESPACE_ENTER
 namespace {
 const std::size_t kPacketSize = 16;
 
-// Embree's traversal is much slower on denormals; the caller's mode is restored on the way out.
-class ScopedFlushDenormals {
+// Embree's traversal is much slower on denormals, and its maths raises floating-point exceptions that
+// debug builds trap; the caller's mode is restored on the way out.
+class ScopedEmbreeFpMode {
 public:
-    ScopedFlushDenormals()
-        : _saved(_mm_getcsr())
+    ScopedEmbreeFpMode()
+        : _noTraps()
+        , _saved(_mm_getcsr())
     {
         const unsigned int flushToZero = 1u << 15;
         const unsigned int denormalsAreZero = 1u << 6;
@@ -61,12 +64,13 @@ public:
         _mm_setcsr(_saved | flushToZero | denormalsAreZero);
     }
 
-    ~ScopedFlushDenormals()
+    ~ScopedEmbreeFpMode()
     {
         _mm_setcsr(_saved);
     }
 
 private:
+    const boost_adaptbx::floating_point::FpTrapGuard _noTraps;
     const unsigned int _saved;
 };
 
@@ -349,10 +353,12 @@ PaintMeshIndex::build(std::vector<SceneRaster::TriangulatedMesh> targets,
         }
     }
 
-    // Embree's TBB build spawns into whichever arena commits it, which holds it to the budget.
+    // Embree's TBB build spawns into whichever arena commits it, which holds it to the budget. The
+    // arena takes its workers' floating-point mode from this thread, so the traps are off before it starts.
+    const boost_adaptbx::floating_point::FpTrapGuard noTraps;
     tbb::task_arena arena(std::max(1, threads > 0 ? threads : effectThreads()));
     arena.execute([&imp]() {
-        const ScopedFlushDenormals flush;
+        const ScopedEmbreeFpMode fpMode;
         rtcCommitScene(imp.scene);
     });
     if (rtcGetDeviceError(imp.device) != RTC_ERROR_NONE) {
@@ -458,7 +464,7 @@ PaintMeshIndex::raycast(const GfVec3f& origin,
     if (!imp.scene || !(tFar >= tNear)) {
         return false;
     }
-    const ScopedFlushDenormals flush;
+    const ScopedEmbreeFpMode fpMode;
     RTCRayHit rayHit;
     std::memset(&rayHit, 0, sizeof(rayHit));
     rayHit.ray.org_x = origin[0];
@@ -489,7 +495,7 @@ PaintMeshIndex::trianglesInSphere(const GfVec3f& centre,
     if (!imp.scene || !(radius >= 0.f)) {
         return found;
     }
-    const ScopedFlushDenormals flush;
+    const ScopedEmbreeFpMode fpMode;
     RTCPointQuery query;
     query.x = centre[0];
     query.y = centre[1];
@@ -527,7 +533,7 @@ PaintMeshIndex::visible(const GfVec3f* points,
     const GfVec3d towardCamera = -camera.ComputeViewDirection();
     const double nearClip = camera.GetNearFar().GetMin();
     const double occlusionBias = std::max(bias, kMinimumBias);
-    const ScopedFlushDenormals flush;
+    const ScopedEmbreeFpMode fpMode;
 
     for (std::size_t start = 0; start < count; start += kPacketSize) {
         const std::size_t n = std::min(kPacketSize, count - start);

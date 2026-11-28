@@ -38,3 +38,4 @@ Give USD nodes their own top-level toolbar category, USD, instead of the 3D/USD 
 
 **Verification gate:** release gate green per `.local/build-mode`; `Tests/gui/usd_toolbar_menu.py` passes under Xvfb at 1920x1080; the menu screenshot is OK'd at F36 - UI Polish Batch II's UAT.
 - 2026-11-28 — **F36 UAT round 1 (user):** the USD icon reads as "networking". Options to show: a tree with two cubes, a NativeGeo-style cube with a "U" badge, others; the Pixar USD logo in greyscale only if its trademark terms allow.
+- 2026-11-28 — **No USD logo (user):** the Pixar/OpenUSD logo is trademarked and not allowed; the USD icon is our own glyph.

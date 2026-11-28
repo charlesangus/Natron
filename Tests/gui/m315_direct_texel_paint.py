@@ -10,8 +10,8 @@ any orbit, once the node's hidden bakeGeneration knob counts the paint landing, 
 goes once its texels are in the texture. Tiles 1001 and 1002 are rendered through a Write with Output Tile
 set to each and read back: both islands hold red (pure red survives any colour transform). A Ctrl+left drag
 then orbits, with no bake progress drawn, and the Edit menu's Undo takes the stroke off both tiles. Last,
-one Buffer stroke over the front face is baked by an orbit and lands in tile 1001 over the Direct session,
-tile 1002 staying clean.
+the reverse drag brings the default view back, and one Buffer stroke over the front face is baked by an
+orbit and lands only in the front face's island in tile 1001, tile 1002 staying clean.
 
 Mouse events are sent to the SceneViewport (synthesized window-system events do not reach Natron's
 widgets under Xvfb). Run through Tests/gui/run-gui-test.sh at 1920x1080. Screenshots and results.txt
@@ -39,6 +39,8 @@ FRONT_CENTRE = (-0.57, -0.35)
 TOP_CENTRE = (0.0, 0.91)
 # The faces' islands in st: the front face in tile 1001, the top face in tile 1002 at the same place.
 ISLAND = (0.25, 0.45)
+# The Orbit section's Ctrl+left drag, in view pixels: azimuth -64 and elevation +24 degrees.
+ORBIT = (160, 60)
 
 try:
     import NatronEngine
@@ -238,7 +240,7 @@ try:
 
         section("Orbit")
         before = free_camera()
-        drag(v, v.rect().center(), QPoint(160, 60), Qt.ControlModifier)
+        drag(v, v.rect().center(), QPoint(*ORBIT), Qt.ControlModifier)
         after = free_camera()
         report("NOTE free camera before %r after %r" % (before, after))
         check(len(before) == 7 and len(after) == 7 and before[4:6] != after[4:6], "a Ctrl+left drag orbits the camera")
@@ -265,6 +267,11 @@ try:
         shot("m315-direct-undone.png")
 
         section("Buffer stroke")
+        drag(v, v.rect().center(), QPoint(-ORBIT[0], -ORBIT[1]), Qt.ControlModifier)
+        home = free_camera()
+        report("NOTE free camera turned back to %r" % (home,))
+        require(len(home) == 7 and abs(home[4] - 35.) < 0.5 and abs(home[5] - 25.) < 0.5,
+                "the reverse Ctrl+left drag brings back the default view the stroke points are measured in")
         paint.getParam("paintModel").setValue(BUFFER)
         QApplication.processEvents()
         v.activateWindow()
@@ -283,6 +290,8 @@ try:
         report("NOTE red texels after the Buffer stroke: %r" % (mixed,))
         check(mixed[1001][0] >= MIN_RED_TEXELS, "the Buffer stroke lands in tile 1001 over the Direct session (%d)"
               % mixed[1001][0])
+        check(mixed[1001][1] == mixed[1001][0], "every red texel in tile 1001 lies in the front face's island (%d of %d)"
+              % (mixed[1001][1], mixed[1001][0]))
         check(mixed[1002][0] == 0, "tile 1002 stays clean (%d)" % mixed[1002][0])
 
         navigation.setValue(original_navigation)

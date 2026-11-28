@@ -1033,6 +1033,92 @@ TEST_F(USDTexturePaintTest, BufferStrokeGrowsTheSeamGutterAndNoFurther)
     }
 }
 
+namespace {
+// The texels of tile reading as pure red outside the texel box [x0, x1] x [y0, y1], and inside it.
+void
+countRedTexels(const ImagePtr& tile,
+               int x0,
+               int x1,
+               int y0,
+               int y1,
+               int* outside,
+               int* inside)
+{
+    *outside = 0;
+    *inside = 0;
+    if (!tile) {
+        ADD_FAILURE() << "no tile";
+
+        return;
+    }
+    const RectI bounds = tile->getBounds();
+    const int nComps = (int)tile->getComponentsCount();
+    ASSERT_GE(nComps, 4);
+    Image::ReadAccess access(tile.get());
+    for (int y = bounds.y1; y < bounds.y2; ++y) {
+        for (int x = bounds.x1; x < bounds.x2; ++x) {
+            const float* in = reinterpret_cast<const float*>(access.pixelAt(x, y));
+            if (!in || !((in[0] > 0.9f) && (in[1] < 0.1f) && (in[2] < 0.1f) && (in[3] > 0.9f))) {
+                continue;
+            }
+            const bool within = (x >= x0) && (x <= x1) && (y >= y0) && (y <= y1);
+            ++(within ? *inside : *outside);
+        }
+    }
+}
+} // anonymous namespace
+
+TEST_F(USDTexturePaintTest, BufferStrokeOnTheSeamCubeStaysInTheFrontIslandOfItsTile)
+{
+    QFile fixture(QString::fromUtf8(NATRON_TESTS_FIXTURES_DIR "/texture-paint-seam-cube.usda"));
+    ASSERT_TRUE(fixture.open(QIODevice::ReadOnly));
+    const QByteArray usda = fixture.readAll();
+    ASSERT_FALSE(usda.isEmpty());
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedScene(dir, usda.constData(), &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    ASSERT_EQ(USDTexturePaint::ePaintModelBuffer, USDTexturePaint::getSessionPaintModel(session));
+
+    ImagePtr before = renderTile(paint);
+    ASSERT_TRUE(bool(before));
+
+    // viewCamera() looks straight at the front face, x and y in [-1, 1] at u in [1/3, 2/3] and v in
+    // [0.25, 0.75]; its st is [0.25, 0.45]^2, s with x and t with y. The stroke runs along y = 0
+    // from inside the face over its right edge, a seam with the right face's island, and past the cube.
+    RotoStrokeItemPtr stroke = addSpanStroke(paint, session, "front", 0.45, 0.75, 0.5);
+    setColor(stroke, 1., 0., 0.);
+    ImagePtr front = renderTile(paint);
+    ASSERT_TRUE(bool(front));
+
+    const int first = 256;
+    const int last = 460;
+    const int g = TexelPages::kSeamGutter;
+    int outside = 0;
+    int inside = 0;
+    countRedTexels(front, first - g, last + g, first - g, last + g, &outside, &inside);
+    EXPECT_GT(inside, 1000) << "the stroke's texels in the front face's island";
+    EXPECT_EQ(0, outside) << "red texels outside the front face's island and its gutter";
+
+    const int row = (int)(0.35 * kSmallTile);
+    expectColor(texelAtIndex(front, last, row), 1.f, 0.f, 0.f, 1.f, "the front face's edge texel at the seam");
+    for (int x = last + 1; x <= last + g; ++x) {
+        expectColor(texelAtIndex(front, x, row), 1.f, 0.f, 0.f, 1.f, "seam gutter texel");
+    }
+    for (int x = last + g + 1; x <= last + g + 4; ++x) {
+        const BufferPixel was = texelAtIndex(before, x, row);
+        expectColor(texelAtIndex(front, x, row), was.rgba[0], was.rgba[1], was.rgba[2], was.rgba[3], "texel past the gutter");
+    }
+
+    getKnob<KnobInt>(paint, kUSDTexturePaintParamOutputTile)->setValue(1002);
+    ImagePtr top = renderTile(paint);
+    ASSERT_TRUE(bool(top));
+    countRedTexels(top, 0, kSmallTile - 1, 0, kSmallTile - 1, &outside, &inside);
+    EXPECT_EQ(0, inside + outside) << "red texels in tile 1002, which holds only the top face";
+}
+
 TEST_F(USDTexturePaintTest, PlanePurposesReachMetadataDownstream)
 {
     QTemporaryDir dir;

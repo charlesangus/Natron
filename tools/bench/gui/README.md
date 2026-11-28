@@ -386,7 +386,7 @@ UTILITY_BENCH_EDITS=5 tools/bench/gui/run.sh --xvfb --driver utility    # checks
 
 Times Natron Utility in Raster mode as the viewer sees it: a USDRender of an emissive projected
 card at 1920x1080, Raster Samples 1 and 16, into Viewer1 with Full Frame on, so every frame is the
-whole image at full resolution. Each edit moves the camera through a USDXformPrim to a position it
+whole image at full resolution. Each edit moves the camera through a USDEditTransform to a position it
 has never held, and is timed from the knob change to the first and the last viewer frame it brings.
 The result is `<UTC>-<host>-<mode>-utility.jsonl`; its directory also holds
 `utility-profile.jsonl` (`NATRON_UTILITY_PROFILE`, whose `viewer_frame` and `hydra_profile`

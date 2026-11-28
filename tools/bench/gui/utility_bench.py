@@ -8,13 +8,13 @@ viewer has no device hand-off and the device is lavapipe.
     Tests/gui/run-gui-test.sh tools/bench/gui/utility_bench.py [natron-binary]
 
 Graph: USDRead of a generated stage (a camera at the origin facing a card ten units away) into
-USDXformPrim on /World/Cam, into USDAssignMaterial binding a USDProject3D (a CheckerBoard seen
+USDEditTransform on /World/Cam, into USDAssignMaterial binding a USDProject3D (a CheckerBoard seen
 through a USDCamera at the origin) to the card, into USDRenderSettings (Natron Utility, Raster)
 into USDRender into Viewer1, whose Full Frame is on so every frame renders the whole 1920x1080
 image at full resolution whatever the zoom.
 
 Per pass count, UTILITY_BENCH_WARMUPS untimed edits and then UTILITY_BENCH_EDITS timed ones. An
-edit moves the camera sideways through the USDXformPrim to a value it has never held (or, with
+edit moves the camera sideways through the USDEditTransform to a value it has never held (or, with
 UTILITY_BENCH_NUDGE=seed, changes the Seed), so no frame comes from a cache. Each edit is timed
 from the knob change to the first and to the last viewer frame it brings (the viewer_frame records
 of NATRON_UTILITY_PROFILE, stamped with the steady clock this script reads), the last one being
@@ -248,10 +248,11 @@ try:
         with open(stage_path, "w") as f:
             f.write(STAGE)
         read = make("USDRead")
-        read.getParam("filename").setValue(stage_path)
-        rig = make("USDXformPrim")
-        rig.getParam("primPath").setValue("/World/Cam")
-        require(rig.connectInput(0, read), "connect the USDXformPrim to the USDRead")
+        # USDXformPrim would define an Xform at /World/Cam and graft the stage under it, leaving no
+        # camera at that path; USDEditTransform moves the existing prim.
+        rig = make("USDEditTransform")
+        rig.getParam("primPattern").set("/World/Cam")
+        require(rig.connectInput(0, read), "connect the USDEditTransform to the USDRead")
         checker = make("CheckerBoard")
         checker.getParam("boxSize").set(120.0, 120.0)
         projector = make("USDCamera")
@@ -264,12 +265,13 @@ try:
         project.connectInput(1, projector)
         assign = make("USDAssignMaterial")
         assign.getParam("primPattern").set("/World/Card")
-        require(assign.connectInput(0, rig), "connect the USDAssignMaterial to the USDXformPrim")
+        require(assign.connectInput(0, rig), "connect the USDAssignMaterial to the USDEditTransform")
         require(assign.connectInput(1, project), "connect the USDAssignMaterial to the USDProject3D")
         settings = make("USDRenderSettings")
         require(settings.connectInput(0, assign), "connect the USDRenderSettings to the USDAssignMaterial")
         render = make("USDRender")
         require(render.connectInput(0, settings), "connect the USDRender to the USDRenderSettings")
+        read.getParam("filename").setValue(stage_path)
         return rig, settings, render
 
     def summary(passes, frames, placement, failures):

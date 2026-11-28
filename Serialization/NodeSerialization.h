@@ -94,11 +94,11 @@ struct NodeLayoutSerialization {
  * exist in the scene the file is opened with. None of it reaches the node's output.
  **/
 struct SceneViewSerialization {
-    // Prim path to the state set on it: "bbox", "expand", "geometry", "loadAndDraw" or "hide".
+    // Prim path to the state set on it: "bbox", "passThrough", "geometry", "loadAndDraw" or "hide".
     std::map<std::string, std::string> drawStates;
 
-    // The paths of drawStates whose Expand was set for a row below, not chosen for the row.
-    std::list<std::string> impliedExpand;
+    // The paths of drawStates whose Pass Through was set for a row below, not chosen for the row.
+    std::list<std::string> impliedPassThrough;
 
     // Prim path to the stage's load rule there: "all", "only" or "none". The root's rule when it
     // loads nothing is left out, as a viewer's stage starts that way.
@@ -106,7 +106,7 @@ struct SceneViewSerialization {
 
     bool isEmpty() const
     {
-        return drawStates.empty() && impliedExpand.empty() && loadRules.empty();
+        return drawStates.empty() && impliedPassThrough.empty() && loadRules.empty();
     }
 };
 

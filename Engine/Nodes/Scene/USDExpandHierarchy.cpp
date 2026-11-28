@@ -126,7 +126,7 @@ USDExpandHierarchy::createRow(int index)
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption(sceneDrawStateName(eSceneDrawStateBBox), tr("BBox").toStdString(),
                                        tr("One box around everything below the prim. Payloads below stay unloaded.").toStdString()));
-        options.push_back(ChoiceOption(sceneDrawStateName(eSceneDrawStateChildren), tr("Expand").toStdString(),
+        options.push_back(ChoiceOption(sceneDrawStateName(eSceneDrawStatePassThrough), tr("Pass Through").toStdString(),
                                        tr("Each child by its own draw; children nothing sets draw as boxes.").toStdString()));
         options.push_back(ChoiceOption(sceneDrawStateName(eSceneDrawStateFull), tr("Geometry").toStdString(),
                                        tr("Everything below the prim, as far as its payloads are loaded. Nothing is "

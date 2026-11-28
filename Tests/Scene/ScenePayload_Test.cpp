@@ -102,8 +102,8 @@ TEST(ScenePayloadTest, AWalkKeepingToItsLayersStopsAtPrimsOtherLayersAdded)
     levels.layers.push_back(file->GetIdentifier());
     SceneDrawStates::PolicyStates policy;
     ASSERT_TRUE(SceneOps::matchDrawRules(stage, SceneDrawRules(1, levels), &policy, std::function<bool()>()));
-    EXPECT_EQ(eSceneDrawStateChildren, policy["/World"].state);
-    EXPECT_EQ(eSceneDrawStateChildren, policy["/World/a"].state);
+    EXPECT_EQ(eSceneDrawStatePassThrough, policy["/World"].state);
+    EXPECT_EQ(eSceneDrawStatePassThrough, policy["/World/a"].state);
     EXPECT_EQ(eSceneDrawStateBBox, policy["/World/a/geo"].state);
     EXPECT_EQ(policy.end(), policy.find("/World/added"));
     EXPECT_EQ(policy.end(), policy.find("/World/added/geo"));
@@ -497,7 +497,7 @@ TEST(ScenePayloadTest, ALaterFullRuleOpensTheEarlierBoxesAboveIt)
                                          SceneDrawRules { makeRule("/World", eSceneDrawStateBBox, "Early"), makeRule("/World/a/b", eSceneDrawStateFull, "Late") },
                                          &policy,
                                          std::function<bool()>()));
-    EXPECT_EQ(eSceneDrawStateChildren, policy["/World"].state);
+    EXPECT_EQ(eSceneDrawStatePassThrough, policy["/World"].state);
     EXPECT_EQ(std::string("Late"), policy["/World"].origin);
     EXPECT_EQ(eSceneDrawStateFull, policy["/World/a/b"].state);
 
@@ -529,7 +529,7 @@ TEST(ScenePayloadTest, DrawRulePatternsMatchTheStageAndOneMatchingNothingDoesNot
     levels.levels = 1;
     ASSERT_TRUE(SceneOps::matchDrawRules(stage, SceneDrawRules(1, levels), &policy, std::function<bool()>()));
     ASSERT_EQ((std::size_t)3, policy.size());
-    EXPECT_EQ(eSceneDrawStateChildren, policy["/World"].state);
+    EXPECT_EQ(eSceneDrawStatePassThrough, policy["/World"].state);
     EXPECT_EQ(eSceneDrawStateBBox, policy["/World/a"].state);
     EXPECT_EQ(eSceneDrawStateBBox, policy["/World/b"].state);
 
@@ -537,7 +537,7 @@ TEST(ScenePayloadTest, DrawRulePatternsMatchTheStageAndOneMatchingNothingDoesNot
     toKind.toKind = "model";
     ASSERT_TRUE(SceneOps::matchDrawRules(stage, SceneDrawRules(1, toKind), &policy, std::function<bool()>()));
     ASSERT_EQ((std::size_t)2, policy.size());
-    EXPECT_EQ(eSceneDrawStateChildren, policy["/World"].state);
+    EXPECT_EQ(eSceneDrawStatePassThrough, policy["/World"].state);
     EXPECT_EQ(eSceneDrawStateHidden, policy["/World/b"].state);
 
     EXPECT_FALSE(SceneOps::drawRulesNeedStage(SceneDrawRules { makeRule("/World/a /World/b", eSceneDrawStateBBox, "Policy1") }));

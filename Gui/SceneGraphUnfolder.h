@@ -17,8 +17,8 @@
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
 
-#ifndef Gui_SceneGraphExpander_h
-#define Gui_SceneGraphExpander_h
+#ifndef Gui_SceneGraphUnfolder_h
+#define Gui_SceneGraphUnfolder_h
 
 // ***** BEGIN PYTHON BLOCK *****
 // from <https://docs.python.org/3/c-api/intro.html#include-files>:
@@ -107,13 +107,14 @@ private:
  * thread, each slice bounded by a time budget, so that the window keeps handling events however
  * many rows there are. Rows whose children have not been fetched yet are fetched before the walk
  * goes below them. It never loads a payload: rows of unloaded or failed payloads stay closed, and
- * the walk does not go below rows of payloads still loading, which Expand All Below opens; both
+ * the walk does not go below rows of payloads still loading, which Unfold All Below opens; both
  * are counted.
  *
- * Expand All Below opens every row with children below the roots. Expand To <kind> walks down
- * from the roots by walkToKind()'s stop rule (kindWalkStopsAt()): the rows of the kind, and the
+ * Unfold All Below opens every row with children below the roots. Unfold To <kind> walks down
+ * from the roots by walkToKind()'s stop rule (kindWalkStopsAt()), a root of the kind walked
+ * through: the nearest rows of the kind below the roots, and the
  * payload rows the walk could not go into, are shown closed with their ancestors open up to the
- * root, and a branch where the walk found neither is left as it was. Collapse All Below closes
+ * root, and a branch where the walk found neither is left as it was. Fold All Below closes
  * the remembered open rows below the roots, each after every row below it, then the roots.
  *
  * It also reopens remembered rows after rows came back (restore()), in slices of its own that
@@ -129,22 +130,22 @@ private:
  * slice is given at least as long, up to kMaxSliceMs, so that the relayout takes at most about half
  * of each tick rather than growing to most of it as rows open.
  **/
-class SceneGraphExpander {
+class SceneGraphUnfolder {
 public:
     enum ModeEnum {
-        eModeExpandBelow = 0,
-        eModeExpandToKind,
-        eModeCollapseBelow
+        eModeUnfoldBelow = 0,
+        eModeUnfoldToKind,
+        eModeFoldBelow
     };
 
     struct Progress {
-        ModeEnum mode = eModeExpandBelow;
-        // The kind of Expand To.
+        ModeEnum mode = eModeUnfoldBelow;
+        // The kind of Unfold To.
         QString kind;
         int roots = 0;
-        // Rows the run opened, or closed for Collapse All Below.
+        // Rows the run opened, or closed for Fold All Below.
         int changed = 0;
-        // Rows of the kind found by Expand To.
+        // Rows of the kind found by Unfold To.
         int matches = 0;
         // Rows of unloaded or failed payloads the walk reached and left closed.
         int unloaded = 0;
@@ -164,14 +165,14 @@ public:
 
     /**
      * @brief Works on tree, whose model is model. expanded is the set of paths the panel remembers
-     * open on the shown stage; Collapse All Below reads it and drops from it the paths no row is
+     * open on the shown stage; Fold All Below reads it and drops from it the paths no row is
      * shown for, and restore() reopens from it.
      **/
-    SceneGraphExpander(QTreeView* tree,
+    SceneGraphUnfolder(QTreeView* tree,
                        SceneGraphModel* model,
                        SceneGraphExpandedPaths* expanded);
 
-    ~SceneGraphExpander();
+    ~SceneGraphUnfolder();
 
     /**
      * @brief Works from now on with expanded, the set remembered for another stage: stops the
@@ -184,7 +185,7 @@ public:
 
     /**
      * @brief Stops any run under way and starts mode on the rows of roots, a root inside another's
-     * branch dropped. kind is the target of eModeExpandToKind, a built-in or registered kind.
+     * branch dropped. kind is the target of eModeUnfoldToKind, a built-in or registered kind.
      **/
     void start(ModeEnum mode,
                const QStringList& roots,
@@ -195,18 +196,18 @@ public:
 
     bool isRunning() const;
 
-    // Whether the expander is opening or closing a row, or reading the rows to reopen one, right
+    // Whether the unfolder is opening or closing a row, or reading the rows to reopen one, right
     // now: rows inserted meanwhile are its own.
     bool isApplying() const;
 
-    // Whether rows inserted under parent now are the expander's own: it is applying, or the run
+    // Whether rows inserted under parent now are the unfolder's own: it is applying, or the run
     // under way asked for parent's children. Rows a load brings in under other rows are not.
     bool ownsRowsUnder(const QString& parent) const;
 
     const Progress& getProgress() const;
 
-    // What progress says for the status line: "Expanded 4,210 rows; 37 unloaded payloads not
-    // expanded; 2 payloads still loading, not walked below".
+    // What progress says for the status line: "Unfolded 4,210 rows; 37 unloaded payloads not
+    // unfolded; 2 payloads still loading, not walked below".
     static QString progressText(const Progress& progress);
 
     /**
@@ -238,4 +239,4 @@ private:
 
 NATRON_NAMESPACE_EXIT
 
-#endif // Gui_SceneGraphExpander_h
+#endif // Gui_SceneGraphUnfolder_h

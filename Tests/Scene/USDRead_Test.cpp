@@ -1139,8 +1139,8 @@ TEST_F(USDReadTest, ToKindStopsAtAnUnloadedPayload)
     ASSERT_TRUE(bool(stage));
     SceneDrawStates::PolicyStates policy;
     ASSERT_TRUE(SceneOps::matchDrawRules(stage, rules, &policy, std::function<bool()>()));
-    EXPECT_EQ(eSceneDrawStateChildren, policy["/World"].state);
-    EXPECT_EQ(eSceneDrawStateChildren, policy["/World/Block"].state);
+    EXPECT_EQ(eSceneDrawStatePassThrough, policy["/World"].state);
+    EXPECT_EQ(eSceneDrawStatePassThrough, policy["/World/Block"].state);
     EXPECT_EQ(eSceneDrawStateBBox, policy["/World/Block/Building"].state);
     EXPECT_EQ(reader->getScriptName(), policy["/World/Block/Building"].origin);
     EXPECT_FALSE(bool(PXR_NS::SdfLayer::Find(building))) << "a payload layer was opened";

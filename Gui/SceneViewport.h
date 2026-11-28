@@ -1534,7 +1534,8 @@ public Q_SLOTS:
      * @brief Scoped load, unload and draw state edits on rows, for the scene graph's bulk commands.
      * scope is "selected", the rows themselves; "below", the rows and everything below them; or a
      * kind token (assembly, component, subcomponent or a registered custom kind), the prims of that
-     * kind under the rows as walkToKind() finds them. Each returns what it did as one line for a
+     * kind under the rows as walkToKind() finds them: a row of that kind stands for the nearest
+     * prims of the kind strictly below it, except for unloadRows(). Each returns what it did as one line for a
      * status line, or an empty string, having done nothing, if a path, the scope or the state is
      * not one, or the scope does not apply.
      *
@@ -1789,6 +1790,13 @@ private:
 
     // Main thread: the render thread took in draw changes posted to it.
     void onDrawChangesTakenIn();
+
+    /**
+     * @brief Main thread: something that kept a frame from starting has let go. Every such end comes
+     * here, so that once the last one goes a frame starts, or the paint asked for owes one: nothing
+     * else asks again, and the view would keep what it last showed, the background included.
+     **/
+    void onFrameHoldCleared();
 
     // Main thread: asks for the paint that shows the frame on the GPU once the render thread has
     // found it finished. Makes no context current.

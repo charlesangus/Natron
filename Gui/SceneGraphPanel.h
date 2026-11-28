@@ -61,11 +61,11 @@ class SceneGraphModel;
  * (SceneViewport::loadRows(), unloadRows() and setDrawStateOnRowsScoped()); the row menu holds the
  * same commands, and each built-in scope's has an unbound key in the Shortcut Editor.
  *
- * Expand All Below, Expand To <kind> and Collapse All Below open and close whole branches of the
- * tree a slice at a time (SceneGraphExpander), never loading a payload; Esc, another of them, or
+ * Unfold All Below, Unfold To <kind> and Fold All Below open and close whole branches of the
+ * tree a slice at a time (SceneGraphUnfolder), never loading a payload; Esc, another of them, or
  * another stage stops one under way. They run from the row menu, Shift-click on a branch arrow (all
- * below, or on an open row collapse all below), * on the current row, the toolbar's Expand and
- * Collapse buttons in the scope its combo picks, and unbound keys in the Shortcut Editor.
+ * below, or on an open row fold all below), * on the current row, the toolbar's Unfold and
+ * Fold buttons in the scope its combo picks, and unbound keys in the Shortcut Editor.
  *
  * A node the viewer does not show is read on a worker into a stage of the panel's own, opened with
  * no payload loaded; the rows of the stage left stay up, greyed, until it is read. The stages of
@@ -78,9 +78,9 @@ class SceneGraphModel;
  * sceneGraphResults, sceneGraphFilter, sceneGraphApplyToNode, sceneGraphFilterMessage, sceneGraphPin, sceneGraphFollow, sceneGraphNode,
  * sceneGraphChangedHere, sceneGraphStatus, sceneGraphBulkScope, sceneGraphBulk_<action>,
  * sceneGraphBulkLoadIcon, sceneGraphBulkDisplayIcon, sceneGraphBulkStatus, sceneGraphResetDrawStates,
- * sceneGraphBakeDrawStates, sceneGraphCancelLoads, sceneGraphExpand, sceneGraphCollapse and
- * sceneGraphTreePane, the row menu's sceneGraphExpandBelow, sceneGraphExpandTo_<kind> and
- * sceneGraphCollapseBelow, and the inspector's. Rows the shown node's own layers
+ * sceneGraphBakeDrawStates, sceneGraphCancelLoads, sceneGraphUnfold, sceneGraphFold and
+ * sceneGraphTreePane, the row menu's sceneGraphUnfoldBelow, sceneGraphUnfoldTo_<kind> and
+ * sceneGraphFoldBelow, and the inspector's. Rows the shown node's own layers
  * author something on, and their ancestors, are marked (SceneGraphModel::eChangedHereRole); the
  * Changed Here button swaps the tree for one listing only those (SceneChangedHereModel), leaving
  * the tree as it was. It mirrors its state into the natronSceneGraphPinned, natronSceneGraphFollow
@@ -90,9 +90,9 @@ class SceneGraphModel;
  * natronSceneGraphChangedHereOnly, natronSceneGraphChangedHereBusy, natronSceneGraphChangedHereCount,
  * natronSceneGraphChangedHereRows, natronSceneGraphComposeCount (evaluations that reached a stage
  * of the panel's own), natronSceneGraphSwitching, natronSceneGraphCachedStages,
- * natronSceneGraphTimersActive, natronSceneGraphTopPath, natronSceneGraphExpanding,
- * natronSceneGraphExpandSlices (slices of the last expand or collapse) and
- * natronSceneGraphExpandedCount (open rows remembered) properties.
+ * natronSceneGraphTimersActive, natronSceneGraphTopPath, natronSceneGraphUnfolding,
+ * natronSceneGraphUnfoldSlices (slices of the last unfold or fold) and
+ * natronSceneGraphUnfoldedCount (open rows remembered) properties.
  **/
 class SceneGraphPanel
     : public QWidget,

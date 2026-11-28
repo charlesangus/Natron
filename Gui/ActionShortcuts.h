@@ -456,8 +456,8 @@ CLANG_DIAG_ON(uninitialized)
 #define kShortcutIDActionViewer3DCreateFromSelection "createNodeFromSelection"
 #define kShortcutDescActionViewer3DCreateFromSelection "Create Node from Selection"
 
-#define kShortcutIDActionViewer3DDrawExpand "drawStateExpand"
-#define kShortcutDescActionViewer3DDrawExpand "Draw Expand"
+#define kShortcutIDActionViewer3DDrawPassThrough "drawStatePassThrough"
+#define kShortcutDescActionViewer3DDrawPassThrough "Draw Pass Through"
 
 #define kShortcutIDActionViewer3DDrawGeometry "drawStateGeometry"
 #define kShortcutDescActionViewer3DDrawGeometry "Draw Geometry"
@@ -1167,11 +1167,11 @@ struct SceneGraphBulkKeyBinding {
 const std::vector<SceneGraphBulkKeyBinding>& getSceneGraphBulkKeyBindings();
 
 /**
- * @brief The scene graph panel's Expand All Below, Expand To <kind> for the built-in kinds and
- * Collapse All Below, as key actions of the 3D viewer group with the row menu entries' object names
- * as IDs; none is bound by default. action is "expand" or "collapse"; scope is "below" or a kind.
+ * @brief The scene graph panel's Unfold All Below, Unfold To <kind> for the built-in kinds and
+ * Fold All Below, as key actions of the 3D viewer group with the row menu entries' object names
+ * as IDs; none is bound by default. action is "unfold" or "fold"; scope is "below" or a kind.
  **/
-const std::vector<SceneGraphBulkKeyBinding>& getSceneGraphExpandKeyBindings();
+const std::vector<SceneGraphBulkKeyBinding>& getSceneGraphFoldKeyBindings();
 
 // Writes an action's bindings into settings, which must be inside the action's group.
 void writeShortcutSettings(QSettings& settings, const QString& actionID, const BoundAction& action);

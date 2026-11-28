@@ -42,8 +42,8 @@
 
 #include <gtest/gtest.h>
 
-#include "Gui/SceneGraphExpander.h"
 #include "Gui/SceneGraphModel.h"
+#include "Gui/SceneGraphUnfolder.h"
 
 #include <QAbstractItemModelTester>
 #include <QCoreApplication>
@@ -1641,9 +1641,9 @@ TEST(SceneGraphModel, TheDrawStateColumnShowsTheViewersStatesAndEditsThem)
     EXPECT_TRUE(drawCell(box).data(Qt::FontRole).value<QFont>().italic());
 
     // A state set on a row reads as set; the rows below it inherit what it implies.
-    EXPECT_TRUE(model.setData(drawCell(world), (int)eSceneDrawStateChildren));
-    EXPECT_EQ(QStringList(QString::fromUtf8("/World=%1").arg((int)eSceneDrawStateChildren)), viewer.writes);
-    EXPECT_EQ(QString::fromUtf8("Expand"), drawCell(world).data().toString());
+    EXPECT_TRUE(model.setData(drawCell(world), (int)eSceneDrawStatePassThrough));
+    EXPECT_EQ(QStringList(QString::fromUtf8("/World=%1").arg((int)eSceneDrawStatePassThrough)), viewer.writes);
+    EXPECT_EQ(QString::fromUtf8("Pass Through"), drawCell(world).data().toString());
     EXPECT_FALSE(world.data(SceneGraphModel::eDrawStateInheritedRole).toBool());
     EXPECT_FALSE(drawCell(world).data(Qt::FontRole).value<QFont>().italic());
     EXPECT_EQ(QString::fromUtf8("BBox"), drawCell(ball).data().toString());
@@ -1653,7 +1653,7 @@ TEST(SceneGraphModel, TheDrawStateColumnShowsTheViewersStatesAndEditsThem)
     EXPECT_TRUE(model.setData(drawCell(world), (int)eSceneDrawStateBBox));
     EXPECT_EQ(QString::fromUtf8("BBox"), drawCell(world).data().toString());
     EXPECT_TRUE(model.setData(drawCell(ball), (int)eSceneDrawStateFull));
-    EXPECT_EQ(QString::fromUtf8("Expand"), drawCell(world).data().toString());
+    EXPECT_EQ(QString::fromUtf8("Pass Through"), drawCell(world).data().toString());
     EXPECT_EQ(QString::fromUtf8("Geometry"), drawCell(ball).data().toString());
     EXPECT_FALSE(ball.data(SceneGraphModel::eDrawStateInheritedRole).toBool());
     EXPECT_EQ(QString::fromUtf8("BBox"), drawCell(box).data().toString());
@@ -2004,7 +2004,7 @@ TEST(SceneGraphExpansionMemory, ThePathsBelowAPathAreOneRange)
     EXPECT_EQ(QStringList(below.first, below.second), QStringList({ QString::fromUtf8("/B/A") }));
 }
 
-TEST(SceneGraphExpander, ARestoreReopensTheRememberedRowsInSlices)
+TEST(SceneGraphUnfolder, ARestoreReopensTheRememberedRowsInSlices)
 {
     const int groupCount = 60;
     std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
@@ -2027,24 +2027,24 @@ TEST(SceneGraphExpander, ARestoreReopensTheRememberedRowsInSlices)
     other.insert(QString::fromUtf8("/Elsewhere"));
     const SceneGraphExpandedPaths otherBefore = other;
 
-    SceneGraphExpander expander(&tree, &model, &remembered);
+    SceneGraphUnfolder unfolder(&tree, &model, &remembered);
     int restores = 0;
     bool deferred = true;
-    expander.setRestoreCallback([&](bool wasDeferred) {
+    unfolder.setRestoreCallback([&](bool wasDeferred) {
         ++restores;
         deferred = wasDeferred;
     });
 
-    const int slicesBefore = expander.getRestoreSliceCount();
-    expander.restore(true, QStringList());
+    const int slicesBefore = unfolder.getRestoreSliceCount();
+    unfolder.restore(true, QStringList());
     // The first slice ran at once; the rest wait for the event loop.
-    EXPECT_TRUE(expander.isRestoring());
+    EXPECT_TRUE(unfolder.isRestoring());
     EXPECT_EQ(restores, 0);
     ASSERT_TRUE(processEventsUntil([&]() { return restores > 0; }));
     EXPECT_EQ(restores, 1);
     EXPECT_FALSE(deferred);
-    EXPECT_FALSE(expander.isRestoring());
-    EXPECT_GT(expander.getRestoreSliceCount() - slicesBefore, 1);
+    EXPECT_FALSE(unfolder.isRestoring());
+    EXPECT_GT(unfolder.getRestoreSliceCount() - slicesBefore, 1);
 
     const QModelIndex root = model.indexOfPath(QString::fromUtf8("/R"), false);
     ASSERT_TRUE(root.isValid());
@@ -2061,7 +2061,7 @@ TEST(SceneGraphExpander, ARestoreReopensTheRememberedRowsInSlices)
     for (int i = 0; i < groupCount; ++i) {
         tree.collapse(model.indexOfPath(groupPath(i), false));
     }
-    expander.restore(false, QStringList({ groupPath(7) }));
+    unfolder.restore(false, QStringList({ groupPath(7) }));
     ASSERT_TRUE(processEventsUntil([&]() { return restores > 1; }));
     open = 0;
     for (int i = 0; i < groupCount; ++i) {
@@ -2070,8 +2070,8 @@ TEST(SceneGraphExpander, ARestoreReopensTheRememberedRowsInSlices)
     EXPECT_EQ(open, 0);
 
     // Another stage's set: the rows it remembers are its own, and none of the first set's reopen.
-    expander.setExpandedPaths(&other);
-    expander.restore(true, QStringList());
+    unfolder.setExpandedPaths(&other);
+    unfolder.restore(true, QStringList());
     ASSERT_TRUE(processEventsUntil([&]() { return restores > 2; }));
     EXPECT_TRUE(tree.isExpanded(model.indexOfPath(QString::fromUtf8("/R/G1"), false)));
     EXPECT_FALSE(tree.isExpanded(model.indexOfPath(groupPath(2), false)));
@@ -2079,7 +2079,7 @@ TEST(SceneGraphExpander, ARestoreReopensTheRememberedRowsInSlices)
     EXPECT_EQ(remembered.size(), (std::size_t)groupCount + 1);
 }
 
-TEST(SceneGraphExpander, CollapseAllBelowClosesTheRememberedRowsBelowTheRoot)
+TEST(SceneGraphUnfolder, FoldAllBelowClosesTheRememberedRowsBelowTheRoot)
 {
     const int groupCount = 20;
     std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
@@ -2099,16 +2099,16 @@ TEST(SceneGraphExpander, CollapseAllBelowClosesTheRememberedRowsBelowTheRoot)
     // A run starts from rows the tree shows, as a selection's are; the model reads /R on demand.
     ASSERT_TRUE(processEventsUntil([&]() { return model.indexOfPath(QString::fromUtf8("/R"), true).isValid(); }));
 
-    SceneGraphExpander expander(&tree, &model, &remembered);
-    expander.start(SceneGraphExpander::eModeExpandBelow, QStringList({ QString::fromUtf8("/R") }));
-    ASSERT_TRUE(processEventsUntil([&]() { return !expander.isRunning(); }));
+    SceneGraphUnfolder unfolder(&tree, &model, &remembered);
+    unfolder.start(SceneGraphUnfolder::eModeUnfoldBelow, QStringList({ QString::fromUtf8("/R") }));
+    ASSERT_TRUE(processEventsUntil([&]() { return !unfolder.isRunning(); }));
     EXPECT_EQ(remembered.size(), (std::size_t)groupCount + 1);
     // Remembered but not shown: closed by the run along with the rest.
     remembered.insert(QString::fromUtf8("/R/G3/C"));
 
-    expander.start(SceneGraphExpander::eModeCollapseBelow, QStringList({ QString::fromUtf8("/R") }));
-    ASSERT_TRUE(processEventsUntil([&]() { return !expander.isRunning(); }));
-    EXPECT_FALSE(expander.getProgress().cancelled);
+    unfolder.start(SceneGraphUnfolder::eModeFoldBelow, QStringList({ QString::fromUtf8("/R") }));
+    ASSERT_TRUE(processEventsUntil([&]() { return !unfolder.isRunning(); }));
+    EXPECT_FALSE(unfolder.getProgress().cancelled);
     EXPECT_TRUE(remembered.empty());
     ASSERT_EQ(closed.size(), (std::size_t)groupCount + 1);
     // Every row closes after the rows below it.
@@ -2116,7 +2116,7 @@ TEST(SceneGraphExpander, CollapseAllBelowClosesTheRememberedRowsBelowTheRoot)
     EXPECT_FALSE(tree.isExpanded(model.indexOfPath(QString::fromUtf8("/R"), false)));
 }
 
-TEST(SceneGraphExpander, ALoadingPayloadRowOpensAndIsCountedApartFromUnloadedOnes)
+TEST(SceneGraphUnfolder, ALoadingPayloadRowOpensAndIsCountedApartFromUnloadedOnes)
 {
     PayloadModel fixture;
     QTreeView tree;
@@ -2128,18 +2128,18 @@ TEST(SceneGraphExpander, ALoadingPayloadRowOpensAndIsCountedApartFromUnloadedOne
     fixture.model.markLoading(QStringList(kB0));
     ASSERT_EQ(SceneGraphModel::ePayloadStateLoading, fixture.model.getPayloadState(kB0));
 
-    SceneGraphExpander expander(&tree, &fixture.model, &remembered);
-    expander.start(SceneGraphExpander::eModeExpandBelow, QStringList({ QString::fromUtf8("/World") }));
-    ASSERT_TRUE(processEventsUntil([&]() { return !expander.isRunning(); }));
+    SceneGraphUnfolder unfolder(&tree, &fixture.model, &remembered);
+    unfolder.start(SceneGraphUnfolder::eModeUnfoldBelow, QStringList({ QString::fromUtf8("/World") }));
+    ASSERT_TRUE(processEventsUntil([&]() { return !unfolder.isRunning(); }));
 
-    const SceneGraphExpander::Progress& progress = expander.getProgress();
+    const SceneGraphUnfolder::Progress& progress = unfolder.getProgress();
     EXPECT_EQ(1, progress.loading);
     EXPECT_EQ(2, progress.unloaded);
     // Its load is under way already: opening it asks for nothing, and its rows show once it ends.
     EXPECT_TRUE(tree.isExpanded(fixture.row(kB0)));
     EXPECT_FALSE(tree.isExpanded(fixture.row(kB1)));
     EXPECT_FALSE(tree.isExpanded(fixture.row(kB2)));
-    const QString text = SceneGraphExpander::progressText(progress);
+    const QString text = SceneGraphUnfolder::progressText(progress);
     EXPECT_TRUE(text.contains(QString::fromUtf8("2 unloaded payloads not expanded"))) << text.toStdString();
     EXPECT_TRUE(text.contains(QString::fromUtf8("1 payload still loading, not walked below"))) << text.toStdString();
     EXPECT_EQ(SceneGraphModel::ePayloadStateUnloaded, fixture.model.getPayloadState(kB1));
@@ -2150,14 +2150,14 @@ TEST(SceneGraphExpander, ALoadingPayloadRowOpensAndIsCountedApartFromUnloadedOne
     remembered.insert(kB0);
     remembered.insert(kB1);
     bool restored = false;
-    expander.setRestoreCallback([&](bool) { restored = true; });
-    expander.restore(true, QStringList());
+    unfolder.setRestoreCallback([&](bool) { restored = true; });
+    unfolder.restore(true, QStringList());
     ASSERT_TRUE(processEventsUntil([&]() { return restored; }));
     EXPECT_TRUE(tree.isExpanded(fixture.row(kB0)));
     EXPECT_FALSE(tree.isExpanded(fixture.row(kB1)));
 }
 
-TEST(SceneGraphExpander, OnlyTheRowsARunFetchedAreItsOwn)
+TEST(SceneGraphUnfolder, OnlyTheRowsARunFetchedAreItsOwn)
 {
     const int groupCount = 60;
     std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
@@ -2172,19 +2172,19 @@ TEST(SceneGraphExpander, OnlyTheRowsARunFetchedAreItsOwn)
     ASSERT_TRUE(processEventsUntil([&]() { return model.indexOfPath(QString::fromUtf8("/R"), true).isValid(); }));
 
     SceneGraphExpandedPaths remembered;
-    SceneGraphExpander expander(&tree, &model, &remembered);
-    expander.start(SceneGraphExpander::eModeExpandBelow, QStringList({ QString::fromUtf8("/R") }));
-    ASSERT_TRUE(expander.isRunning());
-    bool ownsSome = expander.ownsRowsUnder(QString::fromUtf8("/R"));
+    SceneGraphUnfolder unfolder(&tree, &model, &remembered);
+    unfolder.start(SceneGraphUnfolder::eModeUnfoldBelow, QStringList({ QString::fromUtf8("/R") }));
+    ASSERT_TRUE(unfolder.isRunning());
+    bool ownsSome = unfolder.ownsRowsUnder(QString::fromUtf8("/R"));
     for (int i = 0; i < groupCount; ++i) {
-        ownsSome = ownsSome || expander.ownsRowsUnder(groupPath(i));
+        ownsSome = ownsSome || unfolder.ownsRowsUnder(groupPath(i));
     }
     EXPECT_TRUE(ownsSome);
     // Rows a load brings in under a row the run did not read are not the run's.
-    EXPECT_FALSE(expander.ownsRowsUnder(QString::fromUtf8("/Elsewhere")));
-    EXPECT_FALSE(expander.ownsRowsUnder(QString()));
-    ASSERT_TRUE(processEventsUntil([&]() { return !expander.isRunning(); }));
+    EXPECT_FALSE(unfolder.ownsRowsUnder(QString::fromUtf8("/Elsewhere")));
+    EXPECT_FALSE(unfolder.ownsRowsUnder(QString()));
+    ASSERT_TRUE(processEventsUntil([&]() { return !unfolder.isRunning(); }));
     for (int i = 0; i < groupCount; ++i) {
-        EXPECT_FALSE(expander.ownsRowsUnder(groupPath(i)));
+        EXPECT_FALSE(unfolder.ownsRowsUnder(groupPath(i)));
     }
 }

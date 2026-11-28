@@ -239,7 +239,7 @@ public:
     // and the rows below it to the graph.
     typedef std::function<void(const QString& path, int state)> DrawStateWriter;
 
-    // "BBox", "Expand", "Geometry", "Load + Draw" or "Hide".
+    // "BBox", "Pass Through", "Geometry", "Load + Draw" or "Hide".
     static QString drawStateLabel(int state);
 
     // Status line phrases of the scene graph's bulk commands, for the panel and the viewer alike.

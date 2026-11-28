@@ -2433,8 +2433,8 @@ SceneGraphModel::drawStateLabel(int state)
     switch (state) {
     case eSceneDrawStateBBox:
         return tr("BBox");
-    case eSceneDrawStateChildren:
-        return tr("Expand");
+    case eSceneDrawStatePassThrough:
+        return tr("Pass Through");
     case eSceneDrawStateFull:
         return tr("Geometry");
     case eSceneDrawStateLoadAll:

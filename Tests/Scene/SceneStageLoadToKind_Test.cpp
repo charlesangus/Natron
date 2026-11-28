@@ -156,6 +156,72 @@ TEST(SceneStageLoadToKind, RootInsideTheSceneLoadsOnlyItsSubtree)
     EXPECT_EQ(std::vector<std::string>({ "/World/Props/Crate" }), loaded(stage));
 }
 
+namespace {
+// /World/Outer is a component payload holding /World/Outer/Inner, a component payload of its own,
+// which holds /World/Outer/Inner/Detail, a subcomponent payload.
+ScenePayload
+nestedComponentsPayload()
+{
+    const PXR_NS::SdfLayerRefPtr detail = PXR_NS::SdfLayer::CreateAnonymous(".usda");
+
+    EXPECT_TRUE(detail->ImportFromString("#usda 1.0\n(\n    defaultPrim = \"Detail\"\n)\ndef Xform \"Detail\" (kind = \"subcomponent\")\n{\n}\n"));
+    const PXR_NS::SdfLayerRefPtr inner = PXR_NS::SdfLayer::CreateAnonymous(".usda");
+    EXPECT_TRUE(inner->ImportFromString("#usda 1.0\n(\n    defaultPrim = \"Inner\"\n)\ndef Xform \"Inner\" (kind = \"component\")\n{\n"
+                                        "    def Xform \"Detail\" (\n        prepend payload = @"
+                                        + detail->GetIdentifier() + "@\n    )\n    {\n    }\n}\n"));
+    const PXR_NS::SdfLayerRefPtr outer = PXR_NS::SdfLayer::CreateAnonymous(".usda");
+    EXPECT_TRUE(outer->ImportFromString("#usda 1.0\n(\n    defaultPrim = \"Outer\"\n)\ndef Xform \"Outer\" (kind = \"component\")\n{\n"
+                                        "    def Xform \"Inner\" (\n        prepend payload = @"
+                                        + inner->GetIdentifier() + "@\n    )\n    {\n    }\n}\n"));
+    const PXR_NS::SdfLayerRefPtr world = PXR_NS::SdfLayer::CreateAnonymous(".usda");
+    EXPECT_TRUE(world->ImportFromString("#usda 1.0\ndef Xform \"World\" (kind = \"group\")\n{\n    def Xform \"Outer\" (\n        kind = \"component\"\n"
+                                        "        prepend payload = @"
+                                        + outer->GetIdentifier() + "@\n    )\n    {\n    }\n}\n"));
+
+    return SceneOps::appendLayer(ScenePayload(), world, 1);
+}
+} // anonymous namespace
+
+TEST(SceneStageLoadToKind, LoadToAKindOnAPrimOfThatKindLoadsTheNearestBelowIt)
+{
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(nestedComponentsPayload()));
+
+    stage.requestLoadToKind({ PXR_NS::SdfPath("/World/Outer") }, PXR_NS::KindTokens->component);
+    serviceAll(stage);
+
+    EXPECT_EQ(std::vector<std::string>({ "/World/Outer", "/World/Outer/Inner" }), loaded(stage));
+}
+
+TEST(SceneStageLoadToKind, UnloadBelowAKindOnAPrimOfThatKindKeepsTheNearestBelowIt)
+{
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(nestedComponentsPayload()));
+    stage.requestLoad(kRoot, true);
+    serviceAll(stage);
+    ASSERT_EQ(3u, loaded(stage).size());
+
+    stage.requestUnloadBelowKind({ PXR_NS::SdfPath("/World/Outer") }, PXR_NS::KindTokens->component);
+    serviceAll(stage);
+
+    EXPECT_EQ(std::vector<std::string>({ "/World/Outer", "/World/Outer/Inner" }), loaded(stage));
+}
+
+TEST(SceneStageLoadToKind, UnloadBelowAKindOnAPrimOfThatKindWithNoneBelowUnloadsNothing)
+{
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(worldPayload()));
+    stage.requestLoad(kRoot, true);
+    serviceAll(stage);
+    ASSERT_EQ(11u, loaded(stage).size());
+
+    // Below the rock is only its moss, a subcomponent: no component under it to keep.
+    stage.requestUnloadBelowKind({ PXR_NS::SdfPath("/World/Island/Rock") }, PXR_NS::KindTokens->component);
+    serviceAll(stage);
+
+    EXPECT_EQ(11u, loaded(stage).size());
+}
+
 TEST(SceneStageLoadToKind, UnloadBelowComponentLeavesComponentsLoaded)
 {
     SceneStage stage(PXR_NS::UsdStage::LoadNone);

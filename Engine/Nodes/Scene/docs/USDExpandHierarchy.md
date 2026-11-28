@@ -13,7 +13,7 @@ Each rule is one row:
 - Draw is what the matches draw as:
   - BBox draws one box around everything below the prim, whose payloads stay
     unloaded.
-  - Expand draws each child by its own draw, and children no rule names as
+  - Pass Through draws each child by its own draw, and children no rule names as
     boxes.
   - Geometry (the default) draws everything below the prim, as far as its
     payloads are loaded. Nothing is loaded.

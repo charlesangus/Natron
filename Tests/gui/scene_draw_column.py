@@ -12,7 +12,7 @@ The column is found by its header, "Draw State". The script checks:
     the same and posts nothing;
   - a row that inherits BBox looks unlike a row set to BBox;
   - with /World boxed, Geometry on /World/A/Deep/Leaf from the row menu switches /World, /World/A and
-    /World/A/Deep to Expand, and leaves /World/B and /World/C boxed;
+    /World/A/Deep to Pass Through, and leaves /World/B and /World/C boxed;
   - collapsing and expanding /World/A changes no state and posts nothing to the viewer;
   - Clear Below on /World keeps its own state and clears the rows under it;
   - Reset to Graph in a cell's editor clears the row and the rows below, and the panel's Reset to
@@ -45,7 +45,7 @@ B = "/World/B"
 C = "/World/C"
 ROWS = [WORLD, A, DEEP, LEAF, B, C]
 # Script name and the label the column shows, in the editor's order.
-STATES = [("bbox", "BBox"), ("expand", "Expand"), ("geometry", "Geometry"), ("loadAndDraw", "Load + Draw"), ("hide", "Hide")]
+STATES = [("bbox", "BBox"), ("passThrough", "Pass Through"), ("geometry", "Geometry"), ("loadAndDraw", "Load + Draw"), ("hide", "Hide")]
 
 SCENE = """#usda 1.0
 (
@@ -398,13 +398,13 @@ try:
         check(pick_in_editor(B, "BBox"), "BBox on /World/B")
         yield from reached(before)
         before = posted()
-        check(pick_in_editor(WORLD, "Expand"), "Expand on /World")
+        check(pick_in_editor(WORLD, "Pass Through"), "Pass Through on /World")
         yield from reached(before)
         tree().clearSelection()
         tree().selectionModel().setCurrentIndex(find(WORLD), QItemSelectionModel.NoUpdate)
         QApplication.processEvents()
         label, inherited, italic = shown(C)
-        check(label == "BBox" and inherited and italic, "/World/C inherits BBox from /World's Expand (%r)" % (shown(C),))
+        check(label == "BBox" and inherited and italic, "/World/C inherits BBox from /World's Pass Through (%r)" % (shown(C),))
         check(shown(B)[0] == "BBox" and not shown(B)[1], "/World/B keeps the BBox set on it (%r)" % (shown(B),))
         check(cell_image(B) != cell_image(C), "an inherited BBox looks unlike a set one")
         save("scene-column-inherited")
@@ -421,7 +421,7 @@ try:
         ok = yield from reached(before)
         check(ok, "Geometry on the leaf reaches the viewer")
         for path in (WORLD, A, DEEP):
-            check(shown(path)[0] == "Expand" and not shown(path)[1], "%s switches to Expand (%r)" % (path, shown(path)))
+            check(shown(path)[0] == "Pass Through" and not shown(path)[1], "%s switches to Pass Through (%r)" % (path, shown(path)))
         check(shown(LEAF)[0] == "Geometry" and not shown(LEAF)[1], "the leaf reads Geometry, set (%r)" % (shown(LEAF),))
         for path in (B, C):
             check(shown(path)[0] == "BBox" and shown(path)[1], "%s stays boxed, inherited (%r)" % (path, shown(path)))
@@ -444,7 +444,7 @@ try:
         before = posted()
         check(pick_in_menu(WORLD, "sceneGraphDrawStateClearBelow"), "the row menu of /World offers Clear Below")
         yield from reached(before)
-        check(shown(WORLD)[0] == "Expand" and not shown(WORLD)[1], "/World keeps its own state (%r)" % (shown(WORLD),))
+        check(shown(WORLD)[0] == "Pass Through" and not shown(WORLD)[1], "/World keeps its own state (%r)" % (shown(WORLD),))
         for path in (A, B, C):
             check(shown(path)[0] == "BBox" and shown(path)[1], "%s is cleared and inherits BBox (%r)" % (path, shown(path)))
         save("scene-column-clear-below")

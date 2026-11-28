@@ -43,7 +43,7 @@ ROWS = [WORLD, A, A_CUBE, B, B_CUBE]
 # The viewer's states, in the order the script sets them.
 VIEWER_STATES = [(A_CUBE, "geometry"), (A, "bbox"), (B, "hide")]
 # SceneDrawStateEnum, which the panel's draw state role holds, and the USDExpandHierarchy's Draw menu.
-STATES = ["bbox", "expand", "geometry", "loadAndDraw", "hide"]
+STATES = ["bbox", "passThrough", "geometry", "loadAndDraw", "hide"]
 # SceneDrawOriginEnum, which the panel's origin role holds.
 ORIGINS = ["viewer", "graph", "inherited", "default"]
 # USDRead's Initial Draw menu, in order.
@@ -404,7 +404,7 @@ try:
         yield from expect("redone drawing", frame_drawn, viewer_drawn)
 
         section("bake into the viewed node")
-        set_state(WORLD, "expand")
+        set_state(WORLD, "passThrough")
         ok = yield ("until", lambda: origin(WORLD) == ("viewer", ""), POLL_TIMEOUT_S)
         require(ok, "the viewer sets %s (got %r)" % (WORLD, origin(WORLD)))
         ok = yield ("until", lambda: bake_button() is not None and bake_button().isEnabled(), POLL_TIMEOUT_S)
@@ -416,7 +416,7 @@ try:
         ok = yield ("until", lambda: origin(WORLD) == ("graph", name), POLL_TIMEOUT_S)
         check(ok, "%s is set by %s (got %r)" % (WORLD, name, origin(WORLD)))
         check(len(expand_nodes()) == before_nodes + 1, "no node is created (got %r)" % [n.getScriptName() for n in expand_nodes()])
-        check(rules_of(expand)[-1] == (WORLD, "expand") and len(rules_of(expand)) == 4,
+        check(rules_of(expand)[-1] == (WORLD, "passThrough") and len(rules_of(expand)) == 4,
               "%s gains one rule (got %r)" % (name, rules_of(expand)))
         yield from expect("baked again", cells, again_cells)
         yield from expect("baked again drawing", frame_drawn, again_drawn)
@@ -425,7 +425,7 @@ try:
         yield from expect("baked again origins", origins, final_origins)
         # What the node's rules decide, rather than what the live viewer showed before saving.
         final_cells = dict(viewer_cells)
-        final_cells[WORLD] = ("expand", False)
+        final_cells[WORLD] = ("passThrough", False)
 
         section("save and reopen")
         require(app.saveProjectAs(project_path), "save the project to " + project_path)

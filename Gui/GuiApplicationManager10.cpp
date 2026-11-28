@@ -1035,7 +1035,7 @@ GuiApplicationManager::populateShortcuts()
         for (const SceneGraphBulkKeyBinding& b : getSceneGraphBulkKeyBindings()) {
             registerKeybind(kShortcutGroupViewer3D, b.actionID, b.description, Qt::NoModifier, Qt::Key(0));
         }
-        for (const SceneGraphBulkKeyBinding& b : getSceneGraphExpandKeyBindings()) {
+        for (const SceneGraphBulkKeyBinding& b : getSceneGraphFoldKeyBindings()) {
             registerKeybind(kShortcutGroupViewer3D, b.actionID, b.description, Qt::NoModifier, Qt::Key(0));
         }
     }

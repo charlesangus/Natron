@@ -2,7 +2,7 @@
 
 Graph: USDRead of a four-block heavy_city.usda (tools/bench/heavy_scene_make.py) into Viewer1, every
 payload unloaded, with the file of /World/Block3/B3 deleted. The script sets Load + Draw on Block0,
-Expand on Block1/B1, BBox on Block2, Geometry on Block2/B3 (which switches Block2 to Expand), Hide on
+Pass Through on Block1/B1, BBox on Block2, Geometry on Block2/B3 (which switches Block2 to Pass Through), Hide on
 Block3/B0, and asks for the payloads of Block3/B2 and Block3/B3 as a twirl does. Then it checks:
   - the saved project holds the viewer's sceneView, with the missing payload's path in the load set;
   - reopening restores every draw state cell and loads the same buildings, with no request from
@@ -38,7 +38,7 @@ CITY_PRIMS = len(BLOCKS) * BUILDINGS_PER_BLOCK * 400 + len(BLOCKS) + 1
 BUILDINGS = ["%s/B%d" % (block, i) for block in BLOCKS for i in range(BUILDINGS_PER_BLOCK)]
 STATES = [
     ("/World/Block0", "loadAndDraw"),
-    ("/World/Block1/B1", "expand"),
+    ("/World/Block1/B1", "passThrough"),
     ("/World/Block2", "bbox"),
     ("/World/Block2/B3", "geometry"),
     ("/World/Block3/B0", "hide"),
@@ -323,7 +323,7 @@ try:
         text = saved_project_yaml()
         check("sceneView:" in text, "the project holds the viewer's sceneView")
         check(BROKEN in text.split("sceneView:", 1)[-1], "the missing payload stays in the saved load set")
-        check("impliedExpand" in text, "Block2's switch to Expand is saved as one made for a row below")
+        check("impliedPassThrough" in text, "Block2's switch to Pass Through is saved as one made for a row below")
 
         section("reopen restores")
         yield from reopen("restore")

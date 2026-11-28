@@ -132,7 +132,9 @@ private:
  * a built-in target matches the kinds that derive from it, a custom one only itself. A custom
  * target derived from no built-in level stops the walk only where it matches. It goes into
  * instances through their instance proxies, as the scene graph's rows do, and skips inactive,
- * undefined and abstract prims.
+ * undefined and abstract prims. A root of the target kind is walked through rather than matched, so
+ * every To <kind> command, Unload Below <kind> too, acts on the nearest prims of the kind strictly
+ * below it.
  *
  * Reads the stage only. cancelled, if set, is polled every few hundred prims; a walk it stops
  * comes back with cancelled set and what it had found.

@@ -196,9 +196,17 @@ TEST(SceneKindWalk, AssemblyStopsAtAComponentReachedFirst)
 TEST(SceneKindWalk, SubcomponentFromInsideAComponent)
 {
     PXR_NS::UsdStageRefPtr stage = openStage(kWorld);
-    const SceneKindWalkResult result = walkToKind(stage, paths({ "/World/City/Block/HouseA/Door" }), PXR_NS::KindTokens->subcomponent);
+    const SceneKindWalkResult result = walkToKind(stage, paths({ "/World/City/Block/HouseA" }), PXR_NS::KindTokens->subcomponent);
 
     EXPECT_EQ(std::vector<std::string>({ "/World/City/Block/HouseA/Door" }), strings(result.matches));
+}
+
+TEST(SceneKindWalk, ARootOfTheTargetKindWithNoneBelowMatchesNothing)
+{
+    PXR_NS::UsdStageRefPtr stage = openStage(kWorld);
+    const SceneKindWalkResult result = walkToKind(stage, paths({ "/World/City/Block/HouseA/Door" }), PXR_NS::KindTokens->subcomponent);
+
+    EXPECT_EQ(std::vector<std::string>(), strings(result.matches));
 }
 
 TEST(SceneKindWalk, CustomKindMatchesExactlyAtItsBaseLevel)
@@ -255,12 +263,22 @@ TEST(SceneKindWalk, NestedRootsAreWalkedOnce)
     EXPECT_EQ(std::vector<std::string>({ "/World/City/Block/HouseA", "/World/City/Block/HouseB" }), strings(result.matches));
 }
 
-TEST(SceneKindWalk, RootOfTheTargetKindIsItsOwnMatch)
+TEST(SceneKindWalk, ARootOfTheTargetKindIsWalkedThroughToTheNearestBelow)
 {
     PXR_NS::UsdStageRefPtr stage = openStage(kWorld);
     const SceneKindWalkResult result = walkToKind(stage, paths({ "/World/City" }), PXR_NS::KindTokens->assembly);
 
-    EXPECT_EQ(std::vector<std::string>({ "/World/City" }), strings(result.matches));
+    EXPECT_EQ(std::vector<std::string>({ "/World/City/Block" }), strings(result.matches));
+}
+
+TEST(SceneKindWalk, AWalkerWalksThroughARootOfTheTargetKind)
+{
+    PXR_NS::UsdStageRefPtr stage = openStage(kWorld);
+    SceneKindWalker walker(paths({ "/World/City/Block/HouseA" }), PXR_NS::KindTokens->component);
+
+    EXPECT_TRUE(walker.walk(stage, []() { return false; }, 64));
+    // The door is a subcomponent, below the component level: the walk stops there without a match.
+    EXPECT_EQ(std::vector<std::string>(), strings(walker.getResult().matches));
 }
 
 TEST(SceneKindWalk, InactiveAndAbstractPrimsAreSkipped)

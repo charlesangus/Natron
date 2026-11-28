@@ -23,7 +23,7 @@
 #include <Python.h>
 // ***** END PYTHON BLOCK *****
 
-#include "SceneGraphExpander.h"
+#include "SceneGraphUnfolder.h"
 
 #include <algorithm>
 #include <deque>
@@ -48,9 +48,9 @@ namespace {
 const int kWaitPollMs = 15;
 
 QString
-trExpander(const char* text)
+trUnfolder(const char* text)
 {
-    return QCoreApplication::translate("SceneGraphExpander", text);
+    return QCoreApplication::translate("SceneGraphUnfolder", text);
 }
 
 // "1 row", "4,210 rows": a run can reach far more rows than a bulk command's selection.
@@ -60,10 +60,10 @@ groupedCountText(int count,
                  const char* many)
 {
     if (count == 1) {
-        return trExpander(one);
+        return trUnfolder(one);
     }
 
-    return trExpander(many).arg(QLocale(QLocale::English, QLocale::UnitedStates).toString(count));
+    return trUnfolder(many).arg(QLocale(QLocale::English, QLocale::UnitedStates).toString(count));
 }
 
 // Opening an unloaded or failed payload row would load it. A loading row opens: its load is
@@ -124,22 +124,22 @@ struct SlicePacer {
     int waitMs = 0;
     // Whether the last slice opened or closed a row, leaving the tree a relayout.
     bool laidOut = false;
-    int budgetMs = SceneGraphExpander::kSliceMs;
+    int budgetMs = SceneGraphUnfolder::kSliceMs;
 
     void reset()
     {
         sinceSlice.invalidate();
         laidOut = false;
-        budgetMs = SceneGraphExpander::kSliceMs;
+        budgetMs = SceneGraphUnfolder::kSliceMs;
     }
 
     // The budget of the slice starting now.
     int begin()
     {
-        budgetMs = SceneGraphExpander::kSliceMs;
+        budgetMs = SceneGraphUnfolder::kSliceMs;
         if (laidOut && sinceSlice.isValid()) {
             const qint64 gap = sinceSlice.elapsed() - waitMs;
-            budgetMs = (int)std::max<qint64>(SceneGraphExpander::kSliceMs, std::min<qint64>(gap, SceneGraphExpander::kMaxSliceMs));
+            budgetMs = (int)std::max<qint64>(SceneGraphUnfolder::kSliceMs, std::min<qint64>(gap, SceneGraphUnfolder::kMaxSliceMs));
         }
         laidOut = false;
 
@@ -256,7 +256,7 @@ SceneGraphExpansionMemory::size() const
  * which the panel calls from the event loop, between slices; modelAboutToBeReset() then stops the
  * run.
  */
-struct SceneGraphExpander::Implementation {
+struct SceneGraphUnfolder::Implementation {
     // A row to visit, or the children of a row from one on.
     struct Pending {
         QString path;
@@ -286,7 +286,7 @@ struct SceneGraphExpander::Implementation {
     QSet<QString> opened;
     // Rows whose children the run asked the model for: the rows inserted under them are its own.
     QSet<QString> fetched;
-    // Collapse All Below: the roots, the one being closed, and the last path closed below it,
+    // Fold All Below: the roots, the one being closed, and the last path closed below it,
     // empty before the first; the remembered paths below a root are closed last to first.
     QStringList collapseRoots;
     int collapseRoot = 0;
@@ -420,10 +420,11 @@ struct SceneGraphExpander::Implementation {
     void visit(const QModelIndex& index,
                const QString& path)
     {
-        if (progress.mode == eModeExpandToKind) {
+        if (progress.mode == eModeUnfoldToKind) {
             bool matches = false;
             const QString kind = index.siblingAtColumn(SceneGraphModel::eColumnKind).data(Qt::DisplayRole).toString();
-            if (kindWalkStopsAt(PXR_NS::TfToken(kind.toStdString()), target, &matches)) {
+            // A root of the kind is walked through, to the nearest rows of the kind below it.
+            if (kindWalkStopsAt(PXR_NS::TfToken(kind.toStdString()), target, &matches) && !(matches && roots.contains(path))) {
                 if (matches) {
                     ++progress.matches;
                     reveal(index);
@@ -438,13 +439,13 @@ struct SceneGraphExpander::Implementation {
             if (model->hasChildren(index)) {
                 if (state == SceneGraphModel::ePayloadStateLoading) {
                     ++progress.loading;
-                    if ((progress.mode == eModeExpandBelow) && open(index)) {
+                    if ((progress.mode == eModeUnfoldBelow) && open(index)) {
                         ++progress.changed;
                     }
                 } else {
                     ++progress.unloaded;
                 }
-                if (progress.mode == eModeExpandToKind) {
+                if (progress.mode == eModeUnfoldToKind) {
                     reveal(index);
                 }
             }
@@ -454,7 +455,7 @@ struct SceneGraphExpander::Implementation {
         if (!model->hasChildren(index)) {
             return;
         }
-        if ((progress.mode == eModeExpandBelow) && open(index)) {
+        if ((progress.mode == eModeUnfoldBelow) && open(index)) {
             ++progress.changed;
         }
         if (!childrenReady(index, path)) {
@@ -559,7 +560,7 @@ struct SceneGraphExpander::Implementation {
         const int budget = pacer.begin();
         ++progress.slices;
         bool done = false;
-        if (progress.mode == eModeCollapseBelow) {
+        if (progress.mode == eModeFoldBelow) {
             collapse(clock, budget);
             done = (collapseRoot >= collapseRoots.size());
         } else {
@@ -573,7 +574,7 @@ struct SceneGraphExpander::Implementation {
 
             return;
         }
-        timer.setInterval((progress.mode != eModeCollapseBelow) && queue.empty() ? kWaitPollMs : 0);
+        timer.setInterval((progress.mode != eModeFoldBelow) && queue.empty() ? kWaitPollMs : 0);
         pacer.end(timer.interval());
         timer.start();
         report();
@@ -713,7 +714,7 @@ struct SceneGraphExpander::Implementation {
     }
 };
 
-SceneGraphExpander::SceneGraphExpander(QTreeView* tree,
+SceneGraphUnfolder::SceneGraphUnfolder(QTreeView* tree,
                                        SceneGraphModel* model,
                                        SceneGraphExpandedPaths* expanded)
     : _imp(new Implementation(tree, model, expanded))
@@ -730,16 +731,16 @@ SceneGraphExpander::SceneGraphExpander(QTreeView* tree,
     });
 }
 
-SceneGraphExpander::~SceneGraphExpander() = default;
+SceneGraphUnfolder::~SceneGraphUnfolder() = default;
 
 void
-SceneGraphExpander::setProgressCallback(const std::function<void(const Progress&)>& callback)
+SceneGraphUnfolder::setProgressCallback(const std::function<void(const Progress&)>& callback)
 {
     _imp->callback = callback;
 }
 
 void
-SceneGraphExpander::setExpandedPaths(SceneGraphExpandedPaths* expanded)
+SceneGraphUnfolder::setExpandedPaths(SceneGraphExpandedPaths* expanded)
 {
     if (expanded == _imp->expanded) {
         return;
@@ -750,7 +751,7 @@ SceneGraphExpander::setExpandedPaths(SceneGraphExpandedPaths* expanded)
 }
 
 void
-SceneGraphExpander::start(ModeEnum mode,
+SceneGraphUnfolder::start(ModeEnum mode,
                           const QStringList& roots,
                           const QString& kind)
 {
@@ -766,14 +767,14 @@ SceneGraphExpander::start(ModeEnum mode,
     for (const QString& root : kept) {
         _imp->roots.insert(root);
     }
-    if (mode == eModeCollapseBelow) {
+    if (mode == eModeFoldBelow) {
         _imp->collapseRoots = kept;
     } else {
         for (const QString& root : kept) {
             _imp->queue.push_back(Implementation::Pending { root, -1 });
         }
     }
-    if ((mode == eModeExpandToKind) && kind.isEmpty()) {
+    if ((mode == eModeUnfoldToKind) && kind.isEmpty()) {
         _imp->finish(false);
 
         return;
@@ -783,7 +784,7 @@ SceneGraphExpander::start(ModeEnum mode,
 }
 
 void
-SceneGraphExpander::cancel()
+SceneGraphUnfolder::cancel()
 {
     if (_imp->progress.running) {
         _imp->finish(true);
@@ -791,31 +792,31 @@ SceneGraphExpander::cancel()
 }
 
 bool
-SceneGraphExpander::isRunning() const
+SceneGraphUnfolder::isRunning() const
 {
     return _imp->progress.running;
 }
 
 bool
-SceneGraphExpander::isApplying() const
+SceneGraphUnfolder::isApplying() const
 {
     return _imp->applying;
 }
 
 bool
-SceneGraphExpander::ownsRowsUnder(const QString& parent) const
+SceneGraphUnfolder::ownsRowsUnder(const QString& parent) const
 {
     return _imp->applying || (_imp->progress.running && _imp->fetched.contains(parent));
 }
 
-const SceneGraphExpander::Progress&
-SceneGraphExpander::getProgress() const
+const SceneGraphUnfolder::Progress&
+SceneGraphUnfolder::getProgress() const
 {
     return _imp->progress;
 }
 
 void
-SceneGraphExpander::restore(bool all,
+SceneGraphUnfolder::restore(bool all,
                             const QStringList& under)
 {
     Implementation* imp = _imp.get();
@@ -846,56 +847,56 @@ SceneGraphExpander::restore(bool all,
 }
 
 bool
-SceneGraphExpander::isRestoring() const
+SceneGraphUnfolder::isRestoring() const
 {
     return _imp->restoring;
 }
 
 int
-SceneGraphExpander::getRestoreSliceCount() const
+SceneGraphUnfolder::getRestoreSliceCount() const
 {
     return _imp->restoreSlices;
 }
 
 void
-SceneGraphExpander::setRestoreCallback(const std::function<void(bool deferred)>& callback)
+SceneGraphUnfolder::setRestoreCallback(const std::function<void(bool deferred)>& callback)
 {
     _imp->restoreCallback = callback;
 }
 
 QString
-SceneGraphExpander::progressText(const Progress& progress)
+SceneGraphUnfolder::progressText(const Progress& progress)
 {
-    const QString rows = groupedCountText(progress.changed, QT_TRANSLATE_NOOP("SceneGraphExpander", "1 row"), QT_TRANSLATE_NOOP("SceneGraphExpander", "%1 rows"));
+    const QString rows = groupedCountText(progress.changed, QT_TRANSLATE_NOOP("SceneGraphUnfolder", "1 row"), QT_TRANSLATE_NOOP("SceneGraphUnfolder", "%1 rows"));
     QString text;
 
-    if (progress.mode == eModeCollapseBelow) {
+    if (progress.mode == eModeFoldBelow) {
         if (progress.running) {
-            return trExpander(QT_TRANSLATE_NOOP("SceneGraphExpander", "Collapsing: %1 so far; Esc stops")).arg(rows);
+            return trUnfolder(QT_TRANSLATE_NOOP("SceneGraphUnfolder", "Folding: %1 so far; Esc stops")).arg(rows);
         }
-        text = trExpander(QT_TRANSLATE_NOOP("SceneGraphExpander", "Collapsed %1")).arg(rows);
-    } else if (progress.mode == eModeExpandToKind) {
+        text = trUnfolder(QT_TRANSLATE_NOOP("SceneGraphUnfolder", "Folded %1")).arg(rows);
+    } else if (progress.mode == eModeUnfoldToKind) {
         const QString found = SceneGraphModel::kindCountText(progress.kind, progress.matches);
         if (progress.running) {
-            return trExpander(QT_TRANSLATE_NOOP("SceneGraphExpander", "Expanding to %1: %2 found so far; Esc stops")).arg(SceneGraphModel::kindPluralText(progress.kind), found);
+            return trUnfolder(QT_TRANSLATE_NOOP("SceneGraphUnfolder", "Unfolding to %1: %2 found so far; Esc stops")).arg(SceneGraphModel::kindPluralText(progress.kind), found);
         }
-        text = trExpander(QT_TRANSLATE_NOOP("SceneGraphExpander", "Expanded to %1 under %2")).arg(found, SceneGraphModel::rowsText(progress.roots));
+        text = trUnfolder(QT_TRANSLATE_NOOP("SceneGraphUnfolder", "Unfolded to %1 under %2")).arg(found, SceneGraphModel::rowsText(progress.roots));
     } else {
         if (progress.running) {
-            return trExpander(QT_TRANSLATE_NOOP("SceneGraphExpander", "Expanding: %1 so far; Esc stops")).arg(rows);
+            return trUnfolder(QT_TRANSLATE_NOOP("SceneGraphUnfolder", "Unfolding: %1 so far; Esc stops")).arg(rows);
         }
-        text = trExpander(QT_TRANSLATE_NOOP("SceneGraphExpander", "Expanded %1")).arg(rows);
+        text = trUnfolder(QT_TRANSLATE_NOOP("SceneGraphUnfolder", "Unfolded %1")).arg(rows);
     }
-    if ((progress.mode != eModeCollapseBelow) && (progress.unloaded > 0)) {
-        text += trExpander(QT_TRANSLATE_NOOP("SceneGraphExpander", "; %1 not expanded"))
-                    .arg(groupedCountText(progress.unloaded, QT_TRANSLATE_NOOP("SceneGraphExpander", "1 unloaded payload"), QT_TRANSLATE_NOOP("SceneGraphExpander", "%1 unloaded payloads")));
+    if ((progress.mode != eModeFoldBelow) && (progress.unloaded > 0)) {
+        text += trUnfolder(QT_TRANSLATE_NOOP("SceneGraphUnfolder", "; %1 not unfolded"))
+                    .arg(groupedCountText(progress.unloaded, QT_TRANSLATE_NOOP("SceneGraphUnfolder", "1 unloaded payload"), QT_TRANSLATE_NOOP("SceneGraphUnfolder", "%1 unloaded payloads")));
     }
-    if ((progress.mode != eModeCollapseBelow) && (progress.loading > 0)) {
-        text += trExpander(QT_TRANSLATE_NOOP("SceneGraphExpander", "; %1 still loading, not walked below"))
-                    .arg(groupedCountText(progress.loading, QT_TRANSLATE_NOOP("SceneGraphExpander", "1 payload"), QT_TRANSLATE_NOOP("SceneGraphExpander", "%1 payloads")));
+    if ((progress.mode != eModeFoldBelow) && (progress.loading > 0)) {
+        text += trUnfolder(QT_TRANSLATE_NOOP("SceneGraphUnfolder", "; %1 still loading, not walked below"))
+                    .arg(groupedCountText(progress.loading, QT_TRANSLATE_NOOP("SceneGraphUnfolder", "1 payload"), QT_TRANSLATE_NOOP("SceneGraphUnfolder", "%1 payloads")));
     }
     if (progress.cancelled) {
-        text = trExpander(QT_TRANSLATE_NOOP("SceneGraphExpander", "Stopped. %1")).arg(text);
+        text = trUnfolder(QT_TRANSLATE_NOOP("SceneGraphUnfolder", "Stopped. %1")).arg(text);
     }
 
     return text;

@@ -62,7 +62,7 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief The world bounds of the rows a draw filter boxes, computed on a thread of its own.
  *
- * A boxed row is one with a BBox rule, or a child without a rule of its own of an Expand row. A
+ * A boxed row is one with a BBox rule, or a child without a rule of its own of a Pass Through row. A
  * Hide row has no box. Bounds come from UsdGeomBBoxCache with extentsHint, so an unloaded
  * payload whose model authors a hint has a box without its layers opening.
  *

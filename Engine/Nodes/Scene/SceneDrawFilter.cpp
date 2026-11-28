@@ -171,7 +171,7 @@ hiddenBy(RulePtr rule,
     case SceneDrawFilter::eRuleHide:
     case SceneDrawFilter::eRuleHidden:
         return true;
-    case SceneDrawFilter::eRuleExpand:
+    case SceneDrawFilter::eRulePassThrough:
         return rule->first != path;
     }
 
@@ -251,7 +251,7 @@ maskLocators()
     return locators;
 }
 
-// Under an Expand row too: an instance draws only what lies below it.
+// Under a Pass Through row too: an instance draws only what lies below it.
 bool
 instanceHiddenBy(RulePtr rule)
 {
@@ -347,8 +347,8 @@ SceneDrawFilter::applyToRules(const SceneDrawDelta& delta,
     for (const std::string& path : delta.drawn) {
         (*rules)[SdfPath(path)] = eRuleShow;
     }
-    for (const std::string& path : delta.expanded) {
-        (*rules)[SdfPath(path)] = eRuleExpand;
+    for (const std::string& path : delta.passThrough) {
+        (*rules)[SdfPath(path)] = eRulePassThrough;
     }
     for (const std::string& path : delta.boxed) {
         (*rules)[SdfPath(path)] = eRuleHide;
@@ -1091,8 +1091,8 @@ SceneDrawFilter::replaceRules(const Rules& rules)
         case eRuleShow:
             list = &delta.drawn;
             break;
-        case eRuleExpand:
-            list = &delta.expanded;
+        case eRulePassThrough:
+            list = &delta.passThrough;
             break;
         case eRuleHide:
             list = &delta.boxed;
@@ -1120,7 +1120,7 @@ SceneDrawFilter::applyDeltas(const std::vector<const SceneDrawDelta*>& deltas,
     for (const SceneDrawDelta* delta : deltas) {
         applyToRules(*delta, &target);
         addPaths(delta->drawn, &roots);
-        addPaths(delta->expanded, &roots);
+        addPaths(delta->passThrough, &roots);
         addPaths(delta->boxed, &roots);
         addPaths(delta->hidden, &roots);
         addPaths(delta->cleared, &roots);

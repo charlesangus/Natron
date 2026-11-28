@@ -57,7 +57,7 @@ expectState(const SceneDrawStates& states,
 
 TEST(SceneDrawStates, StateNamesReadAsScriptNames)
 {
-    for (SceneDrawStateEnum state : { eSceneDrawStateBBox, eSceneDrawStateChildren, eSceneDrawStateFull, eSceneDrawStateLoadAll, eSceneDrawStateHidden }) {
+    for (SceneDrawStateEnum state : { eSceneDrawStateBBox, eSceneDrawStatePassThrough, eSceneDrawStateFull, eSceneDrawStateLoadAll, eSceneDrawStateHidden }) {
         SceneDrawStateEnum parsed = eSceneDrawStateFull;
         ASSERT_TRUE(sceneDrawStateFromName(sceneDrawStateName(state), &parsed));
         EXPECT_EQ(state, parsed);
@@ -78,7 +78,7 @@ TEST(SceneDrawStates, NothingSetResolvesToFull)
 TEST(SceneDrawStates, NearestSetStateWins)
 {
     SceneDrawStates states;
-    states.setState("/World", eSceneDrawStateChildren);
+    states.setState("/World", eSceneDrawStatePassThrough);
     states.setState("/World/a", eSceneDrawStateFull);
     states.setState("/World/a/b", eSceneDrawStateHidden);
 
@@ -86,13 +86,13 @@ TEST(SceneDrawStates, NearestSetStateWins)
     expectState(states, "/World/a/b", eSceneDrawStateHidden, eSceneDrawOriginViewer);
 }
 
-TEST(SceneDrawStates, ChildrenRowBoxesUnsetChildrenAndStopsThere)
+TEST(SceneDrawStates, PassThroughRowBoxesUnsetChildrenAndStopsThere)
 {
     SceneDrawStates states;
-    states.setState("/World", eSceneDrawStateChildren);
+    states.setState("/World", eSceneDrawStatePassThrough);
     states.setState("/World/a", eSceneDrawStateFull);
 
-    expectState(states, "/World", eSceneDrawStateChildren, eSceneDrawOriginViewer);
+    expectState(states, "/World", eSceneDrawStatePassThrough, eSceneDrawOriginViewer);
     expectState(states, "/World/a/deep", eSceneDrawStateFull, eSceneDrawOriginInherited);
     expectState(states, "/World/b", eSceneDrawStateBBox, eSceneDrawOriginInherited);
     expectState(states, "/World/b/deep", eSceneDrawStateBBox, eSceneDrawOriginInherited, true);
@@ -117,7 +117,7 @@ TEST(SceneDrawStates, BoxAndHiddenStopWhatIsBelowAndRememberIt)
     }
 }
 
-TEST(SceneDrawStates, FullSwitchesBlockingAncestorsToChildren)
+TEST(SceneDrawStates, FullSwitchesBlockingAncestorsToPassThrough)
 {
     SceneDrawStates states;
     states.setState("/World", eSceneDrawStateBBox);
@@ -125,7 +125,7 @@ TEST(SceneDrawStates, FullSwitchesBlockingAncestorsToChildren)
 
     const SceneDrawDelta delta = states.setState("/World/a/b/c", eSceneDrawStateFull);
 
-    EXPECT_EQ((Paths { "/World", "/World/a", "/World/a/b" }), delta.expanded);
+    EXPECT_EQ((Paths { "/World", "/World/a", "/World/a/b" }), delta.passThrough);
     EXPECT_EQ(Paths { "/World/a/b/c" }, delta.drawn);
     EXPECT_TRUE(delta.cleared.empty());
     EXPECT_TRUE(delta.boxed.empty());
@@ -138,7 +138,7 @@ TEST(SceneDrawStates, FullSwitchesBlockingAncestorsToChildren)
 TEST(SceneDrawStates, FullLeavesAncestorsThatDoNotBlock)
 {
     SceneDrawStates states;
-    states.setState("/World", eSceneDrawStateChildren);
+    states.setState("/World", eSceneDrawStatePassThrough);
     states.setState("/World/a", eSceneDrawStateFull);
 
     const SceneDrawDelta delta = states.setState("/World/a/b/c", eSceneDrawStateFull);
@@ -148,18 +148,58 @@ TEST(SceneDrawStates, FullLeavesAncestorsThatDoNotBlock)
     EXPECT_FALSE(states.getSetState("/World/a/b", &set));
 }
 
-TEST(SceneDrawStates, OtherStatesDoNotSwitchAncestors)
+TEST(SceneDrawStates, EveryStateSwitchesBlockingAncestorsToPassThrough)
 {
-    for (SceneDrawStateEnum state : { eSceneDrawStateBBox, eSceneDrawStateChildren, eSceneDrawStateHidden }) {
+    for (SceneDrawStateEnum state : { eSceneDrawStateBBox, eSceneDrawStatePassThrough, eSceneDrawStateHidden }) {
         SceneDrawStates states;
         states.setState("/World", eSceneDrawStateBBox);
+        states.setState("/World/a", eSceneDrawStateHidden);
 
-        const SceneDrawDelta delta = states.setState("/World/a", state);
+        const SceneDrawDelta delta = states.setState("/World/a/b/c", state);
 
-        EXPECT_TRUE(delta.isEmpty());
-        expectState(states, "/World", eSceneDrawStateBBox, eSceneDrawOriginViewer);
-        expectState(states, "/World/a", eSceneDrawStateBBox, eSceneDrawOriginInherited, true);
+        ASSERT_GE(delta.passThrough.size(), 3u) << sceneDrawStateName(state);
+        EXPECT_EQ((Paths { "/World", "/World/a", "/World/a/b" }), Paths(delta.passThrough.begin(), delta.passThrough.begin() + 3)) << sceneDrawStateName(state);
+        expectState(states, "/World", eSceneDrawStatePassThrough, eSceneDrawOriginViewer);
+        expectState(states, "/World/a/b", eSceneDrawStatePassThrough, eSceneDrawOriginViewer);
+        expectState(states, "/World/a/b/c", state, eSceneDrawOriginViewer);
+        expectState(states, "/World/a/sibling", eSceneDrawStateBBox, eSceneDrawOriginInherited);
+        SceneDrawStates::Stored stored { eSceneDrawStateFull, true };
+        for (const std::pair<std::string, SceneDrawStates::Stored>& set : states.getSetStates()) {
+            if (set.first == "/World/a/b") {
+                stored = set.second;
+            }
+        }
+        EXPECT_FALSE(stored.direct) << "a switched ancestor is not set directly, so it does not load";
     }
+}
+
+TEST(SceneDrawStates, EveryStateLeavesAncestorsThatDoNotBlock)
+{
+    for (SceneDrawStateEnum state : { eSceneDrawStateBBox, eSceneDrawStatePassThrough, eSceneDrawStateHidden }) {
+        SceneDrawStates states;
+        states.setState("/World", eSceneDrawStatePassThrough);
+        states.setState("/World/a", eSceneDrawStateFull);
+
+        states.setState("/World/a/b/c", state);
+
+        SceneDrawStateEnum set = eSceneDrawStateBBox;
+        EXPECT_FALSE(states.getSetState("/World/a/b", &set)) << "an ancestor inheriting Full stays";
+        expectState(states, "/World/a", eSceneDrawStateFull, eSceneDrawOriginViewer);
+        expectState(states, "/World/a/b/c", state, eSceneDrawOriginViewer);
+    }
+}
+
+TEST(SceneDrawStates, PassThroughOnAnUnsetChildOfAPassThroughRowTakesEffect)
+{
+    SceneDrawStates states;
+    states.setState("/World", eSceneDrawStatePassThrough);
+
+    const SceneDrawDelta delta = states.setState("/World/a/b", eSceneDrawStatePassThrough);
+
+    EXPECT_EQ((Paths { "/World/a", "/World/a/b" }), delta.passThrough);
+    expectState(states, "/World/a", eSceneDrawStatePassThrough, eSceneDrawOriginViewer);
+    expectState(states, "/World/a/b", eSceneDrawStatePassThrough, eSceneDrawOriginViewer);
+    expectState(states, "/World/a/b/c", eSceneDrawStateBBox, eSceneDrawOriginInherited);
 }
 
 TEST(SceneDrawStates, DeltaReportsDrawnBoxedAndHidden)
@@ -168,17 +208,17 @@ TEST(SceneDrawStates, DeltaReportsDrawnBoxedAndHidden)
 
     EXPECT_EQ(Paths { "/a" }, states.setState("/a", eSceneDrawStateBBox).boxed);
     EXPECT_EQ(Paths { "/b" }, states.setState("/b", eSceneDrawStateHidden).hidden);
-    EXPECT_EQ(Paths { "/c" }, states.setState("/c", eSceneDrawStateChildren).expanded);
+    EXPECT_EQ(Paths { "/c" }, states.setState("/c", eSceneDrawStatePassThrough).passThrough);
     EXPECT_EQ(Paths { "/c/d" }, states.setState("/c/d", eSceneDrawStateFull).drawn);
     EXPECT_EQ(Paths { "/c/e" }, states.setState("/c/e", eSceneDrawStateHidden).hidden);
     // Full under the default adds no rule, so it takes the box's away.
     EXPECT_EQ(Paths { "/a" }, states.setState("/a", eSceneDrawStateFull).cleared);
 }
 
-TEST(SceneDrawStates, BoxUnderChildrenIsWhatTheChildAlreadyWas)
+TEST(SceneDrawStates, BoxUnderPassThroughIsWhatTheChildAlreadyWas)
 {
     SceneDrawStates states;
-    states.setState("/a", eSceneDrawStateChildren);
+    states.setState("/a", eSceneDrawStatePassThrough);
 
     EXPECT_TRUE(states.setState("/a/b", eSceneDrawStateBBox).isEmpty());
     expectState(states, "/a/b", eSceneDrawStateBBox, eSceneDrawOriginViewer);
@@ -187,7 +227,7 @@ TEST(SceneDrawStates, BoxUnderChildrenIsWhatTheChildAlreadyWas)
 TEST(SceneDrawStates, ChangingAnAncestorMovesRulesBelow)
 {
     SceneDrawStates states;
-    states.setState("/a", eSceneDrawStateChildren);
+    states.setState("/a", eSceneDrawStatePassThrough);
     states.setState("/a/b", eSceneDrawStateFull);
     states.setState("/a/c", eSceneDrawStateBBox);
 
@@ -201,11 +241,11 @@ TEST(SceneDrawStates, ChangingAnAncestorMovesRulesBelow)
     EXPECT_TRUE(toBox.drawn.empty());
 }
 
-TEST(SceneDrawStates, ChildrenLoadsOnlyTheRowWhenSetDirectly)
+TEST(SceneDrawStates, PassThroughLoadsOnlyTheRowWhenSetDirectly)
 {
     SceneDrawStates states;
 
-    const SceneDrawDelta delta = states.setState("/payload", eSceneDrawStateChildren);
+    const SceneDrawDelta delta = states.setState("/payload", eSceneDrawStatePassThrough);
 
     ASSERT_EQ(1u, delta.loads.size());
     EXPECT_EQ("/payload", delta.loads[0].path);
@@ -237,18 +277,18 @@ TEST(SceneDrawStates, SettingAgainAsksAgainForItsLoad)
 {
     SceneDrawStates states;
     states.setState("/a", eSceneDrawStateLoadAll);
-    states.setState("/b", eSceneDrawStateChildren);
+    states.setState("/b", eSceneDrawStatePassThrough);
 
     EXPECT_EQ(1u, states.setState("/a", eSceneDrawStateLoadAll).loads.size());
-    EXPECT_EQ(1u, states.setState("/b", eSceneDrawStateChildren).loads.size());
+    EXPECT_EQ(1u, states.setState("/b", eSceneDrawStatePassThrough).loads.size());
 }
 
 TEST(SceneDrawStates, BlockedRowsLoadOnlyWhenUnblocked)
 {
     SceneDrawStates states;
-    states.setState("/a", eSceneDrawStateBBox);
+    states.setState("/a/b", eSceneDrawStatePassThrough);
 
-    EXPECT_TRUE(states.setState("/a/b", eSceneDrawStateChildren).loads.empty());
+    EXPECT_TRUE(states.setState("/a", eSceneDrawStateBBox).loads.empty());
 
     const SceneDrawDelta delta = states.setState("/a", eSceneDrawStateFull);
     ASSERT_EQ(1u, delta.loads.size());
@@ -341,14 +381,14 @@ TEST(SceneDrawStates, BoxingARowBelowALoadAllAsksForNothing)
     EXPECT_EQ(Paths { "/a/box" }, delta.boxed);
 }
 
-TEST(SceneDrawStates, AChildrenRowBelowALoadAllLoadsItselfAndWhatItDraws)
+TEST(SceneDrawStates, APassThroughRowBelowALoadAllLoadsItselfAndWhatItDraws)
 {
     SceneDrawStates states;
-    states.setState("/a/kids", eSceneDrawStateChildren);
+    states.setState("/a/kids", eSceneDrawStatePassThrough);
     states.setState("/a/kids/full", eSceneDrawStateFull);
     states.setState("/a/kids/full/box", eSceneDrawStateBBox);
     states.setState("/a/kids/box", eSceneDrawStateBBox);
-    states.setState("/a/kids/nested", eSceneDrawStateChildren);
+    states.setState("/a/kids/nested", eSceneDrawStatePassThrough);
     states.setState("/a/kids/nested/all", eSceneDrawStateLoadAll);
 
     const SceneDrawDelta delta = states.setState("/a", eSceneDrawStateLoadAll);
@@ -388,8 +428,8 @@ TEST(SceneDrawStates, ClearingAnExcludedRowAsksForWhatTheLoadAllLeftOut)
 {
     SceneDrawStates states;
     states.setState("/a", eSceneDrawStateLoadAll);
-    states.setState("/a/box", eSceneDrawStateBBox);
     states.setState("/a/box/gone", eSceneDrawStateHidden);
+    states.setState("/a/box", eSceneDrawStateBBox);
 
     const SceneDrawDelta delta = states.clearState("/a/box");
 
@@ -427,7 +467,7 @@ TEST(SceneDrawStates, ExclusionsFollowThePolicyToo)
 TEST(SceneDrawStates, FullWithoutALoadAllStillLoadsNothing)
 {
     SceneDrawStates states;
-    states.setState("/a", eSceneDrawStateChildren);
+    states.setState("/a", eSceneDrawStatePassThrough);
 
     EXPECT_TRUE(states.setState("/a/b", eSceneDrawStateFull).loads.empty());
 }
@@ -435,7 +475,7 @@ TEST(SceneDrawStates, FullWithoutALoadAllStillLoadsNothing)
 TEST(SceneDrawStates, ClearBelowForgetsEverySetStateUnderTheRowAndKeepsItsOwn)
 {
     SceneDrawStates states;
-    states.setState("/a", eSceneDrawStateChildren);
+    states.setState("/a", eSceneDrawStatePassThrough);
     states.setState("/a/b", eSceneDrawStateFull);
     states.setState("/a/b/c", eSceneDrawStateHidden);
     states.setState("/a/d/deep", eSceneDrawStateFull);
@@ -448,7 +488,7 @@ TEST(SceneDrawStates, ClearBelowForgetsEverySetStateUnderTheRowAndKeepsItsOwn)
     EXPECT_EQ(1u + outside, states.storedCount());
     SceneDrawStateEnum set = eSceneDrawStateFull;
     ASSERT_TRUE(states.getSetState("/a", &set));
-    EXPECT_EQ(eSceneDrawStateChildren, set);
+    EXPECT_EQ(eSceneDrawStatePassThrough, set);
     EXPECT_FALSE(states.getSetState("/a/b", &set));
     EXPECT_FALSE(states.getSetState("/a/b/c", &set));
     EXPECT_TRUE(states.getSetState("/a-b", &set));
@@ -558,8 +598,8 @@ TEST(SceneDrawStates, MissingPathsAreKept)
 TEST(SceneDrawStates, SiblingNamesThatSortBetweenAParentAndItsChildren)
 {
     SceneDrawStates states;
-    states.setState("/a", eSceneDrawStateBBox);
     states.setState("/a/b", eSceneDrawStateHidden);
+    states.setState("/a", eSceneDrawStateBBox);
     states.setState("/a-b", eSceneDrawStateHidden);
     states.setState("/a.b", eSceneDrawStateHidden);
 
@@ -597,15 +637,15 @@ TEST(SceneDrawStates, ViewerFullSwitchesABlockingPolicyRow)
 
     states.setState("/a/b", eSceneDrawStateFull);
 
-    expectState(states, "/a", eSceneDrawStateChildren, eSceneDrawOriginViewer);
+    expectState(states, "/a", eSceneDrawStatePassThrough, eSceneDrawOriginViewer);
     expectState(states, "/a/b", eSceneDrawStateFull, eSceneDrawOriginViewer);
 }
 
-TEST(SceneDrawStates, PolicyChildrenDoesNotLoadButPolicyLoadAllDoes)
+TEST(SceneDrawStates, PolicyPassThroughDoesNotLoadButPolicyLoadAllDoes)
 {
     SceneDrawStates states;
 
-    EXPECT_TRUE(states.setPolicyState("/a", eSceneDrawStateChildren).loads.empty());
+    EXPECT_TRUE(states.setPolicyState("/a", eSceneDrawStatePassThrough).loads.empty());
     EXPECT_EQ(1u, states.setPolicyState("/b", eSceneDrawStateLoadAll).loads.size());
 }
 
@@ -697,9 +737,11 @@ TEST(SceneDrawStates, OneDeltaOverAHundredThousandStoredStatesLooksOnlyAtItsSubt
     EXPECT_EQ(1000u, block.cleared.size());
     EXPECT_LE(block.visited, 1002u);
 
+    // The boxed row switches to Pass Through, which unblocks the rows remembered below it.
     const SceneDrawDelta blockedBelow = states.setState("/World/b50/r1", eSceneDrawStateHidden);
-    EXPECT_TRUE(blockedBelow.isEmpty());
-    EXPECT_EQ(0u, blockedBelow.visited);
+    EXPECT_EQ(Paths { "/World/b50" }, blockedBelow.passThrough);
+    EXPECT_EQ(1000u, blockedBelow.hidden.size());
+    EXPECT_LE(blockedBelow.visited, 1002u);
 }
 
 namespace {
@@ -725,7 +767,7 @@ TEST(SceneDrawStates, SavedViewRestoresEveryStateIncludingMissingAndSwitchedRows
     states.setState("/World/a/b", eSceneDrawStateFull);
     states.setState("/World/c", eSceneDrawStateLoadAll);
     states.setState("/World/c/d", eSceneDrawStateHidden);
-    states.setState("/World/e", eSceneDrawStateChildren);
+    states.setState("/World/e", eSceneDrawStatePassThrough);
     states.setState("/not/in/this/scene", eSceneDrawStateHidden);
     const SetStates saved = states.getSetStates();
     SceneLoadRules rules;
@@ -735,8 +777,8 @@ TEST(SceneDrawStates, SavedViewRestoresEveryStateIncludingMissingAndSwitchedRows
 
     Serialization::SceneViewSerialization serialization;
     sceneViewToSerialization(saved, rules, &serialization);
-    EXPECT_EQ("expand", serialization.drawStates["/World"]);
-    EXPECT_EQ((std::list<std::string> { "/World", "/World/a" }), serialization.impliedExpand);
+    EXPECT_EQ("passThrough", serialization.drawStates["/World"]);
+    EXPECT_EQ((std::list<std::string> { "/World", "/World/a" }), serialization.impliedPassThrough);
     EXPECT_EQ("hide", serialization.drawStates["/not/in/this/scene"]);
 
     SetStates readStates;
@@ -764,7 +806,7 @@ TEST(SceneDrawStates, RestoringAsksForTheLoadsTheStatesWantAsOneDelta)
     states.setState("/World/a/b", eSceneDrawStateFull);
     states.setState("/World/c", eSceneDrawStateLoadAll);
     states.setState("/World/c/d", eSceneDrawStateHidden);
-    states.setState("/World/e", eSceneDrawStateChildren);
+    states.setState("/World/e", eSceneDrawStatePassThrough);
 
     SceneDrawStates restored;
     const SceneDrawDelta delta = restored.replaceSetStates(states.getSetStates());
@@ -806,7 +848,7 @@ TEST(SceneDrawStates, SavedViewLeavesOutWhatIsNotAPathOrAName)
     serialization.loadRules["/ok"] = "all";
     serialization.loadRules["/bad"] = "some";
     serialization.loadRules["nope"] = "only";
-    serialization.impliedExpand.push_back("/ok");
+    serialization.impliedPassThrough.push_back("/ok");
 
     SetStates states;
     SceneLoadRules rules;
@@ -815,7 +857,7 @@ TEST(SceneDrawStates, SavedViewLeavesOutWhatIsNotAPathOrAName)
     ASSERT_EQ(1u, states.size());
     EXPECT_EQ("/ok", states[0].first);
     EXPECT_EQ(eSceneDrawStateBBox, states[0].second.state);
-    EXPECT_TRUE(states[0].second.direct) << "only a Children row can have been switched for a row below";
+    EXPECT_TRUE(states[0].second.direct) << "only a Pass Through row can have been switched for a row below";
     ASSERT_EQ(1u, rules.size());
     EXPECT_EQ(eSceneLoadRuleAll, rules["/ok"]);
 }
@@ -892,6 +934,18 @@ TEST(SceneDrawStates, EditingManyRowsGivesOneDeltaOverTheirRoots)
     expectState(states, "/a/c", eSceneDrawStateBBox, eSceneDrawOriginInherited, true);
 }
 
+TEST(SceneDrawStates, HidingAPrimWithItsChildrenInOneEditHidesThePrim)
+{
+    for (SceneDrawStateEnum state : { eSceneDrawStateBBox, eSceneDrawStateHidden }) {
+        SceneDrawStates states;
+
+        states.editRows({ setRow("/a/c", state), setRow("/a", eSceneDrawStateHidden), setRow("/a/d", state) });
+
+        expectState(states, "/a", eSceneDrawStateHidden, eSceneDrawOriginViewer);
+        expectState(states, "/a/c", eSceneDrawStateHidden, eSceneDrawOriginInherited, true);
+    }
+}
+
 TEST(SceneDrawStates, ResettingALoadAllRowAsOneEditAsksForNoLoad)
 {
     SceneDrawStates states;
@@ -913,10 +967,10 @@ TEST(SceneDrawStates, AnEditLaterInTheListSeesTheEarlierOnes)
 
     const SceneDrawDelta delta = states.editRows({ setRow("/w", eSceneDrawStateBBox), setRow("/w/x", eSceneDrawStateFull) });
 
-    expectState(states, "/w", eSceneDrawStateChildren, eSceneDrawOriginViewer);
+    expectState(states, "/w", eSceneDrawStatePassThrough, eSceneDrawOriginViewer);
     expectState(states, "/w/x", eSceneDrawStateFull, eSceneDrawOriginViewer);
     expectState(states, "/w/y", eSceneDrawStateBBox, eSceneDrawOriginInherited);
-    EXPECT_EQ(Paths { "/w" }, delta.expanded);
+    EXPECT_EQ(Paths { "/w" }, delta.passThrough);
     EXPECT_EQ(Paths { "/w/x" }, delta.drawn);
     EXPECT_EQ(Paths { "/w" }, delta.roots);
 }

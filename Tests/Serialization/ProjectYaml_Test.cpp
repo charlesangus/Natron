@@ -343,7 +343,7 @@ expectNodesEqual(const NodeSerialization& expected,
     EXPECT_EQ(expected.hasRotoContext, actual.hasRotoContext);
     EXPECT_EQ(expected.hasTrackerContext, actual.hasTrackerContext);
     EXPECT_EQ(expected.sceneView.drawStates, actual.sceneView.drawStates);
-    EXPECT_EQ(expected.sceneView.impliedExpand, actual.sceneView.impliedExpand);
+    EXPECT_EQ(expected.sceneView.impliedPassThrough, actual.sceneView.impliedPassThrough);
     EXPECT_EQ(expected.sceneView.loadRules, actual.sceneView.loadRules);
     EXPECT_EQ(0u, actual.knobsAge);
     EXPECT_TRUE(actual.multiInstanceParentName.empty());
@@ -681,11 +681,11 @@ TEST(ProjectYaml, ViewerSceneViewRoundTripsAndIsLeftOutWhenEmpty)
 
     NodeSerializationPtr viewer = project.nodes.nodes.back();
     ASSERT_EQ("Viewer1", viewer->scriptName);
-    viewer->sceneView.drawStates["/World"] = "expand";
+    viewer->sceneView.drawStates["/World"] = "passThrough";
     viewer->sceneView.drawStates["/World/a"] = "geometry";
     viewer->sceneView.drawStates["/World/gone/from/the/scene"] = "hide";
     viewer->sceneView.drawStates["/World/b"] = "loadAndDraw";
-    viewer->sceneView.impliedExpand.push_back("/World");
+    viewer->sceneView.impliedPassThrough.push_back("/World");
     viewer->sceneView.loadRules["/World/b"] = "all";
     viewer->sceneView.loadRules["/World/b/c"] = "none";
     viewer->sceneView.loadRules["/World/missing"] = "only";

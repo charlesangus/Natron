@@ -39,7 +39,7 @@ A_CUBE = "/World/A/Cube"
 B_CUBE = "/World/B/Cube"
 ROWS = [WORLD, A, A_CUBE, B, B_CUBE]
 # SceneDrawStateEnum, which the panel's draw state role holds, and the USDExpandHierarchy's Draw menu.
-STATES = ["bbox", "expand", "geometry", "loadAndDraw", "hide"]
+STATES = ["bbox", "passThrough", "geometry", "loadAndDraw", "hide"]
 # SceneDrawOriginEnum, which the panel's origin role holds.
 ORIGINS = ["viewer", "graph", "inherited", "default"]
 # USDRead's Initial Draw menu, in order.

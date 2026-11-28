@@ -21,7 +21,7 @@ in widget pixels, and natronSceneGuides each drawn guide. The script checks:
     and a click on that box selects /World/Group in the tree;
   - BBox on /World/Lamps keeps its guides; Hide on it removes both and their pixels; clearing it
     brings them back;
-  - in the Lobby, when present: Expand on the base building draws boxes, and a click on the
+  - in the Lobby, when present: Pass Through on the base building draws boxes, and a click on the
     largest one selects a row and highlights its box when that box was nearest.
 
 Files: $LOBBY_FILE (default .local/World_Lobby.usd); the Lobby section is skipped, and says so,
@@ -490,9 +490,9 @@ try:
         yield from key(Qt.Key_V)
         yield from key(Qt.Key_A)
         save("scene-pick-lobby-before")
-        yield from set_state(BASE_BUILDING, "expand")
+        yield from set_state(BASE_BUILDING, "passThrough")
         ok = yield ("until", lambda: len(drawn_boxes()) > 0, POLL_TIMEOUT_S)
-        check(ok, "Expand on the base building draws boxes (%d)" % len(drawn_boxes()))
+        check(ok, "Pass Through on the base building draws boxes (%d)" % len(drawn_boxes()))
         yield ("sleep", SETTLE_MS)
         save("scene-pick-lobby-boxed")
         boxes = drawn_boxes()

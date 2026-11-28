@@ -32,7 +32,7 @@ TOP_LEVEL = ["/World", "/Annex"]
 BUILDINGS = ["B0", "B1"]
 PAYLOAD_MARK = "scene_expand_hierarchy_payloads"
 # SceneDrawStateEnum, which the panel's draw state role holds, and the Draw menu's order.
-STATES = ["bbox", "expand", "geometry", "loadAndDraw", "hide"]
+STATES = ["bbox", "passThrough", "geometry", "loadAndDraw", "hide"]
 STATE_NONE, STATE_UNLOADED, STATE_LOADING, STATE_LOADED, STATE_FAILED = range(5)
 
 BUILDING = """#usda 1.0

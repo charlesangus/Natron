@@ -1,24 +1,25 @@
-"""The Scene Graph panel's expand commands: Expand All Below, Expand To <kind> and Collapse All Below,
-from the row menu, Shift-click on a branch arrow, *, the toolbar's Expand and Collapse buttons and a
+"""The Scene Graph panel's fold commands: Unfold All Below, Unfold To <kind> and Fold All Below,
+from the row menu, Shift-click on a branch arrow, *, the toolbar's Unfold and Fold buttons and a
 key bound in the Shortcut Editor.
 
 Opens Tests/fixtures/sceneKindPayloads/world.usda (its island assembly holds payloads of components,
 the bush of the custom kind natronTestTree that scene_graph_expand.pxrplugins registers, each holding
 a subcomponent payload) and a wide stage written at run time to $NATRON_GUI_TEST_OUT (100 groups of
 50 rows, each row holding a cube, and 5 unloaded payloads), and checks:
-  - the toolbar row, with Expand and Collapse after Reset to Graph, fits the docked panel; both are
+  - the toolbar row, with Unfold and Fold after Reset to Graph, fits the docked panel; both are
     disabled with no row selected;
-  - Expand To Component on the island, its components loaded, opens the island and the grove and
+  - Unfold To Component on the island, its components loaded, opens the island and the grove and
     leaves every component row shown and closed;
-  - Expand To natronTestTree shows the bush closed and leaves the grove, where nothing matches, as it
+  - Unfold To natronTestTree shows the bush closed and leaves the grove, where nothing matches, as it
     was: closed, or open when it was open;
-  - Expand All Below opens every row under the island and leaves the unloaded subcomponent payloads
+  - Unfold To Assembly on the island, itself an assembly, finds none below it and leaves it closed;
+  - Unfold All Below opens every row under the island and leaves the unloaded subcomponent payloads
     closed and unloaded, and says so;
-  - Collapse All Below closes every row under the island;
+  - Fold All Below closes every row under the island;
   - * on the current row, Shift-click on its arrow, the toolbar buttons in Below and To Component
-    scope, and Scene Graph: Expand All Below, Collapse All Below and Expand To Component bound to K,
+    scope, and Scene Graph: Unfold All Below, Fold All Below and Unfold To Component bound to K,
     J and L do the same and load nothing; Shift-click on an open row's arrow collapses all below it;
-  - on the wide stage Expand All Below opens all 5,101 rows with children and no payload, and a timer
+  - on the wide stage Unfold All Below opens all 5,101 rows with children and no payload, and a timer
     posted as it starts fires while it is still running;
   - Esc stops a long expansion, leaving the rows it opened open, and the status line says Stopped;
   - switching the viewer to another node stops an expansion under way before the panel's model
@@ -152,20 +153,20 @@ try:
         return child(QComboBox, "sceneGraphBulkScope")
 
     def expand_button():
-        return child(QToolButton, "sceneGraphExpand")
+        return child(QToolButton, "sceneGraphUnfold")
 
     def collapse_button():
-        return child(QToolButton, "sceneGraphCollapse")
+        return child(QToolButton, "sceneGraphFold")
 
     def status():
         label = child(QLabel, "sceneGraphBulkStatus")
         return str(label.text()) if label is not None and label.isVisible() else ""
 
     def expanding():
-        return bool(panel().property("natronSceneGraphExpanding"))
+        return bool(panel().property("natronSceneGraphUnfolding"))
 
     def slices():
-        return int(panel().property("natronSceneGraphExpandSlices") or 0)
+        return int(panel().property("natronSceneGraphUnfoldSlices") or 0)
 
     def scene_drawn():
         v = view()
@@ -350,7 +351,7 @@ try:
         QTest.mouseClick(tree().viewport(), Qt.LeftButton, Qt.ShiftModifier, arrow_point(path))
 
     def finished(timeout=POLL_TIMEOUT_S):
-        """Waits for the expander to finish; returns the status line it leaves."""
+        """Waits for the unfolder to finish; returns the status line it leaves."""
         ok = yield ("until", lambda: not expanding(), timeout)
         check(ok, "the expand command finishes within %ds (status %r)" % (timeout, status()))
         return status()
@@ -438,8 +439,8 @@ try:
         group = find_item(keys, "3DViewer")
         require(group is not None, "the shortcuts tree has a 3DViewer group")
         keys.expand(group)
-        for listed in ("Scene Graph: Expand All Below", "Scene Graph: Expand To Assembly", "Scene Graph: Expand To Component",
-                       "Scene Graph: Expand To Subcomponent", "Scene Graph: Collapse All Below"):
+        for listed in ("Scene Graph: Unfold All Below", "Scene Graph: Unfold To Assembly", "Scene Graph: Unfold To Component",
+                       "Scene Graph: Unfold To Subcomponent", "Scene Graph: Fold All Below"):
             row = find_item(keys, listed, "3DViewer")
             check(row is not None, "the 3DViewer group lists %s" % listed)
             if row is not None:
@@ -468,7 +469,7 @@ try:
     BELOW_ISLAND = [ISLAND, GROVE] + COMPONENTS
 
     def check_all_below(how, summary):
-        check(summary == "Expanded 6 rows; 4 unloaded payloads not expanded",
+        check(summary == "Unfolded 6 rows; 4 unloaded payloads not unfolded",
               "%s says what it did (got %r)" % (how, summary))
         check(opened(BELOW_ISLAND) == BELOW_ISLAND, "%s opens the island, the grove and every component (open %r)" % (how, opened(BELOW_ISLAND)))
         check(not opened(SUBCOMPONENTS), "%s leaves the unloaded subcomponents closed (open %r)" % (how, opened(SUBCOMPONENTS)))
@@ -479,16 +480,16 @@ try:
               "%s loads no subcomponent (states %r)" % (how, states(SUBCOMPONENTS)))
 
     def collapse_island(how):
-        ok = pick_in_menu(ISLAND, "sceneGraphCollapseBelow")
-        check(ok, "%s: the row menu has an enabled Collapse All Below" % how)
+        ok = pick_in_menu(ISLAND, "sceneGraphFoldBelow")
+        check(ok, "%s: the row menu has an enabled Fold All Below" % how)
         summary = yield from finished()
-        check(summary.startswith("Collapsed "), "%s: Collapse All Below says what it did (got %r)" % (how, summary))
-        check(not opened(BELOW_ISLAND + SUBCOMPONENTS), "%s: Collapse All Below closes every row under the island (open %r)"
+        check(summary.startswith("Folded "), "%s: Fold All Below says what it did (got %r)" % (how, summary))
+        check(not opened(BELOW_ISLAND + SUBCOMPONENTS), "%s: Fold All Below closes every row under the island (open %r)"
               % (how, opened(BELOW_ISLAND + SUBCOMPONENTS)))
-        check(is_open(WORLD), "%s: Collapse All Below leaves the row above the island open" % how)
+        check(is_open(WORLD), "%s: Fold All Below leaves the row above the island open" % how)
 
     def check_to_component(how, summary):
-        check(summary.startswith("Expanded to ") and "Stopped" not in summary,
+        check(summary.startswith("Unfolded to ") and "Stopped" not in summary,
               "%s says what it did (got %r)" % (how, summary))
         check(is_open(ISLAND) and is_open(GROVE), "%s opens the island and the grove (open %r)" % (how, opened([ISLAND, GROVE])))
         check(all(shown(c) for c in COMPONENTS), "%s shows every component row (shown %r)" % (how, [shown(c) for c in COMPONENTS]))
@@ -515,23 +516,23 @@ try:
         tree().expand(find(WORLD))
 
         # The toolbar row and its buttons.
-        require(expand_button() is not None and collapse_button() is not None, "the toolbar has Expand and Collapse buttons")
-        check(str(expand_button().text()) == "Expand" and str(collapse_button().text()) == "Collapse",
-              "the buttons read Expand and Collapse (got %r, %r)" % (expand_button().text(), collapse_button().text()))
+        require(expand_button() is not None and collapse_button() is not None, "the toolbar has Unfold and Fold buttons")
+        check(str(expand_button().text()) == "Unfold" and str(collapse_button().text()) == "Fold",
+              "the buttons read Unfold and Fold (got %r, %r)" % (expand_button().text(), collapse_button().text()))
         check_row("toolbar", ["sceneGraphBulkScope", "sceneGraphBulk_load", "sceneGraphBulk_clearBelow", "sceneGraphResetDrawStates",
-                              "sceneGraphExpand", "sceneGraphCollapse"])
+                              "sceneGraphUnfold", "sceneGraphFold"])
         tree().selectionModel().clearSelection()
         QApplication.processEvents()
-        check(not expand_button().isEnabled() and not collapse_button().isEnabled(), "Expand and Collapse are disabled with no row selected")
+        check(not expand_button().isEnabled() and not collapse_button().isEnabled(), "Unfold and Fold are disabled with no row selected")
 
         # The row menu's entries.
         texts = menu_texts(ISLAND)
-        for name, text in (("sceneGraphExpandBelow", "Expand All Below"), ("sceneGraphCollapseBelow", "Collapse All Below"),
-                           ("sceneGraphExpandTo_assembly", "Assembly"), ("sceneGraphExpandTo_component", "Component"),
-                           ("sceneGraphExpandTo_subcomponent", "Subcomponent")):
+        for name, text in (("sceneGraphUnfoldBelow", "Unfold All Below"), ("sceneGraphFoldBelow", "Fold All Below"),
+                           ("sceneGraphUnfoldTo_assembly", "Assembly"), ("sceneGraphUnfoldTo_component", "Component"),
+                           ("sceneGraphUnfoldTo_subcomponent", "Subcomponent")):
             check(texts.get(name) == text, "the row menu has %s reading %r (got %r)" % (name, text, texts.get(name)))
-        check("sceneGraphExpandTo_natronTestTree" in texts, "the row menu's Expand To lists the custom kind natronTestTree (got %r)" % sorted(texts))
-        check(shoot_menu(ISLAND, "sceneGraphExpandTo_component", "scene-graph-expand-menu.png"), "shot the row menu's Expand To")
+        check("sceneGraphUnfoldTo_natronTestTree" in texts, "the row menu's Unfold To lists the custom kind natronTestTree (got %r)" % sorted(texts))
+        check(shoot_menu(ISLAND, "sceneGraphUnfoldTo_component", "scene-graph-expand-menu.png"), "shot the row menu's Unfold To")
         yield ("sleep", SETTLE_MS)
 
         # Components loaded, subcomponents not.
@@ -548,36 +549,43 @@ try:
         tree().collapse(find(GROVE))
         yield ("sleep", SETTLE_MS)
 
-        # Expand To Component from the row menu.
-        check(pick_in_menu(ISLAND, "sceneGraphExpandTo_component"), "the row menu has an enabled Expand To Component")
+        # Unfold To Component from the row menu.
+        check(pick_in_menu(ISLAND, "sceneGraphUnfoldTo_component"), "the row menu has an enabled Unfold To Component")
         summary = yield from finished()
-        check_to_component("Expand To Component", summary)
-        yield from check_nothing_loaded("Expand To Component")
+        check_to_component("Unfold To Component", summary)
+        yield from check_nothing_loaded("Unfold To Component")
         shot("scene-graph-expand-to-component.png")
-        yield from collapse_island("after Expand To Component")
+        yield from collapse_island("after Unfold To Component")
 
-        # Expand To a custom kind: the grove holds none, so stays closed.
-        check(pick_in_menu(ISLAND, "sceneGraphExpandTo_natronTestTree"), "the row menu has an enabled Expand To natronTestTree")
+        # Unfold To a custom kind: the grove holds none, so stays closed.
+        check(pick_in_menu(ISLAND, "sceneGraphUnfoldTo_natronTestTree"), "the row menu has an enabled Unfold To natronTestTree")
         summary = yield from finished()
-        check(is_open(ISLAND) and shown(BUSH) and not is_open(BUSH), "Expand To natronTestTree shows the bush closed (open %r)" % opened([ISLAND, BUSH]))
-        check(not is_open(GROVE), "Expand To natronTestTree leaves the grove, which holds none, closed")
+        check(is_open(ISLAND) and shown(BUSH) and not is_open(BUSH), "Unfold To natronTestTree shows the bush closed (open %r)" % opened([ISLAND, BUSH]))
+        check(not is_open(GROVE), "Unfold To natronTestTree leaves the grove, which holds none, closed")
         # A branch open already stays open where nothing matches below it.
         tree().expand(find(GROVE))
-        check(pick_in_menu(ISLAND, "sceneGraphExpandTo_natronTestTree"), "the row menu has an enabled Expand To natronTestTree again")
+        check(pick_in_menu(ISLAND, "sceneGraphUnfoldTo_natronTestTree"), "the row menu has an enabled Unfold To natronTestTree again")
         summary = yield from finished()
-        check(summary.startswith("Expanded to ") and "Stopped" not in summary,
-              "Expand To natronTestTree over the open grove says what it did (got %r)" % summary)
-        check(is_open(GROVE), "Expand To natronTestTree leaves the open grove, which holds none, open")
-        check(shown(BUSH) and not is_open(BUSH), "Expand To natronTestTree over the open grove shows the bush closed")
-        yield from collapse_island("after Expand To natronTestTree over the open grove")
+        check(summary.startswith("Unfolded to ") and "Stopped" not in summary,
+              "Unfold To natronTestTree over the open grove says what it did (got %r)" % summary)
+        check(is_open(GROVE), "Unfold To natronTestTree leaves the open grove, which holds none, open")
+        check(shown(BUSH) and not is_open(BUSH), "Unfold To natronTestTree over the open grove shows the bush closed")
+        yield from collapse_island("after Unfold To natronTestTree over the open grove")
 
-        # Expand All Below from the row menu.
-        check(pick_in_menu(ISLAND, "sceneGraphExpandBelow"), "the row menu has an enabled Expand All Below")
+        # Unfold To Assembly on the island, an assembly, looks below it, where none is.
+        check(pick_in_menu(ISLAND, "sceneGraphUnfoldTo_assembly"), "the row menu has an enabled Unfold To Assembly")
         summary = yield from finished()
-        check_all_below("Expand All Below", summary)
-        yield from check_nothing_loaded("Expand All Below")
+        check(summary == "Unfolded to 0 assemblies under 1 row",
+              "Unfold To Assembly on the island finds no assembly below it, not the island (got %r)" % summary)
+        check(not is_open(ISLAND), "Unfold To Assembly leaves the island, which holds none, closed")
+
+        # Unfold All Below from the row menu.
+        check(pick_in_menu(ISLAND, "sceneGraphUnfoldBelow"), "the row menu has an enabled Unfold All Below")
+        summary = yield from finished()
+        check_all_below("Unfold All Below", summary)
+        yield from check_nothing_loaded("Unfold All Below")
         shot("scene-graph-expand-all-below.png")
-        yield from collapse_island("after Expand All Below")
+        yield from collapse_island("after Unfold All Below")
 
         # * on the current row.
         select_rows([ISLAND])
@@ -590,7 +598,7 @@ try:
         # Shift-click on an open row's arrow collapses all below; on a closed one it expands all below.
         shift_click_arrow(ISLAND)
         summary = yield from finished()
-        check(summary.startswith("Collapsed "), "Shift-click on the open island's arrow collapses all below (got %r)" % summary)
+        check(summary.startswith("Folded "), "Shift-click on the open island's arrow collapses all below (got %r)" % summary)
         check(not opened(BELOW_ISLAND), "Shift-click on the open island's arrow closes every row under it (open %r)" % opened(BELOW_ISLAND))
         shift_click_arrow(ISLAND)
         summary = yield from finished()
@@ -600,53 +608,53 @@ try:
         # The toolbar buttons, driven by the scope combo.
         select_rows([ISLAND])
         set_scope("component")
-        check(collapse_button().isEnabled(), "Collapse is enabled with a row selected")
+        check(collapse_button().isEnabled(), "Fold is enabled with a row selected")
         collapse_button().click()
         summary = yield from finished()
-        check(not opened(BELOW_ISLAND), "Collapse in To Component scope collapses all below (open %r)" % opened(BELOW_ISLAND))
+        check(not opened(BELOW_ISLAND), "Fold in To Component scope collapses all below (open %r)" % opened(BELOW_ISLAND))
         select_rows([ISLAND])
         expand_button().click()
         summary = yield from finished()
-        check_to_component("Expand in To Component scope", summary)
+        check_to_component("Unfold in To Component scope", summary)
         collapse_button().click()
         yield from finished()
         select_rows([ISLAND])
         set_scope("below")
         expand_button().click()
         summary = yield from finished()
-        check_all_below("Expand in Below scope", summary)
-        yield from collapse_island("after Expand in Below scope")
+        check_all_below("Unfold in Below scope", summary)
+        yield from collapse_island("after Unfold in Below scope")
         select_rows([ISLAND])
         set_scope("selected")
         expand_button().click()
         summary = yield from finished()
-        check_all_below("Expand in Selected scope", summary)
-        yield from collapse_island("after Expand in Selected scope")
+        check_all_below("Unfold in Selected scope", summary)
+        yield from collapse_island("after Unfold in Selected scope")
 
         # Editable shortcuts: one per kind of command.
-        rebind([("Scene Graph: Expand All Below", Qt.Key_K, "K"), ("Scene Graph: Collapse All Below", Qt.Key_J, "J"),
-                ("Scene Graph: Expand To Component", Qt.Key_L, "L")])
+        rebind([("Scene Graph: Unfold All Below", Qt.Key_K, "K"), ("Scene Graph: Fold All Below", Qt.Key_J, "J"),
+                ("Scene Graph: Unfold To Component", Qt.Key_L, "L")])
         select_rows([ISLAND])
         focus_tree()
         QTest.keyClick(tree(), Qt.Key_L)
         summary = yield from finished()
-        check_to_component("L, bound to Scene Graph: Expand To Component,", summary)
+        check_to_component("L, bound to Scene Graph: Unfold To Component,", summary)
         yield from check_nothing_loaded("L")
         select_rows([ISLAND])
         focus_tree()
         QTest.keyClick(tree(), Qt.Key_J)
         summary = yield from finished()
-        check(summary.startswith("Collapsed "), "J, bound to Scene Graph: Collapse All Below, says what it did (got %r)" % summary)
-        check(not opened(BELOW_ISLAND), "J, bound to Scene Graph: Collapse All Below, closes every row under the island (open %r)"
+        check(summary.startswith("Folded "), "J, bound to Scene Graph: Fold All Below, says what it did (got %r)" % summary)
+        check(not opened(BELOW_ISLAND), "J, bound to Scene Graph: Fold All Below, closes every row under the island (open %r)"
               % opened(BELOW_ISLAND))
         select_rows([ISLAND])
         focus_tree()
         QTest.keyClick(tree(), Qt.Key_K)
         summary = yield from finished()
-        check_all_below("K, bound to Scene Graph: Expand All Below,", summary)
+        check_all_below("K, bound to Scene Graph: Unfold All Below,", summary)
         yield from check_nothing_loaded("K")
 
-        # A plain click on an unloaded row's arrow opens and loads it, as without the expander.
+        # A plain click on an unloaded row's arrow opens and loads it, as without the unfolder.
         QTest.mouseClick(tree().viewport(), Qt.LeftButton, Qt.NoModifier, arrow_point(BERRIES))
         ok = yield ("until", lambda: is_open(BERRIES) and state(BERRIES, False) == STATE_LOADED, POLL_TIMEOUT_S)
         check(ok, "a plain click on the berries' arrow opens and loads them (open %r, state %r)" % (is_open(BERRIES), state(BERRIES)))
@@ -660,15 +668,15 @@ try:
         select_rows([WIDE])
         set_scope("below")
         ok = yield ("until", lambda: expand_button().isEnabled(), POLL_TIMEOUT_S)
-        require(ok, "Expand is enabled once the wide stage's root is selected")
+        require(ok, "Unfold is enabled once the wide stage's root is selected")
         expand_button().click()
         QTimer.singleShot(0, lambda: fired.append((expanding(), slices())))
         ok = yield ("until", lambda: bool(fired), POLL_TIMEOUT_S)
-        check(ok and fired[0][0], "a timer posted as Expand All Below starts fires while it runs (got %r)" % (fired,))
+        check(ok and fired[0][0], "a timer posted as Unfold All Below starts fires while it runs (got %r)" % (fired,))
         summary = yield from finished(WIDE_TIMEOUT_S)
         check(slices() > 1, "the wide expansion runs in more than one slice (%d)" % slices())
-        check(summary == "Expanded 5,101 rows; 5 unloaded payloads not expanded", "Expand All Below on the wide stage says what it did (got %r)" % summary)
-        check(states(payloads) == [STATE_UNLOADED] * WIDE_PAYLOADS, "Expand All Below loads none of the wide stage's payloads (states %r)" % states(payloads))
+        check(summary == "Unfolded 5,101 rows; 5 unloaded payloads not unfolded", "Unfold All Below on the wide stage says what it did (got %r)" % summary)
+        check(states(payloads) == [STATE_UNLOADED] * WIDE_PAYLOADS, "Unfold All Below loads none of the wide stage's payloads (states %r)" % states(payloads))
         check(not opened(payloads), "the wide stage's payload rows stay closed (open %r)" % opened(payloads))
         last = "%s/G%03d/I%02d" % (WIDE, WIDE_GROUPS - 1, WIDE_ROWS - 1)
         check(is_open(last), "the last row of the wide stage is open")
@@ -676,8 +684,8 @@ try:
         select_rows([WIDE])
         collapse_button().click()
         summary = yield from finished(WIDE_TIMEOUT_S)
-        check(summary == "Collapsed 5,101 rows", "Collapse All Below on the wide stage says what it did (got %r)" % summary)
-        check(not is_open(WIDE) and not is_open(last), "Collapse All Below closes the wide stage")
+        check(summary == "Folded 5,101 rows", "Fold All Below on the wide stage says what it did (got %r)" % summary)
+        check(not is_open(WIDE) and not is_open(last), "Fold All Below closes the wide stage")
 
         # Esc stops a long expansion. The rows are read by now and a slice lays nothing out, so a
         # few slices open the whole stage: Esc goes in after the click's own slice, before the
@@ -686,7 +694,7 @@ try:
         # work left and that the rows open, the rows remembered and the rows reported agree.
         select_rows([WIDE])
         focus_tree()
-        remembered_before = int(panel().property("natronSceneGraphExpandedCount") or 0)
+        remembered_before = int(panel().property("natronSceneGraphUnfoldedCount") or 0)
         expand_button().click()
         running = expanding()
         at_esc = slices()
@@ -697,7 +705,7 @@ try:
         if running:
             yield ("sleep", SETTLE_MS)
             stopped = status()
-            match = re.match(r"Stopped\. Expanded ([\d,]+) rows?(;|$)", stopped)
+            match = re.match(r"Stopped\. Unfolded ([\d,]+) rows?(;|$)", stopped)
             check(match is not None, "the status line says the expansion stopped (got %r)" % stopped)
             check(not expanding() and slices() == at_esc,
                   "no slice runs after Esc (%d slices at Esc, %d after)" % (at_esc, slices()))
@@ -720,7 +728,7 @@ try:
             check(0 < reported <= WIDE_OPENED and len(open_rows) == reported,
                   "the rows open after Esc are the %d the run reported opening (%d open)" % (reported, len(open_rows)))
             check(not opened(payloads), "the wide stage's payload rows stay closed after Esc (open %r)" % opened(payloads))
-            count = int(panel().property("natronSceneGraphExpandedCount") or 0)
+            count = int(panel().property("natronSceneGraphUnfoldedCount") or 0)
             check(count - remembered_before == len(open_rows),
                   "the remembered open rows are the rows open after Esc (%d remembered, %d before the run, %d open)"
                   % (count, remembered_before, len(open_rows)))
@@ -758,7 +766,7 @@ try:
                     viewer_state[name] = v.property(name)
             panel_state = {}
             for name in ("natronSceneGraphNode", "natronSceneGraphHasScene", "natronSceneGraphSwitching",
-                         "natronSceneGraphStageEditCount", "natronSceneGraphStageNotices", "natronSceneGraphExpanding"):
+                         "natronSceneGraphStageEditCount", "natronSceneGraphStageNotices", "natronSceneGraphUnfolding"):
                 panel_state[name] = panel().property(name)
             report("NOTE /World stall: %d polls, longest gap %.2fs, now %d ms; viewer %r; panel %r"
                    % (len(polled), max(gaps) if gaps else 0.0, int(time.time() * 1000), viewer_state, panel_state))

@@ -88,10 +88,10 @@ namespace YamlDetail {
                 em << YAML::Value;
                 emitStringMap(em, view.drawStates);
             }
-            if (!view.impliedExpand.empty()) {
-                emitKey(em, "impliedExpand");
+            if (!view.impliedPassThrough.empty()) {
+                emitKey(em, "impliedPassThrough");
                 em << YAML::Value;
-                emitStringList(em, view.impliedExpand);
+                emitStringList(em, view.impliedPassThrough);
             }
             if (!view.loadRules.empty()) {
                 emitKey(em, "loadRules");
@@ -111,8 +111,8 @@ namespace YamlDetail {
             if (YAML::Node drawStates = reader.get("drawStates")) {
                 view.drawStates = readStringMap(drawStates, context + ".drawStates", warnings);
             }
-            if (YAML::Node implied = reader.get("impliedExpand")) {
-                view.impliedExpand = readStringList(implied, context + ".impliedExpand");
+            if (YAML::Node implied = reader.get("impliedPassThrough")) {
+                view.impliedPassThrough = readStringList(implied, context + ".impliedPassThrough");
             }
             if (YAML::Node loadRules = reader.get("loadRules")) {
                 view.loadRules = readStringMap(loadRules, context + ".loadRules", warnings);

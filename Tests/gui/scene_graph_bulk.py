@@ -17,12 +17,19 @@ scene_graph_bulk.pxrplugins registers), each holding a subcomponent payload, and
     load, on the viewer's stage and, pinned, on the panel's own;
   - Load To Component on the island loads its components and leaves their subcomponents unloaded;
   - Geometry To Component under a boxed island sets Geometry on each component and switches the island and
-    the grove, which would block them, to Expand, and
+    the grove, which would block them, to Pass Through, and
     Geometry shows checked when every selected row is set Geometry;
   - Hide To natronTestTree sets the bush alone;
-  - Expand and BBox on selected rows, and Clear Below;
-  - Load Below loads everything, and Unload Below Component unloads what is below the components
-    and closes their open rows;
+  - Pass Through and BBox on selected rows, and Clear Below;
+  - Hide from the row menu under a boxed island, and BBox through setDrawState under a hidden one,
+    switch the island to Pass Through, and no frame hold is left after;
+  - the island's visibility toggled fast, then again with the render thread failing to take some of
+    the changes in (natronSceneFailNextDrawApply), is followed each time by a finished frame that
+    shows every change, with natronSceneFrameHolds empty;
+  - BBox To Component on a component looks below it, not at it, and finds no component there;
+  - Load Below loads everything; Unload Below Component on a component looks below it, not at it,
+    and leaves its subcomponent loaded; on the island it unloads what is below the components and
+    closes their open rows;
   - Draw To walked a prim per slice runs on, says Esc stops, applies once done, and Esc stops a
     second one with nothing changed;
   - Load + Draw Below sets Load + Draw on the island and clears the states below it, as one change;
@@ -60,10 +67,10 @@ BERRIES = BUSH + "/Berries"
 CRATE = "/World/Props/Crate"
 COMPONENTS = [TREE_A, TREE_B, ROCK, BUSH]
 SUBCOMPONENTS = [LEAVES_A, LEAVES_B, MOSS, BERRIES]
-BUTTONS = ["load", "unload", "bbox", "expand", "geometry", "loadAndDraw", "hide", "clearBelow"]
+BUTTONS = ["load", "unload", "bbox", "passThrough", "geometry", "loadAndDraw", "hide", "clearBelow"]
 
 STATE_NONE, STATE_UNLOADED, STATE_LOADING, STATE_LOADED, STATE_FAILED = range(5)
-DRAW_BBOX, DRAW_EXPAND, DRAW_GEOMETRY, DRAW_LOAD_AND_DRAW, DRAW_HIDE = range(5)
+DRAW_BBOX, DRAW_PASS_THROUGH, DRAW_GEOMETRY, DRAW_LOAD_AND_DRAW, DRAW_HIDE = range(5)
 ORIGIN_VIEWER = 0
 
 try:
@@ -454,7 +461,7 @@ try:
         check(child(QLineEdit, "sceneGraphFilter") is not None, "the panel has the filter field")
         filter_row = check_row("filter", ["sceneGraphFilter", "sceneGraphChangedHere"])
         toolbar_row = check_row("toolbar", ["sceneGraphBulkScope", "sceneGraphBulkLoadIcon", "sceneGraphBulk_load", "sceneGraphBulk_unload",
-                                            "sceneGraphBulkDisplayIcon", "sceneGraphBulk_bbox", "sceneGraphBulk_expand",
+                                            "sceneGraphBulkDisplayIcon", "sceneGraphBulk_bbox", "sceneGraphBulk_passThrough",
                                             "sceneGraphBulk_geometry", "sceneGraphBulk_loadAndDraw", "sceneGraphBulk_hide",
                                             "sceneGraphBulk_clearBelow", "sceneGraphResetDrawStates"])
         for header in ("sceneGraphBulkLoadIcon", "sceneGraphBulkDisplayIcon"):
@@ -463,8 +470,8 @@ try:
             check(header_pixmap is not None and not header_pixmap.isNull(), "the %s section header shows an icon" % header)
         node_row = check_row("node", ["sceneGraphApplyToNode", "sceneGraphBakeDrawStates", "sceneGraphCancelLoads"])
         labels = [str(button(a).text()) for a in BUTTONS]
-        check(labels == ["Load", "Unload", "BBox", "Expand", "Geometry", "Load + Draw", "Hide", "Clear Below"],
-              "the toolbar buttons read Load, Unload, BBox, Expand, Geometry, Load + Draw, Hide, Clear Below (got %r)" % (labels,))
+        check(labels == ["Load", "Unload", "BBox", "Pass Through", "Geometry", "Load + Draw", "Hide", "Clear Below"],
+              "the toolbar buttons read Load, Unload, BBox, Pass Through, Geometry, Load + Draw, Hide, Clear Below (got %r)" % (labels,))
         tree_rect = panel_rect(tree())
         tree_pane = child(QWidget, "sceneGraphTreePane")
         check(tree_pane is not None and tree_pane.isAncestorOf(child(QWidget, "sceneGraphApplyToNode")),
@@ -533,7 +540,7 @@ try:
         tree().expand(find(GROVE))
         shot("scene-graph-bulk-load-to-component.png")
 
-        # Geometry To Component, under a boxed island the components' Geometry has to switch to Expand.
+        # Geometry To Component, under a boxed island the components' Geometry has to switch to Pass Through.
         check(invoke("setDrawStateOnRowsScoped", [ISLAND], "bbox", "selected") == "BBox set on 1 row", "box the island")
         ok = yield ("until", lambda: set_here(ISLAND, DRAW_BBOX), POLL_TIMEOUT_S)
         check(ok, "the island is boxed (got %r)" % (draw(ISLAND),))
@@ -542,8 +549,8 @@ try:
         check(summary == "Geometry set on 4 components under 1 row", "Geometry To Component says what it did (got %r)" % (summary,))
         ok = yield ("until", lambda: all(set_here(p, DRAW_GEOMETRY) for p in COMPONENTS), POLL_TIMEOUT_S)
         check(ok, "Geometry To Component sets Geometry on every component (got %r)" % ([draw(p) for p in COMPONENTS],))
-        check(draw(ISLAND) is not None and draw(ISLAND)[0] == DRAW_EXPAND and draw(GROVE) is not None and draw(GROVE)[0] == DRAW_EXPAND,
-              "the island and the grove read Expand (got %r, %r)" % (draw(ISLAND), draw(GROVE)))
+        check(draw(ISLAND) is not None and draw(ISLAND)[0] == DRAW_PASS_THROUGH and draw(GROVE) is not None and draw(GROVE)[0] == DRAW_PASS_THROUGH,
+              "the island and the grove read Pass Through (got %r, %r)" % (draw(ISLAND), draw(GROVE)))
         yield ("sleep", SETTLE_MS)
         check(not button("geometry").isChecked(), "Geometry is unchecked with the island selected")
         select_rows([TREE_A, TREE_B])
@@ -561,7 +568,7 @@ try:
         check(ok, "Hide To natronTestTree hides the bush (got %r)" % (draw(BUSH),))
         check(all(set_here(p, DRAW_GEOMETRY) for p in (TREE_A, TREE_B, ROCK)), "the other components stay Geometry (got %r)" % ([draw(p) for p in COMPONENTS],))
 
-        # Selected scope: Expand, BBox and Clear Below.
+        # Selected scope: Pass Through, BBox and Clear Below.
         set_scope("selected")
         select_rows([ROCK])
         summary = yield from press("bbox")
@@ -569,15 +576,73 @@ try:
         ok = yield ("until", lambda: set_here(ROCK, DRAW_BBOX), POLL_TIMEOUT_S)
         check(ok, "BBox sets the rock (got %r)" % (draw(ROCK),))
         select_rows([GROVE])
-        yield from press("expand")
-        ok = yield ("until", lambda: set_here(GROVE, DRAW_EXPAND), POLL_TIMEOUT_S)
-        check(ok, "Expand sets the grove (got %r)" % (draw(GROVE),))
-        ok = yield ("until", lambda: button("expand").isChecked(), POLL_TIMEOUT_S)
-        check(ok, "Expand shows checked with the grove selected")
+        yield from press("passThrough")
+        ok = yield ("until", lambda: set_here(GROVE, DRAW_PASS_THROUGH), POLL_TIMEOUT_S)
+        check(ok, "Pass Through sets the grove (got %r)" % (draw(GROVE),))
+        ok = yield ("until", lambda: button("passThrough").isChecked(), POLL_TIMEOUT_S)
+        check(ok, "Pass Through shows checked with the grove selected")
         select_rows([ROCK])
         summary = yield from press("clearBelow")
         check(summary.startswith("States cleared below 1 row"), "Clear Below says what it did (got %r)" % (summary,))
         check(set_here(ROCK, DRAW_BBOX), "Clear Below keeps the row's own state (got %r)" % (draw(ROCK),))
+
+        # A state set under a box switches the ancestors that block it to Pass Through, from the row
+        # menu and from Python alike, and the viewer goes on drawing.
+        check(invoke("setDrawStateOnRowsScoped", [ISLAND], "bbox", "selected") == "BBox set on 1 row", "box the island again")
+        ok = yield ("until", lambda: set_here(ISLAND, DRAW_BBOX), POLL_TIMEOUT_S)
+        check(ok, "the island is boxed again (got %r)" % (draw(ISLAND),))
+        check(pick_in_menu(TREE_A, "sceneGraphDrawState_hide"), "the row menu has an enabled Hide on tree A")
+        ok = yield ("until", lambda: set_here(TREE_A, DRAW_HIDE), POLL_TIMEOUT_S)
+        check(ok, "Hide from the row menu sets tree A under the boxed island (got %r)" % (draw(TREE_A),))
+        check(draw(ISLAND) is not None and draw(ISLAND)[0] == DRAW_PASS_THROUGH,
+              "Hide under the boxed island switches the island to Pass Through (got %r)" % (draw(ISLAND),))
+        check(invoke("setDrawStateOnRowsScoped", [ISLAND], "hide", "selected") == "Hide set on 1 row", "hide the island")
+        ok = yield ("until", lambda: set_here(ISLAND, DRAW_HIDE), POLL_TIMEOUT_S)
+        check(ok, "the island is hidden (got %r)" % (draw(ISLAND),))
+        QMetaObject.invokeMethod(view(), "setDrawState", Q_ARG("QString", TREE_B), Q_ARG("QString", "bbox"))
+        ok = yield ("until", lambda: set_here(TREE_B, DRAW_BBOX), POLL_TIMEOUT_S)
+        check(ok, "setDrawState sets tree B under the hidden island (got %r)" % (draw(TREE_B),))
+        check(draw(ISLAND) is not None and draw(ISLAND)[0] == DRAW_PASS_THROUGH,
+              "BBox under the hidden island switches the island to Pass Through (got %r)" % (draw(ISLAND),))
+        ok = yield ("until", lambda: not view().property("natronSceneFrameHolds"), POLL_TIMEOUT_S)
+        check(ok, "no frame hold is left once the visibility changes settle (got %r)" % (view().property("natronSceneFrameHolds"),))
+
+        # Visibility toggled fast, and once with the render thread failing to take the change in:
+        # each time a frame showing every change is drawn after, with no hold left.
+        def frame_shows_all_changes(painted_before):
+            v = view()
+            stats = v.property("natronSceneDrawStats") or {}
+            return (v is not None and not v.property("natronSceneFrameHolds") and bool(v.property("natronSceneSynced"))
+                    and int(v.property("natronSceneDrawPresented") or 0) == int(stats.get("posted", -1))
+                    and int(v.property("natronSceneLastPaintMs") or 0) > painted_before)
+
+        def frame_report():
+            v = view()
+            return (v.property("natronSceneFrameHolds"), v.property("natronSceneSynced"), v.property("natronSceneDrawPresented"),
+                    (v.property("natronSceneDrawStats") or {}).get("posted"))
+
+        for failing in (False, True):
+            painted = int(view().property("natronSceneLastPaintMs") or 0)
+            for state_name in ("passThrough", "hide", "passThrough", "hide", "passThrough", "hide", "passThrough"):
+                if failing and state_name == "hide":
+                    view().setProperty("natronSceneFailNextDrawApply", True)
+                QMetaObject.invokeMethod(view(), "setDrawState", Q_ARG("QString", ISLAND), Q_ARG("QString", state_name))
+                yield ("sleep", 20)
+            ok = yield ("until", lambda: set_here(ISLAND, DRAW_PASS_THROUGH), POLL_TIMEOUT_S)
+            check(ok, "the island ends Pass Through after the toggles (got %r)" % (draw(ISLAND),))
+            ok = yield ("until", lambda: frame_shows_all_changes(painted), POLL_TIMEOUT_S)
+            check(ok, "a frame showing every visibility change is drawn after the toggles%s, with no hold left "
+                  "(holds, synced, presented, posted: %r)" % (" with failed take-ins" if failing else "", frame_report()))
+        check(not view().property("natronSceneFailNextDrawApply"), "the failure asked for was taken")
+        QMetaObject.invokeMethod(view(), "setDrawState", Q_ARG("QString", ISLAND), Q_ARG("QString", "hide"))
+        ok = yield ("until", lambda: set_here(ISLAND, DRAW_HIDE), POLL_TIMEOUT_S)
+        check(ok, "the island is hidden again (got %r)" % (draw(ISLAND),))
+
+        # To Component on a component walks through it, and finds no component in the tree.
+        summary = invoke("setDrawStateOnRowsScoped", [TREE_A], "bbox", "component")
+        check(summary == "No loaded components under 1 row",
+              "BBox To Component on tree A looks below it, not at it (got %r)" % (summary,))
+        check(set_here(TREE_A, DRAW_HIDE), "tree A keeps its own state (got %r)" % (draw(TREE_A),))
 
         # Load Below, then Unload Below Component.
         select_rows([ISLAND])
@@ -588,6 +653,18 @@ try:
         check(ok, "Load Below loads every payload below the island (states %r)" % ([state(p) for p in SUBCOMPONENTS],))
         for path in (ISLAND, GROVE, TREE_A, LEAVES_A, ROCK, MOSS):
             tree().expand(find(path))
+        set_scope("component")
+        select_rows([TREE_A])
+        yield from press("unload")
+        # Serviced no earlier than tree A's request, so once the berries go that one has been walked.
+        set_scope("selected")
+        select_rows([BERRIES])
+        yield from press("unload")
+        ok = yield ("until", lambda: state(BERRIES) == STATE_UNLOADED, POLL_TIMEOUT_S)
+        check(ok, "Unload unloads the berries (state %r)" % (state(BERRIES),))
+        check(state(LEAVES_A) == STATE_LOADED and tree().isExpanded(find(LEAVES_A)),
+              "Unload Below Component on tree A finds no component below it, so its leaves stay loaded and open (state %r)" % (state(LEAVES_A),))
+        select_rows([ISLAND])
         set_scope("component")
         summary = yield from press("unload")
         check(summary == "Unloading below components under 1 row", "Unload Below Component says what it does (got %r)" % (summary,))

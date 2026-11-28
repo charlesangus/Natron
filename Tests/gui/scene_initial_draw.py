@@ -35,7 +35,7 @@ PAYLOAD_MARK = "scene_initial_draw_payloads"
 # The Initial Draw menu, in order.
 INITIAL_DRAW = ["bbox", "levels", "toKind", "geometry", "loadAndDraw"]
 # SceneDrawStateEnum, which the panel's draw state role holds.
-STATES = ["bbox", "expand", "geometry", "loadAndDraw", "hide"]
+STATES = ["bbox", "passThrough", "geometry", "loadAndDraw", "hide"]
 
 BUILDING = """#usda 1.0
 

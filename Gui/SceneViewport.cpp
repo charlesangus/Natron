@@ -4626,7 +4626,7 @@ SceneViewportRenderer::postDrawChange(const SceneDrawChange& change,
 {
     const SceneDrawDelta& delta = change.delta;
     // Loads alone go to the filter too when revealed, for it to know where what they bring in goes.
-    const bool posted = !delta.drawn.empty() || !delta.expanded.empty() || !delta.boxed.empty() || !delta.hidden.empty() || !delta.cleared.empty()
+    const bool posted = !delta.drawn.empty() || !delta.passThrough.empty() || !delta.boxed.empty() || !delta.hidden.empty() || !delta.cleared.empty()
         || ((revealBatch != 0) && !delta.loads.empty());
 
     if (posted) {
@@ -8225,6 +8225,25 @@ pickedPackedUsdPrimitives(const GeoDisplay& display,
     return packedUsdPrimitivesIn(*convert->detail(), viewProjection, width, height, region, nearest);
 }
 
+/**
+ * @brief Runs fn, logging what it throws as what failed. A render thread job that set a flag on the
+ * main thread runs its work through this, so that the reply clearing the flag is posted however the
+ * work ends: a flag left set keeps every later frame from starting.
+ **/
+template <typename Fn>
+void
+runLogged(const char* what,
+          Fn&& fn)
+{
+    try {
+        fn();
+    } catch (const std::exception& e) {
+        qWarning() << "SceneViewport:" << what << "failed:" << e.what();
+    } catch (...) {
+        qWarning() << "SceneViewport:" << what << "failed with an unknown exception";
+    }
+}
+
 } // anonymous namespace
 
 // How far from the pointer, in logical pixels, a click finds a point or an edge.
@@ -8940,7 +8959,15 @@ struct SceneViewport::Implementation {
                     std::function<void()> job = std::move(jobs.front());
                     jobs.pop_front();
                     lock.unlock();
-                    job();
+                    // An exception leaving the thread would end the process; one caught here still
+                    // counts the job over, or the paints it holds would stay held.
+                    try {
+                        job();
+                    } catch (const std::exception& e) {
+                        qWarning() << "SceneViewport: a render thread job failed:" << e.what();
+                    } catch (...) {
+                        qWarning() << "SceneViewport: a render thread job failed with an unknown exception";
+                    }
                     job = nullptr;
                     lock.lock();
                     if ((--outstanding == 0) && idle) {
@@ -10153,9 +10180,7 @@ SceneViewport::onSynced(U64 serial,
     }
     // With natronSceneLastPaintMs, lets a benchmark time an edit to the frame that shows it.
     setProperty("natronSceneSyncedAtMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
-    startBackgroundFrame();
-    publishState();
-    update();
+    onFrameHoldCleared();
     Q_EMIT sceneSynced();
     noteDrawPolicySettled();
 }
@@ -10178,7 +10203,8 @@ SceneViewport::followSceneRenderer()
         Implementation* imp = _imp.get();
         _imp->postToRenderThread([this, imp]() {
             bool jobBusy = false;
-            const bool jobChanged = imp->renderer.followSceneRenderer(&jobBusy);
+            bool jobChanged = false;
+            runLogged("following the scene's renderer", [imp, &jobBusy, &jobChanged]() { jobChanged = imp->renderer.followSceneRenderer(&jobBusy); });
             // Dropped by Qt if the widget is gone by then.
             imp->postToView([this, jobChanged, jobBusy]() { onSceneRendererFollowed(jobChanged, jobBusy); });
         });
@@ -10224,11 +10250,7 @@ SceneViewport::onSceneRendererFollowed(bool changed,
     if (askedMeanwhile) {
         followSceneRenderer();
     }
-    startBackgroundFrame();
-    serviceDeferredInput();
-    publishState();
-    refreshPaintHold();
-    update();
+    onFrameHoldCleared();
 }
 
 bool
@@ -10331,7 +10353,8 @@ SceneViewport::startBackgroundFrame()
         const double startMs = epochMs();
         const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
         bool converged = false;
-        const bool rendered = imp->renderer.renderBackgroundFrame(imp->ensureRenderTarget(target, w, h), &converged);
+        bool rendered = false;
+        runLogged("rendering a frame", [imp, target, w, h, &converged, &rendered]() { rendered = imp->renderer.renderBackgroundFrame(imp->ensureRenderTarget(target, w, h), &converged); });
         const int passes = imp->renderer.getLastFramePasses();
         const bool fillCompleteAtStart = imp->renderer.wasFillCompleteAtLastFrameStart();
         GLsync fence = nullptr;
@@ -10352,12 +10375,14 @@ SceneViewport::startBackgroundFrame()
             if (rendered) {
                 publishStormFrame(this, startMs, costMs, passes, fillCompleteAtStart);
             }
-            if (fence && (generation == _imp->renderContextGeneration) && _imp->usesRenderThread) {
+            const bool shown = fence && (generation == _imp->renderContextGeneration) && _imp->usesRenderThread;
+            if (shown) {
                 _imp->presentPacer.submitted(fence, finished);
                 _imp->submittedTintOnly = finished.tintOnly;
                 _imp->presentHoldEnd = std::chrono::steady_clock::now() + kPresentHoldLimit;
             }
-            if (!rendered || !converged) {
+            // A frame never shown leaves the view to render again, or none would start for it.
+            if (!shown || !converged) {
                 _imp->renderer.forgetBackgroundView();
             }
             onBackgroundFrameDone();
@@ -10385,15 +10410,8 @@ SceneViewport::onBackgroundFrameDone()
     if (!_imp->rendererSwitchRunning) {
         _imp->composingTimer->stop();
     }
-    if (_imp->followSceneOwed || _imp->renderer.hasPendingRendererSwitch()) {
-        followSceneRenderer();
-    }
     // The stage may have changed again while the frame ran.
-    startBackgroundFrame();
-    serviceDeferredInput();
-    publishState();
-    refreshPaintHold();
-    update();
+    onFrameHoldCleared();
 }
 
 void
@@ -10461,14 +10479,14 @@ SceneViewport::rebuildRenderContext()
     }
     imp->postToRenderThread([this, imp, shareGeneration]() {
         // The viewer lock is taken here, not on the main thread: a sync may hold it for seconds.
-        imp->releaseRenderContext(false);
         QOpenGLContextGroup* group = nullptr;
-        {
+        runLogged("making the render context", [imp, shareGeneration, &group]() {
+            imp->releaseRenderContext(false);
             std::lock_guard<std::mutex> lock(imp->rebuildShareMutex);
             if (imp->rebuildShare && (imp->rebuildShareGeneration == shareGeneration)) {
                 group = imp->makeRenderContext(imp->rebuildShare);
             }
-        }
+        });
         // Dropped by Qt if the widget is gone by then.
         imp->postToView([this, shareGeneration, group]() { onRenderContextRebuilt(shareGeneration, group); });
     });
@@ -10496,28 +10514,14 @@ SceneViewport::onRenderContextRebuilt(U64 shareGeneration,
             _imp->renderSurface.reset();
         }
     }
-    if (_imp->followSceneOwed || _imp->renderer.hasPendingRendererSwitch()) {
-        followSceneRenderer();
-    }
-    startBackgroundFrame();
-    serviceDeferredInput();
-    publishState();
-    refreshPaintHold();
-    update();
+    onFrameHoldCleared();
 }
 
 void
 SceneViewport::onEngineReleased()
 {
     _imp->engineReleaseRunning = false;
-    if (_imp->followSceneOwed || _imp->renderer.hasPendingRendererSwitch()) {
-        followSceneRenderer();
-    }
-    startBackgroundFrame();
-    serviceDeferredInput();
-    publishState();
-    refreshPaintHold();
-    update();
+    onFrameHoldCleared();
 }
 
 void
@@ -10567,6 +10571,21 @@ SceneViewport::onDrawChangesTakenIn()
         --_imp->drawJobsQueued;
     }
     if (_imp->renderThreadBusy()) {
+        // The job still running hears of its own end, and that clears its hold.
+        publishState();
+
+        return;
+    }
+    onFrameHoldCleared();
+}
+
+void
+SceneViewport::onFrameHoldCleared()
+{
+    if ((_imp->heldMatch != 0) && !_imp->policyHeld()) {
+        // Its release comes back here with the stage no longer held.
+        releasePolicyHold();
+
         return;
     }
     if (_imp->followSceneOwed || _imp->renderer.hasPendingRendererSwitch()) {
@@ -10606,13 +10625,7 @@ SceneViewport::onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bo
         _imp->renderer.applyFrameBounds(bounds);
         endLockOutsideLookThrough();
     }
-    if (_imp->followSceneOwed) {
-        followSceneRenderer();
-    }
-    startBackgroundFrame();
-    serviceDeferredInput();
-    publishState();
-    update();
+    onFrameHoldCleared();
     Q_EMIT stageLoadsChanged();
     noteDrawPolicySettled();
 }
@@ -11035,9 +11048,7 @@ SceneViewport::releasePolicyHold()
     _imp->policyHoldTimer->stop();
     _imp->heldMatch = 0;
     _imp->renderer.setStageHeld(false);
-    startBackgroundFrame();
-    publishState();
-    update();
+    onFrameHoldCleared();
     noteDrawPolicySettled();
 }
 
@@ -11047,8 +11058,18 @@ SceneViewport::deliverDrawChange(const SceneDrawChange& change)
     if (_imp->renderer.postDrawChange(change, _imp->drawRevealBatch) && _imp->usesRenderThread) {
         Implementation* imp = _imp.get();
         ++_imp->drawJobsQueued;
-        _imp->postToRenderThread([this, imp]() {
-            imp->renderer.applyPendingDrawDeltas();
+        // Set by GUI tests: the job throws before taking the change in, as a failing engine would.
+        const bool fail = property("natronSceneFailNextDrawApply").toBool();
+        if (fail) {
+            setProperty("natronSceneFailNextDrawApply", false);
+        }
+        _imp->postToRenderThread([this, imp, fail]() {
+            runLogged("taking in a draw state change", [imp, fail]() {
+                if (fail) {
+                    throw std::runtime_error("natronSceneFailNextDrawApply");
+                }
+                imp->renderer.applyPendingDrawDeltas();
+            });
             // Dropped by Qt if the widget is gone by then.
             imp->postToView([this]() { onDrawChangesTakenIn(); });
         });
@@ -11085,7 +11106,7 @@ struct DrawKey {
 };
 
 const DrawKey kDrawKeys[] = {
-    { kShortcutIDActionViewer3DDrawExpand, eSceneDrawStateChildren, false },
+    { kShortcutIDActionViewer3DDrawPassThrough, eSceneDrawStatePassThrough, false },
     { kShortcutIDActionViewer3DDrawGeometry, eSceneDrawStateFull, false },
     { kShortcutIDActionViewer3DDrawLoadAndDraw, eSceneDrawStateLoadAll, false },
     { kShortcutIDActionViewer3DDrawParentBBox, eSceneDrawStateBBox, true },
@@ -11840,6 +11861,44 @@ SceneViewport::publishState()
     setProperty("natronSceneMainWaitMaxMs", _imp->renderer.getMainThreadWaitMaxMs());
     publishDrawStats();
     {
+        // Each gate that keeps a new frame from starting now: a viewer that stays grey shows which
+        // one never cleared.
+        QStringList holds;
+        if (_imp->backgroundFrameRunning) {
+            holds.push_back(QString::fromUtf8("frameRunning"));
+        }
+        if (_imp->widgetContextLost) {
+            holds.push_back(QString::fromUtf8("contextLost"));
+        }
+        if (_imp->drawJobsQueued > 0) {
+            holds.push_back(QString::fromUtf8("drawJobsQueued:%1").arg(_imp->drawJobsQueued));
+        }
+        if (_imp->rendererSwitchRunning || _imp->followSceneRunning || (_imp->renderContextRebuilds > 0) || _imp->engineReleaseRunning) {
+            holds.push_back(QString::fromUtf8("renderThreadBusy"));
+        }
+        if (_imp->presentPacer.pending()) {
+            holds.push_back(QString::fromUtf8("presentPending"));
+        }
+        if (_imp->syncedSerial < _imp->paintHeldUntilSerial) {
+            holds.push_back(QString::fromUtf8("paintHeld"));
+        }
+        if (_imp->stageAwaitsTakeIn()) {
+            holds.push_back(QString::fromUtf8("stageAwaitsTakeIn"));
+        }
+        if (_imp->policyHeld()) {
+            holds.push_back(QString::fromUtf8("policyHeld"));
+        } else if (_imp->renderer.isStageHeld()) {
+            holds.push_back(QString::fromUtf8("stageHeld"));
+        }
+        if (_imp->standInHoldsFrames()) {
+            holds.push_back(QString::fromUtf8("standIn"));
+        }
+        if (!_imp->renderer.isFillComplete()) {
+            holds.push_back(QString::fromUtf8("filling"));
+        }
+        setProperty("natronSceneFrameHolds", holds);
+    }
+    {
         QVariantList failures;
         for (const std::pair<std::string, std::string>& failure : _imp->renderer.getStageLoadFailures()) {
             failures.push_back(QVariantList { QString::fromStdString(failure.first), QString::fromStdString(failure.second) });
@@ -12014,7 +12073,7 @@ SceneViewport::setRendererId(const QString& id)
         if (imp->rendererSwitchLatest != serial) {
             return;
         }
-        imp->renderer.setRendererId(renderer);
+        runLogged("switching the renderer", [imp, &renderer]() { imp->renderer.setRendererId(renderer); });
         // Dropped by Qt if the widget is gone by then.
         imp->postToView([this, id, serial]() { onRendererSwitched(id, serial); });
     });
@@ -13465,11 +13524,13 @@ SceneViewport::releaseEngine()
         Implementation* imp = _imp.get();
         // The render thread waits for the viewer lock, which a sync may hold for seconds.
         _imp->postToRenderThread([this, imp, storm]() {
-            if (storm) {
-                imp->renderer.releaseEngineGL();
-            } else {
-                imp->renderer.releaseStormEngine();
-            }
+            runLogged("releasing the engine", [imp, storm]() {
+                if (storm) {
+                    imp->renderer.releaseEngineGL();
+                } else {
+                    imp->renderer.releaseStormEngine();
+                }
+            });
             // Dropped by Qt if the widget is gone by then.
             imp->postToView([this]() { onEngineReleased(); });
         });
@@ -13636,6 +13697,11 @@ SceneViewport::paintGL()
             imp->standInRefillTimer->start(std::max<int>(0, int(imp->standInRefillDelayMs - imp->viewStillClock.elapsed())) + 1);
         }
         if (!imp->frontFrame && !blank && !standInShown) {
+            if (!imp->backgroundFrameRunning && !imp->presentPacer.pending()) {
+                // No frame to show and none coming: the one this paint owes must render, whatever
+                // view the renderer last took a frame for.
+                imp->renderer.forgetBackgroundView();
+            }
             if (!imp->presentedScene || (imp->composingShowsStatus() && imp->composingClock.isValid() && (imp->composingClock.elapsed() >= kComposingStatusDelayMs))) {
                 paintComposingStatus();
             }

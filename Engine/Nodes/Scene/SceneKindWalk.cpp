@@ -201,7 +201,9 @@ SceneKindWalker::walk(const PXR_NS::UsdStageRefPtr& stage,
         }
         ++_visited;
         bool matches = false;
-        if (kindWalkStopsAt(kindOf(prim), _target, &matches)) {
+        // Only a root is pending without its siblings.
+        const bool root = !next.siblings;
+        if (kindWalkStopsAt(kindOf(prim), _target, &matches) && !(root && matches)) {
             if (matches) {
                 _result.matches.push_back(prim.GetPath());
             }

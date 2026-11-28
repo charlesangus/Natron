@@ -2483,8 +2483,8 @@ TEST_F(SceneViewportStorm, ADrawStateChangeReachesTheFilterAndLoadsOnlyWhatItAsk
     queue.edit([](SceneDrawStates* states) { return states->setState("/World", eSceneDrawStateLoadAll); });
     queue.edit([](SceneDrawStates* states) { return states->setState("/World/Block_1", eSceneDrawStateBBox); });
     queue.edit([](SceneDrawStates* states) { return states->setState("/World/Block_2/B_0", eSceneDrawStateHidden); });
-    // Children on the first block's buildings, then BBox: the first load is cancelled before it runs.
-    queue.edit([](SceneDrawStates* states) { return states->setState("/World/Block_0/B_0", eSceneDrawStateChildren); });
+    // Pass Through on the first block's buildings, then BBox: the first load is cancelled before it runs.
+    queue.edit([](SceneDrawStates* states) { return states->setState("/World/Block_0/B_0", eSceneDrawStatePassThrough); });
     queue.edit([](SceneDrawStates* states) { return states->setState("/World/Block_0/B_0", eSceneDrawStateBBox); });
     EXPECT_EQ(posted.count(), std::size_t(0));
     EXPECT_TRUE(_renderer.hasPendingStageLoads());

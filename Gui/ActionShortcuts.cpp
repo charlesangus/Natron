@@ -519,7 +519,7 @@ getSceneGraphBulkKeyBindings()
             { "load", "Load" },
             { "unload", "Unload" },
             { "bbox", "Draw BBox" },
-            { "expand", "Draw Expand" },
+            { "passThrough", "Draw Pass Through" },
             { "geometry", "Draw Geometry" },
             { "loadAndDraw", "Load + Draw" },
             { "hide", "Hide" },
@@ -568,14 +568,14 @@ getSceneGraphBulkKeyBindings()
 }
 
 const std::vector<SceneGraphBulkKeyBinding>&
-getSceneGraphExpandKeyBindings()
+getSceneGraphFoldKeyBindings()
 {
     static const std::vector<SceneGraphBulkKeyBinding> bindings = {
-        { "sceneGraphExpandBelow", "Scene Graph: Expand All Below", "expand", "below" },
-        { "sceneGraphExpandTo_assembly", "Scene Graph: Expand To Assembly", "expand", "assembly" },
-        { "sceneGraphExpandTo_component", "Scene Graph: Expand To Component", "expand", "component" },
-        { "sceneGraphExpandTo_subcomponent", "Scene Graph: Expand To Subcomponent", "expand", "subcomponent" },
-        { "sceneGraphCollapseBelow", "Scene Graph: Collapse All Below", "collapse", "below" },
+        { "sceneGraphUnfoldBelow", "Scene Graph: Unfold All Below", "unfold", "below" },
+        { "sceneGraphUnfoldTo_assembly", "Scene Graph: Unfold To Assembly", "unfold", "assembly" },
+        { "sceneGraphUnfoldTo_component", "Scene Graph: Unfold To Component", "unfold", "component" },
+        { "sceneGraphUnfoldTo_subcomponent", "Scene Graph: Unfold To Subcomponent", "unfold", "subcomponent" },
+        { "sceneGraphFoldBelow", "Scene Graph: Fold All Below", "fold", "below" },
     };
 
     return bindings;
@@ -614,7 +614,7 @@ getViewer3DDefaultKeyBindings()
         { kShortcutIDActionViewer3DSetSelectionOnNode, kShortcutDescActionViewer3DSetSelectionOnNode, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_E, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DCreateFromSelection, kShortcutDescActionViewer3DCreateFromSelection, Qt::NoModifier, Qt::Key_Tab, Qt::NoModifier, Qt::Key(0) },
         // Draw states of the picked box or the selection: down opens rows up, up boxes their parents.
-        { kShortcutIDActionViewer3DDrawExpand, kShortcutDescActionViewer3DDrawExpand, Qt::NoModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
+        { kShortcutIDActionViewer3DDrawPassThrough, kShortcutDescActionViewer3DDrawPassThrough, Qt::NoModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DDrawGeometry, kShortcutDescActionViewer3DDrawGeometry, Qt::ShiftModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DDrawLoadAndDraw, kShortcutDescActionViewer3DDrawLoadAndDraw, Qt::ControlModifier | Qt::ShiftModifier, Qt::Key_Down, Qt::NoModifier, Qt::Key(0) },
         { kShortcutIDActionViewer3DDrawParentBBox, kShortcutDescActionViewer3DDrawParentBBox, Qt::NoModifier, Qt::Key_Up, Qt::NoModifier, Qt::Key(0) },

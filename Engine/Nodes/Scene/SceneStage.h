@@ -154,7 +154,8 @@ public:
 
     /**
      * @brief Asks for the payloads under each of roots to load down to and including the prims of
-     * kind, as walkToKind() finds them, and no further. Never touches the stage. Each serviceLoads()
+     * kind, as walkToKind() finds them, and no further: a root of kind loads and the walk goes on to
+     * the nearest prims of kind below it. Never touches the stage. Each serviceLoads()
      * walks again and loads what it finds unloaded on its own, without descendants, since a
      * payload's kinds are known only once it composes; the request ends after a walk that finds
      * nothing it has not already asked for, so a payload that fails to load is not asked for twice.
@@ -164,7 +165,9 @@ public:
 
     /**
      * @brief Asks for the top-most payloads below each prim of kind under roots, as walkToKind()
-     * finds them on the next serviceLoads(), to unload. The prims of kind stay loaded.
+     * finds them on the next serviceLoads(), to unload. The prims of kind stay loaded. A root of kind
+     * is walked through, as requestLoadToKind() walks it: the nearest prims of kind strictly below
+     * it stay loaded, and a root with none below it unloads nothing.
      **/
     void requestUnloadBelowKind(const PXR_NS::SdfPathVector& roots, const PXR_NS::TfToken& kind);
 

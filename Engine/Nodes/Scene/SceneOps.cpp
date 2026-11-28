@@ -1145,7 +1145,7 @@ namespace {
 
                 return;
             }
-            add(prim, eSceneDrawStateChildren);
+            add(prim, eSceneDrawStatePassThrough);
             for (const PXR_NS::UsdPrim& child : prim.GetFilteredChildren(drawRulePredicate())) {
                 if (!addedElsewhere(child)) {
                     levels(child, depth + 1);
@@ -1172,8 +1172,8 @@ namespace {
                 }
             }
             if (reached) {
-                // After the prims below: Children blocks nothing, so it switches none of them.
-                add(prim, eSceneDrawStateChildren);
+                // After the prims below: Pass Through blocks nothing, so it switches none of them.
+                add(prim, eSceneDrawStatePassThrough);
             }
 
             return reached;

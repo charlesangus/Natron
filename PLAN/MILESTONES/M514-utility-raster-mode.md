@@ -213,22 +213,32 @@ After P4 the per-pass cost is 5.6 ms (Raster) and 10.8 ms (Ray), but every frame
 - [x] M514.P5.T17 — Progressive frames on the GPU viewer path: the device window returns after the first published pass, the viewer re-requests until converged; partial frames never cached as final
   - files: `HydraRenderImpl.cpp` (~2082-2150, DeviceFrame cache), `USDRender.cpp` renderGpu, `ViewerInstance.cpp`
   - size: L
-- [ ] M514.P5.T18 — Cut the ~30 ms before the region: the settings summary survives camera-only edits
+- [x] M514.P5.T18 — Cut the ~30 ms before the region: the settings summary survives camera-only edits
   - files: `USDRender.cpp` (getSettingsSummary ~621-640, summarizeSettings), `ViewerInstance.cpp` (~4257-4400)
   - approach: add sub-spans (`settings_summary`, `rod_lookup`, `request_pass`) inside viewer_prepare; key the settings summary on a digest of the /Render subtree (and whatever else it really reads), not the node hash, so a camera move doesn't recook upstream under `_settingsNothingContextId` or borrow a stage
   - size: M
-- [ ] M514.P5.T20 — prepare_render reuses its setup across camera edits: split renderSetupKey so settings/format exclude the camera stack hash; take the camera from the render thread's synced SceneStage (or one prim query); pass ActiveSettings from T18 instead of evaluating the scene again
+- [x] M514.P5.T20 — prepare_render reuses its setup across camera edits: split renderSetupKey so settings/format exclude the camera stack hash; take the camera from the render thread's synced SceneStage (or one prim query); pass ActiveSettings from T18 instead of evaluating the scene again
   - files: `USDRender.cpp` (renderSetupKey ~1213-1255, readRenderSetup, prepareRender ~1275)
   - size: M
-- [ ] M514.P5.T21 — One Render() per frame: waitForConverged loops on the converge signal (checking cancel) instead of returning after kConvergencePoll and re-calling Render()
+- [x] M514.P5.T21 — One Render() per frame: waitForConverged loops on the converge signal (checking cancel) instead of returning after kConvergencePoll and re-calling Render()
   - files: `HydraRenderImpl.cpp` (~169, ~2203-2224)
   - size: S
-- [ ] M514.P5.T22 — Upload only changed shade tables (content key, as textures do); no settlePasses when nothing uploads
+- [x] M514.P5.T22 — Upload only changed shade tables (content key, as textures do); no settlePasses when nothing uploads
   - files: `WavefrontGpu.cpp` (uploadTables ~972)
   - size: M
+- [ ] M514.P5.T25 — Settings summary without an upstream cook: key on time, view, overrides and the input's settings-scope digest (getHashNamespaces / appendNodeContentHash), look it up before evaluateSettingsPrimScene, cook only when the digest is uncertain; single-flight so the render thread and readGivenSettingsSummaries never cook it twice
+  - files: `USDRender.cpp` (getSettingsSummary ~802-850, summarizeSettings ~747-760, evaluateSettingsPrimScene ~579-605, readGivenSettingsSummaries ~903-938)
+  - size: M
+- [ ] M514.P5.T26 — One upstream cook per edit: spans per node in EffectInstance::evaluateScene; share cooks that don't depend on the load set across context ids (settings "nothing"/"prim only" and prepare_render's)
+  - size: L
+- [ ] M514.P5.T27 — Measurement: sub-spans in computeRequestPass; batch-3/T25 cache counters in utility_profile records; the bench credits a frame to the last edit applied before its knobs were read (not before task_graph_build)
+  - files: `ViewerInstance.cpp` (~4403), `UtilityProfile`, `tools/bench/gui/utility_bench.py` (~654-668)
+  - size: M
+- [ ] M514.P5.T28 — Edits apply while a frame renders and frames overlap (needs a user decision: changes Natron's queue-while-rendering rule for scene-input nodes); skip the refinement follow-up while a newer edit is pending
+  - size: L
 - [ ] M514.P5.T23 — One blocking submit per frame, viewer hand-off by GPU semaphore rather than a CPU fence wait (with T7); spans around the clock-dependent gaps either side of the region
   - size: M
-- [ ] M514.P5.T24 — Bench: continuous-drag mode (one edit per 33 ms, steady state), per-edit GPU pstate, `first_ms` as the interactive headline at >1 pass; segment labels name the gap's span
+- [x] M514.P5.T24 — Bench: continuous-drag mode (one edit per 33 ms, steady state), per-edit GPU pstate, `first_ms` as the interactive headline at >1 pass; segment labels name the gap's span
   - files: `tools/bench/gui/utility_bench.py`
   - size: M
 - [ ] M514.P5.T19 — No full stage resync per transform edit (stable edit-layer identity / TransferContent so only the edited prim's notices fire) — check pxr notice granularity first
@@ -276,3 +286,4 @@ After P4 the per-pass cost is 5.6 ms (Raster) and 10.8 ms (Ray), but every frame
 - 2026-11-28 — P5.T17 design (consultant): pull model — each current-frame viewer request advances the engine by one published pass, all strips read it (DeviceFrame keyed by request sequence), AbortableRenderInfo carries acceptsRefinement/refining bits, the viewer re-requests once in showFrame after a complete frame is displayed (age-checked, coalesced, forceRender), partials never enter the viewer/node caches. In progress (T17a–d).
 
 - 2026-11-28 — vast g16 (RTX 3060, HEAD 417fa53331): 1 pass median 101.5 ms (hydra 30.7), 16 passes first 81 / last 133 (was 196); results in build/m514-bench-g16. Consultant timeline: ~35 ms inside viewer_prepare before the task graph (settings summary recook), prepare_render 19 ms (setup cache never hits on camera edits), Hydra 31 ms of which 3 Render() calls and table uploads; the ~200 ms outliers are GPU P-state decay during the bench's 400 ms gaps, not Hydra. Ranked fixes → T18, T20–T24; estimate 30–40 ms at P0. Refine stall (weak pointer to the shown request expired before the follow-up) fixed in 9215c8a696.
+- 2026-11-28 — vast g18 (RTX 3060, ec2d23472b): device tests all green (refine stall fixed); 1 pass 95 ms, 16 passes first 99 / last 149, drag 80 ms at 11.3 fps (results build/m514-bench-g18). Consultant: T20/T21/T22 took effect; T18 didn't help because the digest is checked after a fresh upstream cook (two cooks per frame, ~30 ms); prepare_render still cooks (~9 ms). fps is capped by the single in-flight viewer render plus edits queued while the edit node renders (a request only every third 33 ms edit). Next: T25–T27, then T19/T23; T28 put to the user.

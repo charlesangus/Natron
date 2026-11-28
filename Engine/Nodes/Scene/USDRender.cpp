@@ -68,6 +68,7 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
+#include "Engine/Nodes/Scene/Utility/UtilityProfile.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
 #include "Engine/PoolParallelFor.h"
@@ -1164,9 +1165,11 @@ bool
 USDRender::prepareRender(double time,
                          ViewIdx view,
                          unsigned int level,
+                         bool primIdPlane,
                          RenderSetup* setup,
                          std::string* error)
 {
+    const utilityProfile::Span timed("prepare_render");
     auto failWith = [error](const std::string& message) {
         *error = message;
 
@@ -1179,10 +1182,12 @@ USDRender::prepareRender(double time,
     if (!readActiveSettings(time, view, eSettingsLoadEverything, &active, error)) {
         return false;
     }
-    // The output's primId table, which the main thread is never given the whole stage to read.
+    // The output's primId table, which the main thread is never given the whole stage to read. Only
+    // a render of the plane it names stores it: it walks every prim, which an interactive colour
+    // render would pay on every edit of the scene for nothing it draws.
     ImageMetadata primIds;
     const U64 primIdHash = primIdTableHash();
-    if (node && !findPrimIdTable(primIdHash, time, view, false, &primIds)) {
+    if (node && primIdPlane && !findPrimIdTable(primIdHash, time, view, false, &primIds)) {
         primIds = primIdTableOf(active.stage, primIdPurposesOf(_renderPurpose, _proxyPurpose, _guidePurpose));
         if (primIdTableHash() == primIdHash) {
             storePrimIdTable(primIdHash, time, view, primIds);
@@ -1329,6 +1334,7 @@ USDRender::prepareRender(double time,
 StatusEnum
 USDRender::render(const RenderActionArgs& args)
 {
+    const utilityProfile::Span timed("usdrender_region");
     auto fail = [this](const std::string& message) {
         setPersistentMessage(eMessageTypeError, message);
 
@@ -1337,7 +1343,11 @@ USDRender::render(const RenderActionArgs& args)
 
     RenderSetup setup;
     std::string error;
-    if (!prepareRender(args.time, args.view, args.mappedScale.toMipmapLevel(), &setup, &error)) {
+    bool primIdPlane = false;
+    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
+        primIdPlane = primIdPlane || (it->second && (it->first.getLayerID() == "primId"));
+    }
+    if (!prepareRender(args.time, args.view, args.mappedScale.toMipmapLevel(), primIdPlane, &setup, &error)) {
         return fail(error);
     }
     HydraRender::Request& request = setup.request;
@@ -1606,10 +1616,11 @@ StatusEnum
 USDRender::renderGpu(const GpuRenderArgs& args)
 {
 #ifdef NATRON_HAVE_GPU
+    const utilityProfile::Span timed("usdrender_region");
     // A failure here leaves no message: the frame renders again on the CPU, which reports it.
     RenderSetup setup;
     std::string error;
-    if (!prepareRender(args.query.time, args.query.view, args.query.mappedScale.toMipmapLevel(), &setup, &error)) {
+    if (!prepareRender(args.query.time, args.query.view, args.query.mappedScale.toMipmapLevel(), args.query.plane.getLayerID() == "primId", &setup, &error)) {
         return eStatusFailed;
     }
     const ImageLayerDesc& plane = args.query.plane;

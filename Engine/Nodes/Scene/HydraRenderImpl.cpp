@@ -2144,6 +2144,11 @@ RenderThread::renderEngine(const HydraRender::Request& request,
                 yieldToBarrier();
                 if (waitsForConverged) {
                     UtilityRenderBuffer::waitForConverged(convergedBefore, kConvergencePoll);
+                    // A frame that converged on its own thread is in its buffers already: another pass would only sync
+                    // the stage again to be told so. A failed frame never converges, and the next pass throws it.
+                    if (restartWatch.converged() && engine->IsConverged() && !(cancel && cancel->requested())) {
+                        break;
+                    }
                 } else {
                     std::this_thread::sleep_for(kConvergencePoll);
                 }

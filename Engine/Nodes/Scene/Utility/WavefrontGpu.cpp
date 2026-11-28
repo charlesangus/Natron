@@ -466,6 +466,42 @@ startWarmUp(gpu::GpuKernelRegistry& registry,
 }
 } // anon namespace
 
+namespace {
+/**
+ * @brief A visibility pass submitted to signal its semaphore, which the compute work using its hits waits for on
+ * the device. Held by that compute work's context, so it goes once that work is done, or, when the work is never
+ * submitted, once the pass is: its command buffers and the compute scratch it writes are not freed under it.
+ **/
+struct PendingRaster {
+    explicit PendingRaster(gpu::GpuDevice& device)
+        : device(device)
+    {
+    }
+
+    ~PendingRaster()
+    {
+        if (signalled && !device.waitSemaphore(semaphore, 1, kRasterSubmitTimeoutNs)) {
+            // Freeing work the device may still run is invalid: a lost or hung device keeps it.
+            (void)ctx.release();
+
+            return;
+        }
+        ctx.reset();
+        if (semaphore != VK_NULL_HANDLE) {
+            vkDestroySemaphore(device.device(), semaphore, nullptr);
+        }
+    }
+
+    PendingRaster(const PendingRaster&) = delete;
+    PendingRaster& operator=(const PendingRaster&) = delete;
+
+    gpu::GpuDevice& device;
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+    bool signalled = false;
+    std::unique_ptr<gpu::GpuRecordContext> ctx;
+};
+} // anon namespace
+
 struct WavefrontGpu::Implementation {
     Implementation(gpu::GpuKernelRegistry& registry,
                    gpu::GpuBufferPool& pool,
@@ -1555,17 +1591,30 @@ WavefrontGpu::Implementation::rasterHits(const WavefrontFrame& frame,
         }
     }
 
+    std::shared_ptr<PendingRaster> pending = std::make_shared<PendingRaster>(device);
+
+    if (gpu::GpuStatus s = device.createTimelineSemaphore(0, pending->semaphore); !s) {
+        return fail("WavefrontGpu could not create the semaphore of a visibility pass", s);
+    }
+
+    const gpu::TimelineValue drawn { pending->semaphore, 1 };
     gpu::GpuStatus submitted;
 
     {
         const utilityProfile::Scope timed(utilityProfile::Stage::RasterSubmitWait);
 
-        submitted = ctx->submitAndWait(kRasterSubmitTimeoutNs, [&stop]() { return stop.load(std::memory_order_relaxed); });
+        submitted = ctx->submit({}, drawn, [&stop]() { return stop.load(std::memory_order_relaxed); });
     }
     ++submissions;
+    // An aborted context still submits the signal, and the semaphore must outlive it.
+    pending->signalled = submitted || submitted.aborted;
     if (!submitted) {
         return failUnlessStopped("WavefrontGpu could not draw a visibility pass", submitted);
     }
+    pending->ctx = std::move(ctx);
+    // The compute work waits on the device rather than the host, and holds the raster context until it is done.
+    rec.ctx().waitTimeline(drawn);
+    rec.ctx().hold(pending);
     for (const auto& [buffer, bytes] : handed) {
         if (gpu::GpuStatus s = rec.ctx().acquireFromOtherQueue(*buffer, 0, bytes); !s) {
             return failUnlessStopped("WavefrontGpu could not take a visibility pass's hits on its compute queue", s);

@@ -72,6 +72,7 @@ enum class Stage : std::size_t {
     CpuFrame,
     CpuWindow,
     DecodeIds,
+    SceneStageSync,
     Count
 };
 
@@ -211,6 +212,30 @@ void writeViewerFrame(const std::string& viewer,
                       bool deviceColor,
                       bool fallback,
                       const std::string& rung);
+} // namespace utilityProfile
+
+namespace utilityProfile {
+// Writes a "stamp" record: name at the steady clock's now, in mono_ms. Does nothing unless enabled().
+void writeStamp(const char* name);
+
+/**
+ * @brief Writes a "span" record as it is destroyed: name, with the steady clock at construction in start_mono_ms
+ * and at destruction in mono_ms, so that a reader can place the step between an edit and the frame it brings.
+ * Costs one flag test unless enabled().
+ **/
+class Span {
+public:
+    explicit Span(const char* name);
+    ~Span();
+
+    Span(const Span&) = delete;
+    Span& operator=(const Span&) = delete;
+
+private:
+    const char* _name;
+    bool _on;
+    std::chrono::steady_clock::time_point _start;
+};
 } // namespace utilityProfile
 
 class UtilityProfileHydraCall {

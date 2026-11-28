@@ -63,6 +63,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/NodeColorSampler.h"
 #include "Engine/NodeGuiI.h"
 #include "Engine/NodeMetadata.h"
+#include "Engine/Nodes/Scene/Utility/UtilityProfile.h"
 #include "Engine/OfxOverlayInteract.h"
 #include "Engine/Project.h"
 #include "Engine/RotoLatencyProbe.h"
@@ -352,6 +353,8 @@ ViewerGL::paintGL()
 {
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
+    // Qt swaps the buffers after paintGL returns: the span's end is the last host step of a frame.
+    const utilityProfile::Span timed("viewer_paint");
 
     //if app is closing, just return
     if ( !_imp->viewerTab->getGui() ) {

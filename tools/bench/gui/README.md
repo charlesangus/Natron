@@ -391,7 +391,8 @@ has never held, and is timed from the knob change to the first and the last view
 The result is `<UTC>-<host>-<mode>-utility.jsonl`; its directory also holds
 `utility-profile.jsonl` (`NATRON_UTILITY_PROFILE`, whose `viewer_frame` and `hydra_profile`
 records the driver reads back) and `render-profile.jsonl.<pid>` (`NATRON_RENDER_PROFILE`, for the
-USDRender's placement). `run.sh` passes every `UTILITY_BENCH_*` variable, `NATRON_GPU` and
+USDRender's placement), and `nvidia_smi.csv` when the host has `nvidia-smi` (the GPU's graphics and
+memory clocks and power state every 100 ms). `run.sh` passes every `UTILITY_BENCH_*` variable, `NATRON_GPU` and
 `NATRON_VIEWER_HANDOFF` into the container.
 
 Under Xvfb the viewer has no device hand-off and the device is lavapipe, so the target only means
@@ -410,7 +411,10 @@ and `p95_ms` are of `last_ms`, the edit to the frame the viewer settles on; `mee
 on), `rungs` (the viewer's hand-off rungs), `device_color_edits` (edits whose last frame reached
 the viewer as a device root), `fallback_edits` (a device root drawn from a download instead),
 `downloads` and `pick_readbacks` (counted by the renderer over the timed edits), and `placement`
-(USDRender tasks on the gpu and the cpu). The run ends with one `NOTE utility raster ...` line
+(USDRender tasks on the gpu and the cpu), and `segment_median_ms`: from the profile's `stamp` and
+`span` records, each step of an edit (`to_viewer_request`, `to_task_graph_build`, `to_prepare_render`,
+`to_hydra`, `to_viewer_frame`, `to_viewer_paint` and so on, each from the step before) and each span's
+total (`prepare_render_ms`, `task_graph_build_ms`, ...). The run ends with one `NOTE utility raster ...` line
 per pass count in `results.txt`. Knobs: `UTILITY_BENCH_PASSES`, `UTILITY_BENCH_EDITS` (30),
 `UTILITY_BENCH_WARMUPS` (3), `UTILITY_BENCH_QUIET_MS` (400), `UTILITY_BENCH_NUDGE` (`camera` or
 `seed`), `UTILITY_BENCH_SIZE`, `UTILITY_BENCH_DEVICE`, `UTILITY_BENCH_TARGET_MS`,

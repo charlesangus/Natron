@@ -44,16 +44,25 @@ Output: one host record, then per edit a "frame" record and per pass count one "
     downloads, pick_readbacks  how many device downloads and pick readbacks the edit cost
     hydra_ms, hydra     the HydraRender calls in the edit's window: total and per kind and stage
     placement           (summary) the USDRender tasks the scheduler ran on the gpu and on the cpu
+    segments            the edit's steps from the profile's stamp and span records: to_<step> is the ms from the
+                        step before to that step's end (knob, viewer_request, task_graph_build, viewer_prepare,
+                        usdrender_region_start, prepare_render, hydra, usdrender_region, viewer_complete,
+                        viewer_frame, viewer_paint), <span>_ms each span's total in the edit
+    segment_median_ms   (summary) the median of each segment over the edits
     raster_fallback     the render warned that Raster fell back to Ray
+With nvidia-smi on the PATH, nvidia_smi.csv beside the output holds the GPU's clocks and power state every 100 ms.
 The summary's median_ms and p95_ms are of last_ms, the headline compare.py diffs, against the target.
 Exit status is non-zero when any edit brought no viewer frame or Raster fell back to Ray.
 """
+import atexit
 import glob
 import json
 import math
 import os
 import platform
+import shutil
 import socket
+import subprocess
 import sys
 import time
 import traceback
@@ -274,6 +283,51 @@ try:
         read.getParam("filename").setValue(stage_path)
         return rig, settings, render
 
+    def segments_of(t0, seen, hydra, marks):
+        """The edit's steps in ms, from the profile's stamps and spans: each step from the end of the one before
+        it to its own end, up to the last viewer frame and the paint that shows it, plus each span's total."""
+        if not seen:
+            return {}
+        last_frame = seen[-1]["mono_ms"]
+        spans = {}
+        stamps = {}
+        for r in marks:
+            name = r.get("name", "?")
+            if r.get("record") == "stamp":
+                stamps.setdefault(name, r["mono_ms"])
+                continue
+            if r.get("start_mono_ms", 0.0) < t0:
+                continue
+            spans.setdefault(name, []).append((r["start_mono_ms"], r["mono_ms"]))
+        out = {}
+        for name, items in spans.items():
+            out[name + "_ms"] = rounded(sum(end - start for start, end in items))
+        for r in hydra:
+            start = r.get("start_mono_ms")
+            if start is not None and start >= t0:
+                spans.setdefault("hydra", []).append((start, r["mono_ms"]))
+        # Each step's mark: the first one of the edit for the steps before the render, the last one before the
+        # last frame for the render's own, and the first paint after it.
+        points = [("knob", t0)]
+        if "viewer_request" in stamps:
+            points.append(("viewer_request", stamps["viewer_request"]))
+        for name in ("task_graph_build", "viewer_prepare"):
+            if name in spans:
+                points.append((name, min(end for _, end in spans[name])))
+        for name in ("usdrender_region_start", "prepare_render", "hydra", "usdrender_region", "viewer_complete"):
+            key = "usdrender_region" if name == "usdrender_region_start" else name
+            ended = [(start, end) for start, end in spans.get(key, []) if end <= last_frame]
+            if ended:
+                points.append((name, max(start for start, _ in ended) if name == "usdrender_region_start" else max(end for _, end in ended)))
+        points.append(("viewer_frame", last_frame))
+        painted = [end for start, end in spans.get("viewer_paint", []) if start >= last_frame]
+        if painted:
+            points.append(("viewer_paint", min(painted)))
+        points.sort(key=lambda p: p[1])
+        for (_, before), (name, at) in zip(points, points[1:]):
+            out["to_" + name] = rounded(at - before)
+        return out
+
     def summary(passes, frames, placement, failures):
         last = [f["last_ms"] for f in frames if f["last_ms"] is not None]
         first = [f["first_ms"] for f in frames if f["first_ms"] is not None]
@@ -282,6 +336,11 @@ try:
         for f in frames:
             for key, ms in f["hydra"].items():
                 stages.setdefault(key, []).append(ms)
+        segments = {}
+        for f in frames:
+            for key, ms in f.get("segments", {}).items():
+                if ms is not None:
+                    segments.setdefault(key, []).append(ms)
         med = median(last)
         return {
             "type": "summary",
@@ -298,6 +357,7 @@ try:
             "first_median_ms": rounded(median(first)),
             "hydra_median_ms": rounded(median(hydra)),
             "hydra_mean_ms": dict((k, round(sum(v) / len(frames), 3)) for k, v in sorted(stages.items())),
+            "segment_median_ms": dict((k, rounded(median(v))) for k, v in sorted(segments.items())),
             "frames_per_edit": rounded(sum(f["frames"] for f in frames) / float(len(frames))) if frames else None,
             "rungs": sorted(set(f["rung"] for f in frames if f["rung"])),
             "device_color_edits": sum(1 for f in frames if f["device_color"]),
@@ -313,8 +373,31 @@ try:
             "failures": failures,
         }
 
+    def sample_gpu_clocks():
+        """Samples the GPU's clocks and power state every 100 ms into nvidia_smi.csv beside the output, where
+        nvidia-smi exists: a frame time that moves with the clocks is the driver's, not the renderer's."""
+        smi = shutil.which("nvidia-smi")
+        if not smi:
+            return None
+        csv = open(os.path.join(_out_dir, "nvidia_smi.csv"), "w")
+        sampler = subprocess.Popen([smi, "--query-gpu=clocks.gr,clocks.mem,pstate", "--format=csv", "-lms", "100"],
+                                   stdout=csv, stderr=subprocess.DEVNULL)
+        csv.close()
+
+        def stop():
+            if sampler.poll() is None:
+                sampler.terminate()
+                try:
+                    sampler.wait(5)
+                except subprocess.TimeoutExpired:
+                    sampler.kill()
+
+        atexit.register(stop)
+        return stop
+
     def steps():
         emit(host_record())
+        stop_sampling = sample_gpu_clocks()
         report("NOTE utility bench started; results in %s" % OUT_PATH)
         require(bool(PROFILE), "NATRON_UTILITY_PROFILE is set (run.sh --driver utility sets it)")
         ok = yield ("until", lambda: main_window() is not None, STARTUP_TIMEOUT_S)
@@ -359,6 +442,7 @@ try:
             nudge()
             seen = []
             hydra = []
+            marks = []
 
             def drain():
                 for r in utility.read_new():
@@ -368,6 +452,8 @@ try:
                         seen.append(r)
                     elif r.get("record") == "hydra_profile":
                         hydra.append(r)
+                    elif r.get("record") in ("stamp", "span"):
+                        marks.append(r)
                 return bool(seen)
 
             got = yield ("until", drain, OP_TIMEOUT_S)
@@ -407,6 +493,7 @@ try:
                 "hydra_ms": rounded(hydra_ms) if hydra else None,
                 "hydra_calls": dict((k, sum(1 for r in hydra if r.get("kind") == k)) for k in set(r.get("kind") for r in hydra)),
                 "hydra": dict((k, round(v, 3)) for k, v in stages.items()),
+                "segments": segments_of(t0, seen, hydra, marks),
                 "raster_fallback": FALLBACK_TEXT in message,
                 "message": message,
             }
@@ -449,6 +536,8 @@ try:
                        placement))
             check(not failures, "every edit at %d passes brought a Raster viewer frame (%s)" % (passes, "; ".join(failures[:3])))
         viewer.disconnectInput(0)
+        if stop_sampling:
+            stop_sampling()
         _out.close()
 
     gt.run(steps())

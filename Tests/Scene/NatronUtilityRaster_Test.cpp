@@ -1773,6 +1773,7 @@ GPU_TEST_F(NatronUtilityRaster, DepthAndIdsReadBackOnlyWhenMapped)
         AovFilm tiles;
         DeviceFilm device(deviceMisses);
         const std::uint64_t before = UtilityRenderBuffer::pickReadbackCount();
+        const std::uint64_t copies = UtilityRenderBuffer::pickCopyCount();
 
         for (int colourOnly = 0; colourOnly < 2; ++colourOnly) {
             device.startOver();
@@ -1781,6 +1782,8 @@ GPU_TEST_F(NatronUtilityRaster, DepthAndIdsReadBackOnlyWhenMapped)
             (void)device.read<float>(device.color);
         }
         EXPECT_EQ(before, UtilityRenderBuffer::pickReadbackCount());
+        // Published once, at the frame's end, the picks are handed over as they are.
+        EXPECT_EQ(copies, UtilityRenderBuffer::pickCopyCount());
 
         device.startOver();
         ASSERT_TRUE(wavefrontDrawSamples(executor, scene.snapshot(), frame, openShutter(), device, stop, 2, std::function<void(std::size_t)>())) << executor.status().message;
@@ -1809,6 +1812,90 @@ GPU_TEST_F(NatronUtilityRaster, DepthAndIdsReadBackOnlyWhenMapped)
         EXPECT_GT(hits, 100);
         EXPECT_LT(hits, kFrameSize * kFrameSize);
     }
+}
+
+namespace {
+// Publishes after every pass, as a watched frame does: the first pass's depth to buffers of its own, read back at
+// once into earlySeen through one of them.
+class EveryPassFilm : public DeviceFilm {
+public:
+    EveryPassFilm()
+        : firstDepth(SdfPath("/firstDepth"))
+        , earlyDepth(SdfPath("/earlyDepth"))
+    {
+        const GfVec3i size(kFrameSize, kFrameSize, 1);
+
+        for (UtilityRenderBuffer* buffer : { &firstDepth, &earlyDepth }) {
+            buffer->Allocate(size, HdFormatFloat32, false);
+            buffer->clear(VtValue(0.f));
+        }
+    }
+
+    virtual void passDrawn() override
+    {
+        std::string error;
+
+        if (++passes == 1) {
+            EXPECT_TRUE(picks.publish({ &firstDepth, &earlyDepth }, {}, {}, &error)) << error;
+            earlySeen = read<float>(earlyDepth);
+        } else {
+            EXPECT_TRUE(picks.publish({ &depth }, { &primId }, { &instanceId }, &error)) << error;
+        }
+    }
+
+    UtilityRenderBuffer firstDepth;
+    UtilityRenderBuffer earlyDepth;
+    std::vector<float> earlySeen;
+    int passes = 0;
+};
+} // anon namespace
+
+// Picks published after every pass are handed over without a copy, and the passes after merge into a copy of
+// their own: a reader of earlier picks still sees them as they were, and the frame's last ones are those a film
+// taking tiles keeps.
+GPU_TEST_F(NatronUtilityRaster, PicksPublishedEveryPassStayAsTheyWere)
+{
+    UtilityScene scene;
+
+    cardAndCube(scene);
+
+    WavefrontGpu executor(*_registry, *_pool, std::make_shared<int>(0));
+    const std::atomic<bool> stop(false);
+    WavefrontFrame frame = perspectiveFrame();
+
+    frame.raster = true;
+    frame.rasterSamples = 4;
+    // A filter weighing each pass's samples differently, so that later passes replace some of the first's.
+    frame.sampling.filter = eKernelPixelFilterBlackmanHarris;
+    frame.sampling.filterWidth = 2.f;
+
+    AovFilm tiles;
+    EveryPassFilm device;
+    const std::uint64_t copies = UtilityRenderBuffer::pickCopyCount();
+
+    ASSERT_TRUE(wavefrontDrawSamples(executor, scene.snapshot(), frame, openShutter(), device, stop, 2, std::function<void(std::size_t)>())) << executor.status().message;
+    ASSERT_TRUE(wavefrontDrawSamples(executor, scene.snapshot(), frame, openShutter(), tiles, stop, 2, std::function<void(std::size_t)>())) << executor.status().message;
+    ASSERT_EQ(4, device.passes);
+    EXPECT_EQ(copies + 3u, UtilityRenderBuffer::pickCopyCount());
+
+    const std::vector<float> first = device.read<float>(device.firstDepth);
+
+    ASSERT_EQ(device.earlySeen.size(), first.size());
+    EXPECT_TRUE(device.earlySeen == first);
+
+    const std::vector<float> depth = device.read<float>(device.depth);
+    const std::vector<std::int32_t> primId = device.read<std::int32_t>(device.primId);
+    int mismatches = 0;
+
+    EXPECT_FALSE(depth == first);
+    for (std::size_t pixel = 0; pixel < depth.size(); ++pixel) {
+        if ((depth[pixel] != tiles.depth[pixel]) || (primId[pixel] != tiles.primId[pixel])) {
+            if (++mismatches <= 8) {
+                ADD_FAILURE() << "pixel " << pixel << ": device " << depth[pixel] << "/" << primId[pixel] << ", tiles " << tiles.depth[pixel] << "/" << tiles.primId[pixel];
+            }
+        }
+    }
+    EXPECT_EQ(0, mismatches);
 }
 
 namespace {

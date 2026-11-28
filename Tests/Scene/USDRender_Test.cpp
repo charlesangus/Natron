@@ -801,6 +801,28 @@ TEST_F(USDRenderNodeTest, RendersEveryPlaneThroughTheNode)
     EXPECT_TRUE(std::isinf(planes[1].pixels[corner]));
 }
 
+TEST_F(USDRenderNodeTest, OnlyARenderOfThePrimIdPlaneStoresTheTableForTheMainThread)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr node = createRender();
+    ASSERT_TRUE(node != nullptr);
+    NativeEffectBase* effect = dynamic_cast<NativeEffectBase*>(node->getEffectInstance().get());
+    ASSERT_TRUE(effect != nullptr);
+    char key[32];
+    std::snprintf(key, sizeof(key), kUSDRenderMetadataPrimIdPrefix "%08x", HydraRender::primPathHash("/World/Box"));
+    std::vector<RenderedPlane> planes;
+    std::string error;
+
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), std::list<ImageLayerDesc>(1, ImageLayerDesc::getRGBAComponents()), &planes, &error)) << error;
+    EXPECT_FALSE(effect->getOutputMetadata(1., ViewIdx(0)).getString(key).has_value());
+
+    planes.clear();
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), allPlanes(), &planes, &error)) << error;
+    EXPECT_EQ(std::optional<std::string>("/World/Box"), effect->getOutputMetadata(1., ViewIdx(0)).getString(key));
+}
+
 TEST_F(USDRenderNodeTest, APrimCameraTheSceneLacksIsANodeErrorNamingIt)
 {
     if (skipWithoutGL()) {

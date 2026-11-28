@@ -46,6 +46,7 @@
 #include "Engine/FileStampRegistry.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneTeardown.h"
+#include "Engine/Nodes/Scene/Utility/UtilityProfile.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -328,6 +329,7 @@ SceneStage::isSyncedTo(const ScenePayload& payload) const
 bool
 SceneStage::sync(const ScenePayload& payload)
 {
+    const utilityProfile::Scope timed(utilityProfile::Stage::SceneStageSync);
     if (!_stage) {
         return false;
     }

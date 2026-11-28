@@ -60,6 +60,7 @@
 #include "Engine/IsolatedJob.h"
 #include "Engine/KnobFile.h"
 #include "Engine/Node.h"
+#include "Engine/Nodes/Scene/Utility/UtilityProfile.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/Project.h"
@@ -3005,6 +3006,7 @@ RenderEngine::renderCurrentFrame(bool enableRenderStats,
                                  bool canAbort)
 {
     assert( QThread::currentThread() == qApp->thread() );
+    utilityProfile::writeStamp("viewer_request");
     RenderEnginePrivate::RefreshRequest r;
     r.enableStats = enableRenderStats;
     r.enableAbort = canAbort;

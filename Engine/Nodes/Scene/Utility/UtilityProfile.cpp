@@ -190,6 +190,8 @@ stageName(Stage stage)
         return "cpu_window";
     case Stage::DecodeIds:
         return "decode_ids";
+    case Stage::SceneStageSync:
+        return "scene_stage_sync";
     case Stage::Count:
         break;
     }
@@ -419,6 +421,7 @@ UtilityProfileHydraCall::write()
     line += ",\"width\":" + std::to_string(_width);
     line += ",\"height\":" + std::to_string(_height);
     line += ",\"timing\":\"cpu_wall\"";
+    line += ",\"start_mono_ms\":" + number(std::chrono::duration<double, std::milli>(_start.time_since_epoch()).count());
     line += ",\"mono_ms\":" + number(monotonicMilliseconds());
     line += ",\"total_ms\":" + number(total);
     line += ",\"stages\":{";
@@ -464,6 +467,51 @@ writeViewerFrame(const std::string& viewer,
     line += ",\"pick_readbacks\":" + std::to_string(UtilityRenderBuffer::pickReadbackCount());
     line += "}\n";
     appendLine(line);
+}
+
+void
+writeStamp(const char* name)
+{
+    if (!enabled()) {
+        return;
+    }
+
+    std::string line = "{\"record\":\"stamp\"";
+
+    line += ",\"sequence\":" + std::to_string(nextSequence());
+    line += ",\"pid\":" + std::to_string(static_cast<long>(::getpid()));
+    line += ",\"name\":" + jsonString(name);
+    line += ",\"mono_ms\":" + number(monotonicMilliseconds());
+    line += "}\n";
+    appendLine(line);
+}
+
+Span::Span(const char* name)
+    : _name(name)
+    , _on(enabled())
+{
+    if (_on) {
+        _start = std::chrono::steady_clock::now();
+    }
+}
+
+Span::~Span()
+{
+    if (!_on) {
+        return;
+    }
+    try {
+        std::string line = "{\"record\":\"span\"";
+
+        line += ",\"sequence\":" + std::to_string(nextSequence());
+        line += ",\"pid\":" + std::to_string(static_cast<long>(::getpid()));
+        line += ",\"name\":" + jsonString(_name);
+        line += ",\"start_mono_ms\":" + number(std::chrono::duration<double, std::milli>(_start.time_since_epoch()).count());
+        line += ",\"mono_ms\":" + number(monotonicMilliseconds());
+        line += "}\n";
+        appendLine(line);
+    } catch (...) {
+    }
 }
 } // namespace utilityProfile
 

@@ -270,10 +270,12 @@ private:
     void readGivenSettingsSummaries() const;
 
     // The render of time, view and level as the node's settings and input scene make it. False with
-    // *error set to the message the node shows if it cannot render.
+    // *error set to the message the node shows if it cannot render. primIdPlane: the render draws
+    // the primId plane, whose table it then stores for the main thread.
     bool prepareRender(double time,
                        ViewIdx view,
                        unsigned int level,
+                       bool primIdPlane,
                        RenderSetup* setup,
                        std::string* error);
 

@@ -63,6 +63,7 @@
 #include "Engine/MemoryInfo.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/Utility/UtilityProfile.h"
 #include "Engine/NonKeyParams.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/OpenMPThreads.h"
@@ -682,6 +683,7 @@ FrameGraph
 RenderScheduler::buildGraph(const FrameRenderContextPtr& context,
                             const std::vector<FrameStore::TaskKey>& roots)
 {
+    const utilityProfile::Span timed("task_graph_build");
     FrameGraph graph;
 
     if (!context || roots.empty() || !context->getRequest()) {

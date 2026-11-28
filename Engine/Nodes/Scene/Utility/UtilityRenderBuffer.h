@@ -283,9 +283,10 @@ public:
                    const std::vector<UtilityRenderBuffer*>& instanceId);
 
     /**
-     * @brief Hands every buffer its AOV of the picks as they are, in a copy on the device made once the passes so
-     * far are done; each buffer reads back only its own AOV, on the first Map() that asks for it. Without a pass
-     * drawn the buffers publish their host pixels instead. False with *error set when the device cannot.
+     * @brief Hands every buffer its AOV of the picks as the passes so far left them, without copying or submitting
+     * anything: the next pass writes picks of its own. Each buffer reads back only its own AOV, on the first Map()
+     * that asks for it. Without a pass drawn the buffers publish their host pixels instead. False with *error set
+     * when the device cannot.
      **/
     bool publish(const std::vector<UtilityRenderBuffer*>& depth,
                  const std::vector<UtilityRenderBuffer*>& primId,
@@ -398,6 +399,8 @@ public:
     static std::uint64_t deviceDownloadCount();
     // How many times an AOV was read back from the device picks, process-wide.
     static std::uint64_t pickReadbackCount();
+    // How many times a pass copied the device picks it merges into, as readers still held the ones it started from.
+    static std::uint64_t pickCopyCount();
     // How many times a buffer has been set converged, over every buffer; what waitForConverged() waits past. MT-safe.
     static std::uint64_t convergedCount();
     /**

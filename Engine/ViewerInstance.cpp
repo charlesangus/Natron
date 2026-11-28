@@ -4254,6 +4254,7 @@ ViewerInstance::prepareViewerRender(ViewIdx view,
                                     ViewerArgs& inArgs,
                                     PendingViewerRender* pending)
 {
+    const utilityProfile::Span timed("viewer_prepare");
     assert(inArgs.activeInputToRender);
 
     pending->needsCompletion = false;
@@ -4500,6 +4501,7 @@ ViewerInstance::prepareViewerRender(ViewIdx view,
 ViewerInstance::ViewerRenderRetCode
 ViewerInstance::completeViewerRender(PendingViewerRender& pending)
 {
+    const utilityProfile::Span timed("viewer_complete");
     ViewerArgs& inArgs = *pending.inArgs;
     const ViewIdx view = pending.view;
     const bool singleThreaded = pending.singleThreaded;

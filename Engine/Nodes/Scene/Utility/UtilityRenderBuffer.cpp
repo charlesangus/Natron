@@ -74,6 +74,7 @@ namespace {
 std::atomic<int> gLiveBuffers { 0 };
 std::atomic<std::uint64_t> gDeviceDownloads { 0 };
 std::atomic<std::uint64_t> gPickReadbacks { 0 };
+std::atomic<std::uint64_t> gPickCopies { 0 };
 std::mutex gConvergedMutex;
 std::condition_variable gConvergedChanged;
 std::uint64_t gConverged = 0;
@@ -414,6 +415,14 @@ public:
         }
 
         return accumulates ? pool.acquire(2 * bytes, _accumulation) : gpu::GpuStatus();
+    }
+
+    // Takes a share of pixels, which their writer no longer writes, as the film's read-only pixels.
+    void adopt(const gpu::GpuBufferHandle& pixels)
+    {
+        const std::lock_guard<std::mutex> l(_mutex);
+
+        _pixels = pixels;
     }
 
     // Lets go of the pixels and of the runtime, which a holder of the film no longer keeps from recovering.
@@ -1120,6 +1129,8 @@ struct UtilityDeviceAovs::Implementation {
     int height = 0;
     bool fresh = true;
     bool drawn = false;
+    // The picks were handed to readers as they are, so the next pass writes a buffer of its own.
+    bool published = false;
 
     std::uint64_t bytes() const
     {
@@ -1189,7 +1200,27 @@ UtilityDeviceAovs::beginPass(gpu::GpuRecordContext& context,
         imp.y = y;
         imp.width = width;
         imp.height = height;
+    } else if (imp.published) {
+        gpu::GpuBufferHandle picks;
+
+        if (gpu::GpuStatus s = pool.acquire(imp.bytes(), picks); !s) {
+            return s;
+        }
+
+        std::shared_ptr<gpu::GpuBufferHandle> written = std::make_shared<gpu::GpuBufferHandle>(std::move(picks));
+
+        // A pass merging into the published picks starts from them; a fresh one writes every pixel.
+        if (imp.drawn) {
+            context.computeBarrier();
+            if (gpu::GpuStatus s = context.copyBuffer(imp.picks->buffer(), 0, written->buffer(), 0, imp.bytes()); !s) {
+                return s;
+            }
+            context.hold(imp.picks);
+            ++gPickCopies;
+        }
+        imp.picks = std::move(written);
     }
+    imp.published = false;
     imp.fresh = !imp.drawn;
 
     return gpu::GpuStatus();
@@ -1283,6 +1314,7 @@ UtilityDeviceAovs::publish(const std::vector<UtilityRenderBuffer*>& depth,
     Implementation& imp = *_imp;
     const std::vector<UtilityRenderBuffer*>* aovs[] = { &depth, &primId, &instanceId };
 
+    (void)error;
     if (!imp.drawn || !imp.picks) {
         for (const std::vector<UtilityRenderBuffer*>* buffers : aovs) {
             for (UtilityRenderBuffer* buffer : *buffers) {
@@ -1296,31 +1328,11 @@ UtilityDeviceAovs::publish(const std::vector<UtilityRenderBuffer*>& depth,
         return true;
     }
 
-    const std::uint64_t bytes = imp.bytes();
+    // The passes' writes were made by earlier submissions on the same queue, which every reader's copy is ordered after.
     std::shared_ptr<UtilityDeviceFilm> copy = std::make_shared<UtilityDeviceFilm>(*imp.registry, *imp.pool, imp.kernels, imp.runtimeHold, imp.width, imp.height);
-    UtilityDeviceFilm::Lease lease;
-    std::unique_ptr<gpu::GpuRecordContext> context;
-    gpu::GpuStatus status = copy->allocate(bytes, false);
 
-    if (status && !copy->lease(&lease)) {
-        status = failure("the copy was released with the GPU");
-    }
-    if (status) {
-        status = gpu::GpuRecordContext::create(*imp.registry, context, imp.pool);
-    }
-    if (status) {
-        // The passes' writes were made by earlier submissions on the same queue.
-        context->computeBarrier();
-        status = context->copyBuffer(imp.picks->buffer(), 0, lease.pixels.buffer(), 0, bytes);
-    }
-    if (status) {
-        status = context->submitAndWait();
-    }
-    if (!status) {
-        *error = "The Utility renderer could not keep a copy of its depth and ids on the GPU: " + status.message;
-
-        return false;
-    }
+    copy->adopt(*imp.picks);
+    imp.published = true;
     registerFilm(copy);
 
     std::shared_ptr<UtilityPickSnapshot> picks = std::make_shared<UtilityPickSnapshot>();
@@ -1355,6 +1367,7 @@ UtilityDeviceAovs::drop()
     imp.x = imp.y = imp.width = imp.height = 0;
     imp.fresh = true;
     imp.drawn = false;
+    imp.published = false;
     imp.runtimeHold.reset();
 }
 #endif // NATRON_HAVE_GPU
@@ -1561,6 +1574,12 @@ std::uint64_t
 UtilityRenderBuffer::pickReadbackCount()
 {
     return gPickReadbacks.load();
+}
+
+std::uint64_t
+UtilityRenderBuffer::pickCopyCount()
+{
+    return gPickCopies.load();
 }
 
 std::uint64_t

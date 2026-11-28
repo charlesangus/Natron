@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <limits>
 
 CLANG_DIAG_OFF(deprecated)
@@ -121,14 +122,56 @@ public:
 
     bool hasWidgetBeenCreated() const;
 
+    /**
+     * @brief Leaves the row unbuilt until it is first shown, on a page that has been shown: build then makes
+     * its widgets in the grid rows kept for it from firstRow.
+     **/
+    void setDeferredRow(const KnobPageGuiPtr& page, int firstRow, const std::function<void()>& build);
+
+    bool isRowDeferred() const;
+
+    /**
+     * @brief Builds an unbuilt row that should now be visible, and shows it.
+     **/
+    void buildDeferredRowIfShown();
+
+    /**
+     * @brief Builds an unbuilt row whose page has been shown, leaving it shown or hidden as an eagerly
+     * built row would be. Does nothing for a built row or one on a page not yet shown.
+     **/
+    void ensureRowBuilt();
+
+    /**
+     * @brief Records the row before this one in its page's focus order. Only the first call counts, so the
+     * rows link back to rows linked before them and never form a cycle.
+     **/
+    void setPreviousFocusRow(const KnobGuiPtr& previous);
+
+    /**
+     * @brief Records the last widget of this row that takes focus, or null if it has none.
+     **/
+    void setLastFocusable(QWidget* w);
+
+    /**
+     * @brief Returns the last widget that takes focus of this row or, failing that, of the nearest row before
+     * it in its page's focus order; null if no row there has one. A widget built for the row later goes after it.
+     **/
+    QWidget* getFocusChainAnchor() const;
+
+    /**
+     * @brief Shows w unless it is a child of a hidden widget that has never been shown or hidden explicitly:
+     * such a child appears with its parent, and an explicit show() would polish it now for nothing.
+     **/
+    static void showWidget(QWidget* w);
+
     void createGUI(QWidget* fieldContainer,
                    QWidget* labelContainer,
                    KnobClickableLabel* label,
-                   Label* warningIndicator,
+                   int warningIconSize,
                    QHBoxLayout* layout,
                    bool isOnNewLine,
                    int lastKnobSpacing,
-                   const std::vector<KnobIPtr> & knobsOnSameLine);
+                   const std::vector<KnobIPtr>& knobsOnSameLine);
 
     virtual bool shouldAddStretch() const { return true; }
 

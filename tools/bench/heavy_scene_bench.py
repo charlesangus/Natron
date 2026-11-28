@@ -94,7 +94,7 @@ scenario). heavy_scene_watchdog.sh writes those last three from outside Natron, 
 a record. Every record has started_at and ended_at (epoch seconds), and the log a "SCENARIO start" and
 "SCENARIO end" line for each, so that stack samples can be lined up with them.
 
-Full + Load keeps loading payloads after the first frame, and queues the payloads a landed payload
+Load + Draw keeps loading payloads after the first frame, and queues the payloads a landed payload
 reveals only once it lands. Loads count as over when nothing is pending or composing, every posted draw
 change is presented, no reveal runs, and the loaded layers, load edits, prims added and posted changes
 have not moved for BENCH_SETTLE_S; *_settle fields hold the counts before and after and the wait. After
@@ -170,7 +170,7 @@ viewer that publishes natronSceneFillProgress, and skips without one.
 
 Budgets: main-thread stall under 100 ms; time from a draw state change to the image that shows it under
 100 ms (time_to_picture_ms, worst untraced change of prune_restore, sibling_state and draw_budget, with
-draw_budget's rows also judged apart); a paced reveal of the root with Load All (reveal_load_all,
+draw_budget's rows also judged apart); a paced reveal of the root with Load + Draw (reveal_load_all,
 which also waits for the loads to land) and of the wide row (reveal_wide) completes with no gap over
 100 ms between presented frames (natronScenePresentedFrames; not_valid when fewer than 2 were presented,
 as is the workflow's full_load_block_worst_frame_ms); a fill of the wide row boxed again as soon as its first batch is
@@ -210,7 +210,7 @@ HEARTBEAT_MS = 10
 POLL_MS = 5
 REVEAL_MIN_S = 120.0
 REVEAL_S_PER_PRIM = 500e-6
-# Full + Load queues the payloads a landed payload reveals only after it lands, so an empty queue for
+# Load + Draw queues the payloads a landed payload reveals only after it lands, so an empty queue for
 # one poll is not the end of the loads: the counts have to hold still for a window.
 SETTLE_S = float(os.environ.get("BENCH_SETTLE_S", "2"))
 SETTLE_POLL_MS = 250
@@ -241,7 +241,7 @@ LONG_SCENARIOS = OPEN_SCENARIOS + ("draw_budget", "reveal_load_all", "reveal_wid
                                    "budget_apply_probe", "budget_orbit")
 FILL_ORBIT_DELAY_S = float(os.environ.get("BENCH_FILL_ORBIT_DELAY_S", "1"))
 PICTURE_SCENARIOS = ("prune_restore", "sibling_state", "draw_budget")
-# Payloads still landing from a Full + Load open would be measured along with these.
+# Payloads still landing from a Load + Draw open would be measured along with these.
 SETTLED_SCENARIOS = ("reveal", "reveal_cancel", "reveal_wide", "reveal_cancel_paced", "orbit", "orbit10k", "orbit_full", "draw_budget",
                      "budget_orbit")
 DRAW_TIMING = os.environ.get("NATRON_DRAW_STATE_TIMING") == "1"
@@ -659,7 +659,7 @@ try:
         t0 = time.time()
         t0_ms = int(t0 * 1000.0)
         marks = [time.perf_counter()]
-        # Full or Full + Load; the default boxes the top-level prims, which would leave later box edits nothing to change.
+        # Geometry or Load + Draw; the default boxes the top-level prims, which would leave later box edits nothing to change.
         usd.getParam("initialDraw").setValue(4 if load_state == "all" else 3)
         if load_state == "all":
             m.all_payloads_requested = True
@@ -1049,12 +1049,12 @@ try:
         require(view() is not None and shown(), "load_all: a scene view is visible and showing the scene")
         v = view()
         if project_state["loaded_at_open"]:
-            # Full + Load keeps loading payloads after the first frame; what is left is what this waits for.
+            # Load + Draw keeps loading payloads after the first frame; what is left is what this waits for.
             edits_before = int(v.property("natronSceneLoadEdits") or 0)
             at_open = project_state["open_load_edits"]
             m.all_payloads_requested = True
             m.values["loaded_at_open"] = True
-            # The stage opened is new and counts its load edits from zero, so the open's own Full + Load
+            # The stage opened is new and counts its load edits from zero, so the open's own Load + Draw
             # has landed once the count is past zero and differs from the stage it replaced; before
             # that the queues read idle only because the load has not been queued yet.
             settle = yield from wait_loads_settled("load_all", lambda edits: edits > 0 and edits != at_open)
@@ -1406,14 +1406,14 @@ try:
         edits_before = int(v.property("natronSceneLoadEdits") or 0)
         m.all_payloads_requested = True
         committed = commit_watch(v)
-        yield from paced_reveal(m, "reveal_load_all", rows["root"], "bbox", "loadAll", committed)
+        yield from paced_reveal(m, "reveal_load_all", rows["root"], "bbox", "loadAndDraw", committed)
         # The reveal is judged up to the first commit; the payloads that commit reveals keep landing after it.
         settle = yield from wait_loads_settled("reveal_load_all")
         m.values["reveal_load_all_settle"] = settle_fields(settle)
         load_results(m, v, "load", edits_before)
 
     def action_reveal_wide(m):
-        yield from paced_reveal(m, "reveal_wide", rows["widest_row"], "bbox", "full")
+        yield from paced_reveal(m, "reveal_wide", rows["widest_row"], "bbox", "geometry")
 
     FILL_FIRST_BATCH = 1024
     FILL_CANCEL_SETTLE_S = 10.0
@@ -1439,7 +1439,7 @@ try:
         draw_call(v, "setDrawFillBatch", Q_ARG(int, fill_batch))
         before = draw_stats()
         # The first admit batch is in the apply that posts the change; the rest of the row waits in the fill's queue.
-        yield from set_draw_state(row, "full")
+        yield from set_draw_state(row, "geometry")
         at_cancel = draw_stats()
         progress_at_cancel, complete_at_cancel = fill_state()
         cancelled = yield from set_draw_state(row, "bbox")
@@ -1480,7 +1480,7 @@ try:
         heartbeat.start()
         before = draw_stats()
         started = time.perf_counter()
-        yield from set_draw_state(row, "full")
+        yield from set_draw_state(row, "geometry")
         complete, frames, worst, limit_s = yield from watch_reveal(lambda: not draw_stats().get("revealing"))
         elapsed = (time.perf_counter() - started) * 1000.0
         after = draw_stats()
@@ -1506,7 +1506,7 @@ try:
         draw_call(v, "setDrawRevealBatch", Q_ARG(int, cancel_batch))
         heartbeat.start()
         before = draw_stats().get("shownSent", 0)
-        started = yield from set_draw_state(row, "full")
+        started = yield from set_draw_state(row, "geometry")
 
         def advanced():
             stats = draw_stats()
@@ -1561,10 +1561,10 @@ try:
         parents = list(rows.get("box_parents") or [])
         require(bool(parents), "orbit10k: the scene has prims to box at depth %r" % (depth,))
         sent_ms = time.time() * 1000.0
-        # Children on every prim above the box depth draws each prim at that depth as one box; BBox on the
+        # Expand on every prim above the box depth draws each prim at that depth as one box; BBox on the
         # root would draw a single box.
-        timings = yield from presented_after_call(v, "orbit10k: Children above depth %r" % (depth,), "setDrawStateOnRows",
-                                                  Q_ARG("QStringList", parents), Q_ARG("QString", "children"), judged=False)
+        timings = yield from presented_after_call(v, "orbit10k: Expand above depth %r" % (depth,), "setDrawStateOnRows",
+                                                  Q_ARG("QStringList", parents), Q_ARG("QString", "expand"), judged=False)
         require(bool(timings), "orbit10k: the draw state changed something")
         # A large change can post more than once; the orbit is only meaningful on the picture it asked for.
         while True:
@@ -1663,7 +1663,7 @@ try:
             return
         ok = yield ("until", lambda: draw_settled(v)() and bool(v.property("natronSceneFillComplete")), TIMEOUT_S)
         require(ok, "orbit_fill: the full scene was presented before the change")
-        yield from set_draw_state(rows["root"], "hidden")
+        yield from set_draw_state(rows["root"], "hide")
         settings = NatronEngine.natron.getSettings()
         navigation = settings.getParam("viewer3DNavigation")
         require(navigation is not None, "Preferences have a viewer3DNavigation parameter")
@@ -2236,7 +2236,7 @@ try:
         return drawn
 
     def action_workflow(m):
-        """Open, twirl into a payload, Full on one asset, Full + Load on a block, add a pattern node, switch
+        """Open, twirl into a payload, Geometry on one asset, Load + Draw on a block, add a pattern node, switch
         to it, select a prim in the inspector, save, reopen. A step's stall is its own: the setup before it
         (docking the panel, reading a row's index) is not the work the budget is about."""
 
@@ -2275,7 +2275,7 @@ try:
             yield from clear_draw_states()
             yield from set_draw_state(asset, "bbox")
             heartbeat.start()
-            timings = yield from set_draw_state(asset, "full")
+            timings = yield from set_draw_state(asset, "geometry")
             finish_step("full_asset", timings["total_ms"], path=asset, picture_ms=timings["picture_ms"],
                         picture_source=timings["picture_source"], apply_ms=timings["apply_ms"])
         else:
@@ -2286,7 +2286,7 @@ try:
             v = view()
             edits_before = int(v.property("natronSceneLoadEdits") or 0)
             add_request(m, [block], True)
-            yield from paced_reveal(m, "workflow_block", block, "bbox", "loadAll", commit_watch(v), keep_states=True)
+            yield from paced_reveal(m, "workflow_block", block, "bbox", "loadAndDraw", commit_watch(v), keep_states=True)
             # The block's later payloads land after its first commit; the next step must not measure them.
             settle = yield from wait_loads_settled("workflow: full_load_block", lambda edits: edits > edits_before)
             load_results(m, v, "workflow_block", edits_before)
@@ -2434,7 +2434,7 @@ try:
         yield from clear_draw_state(row)
         yield from set_draw_state(row, "bbox")
         draw_call(view(), "setDrawRevealBatch", Q_ARG(int, cancel_batch))
-        yield from set_draw_state(row, "full")
+        yield from set_draw_state(row, "geometry")
         yield from set_draw_state(row, "bbox")
         draw_call(view(), "setDrawRevealBatch", Q_ARG(int, 0))
         yield from clear_draw_state(row)
@@ -2557,7 +2557,7 @@ try:
                                                 applicable=first_frame_judged, reason=first_frame_unjudged_reason)
         if project_state["loaded_at_open"]:
             budgets["unrequested_payloads"] = {"value": None, "limit": 0, "status": "not_applicable",
-                                               "reason": "the scene was opened with Full + Load, which requests every payload"}
+                                               "reason": "the scene was opened with Load + Draw, which requests every payload"}
         elif m.all_payloads_requested:
             budgets["unrequested_payloads"] = {"value": None, "limit": 0, "status": "not_applicable"}
         elif new_layers is None:

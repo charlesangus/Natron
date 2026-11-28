@@ -1,0 +1,20 @@
+#usda 1.0
+(
+    defaultPrim = "Bush"
+)
+
+def Xform "Bush" (
+    kind = "natronTestTree"
+)
+{
+    def Sphere "Foliage"
+    {
+        double radius = 0.4
+    }
+
+    def Xform "Berries" (
+        prepend payload = @./leaves.usda@
+    )
+    {
+    }
+}

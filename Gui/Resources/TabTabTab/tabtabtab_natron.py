@@ -98,10 +98,6 @@ _INPUT_KIND_PROPERTY = "natronInputKind"
 _PRIM_PATH_KNOB_PROPERTY = "natronPrimPathKnob"
 _INPUT_KINDS_PROPERTY = "natronInputKinds"
 
-# PLUGINID_NATRON_READ and PLUGINID_NATRON_WRITE, whose interactive creation
-# asks for a file first.
-_FILE_DIALOG_PLUGIN_IDS = frozenset(("Read", "Write"))
-
 # An input of this kind takes any kind.
 _ANY_KIND = "polymorphic"
 
@@ -520,12 +516,6 @@ class NatronPlugin(TabTabTabPlugin):
         self._chosen = True
         _trigger_action(self._app, thing['menuobj'])
 
-    def invoke_opens_window(self, thing):
-        """False for a node the nodes menu creates without a dialog; menu
-        commands and script actions may open anything."""
-        plugin_id = _string_property(thing.get('menuobj'), _PLUGIN_ID_PROPERTY)
-        return not plugin_id or plugin_id in _FILE_DIALOG_PLUGIN_IDS
-
     def closed(self):
         """The popup closed: a filtered launch closed with no choice tells
         the app, which would otherwise hold its context for a later choice."""
@@ -638,7 +628,7 @@ _watched_popup = None
 
 def _watch_popup_close(popup):
     # The core hides its popup on every close path (a choice, Escape, a
-    # click outside), and on a choice invokes it just before or just after.
+    # click outside), and on a choice invokes it once hidden.
     global _close_watcher, _watched_popup
     if not _is_alive(popup) or popup is _watched_popup:
         return

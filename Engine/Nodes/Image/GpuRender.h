@@ -36,6 +36,7 @@
 #include <type_traits>
 #include <vector>
 
+#include "Engine/EngineFwd.h"
 #include "Engine/ImageLayerDesc.h"
 #include "Engine/RectI.h"
 #include "Engine/RenderScale.h"
@@ -285,6 +286,33 @@ struct GpuContextInput {
     }
 };
 
+/**
+ * @brief The input number getGpuInputRoI() is asked about for the outputs a render continuation
+ * requested, which renderGpu() reads from GpuRenderArgs::continuationInputs.
+ **/
+inline constexpr int kGpuContinuationInputNb = -4;
+
+/**
+ * @brief An output the render continuation of a node supportsRenderContinuationOnGpu() requested:
+ * the request's context and time, and its image in the layer getGpuInputLayer() names for
+ * kGpuContinuationInputNb, which must be one of the request's layers. The view's buffer is null
+ * when the output renders nothing.
+ **/
+struct GpuContinuationInput {
+    RenderContextPtr context;
+    double time;
+    ImageLayerDesc layer;
+    GpuImageView view;
+
+    GpuContinuationInput()
+        : context()
+        , time(0.)
+        , layer()
+        , view()
+    {
+    }
+};
+
 // An input read at another time than the rendered one.
 struct GpuTimedInput {
     int inputNb;
@@ -316,6 +344,9 @@ struct GpuRenderArgs {
     // The inputs at the other times query.inputTimes lists, one entry per input and time, in the
     // layer getGpuInputLayer() names.
     std::vector<GpuTimedInput> timedInputs;
+
+    // One per output the render continuation requested, in the order of its requests.
+    std::vector<GpuContinuationInput> continuationInputs;
     GpuImageView output;
     gpu::GpuRecordContext& context;
 
@@ -330,6 +361,7 @@ struct GpuRenderArgs {
         , layerInputs()
         , contextInputs()
         , timedInputs()
+        , continuationInputs()
         , output()
         , context(ctx)
         , recordScope(&ctx)

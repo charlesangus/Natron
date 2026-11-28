@@ -53,6 +53,10 @@ public:
     TabGroup* groupAsTab; //< to gather group knobs that are set as a tab
     KnobPageWPtr pageKnob;
     QGridLayout* gridLayout;
+    // Set once the page has been current: until then its rows are left unbuilt.
+    bool shown;
+    // The row last added in layout order, which the next one follows in the focus chain.
+    KnobGuiWPtr lastFocusRow;
 
     KnobPageGui()
         : tab(0)
@@ -60,6 +64,8 @@ public:
         , groupAsTab(0)
         , pageKnob()
         , gridLayout(0)
+        , shown(false)
+        , lastFocusRow()
     {
     }
 };
@@ -110,7 +116,6 @@ private:
  * must indicate how pages are selected and which one is active at a time. @see DockablePanel for an implementation.
  **/
 struct KnobGuiContainerHelperPrivate;
-struct PendingKnobPage;
 class KnobGuiContainerHelper
     : public KnobGuiContainerI, public DockablePanelI
 
@@ -131,27 +136,6 @@ public:
      * Once created once, if knob changes (deletion, creation...) happen you should instead call refreshGuiForKnobsChanges() to refresh knob changes.
      **/
     void initializeKnobs();
-
-    /**
-     * @brief Same as initializeKnobs(), but nothing is built before the event loop runs again, and the
-     * pages and widgets are then built over several of its passes, the current page first, and onDone is called once every knob has its gui. Until then, making a page
-     * current builds that page at once, and getKnobGui() for a knob that has no gui yet, getKnobsMapping()
-     * and the knob refresh functions build the rest at once.
-     **/
-    void initializeKnobsIncrementally(const std::function<void()>& onDone);
-
-    /**
-     * @brief Finishes a build started by initializeKnobsIncrementally(). Does nothing while one of its
-     * passes is running.
-     **/
-    void ensureKnobGuisCreated();
-
-    bool isKnobBuildPending() const;
-
-    /**
-     * @brief Stops a build started by initializeKnobsIncrementally() where it is, without calling its onDone.
-     **/
-    void cancelKnobBuild();
 
     /**
      * @brief Returns all the pages inside this container
@@ -211,6 +195,15 @@ public:
     virtual bool isPagingEnabled() const
     {
         return true;
+    }
+
+    /**
+     * @brief Returns whether a row hidden at build time, or on a page not yet shown, may be left unbuilt until it
+     * is first shown.
+     **/
+    virtual bool canDeferKnobRows() const
+    {
+        return false;
     }
 
     /**
@@ -290,11 +283,6 @@ protected:
     virtual void onKnobsInitialized() {}
 
     /**
-     * @brief Called by initializeKnobsIncrementally() once the pages exist, before any knob gui is built.
-     **/
-    virtual void onKnobBuildStarted() { }
-
-    /**
      * @brief This is called when a page is made current externally, e.g: not by the user changing it from the tab-widget
      **/
     virtual void onPageActivated(const KnobPageGuiPtr& page) = 0;
@@ -371,19 +359,28 @@ private:
                                    QWidget* lastRowWidget,
                                    const KnobsVec& knobsOnSameLine);
 
+    void buildKnobRow(const KnobGuiPtr& ret,
+                      const KnobPageGuiPtr& page,
+                      QGridLayout* layout,
+                      bool inGroupTab,
+                      KnobGuiGroup* parentGui,
+                      bool makeNewLine,
+                      int lastKnobLineSpacing,
+                      QWidget* lastRowWidget,
+                      const KnobsVec& knobsOnSameLine,
+                      int keptRow);
+
+    void buildShownDeferredRows();
+
+    /**
+     * @brief Moves the widgets taking focus that row made after mark in the focus chain to follow the rows
+     * before it on page.
+     **/
+    void placeRowInFocusChain(const KnobGuiPtr& row, const KnobPageGuiPtr& page, QWidget* mark);
+
     void initializeKnobVectorInternal(const KnobsVec& siblingsVec, KnobsVec* regularKnobsVec);
 
     void initializeKnobVectorItem(const KnobsVec& siblingsVec, std::size_t index, QWidget** lastRowWidget);
-
-    void runKnobBuildStep();
-
-    void createPendingPages();
-
-    bool buildNextPendingKnob(PendingKnobPage& page);
-
-    void buildPendingPage(const KnobPageGuiPtr& page);
-
-    void finishKnobBuild();
 
     void recreateKnobsInternal(const KnobPageGuiPtr& curPage, bool restorePageIndex);
 

@@ -136,6 +136,9 @@ registerLiveEffect(EffectInstance* effect)
     liveEffects()[effect] = effect;
 }
 
+// Set by markComponentsProvisional() during the getComponentsNeededAndProduced() call the thread
+// is in; one per thread because a node's answer asks the nodes upstream for theirs on the same thread.
+thread_local bool computingProvisionalComponents = false;
 } // anon namespace
 
 EffectInstance::EffectInstance(NodePtr node)
@@ -817,42 +820,86 @@ EffectInstance::Implementation::aborted(bool isRenderResponseToUserInteraction,
     }
 }
 
+namespace {
+struct InheritedAbort {
+    bool isRenderResponseToUserInteraction = false;
+    AbortableRenderInfoPtr abortInfo;
+    EffectInstancePtr treeRoot;
+};
+
+thread_local InheritedAbort tInheritedAbort;
+} // anonymous namespace
+
+EffectInstance::InheritedAbortScope::InheritedAbortScope(bool isRenderResponseToUserInteraction,
+                                                         const AbortableRenderInfoPtr& abortInfo,
+                                                         const EffectInstancePtr& treeRoot)
+    : _previousUserInteraction(tInheritedAbort.isRenderResponseToUserInteraction)
+    , _previousAbortInfo(tInheritedAbort.abortInfo)
+    , _previousTreeRoot(tInheritedAbort.treeRoot)
+{
+    tInheritedAbort.isRenderResponseToUserInteraction = isRenderResponseToUserInteraction;
+    tInheritedAbort.abortInfo = abortInfo;
+    tInheritedAbort.treeRoot = treeRoot;
+}
+
+EffectInstance::InheritedAbortScope::~InheritedAbortScope()
+{
+    tInheritedAbort.isRenderResponseToUserInteraction = _previousUserInteraction;
+    tInheritedAbort.abortInfo = _previousAbortInfo;
+    tInheritedAbort.treeRoot = _previousTreeRoot;
+}
+
+bool
+EffectInstance::getAbortState(bool* isRenderResponseToUserInteraction,
+                              AbortableRenderInfoPtr* abortInfo,
+                              EffectInstancePtr* treeRoot) const
+{
+    /* If this thread is an AbortableThread, this function will be extremely fast*/
+    AbortableThread* isAbortableThread = dynamic_cast<AbortableThread*>(QThread::currentThread());
+
+    if (isAbortableThread && isAbortableThread->getAbortInfo(isRenderResponseToUserInteraction, abortInfo, treeRoot)) {
+        return true;
+    }
+
+    /**
+       Threads that start a render generally already have the AbortableThread::setAbortInfo function called on them, but
+       threads spawned from the thread pool may not: their info comes from this node's frame args, which
+       is cached on an AbortableThread.
+     **/
+    const ParallelRenderArgsPtr args = getFrameArgs();
+    AbortableRenderInfoPtr argsAbortInfo = args ? args->abortInfo.lock() : AbortableRenderInfoPtr();
+
+    // Frame args a direct evaluation made up on a pool thread know no render, or carry the lent
+    // one: it is answered without being cached on the thread, where it would outlive its scope.
+    if (tInheritedAbort.abortInfo && (!argsAbortInfo || (argsAbortInfo == tInheritedAbort.abortInfo))) {
+        *isRenderResponseToUserInteraction = tInheritedAbort.isRenderResponseToUserInteraction;
+        *abortInfo = tInheritedAbort.abortInfo;
+        *treeRoot = tInheritedAbort.treeRoot;
+
+        return true;
+    }
+    if (!args) {
+        return false;
+    }
+    *isRenderResponseToUserInteraction = args->isRenderResponseToUserInteraction;
+    *abortInfo = argsAbortInfo;
+    *treeRoot = args->treeRoot ? args->treeRoot->getEffectInstance() : EffectInstancePtr();
+    if (isAbortableThread) {
+        isAbortableThread->setAbortInfo(*isRenderResponseToUserInteraction, *abortInfo, *treeRoot);
+    }
+
+    return true;
+}
+
 bool
 EffectInstance::aborted() const
 {
-    QThread* thisThread = QThread::currentThread();
-
-    /* If this thread is an AbortableThread, this function will be extremely fast*/
-    AbortableThread* isAbortableThread = dynamic_cast<AbortableThread*>(thisThread);
-
-    /**
-       The solution here is to store per-render info on the thread that we retrieve.
-       These info contain an atomic integer determining whether this particular render was aborted or not.
-       If this thread does not have abort info yet on it, we retrieve them from the thread-local storage of this node
-       and set it.
-       Threads that start a render generally already have the AbortableThread::setAbortInfo function called on them, but
-       threads spawned from the thread pool may not.
-     **/
-    bool isRenderUserInteraction;
+    bool isRenderUserInteraction = false;
     AbortableRenderInfoPtr abortInfo;
     EffectInstancePtr treeRoot;
 
-
-    if ( !isAbortableThread || !isAbortableThread->getAbortInfo(&isRenderUserInteraction, &abortInfo, &treeRoot) ) {
-        // If this thread is not abortable or we did not set the abort info for this render yet, retrieve them from the TLS of this node.
-        const ParallelRenderArgsPtr args = getFrameArgs();
-        if (!args) {
-            return false;
-        }
-        isRenderUserInteraction = args->isRenderResponseToUserInteraction;
-        abortInfo = args->abortInfo.lock();
-        if (args->treeRoot) {
-            treeRoot = args->treeRoot->getEffectInstance();
-        }
-
-        if (isAbortableThread) {
-            isAbortableThread->setAbortInfo(isRenderUserInteraction, abortInfo, treeRoot);
-        }
+    if (!getAbortState(&isRenderUserInteraction, &abortInfo, &treeRoot)) {
+        return false;
     }
 
     // The internal function that given a AbortableRenderInfoPtr determines if a render was aborted or not
@@ -860,6 +907,33 @@ EffectInstance::aborted() const
                                    abortInfo,
                                    treeRoot);
 } // EffectInstance::aborted
+
+void
+adoptThreadAbortState(ParallelRenderArgs* args)
+{
+    AbortableThread* isAbortableThread = dynamic_cast<AbortableThread*>(QThread::currentThread());
+    bool isRenderUserInteraction = false;
+    AbortableRenderInfoPtr abortInfo;
+    EffectInstancePtr treeRoot;
+
+    if (!args || !isAbortableThread || !isAbortableThread->getAbortInfo(&isRenderUserInteraction, &abortInfo, &treeRoot) || !abortInfo) {
+        return;
+    }
+    args->isRenderResponseToUserInteraction = isRenderUserInteraction;
+    args->abortInfo = abortInfo;
+    args->treeRoot = treeRoot ? treeRoot->getNode() : NodePtr();
+}
+
+void
+adoptInheritedAbortState(ParallelRenderArgs* args)
+{
+    if (!args || !tInheritedAbort.abortInfo) {
+        return;
+    }
+    args->isRenderResponseToUserInteraction = tInheritedAbort.isRenderResponseToUserInteraction;
+    args->abortInfo = tInheritedAbort.abortInfo;
+    args->treeRoot = tInheritedAbort.treeRoot ? tInheritedAbort.treeRoot->getNode() : NodePtr();
+}
 
 bool
 EffectInstance::abortIfSuperseded() const
@@ -2951,6 +3025,18 @@ EffectInstance::getImageFromCacheAndConvertIfNeeded(bool /*useCache*/,
                 continue;
             }
 
+            // Without a bitmap nothing records which pixels were written: such an image holds its whole bounds
+            // and can only serve a request it covers at its own level.
+            if ((*it)->getStorageMode() == eStorageModeRAM && !(*it)->usesBitMap()) {
+                if (candidate._mipmapLevel != mipmapLevel) {
+                    continue;
+                }
+                const RectI needed = boundsParam ? roi.intersect(*boundsParam) : roi;
+                if (!needed.isNull() && !(*it)->getBounds().contains(needed)) {
+                    continue;
+                }
+            }
+
             if (candidate._mipmapLevel == mipmapLevel) {
                 *image = *it;
 
@@ -3659,6 +3745,34 @@ findInputImageForPlane(const EffectInstance::InputImagesMap& inputImages,
     return found->second.front();
 }
 
+// Input images reach this render in the depth their own node rendered them at, and only a fetch that maps to
+// the clip preferences converts them. The unprocessed-channel copy, the mask/mix and the mipmap upscale read the
+// source in the depth of the image they write, so a source of another depth is converted over rect first.
+static ImagePtr
+inputImageInDepth(const ImagePtr& input,
+                  ImageBitDepthEnum depth,
+                  const RectI& rect)
+{
+    if (!input || (input->getBitDepth() == depth) || (input->getStorageMode() != eStorageModeRAM)) {
+        return input;
+    }
+    RectI window = rect.intersect(input->getBounds());
+    if (window.isNull()) {
+        window = input->getBounds();
+    }
+    ImagePtr converted = std::make_shared<Image>(input->getComponents(),
+                                                 input->getRoD(),
+                                                 window,
+                                                 input->getMipmapLevel(),
+                                                 input->getPixelAspectRatio(),
+                                                 depth,
+                                                 input->getFieldingOrder(),
+                                                 false);
+    input->convertToFormat(window, -1, false, converted.get());
+
+    return converted;
+}
+
 // Reads what a plug-in rendered into an OpenGL texture back into the RAM layer image. The context that holds
 // the texture must be current. glReadPixels() writes RGBA float, so a layer of another depth goes through a
 // float temporary, the same way the CPU path converts its temporary image.
@@ -4135,7 +4249,10 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
 
                 assert(it->second.fullscaleImage != it->second.downscaleImage && it->second.renderMappedImage == it->second.fullscaleImage);
 
-                ImagePtr mappedOriginalInputImage = originalInputImage;
+                const ImagePtr originalInTmpDepth = (originalInputImage && (originalInputImage->getMipmapLevel() != 0))
+                    ? inputImageInDepth(originalInputImage, it->second.tmpImage->getBitDepth(), originalInputImage->getBounds())
+                    : inputImageInDepth(originalInputImage, it->second.tmpImage->getBitDepth(), renderMappedRectToRender);
+                ImagePtr mappedOriginalInputImage = originalInTmpDepth;
                 const std::bitset<4> tmpProcessChannels = processChannelsForImage(it->first, *it->second.tmpImage, planeProcessChannels);
 
                 if ( originalInputImage && (originalInputImage->getMipmapLevel() != 0) ) {
@@ -4153,7 +4270,7 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                                                                it->second.tmpImage->getBitDepth(),
                                                                it->second.tmpImage->getFieldingOrder(),
                                                                false);
-                        originalInputImage->upscaleMipmap( downscaledRectToRender, originalInputImage->getMipmapLevel(), 0, tmp.get() );
+                        originalInTmpDepth->upscaleMipmap(downscaledRectToRender, originalInTmpDepth->getMipmapLevel(), 0, tmp.get());
                         mappedOriginalInputImage = tmp;
                     }
                 }
@@ -4238,12 +4355,14 @@ EffectInstance::Implementation::renderHandler(const EffectTLSDataPtr& tls,
                     it->second.downscaleImage->premultiplyByChannel(actionArgs.roi, unPremultDivisorImage.get(), unPremultDivisorChannel, planeProcessChannels, unPremultSkipChannel);
                 }
 
+                const bool readsOriginal = useMaskMix || (!rendersUnprocessed && it->second.downscaleImage->canCallCopyUnProcessedChannels(planeProcessChannels));
+                const ImagePtr originalInOutputDepth = readsOriginal ? inputImageInDepth(originalInputImage, it->second.downscaleImage->getBitDepth(), actionArgs.roi) : originalInputImage;
                 // Mix first: it blends every channel in float and would round a channel copied back from the source.
                 if (useMaskMix) {
-                    it->second.downscaleImage->applyMaskMix(actionArgs.roi, maskImage.get(), originalInputImage.get(), doMask, false, mix);
+                    it->second.downscaleImage->applyMaskMix(actionArgs.roi, maskImage.get(), originalInOutputDepth.get(), doMask, false, mix);
                 }
                 if (!rendersUnprocessed) {
-                    it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, planeProcessChannels, originalInputImage);
+                    it->second.downscaleImage->copyUnProcessedChannels(actionArgs.roi, planeProcessChannels, originalInOutputDepth);
                 }
             } // if (renderFullScaleThenDownscale) {
         } // if (it->second.isAllocatedOnTheFly) {
@@ -6632,6 +6751,12 @@ appendPresentLayers(const EffectInstance::ComponentsNeededResults& results,
     mergeLayersList(layers, presentLayers);
 }
 
+void
+EffectInstance::markComponentsProvisional()
+{
+    computingProvisionalComponents = true;
+}
+
 EffectInstance::ComponentsNeededResultsPtr
 EffectInstance::getComponentsNeededAndProducedShared(U64 hash,
                                                      double time,
@@ -6647,8 +6772,13 @@ EffectInstance::getComponentsNeededAndProducedShared(U64 hash,
     const CleanHashSnapshot clean(getNode(), getCurrentRestrictedRenderContext());
     std::shared_ptr<ComponentsNeededResults> results = std::make_shared<ComponentsNeededResults>();
     int passThroughView = 0;
+    const bool outerProvisional = computingProvisionalComponents;
+    computingProvisionalComponents = false;
     computeComponentsNeededAndProduced(time, view, &results->neededComps, &results->passThroughLayers, &results->passThroughTime, &passThroughView,
                                        &results->processChannels, &results->processChannelsPerPlane, &results->passThroughInputNb);
+    const bool provisional = computingProvisionalComponents;
+    // A provisional answer upstream makes the caller's answer, computed from it, provisional too.
+    computingProvisionalComponents = outerProvisional || provisional;
     results->passThroughView = ViewIdx(passThroughView);
 
     // Kept apart, so a getPresentLayers() on a hit builds nothing.
@@ -6656,7 +6786,7 @@ EffectInstance::getComponentsNeededAndProducedShared(U64 hash,
 
     // Computed while this effect's own isIdentity() is choosing its pass-through input, the
     // result used the preferred-input fallback and must not outlive that query.
-    if (!isResolvingLayersPassThrough() && clean.allowsStoreUnder(hash)) {
+    if (!provisional && !isResolvingLayersPassThrough() && clean.allowsStoreUnder(hash)) {
         _imp->actionsCache->setComponentsNeededResults(hash, time, view, results);
     }
 
@@ -7590,8 +7720,12 @@ EffectInstance::abortViewerRendersForEdit()
     if (Node::deferViewerAbortToCascade(getNode())) {
         return;
     }
+    const NodePtr node = getNode();
     std::list<OutputEffectInstance*> outputNodes;
-    getDownstreamOutputs(&outputNodes);
+    if (node && !node->abortCooksStaleAfterEditFindingOutputs(&outputNodes)) {
+        node->abortCooksStaleAfterEditDownstream();
+        getDownstreamOutputs(&outputNodes);
+    }
     for (std::list<OutputEffectInstance*>::const_iterator it = outputNodes.begin(); it != outputNodes.end(); ++it) {
         // Only a viewer reads knob values while the user edits them. Any other render keeps going
         // on the values it started with, as nothing in the GUI can edit while it runs.

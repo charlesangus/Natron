@@ -96,6 +96,48 @@ TEST(KnobLayers, ColumnTagsAreLocaleStableAndRoundTrip)
     }
 }
 
+TEST(KnobRenderVars, RowsRoundTripThroughColumnsWhoseLabelsHaveSpaces)
+{
+    KnobRenderVarsPtr knob = std::make_shared<KnobRenderVars>(static_cast<KnobHolder*>(NULL), std::string("customAovs"), 1, false);
+
+    ASSERT_EQ(std::string("Source Type"), knob->getColumnLabel(KnobRenderVars::eColumnSourceType));
+    ASSERT_EQ(std::string("Data Type"), knob->getColumnLabel(KnobRenderVars::eColumnDataType));
+
+    std::list<std::vector<std::string>> rows;
+    {
+        std::vector<std::string> row;
+        row.push_back("st");
+        row.push_back("primvar");
+        row.push_back("float2");
+        row.push_back("uv");
+        rows.push_back(row);
+    }
+    {
+        std::vector<std::string> row;
+        row.push_back("C<RD>L");
+        row.push_back("lpe");
+        row.push_back("");
+        row.push_back("");
+        rows.push_back(row);
+    }
+
+    std::string encoded = knob->encodeToKnobTableFormat(rows);
+
+    EXPECT_NE(std::string::npos, encoded.find("<SourceType>primvar</SourceType>"));
+    EXPECT_NE(std::string::npos, encoded.find("<DataType>float2</DataType>"));
+    EXPECT_EQ(std::string::npos, encoded.find("Source Type"));
+    EXPECT_EQ(std::string::npos, encoded.find("Data Type"));
+
+    std::list<std::vector<std::string>> decoded;
+    knob->decodeFromKnobTableFormat(encoded, &decoded);
+    ASSERT_EQ(rows.size(), decoded.size());
+    std::list<std::vector<std::string>>::const_iterator expectedIt = rows.begin();
+    std::list<std::vector<std::string>>::const_iterator actualIt = decoded.begin();
+    for (; expectedIt != rows.end(); ++expectedIt, ++actualIt) {
+        EXPECT_EQ(*expectedIt, *actualIt);
+    }
+}
+
 TEST(Knob, TableKnobRefusesExpressions)
 {
     KnobLayersPtr knob = std::make_shared<KnobLayers>(static_cast<KnobHolder*>(NULL), std::string("layers"), 1, false);

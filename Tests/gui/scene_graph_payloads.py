@@ -76,6 +76,7 @@ def write_city(directory):
 try:
     import NatronEngine
     from PySide6.QtCore import QModelIndex, QItemSelectionModel, QPersistentModelIndex, Qt, QTimer
+    from PySide6.QtGui import QAction
     from PySide6.QtWidgets import QApplication, QMainWindow, QTreeView
     from pxr import Sdf
 
@@ -213,7 +214,8 @@ try:
             t.selectionModel().setCurrentIndex(index, QItemSelectionModel.NoUpdate)
 
     def row_menu(paths, action_name=None):
-        """Opens the row menu on paths; returns {objectName: enabled} and its labels, triggering action_name."""
+        """Opens the row menu on paths; returns {objectName: enabled} of every entry in it and its
+        submenus, and its own labels, triggering action_name."""
         seen = {}
         labels = []
 
@@ -221,13 +223,15 @@ try:
             menu = QApplication.activePopupWidget()
             if menu is None:
                 return
-            for action in menu.actions():
+            labels.extend(action.text() for action in menu.actions())
+            # Load and Unload are submenus, whose entries are the menu's children.
+            for action in menu.findChildren(QAction):
                 if action.objectName():
                     seen[action.objectName()] = action.isEnabled()
-                labels.append(action.text())
-            for action in menu.actions():
+            for action in menu.findChildren(QAction):
                 if action.objectName() == action_name:
                     action.trigger()
+                    break
             menu.close()
 
         select_rows(paths)
@@ -334,8 +338,10 @@ try:
         check(seen.get("sceneGraphLoad") is True, "Load is enabled on an unloaded row (got %r)" % (seen,))
         check(seen.get("sceneGraphLoadWithDescendants") is True, "Load With Descendants is enabled on an unloaded row (got %r)" % (seen,))
         check(seen.get("sceneGraphUnload") is False, "Unload is disabled on an unloaded row (got %r)" % (seen,))
-        check(all("load" not in t.lower() or t in ("Load", "Load With Descendants", "Unload") for t in labels),
-              "the load actions read Load, Load With Descendants, Unload (got %r)" % (labels,))
+        check(all("load" not in t.lower() or t in ("Load", "Unload") for t in labels) and "Load" in labels and "Unload" in labels,
+              "the load submenus read Load and Unload (got %r)" % (labels,))
+        check(seen.get("sceneGraphLoadTo_component") is True and seen.get("sceneGraphUnloadBelow_component") is True,
+              "the load submenus offer Load To Component and Unload Below Component (got %r)" % (seen,))
         check(not any("undo" in t.lower() for t in labels), "the row menu offers no undo (got %r)" % (labels,))
         row_menu([B1], "sceneGraphLoad")
         check(state(B1) in (STATE_LOADING, STATE_LOADED), "the row menu's Load shows on the row (got %r)" % (state(B1),))

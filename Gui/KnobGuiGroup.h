@@ -113,6 +113,8 @@ private:
     std::list<KnobGuiWPtr> _children;
     std::vector<std::pair<KnobGuiWPtr, std::vector<int> > > _childrenToEnable; //< when re-enabling a group, what are the children that we should set
     TabGroup* _tabGroup;
+    // False until the row is built: a row built after its children were created must not newly disable them.
+    bool _childrenEnableApplied;
     //enabled too
     KnobGroupWPtr _knob;
 };

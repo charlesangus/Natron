@@ -1,4 +1,4 @@
-"""Boxes and markers of boxed rows are picked by depth with prims and guides, and guides go with a Hidden row.
+"""Boxes and markers of boxed rows are picked by depth with prims and guides, and guides go with a Hide row.
 
 Graph: USDRead of a small stage this script writes to $NATRON_GUI_TEST_OUT/scene_draw_pick.usda,
 into Viewer1, seen from the front (Z, then A to frame). The front view looks down -Z, so of two
@@ -19,9 +19,9 @@ in widget pixels, and natronSceneGuides each drawn guide. The script checks:
   - a picked box's row is selected in the Scene Graph tree and its box drawn highlighted;
   - selecting /World/Group/Inner/Leaf in the tree highlights Group's box, in the selection colour,
     and a click on that box selects /World/Group in the tree;
-  - BBox on /World/Lamps keeps its guides; Hidden on it removes both and their pixels; clearing it
+  - BBox on /World/Lamps keeps its guides; Hide on it removes both and their pixels; clearing it
     brings them back;
-  - in the Lobby, when present: Children on the base building draws boxes, and a click on the
+  - in the Lobby, when present: Pass Through on the base building draws boxes, and a click on the
     largest one selects a row and highlights its box when that box was nearest.
 
 Files: $LOBBY_FILE (default .local/World_Lobby.usd); the Lobby section is skipped, and says so,
@@ -470,9 +470,9 @@ try:
         ok = yield ("until", lambda: set(LAMP_GUIDES) <= set(guide_paths()), POLL_TIMEOUT_S)
         check(ok, "BBox on their row keeps the guides (%r)" % guide_paths())
         save("scene-pick-lamps-boxed")
-        yield from set_state(LAMPS, "hidden")
+        yield from set_state(LAMPS, "hide")
         ok = yield ("until", lambda: not (set(LAMP_GUIDES) & set(guide_paths())), POLL_TIMEOUT_S)
-        check(ok, "Hidden on their row removes both guides (%r)" % guide_paths())
+        check(ok, "Hide on their row removes both guides (%r)" % guide_paths())
         hidden = save("scene-pick-lamps-hidden")
         check(bool(changed_pixels(shown, hidden)), "the guides' pixels go")
         yield from clear_states()
@@ -490,9 +490,9 @@ try:
         yield from key(Qt.Key_V)
         yield from key(Qt.Key_A)
         save("scene-pick-lobby-before")
-        yield from set_state(BASE_BUILDING, "children")
+        yield from set_state(BASE_BUILDING, "passThrough")
         ok = yield ("until", lambda: len(drawn_boxes()) > 0, POLL_TIMEOUT_S)
-        check(ok, "Children on the base building draws boxes (%d)" % len(drawn_boxes()))
+        check(ok, "Pass Through on the base building draws boxes (%d)" % len(drawn_boxes()))
         yield ("sleep", SETTLE_MS)
         save("scene-pick-lobby-boxed")
         boxes = drawn_boxes()

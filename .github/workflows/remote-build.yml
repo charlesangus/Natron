@@ -1,9 +1,9 @@
 name: Remote build
 
-# The "what ran" part is format('build{0}{1}{2}{3}{4}', ...) where each
+# The "what ran" part is format('build{0}{1}{2}{3}{4}{5}', ...) where each
 # conditional fragment carries its own leading ", ", so no trailing separator
 # can appear. A from_run dispatch builds nothing and replaces the list.
-run-name: ${{ github.event_name == 'push' && format('Remote build · fast · {0} (cache warm)', github.ref_name) || format('Remote build · {0} · {1}{2}{3}', inputs.preset, inputs.from_run != '' && format('GUI only (from run {0})', inputs.from_run) || format('build{0}{1}{2}{3}{4}', inputs.tests && ', tests' || '', inputs.appimage && ', AppImage' || '', inputs.gui_scripts != '' && ', GUI' || '', inputs.record_goldens && ', goldens' || '', inputs.cmake_args != '' && format(', cmake:{0}', inputs.cmake_args) || ''), inputs.label != '' && format(' · {0}', inputs.label) || '', inputs.token != '' && format(' · {0}', inputs.token) || '') }}
+run-name: ${{ github.event_name == 'push' && format('Remote build · fast · {0} (cache warm)', github.ref_name) || format('Remote build · {0} · {1}{2}{3}', inputs.preset, inputs.from_run != '' && format('GUI only (from run {0})', inputs.from_run) || format('build{0}{1}{2}{3}{4}{5}', inputs.tests && ', tests' || '', inputs.appimage && ', AppImage' || '', inputs.gui_scripts != '' && ', GUI' || '', inputs.record_goldens && ', goldens' || '', inputs.cmake_args != '' && format(', cmake:{0}', inputs.cmake_args) || '', inputs.ctest_regex != '' && format(', ctest -R {0}', inputs.ctest_regex) || ''), inputs.label != '' && format(' · {0}', inputs.label) || '', inputs.token != '' && format(' · {0}', inputs.token) || '') }}
 
 on:
   # A push run builds fast with no tests and no AppImage; it exists to
@@ -62,6 +62,11 @@ on:
         required: false
         type: string
         default: ''
+      ctest_regex:
+        description: 'With tests: run only the ctest entries matching this regex (ctest -R), for intermediate gates. Milestone gates leave it empty'
+        required: false
+        type: string
+        default: ''
       label:
         description: 'Human label for the run title, usually the PR title'
         required: false
@@ -78,7 +83,7 @@ on:
         type: boolean
         default: true
       gui_scripts:
-        description: 'Space-separated Tests/gui/*.py scripts to run under Xvfb against the AppImage, one job each'
+        description: 'Space-separated Tests/gui/*.py scripts to run under Xvfb against the AppImage, in up to 4 jobs'
         required: false
         type: string
         default: ''
@@ -175,17 +180,24 @@ jobs:
 
       # The primary key ends in run_id so every run saves a fresh entry
       # (a save under an existing exact key is a silent no-op); hits come
-      # from the restore-keys prefixes.
+      # from the restore-keys prefixes, ordered by the step before.
+      - name: Order ccache restore keys
+        id: ccache_keys
+        env:
+          FAMILY: ccache-linux-${{ env.PRESET }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          EXTRA_KEYS: ${{ env.PRESET == 'debug' && 'ccache-linux-main-' || '' }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: tools/ci/ccache-restore-keys.sh
+
       - name: Restore ccache
         id: restore_ccache
         uses: actions/cache/restore@v6.1.0
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-linux-${{ env.PRESET }}-${{ github.head_ref || github.ref_name }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-linux-${{ env.PRESET }}-${{ github.head_ref || github.ref_name }}-
-            ccache-linux-${{ env.PRESET }}-main-
-            ${{ env.PRESET == 'debug' && 'ccache-linux-main-' || '' }}
+          restore-keys: ${{ steps.ccache_keys.outputs.keys }}
 
       - name: Reset ccache statistics
         run: ccache -z
@@ -351,7 +363,7 @@ jobs:
 
       - name: Show ccache stats
         if: always()
-        run: ccache -s
+        run: tools/ci/ccache-stats-summary.sh
 
       - name: Job summary
         if: always()
@@ -501,7 +513,8 @@ jobs:
     container:
       image: ${{ needs.dev-image.outputs.image }}
       # The live texture tests export through /dev/shm, which Docker sizes at 64m.
-      options: --shm-size=2g
+      # SYS_PTRACE lets the watchdog dump the stacks of a hung suite's child processes, such as execComp.
+      options: --shm-size=2g --cap-add=SYS_PTRACE
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
@@ -591,11 +604,12 @@ jobs:
       # Without the step bound, a suite that outlives ctest's own per-suite timeout holds the job
       # until GitHub's six-hour limit. A debug suite runs for about 50 minutes, as in PR CI.
       - name: Run ctest suite
-        timeout-minutes: ${{ inputs.shuffle_seeds != '' && 120 || inputs.preset == 'debug' && 75 || 30 }}
+        timeout-minutes: ${{ inputs.shuffle_seeds != '' && 120 || inputs.preset == 'debug' && 75 || 45 }}
         env:
           VK_ICD_FILENAMES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
           GALLIUM_OVERRIDE_CPU_CAPS: avx
           SHUFFLE_SEEDS: ${{ inputs.shuffle_seeds }}
+          NATRON_CTEST_REGEX: ${{ inputs.ctest_regex }}
           # One suite per vCPU of the hosted runner; 1 restores the serial `ctest -V` run.
           NATRON_CTEST_JOBS: 4
         run: |
@@ -750,6 +764,7 @@ jobs:
           GUI_SCRIPTS: ${{ inputs.gui_scripts }}
           FROM_RUN: ${{ inputs.from_run }}
           GUI_REF: ${{ inputs.gui_ref }}
+          GUI_UPLOAD_SLOTS: 16
           APPIMAGE: ${{ inputs.appimage }}
           SHA: ${{ github.sha }}
           RUN_ID: ${{ github.run_id }}
@@ -772,6 +787,24 @@ jobs:
             matrix=$(jq -c --arg s "$script" --arg n "$(basename "$script" .py)" \
               '. + [{script: $s, name: $n}] | unique_by(.name)' <<<"$matrix")
           done
+          # Round-robin into at most 4 groups, so runner slots stay free for other gates. Each
+          # group job has GUI_UPLOAD_SLOTS upload steps, one per script, which keep the per-script
+          # artifact names; a list too long for 4 groups gets more groups instead.
+          count=$(jq length <<<"$matrix")
+          groups=$(( count < 4 ? count : 4 ))
+          if (( count > 4 * GUI_UPLOAD_SLOTS )); then
+            groups=$(( (count + GUI_UPLOAD_SLOTS - 1) / GUI_UPLOAD_SLOTS ))
+          fi
+          matrix=$(jq -c --argjson g "$groups" '
+            [to_entries | group_by(.key % $g)[] | map(.value)]
+            | to_entries
+            | map({name: "group \(.key + 1) of \($g)",
+                   scripts: (.value | map(.script)),
+                   names: (.value | map(.name))})' <<<"$matrix")
+          if [[ "$(jq --argjson n "$GUI_UPLOAD_SLOTS" '[.[] | select((.names | length) > $n)] | length' <<<"$matrix")" -gt 0 ]]; then
+            echo "::error::a GUI group has more than $GUI_UPLOAD_SLOTS scripts, the number of upload steps in the gui job"
+            exit 1
+          fi
           if [[ -n "$FROM_RUN" ]]; then
             if ! [[ "$FROM_RUN" =~ ^[0-9]+$ ]]; then
               echo "::error::from_run '$FROM_RUN' is not a run id"
@@ -820,6 +853,8 @@ jobs:
           fi
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
+  # One job per group of scripts (see gui-matrix). The scripts run one after another, each under
+  # its own timeout and Xvfb display, and a failing one does not stop the rest of its group.
   gui:
     name: GUI · ${{ matrix.name }}
     needs: [gui-matrix, package]
@@ -827,6 +862,9 @@ jobs:
       !cancelled() && needs.gui-matrix.result == 'success'
       && (inputs.from_run != '' || needs.package.outputs.appimage == 'success')
     runs-on: ubuntu-latest
+    # The scripts step is capped at 300 minutes so the always() upload steps keep the rest of
+    # the 360-minute job limit.
+    timeout-minutes: 355
     strategy:
       fail-fast: false
       matrix:
@@ -852,22 +890,23 @@ jobs:
           submodules: false
           lfs: false
 
-      # Only the LFS fixtures a script names are fetched, so most scripts download none.
-      - name: List LFS fixtures the script uses
+      # Only the LFS fixtures the group's scripts name are fetched, so most groups download few.
+      - name: List LFS fixtures the scripts use
         id: lfs
         env:
-          SCRIPT: ${{ matrix.script }}
+          SCRIPTS: ${{ join(matrix.scripts, ' ') }}
         run: |
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
           git lfs ls-files -l | cut -d' ' -f1 | sort > .lfs-assets-id
           include=()
-          if [[ -f "$SCRIPT" ]]; then
-            while IFS= read -r path; do
-              if grep -qF "$(basename "$path")" "$SCRIPT"; then
+          while IFS= read -r path; do
+            for script in $SCRIPTS; do
+              if [[ -f "$script" ]] && grep -qF "$(basename "$path")" "$script"; then
                 include+=("$path")
+                break
               fi
-            done < <(git lfs ls-files -n)
-          fi
+            done
+          done < <(git lfs ls-files -n)
           echo "include=$(IFS=,; echo "${include[*]}")" >> "$GITHUB_OUTPUT"
 
       # Restore only: a save here would store a partial object set under the full set's key.
@@ -894,40 +933,213 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: gui-appimage
 
-      - name: Run ${{ matrix.script }}
-        timeout-minutes: 25
+      # Each script's output, its exit status in exit-status included, goes to
+      # build/gui-out/<name>/, which build.sh reads its result from.
+      - name: Run the group's scripts
+        timeout-minutes: 300
         env:
-          SCRIPT: ${{ matrix.script }}
+          SCRIPTS: ${{ join(matrix.scripts, ' ') }}
           GUI_TEST_SCREEN_SIZE: 1920x1080
           GUI_TEST_TIMEOUT: 900
+          SCRIPT_TIMEOUT: 1500
           ARTIFACT: ${{ needs.gui-matrix.outputs.artifact }}
         run: |
+          set -u
           appimage=$(find gui-appimage -name '*.AppImage' -print -quit)
           if [[ -z "$appimage" ]]; then
             echo "::error::no AppImage in $ARTIFACT"
             exit 1
           fi
-          export NATRON_GUI_TEST_OUT="$GITHUB_WORKSPACE/build/gui-out"
-          Tests/gui/run-gui-test.sh "$SCRIPT" "$appimage"
+          failed=()
+          display=79
+          for script in $SCRIPTS; do
+            name=$(basename "$script" .py)
+            out="$GITHUB_WORKSPACE/build/gui-out/$name"
+            mkdir -p "$out"
+            echo "::group::$script"
+            NATRON_GUI_TEST_OUT="$out" GUI_TEST_DISPLAY="$display" \
+              timeout -k 30 "$SCRIPT_TIMEOUT" Tests/gui/run-gui-test.sh "$script" "$appimage" 2>&1 \
+              | tee "$out/run.log"
+            rc=${PIPESTATUS[0]}
+            echo "::endgroup::"
+            echo "$rc" > "$out/exit-status"
+            if [[ "$rc" -ne 0 ]]; then
+              echo "::error::$script failed (exit $rc)"
+              failed+=("$script")
+            else
+              echo "$script passed"
+            fi
+            display=$((display + 1))
+          done
+          if [[ ${#failed[@]} -gt 0 ]]; then
+            echo "failed: ${failed[*]}"
+            exit 1
+          fi
 
-      - name: Upload GUI output
-        if: always()
+      # One upload step per script slot; GUI_UPLOAD_SLOTS in gui-matrix must equal the number of
+      # steps below, and gui-matrix fails a group with more names than that.
+      - name: Upload GUI output · ${{ matrix.names[0] }}
+        if: always() && matrix.names[0]
         uses: actions/upload-artifact@v7.0.1
         with:
-          name: gui-${{ matrix.name }}-${{ env.PRESET }}-${{ needs.gui-matrix.outputs.sha }}
-          path: build/gui-out
+          name: gui-${{ matrix.names[0] }}-${{ env.PRESET }}-${{ needs.gui-matrix.outputs.sha }}
+          path: build/gui-out/${{ matrix.names[0] }}
           if-no-files-found: warn
           retention-days: 7
 
-      # The commit under test may predate the script.
+      - name: Upload GUI output · ${{ matrix.names[1] }}
+        if: always() && matrix.names[1]
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gui-${{ matrix.names[1] }}-${{ env.PRESET }}-${{ needs.gui-matrix.outputs.sha }}
+          path: build/gui-out/${{ matrix.names[1] }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload GUI output · ${{ matrix.names[2] }}
+        if: always() && matrix.names[2]
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gui-${{ matrix.names[2] }}-${{ env.PRESET }}-${{ needs.gui-matrix.outputs.sha }}
+          path: build/gui-out/${{ matrix.names[2] }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload GUI output · ${{ matrix.names[3] }}
+        if: always() && matrix.names[3]
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gui-${{ matrix.names[3] }}-${{ env.PRESET }}-${{ needs.gui-matrix.outputs.sha }}
+          path: build/gui-out/${{ matrix.names[3] }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload GUI output · ${{ matrix.names[4] }}
+        if: always() && matrix.names[4]
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gui-${{ matrix.names[4] }}-${{ env.PRESET }}-${{ needs.gui-matrix.outputs.sha }}
+          path: build/gui-out/${{ matrix.names[4] }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload GUI output · ${{ matrix.names[5] }}
+        if: always() && matrix.names[5]
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gui-${{ matrix.names[5] }}-${{ env.PRESET }}-${{ needs.gui-matrix.outputs.sha }}
+          path: build/gui-out/${{ matrix.names[5] }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload GUI output · ${{ matrix.names[6] }}
+        if: always() && matrix.names[6]
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gui-${{ matrix.names[6] }}-${{ env.PRESET }}-${{ needs.gui-matrix.outputs.sha }}
+          path: build/gui-out/${{ matrix.names[6] }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload GUI output · ${{ matrix.names[7] }}
+        if: always() && matrix.names[7]
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gui-${{ matrix.names[7] }}-${{ env.PRESET }}-${{ needs.gui-matrix.outputs.sha }}
+          path: build/gui-out/${{ matrix.names[7] }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload GUI output · ${{ matrix.names[8] }}
+        if: always() && matrix.names[8]
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gui-${{ matrix.names[8] }}-${{ env.PRESET }}-${{ needs.gui-matrix.outputs.sha }}
+          path: build/gui-out/${{ matrix.names[8] }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload GUI output · ${{ matrix.names[9] }}
+        if: always() && matrix.names[9]
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gui-${{ matrix.names[9] }}-${{ env.PRESET }}-${{ needs.gui-matrix.outputs.sha }}
+          path: build/gui-out/${{ matrix.names[9] }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload GUI output · ${{ matrix.names[10] }}
+        if: always() && matrix.names[10]
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gui-${{ matrix.names[10] }}-${{ env.PRESET }}-${{ needs.gui-matrix.outputs.sha }}
+          path: build/gui-out/${{ matrix.names[10] }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload GUI output · ${{ matrix.names[11] }}
+        if: always() && matrix.names[11]
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gui-${{ matrix.names[11] }}-${{ env.PRESET }}-${{ needs.gui-matrix.outputs.sha }}
+          path: build/gui-out/${{ matrix.names[11] }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload GUI output · ${{ matrix.names[12] }}
+        if: always() && matrix.names[12]
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gui-${{ matrix.names[12] }}-${{ env.PRESET }}-${{ needs.gui-matrix.outputs.sha }}
+          path: build/gui-out/${{ matrix.names[12] }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload GUI output · ${{ matrix.names[13] }}
+        if: always() && matrix.names[13]
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gui-${{ matrix.names[13] }}-${{ env.PRESET }}-${{ needs.gui-matrix.outputs.sha }}
+          path: build/gui-out/${{ matrix.names[13] }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload GUI output · ${{ matrix.names[14] }}
+        if: always() && matrix.names[14]
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gui-${{ matrix.names[14] }}-${{ env.PRESET }}-${{ needs.gui-matrix.outputs.sha }}
+          path: build/gui-out/${{ matrix.names[14] }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload GUI output · ${{ matrix.names[15] }}
+        if: always() && matrix.names[15]
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: gui-${{ matrix.names[15] }}-${{ env.PRESET }}-${{ needs.gui-matrix.outputs.sha }}
+          path: build/gui-out/${{ matrix.names[15] }}
+          if-no-files-found: warn
+          retention-days: 7
+
+      # The commit under test may predate the summary script.
       - name: Job summary
         if: always()
         env:
-          JOB_STATUS: ${{ job.status }}
-          SCRIPT: ${{ matrix.script }}
-          LEG_NAME: ${{ matrix.name }}
+          SCRIPTS: ${{ join(matrix.scripts, ' ') }}
           TESTED_SHA: ${{ needs.gui-matrix.outputs.sha }}
         run: |
           if [[ -x tools/ci/summary.sh ]]; then
-            tools/ci/summary.sh gui "$SCRIPT" "$JOB_STATUS" "gui-$LEG_NAME-$PRESET-$TESTED_SHA"
+            for script in $SCRIPTS; do
+              name=$(basename "$script" .py)
+              status_file="build/gui-out/$name/exit-status"
+              if [[ ! -f "$status_file" ]]; then
+                result=missing
+              elif [[ "$(cat "$status_file")" == 0 ]]; then
+                result=success
+              else
+                result="failure (exit $(cat "$status_file"))"
+              fi
+              tools/ci/summary.sh gui "$script" "$result" "gui-$name-$PRESET-$TESTED_SHA"
+            done
           fi

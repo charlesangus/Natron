@@ -39,7 +39,7 @@
 #             guard. Ends with heavy_scene_budget_table.py's table of the results: time to picture and
 #             stall against 100 ms per row, the untraced critical path, and the traced stages.
 #   acceptance  The end-to-end budget run, with NATRON_DRAW_STATE_TIMING=1, one process per line: the
-#             workflow scenario (open, twirl, Full on an asset, Full + Load on a block, a pattern node, a
+#             workflow scenario (open, twirl, Geometry on an asset, Load + Draw on a block, a pattern node, a
 #             node switch, a prim in the inspector, save, reopen) on flat, the city, Lobby and Island, each
 #             step judged against its budget; then the time-to-picture budgets and reveal and cancel on
 #             the loaded city, Lobby and Island (populate_full, load_all, draw_budget, reveal_wide,

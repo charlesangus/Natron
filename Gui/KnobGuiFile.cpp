@@ -109,6 +109,9 @@ KnobGuiFile::createWidget(QHBoxLayout* layout)
 
 
     _openFileButton = new Button( layout->parentWidget() );
+    if (knob) {
+        _openFileButton->setObjectName(QString::fromUtf8(knob->getName().c_str()) + QString::fromUtf8("OpenFileButton"));
+    }
     _openFileButton->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
     QIcon pix;
     appPTR->getIcon(NATRON_PIXMAP_OPEN_FILE, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pix);
@@ -173,8 +176,8 @@ KnobGuiFile::open_file()
         pathWhereToOpen = QString::fromUtf8( path.c_str() );
     }
 
-    SequenceFileDialog dialog( _lineEdit->parentWidget(), filters, knob->isInputImageFile(),
-                               SequenceFileDialog::eFileDialogModeOpen, pathWhereToOpen.toStdString(), getGui(), true);
+    SequenceFileDialog dialog(_lineEdit->parentWidget(), filters, knob->opensSequences(),
+                              SequenceFileDialog::eFileDialogModeOpen, pathWhereToOpen.toStdString(), getGui(), true);
 
     if ( dialog.exec() ) {
         std::string selectedFile = dialog.selectedFiles();
@@ -249,8 +252,8 @@ KnobGuiFile::_hide()
 void
 KnobGuiFile::_show()
 {
-    _openFileButton->show();
-    _lineEdit->show();
+    KnobGui::showWidget(_openFileButton);
+    KnobGui::showWidget(_lineEdit);
 }
 
 void
@@ -440,6 +443,9 @@ KnobGuiOutputFile::createWidget(QHBoxLayout* layout)
 
 
     _openFileButton = new Button( layout->parentWidget() );
+    if (knob) {
+        _openFileButton->setObjectName(QString::fromUtf8(knob->getName().c_str()) + QString::fromUtf8("OpenFileButton"));
+    }
     _openFileButton->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
     QIcon pix;
     appPTR->getIcon(NATRON_PIXMAP_OPEN_FILE, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pix);
@@ -494,10 +500,12 @@ KnobGuiOutputFile::open_file(bool openSequence)
     }
     std::vector<std::string> filters;
 
-    if ( !knob->isOutputImageFile() ) {
-        filters.push_back("*");
-    } else {
+    if (knob->isOutputImageFile()) {
         appPTR->getSupportedWriterFileFormats(&filters);
+    } else if (!knob->getFileExtensions().empty()) {
+        filters = knob->getFileExtensions();
+    } else {
+        filters.push_back("*");
     }
 
     SequenceFileDialog dialog( _lineEdit->parentWidget(), filters, openSequence, SequenceFileDialog::eFileDialogModeSave, _lastOpened.toStdString(), getGui(), true);
@@ -561,8 +569,8 @@ KnobGuiOutputFile::_hide()
 void
 KnobGuiOutputFile::_show()
 {
-    _openFileButton->show();
-    _lineEdit->show();
+    KnobGui::showWidget(_openFileButton);
+    KnobGui::showWidget(_lineEdit);
 }
 
 void
@@ -752,7 +760,7 @@ KnobGuiPath::createWidget(QHBoxLayout* layout)
         QObject::connect( _lineEdit, SIGNAL(editingFinished()), this, SLOT(onTextEdited()) );
 
         enableRightClickMenu(_lineEdit, 0);
-        _openFileButton = new Button( layout->parentWidget() );
+        _openFileButton = new Button(_mainContainer);
         _openFileButton->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
         _openFileButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Click to select a path to append to/replace this variable."), NATRON_NAMESPACE::WhiteSpaceNormal) );
         QIcon pix;

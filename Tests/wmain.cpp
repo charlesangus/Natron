@@ -304,6 +304,8 @@ GTEST_API_ int main(int argc, char **argv)
     // A renderer whose library is missing, for the tests of unavailable delegates. Hydra
     // discovers its renderers once, so it is registered before anything can ask for them.
     RenderDelegates::registerPluginDirectory(NATRON_TESTS_FIXTURES_DIR "/renderDelegates");
+    // Custom kinds for the kind walk tests; USD reads kinds when it first asks for one.
+    RenderDelegates::registerPluginDirectory(NATRON_TESTS_FIXTURES_DIR "/sceneKinds");
     appendTestOfxPluginDir();
     applyTestRetiredOfxIds();
     applyTestPlaneChoiceTakeOvers();

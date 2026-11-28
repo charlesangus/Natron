@@ -87,7 +87,7 @@ NATRON_NAMESPACE_ENTER
  * hide or a show announces each prim: HdsiPrefixPathPruningSceneIndex is out too, since a prefix is
  * its only unit of change and it cannot release part of a subtree.
  *
- * Lights stop only under a Hidden row. A BBox row, or a row boxed by a Children parent, hides
+ * Lights stop only under a Hidden row. A BBox row, or a row boxed by a Pass Through parent, hides
  * geometry and leaves its lights, so drilling into a scene never darkens it.
  *
  * A native instance draws through an instancer far from its row, under /UsdNiPropagatedPrototypes
@@ -125,7 +125,7 @@ public:
         eRuleShow,
         eRuleHide,
         // The prim itself shows, and everything below without a rule of its own hides.
-        eRuleExpand,
+        eRulePassThrough,
         // As eRuleHide, and lights below go too.
         eRuleHidden
     };

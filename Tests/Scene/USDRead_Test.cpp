@@ -1065,8 +1065,8 @@ TEST_F(USDReadTest, EachInitialDrawSetsItsRuleOnTheSameStack)
     const Expected values[] = {
         { kUSDReadInitialDrawLevels, eSceneDrawStateBBox, 3, "" },
         { kUSDReadInitialDrawToKind, eSceneDrawStateBBox, 0, "group" },
-        { kUSDReadInitialDrawFull, eSceneDrawStateFull, 0, "" },
-        { kUSDReadInitialDrawFullLoad, eSceneDrawStateLoadAll, 0, "" },
+        { kUSDReadInitialDrawGeometry, eSceneDrawStateFull, 0, "" },
+        { kUSDReadInitialDrawLoadAndDraw, eSceneDrawStateLoadAll, 0, "" },
         { kUSDReadInitialDrawBBox, eSceneDrawStateBBox, 0, "" },
     };
     levels->setValue(3);
@@ -1109,7 +1109,7 @@ TEST_F(USDReadTest, LevelsAndToKindShowOnlyForTheirInitialDraw)
     setInitialDraw(reader, kUSDReadInitialDrawToKind);
     EXPECT_TRUE(levels->getIsSecret());
     EXPECT_FALSE(toKind->getIsSecret());
-    setInitialDraw(reader, kUSDReadInitialDrawFullLoad);
+    setInitialDraw(reader, kUSDReadInitialDrawLoadAndDraw);
     EXPECT_TRUE(levels->getIsSecret());
     EXPECT_TRUE(toKind->getIsSecret());
 }
@@ -1139,8 +1139,8 @@ TEST_F(USDReadTest, ToKindStopsAtAnUnloadedPayload)
     ASSERT_TRUE(bool(stage));
     SceneDrawStates::PolicyStates policy;
     ASSERT_TRUE(SceneOps::matchDrawRules(stage, rules, &policy, std::function<bool()>()));
-    EXPECT_EQ(eSceneDrawStateChildren, policy["/World"].state);
-    EXPECT_EQ(eSceneDrawStateChildren, policy["/World/Block"].state);
+    EXPECT_EQ(eSceneDrawStatePassThrough, policy["/World"].state);
+    EXPECT_EQ(eSceneDrawStatePassThrough, policy["/World/Block"].state);
     EXPECT_EQ(eSceneDrawStateBBox, policy["/World/Block/Building"].state);
     EXPECT_EQ(reader->getScriptName(), policy["/World/Block/Building"].origin);
     EXPECT_FALSE(bool(PXR_NS::SdfLayer::Find(building))) << "a payload layer was opened";

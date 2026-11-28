@@ -138,6 +138,7 @@
         <file>Resources/Icons/lucide/monitor.svg</file>
         <file>Resources/Icons/lucide/mouse-pointer-2.svg</file>
         <file>Resources/Icons/lucide/move.svg</file>
+        <file>Resources/Icons/lucide/package-open.svg</file>
         <file>Resources/Icons/lucide/package.svg</file>
         <file>Resources/Icons/lucide/paint-bucket.svg</file>
         <file>Resources/Icons/lucide/palette.svg</file>
@@ -217,6 +218,7 @@
         <file>Resources/Icons/natron/layout-anchor.svg</file>
         <file>Resources/Icons/natron/link-cursor.svg</file>
         <file>Resources/Icons/natron/link-mult-cursor.svg</file>
+        <file>Resources/Icons/natron/loop.svg</file>
         <file>Resources/Icons/natron/marker-break.svg</file>
         <file>Resources/Icons/natron/marker-c.svg</file>
         <file>Resources/Icons/natron/marker-constant.svg</file>

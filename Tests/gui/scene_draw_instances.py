@@ -6,20 +6,20 @@ Viewer1, first on heavy_instances.usda (tools/bench/heavy_scene_make.py --instan
 native instances under /World/Instanced, a point instancer of as many balls at /World/Scatter),
 then on the Lobby. Each change waits for the frame that shows it (natronSceneDrawPresented), and
 each image is compared with the one before the change. The script checks:
-  - BBox on one instance, on the whole /World/Instanced row and Hidden on it each change pixels,
+  - BBox on one instance, on the whole /World/Instanced row and Hide on it each change pixels,
     the row more than the one instance, and natronSceneDrawStats counts the masked instances;
   - BBox on /World/Scatter, a point instancer's own row, changes pixels;
   - clearing each change gives back the first image exactly;
   - in the Lobby, /World/assembly_Lobby/max_Lobby/Geometry lies inside the base building's opaque
-    shell, so from the framed view it covers no pixel. With the base building Hidden, BBox on
+    shell, so from the framed view it covers no pixel. With the base building set to Hide, BBox on
     Geometry changes pixels, and clearing it gives back the image before.
 
 Files: $NATRON_INSTANCES_FILE (by default the script writes it under $NATRON_GUI_TEST_OUT) and
 $LOBBY_FILE (default .local/World_Lobby.usd); the Lobby section is skipped, and says so, when the Lobby is absent.
 
 Screenshots for sign-off: scene-instances-shown, scene-instances-one-boxed,
-scene-instances-row-boxed, scene-instances-row-hidden, scene-instances-scatter-boxed,
-scene-lobby-base-hidden, scene-lobby-geometry-boxed.
+scene-instances-row-boxed, scene-instances-row-hide, scene-instances-scatter-boxed,
+scene-lobby-base-hide, scene-lobby-geometry-boxed.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -183,8 +183,8 @@ try:
         row, masked = yield from changes_and_restores(INSTANCED, "bbox", "scene-instances-row-boxed", base)
         check(masked == INSTANCE_COUNT, "BBox on the row masks all %d instances (%d)" % (INSTANCE_COUNT, masked))
         check(row > one, "the row changes more pixels than one instance (%d, %d)" % (row, one))
-        hidden, masked = yield from changes_and_restores(INSTANCED, "hidden", "scene-instances-row-hidden", base)
-        check(masked == INSTANCE_COUNT, "Hidden on the row masks all %d instances (%d)" % (INSTANCE_COUNT, masked))
+        hidden, masked = yield from changes_and_restores(INSTANCED, "hide", "scene-instances-row-hide", base)
+        check(masked == INSTANCE_COUNT, "Hide on the row masks all %d instances (%d)" % (INSTANCE_COUNT, masked))
         check(int(draw_stats().get("maskedInstances", -1)) == 0, "no instance stays masked once the rows are clear")
 
         section("point instancer")
@@ -200,11 +200,11 @@ try:
         occluded = changed_pixels(lobby, grab())
         report("NOTE BBox on Geometry inside the base building changes %r pixels (its shell hides it)" % (occluded,))
         yield from clear_state(GEOMETRY)
-        yield from set_state(BASE_BUILDING, "hidden")
-        opened = save("scene-lobby-base-hidden")
-        check(bool(changed_pixels(lobby, opened)), "Hidden on the base building changes the image")
+        yield from set_state(BASE_BUILDING, "hide")
+        opened = save("scene-lobby-base-hide")
+        check(bool(changed_pixels(lobby, opened)), "Hide on the base building changes the image")
         changed, _ = yield from changes_and_restores(GEOMETRY, "bbox", "scene-lobby-geometry-boxed", opened)
-        report("NOTE with the base building Hidden, BBox on Geometry changes %d pixels" % changed)
+        report("NOTE with the base building set to Hide, BBox on Geometry changes %d pixels" % changed)
         yield from clear_state(BASE_BUILDING)
         restored = changed_pixels(lobby, grab())
         check(restored == 0, "clearing the base building gives back the Lobby's first image (%r pixels differ)" % (restored,))

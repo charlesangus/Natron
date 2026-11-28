@@ -88,7 +88,7 @@ rowPredicate()
     return UsdTraverseInstanceProxies(UsdPrimIsActive && UsdPrimIsDefined && !UsdPrimIsAbstract);
 }
 
-// Mirrors the filter: the rule nearest a prim, its own included, decides it, and a Children row
+// Mirrors the filter: the rule nearest a prim, its own included, decides it, and a Pass Through row
 // shows itself alone.
 bool
 parentShown(const SceneDrawFilter::Rules& rules,
@@ -104,7 +104,7 @@ parentShown(const SceneDrawFilter::Rules& rules,
         switch (found->second) {
         case SceneDrawFilter::eRuleShow:
             return true;
-        case SceneDrawFilter::eRuleExpand:
+        case SceneDrawFilter::eRulePassThrough:
             return at == parent;
         case SceneDrawFilter::eRuleHide:
         case SceneDrawFilter::eRuleHidden:
@@ -119,7 +119,7 @@ bool
 boxesAnything(const SceneDrawFilter::Rules& rules)
 {
     for (const SceneDrawFilter::Rules::value_type& rule : rules) {
-        if ((rule.second == SceneDrawFilter::eRuleHide) || (rule.second == SceneDrawFilter::eRuleExpand)) {
+        if ((rule.second == SceneDrawFilter::eRuleHide) || (rule.second == SceneDrawFilter::eRulePassThrough)) {
             return true;
         }
     }
@@ -1357,7 +1357,7 @@ SceneDrawBoxes::boxedRows(const UsdStageRefPtr& stage,
     }
     const Usd_PrimFlagsPredicate predicate = rowPredicate();
     for (const SceneDrawFilter::Rules::value_type& rule : rules) {
-        if ((rule.second != SceneDrawFilter::eRuleHide) && (rule.second != SceneDrawFilter::eRuleExpand)) {
+        if ((rule.second != SceneDrawFilter::eRuleHide) && (rule.second != SceneDrawFilter::eRulePassThrough)) {
             continue;
         }
         if (!rule.first.IsAbsoluteRootOrPrimPath() || !parentShown(rules, rule.first)) {
@@ -1415,7 +1415,7 @@ SceneDrawBoxes::standInRows(const UsdStageRefPtr& stage,
     }
     const Usd_PrimFlagsPredicate predicate = rowPredicate();
     for (const SceneDrawFilter::Rules::value_type& rule : rules) {
-        if ((rule.second != SceneDrawFilter::eRuleShow) && (rule.second != SceneDrawFilter::eRuleExpand)) {
+        if ((rule.second != SceneDrawFilter::eRuleShow) && (rule.second != SceneDrawFilter::eRulePassThrough)) {
             continue;
         }
         if (!rule.first.IsPrimPath() || !parentShown(rules, rule.first)) {

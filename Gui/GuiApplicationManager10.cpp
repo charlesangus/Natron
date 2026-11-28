@@ -77,6 +77,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiGLRequirements.h"
 #include "Gui/HydraGLContextQt.h"
 #include "Gui/KnobGuiFactory.h"
+#include "Gui/NodeCreationTrace.h"
 #include "Gui/SceneViewport.h"
 #include "Gui/SplashScreen.h"
 #include "Gui/TabMenuBridge.h"
@@ -244,6 +245,13 @@ public:
         }
 #  endif
 #endif
+    }
+
+    bool notify(QObject* receiver, QEvent* e) OVERRIDE
+    {
+        NodeCreationTrace::EventScope trace(receiver, e);
+
+        return QApplication::notify(receiver, e);
     }
 
 protected:
@@ -1031,6 +1039,12 @@ GuiApplicationManager::populateShortcuts()
             } else {
                 registerKeybind(kShortcutGroupViewer3D, b.actionID, b.description, b.modifiers, b.key);
             }
+        }
+        for (const SceneGraphBulkKeyBinding& b : getSceneGraphBulkKeyBindings()) {
+            registerKeybind(kShortcutGroupViewer3D, b.actionID, b.description, Qt::NoModifier, Qt::Key(0));
+        }
+        for (const SceneGraphBulkKeyBinding& b : getSceneGraphFoldKeyBindings()) {
+            registerKeybind(kShortcutGroupViewer3D, b.actionID, b.description, Qt::NoModifier, Qt::Key(0));
         }
     }
 

@@ -155,7 +155,7 @@ try:
                 % (prop("natronSceneFillProgress"), prop("natronSceneFillComplete")))
 
         section("The city out of Hydra")
-        call("setDrawState", Q_ARG("QString", "/World"), Q_ARG("QString", "hidden"))
+        call("setDrawState", Q_ARG("QString", "/World"), Q_ARG("QString", "hide"))
         ok = yield ("until", lambda: scene_drawn() and fill_complete(), POLL_TIMEOUT_S)
         require(ok, "hiding /World settles")
         yield ("sleep", SETTLE_MS)

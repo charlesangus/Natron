@@ -374,9 +374,9 @@ TEST_F(SceneDrawStatesOutputTest, ARestoredViewLeavesEveryOutputAsItWas)
     const std::map<std::string, bool> layersBefore = layerDirtiness();
 
     Serialization::SceneViewSerialization saved;
-    saved.drawStates["/World/Block_0"] = "loadAll";
-    saved.drawStates["/World/Block_2"] = "children";
-    saved.drawStates["/World/Block_2/B_0"] = "hidden";
+    saved.drawStates["/World/Block_0"] = "loadAndDraw";
+    saved.drawStates["/World/Block_2"] = "passThrough";
+    saved.drawStates["/World/Block_2/B_0"] = "hide";
     saved.loadRules["/World/Block_1/B_1"] = "only";
     saved.loadRules["/World/Block_1/Missing"] = "only";
     std::vector<std::pair<std::string, SceneDrawStates::Stored>> restoredStates;

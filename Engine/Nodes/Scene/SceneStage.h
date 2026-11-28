@@ -153,6 +153,25 @@ public:
     void requestUnload(const PXR_NS::SdfPathVector& paths);
 
     /**
+     * @brief Asks for the payloads under each of roots to load down to and including the prims of
+     * kind, as walkToKind() finds them, and no further: a root of kind loads and the walk goes on to
+     * the nearest prims of kind below it. Never touches the stage. Each serviceLoads()
+     * walks again and loads what it finds unloaded on its own, without descendants, since a
+     * payload's kinds are known only once it composes; the request ends after a walk that finds
+     * nothing it has not already asked for, so a payload that fails to load is not asked for twice.
+     * A later kind request at a root replaces an earlier one, and cancelPendingLoads() ends it.
+     **/
+    void requestLoadToKind(const PXR_NS::SdfPathVector& roots, const PXR_NS::TfToken& kind);
+
+    /**
+     * @brief Asks for the top-most payloads below each prim of kind under roots, as walkToKind()
+     * finds them on the next serviceLoads(), to unload. The prims of kind stay loaded. A root of kind
+     * is walked through, as requestLoadToKind() walks it: the nearest prims of kind strictly below
+     * it stay loaded, and a root with none below it unloads nothing.
+     **/
+    void requestUnloadBelowKind(const PXR_NS::SdfPathVector& roots, const PXR_NS::TfToken& kind);
+
+    /**
      * @brief Drops the requests no serviceLoads() has taken yet. A batch being serviced commits what
      * it has opened but puts none of its requests back and asks for none of its follow-up loads.
      **/
@@ -165,7 +184,8 @@ public:
      **/
     void cancelPendingLoads(const PXR_NS::SdfPathVector& paths);
 
-    // Counts a load put off for a closed scene's stale layer only once SceneTeardown is idle.
+    // Counts a load put off for a closed scene's stale layer only once SceneTeardown is idle, and a
+    // kind request until a walk of it finds nothing more to load.
     bool hasPendingLoads() const;
 
     /**
@@ -307,6 +327,13 @@ private:
         ePendingUnload
     };
 
+    struct KindRequest {
+        PXR_NS::TfToken kind;
+        bool unload = false;
+        // The payloads the request has asked for already.
+        PXR_NS::SdfPathSet asked;
+    };
+
     struct PreviewPrim {
         PXR_NS::SdfPath path;
         PXR_NS::GfMatrix4d parentToWorld;
@@ -339,6 +366,7 @@ private:
     // not ask again for them; a cancel of every request sets the flag instead.
     PXR_NS::SdfPathSet _cancelledWhileServicing;
     bool _allCancelledWhileServicing = false;
+    std::map<PXR_NS::SdfPath, KindRequest> _kindRequests;
     std::map<PXR_NS::SdfPath, std::string> _loadFailures;
     bool _servicingLoads = false;
     // The loads put off for a stale layer, until SceneTeardown is idle.

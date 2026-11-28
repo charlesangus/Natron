@@ -251,6 +251,60 @@ TEST(GpuPlacement, ChainBecomesOneRegion)
     EXPECT_TRUE(isConvex(graph, 0));
 }
 
+// The scheduler probes a continuation task once everything it depends on has rendered, so none of it may share
+// the task's region; its consumer may join.
+TEST(GpuPlacement, ContinuationTaskStartsItsOwnRegion)
+{
+    FrameGraph graph = makeGraph(5, { { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 4 } });
+    PlacementInputs inputs = gpuTasks(graph, { 0, 1, 2, 3 });
+    const FrameGraph::Task* first = graph.tasks.data();
+    inputs.offersContinuation = [first](const FrameGraph::Task& task) {
+        return (&task - first) == 1;
+    };
+
+    placeGraph(graph, inputs);
+
+    ASSERT_EQ(graph.regions.size(), 2u);
+    for (int t = 0; t < 4; ++t) {
+        EXPECT_EQ(graph.tasks[t].device, FrameGraph::Device::Gpu) << t;
+    }
+    EXPECT_EQ(graph.tasks[3].regionId, graph.tasks[2].regionId);
+    EXPECT_NE(graph.tasks[2].regionId, graph.tasks[1].regionId);
+    EXPECT_EQ(graph.tasks[1].regionId, graph.tasks[0].regionId);
+    for (int r = 0; r < (int)graph.regions.size(); ++r) {
+        EXPECT_TRUE(isConvex(graph, r)) << r;
+    }
+    EXPECT_TRUE(isContractionAcyclic(graph));
+}
+
+// Merge 0 reads continuation tasks 1 and 2, which read 3 and 4: one region probes one continuation, so 1 and 2
+// never share one, even through their consumer.
+TEST(GpuPlacement, ContinuationRegionsNeverMerge)
+{
+    FrameGraph graph = makeGraph(6, { { 0, 1 }, { 0, 2 }, { 1, 3 }, { 2, 4 }, { 3, 5 }, { 4, 5 } });
+    PlacementInputs inputs = gpuTasks(graph, { 0, 1, 2, 3, 4 });
+    const FrameGraph::Task* first = graph.tasks.data();
+    inputs.offersContinuation = [first](const FrameGraph::Task& task) {
+        const std::ptrdiff_t t = &task - first;
+
+        return (t == 1) || (t == 2);
+    };
+
+    placeGraph(graph, inputs);
+
+    for (int t = 0; t < 5; ++t) {
+        EXPECT_EQ(graph.tasks[t].device, FrameGraph::Device::Gpu) << t;
+    }
+    EXPECT_NE(graph.tasks[1].regionId, graph.tasks[2].regionId);
+    EXPECT_NE(graph.tasks[1].regionId, graph.tasks[3].regionId);
+    EXPECT_NE(graph.tasks[2].regionId, graph.tasks[4].regionId);
+    EXPECT_TRUE((graph.tasks[0].regionId == graph.tasks[1].regionId) || (graph.tasks[0].regionId == graph.tasks[2].regionId));
+    for (int r = 0; r < (int)graph.regions.size(); ++r) {
+        EXPECT_TRUE(isConvex(graph, r)) << r;
+    }
+    EXPECT_TRUE(isContractionAcyclic(graph));
+}
+
 // Merge 0 reads GPU 1 and CPU 2, which both read GPU 3, which reads reader 4 (CPU). Merge cannot join 3's region:
 // that region would wait on 2, which waits on it.
 TEST(GpuPlacement, DiamondWithCpuSideSplitsIntoConvexRegions)

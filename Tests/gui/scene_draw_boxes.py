@@ -3,7 +3,7 @@
 Graph: USDRead of a ten-block heavy_city.usda (tools/bench/heavy_scene_make.py) into Viewer1, every
 payload unloaded. Nine in ten buildings author an extentsHint, so a boxed building draws a box from it; the
 tenth, index % 10 == 0, has none and draws a marker at its transform. The script checks:
-  - Children on /World/Block0 .. Block9 boxes their 120 buildings: 108 boxes and 12 markers
+  - Pass Through on /World/Block0 .. Block9 boxes their 120 buildings: 108 boxes and 12 markers
     (natronSceneDrawBoxes, natronSceneDrawMarkers), and the image changes;
   - BBox on a hinted building draws one box, on one without a hint one marker;
   - the Scene Graph panel's unknown-bounds role is set on exactly the buildings without a hint;
@@ -234,10 +234,10 @@ try:
         base = save("scene-boxes-none")
         check(drawn() == (0, 0), "nothing is boxed at first (%r)" % (drawn(),))
         for block in BLOCKS:
-            yield from set_state(block, "children")
+            yield from set_state(block, "passThrough")
         unhinted = sum(1 for b in range(len(BLOCKS)) for i in range(BUILDINGS_PER_BLOCK) if (b * BUILDINGS_PER_BLOCK + i) % 10 == 0)
         total = len(BLOCKS) * BUILDINGS_PER_BLOCK
-        yield from expect_drawn("Children on %d blocks" % len(BLOCKS), total - unhinted, unhinted)
+        yield from expect_drawn("Pass Through on %d blocks" % len(BLOCKS), total - unhinted, unhinted)
         image = save("scene-boxes-and-markers")
         check(bool(changed_pixels(base, image)), "the boxes and markers change the image")
         for block in BLOCKS:

@@ -254,7 +254,7 @@ TEST(SceneDrawBoxes, AMarkerIsPickedNearItsCentreOnScreenAndByDepthAgainstBoxes)
     EXPECT_EQ(pickAt(list, 50, 50), 2);
 }
 
-TEST(SceneDrawBoxes, ABBoxRowAndAChildrenRowsUnruledChildrenGetTheirWorldBounds)
+TEST(SceneDrawBoxes, ABBoxRowAndAPassThroughRowsUnruledChildrenGetTheirWorldBounds)
 {
     const UsdStageRefPtr stage = openScene();
     const std::unique_ptr<SceneDrawBoxes> boxes = boxesOver(stage);
@@ -266,7 +266,7 @@ TEST(SceneDrawBoxes, ABBoxRowAndAChildrenRowsUnruledChildrenGetTheirWorldBounds)
     ASSERT_EQ(list->boxes.size(), 1u);
     expectBox(list, "/World/A", GfVec3f(9, -1, -1), GfVec3f(11, 1, 1));
 
-    boxes->setRules(rules({ { "/World", SceneDrawFilter::eRuleExpand }, { "/World/B", SceneDrawFilter::eRuleShow } }));
+    boxes->setRules(rules({ { "/World", SceneDrawFilter::eRulePassThrough }, { "/World/B", SceneDrawFilter::eRuleShow } }));
     list = latest(*boxes);
     ASSERT_NE(list, nullptr);
     EXPECT_EQ(list->boxes.size(), 3u);
@@ -401,7 +401,7 @@ TEST(SceneDrawBoxes, AWaitingWriterEndsTheHoldAfterEachRowAndTheRowsToComeShowAs
         });
     self = &boxes;
 
-    boxes.setRules(rules({ { "/World", SceneDrawFilter::eRuleExpand } }));
+    boxes.setRules(rules({ { "/World", SceneDrawFilter::eRulePassThrough } }));
     const SceneDrawBoxes::ListPtr list = latest(boxes);
     ASSERT_NE(list, nullptr);
     EXPECT_EQ(list->boxes.size(), 4u);
@@ -451,7 +451,7 @@ def Xform "Asset"
     ASSERT_TRUE(stage);
     const std::unique_ptr<SceneDrawBoxes> boxes = boxesOver(stage);
 
-    boxes->setRules(rules({ { "/City", SceneDrawFilter::eRuleExpand } }));
+    boxes->setRules(rules({ { "/City", SceneDrawFilter::eRulePassThrough } }));
     SceneDrawBoxes::ListPtr list = latest(*boxes);
     ASSERT_NE(list, nullptr);
     EXPECT_EQ(list->boxes.size(), 2u);

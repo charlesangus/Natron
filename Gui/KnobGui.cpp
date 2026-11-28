@@ -83,37 +83,36 @@ KnobGui::initialize()
     assert(helper);
     if (helper) {
         KnobSignalSlotHandler* handler = helper->getSignalSlotHandler().get();
-        QObject::connect( handler, SIGNAL(redrawGuiCurve(int,ViewSpec,int)), this, SLOT(onRedrawGuiCurve(int,ViewSpec,int)) );
-        QObject::connect( handler, SIGNAL(valueChanged(ViewSpec,int,int)), this, SLOT(onInternalValueChanged(ViewSpec,int,int)) );
-        QObject::connect( handler, SIGNAL(keyFrameSet(double,ViewSpec,int,int,bool)), this, SLOT(onInternalKeySet(double,ViewSpec,int,int,bool)) );
-        QObject::connect(handler, SIGNAL(keyFrameRemoved(double, ViewSpec, int, int)), this, SLOT(onInternalKeyRemoved(double, ViewSpec, int, int)));
-        QObject::connect( handler, SIGNAL(multipleKeyFramesSet(std::list<double>,ViewSpec,int,int)), this,
-                          SLOT(onMultipleKeySet(std::list<double>,ViewSpec,int,int)) );
-        QObject::connect( handler, SIGNAL(multipleKeyFramesRemoved(std::list<double>,ViewSpec,int,int)), this,
-                          SLOT(onMultipleKeyRemoved(std::list<double>,ViewSpec,int,int)) );
-        QObject::connect( handler, SIGNAL(secretChanged()), this, SLOT(setSecret()) );
-        QObject::connect( handler, SIGNAL(enabledChanged()), this, SLOT(setEnabledSlot()) );
-        QObject::connect(handler, SIGNAL(knobSlaved(int, bool)), this, SLOT(onKnobSlavedChanged(int, bool)));
-        QObject::connect( handler, SIGNAL(animationRemoved(ViewSpec,int)), this, SLOT(onInternalAnimationRemoved()) );
-        QObject::connect( handler, SIGNAL(setValueWithUndoStack(Variant,ViewSpec,int)), this, SLOT(onSetValueUsingUndoStack(Variant,ViewSpec,int)) );
-        QObject::connect( handler, SIGNAL(dirty(bool)), this, SLOT(onSetDirty(bool)) );
-        QObject::connect( handler, SIGNAL(animationLevelChanged(ViewSpec,int)), this, SLOT(onAnimationLevelChanged(ViewSpec,int)) );
-        QObject::connect( handler, SIGNAL(appendParamEditChange(int,Variant,ViewSpec,int,double,bool,bool)), this,
-                          SLOT(onAppendParamEditChanged(int,Variant,ViewSpec,int,double,bool,bool)) );
-        QObject::connect( handler, SIGNAL(frozenChanged(bool)), this, SLOT(onFrozenChanged(bool)) );
-        QObject::connect( handler, SIGNAL(helpChanged()), this, SLOT(onHelpChanged()) );
-        QObject::connect( handler, SIGNAL(expressionChanged(int)), this, SLOT(onExprChanged(int)) );
-        QObject::connect( handler, SIGNAL(hasModificationsChanged()), this, SLOT(onHasModificationsChanged()) );
-        QObject::connect( handler, SIGNAL(labelChanged()), this, SLOT(onLabelChanged()) );
-        QObject::connect( handler, SIGNAL(dimensionNameChanged(int)), this, SLOT(onDimensionNameChanged(int)) );
-        QObject::connect( handler, SIGNAL(viewerContextSecretChanged()), this, SLOT(onViewerContextSecretChanged()) );
-        QObject::connect(handler, SIGNAL(linkChanged()), this, SLOT(onLinkStateChanged()));
+        // Pointer-to-member connects skip the signature parsing that string connects pay for
+        // every knob of every panel build.
+        QObject::connect(handler, &KnobSignalSlotHandler::redrawGuiCurve, this, &KnobGui::onRedrawGuiCurve);
+        QObject::connect(handler, &KnobSignalSlotHandler::valueChanged, this, &KnobGui::onInternalValueChanged);
+        QObject::connect(handler, &KnobSignalSlotHandler::keyFrameSet, this, &KnobGui::onInternalKeySet);
+        QObject::connect(handler, &KnobSignalSlotHandler::keyFrameRemoved, this, &KnobGui::onInternalKeyRemoved);
+        QObject::connect(handler, &KnobSignalSlotHandler::multipleKeyFramesSet, this, &KnobGui::onMultipleKeySet);
+        QObject::connect(handler, &KnobSignalSlotHandler::multipleKeyFramesRemoved, this, &KnobGui::onMultipleKeyRemoved);
+        QObject::connect(handler, &KnobSignalSlotHandler::secretChanged, this, &KnobGui::setSecret);
+        QObject::connect(handler, &KnobSignalSlotHandler::enabledChanged, this, &KnobGui::setEnabledSlot);
+        QObject::connect(handler, &KnobSignalSlotHandler::knobSlaved, this, &KnobGui::onKnobSlavedChanged);
+        QObject::connect(handler, &KnobSignalSlotHandler::animationRemoved, this, &KnobGui::onInternalAnimationRemoved);
+        QObject::connect(handler, &KnobSignalSlotHandler::setValueWithUndoStack, this, &KnobGui::onSetValueUsingUndoStack);
+        QObject::connect(handler, &KnobSignalSlotHandler::dirty, this, &KnobGui::onSetDirty);
+        QObject::connect(handler, &KnobSignalSlotHandler::animationLevelChanged, this, &KnobGui::onAnimationLevelChanged);
+        QObject::connect(handler, &KnobSignalSlotHandler::appendParamEditChange, this, &KnobGui::onAppendParamEditChanged);
+        QObject::connect(handler, &KnobSignalSlotHandler::frozenChanged, this, &KnobGui::onFrozenChanged);
+        QObject::connect(handler, &KnobSignalSlotHandler::helpChanged, this, &KnobGui::onHelpChanged);
+        QObject::connect(handler, &KnobSignalSlotHandler::expressionChanged, this, &KnobGui::onExprChanged);
+        QObject::connect(handler, &KnobSignalSlotHandler::hasModificationsChanged, this, &KnobGui::onHasModificationsChanged);
+        QObject::connect(handler, &KnobSignalSlotHandler::labelChanged, this, &KnobGui::onLabelChanged);
+        QObject::connect(handler, &KnobSignalSlotHandler::dimensionNameChanged, this, &KnobGui::onDimensionNameChanged);
+        QObject::connect(handler, &KnobSignalSlotHandler::viewerContextSecretChanged, this, &KnobGui::onViewerContextSecretChanged);
+        QObject::connect(handler, &KnobSignalSlotHandler::linkChanged, this, &KnobGui::onLinkStateChanged);
     }
     // A linked node being deactivated or reactivated changes whether the knob reads as linked.
     EffectInstance* effect = dynamic_cast<EffectInstance*>(knob->getHolder());
     NodePtr node = effect ? effect->getNode() : NodePtr();
     if (node && !_imp->isInViewerUIKnob) {
-        QObject::connect(node.get(), SIGNAL(linksChanged()), this, SLOT(onLinkStateChanged()));
+        QObject::connect(node.get(), &Node::linksChanged, this, &KnobGui::onLinkStateChanged);
     }
     if (!_imp->isInViewerUIKnob) {
         _imp->guiCurves.resize( knob->getDimension() );
@@ -159,7 +158,10 @@ KnobGui::removeGui()
             _imp->descriptionLabel = 0;
         }
     }
-    removeSpecificGui();
+    if (_imp->widgetCreated) {
+        removeSpecificGui();
+    }
+    _imp->deferredRowBuild = std::function<void()>();
     _imp->guiRemoved = true;
 }
 
@@ -214,13 +216,18 @@ void
 KnobGui::createGUI(QWidget* fieldContainer,
                    QWidget* labelContainer,
                    KnobClickableLabel* label,
-                   Label* warningIndicator,
+                   int warningIconSize,
                    QHBoxLayout* layout,
                    bool isOnNewLine,
                    int lastKnobSpacing,
-                   const std::vector<KnobIPtr> & knobsOnSameLine)
+                   const std::vector<KnobIPtr>& knobsOnSameLine)
 {
     _imp->guiRemoved = false;
+    _imp->buildingWidgets = true;
+    _imp->deferredRowBuild = std::function<void()>();
+    _imp->deferredRowPage.reset();
+    _imp->deferredRowIndex = -1;
+    _imp->hiddenWhileUnbuilt = false;
     KnobIPtr knob = getKnob();
 
     _imp->fieldLayout = layout;
@@ -230,7 +237,8 @@ KnobGui::createGUI(QWidget* fieldContainer,
     _imp->field = fieldContainer;
     _imp->labelContainer = labelContainer;
     _imp->descriptionLabel = label;
-    _imp->warningIndicator = warningIndicator;
+    _imp->warningIndicator = 0;
+    _imp->warningIconSize = label ? warningIconSize : 0;
     _imp->isOnNewLine = isOnNewLine;
     if (!isOnNewLine) {
         //layout->addStretch();
@@ -250,9 +258,6 @@ KnobGui::createGUI(QWidget* fieldContainer,
             layout->addSpacing( TO_DPIX(spacing) );
         }
         if (label) {
-            if (_imp->warningIndicator) {
-                layout->addWidget(_imp->warningIndicator);
-            }
             layout->addWidget(label);
         }
     }
@@ -285,6 +290,7 @@ KnobGui::createGUI(QWidget* fieldContainer,
     }
 
     _imp->widgetCreated = true;
+    _imp->buildingWidgets = false;
 
     for (int i = 0; i < knob->getDimension(); ++i) {
         onExprChanged(i);
@@ -865,21 +871,34 @@ KnobGui::createAnimationMenu(QMenu* menu,
     }
     if (_imp->driverRow) {
         menu->addSeparator();
-        if (LoopDriverEdit::isDriven(knob, dimension)) {
-            QAction* removeAction = new QAction(tr("Remove loop driver"), menu);
-            removeAction->setData(dimension);
-            QObject::connect(removeAction, SIGNAL(triggered()), this, SLOT(onRemoveLoopDriverActionTriggered()));
-            menu->addAction(removeAction);
-        } else {
-            QAction* driveAction = new QAction(tr("Drive from loop"), menu);
-            driveAction->setData(dimension);
-            if (LoopDriverEdit::loopVariables(LoopDriverEdit::nodeOf(knob)).empty()) {
-                driveAction->setEnabled(false);
-                driveAction->setToolTip(tr("The node is not inside a loop: no LoopEnd below it pairs with a LoopBegin above it."));
-                menu->setToolTipsVisible(true);
+        // Unfolded fields scope the menu to one dimension; every dimension stays reachable too.
+        std::vector<int> scopes;
+        if ((dimension >= 0) && (knob->getDimension() > 1)) {
+            scopes.push_back(-1);
+        }
+        scopes.push_back(dimension);
+        const bool outsideLoops = LoopDriverEdit::loopVariables(LoopDriverEdit::nodeOf(knob)).empty();
+        for (int scope : scopes) {
+            QString suffix;
+            if ((scope < 0) && (dimension >= 0)) {
+                suffix = QLatin1Char(' ') + tr("(all dimensions)");
             }
-            QObject::connect(driveAction, SIGNAL(triggered()), this, SLOT(onDriveFromLoopActionTriggered()));
-            menu->addAction(driveAction);
+            if (LoopDriverEdit::isDriven(knob, scope)) {
+                QAction* removeAction = new QAction(tr("Remove loop driver") + suffix, menu);
+                removeAction->setData(scope);
+                QObject::connect(removeAction, SIGNAL(triggered()), this, SLOT(onRemoveLoopDriverActionTriggered()));
+                menu->addAction(removeAction);
+            } else {
+                QAction* driveAction = new QAction(tr("Drive from loop") + suffix, menu);
+                driveAction->setData(scope);
+                if (outsideLoops) {
+                    driveAction->setEnabled(false);
+                    driveAction->setToolTip(tr("The node is not inside a loop: no loop, for-each or solver end below it pairs with a begin above it."));
+                    menu->setToolTipsVisible(true);
+                }
+                QObject::connect(driveAction, SIGNAL(triggered()), this, SLOT(onDriveFromLoopActionTriggered()));
+                menu->addAction(driveAction);
+            }
         }
     }
 } // createAnimationMenu
@@ -887,7 +906,7 @@ KnobGui::createAnimationMenu(QMenu* menu,
 void
 KnobGui::reflectDriverState(bool driven)
 {
-    if (_imp->customInteract || _imp->guiRemoved) {
+    if (_imp->customInteract || _imp->guiRemoved || !_imp->hasWidgets()) {
         return;
     }
     if (driven) {

@@ -53,7 +53,9 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneCaches.h"
+#include "Engine/Nodes/Scene/SceneKindWalk.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
+#include "Engine/Nodes/Scene/ScenePredicates.h"
 #include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
@@ -938,8 +940,14 @@ namespace {
         if (!stage || parsed.IsEmpty()) {
             return true;
         }
-        const PXR_NS::UsdObjectCollectionExpressionEvaluator evaluator(stage, parsed);
-        PXR_NS::UsdObjectCollectionExpressionEvaluator::IncrementalSearcher searcher = evaluator.MakeIncrementalSearcher();
+        ScenePredicates::PathEval eval;
+        std::string linkError;
+        if (!ScenePredicates::link(parsed, ScenePredicates::library(), &eval, &linkError)) {
+            *errorMessage = "\"" + expression + "\" can't be evaluated: " + linkError;
+
+            return false;
+        }
+        ScenePredicates::Searcher searcher = eval.MakeIncrementalSearcher(ScenePredicates::PrimOfPath { PXR_NS::UsdStageWeakPtr(stage) });
         PXR_NS::UsdPrimRange range = stage->Traverse(predicate);
         std::size_t visited = 0;
         for (PXR_NS::UsdPrimRange::iterator it = range.begin(); it != range.end(); ++it) {
@@ -996,12 +1004,6 @@ namespace {
         static const PXR_NS::Usd_PrimFlagsPredicate predicate = PXR_NS::UsdPrimIsActive && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract;
 
         return predicate;
-    }
-
-    bool
-    isUnloadedPayload(const PXR_NS::UsdPrim& prim)
-    {
-        return prim.HasAuthoredPayloads() && !prim.IsLoaded();
     }
 
     // Whether path is root or below it.
@@ -1143,7 +1145,7 @@ namespace {
 
                 return;
             }
-            add(prim, eSceneDrawStateChildren);
+            add(prim, eSceneDrawStatePassThrough);
             for (const PXR_NS::UsdPrim& child : prim.GetFilteredChildren(drawRulePredicate())) {
                 if (!addedElsewhere(child)) {
                     levels(child, depth + 1);
@@ -1170,8 +1172,8 @@ namespace {
                 }
             }
             if (reached) {
-                // After the prims below: Children blocks nothing, so it switches none of them.
-                add(prim, eSceneDrawStateChildren);
+                // After the prims below: Pass Through blocks nothing, so it switches none of them.
+                add(prim, eSceneDrawStatePassThrough);
             }
 
             return reached;
@@ -1234,8 +1236,11 @@ namespace {
         if (!stage || !parsePrimExpression(expression, &parsed, &error) || parsed.IsEmpty()) {
             return true;
         }
+        ScenePredicates::PathEval eval;
+        if (!ScenePredicates::link(parsed, ScenePredicates::library(), &eval, &error)) {
+            return true;
+        }
         const PXR_NS::Usd_PrimFlagsPredicate& predicate = drawRulePredicate();
-        const PXR_NS::UsdObjectCollectionExpressionEvaluator evaluator(stage, parsed);
         std::size_t visited = 0;
         for (const std::string& root : roots) {
             const PXR_NS::SdfPath rootPath(root);
@@ -1243,7 +1248,7 @@ namespace {
             if (!prim || !predicate(prim)) {
                 continue;
             }
-            PXR_NS::UsdObjectCollectionExpressionEvaluator::IncrementalSearcher searcher = evaluator.MakeIncrementalSearcher();
+            ScenePredicates::Searcher searcher = eval.MakeIncrementalSearcher(ScenePredicates::PrimOfPath { PXR_NS::UsdStageWeakPtr(stage) });
             bool pruned = false;
             for (const PXR_NS::SdfPath& ancestor : rootPath.GetPrefixes()) {
                 if (ancestor == rootPath) {
@@ -1777,7 +1782,7 @@ countUnloadedPayloads(const PXR_NS::UsdStageRefPtr& stage,
         }
         if (at != root) {
             // The path lies inside a payload not loaded, or names no prim at all.
-            if (prim.HasAuthoredPayloads() && !prim.IsLoaded()) {
+            if (isUnloadedPayload(prim)) {
                 counted.insert(at);
             }
             continue;
@@ -1785,7 +1790,7 @@ countUnloadedPayloads(const PXR_NS::UsdStageRefPtr& stage,
         // The predicate leaves IsLoaded out, or the walk would not see what it counts.
         const PXR_NS::UsdPrimRange range(prim, PXR_NS::UsdPrimIsActive && PXR_NS::UsdPrimIsDefined && !PXR_NS::UsdPrimIsAbstract);
         for (PXR_NS::UsdPrimRange::const_iterator it = range.begin(); it != range.end(); ++it) {
-            if (it->HasAuthoredPayloads() && !it->IsLoaded()) {
+            if (isUnloadedPayload(*it)) {
                 counted.insert(it->GetPath());
                 it.PruneChildren();
             }
@@ -2331,7 +2336,7 @@ getPrimComposition(const PXR_NS::UsdPrim& prim)
         }
         composition.arcs.push_back(std::move(arc));
     }
-    if (prim.HasAuthoredPayloads() && !prim.IsLoaded()) {
+    if (isUnloadedPayload(prim)) {
         PXR_NS::SdfLayerHandle introducing;
         for (const PXR_NS::SdfPrimSpecHandle& spec : prim.GetPrimStack()) {
             if (spec && spec->HasField(PXR_NS::SdfFieldKeys->Payload)) {
@@ -2919,7 +2924,7 @@ namespace {
         for (const PXR_NS::UsdPrim& root : stage->GetPseudoRoot().GetAllChildren()) {
             if (root.IsDefined() && !root.IsAbstract()) {
                 names->push_back(root.GetName().GetString());
-            } else if (!root.IsDefined() && root.HasAuthoredPayloads() && !root.IsLoaded()) {
+            } else if (!root.IsDefined() && isUnloadedPayload(root)) {
                 // An over's specifier can come from its payload, which may define it.
                 reach->push_back(root.GetPath().GetString());
             }

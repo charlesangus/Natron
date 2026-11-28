@@ -117,9 +117,10 @@ public:
     /**
      * @brief Makes step() match prims with text, a USD path expression as a prim pattern knob takes
      * it (SceneOps::parsePrimExpression()), rather than by name; empty text goes back to names. The
-     * expression's predicates are USD's collection predicates and two more, {loaded} and {active},
-     * each taking false as in {loaded:false}. Inactive prims are matched too, so that
-     * {active:false} can find them; the walk never goes below one. The search is incremental: a
+     * expression's predicates are a node pattern's (ScenePredicates::library(), {purpose:proxy}
+     * among them) and two more, {loaded} and {active}, each taking false as in {loaded:false}.
+     * Inactive prims are matched too, so that {active:false} can find them; the walk never goes
+     * below one. The search is incremental: a
      * prim under which the expression can't match has its children skipped. Returns false with
      * *errorMessage set, matching nothing, when text doesn't parse or names a predicate the library
      * lacks. The next step() starts over.
@@ -186,6 +187,8 @@ public:
         eColumnName = 0,
         eColumnType,
         eColumnKind,
+        // The prim's computed purpose: default, render, proxy or guide; blank when it is not imageable.
+        eColumnPurpose,
         // The row's draw state in the viewer the panel is linked to.
         eColumnDrawState,
         eColumnCount
@@ -211,6 +214,12 @@ public:
         // The script name of the node whose draw rule set the row's state, for a state the graph
         // sets on the row itself; empty otherwise, and when the rule names no node.
         eDrawStateOriginNodeRole,
+        // Whether the prim's purpose is not authored on it, so that it comes from an ancestor or
+        // is the fallback, a bool. Invalid for a prim that is not imageable.
+        ePurposeInheritedRole,
+        // The path of the prim the purpose is authored on, a QString, empty for the fallback.
+        // Invalid for a prim that is not imageable.
+        ePurposeOriginRole,
     };
 
     enum PayloadStateEnum {
@@ -230,11 +239,29 @@ public:
     // and the rows below it to the graph.
     typedef std::function<void(const QString& path, int state)> DrawStateWriter;
 
-    // "BBox", "Children", "Full", "Load All" or "Hidden".
+    // "BBox", "Pass Through", "Geometry", "Load + Draw" or "Hide".
     static QString drawStateLabel(int state);
+
+    // Status line phrases of the scene graph's bulk commands, for the panel and the viewer alike.
+    // "1 row", "3 rows".
+    static QString rowsText(int count);
+
+    // "components", or "natronTree prims" for a custom kind.
+    static QString kindPluralText(const QString& kind);
+
+    // "1 component", "2 natronTree prims".
+    static QString kindCountText(const QString& kind, int count);
+
+    // What a load or an unload of rows in scope ("selected", "below" or a kind) was asked to do.
+    static QString loadingText(int rows, const QString& scope);
+
+    static QString unloadingText(int rows, const QString& scope);
 
     // The draw state column's tooltip for a SceneDrawOriginEnum, naming node for a graph-set row.
     static QString drawOriginTip(int origin, const QString& node);
+
+    // The purpose column's tooltip: the purpose and the prim it is authored on, if not the row's.
+    static QString purposeTip(const QString& purpose, bool inherited, const QString& origin);
 
     // The mime type of dragged prim paths: UTF-8, one path per line.
     static QString primPathsMimeType();
@@ -336,7 +363,8 @@ public:
 
     /**
      * @brief Marks the rows at paths, which the caller gives with their ancestors. Rows read later
-     * are marked too, so the set stays small however large the stage is.
+     * are marked too, so the set stays small however large the stage is. Like
+     * refreshDrawStates(), it announces the change on the top-level rows only.
      **/
     void setChangedHere(const QSet<QString>& paths);
 
@@ -349,7 +377,13 @@ public:
      **/
     void setDrawStateAccess(const DrawStatesReader& reader, const DrawStateWriter& writer);
 
-    // The linked viewer's draw states changed: the column reads them again.
+    /**
+     * @brief The linked viewer's draw states changed: the column reads them again. The one
+     * dataChanged() it emits spans the top-level rows only, though rows at every depth may change,
+     * because each dataChanged() costs a view a header layout and one per parent would be
+     * quadratic in the rows open. A view of this model must therefore repaint its whole viewport
+     * on a top-level dataChanged(), as SceneGraphPanel does; Qt repaints only the range given.
+     **/
     void refreshDrawStates();
 
     int getChangedHereCount() const;
@@ -374,6 +408,11 @@ public:
     // The draw state column takes a SceneDrawStateEnum, or -1 to reset the row to the graph.
     bool setData(const QModelIndex& index, const QVariant& value, int role = Qt::EditRole) override;
     bool canFetchMore(const QModelIndex& parent) const override;
+    /**
+     * @brief Whether every child of parent has a row: none is left to fetch, none is being read and
+     * no read of them is owed. True for a row with no children.
+     **/
+    bool hasFetchedAll(const QModelIndex& parent) const;
     void fetchMore(const QModelIndex& parent) override;
     QStringList mimeTypes() const override;
     QMimeData* mimeData(const QModelIndexList& indexes) const override;
@@ -401,6 +440,14 @@ struct SceneChangedHereRow {
     QString name;
     QString type;
     QString kind;
+    // As SceneGraphModel's purpose column and roles show them, for an imageable prim: a prim that
+    // is not passes its parent's purpose through to the rows below.
+    bool imageable = false;
+    QString purpose;
+    bool purposeInherited = false;
+    QString purposeOrigin;
+    // Whether the rows below take this row's purpose when they author none.
+    bool purposeInheritable = false;
     // Indexes into SceneChangedHereRows::rows; a top-level row has no parent, -1.
     int parent = -1;
     int rowInParent = 0;

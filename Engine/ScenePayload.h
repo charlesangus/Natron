@@ -39,7 +39,7 @@ NATRON_NAMESPACE_ENTER
 
 enum SceneDrawStateEnum {
     eSceneDrawStateBBox,
-    eSceneDrawStateChildren,
+    eSceneDrawStatePassThrough,
     eSceneDrawStateFull,
     eSceneDrawStateLoadAll,
     eSceneDrawStateHidden
@@ -52,8 +52,8 @@ enum SceneDrawStateEnum {
  * pattern is a prim path expression as a PrimSelector holds it. A union of plain paths needs no
  * stage, so it applies to prims inside unloaded payloads too. With levels and toKind unset, each
  * prim matched takes state. With levels set, each prim matched and the prims down to levels - 1
- * below it are Children and the prims levels below it take state. With toKind set, the prims
- * from each match down to the first prim whose kind is toKind or derives from it are Children,
+ * below it are Pass Through and the prims levels below it take state. With toKind set, the prims
+ * from each match down to the first prim whose kind is toKind or derives from it are Pass Through,
  * and that prim takes state. An unloaded payload reached by either walk takes state, as nothing
  * below it can be seen yet.
  **/

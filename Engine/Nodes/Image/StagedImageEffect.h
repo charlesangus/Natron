@@ -124,6 +124,17 @@ public:
     virtual std::optional<OpKind> opKind() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
+     * @brief The StagePlan render() runs for a Composite op rendering plane at time and view with
+     * processChannels, and in error the error render() would post and fail with instead, or
+     * nullopt.
+     **/
+    StagePlan resolveCompositeRenderPlan(double time,
+                                         ViewIdx view,
+                                         const ImageLayerDesc& plane,
+                                         const std::bitset<4>& processChannels,
+                                         std::optional<std::string>* error) WARN_UNUSED_RETURN;
+
+    /**
      * @brief For a Point op, whether the GPU executor can run the StagePlan of query
      * (canRunStagesGpu()) and the op's gpu() description at the query's time, view and scale names work
      * the device runs for pixels of the query's component count. A runtime shader that does not build is reported once and never built

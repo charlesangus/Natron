@@ -52,10 +52,20 @@ class SceneGraphModel;
  * the matching prims instead of the tree: by name, or, for text that starts with / or holds { or
  * %, by the path expression a prim pattern knob takes, whose matches are selected as they are
  * found and which Apply To Node writes to the current node's first prim pattern knob. Beside the
- * field, the expression's error or how many unloaded branches were not searched. Below the tree, a ScenePrimInspector on the current
- * prim at the viewer's frame. Rows drag their prim paths onto prim path and pattern knobs.
+ * field, the expression's error or how many unloaded branches were not searched. Below the tree, Apply To Node, Bake to Node and Cancel
+ * Loads, then a ScenePrimInspector on the current prim at the viewer's frame. Rows drag their prim paths onto prim path and pattern knobs.
  * Twirling open a row of an unloaded payload loads that payload alone, and the row menu loads and
- * unloads the selection, on the stage the rows are read from; closing a row never unloads.
+ * unloads the selection, on the stage the rows are read from; closing a row never unloads. A
+ * toolbar row under the filter runs Load, Unload, the draw states, Clear Below and Reset to Graph,
+ * the first four in the scope its combo picks: the selected rows, everything below them, or the prims of a kind below them
+ * (SceneViewport::loadRows(), unloadRows() and setDrawStateOnRowsScoped()); the row menu holds the
+ * same commands, and each built-in scope's has an unbound key in the Shortcut Editor.
+ *
+ * Unfold All Below, Unfold To <kind> and Fold All Below open and close whole branches of the
+ * tree a slice at a time (SceneGraphUnfolder), never loading a payload; Esc, another of them, or
+ * another stage stops one under way. They run from the row menu, Shift-click on a branch arrow (all
+ * below, or on an open row fold all below), * on the current row, the toolbar's Unfold and
+ * Fold buttons in the scope its combo picks, and unbound keys in the Shortcut Editor.
  *
  * A node the viewer does not show is read on a worker into a stage of the panel's own, opened with
  * no payload loaded; the rows of the stage left stay up, greyed, until it is read. The stages of
@@ -66,7 +76,11 @@ class SceneGraphModel;
  *
  * Scripts find its widgets by object name: sceneGraphTree, sceneGraphChangedHereTree,
  * sceneGraphResults, sceneGraphFilter, sceneGraphApplyToNode, sceneGraphFilterMessage, sceneGraphPin, sceneGraphFollow, sceneGraphNode,
- * sceneGraphChangedHere and sceneGraphStatus, and the inspector's. Rows the shown node's own layers
+ * sceneGraphChangedHere, sceneGraphStatus, sceneGraphBulkScope, sceneGraphBulk_<action>,
+ * sceneGraphBulkLoadIcon, sceneGraphBulkDisplayIcon, sceneGraphBulkStatus, sceneGraphResetDrawStates,
+ * sceneGraphBakeDrawStates, sceneGraphCancelLoads, sceneGraphUnfold, sceneGraphFold and
+ * sceneGraphTreePane, the row menu's sceneGraphUnfoldBelow, sceneGraphUnfoldTo_<kind> and
+ * sceneGraphFoldBelow, and the inspector's. Rows the shown node's own layers
  * author something on, and their ancestors, are marked (SceneGraphModel::eChangedHereRole); the
  * Changed Here button swaps the tree for one listing only those (SceneChangedHereModel), leaving
  * the tree as it was. It mirrors its state into the natronSceneGraphPinned, natronSceneGraphFollow
@@ -76,7 +90,9 @@ class SceneGraphModel;
  * natronSceneGraphChangedHereOnly, natronSceneGraphChangedHereBusy, natronSceneGraphChangedHereCount,
  * natronSceneGraphChangedHereRows, natronSceneGraphComposeCount (evaluations that reached a stage
  * of the panel's own), natronSceneGraphSwitching, natronSceneGraphCachedStages,
- * natronSceneGraphTimersActive and natronSceneGraphTopPath properties.
+ * natronSceneGraphTimersActive, natronSceneGraphTopPath, natronSceneGraphUnfolding,
+ * natronSceneGraphUnfoldSlices (slices of the last unfold or fold) and
+ * natronSceneGraphUnfoldedCount (open rows remembered) properties.
  **/
 class SceneGraphPanel
     : public QWidget,

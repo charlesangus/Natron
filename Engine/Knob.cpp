@@ -74,6 +74,7 @@
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Loop/LoopBlock.h"
 #include "Engine/Project.h"
 #include "Engine/PyRFV.h"
 #include "Engine/RFV.h"
@@ -6798,6 +6799,7 @@ KnobHelper::createDuplicateOnHolder(KnobHolder* otherHolder,
     KnobOutputFile* isOutputFile = dynamic_cast<KnobOutputFile*>(this);
     KnobPath* isPath = dynamic_cast<KnobPath*>(this);
     KnobLayers* isLayers = dynamic_cast<KnobLayers*>(this);
+    KnobRenderVars* isRenderVars = dynamic_cast<KnobRenderVars*>(this);
     KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(this);
     KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(this);
     KnobChannelSelect* isChannelSelect = dynamic_cast<KnobChannelSelect*>(this);
@@ -6899,6 +6901,10 @@ KnobHelper::createDuplicateOnHolder(KnobHolder* otherHolder,
         output = newKnob;
     } else if (isLayers) {
         KnobLayersPtr newKnob = AppManager::createKnob<KnobLayers>(otherHolder, newLabel, getDimension(), false);
+        newKnob->setAsUserKnob(isUserKnob);
+        output = newKnob;
+    } else if (isRenderVars) {
+        KnobRenderVarsPtr newKnob = AppManager::createKnob<KnobRenderVars>(otherHolder, newLabel, getDimension(), false);
         newKnob->setAsUserKnob(isUserKnob);
         output = newKnob;
     } else if (isChannelSet) {
@@ -8421,8 +8427,6 @@ attributeAt(const std::string& expression,
     return end;
 }
 
-const char* const kLoopVariableNames[] = { "iteration", "count", "t", "frame" };
-
 bool
 readsLoopVariables(const RenderContextReadSet& reads)
 {
@@ -8499,7 +8503,7 @@ KnobHelper::getRFVExpressionReads(const std::string& expression)
         if (attributeAt(expression, code, pos + kLoop.size(), &variable) != std::string::npos) {
             reads.add(RenderContextName::loop(variable));
         } else {
-            for (const char* name : kLoopVariableNames) {
+            for (const std::string& name : LoopBlocks::allVariables()) {
                 reads.add(RenderContextName::loop(name));
             }
         }
@@ -8522,7 +8526,7 @@ KnobHelper::getRFVExpressionReads(const std::string& expression)
         if (attributeAt(expression, code, afterName, &variable) != std::string::npos) {
             reads.add(RenderContextName::loops(loopName, variable));
         } else {
-            for (const char* name : kLoopVariableNames) {
+            for (const std::string& name : LoopBlocks::allVariables()) {
                 reads.add(RenderContextName::loops(loopName, name));
             }
         }

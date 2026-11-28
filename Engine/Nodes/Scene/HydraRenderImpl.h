@@ -435,6 +435,16 @@ bool engineSetting(const void* owner,
                    const std::string& key,
                    PXR_NS::VtValue* value) WARN_UNUSED_RETURN;
 
+/**
+ * @brief For tests: sets key on owner's engine (UsdImagingGLEngine::SetRendererSetting), waiting
+ * for the engine's thread, and counts it among the settings the engine was made with: a render
+ * under the changed settings then renders again on that engine, where otherwise it would make
+ * another. False if owner has no engine.
+ **/
+bool setEngineSetting(const void* owner,
+                      const std::string& key,
+                      const PXR_NS::VtValue& value) WARN_UNUSED_RETURN;
+
 // Drops owner's stage and engine, whichever delegate it is of, without waiting.
 void release(const void* owner);
 

@@ -396,6 +396,40 @@ expectTheSameEngine(const LiveRender& render,
     EXPECT_FALSE(render.trace.freshEngine) << what << traceOf(render);
     EXPECT_EQ(0, render.trace.remakes) << what << traceOf(render);
 }
+
+void
+expectALiveShutterEditToBlurOnTheSameEngine(const char* body)
+{
+    const FixedSampling sampling;
+    LiveRender closed;
+    LiveRender open;
+    LiveRender wide;
+    LiveRender reclosed;
+    {
+        LiveScene live(sceneOf("", body), kShutterOver);
+        ASSERT_TRUE(live.render(&closed));
+        ASSERT_TRUE(live.setShutter(-0.25, 0.25));
+        ASSERT_TRUE(live.render(&open));
+        ASSERT_TRUE(live.setShutter(-0.5, 0.5));
+        ASSERT_TRUE(live.render(&wide));
+        ASSERT_TRUE(live.setShutter(0, 0));
+        ASSERT_TRUE(live.render(&reclosed));
+    }
+    EXPECT_FALSE(CyclesTestUtils::hasHydraDirtyingError(closed.codingErrors)) << "closed: " << closed.codingErrors;
+    expectTheSameEngine(open, "opened");
+    expectTheSameEngine(wide, "widened");
+    expectTheSameEngine(reclosed, "closed again");
+
+    EXPECT_GE(partlyCovered(open.rgba, true), partlyCovered(closed.rgba, true) + 4)
+        << "row: opened " << partlyCovered(open.rgba, true) << ", closed " << partlyCovered(closed.rgba, true) << traceOf(open);
+    EXPECT_LE(partlyCovered(open.rgba, false), partlyCovered(closed.rgba, false) + 1)
+        << "column: opened " << partlyCovered(open.rgba, false) << ", closed " << partlyCovered(closed.rgba, false) << traceOf(open);
+    EXPECT_GE(partlyCovered(wide.rgba, true), partlyCovered(open.rgba, true) + 4)
+        << "row: widened " << partlyCovered(wide.rgba, true) << ", opened " << partlyCovered(open.rgba, true) << traceOf(wide);
+    EXPECT_LE(partlyCovered(reclosed.rgba, true), partlyCovered(closed.rgba, true) + 1)
+        << "row: closed again " << partlyCovered(reclosed.rgba, true) << ", closed " << partlyCovered(closed.rgba, true) << traceOf(reclosed);
+    EXPECT_LE(coverageDifferences(reclosed.rgba, closed.rgba), (std::size_t)kSize / 16) << traceOf(reclosed);
+}
 } // anon namespace
 
 TEST(USDRenderCyclesMotion, TheShutterBlursAMovingTransform)
@@ -474,34 +508,22 @@ TEST(USDRenderCyclesMotion, EveryFitAndOffsetFramesAsTheFrustum)
     }
 }
 
-// Opening the shutter on the live stage, then widening it, blurs the moving cube more each time on
-// the same engine. Cycles samples motion over a shutter of its own, so its rprims have to sync
-// again over each new one, which under a scene index takes dirtying Hydra does not reject.
-TEST(USDRenderCyclesMotion, ALiveShutterEditBlursOnTheSameEngine)
+// Opening the shutter on the live stage, then widening it, blurs body more each time on the same
+// engine, and closing it again leaves body as sharp as before. Cycles samples motion over a
+// shutter of its own, so its rprims have to sync again over each new one, which under a scene
+// index takes dirtying Hydra does not reject.
+TEST(USDRenderCyclesMotion, ALiveShutterEditBlursATransformOnTheSameEngine)
 {
     if (!CyclesTestUtils::cyclesOrSkip()) {
         return;
     }
-    const FixedSampling sampling;
-    LiveRender closed;
-    LiveRender open;
-    LiveRender wide;
-    {
-        LiveScene live(sceneOf("", kMovingCube), kShutterOver);
-        ASSERT_TRUE(live.render(&closed));
-        ASSERT_TRUE(live.setShutter(-0.25, 0.25));
-        ASSERT_TRUE(live.render(&open));
-        ASSERT_TRUE(live.setShutter(-0.5, 0.5));
-        ASSERT_TRUE(live.render(&wide));
-    }
-    EXPECT_FALSE(CyclesTestUtils::hasHydraDirtyingError(closed.codingErrors)) << "closed: " << closed.codingErrors;
-    expectTheSameEngine(open, "opened");
-    expectTheSameEngine(wide, "widened");
+    expectALiveShutterEditToBlurOnTheSameEngine(kMovingCube);
+}
 
-    EXPECT_GE(partlyCovered(open.rgba, true), partlyCovered(closed.rgba, true) + 4)
-        << "row: opened " << partlyCovered(open.rgba, true) << ", closed " << partlyCovered(closed.rgba, true) << traceOf(open);
-    EXPECT_LE(partlyCovered(open.rgba, false), partlyCovered(closed.rgba, false) + 1)
-        << "column: opened " << partlyCovered(open.rgba, false) << ", closed " << partlyCovered(closed.rgba, false) << traceOf(open);
-    EXPECT_GE(partlyCovered(wide.rgba, true), partlyCovered(open.rgba, true) + 4)
-        << "row: widened " << partlyCovered(wide.rgba, true) << ", opened " << partlyCovered(open.rgba, true) << traceOf(wide);
+TEST(USDRenderCyclesMotion, ALiveShutterEditBlursPointsOnTheSameEngine)
+{
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    expectALiveShutterEditToBlurOnTheSameEngine(kMovingPoints);
 }

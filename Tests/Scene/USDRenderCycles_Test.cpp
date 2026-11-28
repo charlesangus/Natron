@@ -1583,17 +1583,8 @@ protected:
                      const std::map<std::string, PXR_NS::VtValue>& settings,
                      std::vector<float>* rgba)
     {
-        std::map<std::string, PXR_NS::VtValue> all = fixedSampling(16);
-        all.insert(settings.begin(), settings.end());
-        HydraRender::setRendererSettings(kRenderDelegateCyclesId, all);
         HydraRender::releaseAllCpuEngines();
-        const QString file = _dir.path() + QString::fromUtf8("/subdivision") + QString::number(_files++) + QString::fromUtf8(".usda");
-        if (!_dir.isValid() || !writeSubdivisionStage(file, meshes)) {
-            ADD_FAILURE() << "cannot write " << file.toStdString();
-
-            return false;
-        }
-        NodePtr node = createGraph(nullptr, file.toStdString().c_str());
+        NodePtr node = subdivisionGraph(meshes, settings);
         if (!node) {
             return false;
         }
@@ -1604,6 +1595,30 @@ protected:
         *rgba = planes[0].pixels;
 
         return true;
+    }
+
+    // Puts fixedSampling() and settings on every engine of Cycles'.
+    static void setCyclesSettings(const std::map<std::string, PXR_NS::VtValue>& settings)
+    {
+        std::map<std::string, PXR_NS::VtValue> all = fixedSampling(16);
+        all.insert(settings.begin(), settings.end());
+        HydraRender::setRendererSettings(kRenderDelegateCyclesId, all);
+    }
+
+    // The render node of a graph reading the stage of meshes, with setCyclesSettings(settings);
+    // null after a gtest failure.
+    NodePtr subdivisionGraph(const std::string& meshes,
+                             const std::map<std::string, PXR_NS::VtValue>& settings)
+    {
+        setCyclesSettings(settings);
+        const QString file = _dir.path() + QString::fromUtf8("/subdivision") + QString::number(_files++) + QString::fromUtf8(".usda");
+        if (!_dir.isValid() || !writeSubdivisionStage(file, meshes)) {
+            ADD_FAILURE() << "cannot write " << file.toStdString();
+
+            return NodePtr();
+        }
+
+        return createGraph(nullptr, file.toStdString().c_str());
     }
 
     static std::map<std::string, PXR_NS::VtValue> on(std::map<std::string, PXR_NS::VtValue> settings = std::map<std::string, PXR_NS::VtValue>())
@@ -1689,34 +1704,46 @@ TEST_F(USDRenderCyclesSubdivisionTest, DicingRateSetsTheFacetSize)
     EXPECT_LE(differingPixels(fineRgba, defaultRgba), differingPixels(coarseRgba, defaultRgba));
 }
 
-// Subdivision settings reach the delegate when Natron makes an engine under them, before its first
-// sync, which then subdivides and dices under them with no dirtying Hydra rejects under a scene
-// index. Natron makes an engine again under changed settings rather than changing a live one's.
-TEST_F(USDRenderCyclesSubdivisionTest, SubdivisionSettingsDirtyNothingHydraRejects)
+// A dicing rate changed on a live engine dices its subdivided mesh again on that engine, with no
+// dirtying Hydra rejects under a scene index. Natron makes an engine again under changed settings,
+// so only a test changes them on a live one.
+TEST_F(USDRenderCyclesSubdivisionTest, ALiveDicingRateChangeRedicesOnTheSameEngine)
 {
     if (!cyclesOrSkip()) {
         return;
     }
-    const std::string cube = subdivisionCube("Cube", "catmullClark");
     std::map<std::string, PXR_NS::VtValue> fine, coarse;
     fine["natron:dicingRate"] = PXR_NS::VtValue(0.5f);
     coarse["natron:dicingRate"] = PXR_NS::VtValue(8.f);
-    std::vector<float> fineRgba, coarseRgba;
+    HydraRender::releaseAllCpuEngines();
+    NodePtr node = subdivisionGraph(subdivisionCube("Cube", "catmullClark"), on(fine));
+    ASSERT_TRUE(node != nullptr);
+    const void* owner = dynamic_cast<USDRender*>(node->getEffectInstance().get());
+    std::vector<RenderedPlane> finePlanes, coarsePlanes;
     std::string fineErrors, coarseErrors;
     {
         const CyclesTestUtils::CodingErrors errors;
-        ASSERT_TRUE(renderStage(cube, on(fine), &fineRgba));
+        ASSERT_TRUE(renderAll(node, &finePlanes, true));
         fineErrors = errors.text();
     }
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+    setCyclesSettings(on(coarse));
+    ASSERT_TRUE(HydraRender::setEngineSetting(owner, "natron:dicingRate", coarse["natron:dicingRate"]));
     {
         const CyclesTestUtils::CodingErrors errors;
-        ASSERT_TRUE(renderStage(cube, on(coarse), &coarseRgba));
+        ASSERT_TRUE(renderAll(node, &coarsePlanes, true));
         coarseErrors = errors.text();
     }
+    const std::uint64_t rebuilds = HydraRender::getEngineBuildCount() - builds;
+    HydraRender::releaseAllCpuEngines();
 
     EXPECT_FALSE(CyclesTestUtils::hasHydraDirtyingError(fineErrors)) << fineErrors;
     EXPECT_FALSE(CyclesTestUtils::hasHydraDirtyingError(coarseErrors)) << coarseErrors;
+    EXPECT_EQ(0u, rebuilds);
+    const std::vector<float>& fineRgba = finePlanes[0].pixels;
+    const std::vector<float>& coarseRgba = coarsePlanes[0].pixels;
     EXPECT_GT(differingPixels(fineRgba, coarseRgba), 0u);
+    // The coarse surface is a polygon inside the smooth one, so it covers less.
     EXPECT_LT(coverage(coarseRgba), coverage(fineRgba));
 }
 

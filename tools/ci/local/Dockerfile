@@ -43,8 +43,8 @@ FROM aswf/ci-vfxall:2027-clang21.1
 # compressed it adds to the AppImage.
 # NATRON_CYCLES_SHA256 is of <NATRON_CYCLES_REPO>/archive/<commit>.tar.gz.
 ARG NATRON_CYCLES_REPO=https://github.com/charlesangus/cycles
-ARG NATRON_CYCLES_COMMIT=02d38ebbea4e2f25a50b772fd8c0564e0b39a87b
-ARG NATRON_CYCLES_SHA256=010e6ab95ddd470a55121ac89558eff6d61af6054561ef2d265fe4a63ded600c
+ARG NATRON_CYCLES_COMMIT=925817b3bd739aa0aa1a20ecaa526ee7649aa6ad
+ARG NATRON_CYCLES_SHA256=da1d7c01bacf8a1fc2a38d3746217ea5da521fec341bac126ed54cca7ac0f7cd
 ARG NATRON_CYCLES_OIDN=ON
 COPY build-cycles.sh /tmp/build-cycles.sh
 RUN NATRON_CYCLES_REPO="$NATRON_CYCLES_REPO" \

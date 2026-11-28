@@ -42,19 +42,19 @@ A second paint model for `USDTexturePaint`: each dab of a stroke is splatted str
 
 ## Phase 315.1: Substrate
 
-- [ ] M315.P1.T1 — Extract a cairo-free stroke dab walker used by RotoPaint's stroke renderer
+- [x] M315.P1.T1 — Extract a cairo-free stroke dab walker used by RotoPaint's stroke renderer
   - files: new `Engine/RotoStrokeDabs.h`/`.cpp`, `Engine/RotoContext.cpp`, `Engine/RotoContextPrivate.h`, new `Tests/RotoStrokeDabs_Test.cpp`, `Tests/CMakeLists.txt`
   - approach: lift the dab placement out of `RotoContextPrivate::renderStroke`/`renderDot` (`RotoContextPrivate.h:2536-2553`, `RotoContext.cpp:1570`, `:1744`, `:1771`) into `RotoStrokeDabs::walk(strokes, distToNext, item, time, mipmapLevel, sink)`. The sink receives each dab: centre, internal and external radius, pressure, opacity stops, build-up and opacity, and the walk returns the carried distance to the next dab. `renderStroke` becomes a sink that calls `renderDot`, so RotoPaint renders exactly as before. No cairo in the new files.
   - verify: the new test checks that the dab count, centres and radii for a fixed multi-segment stroke with pressure match what the cairo path draws (an instrumented sink in a test build); the existing Roto and RotoPaint ctests pass unchanged.
   - size: L
 
-- [ ] M315.P1.T2 — `SceneRaster::triangulateMeshes`: world-space triangles with per-corner st
+- [x] M315.P1.T2 — `SceneRaster::triangulateMeshes`: world-space triangles with per-corner st
   - files: `Engine/Nodes/Scene/SceneRaster.h`/`.cpp`, `Tests/Scene/SceneRaster_Test.cpp`
   - approach: expose what `UVLayout::prepare` builds privately (`SceneRaster.h:185-210`) as a public `TriangulatedMesh` (path, world points, triangle corners, per-corner st after HdMeshUtil's faceVarying, vertex and varying remap, flat normals) for a stage, time, mesh list and st name. `UVLayout::prepare` then uses it. Keep it plain data so M427's GeoDetail adapter can fill the same struct.
   - verify: test that a unit quad and a two-island cube give the expected triangle count, world corners and st per corner for indexed faceVarying and vertex st; the existing SceneRaster tests pass.
   - size: M
 
-- [ ] M315.P1.T3 — `PaintMeshIndex`: Embree raycast, sphere query and batched visibility over TriangulatedMeshes
+- [x] M315.P1.T3 — `PaintMeshIndex`: Embree raycast, sphere query and batched visibility over TriangulatedMeshes
   - files: new `Engine/Nodes/Scene/PaintMeshIndex.h`/`.cpp`, new `Tests/Scene/PaintMeshIndex_Test.cpp`
   - approach: one Embree scene over P1.T2's meshes, built once per (scene hash, meshes, time) and reused by every dab. The API is `raycast(camera, u, v)` → mesh, triangle, barycentrics, world position, normal, st, UDIM tile; `trianglesInSphere(centre, radius)` via `rtcPointQuery`; and `visible(points, normals, camera, bias)` in `rtcOccluded16` batches. Use `Engine/Nodes/Scene/Utility/EmbreeTracer.cpp` as the Embree API reference, not as a dependency (Tracer has no point query). Thread use stays inside Natron's thread budget. First confirm which occluders TextureProjection uses and mirror them.
   - verify: tests on hand-built meshes. A ray through the quad centre hits with barycentrics (1/3, 1/3) on the expected triangle. A sphere at a cube edge returns the triangles of both faces and none beyond the radius. A point behind another quad is reported occluded. A miss returns no hit. Old gtest: no `GTEST_SKIP`, no `ASSERT_TRUE(ptr)`.
@@ -153,3 +153,4 @@ A second paint model for `USDTexturePaint`: each dab of a stroke is splatted str
 - 2026-11-28 (planner) — USDTexturePaint only: M427 has not landed and no shared base exists, so the engine (`PaintMeshIndex`, `TexelPages`, `TexelSplat`) takes `TriangulatedMesh` data only, for M427 to adapt.
 - 2026-11-28 (planner) — Paint model is recorded per session and the node knob applies to new sessions, so mixed projects replay unchanged after the knob moves.
 - 2026-11-28 — **User:** Footprint is a knob (Surface default, View); all nine brushes in Direct; M315 serves every UDIM tile (P3.T4); the 2-texel seam gutter applies to both paint models.
+- 2026-11-28 — Phase 1 in eb0d3d5c87 (m315-gate1 running). Embree 4.2.0 has rtcPointQuery/rtcOccluded16. Occluders: TextureProjection's depth buffer has no prim filter, so every drawn mesh occludes (not only matched meshes); PaintMeshIndex mirrors it — matched meshes are paint targets, all other drawn meshes only block. walk() also takes buildUp and opacity. PM: an occluder mesh that fails to triangulate is skipped with a warning rather than failing the index (fold into Phase 2).

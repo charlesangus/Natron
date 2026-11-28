@@ -74,17 +74,19 @@ constexpr double kGpuRegionMinPixels = 256. * 256.;
  * @brief How much a node weighs when GPU placement decides where a region of nodes renders. A
  * Point node is kGpuPointWeight. A Filter node carries a weight, kGpuFilterWeight unless its
  * cost follows a size. A Heavy node sends the region it belongs to to the GPU whatever the other
- * members weigh.
+ * members weigh. A Resident node does its work on the GPU wherever it is placed, its CPU render
+ * downloading what the device made, so its region goes to the GPU however small its images are.
  **/
 struct GpuWeight {
     enum class Class : unsigned char {
         Point,
         Filter,
-        Heavy
+        Heavy,
+        Resident
     };
 
     Class weightClass = Class::Point;
-    // What the node adds to the sum over its region. Unused by Heavy.
+    // What the node adds to the sum over its region. Unused by Heavy and Resident.
     double weight = kGpuPointWeight;
 
     static GpuWeight point()
@@ -102,9 +104,19 @@ struct GpuWeight {
         return GpuWeight { Class::Heavy, 0. };
     }
 
+    static GpuWeight resident()
+    {
+        return GpuWeight { Class::Resident, 0. };
+    }
+
     bool isHeavy() const
     {
         return weightClass == Class::Heavy;
+    }
+
+    bool isResident() const
+    {
+        return weightClass == Class::Resident;
     }
 };
 

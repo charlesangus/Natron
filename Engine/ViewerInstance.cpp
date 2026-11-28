@@ -1639,19 +1639,26 @@ viewerTakesCpuFramesOnly(OpenGLViewerI* uiContext)
 #ifdef NATRON_HAVE_GPU
 // The GPU viewer process does not read a matte from a second plane, and a
 // root rendered for only part of the texture would drop the tiles found in the cache.
-bool
-viewerFrameCanTakeDeviceRoot(const ViewerArgs& inArgs,
-                             const std::list<ImageLayerDesc>& components,
-                             bool cpuFramesOnly)
+// Empty when the viewer can take the frame's root on the device, else why it cannot.
+std::string
+whyViewerFrameTakesNoDeviceRoot(const ViewerArgs& inArgs,
+                                const std::list<ImageLayerDesc>& components,
+                                bool cpuFramesOnly)
 {
     if (cpuFramesOnly) {
-        return false;
+        return "the viewer takes CPU frames only";
     }
     if ((inArgs.channels == eDisplayChannelsMatte) && (components.size() > 1)) {
-        return false;
+        return "the matte is read from a second plane";
+    }
+    if (inArgs.isDoingPartialUpdates) {
+        return "the frame is a partial update";
+    }
+    if (inArgs.params->nbCachedTile != 0) {
+        return "part of the frame was found in the cache";
     }
 
-    return !inArgs.isDoingPartialUpdates && (inArgs.params->nbCachedTile == 0);
+    return std::string();
 }
 
 /**
@@ -1753,6 +1760,49 @@ private:
     std::list<std::weak_ptr<Entry>> _waiting;
 };
 
+// Logs each reason the first time a viewer frame renders its root off the device for it.
+void
+noteRootOffDevice(const std::string& reason)
+{
+    static std::mutex mutex;
+    static std::set<std::string> logged;
+    {
+        std::lock_guard<std::mutex> k(mutex);
+        if (!logged.insert(reason).second) {
+            return;
+        }
+    }
+    qInfo().noquote() << QString::fromLatin1("Viewer frame root not on the device: %1").arg(QString::fromStdString(reason));
+}
+
+const char*
+placementReasonText(FrameGraph::PlacementReason reason)
+{
+    switch (reason) {
+    case FrameGraph::PlacementReason::None:
+        // Also what a task keeps when placement did not run, GPU placement being unavailable.
+        return "not placed";
+    case FrameGraph::PlacementReason::InvalidGraph:
+        return "graph has a cycle";
+    case FrameGraph::PlacementReason::NoGpuPath:
+        return "no GPU path";
+    case FrameGraph::PlacementReason::DownscaleUnsupported:
+        return "no downscale";
+    case FrameGraph::PlacementReason::Cached:
+        return "cached";
+    case FrameGraph::PlacementReason::Identity:
+        return "identity";
+    case FrameGraph::PlacementReason::RawRunAllOrNothing:
+        return "raw run on the CPU";
+    case FrameGraph::PlacementReason::WouldFormCycle:
+        return "would form a cycle";
+    case FrameGraph::PlacementReason::CostModel:
+        return "cost model";
+    }
+
+    return "unknown";
+}
+
 // Counts a frame the hand-off refused, logging each reason the first time it is given in the session.
 void
 noteHandoffRefusal(const RenderStatsPtr& stats,
@@ -1802,7 +1852,11 @@ buildViewerFrameGraph(const FrameRenderContextPtr& context,
                       bool cpuFramesOnly)
 {
 #ifdef NATRON_HAVE_GPU
-    context->setWantsRootOnDevice(viewerFrameCanTakeDeviceRoot(inArgs, components, cpuFramesOnly));
+    const std::string noDeviceRoot = whyViewerFrameTakesNoDeviceRoot(inArgs, components, cpuFramesOnly);
+    context->setWantsRootOnDevice(noDeviceRoot.empty());
+    if (!noDeviceRoot.empty() && !cpuFramesOnly) {
+        noteRootOffDevice(noDeviceRoot);
+    }
 #else
     Q_UNUSED(cpuFramesOnly);
 #endif
@@ -1939,6 +1993,16 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
             } else {
                 placeRenderGraph(graph, context);
             }
+#ifdef NATRON_HAVE_GPU
+            const FrameGraph::Task& root = graph.tasks.front();
+            if (context->wantsRootOnDevice() && (root.device != FrameGraph::Device::Gpu) && root.key.node) {
+                std::string why = root.key.node->getPluginID() + " renders on the CPU (" + placementReasonText(root.placementReason);
+                if (!root.placementDetail.empty()) {
+                    why += ": " + root.placementDetail;
+                }
+                noteRootOffDevice(why + ")");
+            }
+#endif
             if (contextOut) {
                 *contextOut = context;
             }
@@ -1949,6 +2013,11 @@ submitViewerFrameToRenderScheduler(const ParallelRenderArgsSetter* setter,
     if (reason && stats && countFallback) {
         stats->incLegacyFallbacks(std::string("viewer: ") + reason);
     }
+#ifdef NATRON_HAVE_GPU
+    if (reason && countFallback && !viewerTakesCpuFramesOnly(uiContext)) {
+        noteRootOffDevice(std::string("not scheduled, rendered by renderRoI: ") + reason);
+    }
+#endif
 
     return FrameFuturePtr();
 }

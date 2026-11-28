@@ -1066,6 +1066,30 @@ TEST(GpuWeightPlacement, RegionBelowPixelFloorStays)
     EXPECT_TRUE(generator.graph.regions.empty());
 }
 
+// A lone Resident root renders on the device anyway, so below the pixel floor it still goes, on its own or with a Point
+// consumer whose sum stays below kGpuRegionMinWeight.
+TEST(GpuWeightPlacement, ResidentRegionBelowPixelFloorGoes)
+{
+    const int floorWidth = (int)std::ceil(kGpuRegionMinPixels);
+
+    WeightFixture generator(1, {});
+    generator.weights[0] = GpuWeight::resident();
+    generator.rootOnDevice = true;
+    generator.setRoI(RectI(0, 0, floorWidth - 1, 1));
+    generator.place();
+    ASSERT_EQ(generator.graph.regions.size(), 1u);
+    EXPECT_EQ(generator.graph.tasks[0].device, FrameGraph::Device::Gpu);
+
+    WeightFixture graded(2, { { 0, 1 } });
+    graded.weights[0] = GpuWeight::point();
+    graded.weights[1] = GpuWeight::resident();
+    graded.setRoI(RectI(0, 0, 16, 16));
+    graded.place();
+    ASSERT_EQ(graded.graph.regions.size(), 1u);
+    EXPECT_EQ(graded.graph.tasks[0].device, FrameGraph::Device::Gpu);
+    EXPECT_EQ(graded.graph.tasks[1].device, FrameGraph::Device::Gpu);
+}
+
 // A lone Point root with no input: it moves nothing between the devices when its consumer takes the root on the
 // device, so it goes there however little it weighs. Fed by a CPU reader, it would upload, and stays.
 TEST(GpuWeightPlacement, FreeTransferRegionBelowMinWeightGoes)

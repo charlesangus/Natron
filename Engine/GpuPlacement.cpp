@@ -283,6 +283,7 @@ judgeByWeight(const FrameGraph& graph,
     double pixels = 0.;
     double weight = 0.;
     bool heavy = false;
+    bool resident = false;
     for (int m : region.members) {
         if (isIdentity(m)) {
             continue;
@@ -291,9 +292,13 @@ judgeByWeight(const FrameGraph& graph,
         pixels = std::max(pixels, taskPixelCount(task));
         const GpuWeight w = taskWeight(task);
         heavy = heavy || w.isHeavy();
-        if (!w.isHeavy()) {
+        resident = resident || w.isResident();
+        if (!w.isHeavy() && !w.isResident()) {
             weight += w.weight;
         }
+    }
+    if (resident) {
+        return 1.;
     }
     if (pixels < kGpuRegionMinPixels) {
         return -1.;

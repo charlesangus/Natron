@@ -142,6 +142,10 @@ public:
     // rung HydraHandoff picks; when that rung is readback the node renders on the CPU.
     virtual std::optional<OpKind> opKind() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool canRenderOnGpu(const GpuQuery& query) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    // Resident for Natron Utility, whose CPU render downloads the frame it renders on the device.
+    virtual GpuWeight gpuWeight(double time,
+                                ViewIdx view,
+                                unsigned int mipmapLevel) const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual bool readsGpuInput(int inputNb,
                                const ImageLayerDesc& plane,
                                double time,

@@ -99,9 +99,9 @@ bool regionTransfersAreFree(const FrameGraph& graph,
                             bool rootOnDevice);
 
 /**
- * @brief The weight rule's judgment of region: 1 when it goes to the GPU, -1 when it stays on the CPU. It goes when its
- * largest member image holds at least kGpuRegionMinPixels and either its transfers are free, a member is Heavy, or its
- * members weigh kGpuRegionMinWeight together. Identity members weigh nothing, as they alias their dependency's image.
+ * @brief The weight rule's judgment of region: 1 when it goes to the GPU, -1 when it stays on the CPU. It goes when a
+ * member is Resident, or when its largest member image holds at least kGpuRegionMinPixels and either its transfers are
+ * free, a member is Heavy, or its members weigh kGpuRegionMinWeight together. Identity members weigh nothing, as they alias their dependency's image.
  **/
 double regionWeightGain(const FrameGraph& graph,
                         const FrameGraph::Region& region,

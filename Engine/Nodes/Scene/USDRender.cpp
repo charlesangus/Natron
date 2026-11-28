@@ -34,7 +34,9 @@
 #include <vector>
 
 #include <QCoreApplication>
+#include <QDebug>
 #include <QMetaObject>
+#include <QString>
 #include <QStringList>
 #include <QThread>
 
@@ -98,6 +100,25 @@ normalLayer()
 
     return ImageLayerDesc("normal", std::vector<std::string>(channels, channels + 3));
 }
+
+#ifdef NATRON_HAVE_GPU
+// Placement asks for every frame, so each reason is logged only the first time it keeps a frame on the CPU.
+bool
+refuseGpu(const std::string& reason)
+{
+    static std::mutex mutex;
+    static std::set<std::string> logged;
+    {
+        const std::lock_guard<std::mutex> lock(mutex);
+        if (!logged.insert(reason).second) {
+            return false;
+        }
+    }
+    qInfo().noquote() << QString::fromLatin1("USDRender renders on the CPU: %1").arg(QString::fromStdString(reason));
+
+    return false;
+}
+#endif
 
 std::string
 primIdKey(std::uint32_t hash)
@@ -1514,8 +1535,11 @@ USDRender::canRenderOnGpu(const GpuQuery& query) const
 {
 #ifdef NATRON_HAVE_GPU
     const std::string& layerID = query.plane.getLayerID();
-    if ((query.bitDepth != eImageBitDepthFloat) || (!query.plane.isColorLayer() && (layerID != "depth") && (layerID != "primId"))) {
-        return false;
+    if (query.bitDepth != eImageBitDepthFloat) {
+        return refuseGpu("a frame was asked at a depth other than float");
+    }
+    if (!query.plane.isColorLayer() && (layerID != "depth") && (layerID != "primId")) {
+        return refuseGpu("the " + layerID + " layer has no GPU path");
     }
     std::string renderer;
     std::string error;
@@ -1531,27 +1555,51 @@ USDRender::canRenderOnGpu(const GpuQuery& query) const
         // the render itself does both, and a frame asked before then renders on the CPU.
         GpuContext* context = appPTR ? appPTR->getGpuContext() : nullptr;
         if (!context || context->isInitializing() || !context->isAvailable()) {
-            return false;
+            return refuseGpu("Natron Utility found GPU compute unavailable or still starting");
         }
         const std::shared_ptr<void> hold = context->holdRuntime();
         gpu::GpuRuntime* runtime = hold ? context->runtime() : nullptr;
-        if (!runtime || runtime->isLost() || !WavefrontGpu::missingSupport(*runtime).empty()) {
-            return false;
+        if (!runtime || runtime->isLost()) {
+            return refuseGpu("Natron Utility found no GPU runtime, or a lost one");
+        }
+        const std::string missing = WavefrontGpu::missingSupport(*runtime);
+        if (!missing.empty()) {
+            return refuseGpu("Natron Utility's GPU lacks " + missing);
+        }
+        if (HydraRender::deviceFrameFellBack(this, context->generation(), utilityGpuBudget(), utilityDevice(query.time, query.view))) {
+            return refuseGpu("Natron Utility's last GPU frame fell back to the CPU on this device and budget");
         }
 
-        return !HydraRender::deviceFrameFellBack(this, context->generation(), utilityGpuBudget(), utilityDevice(query.time, query.view));
+        return true;
     }
     // Only Storm renders into GL; the other delegates' host pixels are read back by render().
     if (!RenderDelegates::isStorm(renderer)) {
-        return false;
+        return refuseGpu("the " + renderer + " renderer has no GPU path");
+    }
+    if (HydraHandoff::instance().path() == gpu::GlHandoffPath::Readback) {
+        return refuseGpu("Storm's frames are handed over by readback");
     }
 
-    return HydraHandoff::instance().path() != gpu::GlHandoffPath::Readback;
+    return true;
 #else
     Q_UNUSED(query);
 
     return false;
 #endif
+}
+
+GpuWeight
+USDRender::gpuWeight(double time,
+                     ViewIdx view,
+                     unsigned int mipmapLevel) const
+{
+    std::string renderer;
+    std::string error;
+    if (activeRenderer(time, view, &renderer, &error) && (renderer == kRenderDelegateUtilityId)) {
+        return GpuWeight::resident();
+    }
+
+    return NativeEffectBase::gpuWeight(time, view, mipmapLevel);
 }
 
 StatusEnum

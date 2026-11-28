@@ -31,6 +31,7 @@
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
 #include <QAction>
+#include <QBoxLayout>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -41,6 +42,8 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/KnobGuiPrivate.h"
 #include "Gui/KnobUndoCommand.h" // SetExpressionCommand...
+#include "Gui/Label.h"
+#include "Gui/ThemedIcon.h"
 
 NATRON_NAMESPACE_ENTER
 
@@ -261,6 +264,9 @@ void
 KnobGui::setReadOnly_(bool readOnly,
                       int dimension)
 {
+    if (!_imp->hasWidgets()) {
+        return;
+    }
     if (!_imp->customInteract) {
         setReadOnly(readOnly, dimension);
     }
@@ -339,7 +345,7 @@ KnobGui::onSetValueUsingUndoStack(const Variant & v,
 void
 KnobGui::onSetDirty(bool d)
 {
-    if (!_imp->customInteract) {
+    if (_imp->hasWidgets() && !_imp->customInteract) {
         setDirty(d);
     }
 }
@@ -529,7 +535,7 @@ void
 KnobGui::onAnimationLevelChanged(ViewSpec /*idx*/,
                                  int dimension)
 {
-    if (!_imp->customInteract) {
+    if (_imp->hasWidgets() && !_imp->customInteract) {
         KnobIPtr knob = getKnob();
         int dim = knob->getDimension();
         for (int i = 0; i < dim; ++i) {
@@ -623,7 +629,7 @@ KnobGui::setWarningValue(KnobWarningEnum warn,
 void
 KnobGui::refreshKnobWarningIndicatorVisibility()
 {
-    if (!_imp->warningIndicator) {
+    if (!_imp->warningIndicator && !_imp->warningIconSize) {
         return;
     }
     QString fullToolTip;
@@ -636,10 +642,28 @@ KnobGui::refreshKnobWarningIndicatorVisibility()
             fullToolTip += QString::fromUtf8("</p>");
         }
     }
-    if (hasWarning) {
-        _imp->warningIndicator->setToolTip(fullToolTip);
+    if (!hasWarning) {
+        if (_imp->warningIndicator) {
+            _imp->warningIndicator->setVisible(false);
+        }
+
+        return;
     }
-    _imp->warningIndicator->setVisible(hasWarning);
+    if (!_imp->warningIndicator) {
+        KnobClickableLabel* label = _imp->descriptionLabel;
+        QWidget* labelParent = label ? label->parentWidget() : 0;
+        QBoxLayout* labelLayout = labelParent ? qobject_cast<QBoxLayout*>(labelParent->layout()) : 0;
+        const int labelIndex = labelLayout ? labelLayout->indexOf(label) : -1;
+        if (labelIndex < 0) {
+            return;
+        }
+        const int iconSize = _imp->warningIconSize;
+        _imp->warningIndicator = new Label(labelParent);
+        ThemedIcon::setLabelIcon(_imp->warningIndicator, ThemedIcon::messageIcon(ThemedIcon::eMessageGlyphError, iconSize), iconSize);
+        labelLayout->insertWidget(labelIndex, _imp->warningIndicator);
+    }
+    _imp->warningIndicator->setToolTip(fullToolTip);
+    _imp->warningIndicator->setVisible(true);
 }
 
 void
@@ -650,9 +674,15 @@ KnobGui::onExprChanged(int dimension)
     }
     KnobIPtr knob = getKnob();
     std::string exp = knob->getExpression(dimension);
-    reflectExpressionState( dimension, !exp.empty() );
+    // An unbuilt row reads the expression state when it is built.
+    const bool hasWidgets = _imp->hasWidgets();
+    if (hasWidgets) {
+        reflectExpressionState(dimension, !exp.empty());
+    }
     if ( exp.empty() ) {
-        reflectAnimationLevel( dimension, knob->getAnimationLevel(dimension) );
+        if (hasWidgets) {
+            reflectAnimationLevel(dimension, knob->getAnimationLevel(dimension));
+        }
     } else {
         NodeSettingsPanel* isNodeSettings = dynamic_cast<NodeSettingsPanel*>(_imp->container);
         if (isNodeSettings) {
@@ -662,7 +692,7 @@ KnobGui::onExprChanged(int dimension)
             }
         }
 
-        if (_imp->warningIndicator) {
+        if (_imp->warningIndicator || _imp->warningIconSize) {
             bool invalid = false;
             QString fullErrToolTip;
             int dims = knob->getDimension();
@@ -694,13 +724,18 @@ KnobGui::onExprChanged(int dimension)
         }
         Q_EMIT expressionChanged();
     }
-    onHelpChanged();
-    updateGUI(dimension);
+    if (hasWidgets) {
+        onHelpChanged();
+        updateGUI(dimension);
+    }
 } // KnobGui::onExprChanged
 
 void
 KnobGui::onHelpChanged()
 {
+    if (!_imp->hasWidgets()) {
+        return;
+    }
     if (_imp->descriptionLabel) {
         _imp->descriptionLabel->setToolTip( toolTip() );
     }
@@ -710,7 +745,7 @@ KnobGui::onHelpChanged()
 void
 KnobGui::onHasModificationsChanged()
 {
-    if (_imp->guiRemoved) {
+    if (_imp->guiRemoved || !_imp->hasWidgets()) {
         return;
     }
     if (_imp->descriptionLabel) {
@@ -727,6 +762,9 @@ KnobGui::onHasModificationsChanged()
 void
 KnobGui::onLabelChanged()
 {
+    if (!_imp->hasWidgets()) {
+        return;
+    }
     if (_imp->descriptionLabel) {
         KnobIPtr knob = getKnob();
         if (!knob) {
@@ -753,6 +791,9 @@ KnobGui::onLabelChanged()
 void
 KnobGui::onDimensionNameChanged(int dimension)
 {
+    if (!_imp->hasWidgets()) {
+        return;
+    }
     refreshDimensionName(dimension);
 }
 

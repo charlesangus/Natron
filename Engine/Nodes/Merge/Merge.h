@@ -227,6 +227,22 @@ public:
     static void followContainerLayer(const NodePtr& node,
                                      const std::string& layerID);
 
+    /**
+     * @brief The Params a render at time and view merges with, for a caller folding this Merge's
+     * inputs itself through step().
+     **/
+    NativeMergeOp::Params mergeParams(double time,
+                                      ViewIdx view) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief One fold step of a render, NativeMergeOp::step().
+     **/
+    void step(const NativeMergeOp::Params& params,
+              const RowIO& io) const
+    {
+        op().step(params, io);
+    }
+
 protected:
     /**
      * @brief The layers of B the Layers list merges, and B's alpha layer when B's alpha source

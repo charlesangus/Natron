@@ -33,6 +33,8 @@
 #include <cstdio>
 #include <deque>
 #include <mutex>
+#include <optional>
+#include <string>
 
 #include <QString>
 
@@ -123,6 +125,158 @@ private:
     double _pendingEventMs;
 
     static std::atomic<RotoLatencyProbe*> s_instance;
+};
+
+/**
+ * @brief Opt-in per-stage timing of roto mask and RotoPaint renders. When NATRON_ROTO_RENDER_PROFILE
+ * names a file, each mask render (RotoDrawableItem::renderMaskFromStroke) and each RotoPaint render
+ * appends one JSON line:
+ *
+ *   mask:      {"kind": "mask", "node", "item", "type": "bezier"|"stroke", "time", "mipmap", "hit",
+ *               "pixels", "total_ms", "other_ms", then "<stage>_ms" and "<stage>_calls" for
+ *               cache_lookup, allocate, polygon, feather_setup, fill, feather and conversion}
+ *   rotopaint: {"kind": "rotopaint", "node", "time", "mipmap", "items", "pixels", "total_ms",
+ *               "other_ms", then "<stage>_ms" and "<stage>_calls" for setup and tree}
+ *
+ * Every stage of the record's kind is written, with 0 for a stage the render never entered. Stage
+ * times are exclusive: a stage nested in another is not counted in the outer one, and other_ms is
+ * the time of the record spent in no stage. A record opened inside another on the same thread
+ * stands on its own, so the masks a RotoPaint's tree renders on its thread are part of its tree_ms.
+ * Times are milliseconds on std::chrono::steady_clock.
+ *
+ * Stage timers look at one thread-local pointer, so without the variable a site costs one branch.
+ **/
+class RotoRenderProfile {
+public:
+    enum KindEnum {
+        eKindMask = 0,
+        eKindRotoPaint
+    };
+
+    enum StageEnum {
+        eStageCacheLookup = 0,
+        eStageAllocate,
+        eStagePolygon,
+        eStageFeatherSetup,
+        eStageFill,
+        eStageFeather,
+        eStageConversion,
+        eStageSetup,
+        eStageTree,
+        eStageCount
+    };
+
+    struct Record {
+        KindEnum kind;
+        std::string node;
+        std::string item;
+        std::string type;
+        double time;
+        unsigned int mipmap;
+        bool hit;
+        long long pixels;
+        int items;
+        double startMs;
+        double lastMs;
+        int current;
+        double stageMs[eStageCount];
+        int stageCalls[eStageCount];
+        double otherMs;
+    };
+
+    /**
+     * @brief Opens a record on this thread when the profile runs, and writes it when it goes out of
+     * scope. Without the profile every setter does nothing.
+     **/
+    class Scope {
+    public:
+        Scope(KindEnum kind, double time, unsigned int mipmap);
+        ~Scope();
+
+        Scope(const Scope&) = delete;
+        Scope& operator=(const Scope&) = delete;
+
+        bool active() const
+        {
+            return _record != nullptr;
+        }
+
+        void setNames(const std::string& node, const std::string& item, const std::string& type);
+        void setHit(bool hit);
+        void setPixels(long long pixels);
+        void setItems(int items);
+
+    private:
+        RotoRenderProfile* _profile;
+        Record* _record;
+        Record* _previous;
+        std::optional<Record> _storage;
+    };
+
+    /**
+     * @brief Charges the time until it goes out of scope to one stage of this thread's open record.
+     **/
+    class StageTimer {
+    public:
+        explicit StageTimer(StageEnum stage)
+            : _record(t_current)
+            , _previous(-1)
+        {
+            if (_record) {
+                begin(stage);
+            }
+        }
+
+        ~StageTimer()
+        {
+            if (_record) {
+                end();
+            }
+        }
+
+        StageTimer(const StageTimer&) = delete;
+        StageTimer& operator=(const StageTimer&) = delete;
+
+    private:
+        void begin(StageEnum stage);
+        void end();
+
+        Record* _record;
+        int _previous;
+    };
+
+    static RotoRenderProfile* instance()
+    {
+        return s_instance.load(std::memory_order_acquire);
+    }
+
+    /**
+     * @brief Starts the profile when NATRON_ROTO_RENDER_PROFILE names a path; returns whether it runs.
+     **/
+    static bool startFromEnvironment();
+
+    /**
+     * @brief Returns false when the profile already runs or logPath cannot be opened for appending.
+     **/
+    static bool start(const QString& logPath);
+
+    /**
+     * @brief Closes the log and stops the profile. No render may be running: one could still hold
+     * the instance.
+     **/
+    static void stop();
+
+private:
+    explicit RotoRenderProfile(std::FILE* log);
+    ~RotoRenderProfile();
+
+    void writeRecord(const Record& record);
+
+    std::FILE* _log;
+    std::mutex _mutex;
+
+    static std::atomic<RotoRenderProfile*> s_instance;
+    static thread_local Record* t_current;
 };
 
 NATRON_NAMESPACE_EXIT

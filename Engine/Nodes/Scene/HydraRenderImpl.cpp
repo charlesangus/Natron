@@ -72,10 +72,12 @@
 #include <pxr/imaging/garch/glApi.h>
 #include <pxr/imaging/glf/simpleLight.h>
 #include <pxr/imaging/glf/simpleMaterial.h>
+#include <pxr/imaging/hd/aov.h>
 #include <pxr/imaging/hd/driver.h>
 #include <pxr/imaging/hd/renderBuffer.h>
 #include <pxr/imaging/hd/tokens.h>
 #include <pxr/imaging/hd/types.h>
+#include <pxr/imaging/hdx/taskControllerSceneIndex.h>
 #include <pxr/imaging/hdx/tokens.h>
 #include <pxr/imaging/hgi/hgi.h>
 #include <pxr/imaging/hgi/texture.h>
@@ -92,6 +94,7 @@
 #define emit
 #endif
 
+#include "Engine/Nodes/Scene/AovLayers.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
@@ -631,6 +634,17 @@ typedef std::map<std::string, VtValue> RendererSettings;
 std::mutex gSettingsMutex;
 std::map<std::string, RendererSettings> gSettings;
 
+std::map<std::string, VtDictionary> gTestStats;
+
+VtDictionary
+testStats(const std::string& renderer)
+{
+    std::lock_guard<std::mutex> lock(gSettingsMutex);
+    std::map<std::string, VtDictionary>::const_iterator found = gTestStats.find(renderer);
+
+    return (found == gTestStats.end()) ? VtDictionary() : found->second;
+}
+
 RendererSettings
 rendererSettings(const std::string& renderer)
 {
@@ -794,6 +808,49 @@ private:
     std::map<int, std::function<void()>> _holders;
 };
 
+// UsdImagingGLEngine has no call for an AOV's descriptor settings, which its task controller holds.
+// The controller is reached through a member pointer, so that this works on every engine newEngine()
+// makes, a StormIdEngine included; the class itself is never made.
+class EngineAovSettings
+    : public UsdImagingGLEngine {
+public:
+    EngineAovSettings() = delete;
+
+    // Takes effect for an AOV SetRendererAovs() asked for, and only until it is called again.
+    static bool set(UsdImagingGLEngine* engine,
+                    const TfToken& aov,
+                    const VtDictionary& settings)
+    {
+        const auto& controller = engine->*(&EngineAovSettings::_taskControllerSceneIndex);
+        if (!controller) {
+            return false;
+        }
+        HdAovDescriptor descriptor = controller->GetRenderOutputSettings(aov);
+        for (const std::pair<const std::string, VtValue>& entry : settings) {
+            descriptor.aovSettings[TfToken(entry.first)] = entry.second;
+        }
+        controller->SetRenderOutputSettings(aov, descriptor);
+
+        return true;
+    }
+
+    static bool get(const UsdImagingGLEngine* engine,
+                    const TfToken& aov,
+                    VtDictionary* settings)
+    {
+        const auto& controller = engine->*(&EngineAovSettings::_taskControllerSceneIndex);
+        if (!controller) {
+            return false;
+        }
+        const HdAovDescriptor descriptor = controller->GetRenderOutputSettings(aov);
+        for (const std::pair<const TfToken, VtValue>& entry : descriptor.aovSettings) {
+            (*settings)[entry.first.GetString()] = entry.second;
+        }
+
+        return true;
+    }
+};
+
 // Closes the engine's Cycles session (CyclesThreads::open()) after the engine, which ends it, goes.
 struct EngineDeleter {
     bool cyclesSession = false;
@@ -889,6 +946,10 @@ struct EngineEntry {
     TfToken depthAov;
     bool normal = false;
     bool normalInCameraSpace = false;
+    // The request's AOVs the engine was made with, and those of them it was not asked to render.
+    std::vector<HydraRender::Aov> aovs;
+    std::vector<TfToken> refusedAovs;
+    std::vector<HydraRender::Aov> builtInAovs;
     // What DelegateSupport finds the delegate cannot render of the stage, and whether that was
     // found since the stage or the delegate last changed.
     std::string supportWarning;
@@ -1220,6 +1281,18 @@ public:
         return _context ? _context->description() : std::string();
     }
 
+    bool engineAovSettings(const void* owner,
+                           const TfToken& aov,
+                           VtDictionary* settings) const
+    {
+        std::map<const void*, EngineEntry>::const_iterator found = _engines.find(owner);
+        if ((found == _engines.end()) || !found->second.engine) {
+            return false;
+        }
+
+        return EngineAovSettings::get(found->second.engine.get(), aov, settings);
+    }
+
     // The setting key of owner's engine; false if owner has none.
     bool engineSetting(const void* owner,
                        const TfToken& key,
@@ -1396,9 +1469,12 @@ public:
                     std::string* error);
 
     // The whole frame's planes of entry's render, as pack() gives them, or converted on the CPU
-    // when the context cannot pack.
+    // when the context cannot pack. cancel, when set, stops it between rows of the requested AOVs;
+    // aovPixels, when set, names the AOVs whose pixels are read.
     bool frame(EngineEntry& entry,
                unsigned int planes,
+               const RenderCancel* cancel,
+               const std::set<TfToken>* aovPixels,
                HydraRender::Result* result,
                std::string* error);
 
@@ -1775,6 +1851,75 @@ componentToFloat(HdFormat componentFormat,
     }
 }
 
+// The request's AOVs of entry's last render, the pixels of those in aovPixels (of all when it is
+// null), and the metadata its delegate's stats hold for them; false when cancel is set before
+// they are all read.
+bool
+readAovs(const EngineEntry& entry,
+         const RenderCancel* cancel,
+         const std::set<TfToken>* aovPixels,
+         HydraRender::Result* result)
+{
+    const int kRowsPerCancelCheck = 64;
+    const std::size_t pixels = (std::size_t)entry.width * (std::size_t)entry.height;
+
+    result->aovs.clear();
+    result->rejectedAovs.clear();
+    result->aovMetadata.clear();
+    for (const HydraRender::Aov& aov : entry.aovs) {
+        if (std::find(entry.refusedAovs.begin(), entry.refusedAovs.end(), aov.name) != entry.refusedAovs.end()) {
+            result->rejectedAovs.push_back(aov.name);
+            continue;
+        }
+        std::string mapError;
+        MappedAov mapped(entry, aov.name, &mapError);
+        if (!mapped.valid()) {
+            result->rejectedAovs.push_back(aov.name);
+            continue;
+        }
+        const HdFormat componentFormat = HdGetComponentFormat(mapped.format());
+        const std::size_t components = HdGetComponentCount(mapped.format());
+        const std::size_t componentSize = HdDataSizeOfFormat(componentFormat);
+        HydraRender::AovPlane plane;
+        plane.name = aov.name;
+        plane.channels = (int)components;
+        AovLayers::rememberFormatChannels(entry.renderer, aov.name.GetString(), plane.channels);
+        if (aovPixels && !aovPixels->count(aov.name)) {
+            result->aovs.push_back(std::move(plane));
+            continue;
+        }
+        plane.pixels.resize(pixels * components);
+        for (int y = 0; y < entry.height; ++y) {
+            if (cancel && ((y % kRowsPerCancelCheck) == 0) && cancel->requested()) {
+                return false;
+            }
+            const std::size_t rowStart = (std::size_t)y * (std::size_t)entry.width;
+            for (std::size_t i = rowStart; i < rowStart + (std::size_t)entry.width; ++i) {
+                const unsigned char* at = mapped.pixel(i);
+                for (std::size_t c = 0; c < components; ++c) {
+                    plane.pixels[i * components + c] = componentToFloat(componentFormat, at + c * componentSize);
+                }
+            }
+        }
+        result->aovs.push_back(std::move(plane));
+    }
+    if (entry.aovs.empty() && entry.builtInAovs.empty()) {
+        return true;
+    }
+    VtDictionary stats = entry.engine->GetRenderStats();
+    for (const std::pair<const std::string, VtValue>& stat : testStats(entry.renderer)) {
+        stats[stat.first] = stat.second;
+    }
+    static const std::string prefix = "aovMetadata:";
+    for (const std::pair<const std::string, VtValue>& stat : stats) {
+        if ((stat.first.compare(0, prefix.size(), prefix) == 0) && (stat.first.size() > prefix.size()) && stat.second.IsHolding<VtDictionary>()) {
+            result->aovMetadata[TfToken(stat.first.substr(prefix.size()))] = stat.second.UncheckedGet<VtDictionary>();
+        }
+    }
+
+    return true;
+}
+
 std::int32_t
 readInt(const unsigned char* at)
 {
@@ -1877,7 +2022,25 @@ RenderThread::makeEngine(EngineEntry& entry,
             aovs.push_back(HdAovTokens->normal);
         }
     }
-    if (!entry.engine->SetRendererAovs(aovs)) {
+    entry.aovs = request.aovs;
+    entry.builtInAovs = request.builtInAovs;
+    entry.refusedAovs.clear();
+    TfTokenVector extras;
+    for (const HydraRender::Aov& aov : request.aovs) {
+        // Cycles' elementId buffer holds no ids, only instanceId's again.
+        if (CyclesAovs::isCycles(renderer) && (aov.name == HdAovTokens->elementId)) {
+            entry.refusedAovs.push_back(aov.name);
+        } else if (std::find(aovs.begin(), aovs.end(), aov.name) == aovs.end()) {
+            extras.push_back(aov.name);
+        }
+    }
+    TfTokenVector all = aovs;
+    all.insert(all.end(), extras.begin(), extras.end());
+    if (!extras.empty() && !entry.engine->SetRendererAovs(all)) {
+        entry.refusedAovs.insert(entry.refusedAovs.end(), extras.begin(), extras.end());
+        extras.clear();
+    }
+    if (extras.empty() && !entry.engine->SetRendererAovs(aovs)) {
         std::string names;
         for (std::size_t i = 0; i < aovs.size(); ++i) {
             if (i > 0) {
@@ -1891,6 +2054,15 @@ RenderThread::makeEngine(EngineEntry& entry,
         _engineCount = _engines.size();
 
         return false;
+    }
+    // A request's AOV can be one the engine renders anyway (instanceId), whose settings it takes too.
+    const TfTokenVector& rendered = extras.empty() ? aovs : all;
+    for (const std::vector<HydraRender::Aov>* list : { &request.aovs, &request.builtInAovs }) {
+        for (const HydraRender::Aov& aov : *list) {
+            if (!aov.settings.empty() && (std::find(rendered.begin(), rendered.end(), aov.name) != rendered.end())) {
+                (void)EngineAovSettings::set(entry.engine.get(), aov.name, aov.settings);
+            }
+        }
     }
     entry.headlight = request.headlight;
     if (entry.headlight) {
@@ -1970,7 +2142,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     bool freshEngine = false;
     const bool settingsChanged = settings != entry.settings;
     const bool settingsInPlace = settingsChanged && entry.engine && (renderer == kRenderDelegateUtilityId) && onlyUtilityFrameSettingsDiffer(settings, entry.settings);
-    if (!entry.engine || (request.headlight != entry.headlight) || (settingsChanged && !settingsInPlace) || budgetChanged) {
+    const bool aovsChanged = (request.aovs != entry.aovs) || (request.builtInAovs != entry.builtInAovs);
+    if (!entry.engine || (request.headlight != entry.headlight) || (settingsChanged && !settingsInPlace) || budgetChanged || aovsChanged) {
         if (!makeEngine(entry, request, renderer, settings, cancel, error)) {
             return nullptr;
         }
@@ -2735,6 +2908,8 @@ RenderThread::translucentIds(EngineEntry& entry,
 bool
 RenderThread::frame(EngineEntry& entry,
                     unsigned int planes,
+                    const RenderCancel* cancel,
+                    const std::set<TfToken>* aovPixels,
                     HydraRender::Result* result,
                     std::string* error)
 {
@@ -2772,6 +2947,11 @@ RenderThread::frame(EngineEntry& entry,
         }
         result->warning = entry.warning;
         result->errors = entry.errors;
+        if (!readAovs(entry, cancel, aovPixels, result)) {
+            *error = "The " + entry.rendererName + " render was cancelled.";
+
+            return false;
+        }
         result->device = entry.device;
 
         return true;
@@ -2794,6 +2974,11 @@ RenderThread::frame(EngineEntry& entry,
         return false;
     }
     result->primPaths = entry.primPaths;
+    if (!readAovs(entry, cancel, aovPixels, result)) {
+        *error = "The " + entry.rendererName + " render was cancelled.";
+
+        return false;
+    }
 
     return true;
 }
@@ -3379,7 +3564,7 @@ render(const Request& request,
 
         try {
             EngineEntry* entry = thread.renderEngine(request, &cancel, error);
-            ok = entry && thread.frame(*entry, request.planes, result, error);
+            ok = entry && thread.frame(*entry, request.planes, &cancel, request.aovPixels ? &*request.aovPixels : nullptr, result, error);
             if (ok) {
                 result->partial = entry->partial;
             }
@@ -3940,6 +4125,35 @@ setRendererSettings(const std::string& renderer,
     } else {
         gSettings[renderer] = settings;
     }
+}
+
+void
+setRenderStatsForTests(const std::string& renderer,
+                       const VtDictionary& stats)
+{
+    std::lock_guard<std::mutex> lock(gSettingsMutex);
+
+    if (stats.empty()) {
+        gTestStats.erase(renderer);
+    } else {
+        gTestStats[renderer] = stats;
+    }
+}
+
+bool
+engineAovSettings(const void* owner,
+                  const std::string& aov,
+                  VtDictionary* settings)
+{
+    for (RenderThread* thread : { &RenderThread::storm(), &RenderThread::cpu() }) {
+        std::promise<bool> read;
+        std::future<bool> done = read.get_future();
+        if (thread->post([thread, owner, &aov, settings, &read]() { read.set_value(thread->engineAovSettings(owner, TfToken(aov), settings)); }, false) && done.get()) {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 void

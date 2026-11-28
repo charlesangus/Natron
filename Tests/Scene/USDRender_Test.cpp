@@ -51,6 +51,7 @@
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
 #include <QFile>
 #include <QString>
 #include <QTemporaryDir>
@@ -68,9 +69,12 @@
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
+#include "Engine/Nodes/Scene/AovLayers.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
+#include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/HeadlessGLContext.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
+#include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
@@ -2284,6 +2288,489 @@ TEST(USDRenderRenderers, ANewSeedKeepsNatronUtilitysEngine)
     ASSERT_TRUE(HydraRender::render(request, &subdivided, &error)) << error;
     EXPECT_EQ(builds + 1, HydraRender::getEngineBuildCount());
     HydraRender::releaseAll();
+}
+
+// A box at the origin seen by /World/Cam from 10 units away, with no render settings prim.
+const char* const kAovWorld = R"(#usda 1.0
+
+def Xform "World"
+{
+    def Cube "Box"
+    {
+        double size = 2
+    }
+
+    def Camera "Cam"
+    {
+        double3 xformOp:translate = (0, 0, 10)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}
+)";
+
+// The vars of the prim the USDRenderSettings node authors: depth, normal and a raw AOV no delegate
+// has. A primvar no prim has would not do: Cycles and Storm render any primvar AOV, as zeros.
+const char* const kDepthNormalNopeVars = R"(
+def Scope "Render"
+{
+    def RenderSettings "rendersettings"
+    {
+        rel products = </Render/product>
+    }
+
+    def RenderProduct "product"
+    {
+        rel orderedVars = [</Render/product/depth>, </Render/product/normal>, </Render/product/nope>]
+
+        def RenderVar "depth"
+        {
+            uniform string sourceName = "depth"
+        }
+
+        def RenderVar "normal"
+        {
+            uniform string sourceName = "normal"
+        }
+
+        def RenderVar "nope"
+        {
+            uniform string sourceName = "nope"
+        }
+    }
+}
+)";
+
+const char* const kUnrelatedRenderer = "NatronTestAovRenderer";
+
+// A Cycles pass and a primvar, for every delegate.
+const char* const kDiffuseAndStVars = R"(
+def Scope "Render"
+{
+    def RenderSettings "rendersettings"
+    {
+        rel products = </Render/product>
+    }
+
+    def RenderProduct "product"
+    {
+        rel orderedVars = [</Render/product/diffuse>, </Render/product/st>]
+
+        def RenderVar "diffuse"
+        {
+            uniform string sourceName = "cycles:diffuse_direct"
+            uniform token dataType = "color3f"
+        }
+
+        def RenderVar "st"
+        {
+            uniform string sourceName = "st"
+            uniform token sourceType = "primvar"
+            uniform token dataType = "texCoord2f"
+        }
+    }
+}
+)";
+
+class USDRenderAovTest
+    : public USDRenderRendererTest {
+protected:
+    virtual void TearDown() OVERRIDE
+    {
+        HydraRender::releaseAllCpuEngines();
+        RenderSettingsKnobs::setDescriptorsForTests(kUnrelatedRenderer, RenderSettingsKnobs::DescriptorList());
+        USDRenderRendererTest::TearDown();
+    }
+
+    // Writes text to name in tmp and returns its path, empty after a gtest failure.
+    static std::string writeScene(const QTemporaryDir& tmp,
+                                  const char* name,
+                                  const std::string& text)
+    {
+        const QString filePath = tmp.path() + QLatin1Char('/') + QString::fromUtf8(name);
+        QFile file(filePath);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate) || (file.write(text.c_str(), (qint64)text.size()) != (qint64)text.size())) {
+            ADD_FAILURE() << "cannot write " << filePath.toStdString();
+
+            return std::string();
+        }
+
+        return filePath.toStdString();
+    }
+
+    // The layers node gives at frame 1, after the main thread has followed its last render, asked
+    // off the main thread, which is given a provisional answer while a worker reads the scene.
+    static std::list<ImageLayerDesc> presentLayers(const NodePtr& node)
+    {
+        QCoreApplication::processEvents();
+        const EffectInstancePtr effect = node->getEffectInstance();
+
+        return std::async(std::launch::async, [effect]() {
+            std::list<ImageLayerDesc> layers;
+            effect->getPresentLayers(1., ViewIdx(0), -1, &layers);
+
+            return layers; }).get();
+    }
+
+    static const ImageLayerDesc* findLayer(const std::list<ImageLayerDesc>& layers,
+                                           const std::string& id)
+    {
+        for (const ImageLayerDesc& layer : layers) {
+            if (layer.getLayerID() == id) {
+                return &layer;
+            }
+        }
+
+        return nullptr;
+    }
+
+    static std::string persistentMessage(const NodePtr& node,
+                                         int* type)
+    {
+        *type = -1;
+        if (!node->hasPersistentMessage()) {
+            return std::string();
+        }
+        QString message;
+        node->getPersistentMessage(&message, type, false);
+
+        return message.toStdString();
+    }
+
+    // Changes the first setting of rendererId the settings node has a bool, int or double knob for.
+    static bool nudgeASetting(const NodePtr& settingsNode,
+                              const std::string& rendererId)
+    {
+        USDRenderSettings* settings = dynamic_cast<USDRenderSettings*>(settingsNode->getEffectInstance().get());
+        const RenderSettingsKnobs* knobs = settings ? settings->renderSettings() : nullptr;
+        if (!knobs) {
+            return false;
+        }
+        for (const std::pair<std::string, std::string>& entry : knobs->audit(rendererId)) {
+            const KnobIPtr k = entry.second.empty() ? KnobIPtr() : knobs->knob(rendererId, entry.first);
+            if (KnobBool* b = dynamic_cast<KnobBool*>(k.get())) {
+                b->setValue(!b->getValue());
+
+                return true;
+            } else if (KnobInt* i = dynamic_cast<KnobInt*>(k.get())) {
+                i->setValue(i->getValue() + 1);
+
+                return true;
+            } else if (KnobDouble* d = dynamic_cast<KnobDouble*>(k.get())) {
+                d->setValue(d->getValue() + 0.5);
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    // A USDRead's hash is a placeholder until an evaluation walks the file it names. With a
+    // renderer chosen, nothing on the USDRender's hash path evaluates upstream, so the walk
+    // would otherwise land at whichever later call first evaluates the reader.
+    static void settleReader(const NodePtr& reader)
+    {
+        ASSERT_TRUE(bool(reader));
+        ScenePayload scene;
+        std::string error;
+        ASSERT_EQ(EffectInstance::eRenderRoIRetCodeOk, reader->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &scene, &error)) << error;
+    }
+};
+
+TEST_F(USDRenderAovTest, RenderVarsRenderTheirLayersAndAWarningNamesTheVarNoneRendersFor)
+{
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string plain = writeScene(tmp, "plain.usda", kAovWorld);
+    const std::string withVars = writeScene(tmp, "vars.usda", std::string(kAovWorld) + kDepthNormalNopeVars);
+    ASSERT_FALSE(plain.empty() || withVars.empty());
+    const int width = kWidth;
+    const int height = kHeight;
+    const std::size_t pixels = (std::size_t)width * height;
+    std::list<ImageLayerDesc> layers;
+    layers.push_back(ImageLayerDesc::getRGBAComponents());
+    layers.push_back(AovLayers::depthLayer());
+    layers.push_back(AovLayers::normalLayer());
+
+    // No vars: the layers every Cycles render has, and no warning.
+    NodePtr node = createRender(plain.c_str());
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateCyclesId));
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, width, height), layers, &planes, &error)) << error;
+    int type = -1;
+    EXPECT_EQ(std::string(), persistentMessage(node, &type));
+    std::vector<std::string> ids;
+    for (const ImageLayerDesc& layer : presentLayers(node)) {
+        ids.push_back(layer.getLayerID());
+    }
+    std::vector<std::string> builtIn = { ImageLayerDesc::getRGBAComponents().getLayerID(), "depth", "primId", "normal" };
+    std::sort(ids.begin(), ids.end());
+    std::sort(builtIn.begin(), builtIn.end());
+    EXPECT_EQ(builtIn, ids);
+
+    KnobFile* file = dynamic_cast<KnobFile*>(node->getInput(0)->getInput(0)->getKnobByName(kUSDReadParamFile).get());
+    ASSERT_TRUE(file);
+    file->setValue(withVars);
+    planes.clear();
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, width, height), layers, &planes, &error)) << error;
+    ASSERT_EQ(3u, planes.size());
+    ASSERT_EQ(pixels * 4, planes[0].pixels.size());
+    ASSERT_EQ(pixels, planes[1].pixels.size());
+    ASSERT_EQ(pixels * 3, planes[2].pixels.size());
+    const std::size_t centre = (std::size_t)(height / 2) * width + (std::size_t)(width / 2);
+    EXPECT_NEAR(1.f, planes[0].pixels[centre * 4 + 3], 1e-3f);
+    EXPECT_NEAR(9.f, planes[1].pixels[centre], 0.05f);
+    EXPECT_GT(std::fabs(planes[2].pixels[centre * 3 + 2]), 0.5f);
+    const std::string message = persistentMessage(node, &type);
+    EXPECT_EQ((int)eMessageTypeWarning, type) << message;
+    EXPECT_NE(std::string::npos, message.find("/Render/product/nope")) << message;
+    EXPECT_EQ(std::string::npos, message.find("/Render/product/depth")) << message;
+    EXPECT_EQ(std::string::npos, message.find("/Render/product/normal")) << message;
+    const std::list<ImageLayerDesc> present = presentLayers(node);
+    EXPECT_TRUE(findLayer(present, "depth"));
+    EXPECT_TRUE(findLayer(present, "normal"));
+    EXPECT_FALSE(findLayer(present, "nope"));
+}
+
+TEST_F(USDRenderAovTest, TheLayersAndHashFollowTheRenderVarsOfTheRenderer)
+{
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string plain = writeScene(tmp, "plain.usda", kAovWorld);
+    const std::string withVars = writeScene(tmp, "vars.usda", std::string(kAovWorld) + kDiffuseAndStVars);
+    ASSERT_FALSE(plain.empty() || withVars.empty());
+    // Storm's delegate declares no settings when it cannot be made here, so the unrelated delegate is a test one.
+    RenderSettingsKnobs::Descriptor flag;
+    flag.key = "flag";
+    flag.name = "Flag";
+    flag.defaultValue = PXR_NS::VtValue(false);
+    RenderSettingsKnobs::setDescriptorsForTests(kUnrelatedRenderer, RenderSettingsKnobs::DescriptorList(1, flag));
+    NodePtr settingsNode;
+    NodePtr node = createRender(plain.c_str(), &settingsNode);
+    ASSERT_TRUE(node && settingsNode);
+    KnobChoice* renderer = rendererKnob(node);
+    ASSERT_TRUE(renderer);
+    ASSERT_TRUE(selectRenderer(renderer, kRenderDelegateCyclesId));
+    EXPECT_FALSE(findLayer(presentLayers(node), "diffuse_direct"));
+    const NodePtr reader = settingsNode->getInput(0);
+    settleReader(reader);
+    const U64 plainHash = node->getHashValue();
+
+    KnobFile* file = dynamic_cast<KnobFile*>(reader->getKnobByName(kUSDReadParamFile).get());
+    ASSERT_TRUE(file);
+    file->setValue(withVars);
+    settleReader(reader);
+    const U64 varsHash = node->getHashValue();
+    EXPECT_NE(plainHash, varsHash);
+    std::list<ImageLayerDesc> present = presentLayers(node);
+    const ImageLayerDesc* diffuse = findLayer(present, "diffuse_direct");
+    const ImageLayerDesc* st = findLayer(present, "st");
+    ASSERT_TRUE(diffuse && st);
+    EXPECT_EQ(std::vector<std::string>({ "R", "G", "B" }), diffuse->getChannels());
+    // Nothing has rendered st yet, so the authored texCoord2f sets its channels, not the renderer's format.
+    EXPECT_EQ(std::vector<std::string>({ "U", "V" }), st->getChannels());
+    std::list<ImageLayerDesc> available;
+    node->getEffectInstance()->getAvailableLayers(1., ViewIdx(0), -1, &available);
+    EXPECT_TRUE(findLayer(available, "diffuse_direct"));
+    EXPECT_TRUE(findLayer(available, "st"));
+
+    // Another delegate's settings are not Cycles': the render, its hash and its layers stay.
+    ASSERT_TRUE(nudgeASetting(settingsNode, kUnrelatedRenderer));
+    EXPECT_EQ(varsHash, node->getHashValue());
+    present = presentLayers(node);
+    EXPECT_TRUE(findLayer(present, "diffuse_direct"));
+    EXPECT_TRUE(findLayer(present, "st"));
+    ASSERT_TRUE(nudgeASetting(settingsNode, kRenderDelegateCyclesId));
+    EXPECT_NE(varsHash, node->getHashValue());
+
+    if (!PXR_NS::PlugRegistry::GetInstance().GetPluginWithName("hd_moonray")) {
+        std::printf("[  SKIPPED ] OpenUSD has no hd_moonray plug-in registered; the switch to MoonRay is not checked\n");
+
+        return;
+    }
+    ASSERT_TRUE(selectRenderer(renderer, kMoonRayRendererId));
+    present = presentLayers(node);
+    EXPECT_FALSE(findLayer(present, "diffuse_direct"));
+    EXPECT_TRUE(findLayer(present, "st"));
+}
+
+// A file's own product renders with no USDRenderSettings node: its camera and resolution beat the
+// settings prim's, and each var is a layer under its authored name.
+TEST_F(USDRenderAovTest, AFilesRenderVarsRenderWithoutASettingsNode)
+{
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    NodePtr reader = createReader(NATRON_TESTS_FIXTURES_DIR "/scene-rendervars.usda");
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(reader && node);
+    connectNodes(reader, node, 0, true);
+    USDRender* effect = renderOf(node);
+    ASSERT_TRUE(effect);
+    effect->refreshSettingsPrimMenu();
+    ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateCyclesId));
+    const RectD rod = rodOf(node);
+    EXPECT_EQ(64., rod.x2);
+    EXPECT_EQ(48., rod.y2);
+
+    std::list<ImageLayerDesc> present = presentLayers(node);
+    const ImageLayerDesc* depth = findLayer(present, "depth");
+    const ImageLayerDesc* normal = findLayer(present, "normal");
+    const ImageLayerDesc* instance = findLayer(present, "instance");
+    ASSERT_TRUE(depth && normal && instance);
+    EXPECT_FALSE(findLayer(present, "instanceId"));
+    EXPECT_EQ(1u, instance->getChannels().size());
+    std::list<ImageLayerDesc> layers;
+    layers.push_back(ImageLayerDesc::getRGBAComponents());
+    layers.push_back(*depth);
+    layers.push_back(*normal);
+    layers.push_back(*instance);
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, 64, 48), layers, &planes, &error)) << error;
+    ASSERT_EQ(4u, planes.size());
+    const std::size_t pixels = (std::size_t)64 * 48;
+    ASSERT_EQ(pixels * 4, planes[0].pixels.size());
+    ASSERT_EQ(pixels, planes[1].pixels.size());
+    ASSERT_EQ(pixels * 3, planes[2].pixels.size());
+    ASSERT_EQ(pixels, planes[3].pixels.size());
+    // The settings prim's camera looks away from the box; the product's looks at it.
+    const std::size_t centre = (std::size_t)24 * 64 + 32;
+    EXPECT_NEAR(1.f, planes[0].pixels[centre * 4 + 3], 1e-3f);
+    EXPECT_NEAR(9.f, planes[1].pixels[centre], 0.05f);
+    present = presentLayers(node);
+    EXPECT_TRUE(findLayer(present, "depth"));
+    EXPECT_TRUE(findLayer(present, "normal"));
+    EXPECT_TRUE(findLayer(present, "instance"));
+    int type = -1;
+    EXPECT_EQ(std::string(), persistentMessage(node, &type));
+}
+
+namespace {
+// Cycles' own normal pass, and the colour under a layer of another name with a setting for the delegate.
+const char* const kOwnNormalAndNamedColourVars = R"(
+def Scope "Render"
+{
+    def RenderSettings "rendersettings"
+    {
+        rel products = </Render/product>
+    }
+
+    def RenderProduct "product"
+    {
+        rel orderedVars = [</Render/product/ownNormal>, </Render/product/colour>]
+
+        def RenderVar "ownNormal"
+        {
+            uniform string sourceName = "cycles:normal"
+        }
+
+        def RenderVar "colour"
+        {
+            uniform string sourceName = "color"
+            string natron:layer = "beauty"
+            int driver:parameters:aov:natronTestSetting = 1
+        }
+    }
+}
+)";
+} // anon namespace
+
+// A texCoord2f var keeps its two channels when Cycles gives three: a render after the first moves
+// neither the layers nor the metadata.
+TEST_F(USDRenderAovTest, ARenderedTexCoordLayerSettles)
+{
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string withVars = writeScene(tmp, "vars.usda", std::string(kAovWorld) + kDiffuseAndStVars);
+    ASSERT_FALSE(withVars.empty());
+    NodePtr node = createRender(withVars.c_str());
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateCyclesId));
+    const std::list<ImageLayerDesc> declared = presentLayers(node);
+    const ImageLayerDesc* st = findLayer(declared, "st");
+    ASSERT_TRUE(st != nullptr);
+    EXPECT_EQ(std::vector<std::string>({ "U", "V" }), st->getChannels());
+    const std::list<ImageLayerDesc> layers(1, *st);
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), layers, &planes, &error)) << error;
+    QCoreApplication::processEvents();
+    const U64 revision = node->getMetadataRevision();
+    planes.clear();
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), layers, &planes, &error)) << error;
+    QCoreApplication::processEvents();
+    EXPECT_EQ(revision, node->getMetadataRevision()) << "the second render of st queued a metadata refresh";
+    const std::list<ImageLayerDesc> rendered = presentLayers(node);
+    st = findLayer(rendered, "st");
+    ASSERT_TRUE(st != nullptr);
+    EXPECT_EQ(std::vector<std::string>({ "U", "V" }), st->getChannels());
+}
+
+// On the list hdCycles publishes, its cycles:normal pass is the normal every Cycles render has,
+// not a second layer of that name; a var of the colour keeps the rgba layer and says its own
+// layer is ignored.
+TEST_F(USDRenderAovTest, ACyclesPassOfAnAovEveryRenderHasRendersToItsLayer)
+{
+    if (!CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    const std::vector<std::string> published = DelegateSupport::availableAovs(kRenderDelegateCyclesId);
+    if (std::find(published.begin(), published.end(), "cycles:normal") == published.end()) {
+        std::printf("[  SKIPPED ] hdCycles publishes no cycles:normal pass\n");
+
+        return;
+    }
+    EXPECT_EQ(std::string("cycles:normal"), RenderSettingsPrim::delegateAovName("cycles:normal", kRenderDelegateCyclesId));
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string withVars = writeScene(tmp, "vars.usda", std::string(kAovWorld) + kOwnNormalAndNamedColourVars);
+    ASSERT_FALSE(withVars.empty());
+    NodePtr node = createRender(withVars.c_str());
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateCyclesId));
+    std::list<ImageLayerDesc> layers;
+    layers.push_back(ImageLayerDesc::getRGBAComponents());
+    layers.push_back(AovLayers::normalLayer());
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), layers, &planes, &error, false)) << error;
+    ASSERT_EQ(2u, planes.size());
+    const std::size_t centre = (std::size_t)(kHeight / 2) * kWidth + (std::size_t)(kWidth / 2);
+    ASSERT_EQ((std::size_t)kWidth * kHeight * 3, planes[1].pixels.size());
+    EXPECT_GT(std::fabs(planes[1].pixels[centre * 3 + 2]), 0.5f);
+
+    int type = -1;
+    const std::string message = persistentMessage(node, &type);
+    EXPECT_EQ(std::string::npos, message.find("/Render/product/ownNormal")) << message;
+    EXPECT_NE(std::string::npos, message.find("/Render/product/colour")) << message;
+    EXPECT_NE(std::string::npos, message.find("beauty")) << message;
+    int normals = 0;
+    for (const ImageLayerDesc& layer : presentLayers(node)) {
+        normals += (layer.getLayerID() == "normal") ? 1 : 0;
+        EXPECT_NE(std::string("beauty"), layer.getLayerID());
+        EXPECT_NE(std::string("cycles_normal"), layer.getLayerID());
+    }
+    EXPECT_EQ(1, normals);
+
+    // The colour var's setting reaches the delegate's colour AOV.
+    PXR_NS::VtDictionary settings;
+    const void* owner = dynamic_cast<USDRender*>(node->getEffectInstance().get());
+    ASSERT_TRUE(HydraRender::engineAovSettings(owner, "color", &settings));
+    PXR_NS::VtDictionary::const_iterator setting = settings.find("driver:parameters:aov:natronTestSetting");
+    ASSERT_TRUE(setting != settings.end());
+    EXPECT_EQ(PXR_NS::VtValue(1), setting->second);
 }
 
 // Free GPU Memory drops USDRender's Storm engines and the device buffers the GPU runtime's pool

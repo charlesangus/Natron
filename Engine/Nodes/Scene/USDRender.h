@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <list>
 #include <map>
@@ -40,6 +41,7 @@
 #include <utility>
 
 #include "Engine/EngineFwd.h"
+#include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 
@@ -63,9 +65,17 @@
 // value's bits as eight lowercase hexadecimal digits.
 #define kUSDRenderMetadataPrimIdPrefix "primId/"
 
+// The frame metadata key of a value the renderer gives for an AOV: this prefix, the AOV's layer, a
+// slash and the value's key in the delegate's "aovMetadata:<aov>" render stat.
+#define kUSDRenderMetadataAovPrefix "aov/"
+
 NATRON_NAMESPACE_ENTER
 
 class SceneLoadSet;
+
+namespace HydraRender {
+struct Result;
+}
 
 class USDRender
     : public NativeEffectBase {
@@ -237,6 +247,81 @@ private:
     // where USD is included.
     struct ActiveSettings;
 
+    struct SpecAovs;
+
+    typedef std::pair<double, int> FrameKey;
+
+    // The frames whose entries a playback back and forth over a few frames reuses.
+    static const std::size_t kRecentFrames = 8;
+
+    // The latest kRecentFrames entries by key, the most recently used first.
+    template <typename Key, typename Value>
+    class RecentFrames {
+    public:
+        const Value* find(const Key& key)
+        {
+            for (typename std::list<std::pair<Key, Value>>::iterator it = _entries.begin(); it != _entries.end(); ++it) {
+                if (it->first == key) {
+                    _entries.splice(_entries.begin(), _entries, it);
+
+                    return &_entries.front().second;
+                }
+            }
+
+            return nullptr;
+        }
+
+        // The entry of key, a default one when there is none, which drops the least recently used beyond kRecentFrames.
+        Value& get(const Key& key)
+        {
+            if (!find(key)) {
+                _entries.emplace_front(key, Value());
+                if (_entries.size() > kRecentFrames) {
+                    _entries.pop_back();
+                }
+            }
+
+            return _entries.front().second;
+        }
+
+        void clear()
+        {
+            _entries.clear();
+        }
+
+    private:
+        std::list<std::pair<Key, Value>> _entries;
+    };
+
+    // The node's hash with the frame: an image served from the cache under an earlier hash keeps that render's metadata.
+    typedef std::pair<U64, FrameKey> HashedFrameKey;
+
+    /**
+     * The AOVs the active prim's RenderVars ask the active renderer for, of the frame, cached under
+     * the render hash for the kRecentFrames last frames. Read from active when it is not null and the frame is not cached; null
+     * when the scene cannot be read. The main thread outside a render never evaluates the input
+     * for it: without active it is given, with *provisional set, the last one stored for any hash
+     * and frame, or null, while the settings worker reads the frame's (readWantedSpecAovs()).
+     **/
+    std::shared_ptr<const SpecAovs> specAovs(double time, ViewIdx view, const ActiveSettings* active, bool* provisional = nullptr) const;
+
+    void clearSpecAovs();
+
+    // On the settings worker: reads every spec the main thread was given a provisional one for
+    // under the node's hash, and refreshes the layer menus when its layers differ from those.
+    void readWantedSpecAovs() const;
+
+    // Posts the settings worker's read of the summaries and specs the main thread was given
+    // provisional ones for under hash, unless one is posted and not yet started.
+    void postSettingsRead(U64 hash) const;
+
+    // Keeps the layers and metadata to what the render gave, and returns the warning naming the RenderVars that render nothing.
+    std::string followRenderedAovs(U64 hash,
+                                   double time,
+                                   ViewIdx view,
+                                   const RenderSetup& setup,
+                                   const HydraRender::Result& result);
+
     enum SettingsLoadEnum {
         // No payload open, for the main thread's provisional answer.
         eSettingsLoadNothing,
@@ -379,6 +464,22 @@ private:
     KnobBoolWPtr _guidePurpose;
     KnobChoiceWPtr _renderer;
     std::atomic<bool> _settingsPrimMenuRefreshPending;
+    mutable std::mutex _specMutex;
+    // Under _specMutex: the specs by render hash and frame, the last one stored, the frames the main
+    // thread was given a provisional one for, and a count that clearSpecAovs() moves, so that a
+    // read begun before it is not stored after it.
+    mutable RecentFrames<HashedFrameKey, std::shared_ptr<const SpecAovs>> _specAovs;
+    mutable std::shared_ptr<const SpecAovs> _lastSpecAovs;
+    struct WantedSpecAovs {
+        U64 hash = 0;
+        std::shared_ptr<const SpecAovs> given;
+    };
+    mutable std::map<FrameKey, WantedSpecAovs> _specAovsWanted;
+    mutable U64 _specGeneration = 0;
+    // The AOVs each renderer gave no buffer for in its last render, whose layers are left out.
+    std::set<std::pair<std::string, std::string>> _refusedAovs;
+    // The layer metadata of the last render of each frame under each hash, from the delegate's render stats.
+    RecentFrames<HashedFrameKey, ImageMetadata> _aovMetadata;
     SceneMenuRefresh _settingsPrimMenuRefresh;
     // Each read of the settings evaluates the input on its own load set, under its own id.
     const U64 _settingsNothingContextId;

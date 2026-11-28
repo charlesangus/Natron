@@ -138,7 +138,7 @@ orderedColorKnobs(DockablePanel* panel)
     for (KnobsGuiMapping::const_iterator it = mapping.begin(); it != mapping.end(); ++it) {
         KnobGuiColor* colorGui = dynamic_cast<KnobGuiColor*>(it->second.get());
 
-        if (!colorGui || !colorGui->getAdjustPanel()) {
+        if (!colorGui || !colorGui->hasAdjustPanel()) {
             // No adjustment panel means a simplified or viewer colour knob, which keeps the
             // old popup and is never a trackball target.
             continue;
@@ -379,8 +379,7 @@ resolveColorTrackballTarget(Gui* gui)
 
 void
 revealKnobInPanel(DockablePanel* panel,
-                  const KnobIPtr& knob,
-                  QWidget* widget)
+                  const KnobIPtr& knob)
 {
     if (!panel || !knob) {
         return;
@@ -402,6 +401,14 @@ revealKnobInPanel(DockablePanel* panel,
         // group's own widget, which is what actually lays the children out.
         group->setValue(true, ViewSpec::all(), 0, eValueChangedReasonNatronGuiEdited, 0);
     }
+    if (KnobGuiPtr knobGui = panel->getKnobGui(knob)) {
+        knobGui->ensureRowBuilt();
+    }
+} // revealKnobInPanel
+
+void
+scrollWidgetIntoView(QWidget* widget)
+{
     if (!widget) {
         return;
     }
@@ -411,7 +418,7 @@ revealKnobInPanel(DockablePanel* panel,
             break;
         }
     }
-} // revealKnobInPanel
+}
 
 bool
 isGlobalModeKnob(KnobGui* knobGui)
@@ -426,7 +433,7 @@ isGlobalModeKnob(KnobGui* knobGui)
         return false;
     }
     if (KnobGuiColor* color = dynamic_cast<KnobGuiColor*>(knobGui)) {
-        return color->getAdjustPanel() != 0;
+        return color->hasAdjustPanel();
     }
     if (!dynamic_cast<KnobGuiValue*>(knobGui)) {
         return false;
@@ -489,7 +496,7 @@ makeGlobalModeTarget(KnobGui* knobGui)
         return std::shared_ptr<GlobalModeTarget>();
     }
     if (KnobGuiColorPtr color = std::dynamic_pointer_cast<KnobGuiColor>(owner)) {
-        if (!color->getAdjustPanel()) {
+        if (!color->hasAdjustPanel()) {
             return std::shared_ptr<GlobalModeTarget>();
         }
 

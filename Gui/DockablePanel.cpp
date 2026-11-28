@@ -25,6 +25,7 @@
 
 #include "DockablePanel.h"
 
+#include <optional>
 #include <stdexcept>
 
 #include <QApplication> // qApp
@@ -48,6 +49,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/Image.h" // Image::clamp
 #include "Engine/KnobTypes.h" // KnobButton
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/NodeGuiI.h"
 #include "Engine/Nodes/IO/NativeWrite.h"
@@ -75,6 +77,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/LineEdit.h"
 #include "Gui/Menu.h"
 #include "Gui/MultiInstancePanel.h"
+#include "Gui/NodeCreationTrace.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGraphUndoRedo.h" // RenameNodeUndoRedoCommand
 #include "Gui/NodeGui.h"
@@ -440,6 +443,9 @@ DockablePanel::DockablePanel(Gui* gui,
         _imp->_tabWidget->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
     }
     QObject::connect( _imp->_tabWidget, SIGNAL(currentChanged(int)), this, SLOT(onPageIndexChanged(int)) );
+    // In its place before the pages are built: moving it there afterwards re-resolves the fonts, palettes and
+    // style of every row.
+    _imp->_rightContainerLayout->addWidget(_imp->_tabWidget);
     _imp->_horizLayout->addWidget(_imp->_rightContainer);
     _imp->_mainLayout->addWidget(_imp->_horizContainer);
 
@@ -511,10 +517,79 @@ DockablePanel::onEditButtonClicked(bool checked)
     refreshEditButton();
 }
 
+// A panel outside the properties bin's visible area gets no paint.
+static const int kAfterNextFrameWaitMs = 250;
+
+void
+DockablePanel::runAfterNextFrame(const std::function<void()>& fn)
+{
+    if (!isVisible()) {
+        fn();
+
+        return;
+    }
+    _afterNextFrame = fn;
+    const unsigned generation = ++_afterNextFrameGeneration;
+    QTimer::singleShot(kAfterNextFrameWaitMs, this, [this, generation]() {
+        if (generation == _afterNextFrameGeneration) {
+            runAfterFrameCallback();
+        }
+    });
+}
+
+void
+DockablePanel::runAfterFrameCallback()
+{
+    std::function<void()> fn;
+    fn.swap(_afterNextFrame);
+    if (fn) {
+        fn();
+    }
+}
+
+bool
+DockablePanel::event(QEvent* e)
+{
+    if ((e->type() == QEvent::Paint) && _afterNextFrame) {
+        // The window is flushed as the update request delivering this paint returns, before a call
+        // queued now runs.
+        const unsigned generation = _afterNextFrameGeneration;
+        QMetaObject::invokeMethod(this, [this, generation]() {
+            if (generation == _afterNextFrameGeneration) {
+                runAfterFrameCallback();
+            } }, Qt::QueuedConnection);
+    }
+    if (!NodeCreationStageLog::enabled()) {
+        return QFrame::event(e);
+    }
+    if (e->type() == QEvent::LayoutRequest) {
+        NodeCreationStageLog::Scope stage("panelLayout");
+        return QFrame::event(e);
+    }
+    if (e->type() == QEvent::Show) {
+        NodeCreationStageLog::mark("panelShow");
+    }
+    if ((e->type() == QEvent::Paint) && !_firstPaintLogged) {
+        _firstPaintLogged = true;
+        NodeCreationTrace::notePanelPainted();
+        // Rows paint after the panel in the same repaint pass, so the span runs until the event loop is
+        // back: every widget of the first frame plus the flush.
+        NodeCreationStageLog::Scope* paint = new NodeCreationStageLog::Scope("panelFirstPaint");
+        QTimer::singleShot(0, qApp, [paint]() { delete paint; });
+    }
+    return QFrame::event(e);
+}
+
 bool
 DockablePanel::isPagingEnabled() const
 {
     return _imp->_pagesEnabled;
+}
+
+bool
+DockablePanel::canDeferKnobRows() const
+{
+    return true;
 }
 
 bool
@@ -857,29 +932,19 @@ DockablePanel::onLineEditNameEditingFinished()
 }
 
 void
-DockablePanel::onKnobBuildStarted()
-{
-    // Pages are filled while the panel is shown, so the tab widget must already be laid out.
-    if (_imp->_tabWidget && (_imp->_rightContainerLayout->indexOf(_imp->_tabWidget) < 0)) {
-        _imp->_rightContainerLayout->addWidget(_imp->_tabWidget);
-    }
-}
-
-void
 DockablePanel::onKnobsInitialized()
 {
-    assert(_imp->_tabWidget);
-    if (_imp->_rightContainerLayout->indexOf(_imp->_tabWidget) < 0) {
-        _imp->_rightContainerLayout->addWidget(_imp->_tabWidget);
+    {
+        NodeCreationStageLog::Scope stage("panelInitRoto");
+        RotoPanel* roto = initializeRotoPanel();
+        if (roto) {
+            _imp->_rightContainerLayout->addWidget(roto);
+        }
     }
-
-    RotoPanel* roto = initializeRotoPanel();
-    if (roto) {
-        _imp->_rightContainerLayout->addWidget(roto);
-    }
-
 
     assert(!_imp->_trackerPanel);
+    std::optional<NodeCreationStageLog::Scope> trackerStage;
+    trackerStage.emplace("panelInitTracker");
     _imp->_trackerPanel = initializeTrackerPanel();
 
     if (_imp->_trackerPanel) {
@@ -896,9 +961,14 @@ DockablePanel::onKnobsInitialized()
             }
         }
     }
+    trackerStage.reset();
 
-    initializeExtraGui(_imp->_rightContainerLayout);
+    {
+        NodeCreationStageLog::Scope stage("panelInitExtra");
+        initializeExtraGui(_imp->_rightContainerLayout);
+    }
 
+    NodeCreationStageLog::Scope pyPlugStage("panelInitPyPlug");
     NodeSettingsPanel* isNodePanel = dynamic_cast<NodeSettingsPanel*>(this);
     if (isNodePanel) {
         NodeGuiPtr nodeGui = isNodePanel->getNode();
@@ -1104,27 +1174,6 @@ DockablePanel::setClosedInternal(bool c)
 
     if (c && _imp->_editMode) {
         _imp->_editMode->setActive(false);
-    }
-
-    // Opening and closing add and remove the node from the editors, which a panel still being built
-    // has yet to do. Finishing a build only to close it would stall whatever closes it, such as the
-    // open-panel limit during a burst of creations, so such a panel is dropped and built afresh when
-    // next opened.
-    NodeSettingsPanel* isBuildingNodePanel = dynamic_cast<NodeSettingsPanel*>(this);
-    if (isBuildingNodePanel) {
-        NodeGuiPtr nodeGui = isBuildingNodePanel->getNode();
-        if (nodeGui) {
-            if (c && nodeGui->dropUnbuiltPanel()) {
-                {
-                    QMutexLocker l(&_imp->_isClosedMutex);
-                    _imp->_isClosed = true;
-                }
-                Q_EMIT closeChanged(true);
-
-                return;
-            }
-            nodeGui->ensurePanelCreated();
-        }
     }
 
     {

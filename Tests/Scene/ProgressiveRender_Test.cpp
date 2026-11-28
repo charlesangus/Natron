@@ -44,6 +44,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -526,6 +527,20 @@ protected:
         return _calls;
     }
 
+    // What the render last reported, for a wait that ran out: whether its engine was being made
+    // again, had failed, or rendered on without ending.
+    std::string describeStatus() const
+    {
+        if (!_render) {
+            return std::string();
+        }
+        const ProgressiveRender::Status status = _render->getStatus();
+        std::ostringstream text;
+        text << "; the render: active " << status.active << ", stopped " << status.stopped << ", paused " << status.paused << ", converged " << status.converged << ", samples " << status.samples << " of " << status.maxSamples << ", restarts " << status.restarts << ", engines " << status.engines << " (" << status.unseenRemakes << " for an unseen restart, " << status.stallRemakes << " for a stall), frames " << status.frames << ", error '" << status.error << "'";
+
+        return text.str();
+    }
+
     // Waits, under _signalMutex, until reached() holds, reading it again at each call of the
     // listener and at least every 10 ms for what the listener is not told of. False, with a
     // failure, if it did not hold within kTimeout.
@@ -538,7 +553,7 @@ protected:
 
         while (!reached()) {
             if (std::chrono::steady_clock::now() >= end) {
-                ADD_FAILURE() << what << " did not happen in " << kTimeout.count() << " s";
+                ADD_FAILURE() << what << " did not happen in " << kTimeout.count() << " s" << describeStatus();
 
                 return false;
             }
@@ -1882,8 +1897,9 @@ TEST_F(ProgressiveRenderTest, AReaderWaitingForAWriterTakesTheGilBackOutsideTheB
 // A thread that holds the GIL and registers or unregisters a participant while a writer is inside
 // runExclusive releases the GIL while it waits for the writer lock, because the writer takes the
 // GIL back while it holds that lock. The writer is held, once its readers have drained and before
-// it takes the GIL back, until the registrant sleeps on the writer lock: a registrant that kept
-// the GIL then would block the writer for good. A hang ends the process.
+// it takes the GIL back, until the registrant reports that it is about to wait for the writer
+// lock: a registrant that kept the GIL then would block the writer for good. A hang ends the
+// process.
 TEST_F(ProgressiveRenderTest, RegisteringAParticipantDuringAWriteReleasesTheGilWhileWaiting)
 {
     ASSERT_TRUE(Py_IsInitialized() != 0);
@@ -1895,10 +1911,13 @@ TEST_F(ProgressiveRenderTest, RegisteringAParticipantDuringAWriteReleasesTheGilW
     bool releaseReader = false;
     bool writerHasGil = false;
     bool registrantHasGil = false;
+    bool registrantWaiting = false;
+    bool registrantDone = false;
     int finished = 0;
     bool wrote = false;
     std::string writeError;
     std::atomic<long> registrantTid(0);
+    std::thread::id registrantId;
 
     auto setFlag = [&](bool& flag) {
         {
@@ -1914,9 +1933,21 @@ TEST_F(ProgressiveRenderTest, RegisteringAParticipantDuringAWriteReleasesTheGilW
         }
         changed.notify_all();
     };
-    auto deadlocked = [&](const char* what) {
-        ADD_FAILURE() << "the threads deadlocked waiting for " << what;
-        std::fprintf(stderr, "[  FAILED  ] the GIL and the writer lock deadlocked waiting for %s\n", what);
+    auto threadState = [](long tid) {
+        std::ifstream stat("/proc/self/task/" + std::to_string(tid) + "/stat");
+        std::string line;
+        std::getline(stat, line);
+        const std::size_t close = line.rfind(')');
+        if (close == std::string::npos || close + 2 >= line.size()) {
+            return std::string("gone");
+        }
+
+        return std::string(1, line[close + 2]);
+    };
+    auto deadlocked = [&](const std::string& what) {
+        const std::string message = what + " (registrant /proc state: " + threadState(registrantTid.load()) + ")";
+        ADD_FAILURE() << "the threads deadlocked waiting for " << message;
+        std::fprintf(stderr, "[  FAILED  ] the GIL and the writer lock deadlocked waiting for %s\n", message.c_str());
         std::fflush(stdout);
         std::fflush(stderr);
         std::_Exit(1);
@@ -1925,29 +1956,32 @@ TEST_F(ProgressiveRenderTest, RegisteringAParticipantDuringAWriteReleasesTheGilW
     auto waitFor = [&](const char* what, const std::function<bool()>& done) {
         std::unique_lock<std::mutex> l(m);
         if (!changed.wait_until(l, deadline, done)) {
+            l.unlock();
             deadlocked(what);
         }
-    };
-    auto threadIsSleeping = [](long tid) {
-        std::ifstream stat("/proc/self/task/" + std::to_string(tid) + "/stat");
-        std::string line;
-        std::getline(stat, line);
-        const std::size_t close = line.rfind(')');
-        return close != std::string::npos && close + 2 < line.size() && (line[close + 2] == 'S' || line[close + 2] == 'D');
     };
 
     struct Hold {
         std::function<void()> run;
-    } hold;
-    hold.run = [&]() {
-        while (!threadIsSleeping(registrantTid.load())) {
-            if (std::chrono::steady_clock::now() > deadline) {
-                deadlocked("the registrant to wait for the writer lock");
-            }
-            std::this_thread::yield();
+    };
+    Hold writerHold;
+    writerHold.run = [&]() {
+        waitFor("the registrant to wait for the writer lock", [&]() { return registrantWaiting || registrantDone; });
+    };
+    // Other threads may register participants too; only the registrant's call counts.
+    Hold registrantHold;
+    registrantHold.run = [&]() {
+        bool isRegistrant = false;
+        {
+            std::lock_guard<std::mutex> l(m);
+            isRegistrant = std::this_thread::get_id() == registrantId;
+        }
+        if (isRegistrant) {
+            setFlag(registrantWaiting);
         }
     };
-    SceneWriteBarrier::setTestHook([](void* context) { static_cast<Hold*>(context)->run(); }, &hold);
+    SceneWriteBarrier::setTestHook([](void* context) { static_cast<Hold*>(context)->run(); }, &writerHold);
+    SceneWriteBarrier::setRegisterWaitTestHook([](void* context) { static_cast<Hold*>(context)->run(); }, &registrantHold);
 
     // Keeps the writer waiting for readers, with the writer lock held and the GIL released.
     std::thread reader([&]() {
@@ -1973,10 +2007,15 @@ TEST_F(ProgressiveRenderTest, RegisteringAParticipantDuringAWriteReleasesTheGilW
     std::thread registrant([&]() {
         const PyGILState_STATE gil = PyGILState_Ensure();
         registrantTid.store(static_cast<long>(syscall(SYS_gettid)));
+        {
+            std::lock_guard<std::mutex> l(m);
+            registrantId = std::this_thread::get_id();
+        }
         setFlag(registrantHasGil);
         const SceneWriteBarrier::ParticipantId id = SceneWriteBarrier::registerParticipant([]() { }, []() { });
         SceneWriteBarrier::unregisterParticipant(id);
         PyGILState_Release(gil);
+        setFlag(registrantDone);
         finish();
     });
     waitFor("the registrant to take the GIL", [&]() { return registrantHasGil; });
@@ -1986,6 +2025,7 @@ TEST_F(ProgressiveRenderTest, RegisteringAParticipantDuringAWriteReleasesTheGilW
     reader.join();
     writer.join();
     registrant.join();
+    SceneWriteBarrier::setRegisterWaitTestHook(nullptr, nullptr);
     SceneWriteBarrier::setTestHook(nullptr, nullptr);
     EXPECT_TRUE(wrote) << writeError;
 }

@@ -43,20 +43,26 @@
 
 #include <gtest/gtest.h>
 
+#include <QCoreApplication>
+#include <QFile>
 #include <QString>
+#include <QTemporaryDir>
 
 #include <pxr/base/plug/registry.h>
 
 #include "BaseTest.h"
+#include "CyclesTestUtils.h"
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/EffectInstance.h"
 #include "Engine/ImageLayerDesc.h"
+#include "Engine/KnobFile.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/CyclesSettings.h"
+#include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/MoonRaySettings.h"
@@ -76,6 +82,7 @@
 #include "Engine/Project.h"
 #include "Engine/ScenePayload.h"
 #include "Engine/ViewIdx.h"
+#include "Engine/ViewerInstance.h"
 #include "RenderBothWays.h"
 #include "RenderSettingsTestUtils.h"
 #include "Serialization/KnobSerialization.h"
@@ -85,6 +92,7 @@
 PXR_NAMESPACE_USING_DIRECTIVE
 
 NATRON_NAMESPACE_USING
+NATRON_PYTHON_NAMESPACE_USING
 
 namespace {
 template <typename KNOB>
@@ -895,4 +903,426 @@ TEST_F(USDRenderSettingsTest, AFileMakesTheRenderFoldEveryRendererUntilANodeSett
     hash = overRender->getHashValue();
     ASSERT_TRUE(nudge(overSamples));
     EXPECT_EQ(hash, overRender->getHashValue()) << "a MoonRay knob changed the hash of a Cycles render over a file";
+}
+
+namespace {
+// Fixed checklists for Cycles and MoonRay, each a stand-in renderer when its delegate is not installed.
+class ChecklistRenderers {
+public:
+    explicit ChecklistRenderers(const std::vector<std::string>& cyclesAovs = { "color", "depth", "normal" })
+    {
+        const std::vector<std::string> ids = RenderSettingsKnobs::rendererIds();
+        RenderSettingsKnobs::Descriptor flag;
+        flag.key = "flag";
+        flag.name = "Flag";
+        flag.defaultValue = PXR_NS::VtValue(false);
+        for (const char* id : { kRenderDelegateCyclesId, kMoonRayRendererId }) {
+            if (std::find(ids.begin(), ids.end(), std::string(id)) == ids.end()) {
+                RenderSettingsKnobs::setDescriptorsForTests(id, RenderSettingsKnobs::DescriptorList(1, flag));
+                _standIns.push_back(id);
+            }
+        }
+        DelegateSupport::setAvailableAovsForTests(kRenderDelegateCyclesId, cyclesAovs);
+        DelegateSupport::setAvailableAovsForTests(kMoonRayRendererId, { "beauty", "albedo" });
+    }
+
+    ~ChecklistRenderers()
+    {
+        DelegateSupport::setAvailableAovsForTests(kRenderDelegateCyclesId, std::vector<std::string>());
+        DelegateSupport::setAvailableAovsForTests(kMoonRayRendererId, std::vector<std::string>());
+        for (const std::string& id : _standIns) {
+            RenderSettingsKnobs::setDescriptorsForTests(id, RenderSettingsKnobs::DescriptorList());
+        }
+    }
+
+    bool isStandIn(const char* id) const
+    {
+        return std::find(_standIns.begin(), _standIns.end(), std::string(id)) != _standIns.end();
+    }
+
+private:
+    std::vector<std::string> _standIns;
+};
+
+struct AuthoredVar {
+    std::string sourceName;
+    std::string sourceType;
+    std::string dataType;
+    std::string layer;
+};
+
+// The vars the product of the settings prim at primPath orders, in order.
+std::vector<AuthoredVar>
+productVars(const UsdStageRefPtr& stage,
+            const char* primPath = kUSDRenderSettingsDefaultPrimPath)
+{
+    std::vector<AuthoredVar> vars;
+    const PXR_NS::UsdRenderSettings prim(stage ? stage->GetPrimAtPath(PXR_NS::SdfPath(primPath)) : PXR_NS::UsdPrim());
+    if (!prim) {
+        ADD_FAILURE() << "no RenderSettings prim at " << primPath;
+
+        return vars;
+    }
+    PXR_NS::SdfPathVector products;
+    prim.GetProductsRel().GetTargets(&products);
+    for (const PXR_NS::SdfPath& productPath : products) {
+        const PXR_NS::UsdRenderProduct product(stage->GetPrimAtPath(productPath));
+        PXR_NS::SdfPathVector ordered;
+        if (!product || !product.GetOrderedVarsRel().GetTargets(&ordered)) {
+            continue;
+        }
+        for (const PXR_NS::SdfPath& varPath : ordered) {
+            const PXR_NS::UsdRenderVar var(stage->GetPrimAtPath(varPath));
+            if (!var) {
+                ADD_FAILURE() << "the product orders " << varPath.GetString() << ", which is no RenderVar";
+                continue;
+            }
+            AuthoredVar v;
+            var.GetSourceNameAttr().Get(&v.sourceName);
+            PXR_NS::TfToken token;
+            if (var.GetSourceTypeAttr().HasAuthoredValue() && var.GetSourceTypeAttr().Get(&token)) {
+                v.sourceType = token.GetString();
+            }
+            if (var.GetDataTypeAttr().HasAuthoredValue() && var.GetDataTypeAttr().Get(&token)) {
+                v.dataType = token.GetString();
+            }
+            const PXR_NS::UsdAttribute layer = var.GetPrim().GetAttribute(PXR_NS::TfToken("natron:layer"));
+            if (layer) {
+                layer.Get(&v.layer);
+            }
+            vars.push_back(v);
+        }
+    }
+
+    return vars;
+}
+
+const AuthoredVar*
+findVar(const std::vector<AuthoredVar>& vars,
+        const std::string& sourceName)
+{
+    for (const AuthoredVar& v : vars) {
+        if (v.sourceName == sourceName) {
+            return &v;
+        }
+    }
+
+    return nullptr;
+}
+} // anon namespace
+
+// Cycles normal plus a primvars:st row are two RenderVars; a MoonRay tick adds a moonray:* var a
+// Cycles render leaves out; USDWrite keeps them; unticking removes the var.
+TEST_F(USDRenderSettingsTest, TheAovChecklistAuthorsRenderVars)
+{
+    const ChecklistRenderers renderers;
+    NodePtr cam = camera("/Cam");
+    NodePtr node = settings(cam);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(RenderSettingsTestUtils::configure(node, "/Cam", 64, 32));
+    const std::string cyclesPrefix = RenderSettingsKnobs::scriptPrefix(kRenderDelegateCyclesId);
+    const std::string moonRayPrefix = RenderSettingsKnobs::scriptPrefix(kMoonRayRendererId);
+    KnobGroup* cyclesGroup = knob<KnobGroup>(node, (cyclesPrefix + "Aovs").c_str());
+    KnobBool* normal = knob<KnobBool>(node, (cyclesPrefix + "AovNormal").c_str());
+    KnobBool* beauty = knob<KnobBool>(node, (moonRayPrefix + "AovBeauty").c_str());
+    KnobRenderVars* custom = knob<KnobRenderVars>(node, kUSDRenderSettingsParamCustomAovs);
+    ASSERT_TRUE(cyclesGroup && normal && beauty && custom);
+    EXPECT_EQ(std::string("Normal"), normal->getLabel());
+    EXPECT_EQ(std::string("Custom AOVs"), custom->getLabel());
+    EXPECT_FALSE(normal->getValue());
+
+    // Nothing ticked: no product.
+    SceneQueryPool::Lease lease;
+    EXPECT_TRUE(productVars(stageOf(node, &lease)).empty());
+    lease = SceneQueryPool::Lease();
+
+    NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(bool(render));
+    ASSERT_TRUE(render->connectInput(node, 0));
+    KnobChoice* renderer = knob<KnobChoice>(node, kUSDRenderSettingsParamDefaultRenderer);
+    ASSERT_TRUE(renderer != nullptr);
+    (void)renderer->setValueFromID(kRenderDelegateCyclesId, 0);
+
+    normal->setValue(true);
+    custom->setTable({ { "st", "primvar", "texCoord2f", "" } });
+    {
+        const UsdStageRefPtr authored = stageOf(node, &lease);
+        const PXR_NS::UsdRenderSettings prim(authored->GetPrimAtPath(PXR_NS::SdfPath(kUSDRenderSettingsDefaultPrimPath)));
+        ASSERT_TRUE(bool(prim));
+        PXR_NS::SdfPathVector products;
+        prim.GetProductsRel().GetTargets(&products);
+        EXPECT_EQ(PXR_NS::SdfPathVector({ PXR_NS::SdfPath("/Render/Products/rendersettings") }), products);
+        const PXR_NS::UsdRenderProduct product(authored->GetPrimAtPath(PXR_NS::SdfPath("/Render/Products/rendersettings")));
+        ASSERT_TRUE(bool(product));
+        PXR_NS::SdfPathVector ordered;
+        product.GetOrderedVarsRel().GetTargets(&ordered);
+        EXPECT_EQ(PXR_NS::SdfPathVector({ PXR_NS::SdfPath("/Render/Products/Vars/rendersettings/cycles_normal"), PXR_NS::SdfPath("/Render/Products/Vars/rendersettings/st") }), ordered);
+        EXPECT_TRUE(authored->GetPrimAtPath(PXR_NS::SdfPath("/Render/Products")).IsA<PXR_NS::UsdGeomScope>());
+        EXPECT_TRUE(authored->GetPrimAtPath(PXR_NS::SdfPath("/Render/Products/Vars")).IsA<PXR_NS::UsdGeomScope>());
+        EXPECT_TRUE(authored->GetPrimAtPath(PXR_NS::SdfPath("/Render/Products/Vars/rendersettings")).IsA<PXR_NS::UsdGeomScope>());
+    }
+    lease = SceneQueryPool::Lease();
+    std::vector<AuthoredVar> vars = productVars(stageOf(node, &lease));
+    lease = SceneQueryPool::Lease();
+    ASSERT_EQ(2u, vars.size());
+    EXPECT_EQ(std::string("cycles:normal"), vars[0].sourceName);
+    EXPECT_EQ(std::string("raw"), vars[0].sourceType);
+    EXPECT_EQ(std::string(), vars[0].dataType);
+    EXPECT_EQ(std::string("st"), vars[1].sourceName);
+    EXPECT_EQ(std::string("primvar"), vars[1].sourceType);
+    EXPECT_EQ(std::string("texCoord2f"), vars[1].dataType);
+
+    const U64 renderHash = render->getHashValue();
+    beauty->setValue(true);
+    EXPECT_EQ(renderHash, render->getHashValue()) << "a MoonRay tick changed the hash of a Cycles render";
+    UsdStageRefPtr stage = stageOf(node, &lease);
+    vars = productVars(stage);
+    ASSERT_EQ(3u, vars.size());
+    EXPECT_TRUE(findVar(vars, "moonray:beauty") != nullptr);
+    const PXR_NS::UsdRenderSettings prim(stage->GetPrimAtPath(PXR_NS::SdfPath(kUSDRenderSettingsDefaultPrimPath)));
+    RenderSettingsPrim::AovRequests requests;
+    std::string error;
+    ASSERT_TRUE(RenderSettingsPrim::aovRequests(prim, kRenderDelegateCyclesId, PXR_NS::UsdTimeCode(1.), &requests, &error)) << error;
+    std::vector<std::string> names;
+    for (const RenderSettingsPrim::AovRequest& request : requests.requests) {
+        names.push_back(request.name.GetString());
+    }
+    EXPECT_EQ(std::vector<std::string>({ "cycles:normal", "primvars:st" }), names);
+    EXPECT_TRUE(requests.rejected.empty());
+    ASSERT_TRUE(RenderSettingsPrim::aovRequests(prim, kMoonRayRendererId, PXR_NS::UsdTimeCode(1.), &requests, &error)) << error;
+    names.clear();
+    for (const RenderSettingsPrim::AovRequest& request : requests.requests) {
+        names.push_back(request.name.GetString());
+    }
+    EXPECT_EQ(std::vector<std::string>({ "moonray:beauty", "primvars:st" }), names);
+    stage = UsdStageRefPtr();
+    lease = SceneQueryPool::Lease();
+
+    // USDWrite keeps the product and its vars.
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string path = (tmp.path() + QString::fromUtf8("/rendervars.usda")).toStdString();
+    NodePtr writer = createNode(QString::fromUtf8(PLUGINID_NATRON_USDWRITE));
+    ASSERT_TRUE(bool(writer));
+    ASSERT_TRUE(writer->connectInput(node, 0));
+    KnobOutputFile* file = knob<KnobOutputFile>(writer, kUSDWriteParamFile);
+    KnobChoice* exportMode = knob<KnobChoice>(writer, kUSDWriteParamExportMode);
+    KnobChoice* frameRange = knob<KnobChoice>(writer, kUSDWriteParamFrameRange);
+    KnobInt* first = knob<KnobInt>(writer, kUSDWriteParamFirstFrame);
+    KnobInt* last = knob<KnobInt>(writer, kUSDWriteParamLastFrame);
+    ASSERT_TRUE(file && exportMode && frameRange && first && last);
+    file->setValue(path);
+    exportMode->setValue((int)USDWrite::eExportModeFlattened);
+    frameRange->setValue((int)USDWrite::eFrameRangeManual);
+    first->setValue(1);
+    last->setValue(1);
+    USDWrite* write = dynamic_cast<USDWrite*>(writer->getEffectInstance().get());
+    ASSERT_TRUE(write != nullptr);
+    ASSERT_EQ(eStatusOK, write->writeFrameRange(1, 1, ViewIdx(0)));
+    ASSERT_TRUE(QFile::exists(QString::fromStdString(path)));
+    {
+        const UsdStageRefPtr written = PXR_NS::UsdStage::Open(path);
+        ASSERT_TRUE(written != nullptr);
+        const std::vector<AuthoredVar> back = productVars(written);
+        ASSERT_EQ(3u, back.size());
+        EXPECT_TRUE(findVar(back, "cycles:normal") != nullptr);
+        EXPECT_TRUE(findVar(back, "moonray:beauty") != nullptr);
+        const AuthoredVar* st = findVar(back, "st");
+        ASSERT_TRUE(st != nullptr);
+        EXPECT_EQ(std::string("primvar"), st->sourceType);
+        EXPECT_EQ(std::string("texCoord2f"), st->dataType);
+    }
+
+    // A named layer, then unticking.
+    custom->setTable({ { "st", "primvar", "texCoord2f", "uv" } });
+    beauty->setValue(false);
+    vars = productVars(stageOf(node, &lease));
+    lease = SceneQueryPool::Lease();
+    ASSERT_EQ(2u, vars.size());
+    EXPECT_TRUE(findVar(vars, "moonray:beauty") == nullptr);
+    const AuthoredVar* st = findVar(vars, "st");
+    ASSERT_TRUE(st != nullptr);
+    EXPECT_EQ(std::string("uv"), st->layer);
+
+    // A source type the schema has no name for is an error.
+    custom->setTable({ { "st", "texture", "", "" } });
+    ScenePayload payload;
+    EXPECT_NE(EffectInstance::eRenderRoIRetCodeOk,
+              node->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &payload, &error));
+    EXPECT_NE(std::string::npos, error.find("texture")) << error;
+    custom->setTable({ { "st", "primvar", "texCoord2f", "" } });
+
+    // A Cycles render: normal is the layer Cycles always gives, st the declared primvar.
+    if (renderers.isStandIn(kRenderDelegateCyclesId) || !CyclesTestUtils::cyclesOrSkip()) {
+        return;
+    }
+    QCoreApplication::processEvents();
+    // Off the main thread, which is given a provisional answer while a worker reads the scene.
+    const EffectInstancePtr renderEffect = render->getEffectInstance();
+    const std::list<ImageLayerDesc> present = std::async(std::launch::async, [renderEffect]() {
+        std::list<ImageLayerDesc> layers;
+        renderEffect->getPresentLayers(1., ViewIdx(0), -1, &layers);
+
+        return layers; }).get();
+    bool haveNormal = false;
+    bool haveSt = false;
+    for (const ImageLayerDesc& layer : present) {
+        haveNormal = haveNormal || (layer.getLayerID() == "normal");
+        haveSt = haveSt || (layer.getLayerID() == "st");
+        EXPECT_NE(std::string("beauty"), layer.getLayerID());
+    }
+    EXPECT_TRUE(haveNormal);
+    EXPECT_TRUE(haveSt);
+}
+
+// A list in the renderer's own namespace, as hdCycles publishes it, names each tick after the AOV
+// without that namespace; a name in another namespace keeps it.
+TEST_F(USDRenderSettingsTest, ChecklistTicksAreNamedWithoutTheRenderersNamespace)
+{
+    const ChecklistRenderers renderers({ "cycles:ao", "cycles:diffuse_direct", "cycles:normal", "cycles:lightgroup:key", "primvars:st" });
+    NodePtr cam = camera("/Cam");
+    NodePtr node = settings(cam);
+    ASSERT_TRUE(bool(node));
+    const std::string prefix = RenderSettingsKnobs::scriptPrefix(kRenderDelegateCyclesId);
+    const std::vector<std::pair<std::string, std::string>> expected = {
+        { "AovAo", "AO" },
+        { "AovDiffuseDirect", "Diffuse Direct" },
+        { "AovNormal", "Normal" },
+        { "AovLightgroupKey", "Lightgroup Key" },
+        { "AovPrimvarsSt", "Primvars St" },
+    };
+    for (const std::pair<std::string, std::string>& tick : expected) {
+        KnobBool* k = knob<KnobBool>(node, (prefix + tick.first).c_str());
+        EXPECT_TRUE(k != nullptr) << prefix + tick.first;
+        if (k) {
+            EXPECT_EQ(tick.second, k->getLabel()) << prefix + tick.first;
+        }
+    }
+    EXPECT_TRUE(node->getKnobByName(prefix + "AovCyclesAo") == nullptr);
+
+    KnobBool* ao = knob<KnobBool>(node, (prefix + "AovAo").c_str());
+    ASSERT_TRUE(ao != nullptr);
+    ao->setValue(true);
+    SceneQueryPool::Lease lease;
+    const std::vector<AuthoredVar> vars = productVars(stageOf(node, &lease));
+    lease = SceneQueryPool::Lease();
+    ASSERT_EQ(1u, vars.size());
+    EXPECT_EQ(std::string("cycles:ao"), vars[0].sourceName);
+}
+
+// Scripts author custom vars through the Custom AOVs table; a malformed row raises instead of
+// corrupting the table.
+TEST_F(USDRenderSettingsTest, PythonAuthorsCustomAovs)
+{
+    NodePtr cam = camera("/Cam");
+    NodePtr node = settings(cam);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(RenderSettingsTestUtils::configure(node, "/Cam", 64, 32));
+    KnobRenderVars* custom = knob<KnobRenderVars>(node, kUSDRenderSettingsParamCustomAovs);
+    ASSERT_TRUE(custom != nullptr);
+
+    const std::string param = "param = " + getApp()->getAppIDString() + ".getNode(\"" + node->getScriptName() + "\").getParam(\"" + kUSDRenderSettingsParamCustomAovs + "\")\n";
+    const std::string script = "import NatronEngine\n" + param + "assert isinstance(param, NatronEngine.RenderVarsParam), type(param)\n"
+                                                                 "param.setTable([['st', 'primvar', 'texCoord2f', '']])\n"
+                                                                 "param.appendRow(['C<RD>L', 'lpe', '', 'diffuseLpe'])\n"
+                                                                 "assert param.getTable() == [['st', 'primvar', 'texCoord2f', ''], ['C<RD>L', 'lpe', '', 'diffuseLpe']], param.getTable()\n";
+    std::string error, output;
+    ASSERT_TRUE(interpretPythonScript(script, &error, &output)) << error;
+
+    std::list<std::vector<std::string>> rows;
+    custom->getTable(&rows);
+    ASSERT_EQ(2u, rows.size());
+    EXPECT_EQ(std::string("SourceType"), custom->getColumnTag(KnobRenderVars::eColumnSourceType));
+    EXPECT_EQ(std::vector<std::string>({ "st", "primvar", "texCoord2f", "" }), rows.front());
+
+    SceneQueryPool::Lease lease;
+    const std::vector<AuthoredVar> vars = productVars(stageOf(node, &lease));
+    lease = SceneQueryPool::Lease();
+    const AuthoredVar* st = findVar(vars, "st");
+    ASSERT_TRUE(st != nullptr);
+    EXPECT_EQ(std::string("primvar"), st->sourceType);
+    const AuthoredVar* lpe = findVar(vars, "C<RD>L");
+    ASSERT_TRUE(lpe != nullptr);
+    EXPECT_EQ(std::string("lpe"), lpe->sourceType);
+
+    const std::string shortRow = "import NatronEngine\n" + param + "param.appendRow(['st', 'primvar'])\n";
+    EXPECT_FALSE(interpretPythonScript(shortRow, &error, &output));
+    EXPECT_NE(std::string::npos, error.find("ValueError")) << error;
+    rows.clear();
+    custom->getTable(&rows);
+    EXPECT_EQ(2u, rows.size());
+}
+
+// The layers a USDRender produces follow the vars upstream, so a viewer below it re-lists its
+// layer menu on each AOV edit, with no reconnection.
+TEST_F(USDRenderSettingsTest, AovEditsRefreshTheLayerMenuOfAViewerDownstream)
+{
+    const ChecklistRenderers renderers;
+    NodePtr cam = camera("/Cam");
+    NodePtr node = settings(cam);
+    ASSERT_TRUE(bool(node));
+    ASSERT_TRUE(RenderSettingsTestUtils::configure(node, "/Cam", 64, 32));
+    KnobBool* normal = knob<KnobBool>(node, (RenderSettingsKnobs::scriptPrefix(kRenderDelegateCyclesId) + "AovNormal").c_str());
+    KnobRenderVars* custom = knob<KnobRenderVars>(node, kUSDRenderSettingsParamCustomAovs);
+    ASSERT_TRUE(normal && custom);
+
+    NodePtr render = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(bool(render));
+    ASSERT_TRUE(render->connectInput(node, 0));
+    CreateNodeArgs viewerArgs(PLUGINID_NATRON_VIEWER, getApp()->getProject());
+    viewerArgs.setProperty<bool>(kCreateNodeArgsPropAllowNonUserCreatablePlugins, true);
+    NodePtr viewerNode = getApp()->createNode(viewerArgs);
+    ASSERT_TRUE(bool(viewerNode));
+    ViewerInstance* viewer = viewerNode->isEffectViewer();
+    ASSERT_TRUE(viewer != nullptr);
+    ASSERT_TRUE(viewerNode->connectInput(render, 0));
+    QCoreApplication::processEvents();
+
+    int refreshes = 0;
+    QMetaObject::Connection counter = QObject::connect(viewer, &ViewerInstance::availableComponentsChanged, [&refreshes]() {
+        ++refreshes;
+    });
+    normal->setValue(true);
+    EXPECT_GT(refreshes, 0) << "ticking an AOV left the viewer's layer menu as it was";
+
+    refreshes = 0;
+    custom->setTable({ { "st", "primvar", "texCoord2f", "" } });
+    EXPECT_GT(refreshes, 0) << "a custom AOV left the viewer's layer menu as it was";
+    QObject::disconnect(counter);
+}
+
+// The input scene's product stays listed beside the node's, and the node's vars, in a scope of the
+// prim's own, leave a var of the input scene's that shares a name with one of them as it is.
+TEST_F(USDRenderSettingsTest, TheAovChecklistKeepsTheInputScenesProducts)
+{
+    NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
+    KnobFile* file = knob<KnobFile>(reader, kUSDReadParamFile);
+    ASSERT_TRUE(file != nullptr);
+    file->setValue(std::string(NATRON_TESTS_FIXTURES_DIR "/scene-rendervars.usda"));
+    NodePtr node = settings(reader);
+    ASSERT_TRUE(bool(node));
+    KnobRenderVars* custom = knob<KnobRenderVars>(node, kUSDRenderSettingsParamCustomAovs);
+    ASSERT_TRUE(custom != nullptr);
+    custom->setTable({ { "normal", "raw", "", "" }, { "st", "primvar", "texCoord2f", "" } });
+
+    SceneQueryPool::Lease lease;
+    const UsdStageRefPtr stage = stageOf(node, &lease);
+    ASSERT_TRUE(stage != nullptr);
+    const PXR_NS::UsdRenderSettings prim(stage->GetPrimAtPath(PXR_NS::SdfPath(kUSDRenderSettingsDefaultPrimPath)));
+    ASSERT_TRUE(bool(prim));
+    PXR_NS::SdfPathVector products;
+    prim.GetProductsRel().GetTargets(&products);
+    EXPECT_EQ(PXR_NS::SdfPathVector({ PXR_NS::SdfPath("/Render/Products/rendersettings"), PXR_NS::SdfPath("/Render/Products/beauty") }), products);
+    const PXR_NS::UsdRenderVar normal(stage->GetPrimAtPath(PXR_NS::SdfPath("/Render/Products/Vars/rendersettings/normal")));
+    ASSERT_TRUE(bool(normal));
+    EXPECT_FALSE(normal.GetDataTypeAttr().HasAuthoredValue());
+    const PXR_NS::UsdRenderVar inputNormal(stage->GetPrimAtPath(PXR_NS::SdfPath("/Render/Products/Vars/normal")));
+    ASSERT_TRUE(bool(inputNormal));
+    PXR_NS::TfToken inputDataType;
+    EXPECT_TRUE(inputNormal.GetDataTypeAttr().Get(&inputDataType));
+    EXPECT_EQ(PXR_NS::TfToken("normal3f"), inputDataType);
+    const std::vector<AuthoredVar> vars = productVars(stage);
+    EXPECT_TRUE(findVar(vars, "depth") != nullptr);
+    EXPECT_TRUE(findVar(vars, "instanceId") != nullptr);
+    EXPECT_TRUE(findVar(vars, "st") != nullptr);
 }

@@ -28,9 +28,11 @@
 #include <algorithm>
 #include <cctype>
 #include <map>
+#include <mutex>
 #include <set>
 #include <vector>
 
+#include <pxr/base/vt/array.h>
 #include <pxr/imaging/hd/pluginRenderDelegateUniqueHandle.h>
 #include <pxr/imaging/hd/renderDelegate.h>
 #include <pxr/imaging/hd/rendererPluginRegistry.h>
@@ -40,6 +42,10 @@
 #include <pxr/usdImaging/usdImaging/adapterRegistry.h>
 #include <pxr/usdImaging/usdImaging/apiSchemaAdapter.h>
 #include <pxr/usdImaging/usdImaging/primAdapter.h>
+
+#include "Engine/Nodes/Scene/CyclesAovs.h"
+#include "Engine/Nodes/Scene/MoonRayAovs.h"
+#include "Engine/Nodes/Scene/RenderDelegates.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
 
@@ -179,8 +185,106 @@ probe(const std::string& rendererId)
     }
     support.materialRenderContexts = delegate->GetMaterialRenderContexts();
     support.materialBindingPurpose = delegate->GetMaterialBindingPurpose();
+    support.publishedAovs = publishedAovs(delegate->GetRenderStats());
 
     return support;
+}
+
+std::vector<std::string>
+publishedAovs(const VtDictionary& stats)
+{
+    std::vector<std::string> out;
+    const VtDictionary::const_iterator found = stats.find("aovNames");
+
+    if (found == stats.end()) {
+        return out;
+    }
+    const VtValue* value = &found->second;
+    if (value->IsHolding<VtArray<TfToken>>()) {
+        for (const TfToken& name : value->UncheckedGet<VtArray<TfToken>>()) {
+            out.push_back(name.GetString());
+        }
+    } else if (value->IsHolding<TfTokenVector>()) {
+        for (const TfToken& name : value->UncheckedGet<TfTokenVector>()) {
+            out.push_back(name.GetString());
+        }
+    } else if (value->IsHolding<VtArray<std::string>>()) {
+        const VtArray<std::string>& names = value->UncheckedGet<VtArray<std::string>>();
+        out.assign(names.cbegin(), names.cend());
+    } else if (value->IsHolding<std::vector<std::string>>()) {
+        out = value->UncheckedGet<std::vector<std::string>>();
+    }
+    out.erase(std::remove(out.begin(), out.end(), std::string()), out.end());
+
+    return out;
+}
+
+namespace {
+    std::mutex&
+    testAovsMutex()
+    {
+        static std::mutex mutex;
+
+        return mutex;
+    }
+
+    std::map<std::string, std::vector<std::string>>&
+    testAovs()
+    {
+        static std::map<std::string, std::vector<std::string>> aovs;
+
+        return aovs;
+    }
+
+    // Storm's stats read a resource registry that a delegate made outside a render has not got, so
+    // none is made to ask; these are the AOVs HdStRenderDelegate::GetDefaultAovDescriptor gives a
+    // format. depthStencil is left out: it is depth with a stencil packed in, which only the depth
+    // plane reads.
+    const std::vector<std::string>&
+    stormAovs()
+    {
+        static const std::vector<std::string> names = { "color", "depth", "primId", "instanceId", "elementId", "edgeId", "pointId", "Neye" };
+
+        return names;
+    }
+} // anon namespace
+
+std::vector<std::string>
+availableAovs(const std::string& rendererId)
+{
+    {
+        std::lock_guard<std::mutex> l(testAovsMutex());
+        std::map<std::string, std::vector<std::string>>::const_iterator found = testAovs().find(rendererId);
+        if (found != testAovs().end()) {
+            return found->second;
+        }
+    }
+    if (CyclesAovs::isCycles(rendererId)) {
+        const std::vector<std::string>& published = CyclesAovs::support().publishedAovs;
+
+        return published.empty() ? CyclesAovs::catalogue() : published;
+    } else if (MoonRayAovs::isMoonRay(rendererId)) {
+        const std::vector<std::string>& published = MoonRayAovs::publishedAovs();
+
+        return published.empty() ? MoonRayAovs::catalogue() : published;
+    } else if (RenderDelegates::isStorm(rendererId)) {
+        return stormAovs();
+    }
+
+    return std::vector<std::string>();
+}
+
+void
+setAvailableAovsForTests(const std::string& rendererId,
+                         const std::vector<std::string>& aovs)
+{
+    std::lock_guard<std::mutex> l(testAovsMutex());
+
+    if (aovs.empty()) {
+        testAovs().erase(rendererId);
+    } else {
+        testAovs()[rendererId] = aovs;
+    }
 }
 
 std::string

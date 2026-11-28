@@ -32,6 +32,7 @@
 #include <gtest/gtest.h>
 
 #include "BaseTest.h"
+#include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/MoonRayAovs.h"
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
@@ -317,4 +318,283 @@ TEST_F(RenderSettingsPrimTest, RendererForThePrim)
     EXPECT_FALSE(RenderSettingsPrim::rendererFor(b, &id, &error));
     EXPECT_TRUE(id.empty());
     EXPECT_NE(std::string::npos, error.find("HdNoSuchRendererPlugin")) << error;
+}
+
+namespace {
+const char* const kProducts = R"(#usda 1.0
+def Scope "Render"
+{
+    def RenderSettings "Settings"
+    {
+        rel camera = </World/Cam>
+        rel products = [</Render/a>, </Render/b>]
+    }
+    def RenderProduct "a"
+    {
+        rel orderedVars = [</Render/vars/diffuse>, </Render/vars/st>, </Render/vars/depth>]
+    }
+    def RenderProduct "b"
+    {
+        rel orderedVars = [</Render/vars/depth>, </Render/vars/spec>, </Render/vars/moon>, </Render/vars/cat>]
+    }
+    def Scope "vars"
+    {
+        def RenderVar "diffuse"
+        {
+            uniform string sourceName = "cycles:diffuse_direct"
+            uniform token dataType = "color3f"
+            string natron:layer = "diffuse"
+            string driver:parameters:aov:format = "color3h"
+            int cycles:lightgroup = 2
+        }
+        def RenderVar "st"
+        {
+            uniform string sourceName = "st"
+            uniform token sourceType = "primvar"
+            uniform token dataType = "texCoord2f"
+        }
+        def RenderVar "depth"
+        {
+            uniform string sourceName = "depth"
+        }
+        def RenderVar "spec"
+        {
+            uniform string sourceName = "C<RS>[LO]"
+            uniform token sourceType = "lpe"
+        }
+        def RenderVar "moon"
+        {
+            uniform string sourceName = "moonray:albedo"
+            string driver:parameters:aov:moonray:result = "albedo"
+        }
+        def RenderVar "cat"
+        {
+            uniform string sourceName = "P"
+            uniform token sourceType = "intrinsic"
+        }
+    }
+}
+def Xform "World"
+{
+    def Camera "Cam"
+    {
+    }
+    def Camera "Other"
+    {
+    }
+}
+)";
+
+const RenderSettingsPrim::AovRequest*
+requestAt(const RenderSettingsPrim::AovRequests& requests,
+          const char* path)
+{
+    for (const RenderSettingsPrim::AovRequest& r : requests.requests) {
+        if (r.path == SdfPath(path)) {
+            return &r;
+        }
+    }
+
+    return nullptr;
+}
+
+std::vector<std::string>
+requestPaths(const RenderSettingsPrim::AovRequests& requests)
+{
+    std::vector<std::string> paths;
+
+    for (const RenderSettingsPrim::AovRequest& r : requests.requests) {
+        paths.push_back(r.path.GetString());
+    }
+
+    return paths;
+}
+} // anon namespace
+
+TEST_F(RenderSettingsPrimTest, AovRequestsUnionTheProductsOnce)
+{
+    UsdStageRefPtr stage = stageFrom(kProducts);
+    ASSERT_TRUE(bool(stage));
+    const UsdRenderSettings prim(stage->GetPrimAtPath(SdfPath("/Render/Settings")));
+    RenderSettingsPrim::AovRequests requests;
+    std::string error;
+
+    ASSERT_TRUE(RenderSettingsPrim::aovRequests(prim, kRenderDelegateCyclesId, UsdTimeCode::Default(), &requests, &error)) << error;
+    const std::vector<std::string> expected = { "/Render/vars/diffuse", "/Render/vars/st", "/Render/vars/depth", "/Render/vars/spec" };
+    EXPECT_EQ(expected, requestPaths(requests));
+}
+
+TEST_F(RenderSettingsPrimTest, AovRequestsMapEachSourceType)
+{
+    UsdStageRefPtr stage = stageFrom(kProducts);
+    ASSERT_TRUE(bool(stage));
+    const UsdRenderSettings prim(stage->GetPrimAtPath(SdfPath("/Render/Settings")));
+    RenderSettingsPrim::AovRequests requests;
+    std::string error;
+
+    ASSERT_TRUE(RenderSettingsPrim::aovRequests(prim, kRenderDelegateCyclesId, UsdTimeCode::Default(), &requests, &error)) << error;
+    const RenderSettingsPrim::AovRequest* diffuse = requestAt(requests, "/Render/vars/diffuse");
+    const RenderSettingsPrim::AovRequest* st = requestAt(requests, "/Render/vars/st");
+    const RenderSettingsPrim::AovRequest* depth = requestAt(requests, "/Render/vars/depth");
+    const RenderSettingsPrim::AovRequest* spec = requestAt(requests, "/Render/vars/spec");
+    ASSERT_TRUE(diffuse && st && depth && spec);
+    EXPECT_EQ(TfToken("cycles:diffuse_direct"), diffuse->name);
+    EXPECT_EQ(TfToken("primvars:st"), st->name);
+    EXPECT_EQ(TfToken("depth"), depth->name);
+    EXPECT_EQ(TfToken("lpe:C<RS>[LO]"), spec->name);
+    EXPECT_EQ(TfToken("color3f"), diffuse->dataType);
+    EXPECT_EQ(TfToken("texCoord2f"), st->dataType);
+    // The schema's color3f fallback is not taken for the AOV's type.
+    EXPECT_TRUE(depth->dataType.IsEmpty());
+
+    ASSERT_EQ(1u, requests.rejected.size());
+    EXPECT_EQ(SdfPath("/Render/vars/cat"), requests.rejected.front().path);
+    EXPECT_NE(std::string::npos, requests.rejected.front().reason.find("intrinsic")) << requests.rejected.front().reason;
+}
+
+TEST_F(RenderSettingsPrimTest, AovRequestsKeepNamespacedAttributes)
+{
+    UsdStageRefPtr stage = stageFrom(kProducts);
+    ASSERT_TRUE(bool(stage));
+    const UsdRenderSettings prim(stage->GetPrimAtPath(SdfPath("/Render/Settings")));
+    RenderSettingsPrim::AovRequests requests;
+    std::string error;
+
+    UsdAttribute animated = stage->GetPrimAtPath(SdfPath("/Render/vars/diffuse")).CreateAttribute(TfToken("cycles:exposure"), SdfValueTypeNames->Float);
+    ASSERT_TRUE(animated.Set(1.f, UsdTimeCode(1.)));
+    ASSERT_TRUE(animated.Set(3.f, UsdTimeCode(3.)));
+    ASSERT_TRUE(RenderSettingsPrim::aovRequests(prim, kRenderDelegateCyclesId, UsdTimeCode(2.), &requests, &error)) << error;
+    const RenderSettingsPrim::AovRequest* diffuse = requestAt(requests, "/Render/vars/diffuse");
+    ASSERT_TRUE(diffuse);
+    EXPECT_EQ("diffuse", diffuse->layer);
+    ASSERT_TRUE(diffuse->settings.count("driver:parameters:aov:format"));
+    EXPECT_EQ(VtValue(std::string("color3h")), diffuse->settings.find("driver:parameters:aov:format")->second);
+    ASSERT_TRUE(diffuse->settings.count("cycles:lightgroup"));
+    EXPECT_EQ(VtValue(2), diffuse->settings.find("cycles:lightgroup")->second);
+    ASSERT_TRUE(diffuse->settings.count("cycles:exposure"));
+    EXPECT_EQ(VtValue(2.f), diffuse->settings.find("cycles:exposure")->second);
+    EXPECT_FALSE(diffuse->settings.count("sourceName"));
+}
+
+TEST_F(RenderSettingsPrimTest, OutputSettingsGiveTheDriverParametersUnderBothKeys)
+{
+    RenderSettingsPrim::AovRequest request;
+    request.name = TfToken("cycles:diffuse_direct");
+    request.sourceName = "cycles:diffuse_direct";
+    request.sourceType = TfToken("raw");
+    request.layer = "diffuse";
+    request.settings["driver:parameters:aov:format"] = VtValue(std::string("color3h"));
+    request.settings["driver:parameters:aov:moonray:math_filter"] = VtValue(1);
+    request.settings["parameters:moonray:math_filter"] = VtValue(2);
+    request.settings["cycles:lightgroup"] = VtValue(3);
+    request.settings["natron:layer"] = VtValue(std::string("diffuse"));
+
+    VtDictionary settings = RenderSettingsPrim::outputSettings(request);
+    auto value = [&settings](const char* key) {
+        VtDictionary::const_iterator found = settings.find(key);
+
+        return (found == settings.end()) ? VtValue() : found->second;
+    };
+    EXPECT_EQ(VtValue(std::string("color3h")), value("driver:parameters:aov:format"));
+    EXPECT_EQ(VtValue(std::string("color3h")), value("parameters:format"));
+    EXPECT_EQ(VtValue(1), value("driver:parameters:aov:moonray:math_filter"));
+    // The var's own parameters: attribute is kept.
+    EXPECT_EQ(VtValue(2), value("parameters:moonray:math_filter"));
+    EXPECT_EQ(VtValue(3), value("cycles:lightgroup"));
+    EXPECT_TRUE(value("natron:layer").IsEmpty());
+    EXPECT_EQ(VtValue(std::string("cycles:diffuse_direct")), value("sourceName"));
+    EXPECT_EQ(VtValue(TfToken("raw")), value("sourceType"));
+    // An unauthored dataType is the schema's fallback, which says nothing of the AOV.
+    EXPECT_TRUE(value("dataType").IsEmpty());
+    request.dataType = TfToken("color3f");
+    settings = RenderSettingsPrim::outputSettings(request);
+    EXPECT_EQ(VtValue(TfToken("color3f")), value("dataType"));
+}
+
+TEST_F(RenderSettingsPrimTest, AovRequestsLeaveOutOtherDelegatesVars)
+{
+    UsdStageRefPtr stage = stageFrom(kProducts);
+    ASSERT_TRUE(bool(stage));
+    const UsdRenderSettings prim(stage->GetPrimAtPath(SdfPath("/Render/Settings")));
+    RenderSettingsPrim::AovRequests cycles;
+    RenderSettingsPrim::AovRequests moonRay;
+    std::string error;
+
+    ASSERT_TRUE(RenderSettingsPrim::aovRequests(prim, kRenderDelegateCyclesId, UsdTimeCode::Default(), &cycles, &error)) << error;
+    EXPECT_FALSE(requestAt(cycles, "/Render/vars/moon"));
+    EXPECT_TRUE(requestAt(cycles, "/Render/vars/st"));
+    for (const RenderSettingsPrim::RejectedVar& r : cycles.rejected) {
+        EXPECT_NE(SdfPath("/Render/vars/moon"), r.path);
+    }
+
+    ASSERT_TRUE(RenderSettingsPrim::aovRequests(prim, kMoonRayRendererId, UsdTimeCode::Default(), &moonRay, &error)) << error;
+    EXPECT_FALSE(requestAt(moonRay, "/Render/vars/diffuse"));
+    const RenderSettingsPrim::AovRequest* moon = requestAt(moonRay, "/Render/vars/moon");
+    ASSERT_TRUE(moon);
+    EXPECT_EQ(TfToken("moonray:albedo"), moon->name);
+    EXPECT_TRUE(moon->settings.count("driver:parameters:aov:moonray:result"));
+    EXPECT_TRUE(requestAt(moonRay, "/Render/vars/st"));
+    EXPECT_TRUE(requestAt(moonRay, "/Render/vars/depth"));
+
+    EXPECT_TRUE(RenderSettingsPrim::isForAnotherDelegate("moonray:albedo", kRenderDelegateCyclesId));
+    EXPECT_FALSE(RenderSettingsPrim::isForAnotherDelegate("cycles:ao", kRenderDelegateCyclesId));
+    EXPECT_FALSE(RenderSettingsPrim::isForAnotherDelegate("primvars:st", kRenderDelegateCyclesId));
+    EXPECT_FALSE(RenderSettingsPrim::isForAnotherDelegate("lpe:C.*L", kMoonRayRendererId));
+    EXPECT_FALSE(RenderSettingsPrim::isForAnotherDelegate("color", kMoonRayRendererId));
+}
+
+TEST_F(RenderSettingsPrimTest, AovRequestsRefuseTwoCameras)
+{
+    UsdStageRefPtr stage = stageFrom(kProducts);
+    ASSERT_TRUE(bool(stage));
+    const UsdRenderSettings prim(stage->GetPrimAtPath(SdfPath("/Render/Settings")));
+    RenderSettingsPrim::AovRequests requests;
+    std::string error;
+
+    ASSERT_TRUE(stage->GetPrimAtPath(SdfPath("/Render/b")).CreateRelationship(UsdRenderTokens->camera).SetTargets({ SdfPath("/World/Other") }));
+    EXPECT_FALSE(RenderSettingsPrim::aovRequests(prim, kRenderDelegateCyclesId, UsdTimeCode::Default(), &requests, &error));
+    EXPECT_NE(std::string::npos, error.find("/Render/a")) << error;
+    EXPECT_NE(std::string::npos, error.find("/Render/b")) << error;
+}
+
+// A product that authors its own camera or resolution is rendered with it; the settings prim's
+// values stand where the product authors none.
+TEST_F(RenderSettingsPrimTest, ProductValuesOverrideTheSettingsPrim)
+{
+    UsdStageRefPtr stage = stageFrom(kProducts);
+    ASSERT_TRUE(bool(stage));
+    const UsdRenderSettings prim(stage->GetPrimAtPath(SdfPath("/Render/Settings")));
+    ASSERT_TRUE(prim.CreateResolutionAttr().Set(GfVec2i(320, 240)));
+    ASSERT_TRUE(prim.CreatePixelAspectRatioAttr().Set(2.f));
+
+    RenderSettingsPrim::StandardAttributes before = RenderSettingsPrim::standardAttributes(prim);
+    EXPECT_EQ(SdfPath("/World/Cam"), before.camera);
+    EXPECT_EQ(GfVec2i(320, 240), before.resolution);
+
+    for (const char* path : { "/Render/a", "/Render/b" }) {
+        const UsdRenderProduct product(stage->GetPrimAtPath(SdfPath(path)));
+        ASSERT_TRUE(product.CreateCameraRel().SetTargets({ SdfPath("/World/Other") }));
+        ASSERT_TRUE(product.CreateResolutionAttr().Set(GfVec2i(64, 32)));
+    }
+    const RenderSettingsPrim::StandardAttributes after = RenderSettingsPrim::standardAttributes(prim);
+    EXPECT_EQ(SdfPath("/World/Other"), after.camera);
+    EXPECT_EQ(GfVec2i(64, 32), after.resolution);
+    EXPECT_EQ(2.f, after.pixelAspectRatio);
+
+    RenderSettingsPrim::AovRequests requests;
+    std::string error;
+    EXPECT_TRUE(RenderSettingsPrim::aovRequests(prim, kRenderDelegateCyclesId, UsdTimeCode::Default(), &requests, &error)) << error;
+}
+
+TEST_F(RenderSettingsPrimTest, AovRequestsWithoutProductsAreEmpty)
+{
+    UsdStageRefPtr stage = stageFrom(kTwoPrims);
+    ASSERT_TRUE(bool(stage));
+    const UsdRenderSettings prim(stage->GetPrimAtPath(SdfPath("/Render/A")));
+    RenderSettingsPrim::AovRequests requests;
+    std::string error;
+
+    ASSERT_TRUE(RenderSettingsPrim::aovRequests(prim, kRenderDelegateCyclesId, UsdTimeCode::Default(), &requests, &error)) << error;
+    EXPECT_TRUE(requests.requests.empty());
+    EXPECT_TRUE(requests.rejected.empty());
 }

@@ -144,6 +144,35 @@ struct CurveEditorPrivate
     KnobCurveGuiWPtr selectedKnobCurve;
     bool foldStateHeld;
 
+    // A node panel's rows can only be in that node's contexts, so showing or hiding one does not walk the
+    // elements of every node in the project.
+    NodeCurveEditorElement* findNodeElement(const KnobGuiPtr& knob,
+                                            int dimension) const
+    {
+        NodeSettingsPanel* panel = dynamic_cast<NodeSettingsPanel*>(knob->getContainer());
+        NodeGuiPtr node = panel ? panel->getNode() : NodeGuiPtr();
+        if (!node) {
+            for (std::list<NodeCurveEditorContext*>::const_iterator it = nodes.begin(); it != nodes.end(); ++it) {
+                if (NodeCurveEditorElement* elem = (*it)->findElement(knob, dimension)) {
+                    return elem;
+                }
+            }
+
+            return 0;
+        }
+        std::unordered_map<const NodeGui*, std::deque<std::list<NodeCurveEditorContext*>::iterator>>::const_iterator found = nodesByGui.find(node.get());
+        if (found == nodesByGui.end()) {
+            return 0;
+        }
+        for (std::deque<std::list<NodeCurveEditorContext*>::iterator>::const_iterator it = found->second.begin(); it != found->second.end(); ++it) {
+            if (NodeCurveEditorElement* elem = (**it)->findElement(knob, dimension)) {
+                return elem;
+            }
+        }
+
+        return 0;
+    }
+
     CurveEditorPrivate()
         : nodes()
         , rotos()
@@ -1217,15 +1246,10 @@ void
 CurveEditor::hideCurve(const KnobGuiPtr& knob,
                        int dimension)
 {
-    for (std::list<NodeCurveEditorContext*>::const_iterator it = _imp->nodes.begin();
-         it != _imp->nodes.end(); ++it) {
-        NodeCurveEditorElement* elem = (*it)->findElement(knob, dimension);
-        if (elem) {
-            elem->getCurve()->setVisible(false);
-            elem->getTreeItem()->setHidden(true);
-            checkIfHiddenRecursivly( _imp->tree, elem->getTreeItem() );
-            break;
-        }
+    if (NodeCurveEditorElement* elem = _imp->findNodeElement(knob, dimension)) {
+        elem->getCurve()->setVisible(false);
+        elem->getTreeItem()->setHidden(true);
+        checkIfHiddenRecursivly(_imp->tree, elem->getTreeItem());
     }
     _imp->curveWidget->update();
 }
@@ -1234,15 +1258,10 @@ void
 CurveEditor::hideCurves(const KnobGuiPtr& knob)
 {
     for (int i = 0; i < knob->getKnob()->getDimension(); ++i) {
-        for (std::list<NodeCurveEditorContext*>::const_iterator it = _imp->nodes.begin();
-             it != _imp->nodes.end(); ++it) {
-            NodeCurveEditorElement* elem = (*it)->findElement(knob, i);
-            if (elem) {
-                elem->getCurve()->setVisible(false);
-                elem->getTreeItem()->setHidden(true);
-                checkIfHiddenRecursivly( _imp->tree, elem->getTreeItem() );
-                break;
-            }
+        if (NodeCurveEditorElement* elem = _imp->findNodeElement(knob, i)) {
+            elem->getCurve()->setVisible(false);
+            elem->getTreeItem()->setHidden(true);
+            checkIfHiddenRecursivly(_imp->tree, elem->getTreeItem());
         }
     }
     _imp->curveWidget->update();
@@ -1252,23 +1271,17 @@ void
 CurveEditor::showCurve(const KnobGuiPtr& knob,
                        int dimension)
 {
-    for (std::list<NodeCurveEditorContext*>::const_iterator it = _imp->nodes.begin();
-         it != _imp->nodes.end(); ++it) {
-        NodeCurveEditorElement* elem = (*it)->findElement(knob, dimension);
-        if (elem) {
-            if (!elem->isHiddenByFold() && elem->getCurve()->getInternalCurve()->isAnimated()) {
-                elem->getCurve()->setVisible(true);
-                elem->getTreeItem()->setHidden(false);
-                if ( elem->getTreeItem()->parent() ) {
-                    elem->getTreeItem()->parent()->setHidden(false);
-                    elem->getTreeItem()->parent()->setExpanded(true);
-                    if ( elem->getTreeItem()->parent()->parent() ) {
-                        elem->getTreeItem()->parent()->parent()->setHidden(false);
-                        elem->getTreeItem()->parent()->parent()->setExpanded(true);
-                    }
-                }
+    NodeCurveEditorElement* elem = _imp->findNodeElement(knob, dimension);
+    if (elem && !elem->isHiddenByFold() && elem->getCurve()->getInternalCurve()->isAnimated()) {
+        elem->getCurve()->setVisible(true);
+        elem->getTreeItem()->setHidden(false);
+        if (elem->getTreeItem()->parent()) {
+            elem->getTreeItem()->parent()->setHidden(false);
+            elem->getTreeItem()->parent()->setExpanded(true);
+            if (elem->getTreeItem()->parent()->parent()) {
+                elem->getTreeItem()->parent()->parent()->setHidden(false);
+                elem->getTreeItem()->parent()->parent()->setExpanded(true);
             }
-            break;
         }
     }
     _imp->curveWidget->update();
@@ -1278,23 +1291,17 @@ void
 CurveEditor::showCurves(const KnobGuiPtr& knob)
 {
     for (int i = 0; i < knob->getKnob()->getDimension(); ++i) {
-        for (std::list<NodeCurveEditorContext*>::const_iterator it = _imp->nodes.begin();
-             it != _imp->nodes.end(); ++it) {
-            NodeCurveEditorElement* elem = (*it)->findElement(knob, i);
-            if (elem) {
-                if (!elem->isHiddenByFold() && elem->getCurve()->getInternalCurve()->isAnimated()) {
-                    elem->getCurve()->setVisible(true);
-                    elem->getTreeItem()->setHidden(false);
-                    if ( elem->getTreeItem()->parent() ) {
-                        elem->getTreeItem()->parent()->setHidden(false);
-                        elem->getTreeItem()->parent()->setExpanded(true);
-                        if ( elem->getTreeItem()->parent()->parent() ) {
-                            elem->getTreeItem()->parent()->parent()->setHidden(false);
-                            elem->getTreeItem()->parent()->parent()->setExpanded(true);
-                        }
-                    }
+        NodeCurveEditorElement* elem = _imp->findNodeElement(knob, i);
+        if (elem && !elem->isHiddenByFold() && elem->getCurve()->getInternalCurve()->isAnimated()) {
+            elem->getCurve()->setVisible(true);
+            elem->getTreeItem()->setHidden(false);
+            if (elem->getTreeItem()->parent()) {
+                elem->getTreeItem()->parent()->setHidden(false);
+                elem->getTreeItem()->parent()->setExpanded(true);
+                if (elem->getTreeItem()->parent()->parent()) {
+                    elem->getTreeItem()->parent()->parent()->setHidden(false);
+                    elem->getTreeItem()->parent()->parent()->setExpanded(true);
                 }
-                break;
             }
         }
     }

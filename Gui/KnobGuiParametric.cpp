@@ -123,7 +123,7 @@ KnobGuiParametric::createWidget(QHBoxLayout* layout)
     QVBoxLayout* treeColumnLayout = new QVBoxLayout(treeColumn);
     treeColumnLayout->setContentsMargins(0, 0, 0, 0);
 
-    _tree = new QTreeWidget( layout->parentWidget() );
+    _tree = new QTreeWidget(treeColumn);
     _tree->setSelectionMode(QAbstractItemView::ContiguousSelection);
     _tree->setColumnCount(1);
     _tree->header()->close();
@@ -213,9 +213,9 @@ KnobGuiParametric::_hide()
 void
 KnobGuiParametric::_show()
 {
-    _curveWidget->show();
-    _tree->show();
-    _resetButton->show();
+    KnobGui::showWidget(_curveWidget);
+    KnobGui::showWidget(_tree);
+    KnobGui::showWidget(_resetButton);
 }
 
 void

@@ -3188,6 +3188,57 @@ KnobTable::removeRow(int index)
     setTable(table);
 }
 
+const std::string KnobRenderVars::_typeNameStr("RenderVars");
+const std::string&
+KnobRenderVars::typeNameStatic()
+{
+    return _typeNameStr;
+}
+
+std::string
+KnobRenderVars::getColumnLabel(int col) const
+{
+    switch (col) {
+    case eColumnName:
+
+        return tr("Name").toStdString();
+    case eColumnSourceType:
+
+        return tr("Source Type").toStdString();
+    case eColumnDataType:
+
+        return tr("Data Type").toStdString();
+    case eColumnLayer:
+
+        return tr("Layer").toStdString();
+    default:
+
+        return std::string();
+    }
+}
+
+std::string
+KnobRenderVars::getColumnTag(int col) const
+{
+    switch (col) {
+    case eColumnName:
+
+        return "Name";
+    case eColumnSourceType:
+
+        return "SourceType";
+    case eColumnDataType:
+
+        return "DataType";
+    case eColumnLayer:
+
+        return "Layer";
+    default:
+
+        return std::string();
+    }
+}
+
 const std::string KnobLayers::_typeNameStr("Layers");
 const std::string&
 KnobLayers::typeNameStatic()

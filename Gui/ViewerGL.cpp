@@ -61,6 +61,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/Lut.h"
 #include "Engine/Node.h"
 #include "Engine/NodeColorSampler.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeGuiI.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/Nodes/Scene/Utility/UtilityProfile.h"
@@ -351,6 +352,7 @@ drawStaleCue(StaleCueStyleEnum style,
 void
 ViewerGL::paintGL()
 {
+    NodeCreationStageLog::Scope creationStage("viewerPaint");
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
     // Qt swaps the buffers after paintGL returns: the span's end is the last host step of a frame.

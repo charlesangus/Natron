@@ -29,6 +29,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -475,4 +476,180 @@ TEST(SceneRaster, TheUVBufferNamesTheUDIMTileOfAQuadInTile1002)
     EXPECT_EQ(1002, buffers.udimTile[centre]);
     EXPECT_NEAR(1.5, buffers.st[centre][0], 0.02);
     EXPECT_NEAR(0.5, buffers.st[centre][1], 0.02);
+}
+
+namespace {
+const int kCubeFaces[6][4] = {
+    { 0, 3, 2, 1 }, // z = 0
+    { 4, 5, 6, 7 }, // z = 1
+    { 0, 1, 5, 4 }, // y = 0
+    { 2, 3, 7, 6 }, // y = 1
+    { 0, 4, 7, 3 }, // x = 0
+    { 1, 2, 6, 5 }, // x = 1
+};
+const double kCubePoints[8][3] = {
+    { 0, 0, 0 },
+    { 1, 0, 0 },
+    { 1, 1, 0 },
+    { 0, 1, 0 },
+    { 0, 0, 1 },
+    { 1, 0, 1 },
+    { 1, 1, 1 },
+    { 0, 1, 1 },
+};
+// Two islands: the first three faces map to the square at the origin, the last three to the one at (0.6, 0.6).
+const float kCubeStValues[8][2] = {
+    { 0.f, 0.f },
+    { 0.4f, 0.f },
+    { 0.4f, 0.4f },
+    { 0.f, 0.4f },
+    { 0.6f, 0.6f },
+    { 1.f, 0.6f },
+    { 1.f, 1.f },
+    { 0.6f, 1.f },
+};
+
+// The unit cube translated by (10, 0, 0), its faces wound outward, with indexed faceVarying st.
+std::string
+twoIslandCube()
+{
+    std::string indices;
+    std::string stIndices;
+    for (int f = 0; f < 6; ++f) {
+        for (int k = 0; k < 4; ++k) {
+            indices += (indices.empty() ? "" : ", ") + std::to_string(kCubeFaces[f][k]);
+            stIndices += (stIndices.empty() ? "" : ", ") + std::to_string(f < 3 ? k : 4 + k);
+        }
+    }
+
+    return "def Mesh \"cube\"\n{\n"
+           "    int[] faceVertexCounts = [4, 4, 4, 4, 4, 4]\n"
+           "    int[] faceVertexIndices = ["
+        + indices + "]\n"
+                    "    point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1)]\n"
+                    "    texCoord2f[] primvars:st = [(0, 0), (0.4, 0), (0.4, 0.4), (0, 0.4), (0.6, 0.6), (1, 0.6), (1, 1), (0.6, 1)] (\n"
+                    "        interpolation = \"faceVarying\"\n"
+                    "    )\n"
+                    "    int[] primvars:st:indices = ["
+        + stIndices + "]\n"
+                      "    double3 xformOp:translate = (10, 0, 0)\n"
+                      "    uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+                      "}\n";
+}
+} // anonymous namespace
+
+TEST(SceneRaster, AUnitQuadTriangulatesWithItsVertexSt)
+{
+    PXR_NS::UsdStageRefPtr stage = openStage(quad("card", -1., -1., 1., 1., kFlat, kVertexSt));
+    ASSERT_TRUE(bool(stage));
+
+    SceneRaster::TriangulatedMesh mesh;
+    std::string error;
+    ASSERT_TRUE(SceneRaster::triangulateMesh(stage, PXR_NS::SdfPath("/card"), PXR_NS::TfToken("st"), PXR_NS::UsdTimeCode::Default(), &mesh, &error)) << error;
+
+    EXPECT_EQ(PXR_NS::SdfPath("/card"), mesh.path);
+    const PXR_NS::GfVec3f corners[4] = { PXR_NS::GfVec3f(-1.f, -1.f, 0.f), PXR_NS::GfVec3f(1.f, -1.f, 0.f), PXR_NS::GfVec3f(1.f, 1.f, 0.f), PXR_NS::GfVec3f(-1.f, 1.f, 0.f) };
+    const PXR_NS::GfVec2f vertexSt[4] = { PXR_NS::GfVec2f(0.f, 0.f), PXR_NS::GfVec2f(1.f, 0.f), PXR_NS::GfVec2f(1.f, 1.f), PXR_NS::GfVec2f(0.f, 1.f) };
+    ASSERT_EQ((std::size_t)4, mesh.worldPoints.size());
+    for (int i = 0; i < 4; ++i) {
+        EXPECT_EQ(corners[i], mesh.worldPoints[i]) << i;
+    }
+    ASSERT_EQ((std::size_t)2, mesh.triangles.size());
+    ASSERT_EQ((std::size_t)2, mesh.faceIndices.size());
+    ASSERT_EQ((std::size_t)2, mesh.normals.size());
+    ASSERT_EQ((std::size_t)6, mesh.st.size());
+    ASSERT_EQ((std::size_t)2, mesh.hasSt.size());
+    std::set<int> used;
+    for (std::size_t t = 0; t < 2; ++t) {
+        EXPECT_EQ(0, mesh.faceIndices[t]);
+        EXPECT_EQ(1, mesh.hasSt[t]);
+        EXPECT_NEAR(1., mesh.normals[t][2], 1e-6);
+        for (int k = 0; k < 3; ++k) {
+            const int p = mesh.triangles[t][k];
+            ASSERT_TRUE((p >= 0) && (p < 4)) << p;
+            used.insert(p);
+            EXPECT_EQ(vertexSt[p], mesh.st[t * 3 + k]) << t << ", " << k;
+        }
+    }
+    EXPECT_EQ((std::size_t)4, used.size());
+
+    ASSERT_TRUE(SceneRaster::triangulateMesh(stage, PXR_NS::SdfPath("/card"), PXR_NS::TfToken(), PXR_NS::UsdTimeCode::Default(), &mesh, &error)) << error;
+    EXPECT_EQ((std::size_t)2, mesh.triangles.size());
+    EXPECT_TRUE(mesh.st.empty());
+    EXPECT_TRUE(mesh.hasSt.empty());
+}
+
+TEST(SceneRaster, ATwoIslandCubeTriangulatesWithItsFaceVaryingSt)
+{
+    PXR_NS::UsdStageRefPtr stage = openStage(twoIslandCube());
+    ASSERT_TRUE(bool(stage));
+
+    std::vector<SceneRaster::TriangulatedMesh> meshes;
+    std::string error;
+    const std::vector<PXR_NS::SdfPath> paths(1, PXR_NS::SdfPath("/cube"));
+    ASSERT_TRUE(SceneRaster::triangulateMeshes(stage, paths, PXR_NS::TfToken("st"), PXR_NS::UsdTimeCode::Default(), &meshes, &error)) << error;
+    ASSERT_EQ((std::size_t)1, meshes.size());
+    const SceneRaster::TriangulatedMesh& mesh = meshes[0];
+
+    ASSERT_EQ((std::size_t)8, mesh.worldPoints.size());
+    for (int i = 0; i < 8; ++i) {
+        EXPECT_EQ(PXR_NS::GfVec3f((float)kCubePoints[i][0] + 10.f, (float)kCubePoints[i][1], (float)kCubePoints[i][2]), mesh.worldPoints[i]) << i;
+    }
+    ASSERT_EQ((std::size_t)12, mesh.triangles.size());
+    ASSERT_EQ((std::size_t)36, mesh.st.size());
+    int perFace[6] = { 0, 0, 0, 0, 0, 0 };
+    const PXR_NS::GfVec3f centre(10.5f, 0.5f, 0.5f);
+    for (std::size_t t = 0; t < mesh.triangles.size(); ++t) {
+        const int f = mesh.faceIndices[t];
+        ASSERT_TRUE((f >= 0) && (f < 6)) << f;
+        ++perFace[f];
+        EXPECT_EQ(1, mesh.hasSt[t]);
+        PXR_NS::GfVec3f centroid(0.f);
+        for (int k = 0; k < 3; ++k) {
+            const int p = mesh.triangles[t][k];
+            int position = -1;
+            for (int j = 0; j < 4; ++j) {
+                if (kCubeFaces[f][j] == p) {
+                    position = j;
+                }
+            }
+            ASSERT_NE(-1, position) << "point " << p << " is not on face " << f;
+            const int stIndex = f < 3 ? position : 4 + position;
+            EXPECT_EQ(PXR_NS::GfVec2f(kCubeStValues[stIndex][0], kCubeStValues[stIndex][1]), mesh.st[t * 3 + k]) << t << ", " << k;
+            centroid += mesh.worldPoints[p] / 3.f;
+        }
+        EXPECT_NEAR(1., mesh.normals[t].GetLength(), 1e-6);
+        EXPECT_GT(PXR_NS::GfDot(mesh.normals[t], centroid - centre), 0.f) << "triangle " << t << " faces into the cube";
+    }
+    for (int f = 0; f < 6; ++f) {
+        EXPECT_EQ(2, perFace[f]) << f;
+    }
+}
+
+TEST(SceneRaster, TriangulatingFailsNamingAMeshWithoutSt)
+{
+    PXR_NS::UsdStageRefPtr stage = openStage(quad("card", -1., -1., 1., 1., kFlat, kVertexSt) + quad("bare", -1., -1., 1., 1., kFlat));
+    ASSERT_TRUE(bool(stage));
+
+    std::vector<SceneRaster::TriangulatedMesh> meshes;
+    std::string error;
+    std::vector<PXR_NS::SdfPath> paths;
+    paths.push_back(PXR_NS::SdfPath("/card"));
+    paths.push_back(PXR_NS::SdfPath("/bare"));
+    EXPECT_FALSE(SceneRaster::triangulateMeshes(stage, paths, PXR_NS::TfToken("st"), PXR_NS::UsdTimeCode::Default(), &meshes, &error));
+    EXPECT_NE(std::string::npos, error.find("/bare")) << error;
+    EXPECT_TRUE(meshes.empty());
+
+    ASSERT_TRUE(SceneRaster::triangulateMeshes(stage, paths, PXR_NS::TfToken(), PXR_NS::UsdTimeCode::Default(), &meshes, &error)) << error;
+    EXPECT_EQ((std::size_t)2, meshes.size());
+}
+
+TEST(SceneRaster, DrawnMeshesLeaveOutInvisibleMeshes)
+{
+    PXR_NS::UsdStageRefPtr stage = openStage(quad("card", -1., -1., 1., 1., kFlat) + quad("hidden", -1., -1., 1., 1., kFlat, "    token visibility = \"invisible\"\n"));
+    ASSERT_TRUE(bool(stage));
+
+    const std::vector<PXR_NS::SdfPath> meshes = SceneRaster::drawnMeshes(stage, std::vector<PXR_NS::SdfPath>(), PXR_NS::UsdTimeCode::Default());
+    ASSERT_EQ((std::size_t)1, meshes.size());
+    EXPECT_EQ(PXR_NS::SdfPath("/card"), meshes[0]);
 }

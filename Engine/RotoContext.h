@@ -50,27 +50,10 @@ CLANG_DIAG_ON(deprecated-declarations)
 #include "Engine/FitCurve.h"
 #include "Engine/RotoCurveContext.h"
 #include "Engine/RotoItem.h"
+#include "Engine/RotoStrokeDabs.h"
 #include "Engine/ViewIdx.h"
 
 NATRON_NAMESPACE_ENTER
-
-/**
- * @brief The shape of one brush dab as the stroke renderer draws it: a disc of radius externalDotRadius, either flat at
- * alpha (opacityStops empty) or a radial ramp from internalDotRadius to externalDotRadius through opacityStops, each a
- * (position in [0, 1], opacity) pair. spacing is the distance to the next dab.
- **/
-void getRenderDotParams(double alpha,
-                        double brushSizePixel,
-                        double brushHardness,
-                        double brushSpacing,
-                        double pressure,
-                        bool pressureAffectsOpacity,
-                        bool pressureAffectsSize,
-                        bool pressureAffectsHardness,
-                        double* internalDotRadius,
-                        double* externalDotRadius,
-                        double* spacing,
-                        std::vector<std::pair<double, double>>* opacityStops);
 
 //Small RAII class that properly destroys the cairo image upon destruction
 class CairoImageWrapper

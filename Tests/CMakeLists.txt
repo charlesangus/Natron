@@ -169,6 +169,7 @@ set(Tests_SOURCES
     RotoDragRenderThrottle_Test.cpp
     RotoKeyDuringRender_Test.cpp
     RotoPaintExtraBgRoD_Test.cpp
+    RotoStrokeDabs_Test.cpp
     StrokeRenderCoalescer_Test.cpp
     Knob_Test.cpp
     LayerKnobsRender_Test.cpp

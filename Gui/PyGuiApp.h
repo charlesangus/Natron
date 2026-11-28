@@ -28,10 +28,11 @@
 
 #include "Global/Macros.h"
 
+#include "Engine/EngineFwd.h"
 #include "Engine/PyAppInstance.h"
 #include "Engine/PyParameter.h" // ColorTuple
+#include "Engine/RectD.h"
 #include "Engine/ViewIdx.h"
-#include "Engine/EngineFwd.h"
 
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiFwd.h"
@@ -214,11 +215,15 @@ public:
 
     void clearGraphComparison();
 
-    // "added", "changed", or an empty string when the comparison does not tint effect's node.
+    // "added", "changed", "moved", or an empty string when the comparison does not mark effect's node.
     QString getDiffTint(Effect* effect) const;
 
     // The removed nodes the comparison draws in group's node graph, the top level's by default.
     int getDiffGhostCount(Group* group = 0) const;
+
+    // The ghost at index in group's node graph, in the coordinates of node positions, or an empty
+    // rectangle past the last.
+    RectD getDiffGhostRect(int index, Group* group = 0) const;
 
     // The rows of the Node Diff panel, headings included.
     QStringList getNodeDiffRows() const;

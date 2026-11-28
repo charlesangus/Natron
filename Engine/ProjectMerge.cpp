@@ -27,6 +27,8 @@
 
 #include <algorithm>
 #include <cassert>
+#include <cmath>
+#include <deque>
 #include <exception>
 #include <functional>
 #include <iterator>
@@ -103,6 +105,8 @@ namespace {
         change.hasPosition = flat.node->layout.hasPosition;
         change.x = flat.node->layout.x;
         change.y = flat.node->layout.y;
+        change.placedX = change.x;
+        change.placedY = change.y;
 
         return change;
     }
@@ -564,6 +568,190 @@ ChangeSummary::find(const std::string& nodeId) const
     return nullptr;
 }
 
+namespace {
+    typedef std::pair<double, double> Offset;
+
+    // How far the nodes of one snapshot moved in another, by node ID and by group ID. A node
+    // counts when it has the same ID and group on both sides and a position on both.
+    struct LayoutShift {
+        std::map<std::string, Offset> nodes;
+        std::map<std::string, Offset> groups;
+
+        Offset groupOffset(const std::string& groupId) const
+        {
+            std::map<std::string, Offset>::const_iterator found = groups.find(groupId);
+
+            return (found == groups.end()) ? Offset(0., 0.) : found->second;
+        }
+    };
+
+    double
+    median(std::vector<double> values)
+    {
+        std::sort(values.begin(), values.end());
+        const std::size_t middle = values.size() / 2;
+
+        return (values.size() % 2) ? values[middle] : 0.5 * (values[middle - 1] + values[middle]);
+    }
+
+    // The median keeps a few nodes the artist moved within the template from dragging the offset
+    // of the whole template.
+    LayoutShift
+    layoutShift(const FlatNodes& from,
+                const FlatNodes& to)
+    {
+        LayoutShift shift;
+        std::map<std::string, std::pair<std::vector<double>, std::vector<double>>> byGroup;
+        for (const std::pair<const std::string, FlatNode>& entry : from) {
+            FlatNodes::const_iterator other = to.find(entry.first);
+            if ((other == to.end()) || (other->second.parentId != entry.second.parentId)) {
+                continue;
+            }
+            const Serialization::NodeLayoutSerialization& before = entry.second.node->layout;
+            const Serialization::NodeLayoutSerialization& after = other->second.node->layout;
+            if (!before.hasPosition || !after.hasPosition) {
+                continue;
+            }
+            const Offset offset(after.x - before.x, after.y - before.y);
+            shift.nodes[entry.first] = offset;
+            std::pair<std::vector<double>, std::vector<double>>& values = byGroup[entry.second.parentId];
+            values.first.push_back(offset.first);
+            values.second.push_back(offset.second);
+        }
+        for (const std::pair<const std::string, std::pair<std::vector<double>, std::vector<double>>>& group : byGroup) {
+            shift.groups[group.first] = Offset(median(group.second.first), median(group.second.second));
+        }
+
+        return shift;
+    }
+
+    // Each node's neighbours by wiring, sources and readers alike, within its own group.
+    typedef std::map<std::string, std::vector<std::string>> Wiring;
+
+    Wiring
+    wiringOf(const FlatNodes& nodes)
+    {
+        std::map<std::pair<std::string, std::string>, std::string> byName;
+        for (const std::pair<const std::string, FlatNode>& entry : nodes) {
+            byName.emplace(std::make_pair(entry.second.parentId, entry.second.node->scriptName), entry.first);
+        }
+        Wiring wiring;
+        for (const std::pair<const std::string, FlatNode>& entry : nodes) {
+            for (const std::pair<const std::string, std::string>& input : entry.second.node->inputs) {
+                std::map<std::pair<std::string, std::string>, std::string>::const_iterator source = byName.find(std::make_pair(entry.second.parentId, input.second));
+                if ((source != byName.end()) && (source->second != entry.first)) {
+                    wiring[entry.first].push_back(source->second);
+                    wiring[source->second].push_back(entry.first);
+                }
+            }
+        }
+
+        return wiring;
+    }
+
+    // The offset of the shifted node nearest to id by wiring, looking through unshifted ones, or
+    // the offset of id's group when none is reachable.
+    Offset
+    placementOffset(const FlatNodes& nodes,
+                    const Wiring& wiring,
+                    const LayoutShift& shift,
+                    const std::string& id)
+    {
+        std::set<std::string> visited;
+        std::deque<std::string> pending;
+        visited.insert(id);
+        pending.push_back(id);
+        while (!pending.empty()) {
+            const std::string current = pending.front();
+            pending.pop_front();
+            std::map<std::string, Offset>::const_iterator shifted = shift.nodes.find(current);
+            if (shifted != shift.nodes.end()) {
+                return shifted->second;
+            }
+            Wiring::const_iterator next = wiring.find(current);
+            if (next == wiring.end()) {
+                continue;
+            }
+            for (const std::string& neighbour : next->second) {
+                if (visited.insert(neighbour).second) {
+                    pending.push_back(neighbour);
+                }
+            }
+        }
+        FlatNodes::const_iterator found = nodes.find(id);
+
+        return shift.groupOffset((found == nodes.end()) ? std::string() : found->second.parentId);
+    }
+
+    // A node without a shift, such as one moved to another group or given or stripped of a
+    // position, moved by definition.
+    bool
+    movedWithinGroup(const LayoutShift& shift,
+                     const FlatNodes& to,
+                     const std::string& id)
+    {
+        std::map<std::string, Offset>::const_iterator shifted = shift.nodes.find(id);
+        FlatNodes::const_iterator node = to.find(id);
+        if ((shifted == shift.nodes.end()) || (node == to.end())) {
+            return true;
+        }
+        const Offset group = shift.groupOffset(node->second.parentId);
+
+        return std::hypot(shifted->second.first - group.first, shifted->second.second - group.second) > kMovedThreshold;
+    }
+
+    void
+    placeNodesIn(const std::list<Serialization::NodeSerializationPtr>& nodes,
+                 const std::function<void(Serialization::NodeSerialization*)>& place)
+    {
+        for (const Serialization::NodeSerializationPtr& node : nodes) {
+            if (node) {
+                place(node.get());
+                placeNodesIn(node->children, place);
+            }
+        }
+    }
+
+    // The merge gives a node theirs adds theirs' position, which is left behind wherever the
+    // artist moved the template; it follows its nearest matched neighbour in theirs instead.
+    void
+    placeAddedNodes(const Serialization::ProjectSerialization& theirs,
+                    const Serialization::MergePlan& plan,
+                    const FlatNodes& mineNodes,
+                    Serialization::ProjectSerialization* merged)
+    {
+        Serialization::NodeCorrespondence theirsToMine;
+        for (const std::pair<const std::string, std::string>& entry : plan.baseToTheirs.baseToOther) {
+            const std::string mineId = plan.baseToMine.otherFor(entry.first);
+            if (!mineId.empty()) {
+                theirsToMine.baseToOther[entry.second] = mineId;
+            }
+        }
+        Serialization::ProjectSerialization mapped = Serialization::editableState(theirs);
+        remapNodeIds(mapped.nodes.nodes, theirsToMine);
+        FlatNodes theirsNodes;
+        std::vector<std::string> theirsOrder;
+        flatten(mapped.nodes.nodes, std::string(), &theirsNodes, &theirsOrder);
+        const LayoutShift shift = layoutShift(theirsNodes, mineNodes);
+        const Wiring wiring = wiringOf(theirsNodes);
+
+        placeNodesIn(merged->nodes.nodes, [&](Serialization::NodeSerialization* node) {
+            if (node->id.empty() || (mineNodes.find(node->id) != mineNodes.end()) || !node->layout.hasPosition) {
+                return;
+            }
+            const bool fromTemplate = node->origin.isSet() && (node->origin.templateKey == plan.templateKey);
+            const std::string theirsId = fromTemplate ? node->origin.nodeId : node->id;
+            FlatNodes::const_iterator source = theirsNodes.find(theirsId);
+            if ((source == theirsNodes.end()) || !source->second.node->layout.hasPosition) {
+                return;
+            }
+            const Offset offset = placementOffset(theirsNodes, wiring, shift, theirsId);
+            node->layout.x = source->second.node->layout.x + offset.first;
+            node->layout.y = source->second.node->layout.y + offset.second;
+        });
+    }
+} // anon namespace
+
 UpdateResult
 updateFromTemplate(const ProjectPtr& project,
                    const std::string& templateKey,
@@ -643,6 +831,7 @@ updateFromTemplate(const ProjectPtr& project,
     flatten(before.nodes.nodes, std::string(), &mineNodes, &mineOrder);
     keepMineDefaultKnobs(mineNodes, after.nodes.nodes);
     keepMineDefaultKnobs(before.projectKnobs, &after.projectKnobs);
+    placeAddedNodes(theirs, plan, mineNodes, &after);
     result.ops = Serialization::diffSnapshots(before, after);
     if (!result.ops.empty()) {
         result.results = applier ? applier(result.ops) : applyAllOrNothing(project, result.ops);
@@ -692,6 +881,7 @@ compare(const ProjectPtr& project,
     std::vector<std::string> afterOrder;
     flatten(before.nodes.nodes, std::string(), &beforeNodes, &beforeOrder);
     flatten(after.nodes.nodes, std::string(), &afterNodes, &afterOrder);
+    const LayoutShift shift = layoutShift(beforeNodes, afterNodes);
 
     std::map<std::string, NodeChange> changed;
     ChangeSummary summary;
@@ -723,8 +913,13 @@ compare(const ProjectPtr& project,
                 change->renamed = true;
             }
         } else if (const Serialization::SetNodeUiOp* ui = std::get_if<Serialization::SetNodeUiOp>(&op)) {
-            if (NodeChange* change = changeFor(ui->nodeId)) {
-                change->appearance = true;
+            const bool appearance = ui->size || ui->color || ui->overlayColor;
+            const bool moved = ui->position && movedWithinGroup(shift, afterNodes, ui->nodeId);
+            if (appearance || moved) {
+                if (NodeChange* change = changeFor(ui->nodeId)) {
+                    change->appearance = change->appearance || appearance;
+                    change->moved = change->moved || moved;
+                }
             }
         } else if (const Serialization::SetUserKnobsOp* userKnobs = std::get_if<Serialization::SetUserKnobsOp>(&op)) {
             if (NodeChange* change = changeFor(userKnobs->nodeId)) {
@@ -792,10 +987,14 @@ compare(const ProjectPtr& project,
             summary.nodes.push_back(it->second);
         }
     }
+    const Wiring beforeWiring = wiringOf(beforeNodes);
     for (const std::string& id : beforeOrder) {
         if (afterNodes.find(id) == afterNodes.end()) {
             NodeChange removed = describe(beforeNodes.at(id), NodeChange::eRemoved);
             describeLinks(beforeNodes, beforeNodes.at(id), &removed);
+            const Offset offset = placementOffset(beforeNodes, beforeWiring, shift, id);
+            removed.placedX = removed.x + offset.first;
+            removed.placedY = removed.y + offset.second;
             summary.nodes.push_back(std::move(removed));
         }
     }

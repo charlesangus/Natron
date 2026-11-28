@@ -48,8 +48,8 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 /**
- * @brief The removed nodes of a graph comparison, drawn where they were, with dashed wires to
- * the nodes they were connected to. It takes no mouse button, so nothing of it can be selected.
+ * @brief The removed nodes of a graph comparison, drawn where they belong among the live nodes,
+ * with dashed wires to the nodes they were connected to. It takes no mouse button, so nothing of it can be selected.
  **/
 class NodeDiffGhostItem
     : public QGraphicsObject {
@@ -68,6 +68,11 @@ public:
         return _ghosts.size();
     }
 
+    const std::vector<Ghost>& ghosts() const
+    {
+        return _ghosts;
+    }
+
     virtual QRectF boundingRect() const OVERRIDE FINAL;
     virtual void paint(QPainter* painter,
                        const QStyleOptionGraphicsItem* option,
@@ -81,7 +86,7 @@ private:
 
 /**
  * @brief Shows the Gui's graph comparison over one node graph: added nodes tinted green, changed
- * ones amber, and removed ones as ghosts. Nothing of it is saved with the project.
+ * ones amber, nodes only moved within their group outlined in amber, and removed ones as ghosts. Nothing of it is saved with the project.
  **/
 class NodeGraphDiffOverlay
     : public QObject {
@@ -93,7 +98,8 @@ public:
     enum TintEnum {
         eTintNone,
         eTintAdded,
-        eTintChanged
+        eTintChanged,
+        eTintMoved
     };
 
     NodeGraphDiffOverlay(NodeGraph* graph,
@@ -110,6 +116,10 @@ public:
     TintEnum tintOf(const NodeGui* node) const;
 
     int ghostCount() const;
+
+    // The rectangle of the ghost at index, in the coordinates of node positions, or an empty one
+    // past the last.
+    QRectF ghostRect(int index) const;
 
     // The ID of the group whose nodes the graph shows, empty for the top level.
     static std::string groupIdOf(const NodeGraph* graph);

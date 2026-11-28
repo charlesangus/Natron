@@ -7,6 +7,10 @@ Blur1 and Blur3 as changed, leaves Blur4 untinted and draws one ghost, for Blur2
 lists its size change, selecting Blur3 its keys and its input, which lost Blur2. Clear Comparison
 in the panel removes every tint and the ghost; so does clearing it from Python after comparing again.
 
+Then a second base is saved with Blur5 wired to Blur1 just below it. Moving every node by the same
+amount marks nothing; moving Blur4 further marks it as moved, outlined and not tinted, and the
+panel lists "Moved" for it. Deleting Blur5 draws its ghost beside Blur1's moved position.
+
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m104_diff_overlay.py
 """
 import os
@@ -147,6 +151,62 @@ try:
         QApplication.processEvents()
         yield ("sleep", SETTLE_MS)
         check_cleared("after clearing from Python", names)
+
+        gt.section("layout")
+        layout_base = os.path.join(gt.OUT, "m104_diff_layout_base.ntpz")
+        layout_names = ["Blur1", "Blur3", "Blur4", "Blur5"]
+        blur5 = app.getNode("Blur5")
+        blur5.setPosition(0, 60)
+        require(blur5.connectInput(0, app.getNode("Blur1")), "connect Blur1 to Blur5")
+        yield ("sleep", SETTLE_MS)
+        require(app.saveProjectAs(layout_base), "save the layout base")
+        for name in layout_names:
+            node = app.getNode(name)
+            x, y = node.getPosition()
+            node.setPosition(x + 500, y + 300)
+        yield ("sleep", SETTLE_MS)
+
+        require(app.compareWithFile(layout_base), "compare the moved graph with the layout base")
+        ok = yield ("until", panel_shown, POLL_TIMEOUT_S)
+        check(ok, "the Node Diff panel is shown by the layout comparison")
+        yield ("sleep", SETTLE_MS)
+        found = tints(layout_names)
+        report("NOTE tints after moving everything %r" % found)
+        check(all(t == "" for t in found.values()), "moving every node alike marks none (%r)" % found)
+        check(app.getDiffGhostCount() == 0, "moving every node alike draws no ghost (got %d)" % app.getDiffGhostCount())
+
+        blur4 = app.getNode("Blur4")
+        x, y = blur4.getPosition()
+        blur4.setPosition(x + 200, y)
+        yield ("sleep", SETTLE_MS)
+        require(app.compareWithFile(layout_base), "compare after moving Blur4 on its own")
+        ok = yield ("until", lambda: app.getDiffTint(app.getNode("Blur4")) != "", POLL_TIMEOUT_S)
+        check(ok, "moving Blur4 on its own marks it")
+        found = tints(layout_names)
+        report("NOTE tints after moving Blur4 %r" % found)
+        moved = [n for n, t in found.items() if t == "moved"]
+        check(moved == ["Blur4"], "one node is outlined as moved, Blur4 (%r)" % moved)
+        check(all(t == "" for n, t in found.items() if n != "Blur4"), "no other node is marked (%r)" % found)
+        yield from rows_for(blur4)
+        rows = [str(r) for r in app.getNodeDiffRows()]
+        report("NOTE Blur4 rows %r" % rows)
+        check(rows == ["Blur4", "Moved"], "Blur4 lists only that it moved (%r)" % rows)
+        gt.shot("m104_diff_moved.png")
+
+        blur1 = app.getNode("Blur1")
+        app.getNode("Blur5").destroy(False)
+        yield ("sleep", SETTLE_MS)
+        require(app.compareWithFile(layout_base), "compare after deleting Blur5")
+        ok = yield ("until", lambda: app.getDiffGhostCount() == 1, POLL_TIMEOUT_S)
+        check(ok, "deleting Blur5 draws one ghost (got %d)" % app.getDiffGhostCount())
+        ghost = app.getDiffGhostRect(0)
+        bx, by = blur1.getPosition()
+        width, _ = blur1.getSize()
+        report("NOTE Blur5's ghost at (%g, %g), Blur1 at (%g, %g), node width %g" % (ghost.x1, ghost.y1, bx, by, width))
+        check(abs(ghost.x1 - bx) <= width and abs(ghost.y1 - by) <= width,
+              "Blur5's ghost sits within a node width of Blur1's moved position")
+        gt.shot("m104_diff_ghost_placed.png")
+        app.clearGraphComparison()
 
     gt.run(steps())
 except Exception:

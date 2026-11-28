@@ -183,6 +183,22 @@ After P4 the per-pass cost is 5.6 ms (Raster) and 10.8 ms (Ray), but every frame
   - files: `WavefrontGpu.cpp` (~1145, ~1561)
   - size: L
 
+- [ ] M514.P5.T8 — Measure the interactive USDRender(Utility) → Viewer loop on the GPU path: confirm placement stays on the device, the viewer takes deviceColor at the ZeroCopy rung, zero device downloads; a GUI bench (real Xorg on the VM) reporting per-frame time for 1 and 16 passes
+  - files: `tools/bench/gui/` (new utility viewer bench), `HydraRenderImpl.cpp` (~3494 UtilityProfileHydraCall), viewer RenderStats
+  - size: M
+- [ ] M514.P5.T9 — Event-driven convergence wait for Utility (buffer publish signals) instead of the 10 ms poll; check whether the 250 ms kIdleSettle loop applies to Utility
+  - files: `HydraRenderImpl.cpp` (~2038, ~2050-2140, ~168), `UtilityRenderBuffer.*`
+  - size: M
+- [ ] M514.P5.T10 — Device depth/primId for the GPU path (GetResource per AOV, a picks recordWindow, primId hash paths handed back)
+  - files: `USDRender.cpp` (~1527), `HydraRenderImpl.cpp` (~3502), `UtilityRenderBuffer.*`
+  - size: M
+- [ ] M514.P5.T11 — Key the DeviceFrame cache by view as well as owner
+  - files: `HydraRenderImpl.cpp` (~3466-3481)
+  - size: S
+- [ ] M514.P5.T12 — A check that a Utility root gives the viewer deviceColor with zero deviceDownloadCount and no legacy fallback
+  - files: Tests/gui (natron_utility_viewer.py or a new script), `UtilityRenderBuffer.cpp` (~1239)
+  - size: S
+
 **Phase 514.5 target (user, 2026-11-28):** Raster interactive at 20–30 fps until IO-bound — ≤50 ms per steady frame at 1080p for an RGB render in the viewer path (stretch ≤33 ms); the GPU does the resolve, the CPU only copies colour; Ray keeps ≤33 ms per pass. Replaces "Raster ≥5× Ray at 32 passes".
 
 **Verification gate:**

@@ -28,7 +28,9 @@
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
+#include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -149,6 +151,77 @@ enum class UtilityPickAov {
     InstanceId
 };
 
+#ifdef NATRON_HAVE_GPU
+class UtilityDeviceIds;
+
+/**
+ * @brief A published frame's depth or prim ids still on the device, as UtilityRenderBuffer::GetResource() gives it
+ * for those AOVs: the frame's picks, read as aov() over a buffer of width() x height() pixels. Copies share the picks.
+ **/
+class UtilityDevicePicks {
+public:
+    UtilityDevicePicks();
+    UtilityDevicePicks(const std::shared_ptr<UtilityPickSnapshot>& picks,
+                       UtilityPickAov aov,
+                       unsigned int width,
+                       unsigned int height);
+
+    // Null without picks or once they were released.
+    gpu::GpuDevice* device() const;
+    UtilityPickAov aov() const;
+    unsigned int width() const;
+    unsigned int height() const;
+
+    /**
+     * @brief The frame's prim ids on the device: every distinct (prim, instance) pair its hits show, given to hashOf
+     * once each on the calling thread, which returns the pair's prim path hash, or 0 for a pixel left at 0. Waits
+     * for the device. False with *error set when the frame shows more distinct pairs than the device keeps, or the
+     * device cannot, so that the caller decodes the ids on the CPU instead.
+     **/
+    bool resolveIds(const std::function<std::uint32_t(std::int32_t prim, std::int32_t instance)>& hashOf,
+                    std::shared_ptr<const UtilityDeviceIds>* out,
+                    std::string* error) const;
+
+    /**
+     * @brief Records into context the window [x1, x2) x [y1, y2) of the buffer into out, as HydraRender::PlaneWindow
+     * lays out a depth or prim id window of nComps components, from out's float outOffset with outRowStride floats
+     * from row to row. Depth goes from the window depth to the distance along the view axis through depthFromWindow:
+     * columns 2 and 3 of the inverse projection, rows 0 to 3 of each. A prim id window needs ids, which resolveIds()
+     * made from these picks. context must be on the picks' device; they and ids are kept until its work is done.
+     **/
+    gpu::GpuStatus recordWindow(gpu::GpuRecordContext& context,
+                                int x1,
+                                int y1,
+                                int x2,
+                                int y2,
+                                int nComps,
+                                const gpu::GpuBuffer& out,
+                                std::uint64_t outOffset,
+                                std::uint32_t outRowStride,
+                                const std::array<float, 8>& depthFromWindow,
+                                const std::shared_ptr<const UtilityDeviceIds>& ids) const;
+
+    // Releases the picks, and with them every copy of this resource, when their device is lost.
+    void releaseIfLost() const;
+
+    bool operator==(const UtilityDevicePicks& other) const
+    {
+        return (_picks == other._picks) && (_aov == other._aov) && (_width == other._width) && (_height == other._height);
+    }
+
+    bool operator!=(const UtilityDevicePicks& other) const
+    {
+        return !(*this == other);
+    }
+
+private:
+    std::shared_ptr<UtilityPickSnapshot> _picks;
+    UtilityPickAov _aov = UtilityPickAov::Depth;
+    unsigned int _width = 0;
+    unsigned int _height = 0;
+};
+#endif
+
 /**
  * @brief One frame's depth, prim id and instance id kept on the device: for each pixel of the window the frame
  * draws, the heaviest of its samples so far, as an unfiltered UtilityRenderBuffer::addSample() keeps it. The
@@ -263,7 +336,8 @@ public:
     virtual void Resolve() OVERRIDE;
     virtual bool IsConverged() const OVERRIDE;
 
-    // A UtilityDeviceResource while the device holds the last published pixels, else empty.
+    // A UtilityDeviceResource while the device holds the last published colour, a UtilityDevicePicks while it holds the
+    // last published depth or prim ids, else empty.
     virtual PXR_NS::VtValue GetResource(bool multiSampled) const OVERRIDE;
 
     /**
@@ -324,6 +398,16 @@ public:
     static std::uint64_t deviceDownloadCount();
     // How many times an AOV was read back from the device picks, process-wide.
     static std::uint64_t pickReadbackCount();
+    // How many times a buffer has been set converged, over every buffer; what waitForConverged() waits past. MT-safe.
+    static std::uint64_t convergedCount();
+    /**
+     * @brief Returns once convergedCount() is past seen, wakeConvergedWaiters() is called, or bound has passed,
+     * whichever comes first, so a caller waiting for a frame to converge sees it at once and can still see a
+     * cancel. MT-safe.
+     **/
+    static void waitForConverged(std::uint64_t seen,
+                                 std::chrono::milliseconds bound);
+    static void wakeConvergedWaiters();
 
 #ifdef NATRON_HAVE_GPU
     /**

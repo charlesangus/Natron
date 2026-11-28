@@ -140,6 +140,9 @@ struct Request {
     // time, camera, size, headlight and purposes, and no barrier write since, reuses that render, so the
     // planes of a frame asked for one by one cost one Storm render.
     const void* owner = nullptr;
+    // The project view the frame is for. Each view of an owner keeps its own frame on the device, so
+    // views rendered in turn, as a stereo pair is, do not render each other's frame again.
+    int view = 0;
     ScenePayload scene;
     PXR_NS::UsdTimeCode time;
     PXR_NS::GfFrustum frustum;
@@ -319,9 +322,10 @@ bool packsOnGpu();
 
 #ifdef NATRON_HAVE_GPU
 /**
- * @brief Renders request as render() does, then records into context the copy of window, a colour
- * window, into output's outputRect, on the device and from the frame the delegate left there:
- * Natron Utility's, when it rendered on the GPU. *info gets the render's warning, errors and device.
+ * @brief Renders request as render() does, then records into context the copy of window, a colour,
+ * depth or prim id window, into output's outputRect, on the device and from the frame the delegate left
+ * there: Natron Utility's, when it rendered on the GPU. *info gets the render's warning, errors and
+ * device, and for a prim id window the paths of the hashes it holds, as render() fills primPaths.
  * False with *error set when the frame is not on context's device, so the caller renders on the CPU,
  * where the frame is read back.
  **/

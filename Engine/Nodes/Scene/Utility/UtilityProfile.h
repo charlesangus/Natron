@@ -199,6 +199,20 @@ private:
  * record with the stages timed outside any frame's draw meanwhile, on any thread. Calls nested on the thread are
  * not timed; overlapping calls on other threads share those stages.
  **/
+namespace utilityProfile {
+/**
+ * @brief Writes a "viewer_frame" record as a viewer shows a frame: from a root left on the device (deviceColor) or
+ * from host pixels, through the viewer's hand-off rung, with fallback when a device root was drawn from a download
+ * instead. It carries the steady clock in mono_ms and the process's device download and pick readback counts, so a
+ * reader can tell what each frame cost and line it up with the hydra_profile records. Does nothing unless enabled().
+ **/
+void writeViewerFrame(const std::string& viewer,
+                      double time,
+                      bool deviceColor,
+                      bool fallback,
+                      const std::string& rung);
+} // namespace utilityProfile
+
 class UtilityProfileHydraCall {
 public:
     UtilityProfileHydraCall(const std::string& kind,

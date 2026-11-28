@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
 
 #include <pxr/base/gf/half.h>
@@ -57,7 +58,9 @@
 #include "Engine/Nodes/Scene/Utility/UtilityProfile.h"
 #include "Engine/PoolParallelFor.h"
 
+#include "utility_film_aov_pack_spirv.h"
 #include "utility_film_clear_spirv.h"
+#include "utility_film_ids_spirv.h"
 #include "utility_film_pack_spirv.h"
 #include "utility_film_pick_spirv.h"
 #include "utility_film_scatter_spirv.h"
@@ -71,6 +74,10 @@ namespace {
 std::atomic<int> gLiveBuffers { 0 };
 std::atomic<std::uint64_t> gDeviceDownloads { 0 };
 std::atomic<std::uint64_t> gPickReadbacks { 0 };
+std::mutex gConvergedMutex;
+std::condition_variable gConvergedChanged;
+std::uint64_t gConverged = 0;
+std::uint64_t gConvergedWakes = 0;
 
 // Device films hold RGBA floats.
 const std::size_t kFilmPixelBytes = 4 * sizeof(float);
@@ -190,14 +197,54 @@ struct KernelFilmPickParams {
     std::uint32_t padding0;
 };
 
+// Kernels/FilmIds.slang and FilmAovPack.slang declare these push constants.
+struct KernelFilmIdsParams {
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t mode;
+    std::uint32_t padding0;
+};
+
+struct KernelFilmAovPackParams {
+    float zColumn[4];
+    float wColumn[4];
+    std::uint32_t renderWidth;
+    std::uint32_t renderHeight;
+    std::int32_t picksX;
+    std::int32_t picksY;
+    std::uint32_t picksWidth;
+    std::uint32_t picksHeight;
+    std::int32_t x1;
+    std::int32_t y1;
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t nComps;
+    std::uint32_t outOffset;
+    std::uint32_t outRowStride;
+    std::uint32_t mode;
+    std::uint32_t padding0;
+    std::uint32_t padding1;
+};
+
 // Kernels/FilmPick.slang's planes of a word a pixel: weight, hit, depth, prim id, instance id.
 const std::size_t kFilmPickPlanes = 5;
 const std::size_t kFilmPickHitPlane = 1;
+
+// Kernels/FilmIdsTable.slang's id table: four counter words, the entries taken, the pairs that found no room and
+// the pixels whose pair it does not hold; kIdSlots slots of two words; kIdCapacity entries of two words.
+const std::size_t kIdCapacity = 65536;
+const std::size_t kIdSlots = 2 * kIdCapacity;
+const std::size_t kIdSlotsWord = 4;
+const std::size_t kIdEntriesWord = kIdSlotsWord + 2 * kIdSlots;
+const std::size_t kIdTableWords = kIdEntriesWord + 2 * kIdCapacity;
 
 static_assert(sizeof(KernelFilmClearParams) == utility_film_clear_push_bytes);
 static_assert(sizeof(KernelFilmScatterParams) == utility_film_scatter_push_bytes);
 static_assert(sizeof(KernelFilmPackParams) == utility_film_pack_push_bytes);
 static_assert(sizeof(KernelFilmPickParams) == utility_film_pick_push_bytes);
+static_assert(sizeof(KernelFilmIdsParams) == utility_film_ids_push_bytes);
+static_assert(sizeof(KernelFilmAovPackParams) == utility_film_aov_pack_push_bytes);
+static_assert(utility_film_ids_storage_buffers == 2 && utility_film_aov_pack_storage_buffers == 4);
 static_assert(utility_film_clear_storage_buffers == 2 && utility_film_scatter_storage_buffers == 5 && utility_film_pack_storage_buffers == 2 && utility_film_pick_storage_buffers == 6);
 
 gpu::GpuStatus
@@ -301,6 +348,8 @@ struct UtilityFilmKernels {
     std::shared_ptr<gpu::GpuKernel> scatter;
     std::shared_ptr<gpu::GpuKernel> pack;
     std::shared_ptr<gpu::GpuKernel> pick;
+    std::shared_ptr<gpu::GpuKernel> ids;
+    std::shared_ptr<gpu::GpuKernel> aovPack;
 };
 
 class UtilityDeviceFilm {
@@ -618,6 +667,12 @@ makeUtilityFilmKernels(gpu::GpuDevice& device,
     const gpu::GpuKernelDesc pick {
         utility_film_pick_spirv, utility_film_pick_spirv_words, utility_film_pick_entry, utility_film_pick_storage_buffers, utility_film_pick_push_bytes, { utility_film_pick_group_size[0], utility_film_pick_group_size[1], utility_film_pick_group_size[2] }
     };
+    const gpu::GpuKernelDesc ids {
+        utility_film_ids_spirv, utility_film_ids_spirv_words, utility_film_ids_entry, utility_film_ids_storage_buffers, utility_film_ids_push_bytes, { utility_film_ids_group_size[0], utility_film_ids_group_size[1], utility_film_ids_group_size[2] }
+    };
+    const gpu::GpuKernelDesc aovPack {
+        utility_film_aov_pack_spirv, utility_film_aov_pack_spirv_words, utility_film_aov_pack_entry, utility_film_aov_pack_storage_buffers, utility_film_aov_pack_push_bytes, { utility_film_aov_pack_group_size[0], utility_film_aov_pack_group_size[1], utility_film_aov_pack_group_size[2] }
+    };
 
     *status = makeKernel(device, clear, &kernels->clear);
     if (status->ok()) {
@@ -629,6 +684,12 @@ makeUtilityFilmKernels(gpu::GpuDevice& device,
     if (status->ok()) {
         *status = makeKernel(device, pick, &kernels->pick);
     }
+    if (status->ok()) {
+        *status = makeKernel(device, ids, &kernels->ids);
+    }
+    if (status->ok()) {
+        *status = makeKernel(device, aovPack, &kernels->aovPack);
+    }
 
     return status->ok() ? kernels : std::shared_ptr<const UtilityFilmKernels>();
 }
@@ -636,7 +697,7 @@ makeUtilityFilmKernels(gpu::GpuDevice& device,
 std::vector<std::shared_ptr<gpu::GpuKernel>>
 utilityFilmKernelList(const UtilityFilmKernels& kernels)
 {
-    return { kernels.clear, kernels.scatter, kernels.pack, kernels.pick };
+    return { kernels.clear, kernels.scatter, kernels.pack, kernels.pick, kernels.ids, kernels.aovPack };
 }
 
 UtilityDeviceResource::UtilityDeviceResource()
@@ -792,6 +853,257 @@ public:
         return status;
     }
 };
+
+// A frame's prim ids on the device: Kernels/FilmIdsTable.slang's id table and each entry's prim path hash.
+class UtilityDeviceIds {
+public:
+    // Destroyed after the buffers below, whose pool and device it keeps alive.
+    std::shared_ptr<void> runtimeHold;
+    std::shared_ptr<UtilityPickSnapshot> picks;
+    gpu::GpuBufferHandle table;
+    gpu::GpuBufferHandle hashes;
+};
+
+UtilityDevicePicks::UtilityDevicePicks()
+{
+}
+
+UtilityDevicePicks::UtilityDevicePicks(const std::shared_ptr<UtilityPickSnapshot>& picks,
+                                       UtilityPickAov aov,
+                                       unsigned int width,
+                                       unsigned int height)
+    : _picks(picks)
+    , _aov(aov)
+    , _width(width)
+    , _height(height)
+{
+}
+
+gpu::GpuDevice*
+UtilityDevicePicks::device() const
+{
+    return (_picks && !_picks->released()) ? &_picks->film->device : nullptr;
+}
+
+UtilityPickAov
+UtilityDevicePicks::aov() const
+{
+    return _aov;
+}
+
+unsigned int
+UtilityDevicePicks::width() const
+{
+    return _width;
+}
+
+unsigned int
+UtilityDevicePicks::height() const
+{
+    return _height;
+}
+
+void
+UtilityDevicePicks::releaseIfLost() const
+{
+    if (_picks && _picks->film) {
+        _picks->film->releaseIfLost();
+    }
+}
+
+bool
+UtilityDevicePicks::resolveIds(const std::function<std::uint32_t(std::int32_t prim, std::int32_t instance)>& hashOf,
+                               std::shared_ptr<const UtilityDeviceIds>* out,
+                               std::string* error) const
+{
+    const auto fail = [error](const std::string& message) {
+        *error = "The Utility renderer's prim ids could not be resolved on the GPU: " + message;
+
+        return false;
+    };
+    UtilityDeviceFilm::Lease lease;
+
+    if (!_picks || !_picks->film || !_picks->film->lease(&lease)) {
+        return fail("they were released with the GPU");
+    }
+    if (!lease.kernels || !lease.kernels->ids) {
+        return fail("the kernel is missing");
+    }
+
+    UtilityDeviceFilm& film = *_picks->film;
+    std::shared_ptr<UtilityDeviceIds> ids = std::make_shared<UtilityDeviceIds>();
+
+    ids->runtimeHold = lease.runtimeHold;
+    ids->picks = _picks;
+
+    const VkDeviceSize tableBytes = kIdTableWords * sizeof(std::uint32_t);
+    const VkDeviceSize hashBytes = kIdCapacity * sizeof(std::uint32_t);
+    const VkDeviceSize countersBytes = kIdSlotsWord * sizeof(std::uint32_t);
+    const VkDeviceSize entriesBytes = 2 * kIdCapacity * sizeof(std::uint32_t);
+    const VkDeviceSize picksBytes = static_cast<VkDeviceSize>(_picks->pixels()) * kFilmPickPlanes * sizeof(std::uint32_t);
+    std::unique_ptr<gpu::GpuRecordContext> context;
+    gpu::GpuBuffer staging;
+    gpu::GpuStatus status = film.pool.acquire(tableBytes, ids->table);
+
+    if (status) {
+        status = film.pool.acquire(hashBytes, ids->hashes);
+    }
+    if (status) {
+        status = gpu::GpuRecordContext::create(film.registry, context, &film.pool);
+    }
+    if (status) {
+        status = gpu::GpuBuffer::createStaging(film.device, countersBytes + entriesBytes, gpu::kGpuBufferDefaultUsage, staging);
+    }
+    if (status) {
+        status = context->fillBuffer(ids->table.buffer(), tableBytes, 0);
+    }
+    for (std::uint32_t mode = 0; status && (mode < 2) && (_picks->pixels() > 0); ++mode) {
+        const KernelFilmIdsParams params = { static_cast<std::uint32_t>(_picks->width), static_cast<std::uint32_t>(_picks->height), mode, 0 };
+        const std::array<gpu::GpuBinding, 2> bindings = { gpu::GpuBinding::storage(0, lease.pixels.buffer(), 0, picksBytes), gpu::GpuBinding::storage(1, ids->table.buffer(), 0, tableBytes) };
+
+        context->computeBarrier();
+        status = context->dispatchBindings(lease.kernels->ids, bindings, std::as_bytes(std::span(&params, 1)), { params.width, params.height, 1 });
+    }
+    if (status) {
+        const std::array<VkBufferCopy, 2> regions = { VkBufferCopy { 0, 0, countersBytes }, VkBufferCopy { kIdEntriesWord * sizeof(std::uint32_t), countersBytes, entriesBytes } };
+
+        status = context->copyBuffer(ids->table.buffer(), staging, regions);
+    }
+    if (status) {
+        status = context->submitAndWait();
+    }
+    if (!status) {
+        return fail(status.message);
+    }
+
+    const std::uint32_t* words = static_cast<const std::uint32_t*>(staging.mapped());
+
+    if (words[1] != 0) {
+        return fail("the frame shows more distinct prims than the GPU keeps");
+    }
+    if (words[2] != 0) {
+        return fail("two prims of the frame share a tag");
+    }
+
+    const std::size_t used = std::min<std::size_t>(words[0], kIdCapacity);
+    const std::uint32_t* entries = words + kIdSlotsWord;
+    std::vector<std::uint32_t> hashes(used);
+
+    for (std::size_t entry = 0; entry < used; ++entry) {
+        hashes[entry] = hashOf(static_cast<std::int32_t>(entries[2 * entry]), static_cast<std::int32_t>(entries[2 * entry + 1]));
+    }
+    if (used > 0) {
+        // updateBuffer() writes at most 64 KiB at a time.
+        const std::size_t chunk = 65536 / sizeof(std::uint32_t);
+
+        status = gpu::GpuRecordContext::create(film.registry, context, &film.pool);
+        for (std::size_t first = 0; status && (first < used); first += chunk) {
+            const std::size_t count = std::min(chunk, used - first);
+
+            status = context->updateBuffer(ids->hashes.buffer(), first * sizeof(std::uint32_t), std::as_bytes(std::span(hashes.data() + first, count)));
+        }
+        if (status) {
+            status = context->submitAndWait();
+        }
+        if (!status) {
+            return fail(status.message);
+        }
+    }
+    *out = std::move(ids);
+
+    return true;
+} // UtilityDevicePicks::resolveIds
+
+gpu::GpuStatus
+UtilityDevicePicks::recordWindow(gpu::GpuRecordContext& context,
+                                 int x1,
+                                 int y1,
+                                 int x2,
+                                 int y2,
+                                 int nComps,
+                                 const gpu::GpuBuffer& out,
+                                 std::uint64_t outOffset,
+                                 std::uint32_t outRowStride,
+                                 const std::array<float, 8>& depthFromWindow,
+                                 const std::shared_ptr<const UtilityDeviceIds>& ids) const
+{
+    UtilityDeviceFilm::Lease lease;
+
+    if (!_picks || !_picks->film || !_picks->film->lease(&lease)) {
+        return failure("The Utility renderer's depth and ids were released with its GPU");
+    }
+    if (&context.device() != &_picks->film->device) {
+        return failure("The Utility renderer's depth and ids are on another device");
+    }
+    if (!lease.kernels || !lease.kernels->aovPack) {
+        return failure("The Utility renderer has no kernel to copy its depth and ids on the GPU");
+    }
+    if (_aov == UtilityPickAov::InstanceId) {
+        return failure("The Utility renderer copies only depth and prim ids on the GPU");
+    }
+    const bool primIds = _aov == UtilityPickAov::PrimId;
+    if (primIds && (!ids || (ids->picks != _picks) || !ids->table || !ids->hashes)) {
+        return failure("The Utility renderer's prim ids were not resolved on the GPU");
+    }
+    if ((nComps < 1) || (x2 < x1) || (y2 < y1)) {
+        return failure("The Utility renderer's depth and ids were asked for an empty or inverted window");
+    }
+    if ((x2 == x1) || (y2 == y1)) {
+        return gpu::GpuStatus();
+    }
+
+    const std::uint64_t width = static_cast<std::uint64_t>(x2 - x1);
+    const std::uint64_t height = static_cast<std::uint64_t>(y2 - y1);
+    const std::uint64_t end = outOffset + (height - 1) * outRowStride + width * static_cast<std::uint64_t>(nComps);
+
+    // The kernel indexes the output in 32 bits.
+    if ((end * sizeof(float) > out.size()) || (end > std::numeric_limits<std::uint32_t>::max())) {
+        return failure("The Utility renderer's depth and ids window does not fit the buffer it is copied to");
+    }
+
+    const VkDeviceSize picksBytes = static_cast<VkDeviceSize>(_picks->pixels()) * kFilmPickPlanes * sizeof(std::uint32_t);
+    KernelFilmAovPackParams params = {};
+
+    for (std::size_t row = 0; row < 4; ++row) {
+        params.zColumn[row] = depthFromWindow[row];
+        params.wColumn[row] = depthFromWindow[4 + row];
+    }
+    params.renderWidth = _width;
+    params.renderHeight = _height;
+    params.picksX = _picks->x;
+    params.picksY = _picks->y;
+    params.picksWidth = static_cast<std::uint32_t>(_picks->width);
+    params.picksHeight = static_cast<std::uint32_t>(_picks->height);
+    params.x1 = x1;
+    params.y1 = y1;
+    params.width = static_cast<std::uint32_t>(width);
+    params.height = static_cast<std::uint32_t>(height);
+    params.nComps = static_cast<std::uint32_t>(nComps);
+    params.outOffset = static_cast<std::uint32_t>(outOffset);
+    params.outRowStride = outRowStride;
+    params.mode = primIds ? 1u : 0u;
+
+    // A depth window reads no table: the picks stand in for its bindings.
+    const gpu::GpuBinding picks = gpu::GpuBinding::storage(0, lease.pixels.buffer(), 0, picksBytes);
+    const std::array<gpu::GpuBinding, 4> bindings = {
+        picks,
+        primIds ? gpu::GpuBinding::storage(1, ids->table.buffer(), 0, kIdTableWords * sizeof(std::uint32_t)) : gpu::GpuBinding::storage(1, lease.pixels.buffer(), 0, picksBytes),
+        primIds ? gpu::GpuBinding::storage(2, ids->hashes.buffer(), 0, kIdCapacity * sizeof(std::uint32_t)) : gpu::GpuBinding::storage(2, lease.pixels.buffer(), 0, picksBytes),
+        gpu::GpuBinding::storage(3, out),
+    };
+
+    // Orders the copy after the frame's writes, which earlier submissions on the queue made.
+    context.computeBarrier();
+    if (gpu::GpuStatus s = context.dispatchBindings(lease.kernels->aovPack, bindings, std::as_bytes(std::span(&params, 1)), { params.width, params.height, 1 }); !s) {
+        return s;
+    }
+    context.hold(std::make_shared<UtilityDeviceFilm::Lease>(std::move(lease)));
+    if (primIds) {
+        context.hold(std::const_pointer_cast<UtilityDeviceIds>(ids));
+    }
+
+    return gpu::GpuStatus();
+} // UtilityDevicePicks::recordWindow
 
 struct UtilityDeviceAovs::Implementation {
     // Destroyed after the buffers below, whose pool and device it keeps alive.
@@ -1231,6 +1543,9 @@ UtilityRenderBuffer::GetResource(bool /*multiSampled*/) const
     if (_frontFilm && !_frontFilm->released()) {
         return VtValue(UtilityDeviceResource(_frontFilm));
     }
+    if (_frontPicks && !_frontPicks->released() && (_frontPickAov != UtilityPickAov::InstanceId)) {
+        return VtValue(UtilityDevicePicks(_frontPicks, _frontPickAov, _width, _height));
+    }
 #endif
 
     return VtValue();
@@ -1246,6 +1561,33 @@ std::uint64_t
 UtilityRenderBuffer::pickReadbackCount()
 {
     return gPickReadbacks.load();
+}
+
+std::uint64_t
+UtilityRenderBuffer::convergedCount()
+{
+    const std::lock_guard<std::mutex> lock(gConvergedMutex);
+
+    return gConverged;
+}
+
+void
+UtilityRenderBuffer::waitForConverged(std::uint64_t seen,
+                                      std::chrono::milliseconds bound)
+{
+    std::unique_lock<std::mutex> lock(gConvergedMutex);
+    const std::uint64_t wakes = gConvergedWakes;
+    (void)gConvergedChanged.wait_for(lock, bound, [seen, wakes]() { return (gConverged != seen) || (gConvergedWakes != wakes); });
+}
+
+void
+UtilityRenderBuffer::wakeConvergedWaiters()
+{
+    {
+        const std::lock_guard<std::mutex> lock(gConvergedMutex);
+        ++gConvergedWakes;
+    }
+    gConvergedChanged.notify_all();
 }
 
 bool
@@ -1602,6 +1944,14 @@ void
 UtilityRenderBuffer::setConverged(bool converged)
 {
     _converged.store(converged);
+    if (!converged) {
+        return;
+    }
+    {
+        const std::lock_guard<std::mutex> lock(gConvergedMutex);
+        ++gConverged;
+    }
+    gConvergedChanged.notify_all();
 }
 
 void

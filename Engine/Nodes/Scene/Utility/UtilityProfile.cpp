@@ -25,6 +25,8 @@
 
 #include "UtilityProfile.h"
 
+#include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cstdio>
@@ -105,6 +107,12 @@ namespace {
         std::snprintf(text, sizeof(text), "%.4f", value);
 
         return text;
+    }
+
+    double
+    monotonicMilliseconds()
+    {
+        return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
     }
 
     std::string
@@ -411,6 +419,7 @@ UtilityProfileHydraCall::write()
     line += ",\"width\":" + std::to_string(_width);
     line += ",\"height\":" + std::to_string(_height);
     line += ",\"timing\":\"cpu_wall\"";
+    line += ",\"mono_ms\":" + number(monotonicMilliseconds());
     line += ",\"total_ms\":" + number(total);
     line += ",\"stages\":{";
 
@@ -428,5 +437,34 @@ UtilityProfileHydraCall::write()
     line += "}}\n";
     appendLine(line);
 }
+
+namespace utilityProfile {
+void
+writeViewerFrame(const std::string& viewer,
+                 double time,
+                 bool deviceColor,
+                 bool fallback,
+                 const std::string& rung)
+{
+    if (!enabled()) {
+        return;
+    }
+
+    std::string line = "{\"record\":\"viewer_frame\"";
+
+    line += ",\"sequence\":" + std::to_string(nextSequence());
+    line += ",\"pid\":" + std::to_string(static_cast<long>(::getpid()));
+    line += ",\"mono_ms\":" + number(monotonicMilliseconds());
+    line += ",\"viewer\":" + jsonString(viewer);
+    line += ",\"time\":" + number(time);
+    line += std::string(",\"device_color\":") + (deviceColor ? "true" : "false");
+    line += std::string(",\"fallback\":") + (fallback ? "true" : "false");
+    line += ",\"rung\":" + jsonString(rung);
+    line += ",\"device_downloads\":" + std::to_string(UtilityRenderBuffer::deviceDownloadCount());
+    line += ",\"pick_readbacks\":" + std::to_string(UtilityRenderBuffer::pickReadbackCount());
+    line += "}\n";
+    appendLine(line);
+}
+} // namespace utilityProfile
 
 NATRON_NAMESPACE_EXIT

@@ -82,6 +82,7 @@ CLANG_DIAG_ON(deprecated)
 #include "Engine/Nodes/NativeEffectBase.h"
 #include "Engine/Nodes/Raw/RawDisplay.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
+#include "Engine/Nodes/Scene/Utility/UtilityProfile.h"
 #include "Engine/OfxEffectInstance.h"
 #include "Engine/OpenGLViewerI.h"
 #include "Engine/OutputSchedulerThread.h"
@@ -6379,6 +6380,14 @@ ViewerInstance::ViewerInstancePrivate::showFrame(const UpdateViewerParamsPtr& pa
 
     if (!isDrawing) {
         uiContext->updateColorPicker(params->textureIndex);
+    }
+    if (utilityProfile::enabled() && !params->isPartialRect) {
+#ifdef NATRON_HAVE_GPU
+        const std::string rung = toString(uiContext->handoffRung());
+#else
+        const std::string rung = "Cpu";
+#endif
+        utilityProfile::writeViewerFrame(instance->getScriptName_mt_safe(), params->time, deviceFrame, deviceFrame && deviceDownload, rung);
     }
 }
 

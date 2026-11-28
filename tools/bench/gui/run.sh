@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Runs a GUI benchmark driver and writes build/bench/gui/<UTC>-<host>-<mode>[-roto].jsonl.
+# Runs a GUI benchmark driver and writes build/bench/gui/<UTC>-<host>-<mode>[-roto|-utility].jsonl.
 #
 #   tools/bench/gui/run.sh --xvfb [--appimage PATH] [options]   # in natron-dev, under Xvfb
 #   tools/bench/gui/run.sh --host --appimage PATH [options]     # on this machine's display
 #
 # Options:
-#   --driver gui|roto        gui_bench.py (node graph, default) or roto_bench.py (roto/paint)
+#   --driver gui|roto|utility  gui_bench.py (node graph, default), roto_bench.py (roto/paint) or
+#                            utility_bench.py (Natron Utility Raster edit-to-viewer frame time)
 #   --preset gate|full|create  the matrix (default gate): gate is comp at 300,3000 nodes; full is chain,
 #                            wide, comp and mixed at 300,1000,3000. Both use --reps auto and the graph cache.
 #                            create is mixed at 0,300,3000 nodes running only the node-creation ops
@@ -36,6 +37,9 @@
 #
 # --sizes, --topologies and --self-check apply to the gui driver; the roto driver reads its
 # ROTO_BENCH_* variables (see roto_bench.py) and also writes NATRON_ROTO_LATENCY_LOG beside the result.
+# The utility driver reads its UTILITY_BENCH_* variables (see utility_bench.py) and writes
+# NATRON_UTILITY_PROFILE and NATRON_RENDER_PROFILE beside the result; its frame times only mean
+# something with --host on a hardware GPU and a real X server.
 #
 # --xvfb runs detached (setsid, immune to the caller exiting): it prints the result path and
 # writes the exit code to <result>.done when it finishes. --host runs in the foreground.
@@ -93,7 +97,7 @@ while [ $# -gt 0 ]; do
     case $1 in
         --xvfb) mode=xvfb ;;
         --host) mode=host ;;
-        --driver) driver=${2:?--driver needs gui or roto}; shift ;;
+        --driver) driver=${2:?--driver needs gui, roto or utility}; shift ;;
         --appimage) appimage=${2:?--appimage needs a path}; shift ;;
         --preset) preset=${2:?--preset needs gate, full or create}; shift ;;
         --stages) stages=1 ;;
@@ -120,7 +124,8 @@ done
 case $driver in
     gui) suffix="" ;;
     roto) suffix="-roto" ;;
-    *) echo "unknown driver: $driver (gui or roto)" >&2; exit 2 ;;
+    utility) suffix="-utility" ;;
+    *) echo "unknown driver: $driver (gui, roto or utility)" >&2; exit 2 ;;
 esac
 case $preset in
     gate) preset_sizes=300,3000 preset_topologies=comp preset_restarts=0 preset_ops="" ;;
@@ -208,7 +213,7 @@ export GUI_BENCH_STAMP=$stamp
 
 if [ "$mode" = xvfb ] && [ "${NATRON_IN_CONTAINER:-}" != 1 ]; then
     roto_env=()
-    for name in $(compgen -e | grep '^ROTO_BENCH_'); do
+    for name in $(compgen -e | grep -E '^(ROTO_BENCH_|UTILITY_BENCH_|NATRON_GPU$|NATRON_VIEWER_HANDOFF$)'); do
         roto_env+=("$name=${!name}")
     done
     # The host name belongs to the machine, not the container.
@@ -270,6 +275,12 @@ if [ "$driver" = roto ]; then
     rm -f "$NATRON_ROTO_LATENCY_LOG"
 else
     unset NATRON_ROTO_LATENCY_LOG
+fi
+if [ "$driver" = utility ]; then
+    export NATRON_UTILITY_PROFILE="$work/utility-profile.jsonl" NATRON_RENDER_PROFILE="$work/render-profile.jsonl"
+    rm -f "$NATRON_UTILITY_PROFILE"
+else
+    unset NATRON_UTILITY_PROFILE
 fi
 if [ "$stages" -eq 1 ]; then
     export NATRON_NODE_CREATION_STAGE_LOG="$work/node-creation-stages.jsonl"
@@ -379,9 +390,9 @@ result_lines() {
     fi
 }
 
-# The roto driver has no topologies, so it is one process writing directly into $work.
+# The roto and utility drivers have no topologies, so each is one process writing directly into $work.
 run_driver() {
-    if [ "$driver" != roto ]; then
+    if [ "$driver" = gui ]; then
         run_cases
     fi
     export NATRON_GUI_TEST_OUT="$work" NATRON_STALL_LOG="$work/stalls.jsonl"

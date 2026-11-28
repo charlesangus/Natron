@@ -26,6 +26,7 @@
 #include "HydraRenderImpl.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -467,6 +468,8 @@ public:
     void request()
     {
         _requested.store(true);
+        // A render thread waiting for Natron Utility to converge sees the cancel now, not at the wait's bound.
+        UtilityRenderBuffer::wakeConvergedWaiters();
         const std::lock_guard<std::mutex> l(_mutex);
         stopEngine();
     }
@@ -2046,6 +2049,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         bool cancelled = false;
         // MoonRay shows no restart for kRestartUnseen to catch, nor a session that went silent.
         const bool watchStall = MoonRayAovs::isMoonRay(renderer);
+        // Natron Utility converges on its own thread and says so as it does; the others are polled.
+        const bool waitsForConverged = (renderer == kRenderDelegateUtilityId);
         ProgressStall stall;
         bool stallRemade = false;
         bool passRan = false;
@@ -2079,6 +2084,8 @@ RenderThread::renderEngine(const HydraRender::Request& request,
                     cancelled = true;
                     break;
                 }
+                // Read before the pass, so a frame converging between the pass and the wait ends the wait at once.
+                const std::uint64_t convergedBefore = waitsForConverged ? UtilityRenderBuffer::convergedCount() : 0;
                 passRan = true;
                 if (!renderGuarded(engine, stage->GetPseudoRoot(), params, &renderFailure)) {
                     break;
@@ -2135,7 +2142,11 @@ RenderThread::renderEngine(const HydraRender::Request& request,
                     continue;
                 }
                 yieldToBarrier();
-                std::this_thread::sleep_for(kConvergencePoll);
+                if (waitsForConverged) {
+                    UtilityRenderBuffer::waitForConverged(convergedBefore, kConvergencePoll);
+                } else {
+                    std::this_thread::sleep_for(kConvergencePoll);
+                }
             }
         }
         entry.stopped = cancel && cancel->stopped();
@@ -3460,20 +3471,29 @@ namespace {
         std::mutex mutex;
         bool valid = false;
         DeviceFrameKey key;
+        // Each plane is taken off the engine when a window first asks for it.
         UtilityDeviceResource film;
+        UtilityDevicePicks depth;
+        UtilityDevicePicks primId;
+        std::shared_ptr<const UtilityDeviceIds> ids;
+        std::map<std::uint32_t, std::string> primPaths;
+        std::array<float, 8> depthFromWindow {};
         std::string warning;
         std::string errors;
         std::string device;
     };
 
+    using DeviceFrameSlot = std::pair<const void*, int>;
+
     std::mutex gDeviceFramesMutex;
-    std::map<const void*, std::shared_ptr<DeviceFrame>> gDeviceFrames;
+    std::map<DeviceFrameSlot, std::shared_ptr<DeviceFrame>> gDeviceFrames;
 
     std::shared_ptr<DeviceFrame>
-    deviceFrameOf(const void* owner)
+    deviceFrameOf(const void* owner,
+                  int view)
     {
         const std::lock_guard<std::mutex> lock(gDeviceFramesMutex);
-        std::shared_ptr<DeviceFrame>& frame = gDeviceFrames[owner];
+        std::shared_ptr<DeviceFrame>& frame = gDeviceFrames[DeviceFrameSlot(owner, view)];
         if (!frame) {
             frame = std::make_shared<DeviceFrame>();
         }
@@ -3499,7 +3519,7 @@ recordDeviceWindow(const Request& request,
     }
     const int width = window.x2 - window.x1;
     const int height = window.y2 - window.y1;
-    if ((window.plane != ePlaneColor) || !output.buffer || (width != outputRect.width()) || (height != outputRect.height()) || (window.nComps != output.nComps) || !output.bounds.contains(outputRect)) {
+    if (((window.plane != ePlaneColor) && (window.plane != ePlaneDepth) && (window.plane != ePlanePrimId)) || !output.buffer || (width != outputRect.width()) || (height != outputRect.height()) || (window.nComps != output.nComps) || !output.bounds.contains(outputRect)) {
         *error = "USDRender's GPU output does not match the window it renders.";
 
         return false;
@@ -3515,8 +3535,11 @@ recordDeviceWindow(const Request& request,
         return false;
     }
     const DeviceFrameKey key = deviceFrameKey(request);
-    const std::shared_ptr<DeviceFrame> frame = deviceFrameOf(request.owner);
+    const std::shared_ptr<DeviceFrame> frame = deviceFrameOf(request.owner, request.view);
     UtilityDeviceResource film;
+    UtilityDevicePicks picks;
+    std::shared_ptr<const UtilityDeviceIds> ids;
+    std::array<float, 8> depthFromWindow {};
     {
         // A strip waiting for the one that renders must still see its own abort.
         std::unique_lock<std::mutex> frameLock(frame->mutex, std::try_to_lock);
@@ -3531,14 +3554,39 @@ recordDeviceWindow(const Request& request,
         }
         if (frame->valid) {
             frame->film.releaseIfLost();
+            frame->depth.releaseIfLost();
+            frame->primId.releaseIfLost();
         }
-        if (!frame->valid || !(frame->key == key) || !frame->film.device()) {
-            // The engine's next frame goes into this film when nothing else holds it.
+        if (!frame->valid || !(frame->key == key)) {
+            // The engine's next frame goes into these films when nothing else holds them.
             frame->valid = false;
             frame->film = UtilityDeviceResource();
+            frame->depth = UtilityDevicePicks();
+            frame->primId = UtilityDevicePicks();
+            frame->ids.reset();
+            frame->primPaths.clear();
+        }
+        const auto held = [&]() {
+            switch (window.plane) {
+            case ePlaneColor:
+                return frame->film.device() != nullptr;
+            case ePlaneDepth:
+                return frame->depth.device() != nullptr;
+            case ePlanePrimId:
+                return (frame->primId.device() != nullptr) && frame->ids;
+            case ePlaneNormal:
+                break;
+            }
 
+            return false;
+        };
+        if (!held()) {
             bool ok = false;
             UtilityDeviceResource rendered;
+            UtilityDevicePicks renderedPicks;
+            std::shared_ptr<const UtilityDeviceIds> renderedIds;
+            std::map<std::uint32_t, std::string> renderedPaths;
+            std::array<float, 8> renderedDepth {};
             Result renderedInfo;
             RenderCancel cancel;
             const std::function<void()> whileWaiting = pollAborted(request, &cancel);
@@ -3554,26 +3602,62 @@ recordDeviceWindow(const Request& request,
                     if (!entry) {
                         return;
                     }
-                    HdRenderBuffer* buffer = entry->engine->GetAovRenderBuffer(HdAovTokens->color);
+                    const TfToken aov = (window.plane == ePlaneColor) ? HdAovTokens->color : (window.plane == ePlaneDepth) ? entry->depthAov
+                                                                                                                           : HdAovTokens->primId;
+                    HdRenderBuffer* buffer = entry->engine->GetAovRenderBuffer(aov);
                     if (!buffer) {
-                        *error = entry->rendererName + " rendered no color AOV.";
+                        *error = entry->rendererName + " rendered no " + aov.GetString() + " AOV.";
 
                         return;
                     }
                     buffer->Resolve();
                     if (((int)buffer->GetWidth() != entry->width) || ((int)buffer->GetHeight() != entry->height)) {
-                        *error = entry->rendererName + "'s color AOV is not the size asked for.";
+                        *error = entry->rendererName + "'s " + aov.GetString() + " AOV is not the size asked for.";
 
                         return;
                     }
                     const VtValue resource = buffer->GetResource(false);
-                    if (!resource.IsHolding<UtilityDeviceResource>()) {
-                        *error = entry->rendererName + " did not leave its frame on the GPU.";
-                        fellBack = true;
+                    if (window.plane == ePlaneColor) {
+                        if (!resource.IsHolding<UtilityDeviceResource>()) {
+                            *error = entry->rendererName + " did not leave its frame on the GPU.";
+                            fellBack = true;
 
-                        return;
+                            return;
+                        }
+                        rendered = resource.UncheckedGet<UtilityDeviceResource>();
+                    } else {
+                        // Depth and ids too large for one binding are read back tile by tile, and those of a frame
+                        // drawn on the CPU never reach the device: both render on the CPU, the colour staying here.
+                        if (!resource.IsHolding<UtilityDevicePicks>()) {
+                            *error = entry->rendererName + " did not leave its " + aov.GetString() + " on the GPU.";
+
+                            return;
+                        }
+                        renderedPicks = resource.UncheckedGet<UtilityDevicePicks>();
+                        if (window.plane == ePlaneDepth) {
+                            const GfMatrix4d inverse = entry->projection.GetInverse();
+                            for (int row = 0; row < 4; ++row) {
+                                renderedDepth[(std::size_t)row] = (float)inverse[row][2];
+                                renderedDepth[4 + (std::size_t)row] = (float)inverse[row][3];
+                            }
+                        } else {
+                            const utilityProfile::Scope timed(utilityProfile::Stage::DecodeIds);
+                            UsdImagingGLEngine* engine = entry->engine.get();
+                            const auto hashOf = [engine, &renderedPaths](std::int32_t prim, std::int32_t instance) -> std::uint32_t {
+                                SdfPath path;
+                                if (!engine->DecodeIntersection(prim, instance, &path) || path.IsEmpty()) {
+                                    return 0;
+                                }
+                                const std::uint32_t hash = HydraRender::primPathHash(path.GetString());
+                                renderedPaths[hash] = path.GetString();
+
+                                return hash;
+                            };
+                            if (!renderedPicks.resolveIds(hashOf, &renderedIds, error)) {
+                                return;
+                            }
+                        }
                     }
-                    rendered = resource.UncheckedGet<UtilityDeviceResource>();
                     renderedInfo.warning = entry->warning;
                     renderedInfo.errors = entry->errors;
                     renderedInfo.device = entry->device;
@@ -3590,20 +3674,42 @@ recordDeviceWindow(const Request& request,
             if (!ran || !ok) {
                 return false;
             }
+            switch (window.plane) {
+            case ePlaneColor:
+                frame->film = rendered;
+                break;
+            case ePlaneDepth:
+                frame->depth = renderedPicks;
+                frame->depthFromWindow = renderedDepth;
+                break;
+            case ePlanePrimId:
+                frame->primId = renderedPicks;
+                frame->ids = renderedIds;
+                frame->primPaths = std::move(renderedPaths);
+                break;
+            case ePlaneNormal:
+                break;
+            }
             frame->key = key;
-            frame->film = rendered;
             frame->warning = renderedInfo.warning;
             frame->errors = renderedInfo.errors;
             frame->device = renderedInfo.device;
             frame->valid = true;
         }
         film = frame->film;
+        picks = (window.plane == ePlaneDepth) ? frame->depth : frame->primId;
+        ids = frame->ids;
+        depthFromWindow = frame->depthFromWindow;
         info->warning = frame->warning;
         info->errors = frame->errors;
         info->device = frame->device;
+        if (window.plane == ePlanePrimId) {
+            info->primPaths = frame->primPaths;
+        }
     }
     // A record context belongs to the thread that made it, so the copy is recorded here, not on the render thread.
-    if (film.device() != &context.device()) {
+    const gpu::GpuDevice* device = (window.plane == ePlaneColor) ? film.device() : picks.device();
+    if (device != &context.device()) {
         *error = "Natron Utility rendered on another GPU than the one its output is on.";
 
         return false;
@@ -3612,7 +3718,9 @@ recordDeviceWindow(const Request& request,
         return true;
     }
     const std::int64_t origin = (std::int64_t)(output.byteOffset / sizeof(float)) + ((std::int64_t)(outputRect.y1 - output.bounds.y1) * output.rowStrideFloats) + (std::int64_t)(outputRect.x1 - output.bounds.x1) * output.nComps;
-    const gpu::GpuStatus status = film.recordWindow(context, window.x1, window.y1, window.x2, window.y2, window.nComps, *output.buffer, (std::uint64_t)origin, (std::uint32_t)output.rowStrideFloats);
+    const gpu::GpuStatus status = (window.plane == ePlaneColor)
+        ? film.recordWindow(context, window.x1, window.y1, window.x2, window.y2, window.nComps, *output.buffer, (std::uint64_t)origin, (std::uint32_t)output.rowStrideFloats)
+        : picks.recordWindow(context, window.x1, window.y1, window.x2, window.y2, window.nComps, *output.buffer, (std::uint64_t)origin, (std::uint32_t)output.rowStrideFloats, depthFromWindow, (window.plane == ePlanePrimId) ? ids : std::shared_ptr<const UtilityDeviceIds>());
     if (!status) {
         *error = "Natron Utility's frame could not be copied on the GPU: " + status.message;
 
@@ -3643,7 +3751,8 @@ release(const void* owner)
 #ifdef NATRON_HAVE_GPU
     {
         const std::lock_guard<std::mutex> lock(gDeviceFramesMutex);
-        gDeviceFrames.erase(owner);
+        gDeviceFrames.erase(gDeviceFrames.lower_bound(DeviceFrameSlot(owner, std::numeric_limits<int>::min())),
+                            gDeviceFrames.upper_bound(DeviceFrameSlot(owner, std::numeric_limits<int>::max())));
     }
     forgetDeviceFallback(owner);
 #endif

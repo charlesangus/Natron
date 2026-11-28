@@ -377,6 +377,46 @@ being requested, starting and finishing, the frame's texture upload, and the end
 `paintGL`. A render covers every point added before it was requested. A stage a point never went
 through is `null`. Without the variable the probe costs one branch per stage.
 
+## Utility driver
+
+```
+tools/bench/gui/run.sh --host --driver utility --appimage Natron-x86_64.AppImage
+UTILITY_BENCH_EDITS=5 tools/bench/gui/run.sh --xvfb --driver utility    # checks the driver, times nothing useful
+```
+
+Times Natron Utility in Raster mode as the viewer sees it: a USDRender of an emissive projected
+card at 1920x1080, Raster Samples 1 and 16, into Viewer1 with Full Frame on, so every frame is the
+whole image at full resolution. Each edit moves the camera through a USDXformPrim to a position it
+has never held, and is timed from the knob change to the first and the last viewer frame it brings.
+The result is `<UTC>-<host>-<mode>-utility.jsonl`; its directory also holds
+`utility-profile.jsonl` (`NATRON_UTILITY_PROFILE`, whose `viewer_frame` and `hydra_profile`
+records the driver reads back) and `render-profile.jsonl.<pid>` (`NATRON_RENDER_PROFILE`, for the
+USDRender's placement). `run.sh` passes every `UTILITY_BENCH_*` variable, `NATRON_GPU` and
+`NATRON_VIEWER_HANDOFF` into the container.
+
+Under Xvfb the viewer has no device hand-off and the device is lavapipe, so the target only means
+something on a hardware GPU with a real X server. Run it on a cloud VM:
+
+```
+V=~/.claude/skills/cloud-gpu/vast.sh
+$V run --upload Natron-x86_64.AppImage --upload tools/bench=tools/bench --upload Tests/gui=Tests/gui -- \
+    'bash tools/bench/gui/run.sh --host --driver utility --appimage "$PWD/Natron-x86_64.AppImage" --out "$PWD/out"'
+```
+
+One `frame` record per timed edit, one `summary` record per pass count. A summary's `median_ms`
+and `p95_ms` are of `last_ms`, the edit to the frame the viewer settles on; `meets_target` and
+`meets_stretch` compare the median with 50 ms and 33 ms. It also carries `first_median_ms`,
+`hydra_median_ms` and `hydra_mean_ms` (per HydraRender call kind and stage, `render.raster`, `device_window.map_aov` and so
+on), `rungs` (the viewer's hand-off rungs), `device_color_edits` (edits whose last frame reached
+the viewer as a device root), `fallback_edits` (a device root drawn from a download instead),
+`downloads` and `pick_readbacks` (counted by the renderer over the timed edits), and `placement`
+(USDRender tasks on the gpu and the cpu). The run ends with one `NOTE utility raster ...` line
+per pass count in `results.txt`. Knobs: `UTILITY_BENCH_PASSES`, `UTILITY_BENCH_EDITS` (30),
+`UTILITY_BENCH_WARMUPS` (3), `UTILITY_BENCH_QUIET_MS` (400), `UTILITY_BENCH_NUDGE` (`camera` or
+`seed`), `UTILITY_BENCH_SIZE`, `UTILITY_BENCH_DEVICE`, `UTILITY_BENCH_TARGET_MS`,
+`UTILITY_BENCH_STRETCH_MS`. An edit that brings no viewer frame, or a Raster render that falls back
+to Ray, fails the run.
+
 ## Comparing
 
 ```

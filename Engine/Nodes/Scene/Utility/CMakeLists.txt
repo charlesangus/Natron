@@ -29,7 +29,10 @@ if(NATRON_GPU)
     slang_add_kernel(utility_film_scatter ${CMAKE_CURRENT_SOURCE_DIR}/Kernels/FilmScatter.slang ENTRY utilityFilmScatter)
     slang_add_kernel(utility_film_pack ${CMAKE_CURRENT_SOURCE_DIR}/Kernels/FilmPack.slang ENTRY utilityFilmPack)
     slang_add_kernel(utility_film_pick ${CMAKE_CURRENT_SOURCE_DIR}/Kernels/FilmPick.slang ENTRY utilityFilmPick)
-    target_link_libraries(NatronEngine PRIVATE utility_film_clear utility_film_scatter utility_film_pack utility_film_pick)
+    slang_add_kernel(utility_film_ids ${CMAKE_CURRENT_SOURCE_DIR}/Kernels/FilmIds.slang ENTRY utilityFilmIds)
+    slang_add_kernel(utility_film_aov_pack ${CMAKE_CURRENT_SOURCE_DIR}/Kernels/FilmAovPack.slang ENTRY utilityFilmAovPack)
+    target_link_libraries(NatronEngine PRIVATE utility_film_clear utility_film_scatter utility_film_pack utility_film_pick
+                          utility_film_ids utility_film_aov_pack)
     # The visibility buffer of Raster mode: GpuTracer registers it with the registry it is given.
     slang_add_raster(utility_raster_visibility ${CMAKE_CURRENT_SOURCE_DIR}/Kernels/RasterVisibility.slang
                      VERTEX visibilityVertex FRAGMENT visibilityFragment)

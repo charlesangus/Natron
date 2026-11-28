@@ -1247,6 +1247,7 @@ USDRender::prepareRender(double time,
                        .toStdString());
     }
     setup->request.owner = this;
+    setup->request.view = (int)view;
     setup->request.aborted = [this]() { return aborted(); };
     setup->request.scene = active.scene;
     setup->request.time = active.time;
@@ -1521,9 +1522,9 @@ USDRender::canRenderOnGpu(const GpuQuery& query) const
     if (!activeRenderer(query.time, query.view, &renderer, &error)) {
         return false;
     }
-    // Natron Utility keeps a GPU frame's colour on the device, where renderGpu() copies it from.
+    // Natron Utility keeps a GPU frame's colour, depth and ids on the device, where renderGpu() copies them from.
     if (renderer == kRenderDelegateUtilityId) {
-        if (!query.plane.isColorLayer() || (utilityDevice(query.time, query.view) == kUtilityDeviceCpu)) {
+        if (utilityDevice(query.time, query.view) == kUtilityDeviceCpu) {
             return false;
         }
         // Asked while the frame is being planned, so it neither waits for the GPU nor recovers a lost one:

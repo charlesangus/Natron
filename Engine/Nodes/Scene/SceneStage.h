@@ -110,7 +110,11 @@ public:
      **/
     std::size_t getCommonBaseLength(const ScenePayload& payload) const;
 
-    // How many sync() calls edited the stage, plus the noteLayerEdit() calls.
+    /**
+     * @brief How many sync() calls edited the stage, plus the noteLayerEdit() calls, plus the
+     * SceneWriteBarrier writes that changed what it composes: a layer of the payload refreshed in
+     * place keeps the stack as it is, so a sync to the same payload edits nothing.
+     **/
     U64 getEditCount() const;
 
     /**
@@ -262,6 +266,8 @@ public:
     bool syncTo(const SceneStageSnapshot& snapshot);
 
 private:
+    class OutsideEdits;
+
     void syncProjections();
 
     // Under _loadMutex: moves the loads put off for a stale layer back to the pending ones once
@@ -293,6 +299,8 @@ private:
     std::vector<std::string> _subLayerPaths;
     SceneMetadata _metadata;
     U64 _editCount = 0;
+    // After _stage, so that it stops listening before the stage goes.
+    std::unique_ptr<OutsideEdits> _outsideEdits;
     std::vector<PreviewPrim> _preview;
     std::vector<std::string> _previewRequested;
     U64 _previewGeneration = 0;

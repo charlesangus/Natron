@@ -95,6 +95,8 @@ struct BarrierState {
 
 std::atomic<SceneWriteBarrier::TestHookFunction> testHook { nullptr };
 std::atomic<void*> testHookContext { nullptr };
+std::atomic<SceneWriteBarrier::TestHookFunction> registerWaitTestHook { nullptr };
+std::atomic<void*> registerWaitTestHookContext { nullptr };
 
 BarrierState&
 state()
@@ -403,6 +405,9 @@ SceneWriteBarrier::registerParticipant(const std::function<void()>& quiesce,
     // Declared before the lock so the GIL is re-taken only after writerMutex is released:
     // runExclusive() takes the GIL back while it holds writerMutex.
     PythonUnlockedWhileWaiting unlocked;
+    if (const TestHookFunction hook = registerWaitTestHook.load(std::memory_order_acquire)) {
+        hook(registerWaitTestHookContext.load(std::memory_order_relaxed));
+    }
     std::lock_guard<std::mutex> lock(s.writerMutex);
     s.participants[id] = BarrierState::Participant { quiesce, resume, order };
 
@@ -597,6 +602,13 @@ SceneWriteBarrier::setTestHook(TestHookFunction hook, void* context)
 {
     testHookContext.store(context);
     testHook.store(hook);
+}
+
+void
+SceneWriteBarrier::setRegisterWaitTestHook(TestHookFunction hook, void* context)
+{
+    registerWaitTestHookContext.store(context, std::memory_order_relaxed);
+    registerWaitTestHook.store(hook, std::memory_order_release);
 }
 
 bool

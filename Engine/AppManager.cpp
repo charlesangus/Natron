@@ -3917,10 +3917,21 @@ AppManager::tearDownPython()
 #endif
 
     Py_DECREF(_imp->mainModule);
+    // The stream catchers only feed the script editor, so an error raised while Python finalizes
+    // (an atexit callback, a thread left running) would be lost in them.
+    const char* const streams[][2] = { { "stdout", "__stdout__" }, { "stderr", "__stderr__" } };
+    for (const auto& stream : streams) {
+        PyObject* original = PySys_GetObject(stream[1]);
+        if (original && (original != Py_None)) {
+            PySys_SetObject(stream[0], original);
+        }
+    }
 #if !defined(NDEBUG)
     qDebug() << "Finalizing Python";
 #endif
-    Py_Finalize();
+    if (Py_FinalizeEx() < 0) {
+        qWarning() << "Natron: Python could not flush its buffered output while finalizing";
+    }
 }
 
 PyObject*

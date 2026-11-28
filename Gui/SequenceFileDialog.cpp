@@ -463,7 +463,7 @@ SequenceFileDialog::SequenceFileDialog(QWidget* parent, // necessary to transmit
 
     _view =  new SequenceDialogView(this);
 
-    _model.reset( new FileSystemModel() );
+    _model = FileSystemModel::create();
     _model->initialize(this);
 
     _view->setSortingEnabled( isCaseSensitiveFileSystem( rootPath() ) );

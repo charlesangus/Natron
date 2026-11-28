@@ -513,7 +513,8 @@ jobs:
     container:
       image: ${{ needs.dev-image.outputs.image }}
       # The live texture tests export through /dev/shm, which Docker sizes at 64m.
-      options: --shm-size=2g
+      # SYS_PTRACE lets the watchdog dump the stacks of a hung suite's child processes, such as execComp.
+      options: --shm-size=2g --cap-add=SYS_PTRACE
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}

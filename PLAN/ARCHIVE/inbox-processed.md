@@ -974,3 +974,13 @@ Reference: Nuke 17's EdgeExtend (`.local/docs/nuke/html/content/reference_guide/
 - from: bosley-executor (cat-pm)
 - refs: M554
 - body: hdMoonray now drops hole faces from polygon meshes (M554 - Scene Camera For Delegate Renders), but MoonRay's core ignores holes on subdivision surfaces: `OpenSubdivMesh.cc` (~:428) hard-codes `ignoreHoles = true` and `RdlMeshGeometry` has no hole attribute. Fix needs a MoonRay core change in the fork (an RDL hole attribute fed from hdMoonray, honoured by OpenSubdivMesh). Small fork milestone, or fold into the next MoonRay fork bump.
+
+### 2026-11-27 — change-request — F33 template update workflow redesign (user UAT)
+- from: bosley-executor (cat-pm), user UAT of F33 - Graph Diff And Merge round 1
+- refs: F33, M103, M104, M512
+- body: User UAT found design issues to discuss in a side session before testing continues (do not implement yet). Full notes: `.local/UAT_Feedback.md` "F33 - Graph Diff And Merge (UAT round 1, 2026-11-27)".
+  1. **Update from template** only re-reads the originally imported file. Intended: supe publishes template vN, artist imports it, both work, supe publishes vN+1, artist updates from vN+1 with a three-way merge (base = vN as imported, theirs = vN+1, mine = artist's graph). Needs a way to pick the new version (and remember the base that was imported).
+  2. Picking v002 through the file picker (after moving the template away) added every node again instead of three-way merging — the template identity / base tracking doesn't survive a different file.
+  3. **Compare with base:** ghosts are drawn at their absolute base-file positions instead of relative to the surrounding nodes.
+  4. **Node moves count as changes:** moving the whole template shouldn't count; moving a node within the template possibly should — needs a rule.
+  5. **Probable bug:** importing a second template, changing knobs, then Update from template appears to do nothing.

@@ -704,6 +704,8 @@ future core work has solid ground to build on.
 | M643 | AdjustBBox Zero Pixels Fix | todo | - |  | E3 |  | | [M643-adjustbbox-zero-pixels-fix.md](PLAN/MILESTONES/M643-adjustbbox-zero-pixels-fix.md) |
 | M644 | MoonRay Subdivision Holes | todo | M554 |  | E9 |  | | [M644-moonray-subdivision-holes.md](PLAN/MILESTONES/M644-moonray-subdivision-holes.md) |
 | M645 | Aurora Delegate Evaluation | todo | - |  | E9 |  | | [M645-aurora-delegate-evaluation.md](PLAN/MILESTONES/M645-aurora-delegate-evaluation.md) |
+| M646 | Template Node And Versioning | todo | M103, M104 | | E12 | F33 | | [M646-template-node-and-versioning.md](PLAN/MILESTONES/M646-template-node-and-versioning.md) |
+| M647 | Template Compare Layout | todo | M104 | | E12 | F33 | | [M647-template-compare-layout.md](PLAN/MILESTONES/M647-template-compare-layout.md) |
 
 # Epics
 
@@ -787,7 +789,6 @@ future core work has solid ground to build on.
 | F43 | USD Asset Pipeline | open |  |  | feature/f43-usd-asset-pipeline | Hand assets from lookdev to lighting in plain USD: look layers applied across stages, published components with a material layer and variants, and an asset gallery to drop them into a graph. |
 
 # Open questions
-- **F33 - Graph Diff And Merge (2026-11-27, user UAT):** template update workflow needs redesign before testing continues (update from a newer published version with a three-way merge, ghost positions, move-as-change rule, a probable update bug) — to discuss in a side session; see the inbox entry and `.local/UAT_Feedback.md`.
 - **M365 - Delegate Display Transform (2026-11-27):** Lobby shots sent. (1) Cycles is ~3x brighter than Storm and MoonRay at the same exposure (its Hydra plugin multiplies non-distant light intensity by π): match it to Storm, or leave Cycles as Cycles? (2) MoonRay renders but reports no sample count, so the viewer HUD shows "- / 16 samples": fix in this milestone or file a follow-up?
 - **M104 - Merge Resolution UI (2026-11-22):** Keep Both Keys puts theirs' key one frame after mine, or halfway to the next key when that's closer. Confirm, or give the rule you want.
 

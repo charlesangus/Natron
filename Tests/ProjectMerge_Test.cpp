@@ -766,12 +766,14 @@ TEST_F(ProjectMergeTest, ARemovedNodeIsPlacedByItsNeighboursOffset)
     moveBy(nodeNamed("Blur1"), 500., 300.);
     moveBy(nodeNamed("Blur2"), 650., 300.);
     NodePtr blur3 = nodeNamed("Blur3");
-    const std::string blur3Id = blur3->getNodeId();
+    // A removed node has no live ID left to match, so the compare names it by its template ID.
+    const std::string blur3TemplateId = blur3->getOriginNode();
+    ASSERT_FALSE(blur3TemplateId.empty());
     blur3->destroyNode(true, false);
     blur3.reset();
 
     const ProjectMerge::ChangeSummary summary = compareWithBase();
-    const ProjectMerge::NodeChange* removed = summary.find(blur3Id);
+    const ProjectMerge::NodeChange* removed = summary.find(blur3TemplateId);
     ASSERT_NE(removed, nullptr);
     EXPECT_EQ(removed->kind, ProjectMerge::NodeChange::eRemoved);
     EXPECT_DOUBLE_EQ(removed->x, 0.);
@@ -810,7 +812,8 @@ TEST_F(ProjectMergeTest, NodesInAGroupUseTheGroupsOwnOffset)
     }
     NodePtr inner3 = nodeNamed("Look.Inner3");
     ASSERT_NE(inner3, nullptr);
-    const std::string inner3Id = inner3->getNodeId();
+    const std::string inner3TemplateId = inner3->getOriginNode();
+    ASSERT_FALSE(inner3TemplateId.empty());
     inner3->destroyNode(true, false);
     inner3.reset();
 
@@ -819,7 +822,7 @@ TEST_F(ProjectMergeTest, NodesInAGroupUseTheGroupsOwnOffset)
         EXPECT_FALSE(change.moved) << change.scriptName;
         EXPECT_FALSE(change.appearance) << change.scriptName;
     }
-    const ProjectMerge::NodeChange* removed = summary.find(inner3Id);
+    const ProjectMerge::NodeChange* removed = summary.find(inner3TemplateId);
     ASSERT_NE(removed, nullptr);
     EXPECT_EQ(removed->kind, ProjectMerge::NodeChange::eRemoved);
     EXPECT_DOUBLE_EQ(removed->placedX, 300. - 50.);

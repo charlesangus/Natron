@@ -126,19 +126,19 @@ A second paint model for `USDTexturePaint`: each dab of a stroke is splatted str
 
 ## Phase 315.4: Viewer, tests and GUI
 
-- [ ] M315.P4.T1 — 3D view in Direct: live texture, no bake on navigate, open-stroke overlay
+- [x] M315.P4.T1 — 3D view in Direct: live texture, no bake on navigate, open-stroke overlay
   - files: `Gui/SceneViewport.cpp`/`.h` (`refreshPaintOverlays`, `drawPaintOverlays`, `followPaintNode`)
   - approach: in Direct the open stroke's overlay is drawn as now until its pages are published, then cleared. Orbit, pan and zoom show no bake progress. The brush ring stays in view pixels. The layout still fits 1920x1080.
   - verify: the existing `m53_usd_texture_paint_overlay.py` passes, and a manual Xvfb run shows no progress line on orbit in Direct (screenshot in P4.T3).
   - size: M
 
-- [ ] M315.P4.T2 — Throughput and memory gtest for the hardware range (disabled by default)
+- [x] M315.P4.T2 — Throughput and memory gtest for the hardware range (disabled by default)
   - files: new `Tests/Scene/TexelSplatBench_Test.cpp`
   - approach: a `DISABLED_` gtest that paints a fixed 200-dab stroke over a procedurally subdivided mesh (about 1M triangles) at 4K and 8K tile resolution. It prints dabs per second at 1 thread and at all threads, peak page memory and index build time. No pass/fail on timing.
   - verify: the PM runs it once with `--gtest_also_run_disabled_tests` on the N100 and once on the many-core host and records the numbers in Decisions. Within the bench budget.
   - size: M
 
-- [ ] M315.P4.T3 — Xvfb GUI script: direct painting across a seam and a tile boundary
+- [x] M315.P4.T3 — Xvfb GUI script: direct painting across a seam and a tile boundary
   - files: new `Tests/gui/m315_direct_texel_paint.py` (modelled on `Tests/gui/m53_usd_texture_paint.py`)
   - approach: build USDRead(texture-paint-seam-cube.usda) into USDTexturePaint, with the panel open and Paint Model set to Direct. A left drag across the cube edge whose faces lie in 1001 and 1002 should change the output tiles without any orbit, waiting on bakeGeneration. Render tiles 1001 and 1002 through Write and check for red texels in both islands. Orbit and screenshot from the new angle. Undo the stroke and check that both tiles are clean. Paint one Buffer stroke after it to check that the models mix. Screenshots: before, after the stroke, orbited, and after undo, one file each.
   - verify: the script exits 0 under `Tests/gui/run-gui-test.sh` at 1920x1080 through `build.sh --gui`. The screenshots go to the user at F11's UAT.
@@ -156,3 +156,4 @@ A second paint model for `USDTexturePaint`: each dab of a stroke is splatted str
 - 2026-11-28 — Phase 1 in eb0d3d5c87 (m315-gate1 running). Embree 4.2.0 has rtcPointQuery/rtcOccluded16. Occluders: TextureProjection's depth buffer has no prim filter, so every drawn mesh occludes (not only matched meshes); PaintMeshIndex mirrors it — matched meshes are paint targets, all other drawn meshes only block. walk() also takes buildUp and opacity. PM: an occluder mesh that fails to triangulate is skipped with a warning rather than failing the index (fold into Phase 2).
 - 2026-11-28 — Phase 2 in 7b6b10988b (gate1 cancelled, m315-gate2 covers Phases 1–2). Choices: Sharpen is an unsharp mask (RotoPaint has no Sharpen formula) with Blur's sigma; Reveal samples the base at the texel; dab edge hard at the outer radius; a stroke's working pages stay in RAM until written (committed pages spill). Test thresholds (smear gain, blur symmetry, gutter indices) are hand-derived and may need tuning.
 - 2026-11-28 — Phase 3 in 39c9140515 (unbuilt). Follow-ups in flight with Phase 4: incremental live updates (only new dabs), baker as the only writer of working pages, no bake indication during Direct painting. Accepted limits: clone/reveal time offsets ignored in Direct; freezing a Direct session changes its cache key (rebuild from strokes).
+- 2026-11-28 — Phase 4 + Phase 3 follow-ups committed (incremental dabs, single-writer snapshot, no bake HUD in Direct). Gate after m315-gate2 (P1–2) reports. Known costs: snapshot keeps painted pages; each undo repaints once on a render thread before the baker catches up.

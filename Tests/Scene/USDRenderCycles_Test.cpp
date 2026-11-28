@@ -69,6 +69,7 @@
 #include <pxr/usd/usdGeom/points.h>
 
 #include "BaseTest.h"
+#include "CyclesTestUtils.h"
 
 #include "Engine/AppInstance.h"
 #include "Engine/AppManager.h"
@@ -1686,6 +1687,37 @@ TEST_F(USDRenderCyclesSubdivisionTest, DicingRateSetsTheFacetSize)
     // The coarse surface is a polygon inside the smooth one, so it covers less.
     EXPECT_LT(coverage(coarseRgba), coverage(fineRgba));
     EXPECT_LE(differingPixels(fineRgba, defaultRgba), differingPixels(coarseRgba, defaultRgba));
+}
+
+// Subdivision settings reach the delegate when Natron makes an engine under them, before its first
+// sync, which then subdivides and dices under them with no dirtying Hydra rejects under a scene
+// index. Natron makes an engine again under changed settings rather than changing a live one's.
+TEST_F(USDRenderCyclesSubdivisionTest, SubdivisionSettingsDirtyNothingHydraRejects)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const std::string cube = subdivisionCube("Cube", "catmullClark");
+    std::map<std::string, PXR_NS::VtValue> fine, coarse;
+    fine["natron:dicingRate"] = PXR_NS::VtValue(0.5f);
+    coarse["natron:dicingRate"] = PXR_NS::VtValue(8.f);
+    std::vector<float> fineRgba, coarseRgba;
+    std::string fineErrors, coarseErrors;
+    {
+        const CyclesTestUtils::CodingErrors errors;
+        ASSERT_TRUE(renderStage(cube, on(fine), &fineRgba));
+        fineErrors = errors.text();
+    }
+    {
+        const CyclesTestUtils::CodingErrors errors;
+        ASSERT_TRUE(renderStage(cube, on(coarse), &coarseRgba));
+        coarseErrors = errors.text();
+    }
+
+    EXPECT_FALSE(CyclesTestUtils::hasHydraDirtyingError(fineErrors)) << fineErrors;
+    EXPECT_FALSE(CyclesTestUtils::hasHydraDirtyingError(coarseErrors)) << coarseErrors;
+    EXPECT_GT(differingPixels(fineRgba, coarseRgba), 0u);
+    EXPECT_LT(coverage(coarseRgba), coverage(fineRgba));
 }
 
 // A cycles:max_level primvar of 1 coarsens its own mesh only, and cycles:dicing_rate scales the

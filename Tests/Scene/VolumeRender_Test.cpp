@@ -34,7 +34,6 @@
 #include <cstring>
 #include <functional>
 #include <map>
-#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -44,7 +43,6 @@
 #include <gtest/gtest.h>
 
 #include <pxr/base/plug/registry.h>
-#include <pxr/base/tf/diagnosticMgr.h>
 
 #include "CyclesTestUtils.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
@@ -318,51 +316,7 @@ struct Render {
     HydraRender::RenderTrace trace;
 };
 
-// The delegate's Hydra sync runs on threads with no TfErrorMark, so its coding errors reach only
-// the diagnostic manager's delegates.
-class CodingErrors
-    : public PXR_NS::TfDiagnosticMgr::Delegate {
-public:
-    CodingErrors()
-    {
-        PXR_NS::TfDiagnosticMgr::GetInstance().AddDelegate(this);
-    }
-
-    ~CodingErrors() override
-    {
-        PXR_NS::TfDiagnosticMgr::GetInstance().RemoveDelegate(this);
-    }
-
-    CodingErrors(const CodingErrors&) = delete;
-    CodingErrors& operator=(const CodingErrors&) = delete;
-
-    void IssueError(const PXR_NS::TfError& err) override
-    {
-        const std::lock_guard<std::mutex> lock(_mutex);
-        _text += err.GetSourceFunction() + ": " + err.GetCommentary() + "\n";
-    }
-
-    void IssueFatalError(const PXR_NS::TfCallContext&,
-                         const std::string&) override
-    {
-        _UnhandledAbort();
-    }
-
-    void IssueStatus(const PXR_NS::TfStatus&) override { }
-
-    void IssueWarning(const PXR_NS::TfWarning&) override { }
-
-    std::string text() const
-    {
-        const std::lock_guard<std::mutex> lock(_mutex);
-
-        return _text;
-    }
-
-private:
-    mutable std::mutex _mutex;
-    std::string _text;
-};
+using CyclesTestUtils::CodingErrors;
 
 // For a failure that may be a render the delegate cut short.
 std::string

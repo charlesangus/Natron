@@ -47,7 +47,7 @@
 
 #include "Serialization/SerializationFwd.h"
 
-// The promoted ports, in input order, space separated.
+// The shown ports, in input order, space separated.
 #define kNetworkNodeParamPorts "ports"
 // The output each input reads, as label=output entries; an input without one reads the first.
 #define kNetworkNodeParamInputOutputs "inputOutputs"
@@ -111,11 +111,11 @@ struct NetworkAttribute {
     double displayMinimum = 0.;
     bool hasDisplayMaximum = false;
     double displayMaximum = 1.;
-    // The attribute can be promoted to a port.
+    // The attribute can be shown as a port.
     bool linkable = false;
     // The attribute is always a port and has no knob.
     bool portOnly = false;
-    // promoted is false here: whether it is promoted is the node's state.
+    // shown is false here: whether it is shown is the node's state.
     PortDescriptor port;
 };
 
@@ -129,6 +129,9 @@ struct NetworkNodeLayout {
     std::string description;
     // A menu path whose levels are separated by '/'.
     std::string grouping;
+    // The submenu of its target's left toolbar button the node is listed in; empty lists it
+    // directly in the button's menu.
+    std::string category;
     std::vector<std::string> targets;
     std::vector<std::string> pages;
     std::vector<NetworkAttribute> attributes;
@@ -141,7 +144,7 @@ struct NetworkNodeLayout {
 /**
  * @brief The one class every network plug-in builds: a node of a port network (shaders,
  * kernels, channels), reading its layout from its plug-in ID. Every attribute with a value is a
- * knob; the promoted ones are also inputs, in the order of the ports knob, and the output each
+ * knob; the shown ones are also inputs, in the order of the ports knob, and the output each
  * input reads is named on the downstream node. A network node joins network nodes only and is
  * never rendered: what reads the network walks it.
  **/
@@ -218,7 +221,7 @@ public:
     }
 
     /**
-     * @brief The promoted ports, in input order. Any thread.
+     * @brief The shown ports, in input order. Any thread.
      **/
     std::vector<std::string> getPorts() const;
 
@@ -226,7 +229,7 @@ public:
 
     /**
      * @brief The descriptor of every attribute that can be a port, in layout order, each with its
-     * promoted state.
+     * shown state.
      **/
     std::vector<PortDescriptor> getPortDescriptors() const;
 
@@ -242,13 +245,13 @@ public:
      * @brief Adds attribute to the ports, after the others. False, changing nothing, when it is
      * not a linkable attribute. Main thread.
      **/
-    bool promotePort(const std::string& attribute);
+    bool showPort(const std::string& attribute);
 
     /**
      * @brief Removes attribute from the ports, disconnecting it. False, changing nothing, for a
      * port-only attribute or one that is not an attribute. Main thread.
      **/
-    bool demotePort(const std::string& attribute);
+    bool hidePort(const std::string& attribute);
 
     /**
      * @brief The script name of the knob of attribute: the attribute's name, with every character
@@ -261,12 +264,12 @@ public:
      **/
     KnobIPtr getAttributeKnob(const std::string& attribute) const;
 
-    static bool canPromote(const NetworkAttribute& attribute)
+    static bool canShowPort(const NetworkAttribute& attribute)
     {
         return attribute.linkable;
     }
 
-    static bool canDemote(const NetworkAttribute& attribute)
+    static bool canHidePort(const NetworkAttribute& attribute)
     {
         return attribute.linkable && !attribute.portOnly;
     }
@@ -284,7 +287,7 @@ public:
 
     /**
      * @brief Whether input inputLabel of downstream may read output outputName of upstream: the
-     * nodes must share a target, the output must exist, the input must be a promoted port, and
+     * nodes must share a target, the output must exist, the input must be a shown port, and
      * canConnectPorts() must accept the two. *reason, if given, receives why a refused
      * connection is refused.
      **/
@@ -432,30 +435,30 @@ private:
 };
 
 /**
- * @brief The NetworkEditPortsCommand that promotes (or demotes) attribute of node. False when node
- * is not a network node or attribute cannot be promoted (or demoted); command is then null, and
+ * @brief The NetworkEditPortsCommand that shows (or hides) attribute of node. False when node
+ * is not a network node or attribute cannot be shown (or hidden); command is then null, and
  * also when attribute already is (or is not) a port.
  **/
 bool makeNetworkPortCommand(const NodePtr& node,
                             const std::string& attribute,
-                            bool promote,
+                            bool show,
                             UndoCommandPtr* command);
 
 /**
- * @brief Promotes attribute of node, a network node, through a NetworkEditPortsCommand pushed on
+ * @brief Shows attribute of node, a network node, through a NetworkEditPortsCommand pushed on
  * node. True when attribute is then a port; false, pushing nothing, when node is not a network
  * node or attribute is not linkable. Main thread.
  **/
-bool promoteNetworkPort(const NodePtr& node,
-                        const std::string& attribute);
+bool showNetworkPort(const NodePtr& node,
+                     const std::string& attribute);
 
 /**
- * @brief Demotes attribute of node, a network node, through a NetworkEditPortsCommand pushed on
+ * @brief Hides attribute of node, a network node, through a NetworkEditPortsCommand pushed on
  * node, disconnecting it. True when attribute is then not a port; false, pushing nothing, when
  * node is not a network node or attribute is port-only or not an attribute. Main thread.
  **/
-bool demoteNetworkPort(const NodePtr& node,
-                       const std::string& attribute);
+bool hideNetworkPort(const NodePtr& node,
+                     const std::string& attribute);
 
 std::string networkJoinPorts(const std::vector<std::string>& ports);
 

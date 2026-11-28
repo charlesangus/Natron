@@ -49,6 +49,8 @@ NATRON_NAMESPACE_ENTER
 
 class PortListLayout;
 class PortNodeBody;
+class PortNodeSelection;
+class PortNodeTitle;
 class PortItem;
 
 // The data() keys a port item holds: its side ("input" or "output"), its port name and the fully
@@ -58,6 +60,10 @@ class PortItem;
 #define kPortItemDataNode 2
 // "dimmed", "halo" or empty: how the port is highlighted while a pipe is dragged.
 #define kPortItemDataHighlight 3
+// The kPortItemDataSide of the node's title item, whose kPortItemDataName is the text it draws.
+#define kPortNodeTitleSide "title"
+// The kPortItemDataSide of the node's selection outline.
+#define kPortNodeSelectionSide "selection"
 
 enum PortHighlightEnum {
     ePortHighlightNone,
@@ -65,6 +71,25 @@ enum PortHighlightEnum {
     ePortHighlightDimmed,
     // A dragged pipe can connect to the port.
     ePortHighlightHalo,
+};
+
+/**
+ * @brief How a selected port node is drawn, from the environment variable
+ * NATRON_PORT_SELECTION_STYLE: its number or name, the inset look for anything else. A switch to
+ * compare the looks side by side; the port positions follow it, so a node built before a change
+ * keeps its geometry until it is rebuilt.
+ **/
+enum PortSelectionStyleEnum {
+    // "inset": the ports sit inside the body, and an outline hugs the body's edge.
+    ePortSelectionStyleInset = 1,
+    // "broken": an outline on the body's edge, cut around each port.
+    ePortSelectionStyleBroken = 2,
+    // "header": the header in the selection colour, with a thin border on the body's edge.
+    ePortSelectionStyleHeader = 3,
+    // "halo": a soft glow around the body, under the ports.
+    ePortSelectionStyleHalo = 4,
+    // "outside": an outline around the body far enough out to clear the ports.
+    ePortSelectionStyleOutside = 5,
 };
 
 /**
@@ -77,6 +102,9 @@ struct PortNodeRow {
     // The knob the port's value lives in when it is not connected; null for a port-only
     // attribute or an output.
     KnobIPtr knob;
+    // Where the row is drawn, counted from the top. Inputs are listed in input order, which
+    // follows the order ports were shown in, but drawn in the order of the node's attributes.
+    int row = 0;
 };
 
 /**
@@ -118,8 +146,28 @@ public:
 
     void clearPortHighlights();
 
+    // The row input inputNb is drawn on.
+    int getInputRow(int inputNb) const;
+
+    // The node's name as the header shows it, before eliding.
+    QString getTitleText() const;
+
+    // The hidden name item, whose font and colour the header's title takes.
+    using NodeGui::getNameItem;
+
     // The height of the header the rows start under.
     double getHeaderHeight() const;
+
+    static PortSelectionStyleEnum selectionStyle();
+
+    // How far inside the body's sides the port centres sit.
+    static double portInset();
+
+    // Whether the output at outputIndex feeds some input of a node downstream.
+    bool isOutputConnected(int outputIndex) const;
+
+    // Repaints the body, for a change drawn on it from elsewhere, such as a pipe to an output.
+    void updateBody();
 
     // Whether the node stands in for a network node whose plug-in is missing.
     bool isMissingPlugin() const;
@@ -164,6 +212,20 @@ private:
 
     virtual void applyBrush(const QBrush& brush) OVERRIDE FINAL;
 
+    virtual bool showsSelectionInStateIndicator() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
+    virtual void selectionLookChanged(bool selected) OVERRIDE FINAL;
+
+    void refreshTitle();
+
+    void refreshSelectionGeometry();
+
+    // How far outside the body the widest of the node's ports reaches.
+    double portOverhang() const;
+
     void computeSize(int* w, int* h) const;
 
     void connectPortKnobs();
@@ -179,11 +241,15 @@ private:
     PortListLayout* portLayout() const;
 
     PortNodeBody* _body;
+    PortNodeTitle* _title;
+    PortNodeSelection* _selection;
     std::vector<PortItem*> _portItems;
     std::vector<PortNodeRow> _inputs;
     std::vector<PortNodeRow> _outputs;
     std::vector<QColor> _targetColors;
     std::vector<QMetaObject::Connection> _knobConnections;
+    // The node each input read when last drawn, whose output pipe stub may need redrawing.
+    std::vector<NodeWPtr> _drawnUpstreams;
     QColor _headerColor;
     double _inputLabelWidth;
     double _outputLabelWidth;

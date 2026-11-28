@@ -520,7 +520,7 @@ NetworkNode::sanitizePorts(const std::vector<std::string>& ports) const
 
     for (const std::string& port : ports) {
         const NetworkAttribute* attribute = findAttribute(port);
-        if (attribute && canPromote(*attribute) && seen.insert(port).second) {
+        if (attribute && canShowPort(*attribute) && seen.insert(port).second) {
             ret.push_back(port);
         }
     }
@@ -542,7 +542,7 @@ NetworkNode::publishSpec(const std::vector<std::string>& ports)
         storage->labels.push_back(port);
         const NetworkAttribute* attribute = findAttribute(port);
         PortDescriptor descriptor = attribute ? attribute->port : PortDescriptor();
-        descriptor.promoted = true;
+        descriptor.shown = true;
         storage->ports.push_back(descriptor);
     }
     _current.store(std::move(storage), std::memory_order_release);
@@ -613,7 +613,7 @@ NetworkNode::getPortDescriptors() const
             continue;
         }
         PortDescriptor descriptor = attribute.port;
-        descriptor.promoted = std::find(ports.begin(), ports.end(), attribute.name) != ports.end();
+        descriptor.shown = std::find(ports.begin(), ports.end(), attribute.name) != ports.end();
         ret.push_back(descriptor);
     }
 
@@ -682,11 +682,11 @@ NetworkNode::setPorts(const std::vector<std::string>& ports)
 }
 
 bool
-NetworkNode::promotePort(const std::string& name)
+NetworkNode::showPort(const std::string& name)
 {
     const NetworkAttribute* attribute = findAttribute(name);
 
-    if (!attribute || !canPromote(*attribute)) {
+    if (!attribute || !canShowPort(*attribute)) {
         return false;
     }
     std::vector<std::string> ports = getPorts();
@@ -699,11 +699,11 @@ NetworkNode::promotePort(const std::string& name)
 }
 
 bool
-NetworkNode::demotePort(const std::string& name)
+NetworkNode::hidePort(const std::string& name)
 {
     const NetworkAttribute* attribute = findAttribute(name);
 
-    if (!attribute || !canDemote(*attribute)) {
+    if (!attribute || !canHidePort(*attribute)) {
         return false;
     }
     std::vector<std::string> ports = getPorts();
@@ -1209,34 +1209,34 @@ NetworkEditPortsCommand::undo()
 bool
 makeNetworkPortCommand(const NodePtr& node,
                        const std::string& attribute,
-                       bool promote,
+                       bool show,
                        UndoCommandPtr* command)
 {
     NetworkNode* effect = node ? dynamic_cast<NetworkNode*>(node->getEffectInstance().get()) : nullptr;
     const NetworkAttribute* found = effect ? effect->findAttribute(attribute) : nullptr;
 
     command->reset();
-    if (!found || !(promote ? NetworkNode::canPromote(*found) : NetworkNode::canDemote(*found))) {
+    if (!found || !(show ? NetworkNode::canShowPort(*found) : NetworkNode::canHidePort(*found))) {
         return false;
     }
     std::vector<std::string> ports = effect->getPorts();
     const std::vector<std::string>::iterator it = std::find(ports.begin(), ports.end(), attribute);
-    if (promote == (it != ports.end())) {
+    if (show == (it != ports.end())) {
         return true;
     }
-    if (promote) {
+    if (show) {
         ports.push_back(attribute);
     } else {
         ports.erase(it);
     }
-    *command = std::make_shared<NetworkEditPortsCommand>(node, ports, (promote ? "Promote " : "Demote ") + found->label);
+    *command = std::make_shared<NetworkEditPortsCommand>(node, ports, (show ? "Show Port " : "Hide Port ") + found->label);
 
     return true;
 }
 
 bool
-promoteNetworkPort(const NodePtr& node,
-                   const std::string& attribute)
+showNetworkPort(const NodePtr& node,
+                const std::string& attribute)
 {
     UndoCommandPtr command;
 
@@ -1251,8 +1251,8 @@ promoteNetworkPort(const NodePtr& node,
 }
 
 bool
-demoteNetworkPort(const NodePtr& node,
-                  const std::string& attribute)
+hideNetworkPort(const NodePtr& node,
+                const std::string& attribute)
 {
     UndoCommandPtr command;
 

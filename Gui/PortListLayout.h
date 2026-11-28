@@ -41,8 +41,9 @@ class NetworkNode;
 
 /**
  * @brief The layout of a network node: one row per port under a header, input ports down the
- * left side in input order and named outputs down the right side in the order the node lists
- * them. Edges leave and reach a port horizontally, and end on the port itself.
+ * left side in the order of the node's attributes and named outputs down the right side in the order the node lists
+ * them, PortNodeGui::portInset() inside the body's sides. Edges leave and reach a port
+ * horizontally, and end on the port itself.
  **/
 class PortListLayout
     : public ConnectorLayout {

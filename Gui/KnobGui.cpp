@@ -313,8 +313,8 @@ networkNodeOf(const KnobIPtr& knob)
 
 // Ramp attributes share one knob, so a knob holding several attributes has no single port to toggle.
 std::string
-promotableAttributeOf(const NetworkNode& network,
-                      const KnobIPtr& knob)
+portAttributeOf(const NetworkNode& network,
+                const KnobIPtr& knob)
 {
     std::string found;
 
@@ -322,7 +322,7 @@ promotableAttributeOf(const NetworkNode& network,
         if ((network.getAttributeKnob(attribute.name) != knob)) {
             continue;
         }
-        if (!found.empty() || !NetworkNode::canDemote(attribute)) {
+        if (!found.empty() || !NetworkNode::canHidePort(attribute)) {
             return std::string();
         }
         found = attribute.name;
@@ -352,7 +352,7 @@ KnobGui::createNetworkPortButton(QHBoxLayout* layout,
     if (!network) {
         return;
     }
-    const std::string attribute = promotableAttributeOf(*network, knob);
+    const std::string attribute = portAttributeOf(*network, knob);
     NodePtr node = network->getNode();
     if (attribute.empty() || !node) {
         return;
@@ -366,7 +366,7 @@ KnobGui::createNetworkPortButton(QHBoxLayout* layout,
     _imp->networkPortButton = button;
     layout->addWidget(button);
     QObject::connect(button, &QPushButton::clicked, this, [this]() { toggleNetworkPort(); });
-    // Promoting, demoting and their undo all rebuild the node's inputs.
+    // Showing, hiding and their undo all rebuild the node's inputs.
     QObject::connect(node.get(), &Node::inputsInitialized, this, [this]() { refreshNetworkPortButton(); });
     refreshNetworkPortButton();
 }
@@ -380,13 +380,13 @@ KnobGui::refreshNetworkPortButton()
     if (!button || !network) {
         return;
     }
-    const bool promoted = portIndexOf(*network, _imp->networkPortAttribute) >= 0;
+    const bool shown = portIndexOf(*network, _imp->networkPortAttribute) >= 0;
     button->blockSignals(true);
-    button->setChecked(promoted);
+    button->setChecked(shown);
     button->blockSignals(false);
-    button->setText(promoted ? QString(QChar(0x25CF)) : QString(QChar(0x25CB)));
-    button->setToolTip(promoted ? tr("Demote: the parameter is no longer an input of the node.")
-                                : tr("Promote: the parameter becomes an input of the node, which a connection can drive."));
+    button->setText(shown ? QString(QChar(0x25CF)) : QString(QChar(0x25CB)));
+    button->setToolTip(shown ? tr("Hide Port: the parameter is no longer an input of the node.")
+                             : tr("Show Port: the parameter becomes an input of the node, which a connection can drive."));
 }
 
 void
@@ -403,11 +403,11 @@ KnobGui::toggleNetworkPort()
     }
     const int index = portIndexOf(*network, _imp->networkPortAttribute);
     if (index < 0) {
-        promoteNetworkPort(node, _imp->networkPortAttribute);
+        showNetworkPort(node, _imp->networkPortAttribute);
     } else {
         if (node->getInput(index)) {
-            const StandardButtonEnum reply = Dialogs::questionDialog(tr("Demote %1").arg(QString::fromUtf8(knob->getLabel().c_str())).toStdString(),
-                                                                     tr("%1 is connected. Demoting it removes the connection.").arg(QString::fromUtf8(knob->getLabel().c_str())).toStdString(),
+            const StandardButtonEnum reply = Dialogs::questionDialog(tr("Hide Port: %1").arg(QString::fromUtf8(knob->getLabel().c_str())).toStdString(),
+                                                                     tr("%1 is connected. Hiding it removes the connection.").arg(QString::fromUtf8(knob->getLabel().c_str())).toStdString(),
                                                                      false,
                                                                      StandardButtons(eStandardButtonYes | eStandardButtonNo),
                                                                      eStandardButtonNo);
@@ -417,7 +417,7 @@ KnobGui::toggleNetworkPort()
                 return;
             }
         }
-        demoteNetworkPort(node, _imp->networkPortAttribute);
+        hideNetworkPort(node, _imp->networkPortAttribute);
     }
     refreshNetworkPortButton();
 }

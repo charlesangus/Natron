@@ -378,9 +378,9 @@ def audit_node(effect, renderer, node, node_layout):
         else:
             problems += audit_knob(prefix, param, expected)
         if expected["linkable"] and expected["name"] not in port_attributes:
-            problems.append("missing " + prefix + ": linkable but cannot be promoted")
+            problems.append("missing " + prefix + ": linkable but cannot be shown")
         if not expected["linkable"] and expected["name"] in port_attributes:
-            problems.append(prefix + ": not linkable but can be promoted")
+            problems.append(prefix + ": not linkable but can be shown")
     for port in default_ports(node, node_layout):
         if port not in ports:
             problems.append("missing {} {}.{}: not a port of a new node".format(renderer, shader_id, port))

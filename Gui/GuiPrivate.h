@@ -30,6 +30,7 @@
 
 #include <list>
 #include <map>
+#include <string>
 #include <vector>
 
 CLANG_DIAG_OFF(deprecated)
@@ -197,6 +198,9 @@ public:
     /// the toolbox's buttons, one per grouping of the nodes menu
     std::vector<QAction*> _nodesToolBoxActions;
 
+    // What the toolbox's buttons were built for; see nodesToolBoxContext().
+    std::string _nodesToolBoxContext;
+
     ///holds the properties dock
     PropertiesBinWrapper *_propertiesBin;
     QScrollArea* _propertiesScrollArea;
@@ -283,7 +287,18 @@ public:
 
     void addToolButton(QAction* groupingMenuAction);
 
+    QToolButton* addToolButton(const QIcon& icon, const QString& label);
+
+    // Adds a button per target listing its network node types by category, and one for Backdrop.
+    void addNetworkToolButtons(const std::vector<std::string>& targets);
+
+    // Empty for the nodes menu's buttons; otherwise names the targets of the builder whose graph
+    // was last selected, which it writes to *targets.
+    std::string nodesToolBoxContext(std::vector<std::string>* targets) const;
+
     void rebuildNodesToolBox();
+
+    void refreshNodesToolBoxContext();
 
     ///Creates the properties bin and appends it as a tab to the propertiesPane TabWidget
     void createPropertiesBinGui();

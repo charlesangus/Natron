@@ -105,7 +105,7 @@ millisecondsSince(std::chrono::steady_clock::time_point start)
 
 } // namespace
 
-TEST_F(ShaderNodeInputsTest, TheRuntimeSpecNamesThePromotedPorts)
+TEST_F(ShaderNodeInputsTest, TheRuntimeSpecNamesTheShownPorts)
 {
     NodePtr bsdf = create("PrincipledBsdf");
     ASSERT_TRUE(bool(bsdf));
@@ -284,7 +284,7 @@ TEST_F(ShaderNodeInputsTest, SettingThePortsKnobEditsTheInputs)
     EXPECT_TRUE(map->getOutputs().empty());
 }
 
-TEST_F(ShaderNodeInputsTest, CyclesAreRefusedOnPromotedPorts)
+TEST_F(ShaderNodeInputsTest, CyclesAreRefusedOnShownPorts)
 {
     NodePtr mapA = create("Map");
     NodePtr mapB = create("Map");
@@ -300,7 +300,7 @@ TEST_F(ShaderNodeInputsTest, CyclesAreRefusedOnPromotedPorts)
     EXPECT_EQ(mapA, portInput(mapB, "float0"));
 }
 
-TEST_F(ShaderNodeInputsTest, SaveAndLoadRestorePromotedPortsAndConnections)
+TEST_F(ShaderNodeInputsTest, SaveAndLoadRestoreShownPortsAndConnections)
 {
     ProjectPtr project = getApp()->getProject();
     NodePtr group = createEmptyGroup(getApp());

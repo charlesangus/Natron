@@ -632,7 +632,7 @@ Effect::getPortAttributes() const
 static bool
 editNetworkPortFromPython(const NodePtr& node,
                           const QString& attribute,
-                          bool promote)
+                          bool show)
 {
     NetworkNode* effect = networkEffectOf(node);
 
@@ -643,7 +643,7 @@ editNetworkPortFromPython(const NodePtr& node,
         return false;
     }
     UndoCommandPtr command;
-    if (!makeNetworkPortCommand(node, attribute.toStdString(), promote, &command)) {
+    if (!makeNetworkPortCommand(node, attribute.toStdString(), show, &command)) {
         return false;
     }
     runPythonUndoCommand(node, command);
@@ -652,13 +652,13 @@ editNetworkPortFromPython(const NodePtr& node,
 }
 
 bool
-Effect::promotePort(const QString& attribute)
+Effect::showPort(const QString& attribute)
 {
     return editNetworkPortFromPython(getInternalNode(), attribute, true);
 }
 
 bool
-Effect::demotePort(const QString& attribute)
+Effect::hidePort(const QString& attribute)
 {
     return editNetworkPortFromPython(getInternalNode(), attribute, false);
 }

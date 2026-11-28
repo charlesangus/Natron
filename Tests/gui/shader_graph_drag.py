@@ -108,9 +108,9 @@ try:
                 return i
         return -1
 
-    def promote(node, port):
+    def show(node, port):
         if port not in list(node.getPorts()):
-            gt.require(node.promotePort(port), "promote %s.%s" % (node.getScriptName(), port))
+            gt.require(node.showPort(port), "show %s.%s" % (node.getScriptName(), port))
 
     def input_source(dest, port):
         index = input_index(dest, port)
@@ -183,9 +183,9 @@ try:
         bsdf = create(BSDF, 400, 0, builder)
         tinted = create(BSDF, 400, 300, builder)
         for port in ("base_color", "alpha", "roughness"):
-            promote(bsdf, port)
-        promote(tinted, "base_color")
-        promote(math, "value1")
+            show(bsdf, port)
+        show(tinted, "base_color")
+        show(math, "value1")
         yield ("sleep", SETTLE_MS)
         graph = graph_of(builder)
         gt.require(graph is not None, "the builder's graph is still up")

@@ -121,7 +121,7 @@ public:
     std::vector<UndoCommandPtr> commands;
 };
 
-class ShaderPromoteTest
+class ShaderShowPortTest
     : public BaseTest {
 protected:
     virtual void SetUp() OVERRIDE
@@ -144,7 +144,7 @@ protected:
 
 } // namespace
 
-TEST_F(ShaderPromoteTest, APromotedConnectedPortSurvivesASaveAndLoad)
+TEST_F(ShaderShowPortTest, AShownConnectedPortSurvivesASaveAndLoad)
 {
     ProjectPtr project = getApp()->getProject();
     NodePtr bsdf = create(kPrincipledBsdf);
@@ -152,7 +152,7 @@ TEST_F(ShaderPromoteTest, APromotedConnectedPortSurvivesASaveAndLoad)
 
     ASSERT_TRUE(bsdf && texture);
     ASSERT_FALSE(hasPort(bsdf, "specular_tint"));
-    ASSERT_TRUE(promoteNetworkPort(bsdf, "specular_tint"));
+    ASSERT_TRUE(showNetworkPort(bsdf, "specular_tint"));
     ASSERT_TRUE(hasPort(bsdf, "specular_tint"));
     const int input = bsdf->getInputNumberFromLabel("specular_tint");
     ASSERT_GE(input, 0);
@@ -168,14 +168,14 @@ TEST_F(ShaderPromoteTest, APromotedConnectedPortSurvivesASaveAndLoad)
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
     std::string yaml;
-    ASSERT_TRUE(saveProjectBundle(project, tmp, QString::fromUtf8("promote.ntpz"), &yaml));
+    ASSERT_TRUE(saveProjectBundle(project, tmp, QString::fromUtf8("show.ntpz"), &yaml));
 
     knob.reset();
     bsdf.reset();
     texture.reset();
     project->reset(false, true);
 
-    ASSERT_TRUE(project->loadProject(tmp.path() + QLatin1Char('/'), QString::fromUtf8("promote.ntpz")));
+    ASSERT_TRUE(project->loadProject(tmp.path() + QLatin1Char('/'), QString::fromUtf8("show.ntpz")));
     NodePtr bsdf2 = getApp()->getNodeByFullySpecifiedName(bsdfName);
     NodePtr texture2 = getApp()->getNodeByFullySpecifiedName(textureName);
     ASSERT_TRUE(bsdf2 && texture2);
@@ -194,7 +194,7 @@ TEST_F(ShaderPromoteTest, APromotedConnectedPortSurvivesASaveAndLoad)
     }
 }
 
-TEST_F(ShaderPromoteTest, ALinkedKnobStaysDisabledWhenItsPortIsDisconnected)
+TEST_F(ShaderShowPortTest, ALinkedKnobStaysDisabledWhenItsPortIsDisconnected)
 {
     NodePtr master = create(kPrincipledBsdf);
     NodePtr bsdf = create(kPrincipledBsdf);
@@ -218,7 +218,7 @@ TEST_F(ShaderPromoteTest, ALinkedKnobStaysDisabledWhenItsPortIsDisconnected)
     }
 }
 
-TEST_F(ShaderPromoteTest, ALinkedShaderKnobSurvivesASaveAndLoadAlongsideItsPort)
+TEST_F(ShaderShowPortTest, ALinkedShaderKnobSurvivesASaveAndLoadAlongsideItsPort)
 {
     ProjectPtr project = getApp()->getProject();
     NodePtr master = create(kPrincipledBsdf);
@@ -296,7 +296,7 @@ TEST_F(ShaderPromoteTest, ALinkedShaderKnobSurvivesASaveAndLoadAlongsideItsPort)
     }
 }
 
-TEST_F(ShaderPromoteTest, DemotingAConnectedPortDisconnectsItAndEnablesItsKnob)
+TEST_F(ShaderShowPortTest, HidingAConnectedPortDisconnectsItAndEnablesItsKnob)
 {
     NodePtr bsdf = create(kPrincipledBsdf);
     NodePtr texture = create(kImageTexture);
@@ -311,7 +311,7 @@ TEST_F(ShaderPromoteTest, DemotingAConnectedPortDisconnectsItAndEnablesItsKnob)
     EXPECT_FALSE(knob->isEnabled(0));
 
     const int inputsBefore = bsdf->getNInputs();
-    ASSERT_TRUE(demoteNetworkPort(bsdf, "base_color"));
+    ASSERT_TRUE(hideNetworkPort(bsdf, "base_color"));
     EXPECT_FALSE(hasPort(bsdf, "base_color"));
     EXPECT_EQ(-1, bsdf->getInputNumberFromLabel("base_color"));
     EXPECT_EQ(inputsBefore - 1, bsdf->getNInputs());
@@ -321,27 +321,27 @@ TEST_F(ShaderPromoteTest, DemotingAConnectedPortDisconnectsItAndEnablesItsKnob)
     EXPECT_TRUE(knob->isEnabled(0));
 }
 
-TEST_F(ShaderPromoteTest, KnobOnlyAttributesRefusePromotionAndPortOnlyOnesRefuseDemotion)
+TEST_F(ShaderShowPortTest, KnobOnlyAttributesRefuseShowingAndPortOnlyOnesRefuseHiding)
 {
     NodePtr bsdf = create(kPrincipledBsdf);
     NodePtr mix = create(kMixClosure);
 
     ASSERT_TRUE(bsdf && mix);
     const std::vector<std::string> bsdfPorts = shaderEffect(bsdf)->getPorts();
-    EXPECT_FALSE(promoteNetworkPort(bsdf, "distribution"));
-    EXPECT_FALSE(promoteNetworkPort(bsdf, "no_such_attribute"));
+    EXPECT_FALSE(showNetworkPort(bsdf, "distribution"));
+    EXPECT_FALSE(showNetworkPort(bsdf, "no_such_attribute"));
     EXPECT_EQ(bsdfPorts, shaderEffect(bsdf)->getPorts());
     EXPECT_TRUE(bool(bsdf->getKnobByName("distribution")));
 
     const std::vector<std::string> mixPorts = shaderEffect(mix)->getPorts();
-    EXPECT_FALSE(demoteNetworkPort(mix, "closure1"));
-    EXPECT_FALSE(demoteNetworkPort(mix, "closure2"));
+    EXPECT_FALSE(hideNetworkPort(mix, "closure1"));
+    EXPECT_FALSE(hideNetworkPort(mix, "closure2"));
     EXPECT_EQ(mixPorts, shaderEffect(mix)->getPorts());
     EXPECT_GE(mix->getInputNumberFromLabel("closure1"), 0);
     EXPECT_GE(mix->getInputNumberFromLabel("closure2"), 0);
 }
 
-TEST_F(ShaderPromoteTest, UndoRestoresPortsConnectionsAndOutputs)
+TEST_F(ShaderShowPortTest, UndoRestoresPortsConnectionsAndOutputs)
 {
     NodePtr bsdf = create(kPrincipledBsdf);
     NodePtr texture = create(kImageTexture);
@@ -378,7 +378,7 @@ TEST_F(ShaderPromoteTest, UndoRestoresPortsConnectionsAndOutputs)
     EXPECT_EQ(after, effect->getPorts());
 }
 
-TEST_F(ShaderPromoteTest, PythonPromotesAndDemotesByScriptName)
+TEST_F(ShaderShowPortTest, PythonShowsAndHidesByScriptName)
 {
     NodePtr bsdf = create(kPrincipledBsdf);
 
@@ -389,18 +389,18 @@ TEST_F(ShaderPromoteTest, PythonPromotesAndDemotesByScriptName)
                                             "    raise RuntimeError('already a port')\n"
                                             "if 'specular_tint' not in node.getPortAttributes():\n"
                                             "    raise RuntimeError('not a port attribute')\n"
-                                            "if not node.promotePort('specular_tint'):\n"
-                                            "    raise RuntimeError('promote refused')\n"
+                                            "if not node.showPort('specular_tint'):\n"
+                                            "    raise RuntimeError('show refused')\n"
                                             "if node.getPorts()[-1] != 'specular_tint':\n"
                                             "    raise RuntimeError('not appended')\n"
-                                            "if node.promotePort('distribution'):\n"
-                                            "    raise RuntimeError('knob-only attribute promoted')\n"
+                                            "if node.showPort('distribution'):\n"
+                                            "    raise RuntimeError('knob-only attribute shown')\n"
                                             "if not node.setOutputForInput('specular_tint', 'alpha'):\n"
                                             "    raise RuntimeError('output refused')\n"
                                             "if node.getOutputForInput('specular_tint') != 'alpha':\n"
                                             "    raise RuntimeError('output not kept')\n"
-                                            "if not node.demotePort('base_color'):\n"
-                                            "    raise RuntimeError('demote refused')\n"
+                                            "if not node.hidePort('base_color'):\n"
+                                            "    raise RuntimeError('hide refused')\n"
                                             "if 'base_color' in node.getPorts():\n"
                                             "    raise RuntimeError('still a port')\n";
     std::string error;
@@ -412,10 +412,10 @@ TEST_F(ShaderPromoteTest, PythonPromotesAndDemotesByScriptName)
     EXPECT_FALSE(hasPort(bsdf, "base_color"));
 }
 
-// Promoting and demoting through Python, with the demoted port connected, records one step whose
+// Showing and hiding through Python, with the hidden port connected, records one step whose
 // undo brings back the ports, the connection and the output the input read, and whose redo
 // removes them again.
-TEST_F(ShaderPromoteTest, PythonPortEditsUndoThroughTheUndoHistory)
+TEST_F(ShaderShowPortTest, PythonPortEditsUndoThroughTheUndoHistory)
 {
     NodePtr bsdf = create(kPrincipledBsdf);
     NodePtr texture = create(kImageTexture);
@@ -437,10 +437,10 @@ TEST_F(ShaderPromoteTest, PythonPortEditsUndoThroughTheUndoHistory)
     {
         UndoStepGuard step(getApp(), "test");
         ASSERT_TRUE(interpretPythonScript("node = " + node + "\n"
-                                                             "if not node.promotePort('specular_tint'):\n"
-                                                             "    raise RuntimeError('promote refused')\n"
-                                                             "if not node.demotePort('base_color'):\n"
-                                                             "    raise RuntimeError('demote refused')\n",
+                                                             "if not node.showPort('specular_tint'):\n"
+                                                             "    raise RuntimeError('show refused')\n"
+                                                             "if not node.hidePort('base_color'):\n"
+                                                             "    raise RuntimeError('hide refused')\n",
                                           &error, &output))
             << error;
     }
@@ -480,9 +480,9 @@ TEST_F(ShaderPromoteTest, PythonPortEditsUndoThroughTheUndoHistory)
     getApp()->setUndoRecorder(UndoRecorderPtr());
 }
 
-// What promoteNetworkPort() and demoteNetworkPort() push on the node; with no window there is no
+// What showNetworkPort() and hideNetworkPort() push on the node; with no window there is no
 // history, so the test undoes the pushed command itself.
-TEST_F(ShaderPromoteTest, AConnectedDemoteAndPromoteUndoThroughTheirCommand)
+TEST_F(ShaderShowPortTest, AConnectedHideAndShowUndoThroughTheirCommand)
 {
     NodePtr bsdf = create(kPrincipledBsdf);
     NodePtr texture = create(kImageTexture);
@@ -494,28 +494,28 @@ TEST_F(ShaderPromoteTest, AConnectedDemoteAndPromoteUndoThroughTheirCommand)
     effect->setOutputForInput("base_color", "alpha");
     const std::vector<std::string> before = effect->getPorts();
 
-    UndoCommandPtr demote;
-    ASSERT_TRUE(makeNetworkPortCommand(bsdf, "base_color", false, &demote));
-    ASSERT_TRUE(bool(demote));
-    bsdf->pushUndoCommand(demote);
+    UndoCommandPtr hide;
+    ASSERT_TRUE(makeNetworkPortCommand(bsdf, "base_color", false, &hide));
+    ASSERT_TRUE(bool(hide));
+    bsdf->pushUndoCommand(hide);
     EXPECT_FALSE(hasPort(bsdf, "base_color"));
     EXPECT_TRUE(texture->getOutputs().empty());
     EXPECT_TRUE(bsdf->getKnobByName("base_color")->isEnabled(0));
-    demote->undo();
+    hide->undo();
     EXPECT_EQ(before, effect->getPorts());
     EXPECT_EQ(texture, bsdf->getInput(bsdf->getInputNumberFromLabel("base_color")));
     EXPECT_EQ(std::string("alpha"), effect->getOutputForInput("base_color"));
     EXPECT_FALSE(bsdf->getKnobByName("base_color")->isEnabled(0));
 
-    UndoCommandPtr promote;
-    ASSERT_TRUE(makeNetworkPortCommand(bsdf, "specular_tint", true, &promote));
-    ASSERT_TRUE(bool(promote));
-    bsdf->pushUndoCommand(promote);
+    UndoCommandPtr show;
+    ASSERT_TRUE(makeNetworkPortCommand(bsdf, "specular_tint", true, &show));
+    ASSERT_TRUE(bool(show));
+    bsdf->pushUndoCommand(show);
     const int specularTint = bsdf->getInputNumberFromLabel("specular_tint");
     ASSERT_GE(specularTint, 0);
     ASSERT_TRUE(bsdf->connectInput(texture, specularTint));
     EXPECT_FALSE(bsdf->getKnobByName("specular_tint")->isEnabled(0));
-    promote->undo();
+    show->undo();
     EXPECT_EQ(before, effect->getPorts());
     EXPECT_EQ(-1, bsdf->getInputNumberFromLabel("specular_tint"));
     EXPECT_TRUE(bsdf->getKnobByName("specular_tint")->isEnabled(0));
@@ -530,7 +530,7 @@ TEST_F(ShaderPromoteTest, AConnectedDemoteAndPromoteUndoThroughTheirCommand)
 
 // Python refuses an output name the connected node lacks or whose type does not convert, and a
 // label that is not a port, changing nothing.
-TEST_F(ShaderPromoteTest, PythonRefusesABadOutputOrInput)
+TEST_F(ShaderShowPortTest, PythonRefusesABadOutputOrInput)
 {
     NodePtr bsdf = create(kPrincipledBsdf);
     NodePtr texture = create(kImageTexture);
@@ -557,7 +557,7 @@ TEST_F(ShaderPromoteTest, PythonRefusesABadOutputOrInput)
 
 // A closure does not convert to a colour, so the connection is refused, from C++ and from Python,
 // with the reason.
-TEST_F(ShaderPromoteTest, AConnectionWhoseTypesDoNotConvertIsRefused)
+TEST_F(ShaderShowPortTest, AConnectionWhoseTypesDoNotConvertIsRefused)
 {
     NodePtr upstream = create(kPrincipledBsdf);
     NodePtr bsdf = create(kPrincipledBsdf);
@@ -591,7 +591,7 @@ TEST_F(ShaderPromoteTest, AConnectionWhoseTypesDoNotConvertIsRefused)
     EXPECT_FALSE(bool(bsdf->getInput(baseColor)));
 }
 
-TEST_F(ShaderPromoteTest, TheTypeCheckSeesThroughDots)
+TEST_F(ShaderShowPortTest, TheTypeCheckSeesThroughDots)
 {
     NodePtr upstream = create(kPrincipledBsdf);
     NodePtr bsdf = create(kPrincipledBsdf);

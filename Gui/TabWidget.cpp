@@ -1285,6 +1285,7 @@ TabWidget::makeCurrentTab(int index)
         QMutexLocker l(&_imp->tabWidgetStateMutex);
         curWidget = _imp->currentWidget;
     }
+    NodeGraph* previousGraph = curWidget ? dynamic_cast<NodeGraph*>(curWidget->getWidget()) : 0;
     bool hadFocus = false;
     if ( curWidget && _imp->tabBar->hasClickFocus() ) {
         hadFocus = true;
@@ -1319,6 +1320,18 @@ TabWidget::makeCurrentTab(int index)
         curWidget->takeClickFocus();
     }
     tab->onPanelMadeCurrent();
+    // Showing another graph where the active one was makes it the active one, which the left
+    // toolbar follows.
+    NodeGraph* shownGraph = dynamic_cast<NodeGraph*>(tabW);
+    if (shownGraph && _imp->gui && (shownGraph != previousGraph)) {
+        NodeGraph* active = _imp->gui->getLastSelectedGraph();
+        if (!active) {
+            active = _imp->gui->getNodeGraph();
+        }
+        if (previousGraph && (previousGraph == active)) {
+            _imp->gui->setLastSelectedGraph(shownGraph);
+        }
+    }
 } // TabWidget::makeCurrentTab
 
 void

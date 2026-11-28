@@ -115,7 +115,7 @@ protected:
         BaseTest::TearDown();
     }
 
-    // texture -> Principled BSDF (base_color and the promoted specular_tint, reading alpha) ->
+    // texture -> Principled BSDF (base_color and the shown specular_tint, reading alpha) ->
     // Mix Closure's closure1, with an edited roughness.
     void buildGraph()
     {
@@ -127,7 +127,7 @@ protected:
 
         NetworkNode* effect = shaderEffect(bsdf);
         ASSERT_TRUE(effect);
-        ASSERT_TRUE(effect->promotePort("specular_tint"));
+        ASSERT_TRUE(effect->showPort("specular_tint"));
         const int baseColor = bsdf->getInputNumberFromLabel("base_color");
         const int specularTint = bsdf->getInputNumberFromLabel("specular_tint");
         const int closure1 = mix->getInputNumberFromLabel("closure1");
@@ -262,7 +262,7 @@ TEST_F(ShaderMissingTest, ASavedAttributeTheShaderLacksLoadsWithAWarningNamingIt
     EXPECT_DOUBLE_EQ(kRoughness, loadedRoughness->getValue());
 }
 
-// A port the shader no longer has, here promoted and connected when saved, loads disconnected with
+// A port the shader no longer has, here shown and connected when saved, loads disconnected with
 // a warning naming it; the other ports keep their connections.
 TEST_F(ShaderMissingTest, ASavedPortTheShaderLacksLoadsDisconnectedWithAWarning)
 {
@@ -318,8 +318,8 @@ TEST_F(ShaderMissingTest, ASavedPortTheShaderLacksLoadsDisconnectedWithAWarning)
 }
 
 // The saved port list is the node's, whatever the shader's default ports are: a default port the
-// node had demoted stays demoted, its connection is not restored, and no warning is given.
-TEST_F(ShaderMissingTest, ADemotedDefaultPortStaysDemotedAfterLoading)
+// node had hidden stays hidden, its connection is not restored, and no warning is given.
+TEST_F(ShaderMissingTest, AHiddenDefaultPortStaysHiddenAfterLoading)
 {
     QTemporaryDir tmp;
     ASSERT_TRUE(tmp.isValid());
@@ -332,7 +332,7 @@ TEST_F(ShaderMissingTest, ADemotedDefaultPortStaysDemotedAfterLoading)
     ASSERT_TRUE(effect);
     const std::vector<std::string>& defaults = effect->layout().defaultPorts;
     ASSERT_TRUE(std::find(defaults.begin(), defaults.end(), std::string("base_color")) != defaults.end());
-    ASSERT_TRUE(effect->demotePort("base_color"));
+    ASSERT_TRUE(effect->hidePort("base_color"));
 
     Serialization::ProjectSerialization saved;
     project->toSerialization(&saved);
@@ -344,7 +344,7 @@ TEST_F(ShaderMissingTest, ADemotedDefaultPortStaysDemotedAfterLoading)
     EXPECT_TRUE(original->inputs.find("base_color") == original->inputs.end());
 
     project->reset(false, true);
-    ASSERT_TRUE(loadProjectBundle(project, tmp, QString::fromUtf8("demoted-default.ntpz"), saved));
+    ASSERT_TRUE(loadProjectBundle(project, tmp, QString::fromUtf8("hidden-default.ntpz"), saved));
 
     const QString bsdfName = QString::fromUtf8(_bsdfName.c_str());
     for (const QString& warning : project->getLoadWarnings()) {

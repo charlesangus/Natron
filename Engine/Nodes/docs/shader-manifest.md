@@ -79,7 +79,7 @@ nothing above is specific to shaders.
 | `type` | The renderer's type name. Cycles: `SocketType::type_name` (`float`, `color`, `enum`, `closure`, `array_float`, ...). MoonRay: the rdl2 `attrType` (`Float`, `Rgb`, `SceneObject*`, `FloatVector`, ...). |
 | `default` | The renderer's default. Absent for attributes with no value (`port_only`). Vectors and colours are lists, matrices are lists of rows (MoonRay) or the 12 floats of a 3×4 transform (Cycles). An enum default is the value as it is authored: the enum name for Cycles, the integer for MoonRay. |
 | `enum` | Optional. The choices, `{name, value}`, sorted by value. |
-| `linkable` | The attribute can be driven by a connection, so it can be promoted to a port. |
+| `linkable` | The attribute can be driven by a connection, so it can be shown as a port. |
 | `port_only` | The attribute has no value and is always a port: Cycles closures, MoonRay `SceneObject` bindings. Implies `linkable`. |
 | `array` | The attribute holds a list (ramps, curves, tile lists). |
 | `group` | Optional. MoonRay's group for the attribute. Absent means the node's main page. |
@@ -161,4 +161,4 @@ regenerate the pages whenever a manifest or layout table changes.
 The same script audits the nodes Natron builds: `Tests/Scene/ShaderAudit_Test.cpp` runs its
 `audit()` in the test application, which creates every shader of both renderers by ID and checks
 each manifest attribute's knob (type, dimensions, label, default, options) or port, which
-attributes can be promoted, and the ports a new node starts with. It must report no problem.
+attributes can be shown as ports, and the ports a new node starts with. It must report no problem.

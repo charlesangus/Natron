@@ -115,6 +115,13 @@ public:
 
     NodeGraph* getLastSelectedGraph() const;
 
+    /**
+     * @brief Rebuilds the left toolbar if the last selected graph calls for other buttons: inside a
+     * network builder, one button per target of the builder listing its node types, and Backdrop;
+     * anywhere else, one button per grouping of the nodes menu.
+     **/
+    void refreshNodesToolBoxContext();
+
     void setActiveViewer(ViewerTab* viewer);
     ViewerTab* getActiveViewer() const;
 

@@ -1147,7 +1147,12 @@ NodeGraph::mouseMoveEvent(QMouseEvent* e)
             // The cursor should clearly indicate when will happen if mouse is pressed
             NodeGui* nearbyNode = NULL;
             Edge* nearbyEdge = NULL;
-            NearbyItemEnum nearbyItemCode = hasItemNearbyMouse(e->pos(), &nearbyNode, &nearbyEdge);
+            NodeGuiPtr portNode;
+            int portInput = -1;
+            std::string portOutput;
+            // A press on a port picks up a pipe rather than the node, so the node's hand would
+            // promise the wrong gesture.
+            NearbyItemEnum nearbyItemCode = portNearbyMouse(e->pos(), &portNode, &portInput, &portOutput) ? eNearbyItemNone : hasItemNearbyMouse(e->pos(), &nearbyNode, &nearbyEdge);
 
             switch (nearbyItemCode) {
             case eNearbyItemNode:

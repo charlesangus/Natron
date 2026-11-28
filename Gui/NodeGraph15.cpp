@@ -482,7 +482,7 @@ initialPortsOf(const NetworkNodeLayout& layout)
 
     for (const std::string& name : layout.defaultPorts) {
         const NetworkAttribute* attribute = find(name);
-        if (attribute && NetworkNode::canPromote(*attribute) && seen.insert(name).second) {
+        if (attribute && NetworkNode::canShowPort(*attribute) && seen.insert(name).second) {
             ports.push_back(attribute);
         }
     }
@@ -559,6 +559,12 @@ connectorsTakingPipe(const NodeGuiPtr& node,
                 hit.inputNb = i;
                 found.push_back(hit);
             }
+        }
+        // Cycling walks the ports top to bottom as drawn.
+        if (const PortNodeGui* ports = dynamic_cast<const PortNodeGui*>(node.get())) {
+            std::stable_sort(found.begin(), found.end(), [ports](const ConnectorHit& a, const ConnectorHit& b) {
+                return ports->getInputRow(a.inputNb) < ports->getInputRow(b.inputNb);
+            });
         }
     } else {
         for (const OutputPortDescriptor& output : network->getOutputPorts()) {

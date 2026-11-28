@@ -72,7 +72,7 @@ PortTypeClass portTypeClassFor(const std::string& target,
 
 /**
  * @brief One input port of a network node: an attribute that can be connected. The node's
- * inputs are its promoted ports, in order.
+ * inputs are its shown ports, in order.
  **/
 struct PortDescriptor {
     // The attribute's script name, which is also the input's label and the name of its knob, if
@@ -83,14 +83,14 @@ struct PortDescriptor {
     PortTypeClass typeClass = PortTypeClass::Custom;
     // The label of the page the attribute's knob, or the port alone, belongs on.
     std::string page;
-    bool promoted = false;
+    bool shown = false;
     bool array = false;
     // The value can differ per point, sample or shading point, rather than once per evaluation.
     bool varying = false;
 
     bool operator==(const PortDescriptor& other) const
     {
-        return (attribute == other.attribute) && (type == other.type) && (typeClass == other.typeClass) && (page == other.page) && (promoted == other.promoted) && (array == other.array) && (varying == other.varying);
+        return (attribute == other.attribute) && (type == other.type) && (typeClass == other.typeClass) && (page == other.page) && (shown == other.shown) && (array == other.array) && (varying == other.varying);
     }
 };
 

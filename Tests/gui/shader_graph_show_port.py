@@ -1,13 +1,13 @@
-"""A GUI test of promoting and demoting a shader node's parameter from its settings panel, inside
+"""A GUI test of showing and hiding a shader node's parameter from its settings panel, inside
 a USD Material Builder. It is driven by Tests/gui/run-gui-test.sh (1920x1080), not ctest.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh):
     docker exec natron-dev bash -c 'cd /home/bosley/git/Natron && \
-        NATRON_GUI_TEST_OUT=build/m351-gui/promote GUI_TEST_TIMEOUT=300 \
-        Tests/gui/run-gui-test.sh Tests/gui/shader_graph_promote.py <AppImage or build/fast/App/Natron>'
+        NATRON_GUI_TEST_OUT=build/m351-gui/show-port GUI_TEST_TIMEOUT=300 \
+        Tests/gui/run-gui-test.sh Tests/gui/shader_graph_show_port.py <AppImage or build/fast/App/Natron>'
 
-The port toggle beside a BSDF's diffuse roughness (not a default port) promotes it; a math node is connected to the new port,
-which greys the roughness fields out; the toggle then asks before demoting the connected port, the
+The port toggle beside a BSDF's diffuse roughness (not a default port) shows it; a math node is connected to the new port,
+which greys the roughness fields out; the toggle then asks before hiding the connected port, the
 question is answered Yes, and the port goes with its connection, leaving the fields editable.
 """
 import os
@@ -193,12 +193,12 @@ try:
         check(not button.isChecked(), "the toggle starts unchecked")
         check(bool(fields_of(PORT)), "the panel shows %s's fields" % PORT)
 
-        gt.section("promote")
+        gt.section("show")
         button.click()
         yield ("sleep", SETTLE_MS)
-        check(PORT in list(bsdf.getPorts()), "the toggle promotes %s" % PORT)
+        check(PORT in list(bsdf.getPorts()), "the toggle shows %s" % PORT)
         button = port_button(builder, bsdf, PORT)
-        check(button is not None and button.isChecked(), "the toggle shows the port as promoted")
+        check(button is not None and button.isChecked(), "the toggle is checked once the port is shown")
 
         gt.section("connect")
         index = input_index(bsdf, PORT)
@@ -209,9 +209,9 @@ try:
         check(not bsdf.getParam(PORT).getIsEnabled(0), "the connected port's parameter is disabled")
         read_only = fields_read_only(PORT)
         check(bool(read_only) and all(read_only), "the panel greys %s's fields out (got %r)" % (PORT, read_only))
-        gt.shot("shader_graph_promote_connected.png")
+        gt.shot("shader_graph_show_port_connected.png")
 
-        gt.section("demote through the question")
+        gt.section("hide through the question")
         seen = {}
         timer = answer_question(seen)
         button = port_button(builder, bsdf, PORT)
@@ -219,16 +219,16 @@ try:
         button.click()
         timer.stop()
         yield ("sleep", SETTLE_MS)
-        check(seen.get("question", False), "demoting a connected port asks first")
+        check(seen.get("question", False), "hiding a connected port asks first")
         check(seen.get("yes", False), "the question offers Yes")
-        check(PORT not in list(bsdf.getPorts()), "the answered question demotes %s" % PORT)
+        check(PORT not in list(bsdf.getPorts()), "the answered question hides %s" % PORT)
         check(input_index(bsdf, PORT) < 0, "%s is no longer an input" % PORT)
-        check(bsdf.getParam(PORT).getIsEnabled(0), "the demoted parameter is enabled again")
+        check(bsdf.getParam(PORT).getIsEnabled(0), "the hidden parameter is enabled again")
         read_only = fields_read_only(PORT)
         check(bool(read_only) and not any(read_only), "the panel's %s fields are editable again (got %r)" % (PORT, read_only))
         button = port_button(builder, bsdf, PORT)
-        check(button is not None and not button.isChecked(), "the toggle shows the port as demoted")
-        gt.shot("shader_graph_promote_demoted.png")
+        check(button is not None and not button.isChecked(), "the toggle is unchecked once the port is hidden")
+        gt.shot("shader_graph_show_port_hidden.png")
 
         faulthandler.cancel_dump_traceback_later()
 

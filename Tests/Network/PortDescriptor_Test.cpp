@@ -184,18 +184,18 @@ TEST_F(PortDescriptorTest, ANetworkNodeDescribesEachInputAndOutput)
     EXPECT_EQ(std::string("color"), color->type);
     EXPECT_EQ(PortTypeClass::Color, color->typeClass);
     EXPECT_EQ(std::string("Surface"), color->page);
-    EXPECT_TRUE(color->promoted);
+    EXPECT_TRUE(color->shown);
     EXPECT_FALSE(color->array);
     EXPECT_TRUE(color->varying);
     EXPECT_EQ(std::string("base_color"), node->getInputLabel(0));
 
-    // A port-only attribute is always an input, after the promoted ones.
+    // A port-only attribute is always an input, after the shown ones.
     const std::optional<PortDescriptor> normal = node->getInputPortDescriptor(1);
     ASSERT_TRUE(normal.has_value());
     EXPECT_EQ(std::string("normal"), normal->attribute);
     EXPECT_EQ(PortTypeClass::Normal, normal->typeClass);
     EXPECT_EQ(std::string("Surface"), normal->page);
-    EXPECT_TRUE(normal->promoted);
+    EXPECT_TRUE(normal->shown);
     EXPECT_FALSE(normal->array);
     EXPECT_FALSE(normal->varying);
 
@@ -209,10 +209,10 @@ TEST_F(PortDescriptorTest, ANetworkNodeDescribesEachInputAndOutput)
     EXPECT_EQ(std::string("Alpha"), outputs[1].name);
     EXPECT_EQ(PortTypeClass::Float, outputs[1].typeClass);
 
-    // The array attribute is described once promoted.
+    // The array attribute is described once shown.
     NetworkNode* effect = networkEffect(node);
     ASSERT_TRUE(effect);
-    ASSERT_TRUE(effect->promotePort("ramp"));
+    ASSERT_TRUE(effect->showPort("ramp"));
     ASSERT_EQ(3, node->getNInputs());
     const std::optional<PortDescriptor> ramp = node->getInputPortDescriptor(2);
     ASSERT_TRUE(ramp.has_value());
@@ -221,13 +221,13 @@ TEST_F(PortDescriptorTest, ANetworkNodeDescribesEachInputAndOutput)
     EXPECT_TRUE(ramp->array);
     EXPECT_TRUE(ramp->varying);
 
-    // Every linkable attribute is described, promoted or not; a knob-only one is not.
+    // Every linkable attribute is described, shown or not; a knob-only one is not.
     effect->setPorts({});
     const std::vector<PortDescriptor> all = effect->getPortDescriptors();
     ASSERT_EQ(3u, all.size());
-    EXPECT_FALSE(all[0].promoted);
-    EXPECT_TRUE(all[1].promoted);
-    EXPECT_FALSE(all[2].promoted);
+    EXPECT_FALSE(all[0].shown);
+    EXPECT_TRUE(all[1].shown);
+    EXPECT_FALSE(all[2].shown);
 }
 
 TEST_F(PortDescriptorTest, AClassicNodeDescribesNoPorts)
@@ -247,7 +247,7 @@ TEST_F(PortDescriptorTest, AClassicNodeDescribesNoPorts)
     EXPECT_TRUE(write->getOutputPorts().empty());
 }
 
-TEST_F(PortDescriptorTest, PromotedPortsAndOutputNamesSurviveASaveAndLoad)
+TEST_F(PortDescriptorTest, ShownPortsAndOutputNamesSurviveASaveAndLoad)
 {
     ProjectPtr project = getApp()->getProject();
     NodePtr upstream = createNetworkNode();
@@ -256,7 +256,7 @@ TEST_F(PortDescriptorTest, PromotedPortsAndOutputNamesSurviveASaveAndLoad)
     ASSERT_TRUE(upstream && downstream);
     NetworkNode* effect = networkEffect(downstream);
     ASSERT_TRUE(effect);
-    ASSERT_TRUE(effect->promotePort("ramp"));
+    ASSERT_TRUE(effect->showPort("ramp"));
     const int rampInput = downstream->getInputNumberFromLabel("ramp");
     ASSERT_EQ(2, rampInput);
     ASSERT_TRUE(downstream->connectInput(upstream, rampInput));
@@ -287,7 +287,7 @@ TEST_F(PortDescriptorTest, PromotedPortsAndOutputNamesSurviveASaveAndLoad)
     EXPECT_EQ(upstream2, downstream2->getInput(2));
     const std::optional<PortDescriptor> ramp = downstream2->getInputPortDescriptor(2);
     ASSERT_TRUE(ramp.has_value());
-    EXPECT_TRUE(ramp->promoted);
+    EXPECT_TRUE(ramp->shown);
     EXPECT_EQ(std::string("ramp"), ramp->attribute);
     EXPECT_EQ(std::string("Alpha"), loaded->getOutputForInput("ramp"));
 }

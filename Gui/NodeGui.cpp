@@ -3112,7 +3112,7 @@ NodeGui::refreshStateIndicator()
         brush = QBrush(cpuExecutionColor());
     } else if (_ranOnGpu) {
         brush = QBrush(gpuExecutionColor());
-    } else if (isSelected) {
+    } else if (isSelected && showsSelectionInStateIndicator()) {
         brush = QBrush(Qt::white);
     } else if (!message.isEmpty() && ((type == 1) || (type == 2))) {
         brush = QBrush((type == 1) ? nodeErrorColor() : nodeWarningColor());
@@ -3131,6 +3131,7 @@ NodeGui::refreshStateIndicator()
         _stateIndicator->setBrush(brush);
     }
     if (selectionChanged) {
+        selectionLookChanged(isSelected);
         if (_outputEdge) {
             _outputEdge->setUseSelected(isSelected);
         }

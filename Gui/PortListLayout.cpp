@@ -139,8 +139,10 @@ QPointF
 PortListLayout::inputPortPosition(int inputNb) const
 {
     const QRectF body = _node->bodyRect();
+    const PortNodeGui* portNode = dynamic_cast<const PortNodeGui*>(_node);
+    const int row = portNode ? portNode->getInputRow(inputNb) : std::max(0, inputNb);
 
-    return QPointF(body.left(), body.top() + nodeHeaderHeight() + rowHeight() * (std::max(0, inputNb) + 0.5));
+    return QPointF(body.left() + PortNodeGui::portInset(), body.top() + nodeHeaderHeight() + rowHeight() * (row + 0.5));
 }
 
 QPointF
@@ -148,7 +150,7 @@ PortListLayout::outputPortPosition(int outputIndex) const
 {
     const QRectF body = _node->bodyRect();
 
-    return QPointF(body.right(), body.top() + nodeHeaderHeight() + rowHeight() * (std::max(0, outputIndex) + 0.5));
+    return QPointF(body.right() - PortNodeGui::portInset(), body.top() + nodeHeaderHeight() + rowHeight() * (std::max(0, outputIndex) + 0.5));
 }
 
 int

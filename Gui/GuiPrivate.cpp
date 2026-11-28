@@ -57,6 +57,9 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include <QImage>
 #include <QKeySequence>
 #include <QMessageBox>
+#include <QPainter>
+#include <QPainterPath>
+#include <QPixmap>
 #include <QProgressDialog>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -73,6 +76,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/Lut.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Network/PortTypes.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Plugin.h"
 #include "Engine/ProcessHandler.h"
@@ -113,6 +117,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Gui/SequenceFileDialog.h"
 #include "Gui/SpinBox.h"
 #include "Gui/Splitter.h"
+#include "Gui/TabMenuBridge.h"
 #include "Gui/TabWidget.h"
 #include "Gui/ThemedIcon.h"
 #include "Gui/ViewerGL.h"
@@ -587,19 +592,227 @@ NATRON_NAMESPACE_ANONYMOUS_EXIT
 void
 GuiPrivate::addToolButton(QAction* groupingMenuAction)
 {
+    QToolButton* button = addToolButton(groupingMenuAction->property(kNodesMenuPropToolButtonIcon).value<QIcon>(),
+                                        groupingMenuAction->property(kNodesMenuPropGrouping).toString());
+    button->setMenu(groupingMenuAction->menu());
+}
+
+QToolButton*
+GuiPrivate::addToolButton(const QIcon& icon,
+                          const QString& label)
+{
     QToolButton* button = new AutoRaiseToolButton(_gui, _toolBox);
 
     //button->setArrowType(Qt::NoArrow); // has no effect (arrow is still displayed)
     //button->setToolButtonStyle(Qt::ToolButtonIconOnly); // has no effect (arrow is still displayed)
-    button->setIcon(groupingMenuAction->property(kNodesMenuPropToolButtonIcon).value<QIcon>());
-    button->setMenu(groupingMenuAction->menu());
+    button->setIcon(icon);
 
     const QSize toolButtonSize( TO_DPIX(NATRON_TOOL_BUTTON_SIZE), TO_DPIY(NATRON_TOOL_BUTTON_SIZE) );
     button->setFixedSize(toolButtonSize);
     button->setPopupMode(QToolButton::InstantPopup);
-    const QString label = groupingMenuAction->property(kNodesMenuPropGrouping).toString();
     button->setToolTip(NATRON_NAMESPACE::convertFromPlainText(label.trimmed(), NATRON_NAMESPACE::WhiteSpaceNormal));
     _nodesToolBoxActions.push_back(_toolBox->addWidget(button));
+
+    return button;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_ENTER
+
+QStringList
+networkActionTargets(const QAction* action)
+{
+    return action->property(kNodesMenuPropNetworkTargets).toString().split(QLatin1Char(','), Qt::SkipEmptyParts);
+}
+
+bool
+actionTextLessThan(const QAction* a,
+                   const QAction* b)
+{
+    return a->text().compare(b->text(), Qt::CaseInsensitive) < 0;
+}
+
+// An action of the toolbox's own menu that triggers source, the nodes menu's, which creates the
+// node where any other nodes menu action would.
+void
+addForwardingAction(QMenu* menu,
+                    QAction* source)
+{
+    QAction* action = menu->addAction(source->icon(), source->text());
+
+    action->setToolTip(source->toolTip());
+    action->setProperty(kNodesMenuPropPluginID, source->property(kNodesMenuPropPluginID));
+    QObject::connect(action, &QAction::triggered, source, &QAction::trigger);
+}
+
+void
+collectNetworkActions(QMenu* menu,
+                      std::vector<QAction*>* found)
+{
+    for (QAction* action : menu->actions()) {
+        if (QMenu* submenu = action->menu()) {
+            collectNetworkActions(submenu, found);
+        } else if (!action->property(kNodesMenuPropPluginID).toString().isEmpty()) {
+            found->push_back(action);
+        }
+    }
+}
+
+// The nodes menu's action creating pluginID and the top-level grouping action it is under.
+QAction*
+findNodesMenuAction(QMenu* menu,
+                    const QString& pluginID,
+                    QAction** topLevel)
+{
+    for (QAction* action : menu->actions()) {
+        QAction* found = nullptr;
+        if (QMenu* submenu = action->menu()) {
+            found = findNodesMenuAction(submenu, pluginID, topLevel);
+            if (found) {
+                *topLevel = action;
+            }
+        } else if (action->property(kNodesMenuPropPluginID).toString() == pluginID) {
+            found = action;
+        }
+        if (found) {
+            return found;
+        }
+    }
+
+    return nullptr;
+}
+
+// A swatch in the colour of the stripe the headers of target's nodes carry.
+QIcon
+networkTargetIcon(const std::string& target)
+{
+    QColor color(Qt::gray);
+    PortColor stripe;
+    if (networkTargetColor(target, &stripe)) {
+        color = QColor(stripe.r, stripe.g, stripe.b);
+    }
+    const int size = TO_DPIX(NATRON_TOOL_BUTTON_ICON_SIZE);
+    QPixmap pixmap(size, size);
+    pixmap.fill(Qt::transparent);
+    {
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing);
+        const double radius = size / 6.;
+        QPainterPath path;
+        path.addRoundedRect(QRectF(1., 1., size - 2., size - 2.), radius, radius);
+        painter.fillPath(path, color);
+    }
+
+    return QIcon(pixmap);
+}
+
+// One submenu per category, in alphabetical order, then the node types with none.
+QMenu*
+networkTargetMenu(QWidget* parent,
+                  const QString& target,
+                  const std::vector<QAction*>& actions)
+{
+    std::map<QString, std::vector<QAction*>> byCategory;
+    for (QAction* action : actions) {
+        byCategory[action->property(kNodesMenuPropNetworkCategory).toString()].push_back(action);
+    }
+    QMenu* menu = new Menu(parent);
+    menu->menuAction()->setProperty(kNodesMenuPropNetworkTargets, target);
+    for (std::pair<const QString, std::vector<QAction*>>& entry : byCategory) {
+        std::sort(entry.second.begin(), entry.second.end(), actionTextLessThan);
+        if (entry.first.isEmpty()) {
+            continue;
+        }
+        QMenu* submenu = new Menu(entry.first, menu);
+        submenu->menuAction()->setProperty(kNodesMenuPropGrouping, entry.first);
+        menu->addMenu(submenu);
+        for (QAction* action : entry.second) {
+            addForwardingAction(submenu, action);
+        }
+    }
+    const std::map<QString, std::vector<QAction*>>::const_iterator uncategorised = byCategory.find(QString());
+    if (uncategorised != byCategory.end()) {
+        for (QAction* action : uncategorised->second) {
+            addForwardingAction(menu, action);
+        }
+    }
+
+    return menu;
+}
+
+NATRON_NAMESPACE_ANONYMOUS_EXIT
+
+void
+GuiPrivate::addNetworkToolButtons(const std::vector<std::string>& targets)
+{
+    std::vector<QAction*> actions;
+    if (QMenu* networkMenu = appPTR->getNetworkNodesMenu()) {
+        collectNetworkActions(networkMenu, &actions);
+    }
+    std::vector<std::string> listed = targets;
+    // A builder without targets takes the node types of every target, as its Tab menu lists.
+    if (listed.empty()) {
+        for (QAction* action : actions) {
+            for (const QString& target : networkActionTargets(action)) {
+                if (std::find(listed.begin(), listed.end(), target.toStdString()) == listed.end()) {
+                    listed.push_back(target.toStdString());
+                }
+            }
+        }
+    }
+    for (const std::string& target : listed) {
+        const QString name = QString::fromStdString(target);
+        std::vector<QAction*> ofTarget;
+        for (QAction* action : actions) {
+            if (networkActionTargets(action).contains(name)) {
+                ofTarget.push_back(action);
+            }
+        }
+        if (ofTarget.empty()) {
+            continue;
+        }
+        QToolButton* button = addToolButton(networkTargetIcon(target), QString::fromStdString(networkTargetLabel(target)));
+        button->setMenu(networkTargetMenu(button, name, ofTarget));
+    }
+
+    QMenu* nodesMenu = appPTR->getNodesMenu();
+    QAction* topLevel = nullptr;
+    QAction* backdrop = nodesMenu ? findNodesMenuAction(nodesMenu, QString::fromUtf8(PLUGINID_NATRON_BACKDROP), &topLevel) : nullptr;
+    if (backdrop) {
+        QToolButton* button = topLevel ? addToolButton(topLevel->property(kNodesMenuPropToolButtonIcon).value<QIcon>(),
+                                                       topLevel->property(kNodesMenuPropGrouping).toString())
+                                       : addToolButton(backdrop->icon(), backdrop->text());
+        QMenu* menu = new Menu(button);
+        addForwardingAction(menu, backdrop);
+        button->setMenu(menu);
+    }
+}
+
+std::string
+GuiPrivate::nodesToolBoxContext(std::vector<std::string>* targets) const
+{
+    NodeGraph* graph = _lastFocusedGraph ? _lastFocusedGraph : _nodeGraphArea;
+    const std::optional<TabMenuBridge::NetworkFilter> filter = TabMenuBridge::networkFilterOf(graph);
+
+    targets->clear();
+    if (!filter) {
+        return std::string();
+    }
+    *targets = filter->targets;
+    std::string context = "network:";
+    for (const std::string& target : *targets) {
+        context += target + ",";
+    }
+
+    return context;
+}
+
+void
+GuiPrivate::refreshNodesToolBoxContext()
+{
+    std::vector<std::string> targets;
+    if (nodesToolBoxContext(&targets) != _nodesToolBoxContext) {
+        rebuildNodesToolBox();
+    }
 }
 
 void
@@ -618,6 +831,13 @@ GuiPrivate::rebuildNodesToolBox()
     }
     _nodesToolBoxActions.clear();
 
+    std::vector<std::string> targets;
+    _nodesToolBoxContext = nodesToolBoxContext(&targets);
+    if (!_nodesToolBoxContext.empty()) {
+        addNetworkToolButtons(targets);
+
+        return;
+    }
     QMenu* nodesMenu = appPTR->getNodesMenu();
     if (!nodesMenu) {
         return;

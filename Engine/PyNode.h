@@ -369,13 +369,13 @@ public:
     QString getInputLabel(int inputNumber);
 
     /**
-     * @brief Returns the attributes promoted to ports of a network node (a shader, for one), in
+     * @brief Returns the attributes shown as ports of a network node (a shader, for one), in
      * input order. Empty for any other node.
      **/
     QStringList getPorts() const;
 
     /**
-     * @brief Returns every attribute of a network node that can be a port, promoted or not, in
+     * @brief Returns every attribute of a network node that can be a port, shown or not, in
      * the order of its pages. Empty for any other node.
      **/
     QStringList getPortAttributes() const;
@@ -385,14 +385,14 @@ public:
      * parameter is disabled while the port is connected. Returns false, changing nothing, when the
      * node is not a network node or the attribute cannot be a port. Undoable.
      **/
-    bool promotePort(const QString& attribute);
+    bool showPort(const QString& attribute);
 
     /**
      * @brief Removes the port of the attribute of a network node, disconnecting it and enabling
      * its parameter again. Returns false, changing nothing, when the node is not a network node or
      * the attribute is always a port. Undoable.
      **/
-    bool demotePort(const QString& attribute);
+    bool hidePort(const QString& attribute);
 
     /**
      * @brief Returns the output of the node connected to the input of a network node that the input

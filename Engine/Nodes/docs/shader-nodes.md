@@ -51,12 +51,12 @@ Reproduce, from the checkout root in natron-dev after a release build:
     python3 tools/bench/shader_node_bench.py
 
 If a bar is missed, the options are lazy knob creation (a knob exists only once its attribute is
-edited or promoted; the rest live as a value table on the node) and a data-model design (attributes
+edited or shown as a port; the rest live as a value table on the node) and a data-model design (attributes
 are plain data, and knobs are created only for the node shown in the properties panel).
 
 ## Live inputs
 
-A node's inputs are its promoted attributes, in order, and the user can change them while the node
+A node's inputs are its shown attributes, in order, and the user can change them while the node
 is connected. The node's spec is built at run time and republished on every change.
 
 `Node::initializeInputs` resizes the input array by position, so a port edit:
@@ -71,7 +71,7 @@ life. Edits happen on the main thread only. Ports persist in a hidden `ports` kn
 before the saved connections are restored, so the loader's connect-by-label finds them. Group
 Python export writes knobs before `connectInput`; running the exported script into an empty Group
 rebuilds the ports, connections and output names. One undo command restores the old ports, the
-connections the edit removed and their output names. Cycles are refused on promoted ports like on
+connections the edit removed and their output names. Cycles are refused on shown ports like on
 any input.
 
 Tested: adding an input keeps existing connections; removing a connected input disconnects it
@@ -122,7 +122,7 @@ A port has a type; a node declares targets. A connection is allowed when:
 
 1. the two nodes share at least one target;
 2. the named output exists on the upstream node;
-3. the input is a promoted port;
+3. the input is a shown port;
 4. the output's type converts to the port's.
 
 Conversions are equal types, float to and from `color3` and `vector3`, `color3` to and from
@@ -160,7 +160,7 @@ from an output to an input.
 takes its endpoints and tangents from it. Classic nodes get a `RadialLayout` that reproduces
 today's angles, including the mask, side-input and inspector rules; port nodes get a
 `PortListLayout` that lists ports down the sides. The graph items sit on Node inputs plus a port
-descriptor (type, page, output name, promoted), with no new engine connection store.
+descriptor (type, page, output name, shown), with no new engine connection store.
 
 Why: there is one connection class to keep correct, not two that must stay in step, and later work
 (port groups, folding, channel networks) builds on the layout instead of on special cases. The
@@ -173,7 +173,7 @@ layout is where that choice belongs.
 
 Build order:
 
-- The runtime spec carries each port's type, page and a `promoted` flag.
+- The runtime spec carries each port's type, page and a `shown` flag.
 - `ConnectorLayout` arrives with today's angle logic moved into `RadialLayout` and no visible
   change: classic graph goldens stay pixel-identical.
 - `PortListLayout`, bezier pipes and output names follow on that base.
@@ -194,11 +194,11 @@ Still to work out: splice, bend points and Dot insertion with bezier pipes.
   says why in the status bar.
 - **Groups:** collapsible port groups that mirror the knob pages.
 - **Header colour:** by node category.
-- **No inline value widgets.** An unconnected promoted port shows at most a read-only summary (a
+- **No inline value widgets.** An unconnected shown port shows at most a read-only summary (a
   swatch or a number); editing stays in the properties panel. Inline widgets suit 5-10 ports, not
   100+, and the real `DwaBaseMaterial` has 101.
 - **Default fold:** connected ports only for a node with more than 20 ports, otherwise all
-  promoted ports. Header-only is a manual state.
+  shown ports. Header-only is a manual state.
 - **Interaction:**
   - clicking an output port picks up a new pipe from it, so outputs fan out freely;
   - clicking an input port picks up its pipe, or a new one when it is unconnected;
@@ -224,7 +224,7 @@ and an entry per kind, live ports with disconnect, rebuild and reconnect by labe
 on the downstream node, and the two-layer target-then-type check. For the graph, follow the
 decisions under Drawing: ports are the single connection model through a per-`NodeGui`
 `ConnectorLayout` (`RadialLayout` first, pixel-identical, then `PortListLayout`); unconnected
-promoted ports show read-only summaries, with no inline value widgets; a node with more than 20
+shown ports show read-only summaries, with no inline value widgets; a node with more than 20
 ports shows connected ports only by default; varying values use diamond ports.
 
 Before production, investigate the 541 ms worst knob edit.

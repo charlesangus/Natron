@@ -121,7 +121,7 @@ makeLayout(const std::string& name,
             layout.attributes.push_back(attribute);
         }
     }
-    // Knob-first kinds promote about ten key attributes, the case the design must carry.
+    // Knob-first kinds show about ten key attributes as ports, the case the design must carry.
     const std::size_t keyPorts = 10;
     for (const PortTestAttribute& attribute : layout.attributes) {
         if (allPorts || (attribute.bindable && (layout.defaultPorts.size() < keyPorts))) {

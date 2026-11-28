@@ -273,7 +273,7 @@ Gui::removeGroupGui(NodeGraph* tab,
     tab->hide();
 
     if (_imp->_lastFocusedGraph == tab) {
-        _imp->_lastFocusedGraph = 0;
+        setLastSelectedGraph(0);
     }
     TabWidget* container = dynamic_cast<TabWidget*>( tab->parentWidget() );
     if (container) {
@@ -296,6 +296,7 @@ Gui::setLastSelectedGraph(NodeGraph* graph)
 {
     assert( QThread::currentThread() == qApp->thread() );
     _imp->_lastFocusedGraph = graph;
+    _imp->refreshNodesToolBoxContext();
 }
 
 NodeGraph*

@@ -85,6 +85,8 @@
 #define kNodesMenuPropNetworkTargets "natronNetworkTargets"
 // On the network nodes menu's plug-in actions: the search aliases of the plug-in's layout, joined by commas.
 #define kNodesMenuPropSearchAliases "natronSearchAliases"
+// On the network nodes menu's plug-in actions: the category of the plug-in's layout.
+#define kNodesMenuPropNetworkCategory "natronNetworkCategory"
 
 #define kNetworkNodesMenuObjectName "NetworkNodesMenu"
 

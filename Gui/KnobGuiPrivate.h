@@ -126,7 +126,7 @@ struct KnobGuiPrivate
     bool isInViewerUIKnob;
     // The row standing in for the knob's widgets while it is driven; null for a knob that cannot be.
     KnobDriverRow* driverRow;
-    // The promote/demote toggle of a knob that is the value of one promotable shader-node attribute.
+    // The show/hide toggle of a knob that is the value of one showable shader-node attribute.
     QPointer<QPushButton> networkPortButton;
     std::string networkPortAttribute;
 

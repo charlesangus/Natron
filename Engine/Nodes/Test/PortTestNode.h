@@ -60,8 +60,8 @@ struct PortTestOutput {
 };
 
 /**
- * @brief What one port-node kind declares: its attributes (each a knob, and a port when promoted),
- * its outputs, the targets it supports and the attributes promoted by default. Generic: a shader,
+ * @brief What one port-node kind declares: its attributes (each a knob, and a port when shown),
+ * its outputs, the targets it supports and the attributes shown by default. Generic: a shader,
  * a kernel node and a channel node all fit it.
  **/
 struct PortTestLayout {
@@ -76,7 +76,7 @@ struct PortTestLayout {
 
 /**
  * @brief A throwaway generic port node: one class for every kind, its NodeSpec built at run time
- * from the kind's layout, its inputs the promoted attributes, which can change while the node is
+ * from the kind's layout, its inputs the shown attributes, which can change while the node is
  * live and connected. Registered as one plug-in per kind, every one built by this class. The app
  * registers it only when NATRON_GUI_TEST_NODES=1, the gtests always.
  **/

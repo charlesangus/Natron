@@ -864,6 +864,14 @@ protected:
     virtual bool drawsUserColorAsBody() const { return false; }
 
     /**
+     * @brief False for a subclass that draws its own selection look instead of the state
+     * indicator's selected fill; selectionLookChanged() then tells it when to show it.
+     **/
+    virtual bool showsSelectionInStateIndicator() const { return true; }
+
+    virtual void selectionLookChanged(bool /*selected*/) { }
+
+    /**
      * @brief Called whenever the node's colours are refreshed, for a subclass whose label is not
      * _nameItem (e.g. DotGui, whose label sits beside the disk) to keep that label readable.
      **/

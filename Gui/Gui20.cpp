@@ -930,6 +930,12 @@ Gui::rebuildNodesToolBox()
 }
 
 void
+Gui::refreshNodesToolBoxContext()
+{
+    _imp->refreshNodesToolBoxContext();
+}
+
+void
 Gui::setToolButtonMenuOpened(QToolButton* button)
 {
     _imp->_toolButtonMenuOpened = button;

@@ -1792,12 +1792,15 @@ GuiApplicationManager::getNetworkNodesMenu()
         action->setProperty(kNodesMenuPropPrimPathKnob, QString());
         action->setProperty(kNodesMenuPropNetworkTargets, targets.join(QLatin1Char(',')));
         QStringList aliases;
+        QString category;
         if (const NetworkNodeLayout* layout = NetworkNode::findLayout(entry.first)) {
             for (const std::string& alias : layout->searchAliases) {
                 aliases.push_back(QString::fromStdString(alias));
             }
+            category = QString::fromStdString(layout->category);
         }
         action->setProperty(kNodesMenuPropSearchAliases, aliases.join(QLatin1Char(',')));
+        action->setProperty(kNodesMenuPropNetworkCategory, category);
         refreshPluginActionProperties(action, plugin);
         const int major = plugin->getMajorVersion();
         const int minor = plugin->getMinorVersion();

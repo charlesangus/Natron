@@ -531,7 +531,7 @@ rampCurves(const QJsonArray& attributes,
     }
 }
 
-// What registering a node's plug-in reads: its plug-in ID, label, grouping and targets.
+// What registering a node's plug-in reads: its plug-in ID, label, grouping, category and targets.
 void
 setIdentity(const std::string& renderer,
             const QJsonObject& node,
@@ -540,6 +540,7 @@ setIdentity(const std::string& renderer,
     layout->pluginId = toStd(node.value(QLatin1String("id")));
     layout->label = shaderLabelFromScriptName(toStd(node.value(QLatin1String("name"))));
     layout->grouping = (renderer == kRendererCycles) ? kShaderGroupCycles : kShaderGroupMoonRay;
+    layout->category = shaderLabelFromScriptName(toStd(node.value(QLatin1String("kind"))));
     layout->targets.clear();
     for (const QJsonValue& target : node.value(QLatin1String("targets")).toArray()) {
         layout->targets.push_back(toStd(target));

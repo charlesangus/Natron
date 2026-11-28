@@ -213,9 +213,9 @@ def input_index(node, port):
 
 
 def connect(source, output, dest, port):
-    """Connects output of source to the port of dest, promoting the port first if needed."""
+    """Connects output of source to the port of dest, showing the port first if needed."""
     if port not in list(dest.getPorts()):
-        gt.require(dest.promotePort(port), "promote %s.%s" % (dest.getScriptName(), port))
+        gt.require(dest.showPort(port), "show %s.%s" % (dest.getScriptName(), port))
     index = input_index(dest, port)
     gt.require(index >= 0, "%s has an input for %s" % (dest.getScriptName(), port))
     gt.require(dest.connectInput(index, source), "connect %s to %s.%s"

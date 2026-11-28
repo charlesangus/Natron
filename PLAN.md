@@ -708,6 +708,7 @@ future core work has solid ground to build on.
 | M647 | Template Compare Layout | doing | M104 | bosley-executor | E12 | F33 | | [M647-template-compare-layout.md](PLAN/MILESTONES/M647-template-compare-layout.md) |
 | M648 | Cycles Live Volume Refresh | doing | M554 | bosley-executor | E9 | F1 | | [M648-cycles-live-volume-refresh.md](PLAN/MILESTONES/M648-cycles-live-volume-refresh.md) |
 | M649 | On-Graph Merge Resolution | todo | M104, M647 | | E12 | F33 | | [M649-on-graph-merge-resolution.md](PLAN/MILESTONES/M649-on-graph-merge-resolution.md) |
+| M650 | Delegate Preview Surface Refraction | todo | - | | E9 | | | [M650-delegate-preview-surface-refraction.md](PLAN/MILESTONES/M650-delegate-preview-surface-refraction.md) |
 
 # Epics
 

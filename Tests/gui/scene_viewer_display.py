@@ -5,8 +5,8 @@ beside it) merged with a red USDLight rect light in front of the box, into Viewe
 (Ctrl+Shift+G) and the grid (Ctrl+G, whose red and blue axis lines would count as tinted pixels)
 are hidden so that only the lit geometry counts; the grid comes back for the draw-mode checks.
 The script checks:
-  - lighting starts at Scene Lights, the Viewer 3D Lighting preference's default (no headlight);
-    Display > Lighting > Auto uses the stage's lights when it has any: natronSceneSceneLit is true
+  - lighting starts at Auto, the Viewer 3D Lighting preference's default, and a stage with no light
+    is not black under it (the headlight lights it); Display > Lighting > Auto uses the stage's lights when it has any: natronSceneSceneLit is true
     and the box renders reddish;
   - Display > Lighting > Headlight lights with the headlight instead: SceneLit false, no reddish
     pixels; Display > Lighting > Scene Lights brings the red light back;
@@ -253,7 +253,7 @@ try:
         yield settle()
 
         section("lighting")
-        check(v.property("natronSceneLighting") == "scene", "lighting starts at scene lights (%r)" % v.property("natronSceneLighting"))
+        check(v.property("natronSceneLighting") == "auto", "lighting starts at auto (%r)" % v.property("natronSceneLighting"))
         yield from with_menu(v, "Lighting", "auto", "scene-display-lighting-menu-auto")
         check(v.property("natronSceneLighting") == "auto", "Display > Lighting > Auto selects auto")
         ok = yield ("until", lambda: v.property("natronSceneSceneLit") is True, POLL_TIMEOUT_S)

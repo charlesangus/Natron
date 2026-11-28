@@ -136,6 +136,44 @@ def Xform "World"
 }
 """
 
+# The lit card's stage without its light.
+LIGHTLESS_STAGE = """#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 0.01
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Mesh "Card" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-1, -1, 0), (1, -1, 0), (1, 1, 0), (-1, 1, 0)]
+        rel material:binding = </World/Looks/Grey>
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Grey"
+        {
+            token outputs:surface.connect = </World/Looks/Grey/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.5, 0.5, 0.5)
+                float inputs:roughness = 1
+                token outputs:surface
+            }
+        }
+    }
+}
+"""
+
 CAMERA_STAGE = EMISSIVE_STAGE.replace("""    def Scope "Looks"
 """, """    def Camera "Cam"
     {
@@ -170,11 +208,13 @@ try:
     reference_path = write_stage("m365-reference.usda", EMISSIVE_STAGE % {"grey": "0.3"})
     card_path = write_stage("m365-card.usda", EMISSIVE_STAGE % {"grey": "0.15"})
     lit_path = write_stage("m365-lit.usda", LIT_STAGE)
+    lightless_path = write_stage("m365-lightless.usda", LIGHTLESS_STAGE)
     camera_path = write_stage("m365-camera.usda", CAMERA_STAGE % {"grey": "0.15"})
 
     lighting = NatronEngine.natron.getSettings().getParam("viewer3DLighting")
     require(lighting is not None, "Preferences have a viewer3DLighting parameter")
     original_lighting = lighting.getValue()
+    check(original_lighting == LIGHTING_AUTO, "the Viewer 3D Lighting preference starts at Auto (%r)" % (original_lighting,))
     lighting.setValue(LIGHTING_SCENE)
 
     usd = app.createNode("USDRead")
@@ -560,6 +600,18 @@ try:
         auto = mean_around(auto_image, centre)
         check(restarts() == before, "auto on a stage with a light restarts no render (%d -> %d)" % (before, restarts()))
         check(not differs(auto, scene_lit, COLOUR_SLACK), "auto renders as Scene Lights (%r vs %r)" % (auto, scene_lit))
+
+        yield from load(lightless_path, "the grey card with no light")
+        auto_dark = mean_around(capture("m365-auto-lightless", "Cycles, Auto on a stage with no light: lit by the headlight, not black"), centre)
+        check(prop("natronSceneLightingEffective") == "headlight", "auto on a stage with no light renders with the headlight (%r)"
+              % (prop("natronSceneLightingEffective"),))
+        check(sum(auto_dark) > COLOUR_SLACK * 3, "the card is not black under Auto with no light (%r)" % (auto_dark,))
+        set_lighting(LIGHTING_SCENE)
+        yield ("sleep", SETTLE_MS * 3)
+        yield from repaint()
+        scene_dark = mean_around(capture("m365-scene-lightless", "Cycles, Scene Lights on a stage with no light: black"), centre)
+        check(sum(scene_dark) < sum(auto_dark), "Scene Lights leaves the lightless card darker than Auto (%r vs %r)" % (scene_dark, auto_dark))
+        set_lighting(LIGHTING_AUTO)
 
         section("camera exposure")
         set_lighting(LIGHTING_SCENE)

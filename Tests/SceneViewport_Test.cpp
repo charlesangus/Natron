@@ -1307,8 +1307,9 @@ TEST_F(SceneViewportStorm, DrawModesAndGridChangeTheImage)
     EXPECT_GT(unshadedCount, 2000);
 
     _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
+    _renderer.setLightingMode(SceneViewportRenderer::eLightingModeScene);
     const QImage shaded = render();
-    // The fixture has no light, and the view adds none: the shaded box is black against the grey.
+    // The fixture has no light, and Scene Lights adds none: the shaded box is black against the grey.
     const Rgb unlit = pixel(shaded, 128, 128);
     EXPECT_TRUE((unlit.r < 40) && (unlit.g < 40) && (unlit.b < 40)) << "shaded box with no light: " << unlit;
     EXPECT_FALSE(isBackground(unlit)) << "shaded box with no light: " << unlit;
@@ -1329,16 +1330,21 @@ TEST_F(SceneViewportStorm, DrawModesAndGridChangeTheImage)
     EXPECT_GT(withGrid, withoutGrid + 100) << "the grid drew nothing";
 }
 
-// The fixture has no light: the shaded box is black under Scene Lights, the default, lit under
-// Headlight and Auto, and black again back under Scene Lights, all with the same engine.
-TEST_F(SceneViewportStorm, TheHeadlightLightsTheShadedSceneOnlyWhenChosen)
+// The fixture has no light: the shaded box is lit under Auto, the default, and under Headlight,
+// and black under Scene Lights, all with the same engine.
+TEST_F(SceneViewportStorm, AutoLightsALightlessShadedSceneAndSceneLightsDoesNot)
 {
     if (_skip) {
         return;
     }
-    EXPECT_EQ(SceneViewportRenderer::eLightingModeScene, _renderer.getLightingMode()) << "the headlight is off by default";
+    EXPECT_EQ(SceneViewportRenderer::eLightingModeAuto, _renderer.getLightingMode()) << "a new view lights with Auto";
     _renderer.setDrawMode(SceneViewportRenderer::eDrawModeShaded);
 
+    const Rgb byDefault = pixel(render(), 128, 128);
+    EXPECT_TRUE(isReddish(byDefault)) << "shaded box with no scene light, default lighting: " << byDefault;
+    EXPECT_FALSE(_renderer.isSceneLit());
+
+    _renderer.setLightingMode(SceneViewportRenderer::eLightingModeScene);
     const Rgb off = pixel(render(), 128, 128);
     EXPECT_TRUE((off.r < 40) && (off.g < 40) && (off.b < 40)) << "shaded box, scene lights: " << off;
     EXPECT_TRUE(_renderer.isSceneLit());
@@ -1380,15 +1386,15 @@ TEST_F(SceneViewportStorm, HandsTheEngineBackForItsHolderToDestroy)
     EXPECT_GT(StormGLSection::getSectionCount(), sections) << "the kept engine is destroyed inside a Storm section";
 }
 
-// The 3D views' lighting is the Viewer 3D Lighting preference: Scene Lights (no headlight) by
-// default, and saved and restored like any other.
-TEST(SceneViewportLighting, ThePreferenceIsSceneLightsByDefaultAndSavesAndLoads)
+// The 3D views' lighting is the Viewer 3D Lighting preference: Auto by default, and saved and
+// restored like any other.
+TEST(SceneViewportLighting, ThePreferenceIsAutoByDefaultAndSavesAndLoads)
 {
     SettingsPtr settings = appPTR->getCurrentSettings();
     ASSERT_TRUE(bool(settings));
     KnobChoicePtr knob = settings->getKnobByNameAndType<KnobChoice>("viewer3DLighting");
     ASSERT_TRUE(bool(knob));
-    EXPECT_EQ((int)Settings::eViewer3DLightingScene, knob->getDefaultValue(0));
+    EXPECT_EQ((int)Settings::eViewer3DLightingAuto, knob->getDefaultValue(0));
     EXPECT_EQ(std::string("Viewer 3D Lighting"), knob->getLabel());
 
     const bool wasSaving = settings->getSaveSettings();

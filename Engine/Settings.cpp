@@ -2005,7 +2005,7 @@ Settings::setDefaultValues()
     _viewer3DNavigation->setDefaultValue((int)eViewer3DNavigationNuke);
     _viewer3DGuideSize->setDefaultValue(3.);
     _viewer3DTransformTarget->setDefaultValue((int)eViewer3DTransformTargetOwner);
-    _viewer3DLighting->setDefaultValue((int)eViewer3DLightingScene);
+    _viewer3DLighting->setDefaultValue((int)eViewer3DLightingAuto);
     _sceneStandInMode->setDefaultValue((int)eSceneStandInModeInteraction);
     _sceneStandInBudget->setDefaultValue(33);
     _sceneStandInBoxes->setDefaultValue((int)eSceneStandInBoxesModels);

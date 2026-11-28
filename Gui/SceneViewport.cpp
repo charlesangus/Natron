@@ -1087,7 +1087,7 @@ struct SceneViewportRenderer::Implementation {
     bool showProxy = true;
     bool showRender = false;
     bool showGuidePurpose = false;
-    LightingModeEnum lightingMode = eLightingModeScene;
+    LightingModeEnum lightingMode = eLightingModeAuto;
     // Whether the stage's lights lit the last frame rendered; written by the render thread.
     std::atomic<bool> sceneLit { false };
     FreeCamera freeCamera;
@@ -1211,7 +1211,7 @@ struct SceneViewportRenderer::Implementation {
         int height = 0;
         GfFrustum frustum;
         UsdImagingGLRenderParams params;
-        LightingModeEnum lightingMode = eLightingModeScene;
+        LightingModeEnum lightingMode = eLightingModeAuto;
         OCIO_NAMESPACE::ConstProcessorRcPtr displayProcessor;
         double gain = 1.;
         double gamma = 1.;
@@ -1242,7 +1242,7 @@ struct SceneViewportRenderer::Implementation {
         GfMatrix4d viewMatrix;
         GfMatrix4d projection;
         UsdImagingGLRenderParams params;
-        LightingModeEnum lightingMode = eLightingModeScene;
+        LightingModeEnum lightingMode = eLightingModeAuto;
         OCIO_NAMESPACE::ConstProcessorRcPtr displayProcessor;
         double gain = 1.;
         double gamma = 1.;

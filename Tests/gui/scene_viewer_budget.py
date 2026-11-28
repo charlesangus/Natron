@@ -798,9 +798,9 @@ try:
         check(HOUSE_FACES <= faces < all_faces,
               "loading stopped with part of the town loaded (%d of %d faces)" % (faces, all_faces))
         yield ("sleep", 2 * SETTLE_MS)
-        hud = held_hud()
-        check(hud.startswith("Load limit reached") and "load again to override" in hud and str(faces) in hud,
-              "the HUD says the load limit is reached and how to override it (%r)" % hud)
+        held_line = held_hud()
+        check(held_line.startswith("Load limit reached") and "load again to override" in held_line and str(faces) in held_line,
+              "the HUD says the load limit is reached and how to override it (%r)" % held_line)
         shot("scene-budget-loading-stopped.png")
         yield ("sleep", 2 * SETTLE_MS)
         check(loaded_faces() == faces and loads_held() == "budget", "held loads stay held (%d faces)" % loaded_faces())

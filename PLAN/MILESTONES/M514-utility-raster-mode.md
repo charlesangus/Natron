@@ -122,12 +122,48 @@ A raster render mode in Natron Utility that is faster on simple setups, mostly p
   - verify: the docs build; the numbers are recorded.
   - size: M
 
+## Phase 514.4: Interactive Raster speed
+
+Raster replaces only raygen and intersect; each pass still runs the shared wavefront pipeline (~95 ms/pass at 1080p on an RTX 3060: 8 batches with two blocking waits each, ~40 MB AOV readback, single-threaded CPU `AovFilm::writeTile`, full-frame `publishPass`, Shade/Resolve/bounce dispatches) plus ~0.7 s fixed per frame (incl. a BVH build Raster never uses). Diagnosis 2026-11-27: `WavefrontGpu.cpp:163, 1311, 1380, 1462-1747, 1914-1927, 1959-2015`, `Wavefront.cpp:1690, 1707-1727`, `UtilityRenderPass.cpp:147-175`, `UtilityRenderBuffer.cpp:938-1001, 1112-1185`.
+
+- [ ] M514.P4.T1 — Per-stage profile and a fixed-vs-per-pass bench
+  - files: `Engine/Nodes/Scene/Utility/` (an env-gated `NATRON_UTILITY_PROFILE` timer around tracer update, table upload, and per pass: raster, shade, readback, writeTile, publishPass), `tools/bench/utility_raster_bench.py`/`.sh`
+  - approach: profile records go to a JSONL path from the env var; the bench renders N consecutive frames per session, fits time against pass counts (1, 4, 16, 64) to separate fixed and per-pass cost, and times the render without the 1080p PNG encode (EXR or no Write).
+  - verify: a local llvmpipe run of the bench prints fixed and per-pass figures per mode and a per-stage table; no cost when the env var is unset.
+  - size: M
+- [ ] M514.P4.T2 — Keep every AOV on the device and publish once per frame
+  - files: `WavefrontGpu.cpp` (depth/primId/instanceId accumulation like colour's `recordDeviceBatch`), `UtilityRenderPass.cpp`, `UtilityRenderBuffer.cpp`, `HydraRenderImpl.cpp` AOV mapping if needed
+  - approach: accumulate depth, primId and instanceId on the device as colour already is; read back once per frame; in offline renders publish at frame end (progressive viewer keeps a timer-paced publish).
+  - verify: Raster and Ray AOVs unchanged (NatronUtilityRaster, Golden, Motion tests); profile shows no per-pass readback/writeTile.
+  - size: M
+- [ ] M514.P4.T3 — One submission per Raster pass and one raster context per frame
+  - files: `WavefrontGpu.cpp` (batch loop, raster context creation, submitAndWait points)
+  - approach: render a Raster pass as one batch (or several passes per submission) and reuse one raster context per frame; drop the per-batch CPU waits.
+  - verify: tests unchanged; profile shows one submit per pass.
+  - size: M
+- [ ] M514.P4.T4 — Skip the BVH build when Raster needs no secondary rays
+  - files: `WavefrontGpu.cpp:1914` (`tracer.update`), the Raster setup
+  - approach: when Render Mode is Raster and the frame needs no secondary rays (no bounces, shadows, holes needing resolve), skip `tracer.update`; build lazily if a later pass needs it.
+  - verify: NatronUtilityRaster tests pass, incl. shadowed/bounce cases still tracing correctly; profile shows no BVH time in the emissive case.
+  - size: M
+- [ ] M514.P4.T5 — Cache per-frame setup across unchanged frames
+  - files: `Wavefront.cpp:1690` (shutter snapshot), `WavefrontGpu.cpp:1922-1927` (shade tables and uploads)
+  - approach: reuse the shutter snapshot and tables when the stage version and render settings are unchanged; check whether a Seed change forces a Hydra resync or BVH rebuild and avoid it if so.
+  - verify: tests unchanged; profile shows the fixed cost drop on a second identical-stage frame.
+  - size: M
+- [ ] M514.P4.T6 — Emissive fast path: shade in the fragment shader into a float accumulation attachment
+  - files: the Raster pipeline (`GpuRaster*`, the raster shaders), `WavefrontGpu.cpp` Raster path
+  - approach: when the bounce limit is 0 and there are no shadow-casting lights or holes, the fragment shader shades directly (emissive/flat, projections) and additively blends into an RGBA32F accumulation attachment (`rasterFloatBlend` is already required); skip RasterHits/Shade and readback per pass. Other cases keep the shared pipeline.
+  - verify: fast-path images match the shared-pipeline Raster render within noise (unit test); bench shows the per-pass cost at 1080p in single-digit ms on the vast RTX 3060.
+  - size: L
+
 **Verification gate:**
 - Build and ctest green on both legs.
 - GpuRaster, NatronUtilityRaster, NatronUtilityCancel, Motion and Golden pass on llvmpipe.
 - GPU parity suites and the GPU bench unchanged.
 - Xvfb check of the Render Mode and Raster Samples knobs.
 - RADV and NVIDIA capability results recorded in Decisions.
+- Interactive Raster: on the vast RTX 3060 bench (1080p blurred projected card), Raster per-pass cost in single-digit ms and Raster at least 5x faster than Ray at 32 samples, with the per-stage profile recorded in Decisions.
 - UAT AppImage with a steps .md.
 
 ## Decisions
@@ -146,3 +182,4 @@ A raster render mode in Natron Utility that is faster on simple setups, mostly p
 - 2026-11-27 (PM) — Bench fixed (blur shows, one frame per render, blur gate). It found a Raster-mode quality bug: with the default Blackman-Harris filter each Raster pass gets its single jitter offset's filter weight for the whole frame, so the pass nearest the pixel centre dominates and blur collapses to one or two steps (9 samples: Raster plate-edge smear 2.0 px vs Ray 5.6; Box filter 12.0 vs 9.6). PM call: fix the per-pass weighting in the renderer rather than bench with Box.
 - 2026-11-27 (PM) — Ray vs Raster bench (vast RTX 3060, cloud-gpu-20261128T024440Z, gate7 build with the per-pass weighting fix): blurred projected card at 1920x1080 — 9 spp: Ray 2.00 s vs Raster 1.56 s median (Raster 1.28x faster; p95 1.27x); 36 spp: Ray 4.62 vs Raster 4.13 s (1.12x; p95 1.23x). Both modes pass the blur gate (plate-edge smear 9 spp Ray 22.7 / Raster 33.0 px; 36 spp 38.0 / 39.2 px).
 - 2026-11-27 (PM) — Capability: NVIDIA (RTX 3060, driver 580.95.05) has rasterVisibility — the vast bench rendered Raster on the GPU with no fallback warning. RADV result still to record (needs an AMD GPU, e.g. the GPU host).
+- 2026-11-27 — **Interactive Raster in M514 (user):** Raster as first built was only 1.12-1.28x faster than Ray because it shares the whole per-pass pipeline; the speed work goes into M514 as Phase 514.4 before it ships. Targets (PM default, reversible): single-digit-ms per pass at 1080p and ≥5x faster than Ray at 32 samples on the vast RTX 3060 bench.

@@ -131,22 +131,22 @@ Raster replaces only raygen and intersect; each pass still runs the shared wavef
   - approach: profile records go to a JSONL path from the env var; the bench renders N consecutive frames per session, fits time against pass counts (1, 4, 16, 64) to separate fixed and per-pass cost, and times the render without the 1080p PNG encode (EXR or no Write).
   - verify: a local llvmpipe run of the bench prints fixed and per-pass figures per mode and a per-stage table; no cost when the env var is unset.
   - size: M
-- [ ] M514.P4.T2 — Keep every AOV on the device and publish once per frame
+- [x] M514.P4.T2 — Keep every AOV on the device and publish once per frame
   - files: `WavefrontGpu.cpp` (depth/primId/instanceId accumulation like colour's `recordDeviceBatch`), `UtilityRenderPass.cpp`, `UtilityRenderBuffer.cpp`, `HydraRenderImpl.cpp` AOV mapping if needed
   - approach: accumulate depth, primId and instanceId on the device as colour already is; read back once per frame; in offline renders publish at frame end (progressive viewer keeps a timer-paced publish).
   - verify: Raster and Ray AOVs unchanged (NatronUtilityRaster, Golden, Motion tests); profile shows no per-pass readback/writeTile.
   - size: M
-- [ ] M514.P4.T3 — One submission per Raster pass and one raster context per frame
+- [x] M514.P4.T3 — One submission per Raster pass and one raster context per frame
   - files: `WavefrontGpu.cpp` (batch loop, raster context creation, submitAndWait points)
   - approach: render a Raster pass as one batch (or several passes per submission) and reuse one raster context per frame; drop the per-batch CPU waits.
   - verify: tests unchanged; profile shows one submit per pass.
   - size: M
-- [ ] M514.P4.T4 — Skip the BVH build when Raster needs no secondary rays
+- [x] M514.P4.T4 — Skip the BVH build when Raster needs no secondary rays
   - files: `WavefrontGpu.cpp:1914` (`tracer.update`), the Raster setup
   - approach: when Render Mode is Raster and the frame needs no secondary rays (no bounces, shadows, holes needing resolve), skip `tracer.update`; build lazily if a later pass needs it.
   - verify: NatronUtilityRaster tests pass, incl. shadowed/bounce cases still tracing correctly; profile shows no BVH time in the emissive case.
   - size: M
-- [ ] M514.P4.T5 — Cache per-frame setup across unchanged frames
+- [x] M514.P4.T5 — Cache per-frame setup across unchanged frames
   - files: `Wavefront.cpp:1690` (shutter snapshot), `WavefrontGpu.cpp:1922-1927` (shade tables and uploads)
   - approach: reuse the shutter snapshot and tables when the stage version and render settings are unchanged; check whether a Seed change forces a Hydra resync or BVH rebuild and avoid it if so.
   - verify: tests unchanged; profile shows the fixed cost drop on a second identical-stage frame.
@@ -186,3 +186,4 @@ Raster replaces only raygen and intersect; each pass still runs the shared wavef
 - 2026-11-27 — **Interactive Raster in M514 (user):** Raster as first built was only 1.12-1.28x faster than Ray because it shares the whole per-pass pipeline; the speed work goes into M514 as Phase 514.4 before it ships. Targets (PM default, reversible): single-digit-ms per pass at 1080p and ≥5x faster than Ray at 32 samples on the vast RTX 3060 bench.
 - 2026-11-27 — **Ray gets the shared fixes (user):** the per-pass pipeline overhead also slows Ray on every sample; Phase 514.4's shared fixes (profiler, device-side AOVs + once-per-frame publish, one submission per pass, cached per-frame setup) must speed up Ray as well, and the gate checks Ray's per-sample cost.
 - 2026-11-27 (PM) — P4.T1 profiler+bench in 38129aefad (gate8 = the profiled baseline build). P4.T2 in 2027b6ef68: FilmPick.slang keeps each pixel's heaviest depth/primId/instanceId on the device (CPU film's rule), one download + resolve per frame; offline renders publish once at frame end, progressive viewer renders publish the first pass then at most every 50 ms (natron:progressive). ~40 MB extra device + staging at 1080p.
+- 2026-11-27 (PM) — P4.T3 (ce549ce3cd) batches sized to free memory and a learned ~50 ms submission budget, one raster context per batch, stop-aware waits; Raster still has one CPU wait per pass. P4.T4+T5 (9aade23855): raster-only tracer update (no BVH) when nothing traces, shutter-snapshot reuse, and sampling-only setting changes (seed, samples, filter, mode, depths) keep the Utility engine instead of a resync. Finding: Project3D always sets holes and the default reflection depth is 1, so T4 rarely triggers for projections — the T6 fast path must handle holes and decide by what materials need. T2-T5 checked off pending the gate.

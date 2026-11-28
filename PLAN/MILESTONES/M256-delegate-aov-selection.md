@@ -135,3 +135,4 @@ Sources: `spike/m255/REPORT-P1T1-aov-checklist.md`, `REPORT-P1T2-rendersettings-
 - 2026-11-22 — User sign-off round 1: every per-layer screenshot showed the beauty pass. The GUI script switched the viewer's alpha-channel combo, not its layer combo, and its difference check passed on noise. Script fix in progress; screenshots to re-send.
 - 2026-11-28 — **UAT approved (user).** Found during UAT: UsdPreviewSurface refraction doesn't render in Cycles (MoonRay unchecked) — filed as M650 - Delegate Preview Surface Refraction. Utility AOVs are M285 - Utility Renderer AOVs (unblocked by this). Main merged (267514c942); review round 1 running.
 - 2026-11-28 — Review r1: 11 fixed, 1 declined (a7cc259986); gate9 + gate10 green (m253 layout check scoped to the Storm page, ebdd4a4a94); threads answered; main (M431) merged; PR #369 ready, merge on green CI. Unblocks M285.
+- 2026-11-28 — Merged to main (PR #369, squash).

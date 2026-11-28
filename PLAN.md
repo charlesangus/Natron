@@ -213,7 +213,7 @@ future core work has solid ground to build on.
 | M253 | Delegate Render Settings | done | M251, M252 | misty-marten | E9 | F3 | | [M253-delegate-render-settings.md](PLAN/MILESTONES/M253-delegate-render-settings.md) |
 | M254 | Progressive Viewer Render | done | M248, M251 | misty-marten | E9 | F3 | | [M254-progressive-viewer-render.md](PLAN/MILESTONES/M254-progressive-viewer-render.md) |
 | M255 | Delegate Output Spikes | done | M251, M252 | | E9 | | | [M255-delegate-output-spikes.md](PLAN/MILESTONES/M255-delegate-output-spikes.md) |
-| M256 | Delegate AOV Selection | doing | M255 | bosley-executor | E9 | | uat | [M256-delegate-aov-selection.md](PLAN/MILESTONES/M256-delegate-aov-selection.md) |
+| M256 | Delegate AOV Selection | done | M255 | | E9 | | | [M256-delegate-aov-selection.md](PLAN/MILESTONES/M256-delegate-aov-selection.md) |
 | M257 | Cycles Deep Output | todo | M255, M286 |  | E8 | F24 | | [M257-cycles-deep-output.md](PLAN/MILESTONES/M257-cycles-deep-output.md) |
 | M460 | MoonRay True Deep Patch | doing | M255 | bosley-executor | E8 | F24 | | [M460-moonray-true-deep-patch.md](PLAN/MILESTONES/M460-moonray-true-deep-patch.md) |
 | M461 | MoonRay DeepFrame Over Arras | todo | M255, M286 |  | E8 | F24 | | [M461-moonray-deepframe-over-arras.md](PLAN/MILESTONES/M461-moonray-deepframe-over-arras.md) |

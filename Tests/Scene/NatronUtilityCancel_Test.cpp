@@ -599,7 +599,7 @@ protected:
         };
 
         ProgressiveRender::setPassHook([passes]() { ++*passes; });
-        _render.reset(new ProgressiveRender(&_stageLock, snapshot, std::function<void()>(), 0.05f));
+        _render.reset(new ProgressiveRender(&_stageLock, snapshot, std::function<void()>()));
         _render->setRenderer(kRenderDelegateUtilityId);
         _render->setThreads([]() { return 0; });
         _render->setView(viewOf(showRender));
@@ -651,7 +651,7 @@ protected:
     {
         const std::size_t at = (static_cast<std::size_t>(frame.height / 2) * frame.width + frame.width / 2) * 4;
 
-        return GfVec4f(frame.rgba[at], frame.rgba[at + 1], frame.rgba[at + 2], frame.rgba[at + 3]);
+        return GfVec4f((float)frame.rgba[at], (float)frame.rgba[at + 1], (float)frame.rgba[at + 2], (float)frame.rgba[at + 3]);
     }
 
     std::mutex _stageLock;

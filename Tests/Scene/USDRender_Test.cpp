@@ -2699,7 +2699,7 @@ public:
         _render.reset(new ProgressiveRender(&_stageLock, [sceneStage](SceneStageSnapshot* into) {
             *into = sceneStage->getSnapshot();
 
-            return true; }, std::function<void()>(), 0.05f));
+            return true; }, std::function<void()>()));
     }
 
     ~StageProgressiveRender()
@@ -2799,7 +2799,7 @@ TEST_F(USDRenderNodeTest, FreeGpuMemoryReleasesAProgressiveNatronUtilityRendersG
     ASSERT_TRUE(bool(first)) << error;
     ASSERT_TRUE(bool(first->deviceColor)) << "the frame is not on the GPU";
 
-    std::vector<unsigned char> before;
+    std::vector<PXR_NS::GfHalf> before;
 
     ASSERT_TRUE(render.hostColor(*first, &before, &error)) << error;
     EXPECT_GT(gpu.runtime()->pool().stats().liveBytes, 0u);

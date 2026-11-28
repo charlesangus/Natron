@@ -87,6 +87,7 @@
 #define kViewerParamMaxSamples "maxSamples"
 #define kViewerParamRenderEverything "renderEverything"
 #define kViewerParamRefinementPaused "refinementPaused"
+#define kViewerParamApplyCameraExposure "applyCameraExposure"
 #define kViewerParamMapSiblingOverlays "mapSiblingOverlays"
 #define kViewerParamPointMarkers "pointMarkers"
 #define kViewerParamPointNumbers "pointNumbers"

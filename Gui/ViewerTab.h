@@ -560,6 +560,11 @@ private Q_SLOTS:
 
     void refreshRefineSamplesLabel();
 
+    void onApplyCameraExposureButtonClicked(bool apply);
+
+    // Shows the camera exposure the 3D view read last, and whether there is one to apply.
+    void refreshCameraExposureControls();
+
 private:
     // Shows the viewer node's knobs in the widgets and in the GL viewer, with no widget signal.
     void refreshFromViewerKnob(const std::string& name);

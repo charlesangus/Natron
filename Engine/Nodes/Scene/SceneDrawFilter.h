@@ -362,6 +362,8 @@ private:
 
     bool isFiltering() const { return !_rules.empty() || _revealing || (_root->queuedBelow != 0) || (_waitingCount != 0); }
     bool queues(const Node& node) const { return _admitting && node.hideable && !node.light; }
+    // Whether the prim the path's geomSubset belongs to is out of Hydra.
+    bool subsetOfAbsent(const PXR_NS::SdfPath& subsetPath) const;
     void enqueue(Node& node);
     void dequeue(Node& node);
     void admitNode(Node& node);

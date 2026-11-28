@@ -84,7 +84,9 @@ struct SceneTransformDrag;
  * Another delegate, such as a path tracer, renders progressively in the background
  * (HydraRender::ProgressiveRender): each edit of the stage, the view or Max Samples restarts it, it
  * refines until it converges, reaches Max Samples or is paused, and render() draws its latest
- * frame, uploaded to a texture, under the grid and handles.
+ * frame, uploaded to a half-float texture and graded by the display transform as Storm's colour
+ * is, under the grid and handles. Its lights follow the lighting mode, and a change of the mode
+ * restarts it, while a change of the display transform only redraws its last frame.
  *
  * Owns one long-lived stage (SceneStage) for its whole life and syncs each new scene into it, so
  * an edit upstream reaches the engine as the stage's change notices, which it applies to the
@@ -194,6 +196,10 @@ public:
         U64 frames = 0;
         // The samples per pixel of the frame drawn last, -1 if unknown or none was.
         int drawnSamples = -1;
+        // Whether the lighting mode asked the delegate for the headlight, and whether it lights
+        // with one: a delegate that cannot renders the stage's lights instead.
+        bool headlightAsked = false;
+        bool headlight = false;
     };
 
     /**
@@ -590,6 +596,8 @@ public:
         std::string look;
         double gain = 1.;
         double gamma = 1.;
+        // Multiplies the exposure of the camera looked through in with the gain.
+        bool applyCameraExposure = true;
     };
 
     /**
@@ -737,6 +745,24 @@ public:
 
     // Whether the camera looked through is drawn from setLookThroughTransform().
     bool hasLookThroughTransform() const;
+
+    // The exposure of the camera looked through at the shown time, as the last render read it.
+    struct CameraExposure {
+        // The camera authors an exposure attribute: exposure, or one of the exposure:* terms.
+        bool authored = false;
+        // log2 of scale.
+        double stops = 0.;
+        // The camera's linear exposure scale as USD computes it, 1 when nothing is authored.
+        double scale = 1.;
+
+        bool operator==(const CameraExposure& other) const
+        {
+            return (authored == other.authored) && (stops == other.stops) && (scale == other.scale);
+        }
+    };
+
+    // The free camera has none.
+    CameraExposure getCameraExposure() const;
 
     // The highlighted prims, in selection order: the last is the current one.
     void setSelectedPrims(const std::vector<std::string>& paths);
@@ -1554,6 +1580,10 @@ Q_SIGNALS:
     // Whenever the natronSceneSamples family of properties is published.
     void refineStateChanged();
 
+    // The exposure of the camera looked through changed (getRenderer().getCameraExposure()), or
+    // the camera did. Queued after the paint that read it.
+    void cameraExposureChanged();
+
     // The renderer's stage holds the latest requested scene, or none (main thread).
     void sceneSynced();
 
@@ -1598,9 +1628,9 @@ private:
     // properties, the display settings into natronSceneDrawMode, natronSceneShowGrid,
     // natronSceneShowGuides, natronScenePurposes and natronSceneLighting, and the progressive
     // render's state into natronSceneSamples, natronSceneMaxSamples, natronSceneRefining,
-    // natronSceneRefinementStopped, natronSceneRefineConverged, natronSceneRestartCount and
-    // natronSceneUploadMs, and the main thread's blocking waits (see
-    // SceneViewportRenderer::getMainThreadWaitMs()) into natronSceneMainWaitMs and
+    // natronSceneRefinementStopped, natronSceneRefineConverged, natronSceneRestartCount,
+    // natronSceneUploadMs and natronSceneLightingEffective, and the main thread's blocking waits
+    // (see SceneViewportRenderer::getMainThreadWaitMs()) into natronSceneMainWaitMs and
     // natronSceneMainWaitMaxMs.
     void publishState();
 

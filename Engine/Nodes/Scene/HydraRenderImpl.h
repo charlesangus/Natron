@@ -465,6 +465,12 @@ std::uint64_t getEngineRenderCount();
 std::uint64_t getMoonRayProgressReads();
 
 /**
+ * @brief Converts count floats to halves. A finite value past the largest half saturates to it, so
+ * a later scale such as the viewer's exposure can still bring it down; NaN stays NaN.
+ **/
+void toSaturatedHalves(const float* from, PXR_NS::GfHalf* to, std::size_t count);
+
+/**
  * @brief Whether Storm renders write the ids of translucent prims into their primId plane, as
  * they do unless turned off; for tests, to compare against Storm's own ids. Read when a render's
  * ids are first decoded.
@@ -491,9 +497,9 @@ std::string contextDescription(std::string* error);
  * A worker thread owns the engine (made without the GPU, as the CPU delegates' render thread
  * makes its own) and polls it: a path tracer renders on threads of its own between Render() calls,
  * each of which syncs the stage's changes into it. After each poll whose sample count moved it
- * publishes the colour, over a background and encoded to sRGB, and the depth, as the window depth
- * of the frame's projection, and calls the listener on the worker. Natron Utility, which has no
- * samples to refine, publishes only its finished frames.
+ * publishes the colour, scene-linear and premultiplied as the delegate rendered it, and the depth,
+ * as the window depth of the frame's projection, and calls the listener on the worker. Natron
+ * Utility, which has no samples to refine, publishes only its finished frames.
  *
  * Edits coalesce: a restart waits until no edit has come for a short quiet time, or until the first
  * waiting one is a bounded time old, so that a burst of edits restarts once and a camera dragged
@@ -542,7 +548,8 @@ public:
         bool showRender = false;
         bool showProxy = true;
         bool showGuides = false;
-        // Lit by a light at the camera instead of the stage's lights.
+        // Lit by a light at the camera instead of the stage's lights. A delegate with no distant
+        // light renders the stage's lights, with a warning once.
         bool headlight = false;
 
         bool operator==(const View& other) const;
@@ -555,8 +562,9 @@ public:
     struct Frame {
         int width = 0;
         int height = 0;
-        // 4 bytes per pixel, the bottom row first: the colour over the background, sRGB encoded.
-        std::vector<unsigned char> rgba;
+        // 4 per pixel, the bottom row first: the colour AOV, scene-linear and premultiplied, with
+        // its alpha, 0 where nothing was hit. Nothing is composited under it and nothing clamped.
+        std::vector<PXR_NS::GfHalf> rgba;
         // 1 per pixel: the window depth in the view's projection, 1 where nothing was hit.
         std::vector<float> depth;
         // The delegate's sample count when the frame was read, -1 if it reports none.
@@ -599,6 +607,10 @@ public:
         // Of those, the ones made again because a MoonRay session's progress held still.
         std::uint64_t stallRemakes = 0;
         std::uint64_t frames = 0;
+        // Whether the view of the last pass asked for a light at the camera (View::headlight), and
+        // whether the engine has one: MoonRay without a distant light renders the stage's lights instead.
+        bool headlightAsked = false;
+        bool headlight = false;
         // Why the delegate cannot render, empty if it can.
         std::string error;
     };
@@ -627,19 +639,16 @@ public:
      * The caller calls invalidate() for an edit of its stage before it lets go of *stageLock, so
      * that a snapshot and the edit count read with it agree; the other setters need no lock.
      * They may be called with *stageLock held. listener is called on the
-     * worker after each frame is published and when the delegate fails. background is the linear
-     * grey the colour is composited over. None of snapshot, listener, setThreads()' function or
-     * *stageLock is used once the destructor returns.
+     * worker after each frame is published and when the delegate fails. None of snapshot,
+     * listener, setThreads()' function or *stageLock is used once the destructor returns.
      **/
     ProgressiveRender(std::mutex* stageLock,
                       const std::function<bool(SceneStageSnapshot*)>& snapshot,
-                      const std::function<void()>& listener,
-                      float background);
+                      const std::function<void()>& listener);
 
     ProgressiveRender(const StageLock& stageLock,
                       const std::function<bool(SceneStageSnapshot*)>& snapshot,
-                      const std::function<void()>& listener,
-                      float background);
+                      const std::function<void()>& listener);
 
     /**
      * @brief Tells the worker to end and returns without waiting for it: the worker finishes the
@@ -676,7 +685,10 @@ public:
      **/
     void setSettings(const std::map<std::string, PXR_NS::VtValue>& settings);
 
-    // The sample cap; <= 0 for the delegate's default, the prim's samples if it sets them. A change restarts.
+    // The sample cap in samples per pixel on every delegate; <= 0 for the delegate's default, the
+    // prim's samples if it sets them. MoonRay takes it as the pixel samples whose square reaches it
+    // (MoonRaySettings::pixelSamplesFor), so it may render more than the cap while counting up to it.
+    // A change restarts.
     void setMaxSamples(int samples);
 
     // The cap in force: the one set, or the delegate's default once its engine is made, else 0.
@@ -722,7 +734,7 @@ public:
      * with *error set when frame has no deviceColor or the device cannot read it back.
      **/
     bool hostColor(const Frame& frame,
-                   std::vector<unsigned char>* rgba,
+                   std::vector<PXR_NS::GfHalf>* rgba,
                    std::string* error) const;
 
     /**
@@ -770,6 +782,13 @@ public:
      * (never the stage lock). Empty for none.
      **/
     static void setPassHook(const std::function<void()>& hook);
+
+    /**
+     * @brief For tests: hook is called on every worker in each pass, after the checks that make
+     * its engine again and before it takes the pass's snapshot, without any of its locks. Empty
+     * for none.
+     **/
+    static void setSnapshotHook(const std::function<void()>& hook);
 
     struct Implementation;
 

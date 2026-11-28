@@ -1004,7 +1004,8 @@ ViewerInstance::initializeKnobs()
 
     KnobIntPtr maxSamples = createViewerKnob<KnobInt>(this, page, tr("Max Samples"), kViewerParamMaxSamples,
                                                       tr("The samples per pixel a progressive renderer refines the 3D view to; "
-                                                         "0 uses the renderer's default. A change restarts the render."));
+                                                         "0 uses the renderer's default. MoonRay renders a square number "
+                                                         "of samples, the next one up when this is not one. A change restarts the render."));
     maxSamples->setMinimum(0);
     maxSamples->setDisplayMinimum(0);
     maxSamples->setDisplayMaximum(4096);
@@ -1019,6 +1020,14 @@ ViewerInstance::initializeKnobs()
                                                               tr("Holds a progressive renderer's refinement of the 3D view at its "
                                                                  "current samples; off continues from them. Edits wait until it is off."));
     k.refinementPaused = refinementPaused;
+
+    KnobBoolPtr applyCameraExposure = createViewerKnob<KnobBool>(this, page, tr("Apply Camera Exposure"), kViewerParamApplyCameraExposure,
+                                                                 tr("While the 3D view looks through a scene camera, multiplies what is rendered by "
+                                                                    "the camera's exposure, pow(2, exposure) with its exposure time, ISO, f-stop "
+                                                                    "and responsivity terms, together with Gain. It changes only what the viewer "
+                                                                    "shows, not what is rendered or written."));
+    applyCameraExposure->setDefaultValue(true);
+    k.applyCameraExposure = applyCameraExposure;
 
     KnobBoolPtr mapSiblingOverlays = createViewerKnob<KnobBool>(this, page, tr("Map Sibling Overlays"), kViewerParamMapSiblingOverlays,
                                                                 tr("Draws the overlay of a node on another branch of a shared input "

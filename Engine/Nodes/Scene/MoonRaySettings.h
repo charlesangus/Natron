@@ -40,8 +40,12 @@ NATRON_NAMESPACE_ENTER
 namespace MoonRaySettings {
 const RenderSettingsKnobs::Curated& curated();
 
-// The key of the samples per pixel, which a viewer's own sample count stands in for.
+// The key of MoonRay's pixel samples, the square root of its samples per pixel.
 const char* samplesKey();
+
+// The fewest pixel samples whose square is at least samplesPerPixel: 4 takes 2, 8 takes 3, which
+// renders 9. 0 when samplesPerPixel is.
+int pixelSamplesFor(int samplesPerPixel);
 } // namespace MoonRaySettings
 
 NATRON_NAMESPACE_EXIT

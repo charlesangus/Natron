@@ -109,7 +109,7 @@ public:
         _render.reset(new ProgressiveRender(&_stageLock, [stage](NATRON_NAMESPACE::SceneStageSnapshot* into) {
             *into = stage->getSnapshot();
 
-            return true; }, std::function<void()>(), 0.f));
+            return true; }, std::function<void()>()));
         _render->setDrawRules(rules);
         _render->setThreads([]() { return 2; });
         _render->setRenderer(kRenderDelegateCyclesId);

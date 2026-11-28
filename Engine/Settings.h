@@ -107,7 +107,8 @@ public:
     enum Viewer3DLightingEnum {
         // The stage's lights when it has any, else a light at the camera.
         eViewer3DLightingAuto = 0,
-        // Only the stage's lights: a stage with none shows its lit surfaces black.
+        // Only the stage's lights: a stage with none shows as USDRender renders it, black in Storm and
+        // lit by the delegate's own world in Cycles and MoonRay.
         eViewer3DLightingScene,
         // Only a light at the camera.
         eViewer3DLightingHeadlight

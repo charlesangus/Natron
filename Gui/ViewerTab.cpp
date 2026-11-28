@@ -125,6 +125,7 @@ const char* const kViewerKnobNames[] = {
     kViewerParamMaxSamples,
     kViewerParamRenderEverything,
     kViewerParamRefinementPaused,
+    kViewerParamApplyCameraExposure,
     kViewerParamMapSiblingOverlays,
     kViewerParamPointMarkers,
     kViewerParamPointNumbers,
@@ -792,6 +793,31 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->gainSlider->setToolTip(gainTt);
     _imp->secondRowLayout->addWidget(_imp->gainSlider);
 
+    _imp->applyCameraExposureButton = new Button(tr("Cam Exp"), _imp->secondSettingsRow);
+    _imp->applyCameraExposureButton->setObjectName(QString::fromUtf8(kViewerParamApplyCameraExposure));
+    _imp->applyCameraExposureButton->setCheckable(true);
+    _imp->applyCameraExposureButton->setChecked(true);
+    _imp->applyCameraExposureButton->setDown(true);
+    _imp->applyCameraExposureButton->setFocusPolicy(Qt::NoFocus);
+    _imp->applyCameraExposureButton->setFixedHeight(buttonSize.height());
+    _imp->applyCameraExposureButton->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("Apply Camera Exposure: while the 3D view looks through a scene camera, "
+                                                                                          "multiplies what is rendered by the camera's exposure, together with Gain. "
+                                                                                          "Only what the viewer shows changes."),
+                                                                                       NATRON_NAMESPACE::WhiteSpaceNormal));
+    _imp->applyCameraExposureButton->setEnabled(false);
+    _imp->secondRowLayout->addWidget(_imp->applyCameraExposureButton);
+    QObject::connect(_imp->applyCameraExposureButton, SIGNAL(clicked(bool)), this, SLOT(onApplyCameraExposureButtonClicked(bool)));
+
+    _imp->cameraExposureLabel = new Label(QString(), _imp->secondSettingsRow);
+    _imp->cameraExposureLabel->setObjectName(QString::fromUtf8("cameraExposure"));
+    _imp->cameraExposureLabel->setToolTip(NATRON_NAMESPACE::convertFromPlainText(tr("The exposure, in stops, of the camera the 3D view looks through. "
+                                                                                    "Empty when it looks through no camera or the camera has no exposure."),
+                                                                                 NATRON_NAMESPACE::WhiteSpaceNormal));
+    _imp->cameraExposureLabel->setFixedWidth(_imp->cameraExposureLabel->fontMetrics().horizontalAdvance(QString::fromUtf8("-100.0")) + TO_DPIX(4));
+    _imp->cameraExposureLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    _imp->cameraExposureLabel->setEnabled(false);
+    _imp->secondRowLayout->addWidget(_imp->cameraExposureLabel);
+
     QIcon gammaIc;
     appPTR->getIcon(NATRON_PIXMAP_VIEWER_GAMMA_ENABLED, pixmapIconSize, &gammaIc);
     _imp->toggleGammaButton = new Button(gammaIc, QString(), _imp->secondSettingsRow);
@@ -894,7 +920,8 @@ ViewerTab::ViewerTab(const std::list<NodeGuiPtr> & existingNodesContext,
     _imp->mainLayout->addWidget(_imp->sceneRenderRow);
 
     const QString maxSamplesTt = NATRON_NAMESPACE::convertFromPlainText(tr("The samples per pixel the renderer refines the 3D view to; "
-                                                                           "0 uses the renderer's default. A change restarts the render."),
+                                                                           "0 uses the renderer's default. MoonRay renders a square number "
+                                                                           "of samples, the next one up when this is not one. A change restarts the render."),
                                                                         NATRON_NAMESPACE::WhiteSpaceNormal);
     Label* maxSamplesLabel = new Label(tr("Max Samples"), _imp->sceneRenderRow);
     maxSamplesLabel->setToolTip(maxSamplesTt);
@@ -1676,6 +1703,7 @@ ViewerTab::onActiveInputDataKindChanged()
         }
         QObject::connect(_imp->sceneViewport, &SceneViewport::rendererChanged, this, &ViewerTab::refreshSceneRenderRow);
         QObject::connect(_imp->sceneViewport, &SceneViewport::refineStateChanged, this, &ViewerTab::refreshRefineSamplesLabel);
+        QObject::connect(_imp->sceneViewport, &SceneViewport::cameraExposureChanged, this, &ViewerTab::refreshCameraExposureControls);
         QObject::connect(_imp->sceneViewport, &SceneViewport::geoPickModeChanged, _imp->geoDisplayRow, [this](int mode) {
             _imp->geoDisplayRow->setPickMode(mode);
         });
@@ -1708,6 +1736,7 @@ ViewerTab::onActiveInputDataKindChanged()
         _imp->viewer->show();
     }
     refreshSceneRenderRow();
+    refreshCameraExposureControls();
     applyStaleCueInput();
     Q_EMIT sceneViewChanged();
 } // onActiveInputDataKindChanged
@@ -1736,17 +1765,51 @@ ViewerTab::refreshSceneDisplayTransform()
     ProjectPtr project = (getGui() && getGui()->getApp()) ? getGui()->getApp()->getProject() : ProjectPtr();
     ProjectColorManagementPtr colorManagement = project ? project->getColorManagement() : ProjectColorManagementPtr();
     if (colorManagement) {
-        getDisplayTransform(&transform.display, &transform.view, nullptr);
         transform.config = colorManagement->getConfig();
         transform.colorSpace = project->getWorkingColorSpace();
     }
     if (_imp->viewerNode) {
-        // As the 2D viewer takes it: a look the config does not list is none.
-        _imp->viewerNode->getResolvedDisplayTransform(nullptr, nullptr, &transform.look);
+        // Resolved as the 2D viewer does: a knob on the project default takes the project's display and view, and a look the config does not list is none.
+        _imp->viewerNode->getResolvedDisplayTransform(&transform.display, &transform.view, &transform.look);
         transform.gain = _imp->viewerNode->getGain();
         transform.gamma = _imp->viewerNode->getGamma();
     }
+    transform.applyCameraExposure = _imp->viewerValue<bool>(kViewerParamApplyCameraExposure, true);
     _imp->sceneViewport->setDisplayTransform(transform);
+}
+
+void
+ViewerTab::refreshCameraExposureControls()
+{
+    if (!_imp->applyCameraExposureButton || !_imp->cameraExposureLabel) {
+        return;
+    }
+    const bool apply = _imp->viewerValue<bool>(kViewerParamApplyCameraExposure, true);
+    SceneViewportRenderer::CameraExposure exposure;
+    if (_imp->sceneViewport && isShowingScene()) {
+        exposure = _imp->sceneViewport->getRenderer().getCameraExposure();
+    }
+    {
+        QSignalBlocker blocker(_imp->applyCameraExposureButton);
+        _imp->applyCameraExposureButton->setChecked(apply);
+        _imp->applyCameraExposureButton->setDown(apply);
+    }
+    _imp->applyCameraExposureButton->setEnabled(exposure.authored);
+    _imp->cameraExposureLabel->setEnabled(exposure.authored);
+    const QString text = exposure.authored ? QString::number(exposure.stops, 'f', 1) : QString();
+    if (_imp->cameraExposureLabel->text() != text) {
+        _imp->cameraExposureLabel->setText(text);
+    }
+}
+
+void
+ViewerTab::onApplyCameraExposureButtonClicked(bool apply)
+{
+    editViewerKnobs(tr("Apply Camera Exposure"), [this, apply]() {
+        _imp->setViewerValue<bool>(kViewerParamApplyCameraExposure, apply);
+    });
+    refreshCameraExposureControls();
+    refreshSceneDisplayTransform();
 }
 
 void
@@ -1900,6 +1963,9 @@ ViewerTab::refreshFromViewerKnob(const std::string& name)
         abortViewersAndRefresh();
     } else if ((name == kViewerParamMaxSamples) || (name == kViewerParamRefinementPaused) || (name == kViewerParamRenderEverything) || (name == kViewerParamPointMarkers) || (name == kViewerParamPointNumbers) || (name == kViewerParamPrimitiveNumbers) || (name == kViewerParamNormals) || (name == kViewerParamNormalScale) || (name == kViewerParamHighlightGroup)) {
         refreshSceneRenderFromKnobs();
+    } else if (name == kViewerParamApplyCameraExposure) {
+        refreshCameraExposureControls();
+        refreshSceneDisplayTransform();
     } else if (name == kViewerParamMapSiblingOverlays) {
         refreshMapSiblingOverlaysFromKnob();
     }
@@ -1919,6 +1985,7 @@ ViewerTab::refreshAllFromViewerKnobs()
     refreshFpsFromKnobs();
     refreshFrameRangeFromKnobs();
     refreshSceneRenderFromKnobs();
+    refreshCameraExposureControls();
     refreshMapSiblingOverlaysFromKnob();
 }
 

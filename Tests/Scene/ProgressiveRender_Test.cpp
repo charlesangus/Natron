@@ -40,6 +40,8 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -93,6 +95,8 @@ using MoonRayTestProcesses::ScopedEnv;
 
 namespace {
 const char* const kFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles.usda";
+// /World/Glow, a 2-unit emissive card facing the camera ten units away, over nothing.
+const char* const kEmissionFixture = NATRON_TESTS_FIXTURES_DIR "/scene-cycles-emission.usda";
 const char* const kCamera = "/World/Cam";
 const int kSize = 32;
 const int kSamples = 256;
@@ -106,11 +110,11 @@ typedef HydraRender::ProgressiveRender ProgressiveRender;
 // The fixture as a USDRead node hands it on: a node layer sublayering the file and carrying its
 // stage metadata.
 ScenePayload
-fixtureScene()
+fixtureScene(const char* fixture)
 {
-    PXR_NS::SdfLayerRefPtr file = PXR_NS::SdfLayer::FindOrOpen(kFixture);
+    PXR_NS::SdfLayerRefPtr file = PXR_NS::SdfLayer::FindOrOpen(fixture);
     if (!file) {
-        ADD_FAILURE() << "cannot open " << kFixture;
+        ADD_FAILURE() << "cannot open " << fixture;
 
         return ScenePayload();
     }
@@ -144,6 +148,45 @@ movedNear(const ScenePayload& base,
     order->SetDefaultValue(PXR_NS::VtValue(PXR_NS::VtTokenArray(1, PXR_NS::TfToken("xformOp:translate"))));
 
     return SceneOps::appendLayer(base, layer, hash);
+}
+
+// base, of the emission fixture, with its card's emission set to grey, as a node downstream would.
+ScenePayload
+emittingGrey(const ScenePayload& base,
+             float grey,
+             U64 hash)
+{
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("ProgressiveRenderTestEmission");
+    PXR_NS::SdfPrimSpecHandle prim = PXR_NS::SdfCreatePrimInLayer(layer, PXR_NS::SdfPath("/World/Looks/Glow/Surface"));
+    PXR_NS::SdfAttributeSpecHandle emission = PXR_NS::SdfAttributeSpec::New(prim, "inputs:emissiveColor", PXR_NS::SdfValueTypeNames->Color3f);
+    emission->SetDefaultValue(PXR_NS::VtValue(PXR_NS::GfVec3f(grey, grey, grey)));
+
+    return SceneOps::appendLayer(base, layer, hash);
+}
+
+// The colour and alpha of frame's pixel (x, y), counted from its bottom-left pixel.
+PXR_NS::GfVec4f
+pixelOf(const ProgressiveRender::Frame& frame,
+        int x,
+        int y)
+{
+    const std::size_t at = ((std::size_t)y * (std::size_t)frame.width + (std::size_t)x) * 4;
+
+    return PXR_NS::GfVec4f((float)frame.rgba[at], (float)frame.rgba[at + 1], (float)frame.rgba[at + 2], (float)frame.rgba[at + 3]);
+}
+
+// The mean red of frame's 4 by 4 pixels about its centre, all on the near cube.
+float
+centreRed(const ProgressiveRender::Frame& frame)
+{
+    float sum = 0.f;
+    for (int y = frame.height / 2 - 2; y < frame.height / 2 + 2; ++y) {
+        for (int x = frame.width / 2 - 2; x < frame.width / 2 + 2; ++x) {
+            sum += pixelOf(frame, x, y)[0];
+        }
+    }
+
+    return sum / 16.f;
 }
 
 // The window depth, in frustum's projection, of a point distance units along the view axis.
@@ -210,12 +253,29 @@ withKey(const ScenePayload& base)
     return SceneOps::appendLayer(base, layer, 0x6b65790aULL);
 }
 
-float
-linearOf(unsigned char encoded)
+// base with a grey dome light, /World/Dome, which the camera sees wherever nothing covers it.
+ScenePayload
+withDome(const ScenePayload& base)
 {
-    const float c = encoded / 255.f;
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("ProgressiveRenderTestDome");
+    PXR_NS::SdfPrimSpecHandle prim = PXR_NS::SdfCreatePrimInLayer(layer, PXR_NS::SdfPath("/World/Dome"));
+    prim->SetSpecifier(PXR_NS::SdfSpecifierDef);
+    prim->SetTypeName("DomeLight");
+    PXR_NS::SdfAttributeSpecHandle intensity = PXR_NS::SdfAttributeSpec::New(prim, "inputs:intensity", PXR_NS::SdfValueTypeNames->Float);
+    intensity->SetDefaultValue(PXR_NS::VtValue(1.f));
+    PXR_NS::SdfAttributeSpecHandle color = PXR_NS::SdfAttributeSpec::New(prim, "inputs:color", PXR_NS::SdfValueTypeNames->Color3f);
+    color->SetDefaultValue(PXR_NS::VtValue(PXR_NS::GfVec3f(0.5f, 0.5f, 0.5f)));
 
-    return (c <= 0.04045f) ? (c / 12.92f) : std::pow((c + 0.055f) / 1.055f, 2.4f);
+    return SceneOps::appendLayer(base, layer, 0x646f6d65ULL);
+}
+
+// A linear value as an 8-bit sRGB level, clamped to [0, 255].
+double
+levelOf(float linear)
+{
+    const double v = std::min(1., std::max(0., (double)linear));
+
+    return 255. * ((v <= 0.0031308) ? (v * 12.92) : (1.055 * std::pow(v, 1. / 2.4) - 0.055));
 }
 
 // The mean linear value of channel, or of all three if channel is -1, over the pixels of frame
@@ -236,8 +296,8 @@ meanOver(const ProgressiveRender::Frame& frame,
             if (keep && !keep(x, y)) {
                 continue;
             }
-            const unsigned char* px = &frame.rgba[((std::size_t)y * frame.width + x) * 4];
-            sum += (channel < 0) ? (linearOf(px[0]) + linearOf(px[1]) + linearOf(px[2])) / 3.f : linearOf(px[channel]);
+            const PXR_NS::GfVec4f px = pixelOf(frame, x, y);
+            sum += (channel < 0) ? (px[0] + px[1] + px[2]) / 3.f : px[channel];
             ++count;
         }
     }
@@ -245,7 +305,7 @@ meanOver(const ProgressiveRender::Frame& frame,
     return count ? (float)(sum / count) : -1.f;
 }
 
-// The mean difference, in 8-bit levels, between two frames' colour channels.
+// The mean difference, in 8-bit sRGB levels, between two frames' colour channels.
 double
 meanLevelDifference(const ProgressiveRender::Frame& a,
                     const ProgressiveRender::Frame& b)
@@ -257,7 +317,7 @@ meanLevelDifference(const ProgressiveRender::Frame& a,
     std::size_t count = 0;
     for (std::size_t i = 0; i < a.rgba.size(); ++i) {
         if ((i % 4) != 3) {
-            sum += std::abs((int)a.rgba[i] - (int)b.rgba[i]);
+            sum += std::abs(levelOf((float)a.rgba[i]) - levelOf((float)b.rgba[i]));
             ++count;
         }
     }
@@ -398,6 +458,7 @@ protected:
     {
         _watchdog.setPhase("teardown");
         ProgressiveRender::setPassHook(std::function<void()>());
+        ProgressiveRender::setSnapshotHook(std::function<void()>());
         hold(false);
         _render.reset();
         // A worker still ending would hold a Cycles session of its thread count into the next test.
@@ -448,21 +509,22 @@ protected:
             _published.clear();
             _calls = 0;
         }
-        _render.reset(new ProgressiveRender(&_stageLock, snapshotOfStage(), [this]() { heard(); }, 0.05f));
+        _render.reset(new ProgressiveRender(&_stageLock, snapshotOfStage(), [this]() { heard(); }));
         _listened = _render.get();
     }
 
-    // Starts a render of the fixture by renderer, Cycles unless given, through its camera, kSize
+    // Starts a render of fixture by renderer, Cycles unless given, through its camera, kSize
     // pixels square, with a render settings prim's settings.
     bool start(const std::map<std::string, PXR_NS::VtValue>& settings = std::map<std::string, PXR_NS::VtValue>(),
-               const std::string& renderer = kRenderDelegateCyclesId)
+               const std::string& renderer = kRenderDelegateCyclesId,
+               const char* fixture = kFixture)
     {
         if (!_stage->isValid()) {
             ADD_FAILURE() << "OpenUSD could not open a stage";
 
             return false;
         }
-        _base = fixtureScene();
+        _base = fixtureScene(fixture);
         sync(_base);
         PXR_NS::UsdGeomCamera camera(_stage->getStage()->GetPrimAtPath(PXR_NS::SdfPath(kCamera)));
         if (!camera) {
@@ -631,8 +693,8 @@ protected:
     {
         ASSERT_TRUE(start(std::map<std::string, PXR_NS::VtValue>(), renderer));
         if (std::string(renderer) != kRenderDelegateCyclesId) {
-            // MoonRay's cap is its pixel_samples, the square root of the samples per pixel: 8 takes 64.
-            _render->setMaxSamples(8);
+            // MoonRay's pixel samples 8.
+            _render->setMaxSamples(64);
         }
         SceneDrawFilter::Rules rules;
         rules[PXR_NS::SdfPath("/World/Far")] = SceneDrawFilter::eRuleHidden;
@@ -765,8 +827,10 @@ protected:
         std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
         ASSERT_TRUE(collectUntilDone(mark, &frames));
         ASSERT_FALSE(frames.empty());
-        EXPECT_EQ(3, _render->getMaxSamples());
-        EXPECT_EQ(3, frames.back()->maxSamples);
+        // MoonRay's pixel samples are the square root of the samples per pixel the cap counts.
+        const int capOfThree = (renderer == kMoonRayRendererId) ? 9 : 3;
+        EXPECT_EQ(capOfThree, _render->getMaxSamples());
+        EXPECT_EQ(capOfThree, frames.back()->maxSamples);
 
         settings[samplesKey] = PXR_NS::VtValue(4);
         ASSERT_TRUE(heavyPass(settings));
@@ -860,8 +924,9 @@ TEST_F(ProgressiveRenderTest, RefinesToTheCapAndStops)
     EXPECT_TRUE(last.converged);
     // The centre shows the near cube, in front of the far plane, and is lit.
     EXPECT_NEAR(windowDepth(_view.frustum, kNearDistance), centreDepth(last), 1e-4f);
-    const std::size_t centre = ((std::size_t)(kSize / 2) * kSize + kSize / 2) * 4;
-    EXPECT_GT(last.rgba[centre] + last.rgba[centre + 1] + last.rgba[centre + 2], 3 * 20);
+    const PXR_NS::GfVec4f centre = pixelOf(last, kSize / 2, kSize / 2);
+    EXPECT_GT(centre[0] + centre[1] + centre[2], 0.02f);
+    EXPECT_NEAR(1.f, centre[3], 1e-3f);
 
     const ProgressiveRender::Status status = _render->getStatus();
     EXPECT_TRUE(status.active);
@@ -877,6 +942,135 @@ TEST_F(ProgressiveRenderTest, RefinesToTheCapAndStops)
     _render.reset();
     EXPECT_TRUE(ProgressiveRender::waitForDetachedWorkers(kEndMs));
     EXPECT_EQ(liveBefore, ProgressiveRender::getLiveCount());
+}
+
+// A frame carries the colour AOV as the delegate rendered it: an emissive card at 4 reads about 4
+// at the centre with alpha 1, unclamped and with no background under it, and a pixel nothing was
+// rendered to is transparent black.
+TEST_F(ProgressiveRenderTest, FramesAreSceneLinearWithTheirAlpha)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start(std::map<std::string, PXR_NS::VtValue>(), kRenderDelegateCyclesId, kEmissionFixture));
+    sync(emittingGrey(_base, 4.f, 0x4e3a11ULL));
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    ASSERT_FALSE(frames.empty());
+    const ProgressiveRender::Frame& last = *frames.back();
+    ASSERT_EQ((std::size_t)kSize * kSize * 4, last.rgba.size());
+
+    const PXR_NS::GfVec4f centre = pixelOf(last, kSize / 2, kSize / 2);
+    for (int c = 0; c < 3; ++c) {
+        EXPECT_NEAR(4.f, centre[c], 0.4f) << "channel " << c;
+    }
+    EXPECT_NEAR(1.f, centre[3], 1e-3f);
+    const PXR_NS::GfVec4f corner = pixelOf(last, 0, 0);
+    EXPECT_NEAR(0.f, corner[3], 1e-3f);
+    for (int c = 0; c < 3; ++c) {
+        EXPECT_NEAR(0.f, corner[c], 1e-3f) << "channel " << c;
+    }
+}
+
+// A dome the camera sees where nothing was rendered reaches the frame as light, whatever alpha the
+// delegate gives it there: the viewer's grade adds light at alpha 0 to the background.
+TEST_F(ProgressiveRenderTest, ADomeSeenWhereNothingCoversReachesTheFrame)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start(std::map<std::string, PXR_NS::VtValue>(), kRenderDelegateCyclesId, kEmissionFixture));
+    sync(withDome(emittingGrey(_base, 4.f, 0x4e3a12ULL)));
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    ASSERT_FALSE(frames.empty());
+    const PXR_NS::GfVec4f corner = pixelOf(*frames.back(), 0, 0);
+    std::printf("[          ] the corner under the dome: %g %g %g, alpha %g\n", corner[0], corner[1], corner[2], corner[3]);
+    for (int c = 0; c < 3; ++c) {
+        EXPECT_GT(corner[c], 0.1f) << "channel " << c << ": the dome does not reach the frame";
+    }
+}
+
+// The headlight lights the stage from the camera in place of its lights: a view asking for it
+// makes the engine again, changes the lit cube's colour and the status says the engine has it,
+// and a view without it makes the engine again and brings the colour back.
+TEST_F(ProgressiveRenderTest, TheHeadlightLightsFromTheCameraAndTheStatusSaysSo)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    ASSERT_FALSE(frames.empty());
+    const float sceneLit = centreRed(*frames.back());
+    EXPECT_FALSE(_render->getStatus().headlightAsked);
+    EXPECT_FALSE(_render->getStatus().headlight);
+
+    std::uint64_t builds = HydraRender::getEngineBuildCount();
+    std::size_t mark = publishedCount();
+    ProgressiveRender::View lit = _view;
+    lit.headlight = true;
+    _render->setView(lit);
+    frames.clear();
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    ASSERT_FALSE(frames.empty());
+    const float headlit = centreRed(*frames.back());
+    std::printf("[          ] the cube's red: %g by the stage's lights, %g by the headlight\n", sceneLit, headlit);
+    EXPECT_GT(std::fabs(headlit - sceneLit), 0.1f * std::max(sceneLit, headlit)) << "the headlight changed nothing";
+    EXPECT_TRUE(_render->getStatus().headlightAsked);
+    EXPECT_TRUE(_render->getStatus().headlight);
+    EXPECT_GT(HydraRender::getEngineBuildCount(), builds) << "the headlight did not make the engine again";
+
+    builds = HydraRender::getEngineBuildCount();
+    mark = publishedCount();
+    _render->setView(_view);
+    frames.clear();
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    ASSERT_FALSE(frames.empty());
+    EXPECT_GT(HydraRender::getEngineBuildCount(), builds) << "turning the headlight off did not make the engine again";
+    const float back = centreRed(*frames.back());
+    EXPECT_NEAR(sceneLit, back, 0.1f * std::max(sceneLit, 0.01f));
+    EXPECT_FALSE(_render->getStatus().headlightAsked);
+}
+
+// A lighting mode asked for after the pass's check that makes the engine again, but before its
+// snapshot, which then takes it, still makes the engine again rather than rendering it on the
+// engine made for the other mode.
+TEST_F(ProgressiveRenderTest, AHeadlightAskedForAsThePassSnapshotsMakesTheEngineAgain)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    ASSERT_FALSE(frames.empty());
+    const float sceneLit = centreRed(*frames.back());
+    EXPECT_FALSE(_render->getStatus().headlight);
+
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+    const std::size_t mark = publishedCount();
+    ProgressiveRender* render = _render.get();
+    ProgressiveRender::View lit = _view;
+    lit.headlight = true;
+    std::shared_ptr<std::atomic<bool>> armed = std::make_shared<std::atomic<bool>>(true);
+    ProgressiveRender::setSnapshotHook([render, lit, armed]() {
+        if (armed->exchange(false)) {
+            render->setView(lit);
+        }
+    });
+    _render->invalidate();
+    frames.clear();
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    ProgressiveRender::setSnapshotHook(std::function<void()>());
+    ASSERT_FALSE(armed->load()) << "no pass took a snapshot";
+    ASSERT_FALSE(frames.empty());
+    EXPECT_GT(HydraRender::getEngineBuildCount(), builds) << "the headlight was rendered on the scene lights' engine";
+    EXPECT_TRUE(_render->getStatus().headlight);
+    const float headlit = centreRed(*frames.back());
+    std::printf("[          ] the cube's red: %g by the stage's lights, %g by the headlight\n", sceneLit, headlit);
+    EXPECT_GT(std::fabs(headlit - sceneLit), 0.1f * std::max(sceneLit, headlit)) << "the headlight changed nothing";
 }
 
 // A finished render's worker woken asks for its Cycles thread count without the render's lock. A
@@ -1241,7 +1435,7 @@ TEST_F(ProgressiveRenderTest, CyclesSessionsShareTheLastCountAskedFor)
     const U64 restartsBefore = _render->getRestartCount();
     const std::uint64_t buildsBefore = HydraRender::getEngineBuildCount();
 
-    std::unique_ptr<ProgressiveRender> second(new ProgressiveRender(&_stageLock, snapshotOfStage(), std::function<void()>(), 0.05f));
+    std::unique_ptr<ProgressiveRender> second(new ProgressiveRender(&_stageLock, snapshotOfStage(), std::function<void()>()));
     second->setRenderer(kRenderDelegateCyclesId);
     second->setThreads([]() { return 3; });
     second->setView(_view);
@@ -2122,6 +2316,156 @@ TEST_F(ProgressiveRenderTest, MoonRayReturnsAtOnceFromChangesMidPass)
     }
     const bool cycles = bool(PXR_NS::PlugRegistry::GetInstance().GetPluginWithName("hdCycles"));
     interruptsMidPass(kMoonRayRendererId, MoonRaySettings::samplesKey(), cycles ? std::string(kRenderDelegateCyclesId) : std::string());
+}
+
+// Max Samples counts samples per pixel on MoonRay too: it gets the pixel samples whose square
+// reaches the cap.
+TEST(MoonRaySettingsTest, MaxSamplesTakeThePixelSamplesWhoseSquareReachesThem)
+{
+    EXPECT_EQ(0, MoonRaySettings::pixelSamplesFor(0));
+    EXPECT_EQ(1, MoonRaySettings::pixelSamplesFor(1));
+    EXPECT_EQ(2, MoonRaySettings::pixelSamplesFor(2));
+    EXPECT_EQ(2, MoonRaySettings::pixelSamplesFor(4));
+    EXPECT_EQ(3, MoonRaySettings::pixelSamplesFor(8));
+    EXPECT_EQ(3, MoonRaySettings::pixelSamplesFor(9));
+    EXPECT_EQ(4, MoonRaySettings::pixelSamplesFor(16));
+    EXPECT_EQ(64, MoonRaySettings::pixelSamplesFor(4096));
+}
+
+// The bulk conversion a frame's colour goes through gives the bits a saturating GfHalf does, for
+// floats across the whole range, the specials and a tail shorter than a vector.
+TEST(SaturatedHalvesTest, MatchASaturatingGfHalfBitForBit)
+{
+    std::vector<float> values;
+    for (std::uint64_t bits = 0; bits <= 0xffffffffull; bits += 997) {
+        const std::uint32_t word = (std::uint32_t)bits;
+        float value;
+        std::memcpy(&value, &word, sizeof(value));
+        values.push_back(value);
+    }
+    const std::uint32_t signalling = 0x7f800001u;
+    float signallingNan;
+    std::memcpy(&signallingNan, &signalling, sizeof(signallingNan));
+    const float specials[] = { 0.f, -0.f, 1.f, -1.f, 65504.f, -65504.f, 65519.f, 65520.f, 1e10f, -1e10f,
+                               std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(),
+                               std::numeric_limits<float>::quiet_NaN(), signallingNan, 5.96e-8f, 2.98e-8f, 1e-45f, 6.1e-5f };
+    values.insert(values.end(), std::begin(specials), std::end(specials));
+    values.insert(values.end(), std::begin(specials), std::begin(specials) + 3);
+    std::vector<PXR_NS::GfHalf> halves(values.size());
+    HydraRender::toSaturatedHalves(values.data(), halves.data(), values.size());
+    std::size_t mismatches = 0;
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        const float value = values[i];
+        const PXR_NS::GfHalf expected = std::isnan(value) ? PXR_NS::GfHalf(value) : PXR_NS::GfHalf(std::min(std::max(value, -65504.f), 65504.f));
+        if (expected.bits() != halves[i].bits()) {
+            if (mismatches < 8) {
+                ADD_FAILURE() << "float " << value << ": half bits " << halves[i].bits() << ", expected " << expected.bits();
+            }
+            ++mismatches;
+        }
+    }
+    EXPECT_EQ(0u, mismatches);
+}
+
+// MoonRay counts its samples per pixel off its progress against the square of its pixel samples,
+// as the viewer's sample count shows them, stays under the cap until its render is complete, and
+// ends converged at the cap: 8 renders 9 under pixel samples 3. Without a cap, the prim's pixel
+// samples 4 refine to 16.
+TEST_F(ProgressiveRenderTest, AMoonRayRenderCountsItsSamplesToConvergence)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const int kPrimPixelSamples = 4;
+    const int kMaxSamples = 8;
+    std::map<std::string, PXR_NS::VtValue> settings;
+    settings[MoonRaySettings::samplesKey()] = PXR_NS::VtValue(kPrimPixelSamples);
+    ASSERT_TRUE(start(settings, kMoonRayRendererId));
+    _render->setMaxSamples(kMaxSamples);
+    sync(withKey(_base));
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    ASSERT_FALSE(frames.empty());
+
+    const ProgressiveRender::Frame& last = *frames.back();
+    std::cout << "[   NOTE   ] samples per frame:";
+    int previous = 0;
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        if (frames[i]->restart != last.restart) {
+            continue;
+        }
+        std::cout << " " << frames[i]->samples;
+        EXPECT_GT(frames[i]->samples, 0) << "frame " << i;
+        if (frames[i]->converged) {
+            EXPECT_EQ(kMaxSamples, frames[i]->samples) << "frame " << i;
+        } else {
+            EXPECT_LE(frames[i]->samples, kMaxSamples) << "frame " << i;
+        }
+        EXPECT_GE(frames[i]->samples, previous) << "frame " << i;
+        EXPECT_EQ(kMaxSamples, frames[i]->maxSamples) << "frame " << i;
+        previous = frames[i]->samples;
+    }
+    std::cout << std::endl;
+    EXPECT_TRUE(last.converged);
+    EXPECT_EQ(kMaxSamples, last.samples);
+
+    ProgressiveRender::Status status = _render->getStatus();
+    EXPECT_TRUE(status.converged);
+    EXPECT_EQ(kMaxSamples, status.samples);
+    EXPECT_EQ(kMaxSamples, status.maxSamples);
+
+    const int kPrimSamples = kPrimPixelSamples * kPrimPixelSamples;
+    const std::size_t mark = publishedCount();
+    _render->setMaxSamples(0);
+    frames.clear();
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    ASSERT_FALSE(frames.empty());
+    EXPECT_TRUE(frames.back()->converged);
+    EXPECT_EQ(kPrimSamples, frames.back()->samples);
+    EXPECT_EQ(kPrimSamples, frames.back()->maxSamples);
+    status = _render->getStatus();
+    EXPECT_EQ(kPrimSamples, status.samples);
+    EXPECT_EQ(kPrimSamples, status.maxSamples);
+    EXPECT_EQ(kPrimSamples, _render->getMaxSamples());
+}
+
+// MoonRay's image refines between whole samples per pixel, and each image its session sends is shown.
+// A cap of 2 renders 4 and counts 1 until the render is complete; light and material samples far
+// over their defaults keep it from completing while its frames go on.
+TEST_F(ProgressiveRenderTest, AMoonRayRenderShowsItsImagesBetweenSampleCounts)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const int kMaxSamples = 2;
+    const std::size_t kFrames = 3;
+    std::map<std::string, PXR_NS::VtValue> settings;
+    settings["moonray:sceneVariable:light_samples"] = PXR_NS::VtValue(16);
+    settings["moonray:sceneVariable:bsdf_samples"] = PXR_NS::VtValue(16);
+    ASSERT_TRUE(start(settings, kMoonRayRendererId));
+    _render->setMaxSamples(kMaxSamples);
+    // Under _signalMutex, as waitUntil reads it.
+    const auto sameCount = [this]() {
+        if (_published.empty()) {
+            return std::size_t(0);
+        }
+        const ProgressiveRender::Frame& last = *_published.back();
+        std::size_t count = 0;
+        for (const std::shared_ptr<const ProgressiveRender::Frame>& frame : _published) {
+            if ((frame->restart == last.restart) && (frame->samples == last.samples)) {
+                ++count;
+            }
+        }
+
+        return count;
+    };
+    ASSERT_TRUE(waitUntil([&sameCount, kFrames]() { return sameCount() >= kFrames; }, "three frames of one sample count"));
+
+    std::lock_guard<std::mutex> lock(_signalMutex);
+    const ProgressiveRender::Frame& last = *_published.back();
+    EXPECT_EQ(1, last.samples);
+    EXPECT_FALSE(last.converged);
+    EXPECT_EQ(kMaxSamples, last.maxSamples);
 }
 
 // MoonRay reports no reset counts: an edit restarts its render in place, and its frames are

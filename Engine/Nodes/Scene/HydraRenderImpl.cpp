@@ -45,6 +45,10 @@
 #include <thread>
 #include <utility>
 
+#if defined(__x86_64__)
+#include <immintrin.h>
+#endif
+
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -208,23 +212,31 @@ delegateStallError(std::chrono::milliseconds bound)
     return std::string("MoonRay's render session stopped answering: its progress held still, and once its session was made again held still for ") + seconds + " s.";
 }
 
+// MoonRay's progress in percent, -1 when its stats carry none. hdMoonray moves it only when an image
+// arrives from the render process, so a new value means a new image.
+double
+moonRayPercentOf(const VtDictionary& stats)
+{
+    const VtDictionary::const_iterator percent = stats.find("percentDone");
+    if (percent == stats.end()) {
+        return -1.;
+    }
+    if (percent->second.IsHolding<float>()) {
+        return percent->second.UncheckedGet<float>();
+    }
+    if (percent->second.IsHolding<double>()) {
+        return percent->second.UncheckedGet<double>();
+    }
+
+    return -1.;
+}
+
 // Whether MoonRay's stats show a frame from its render process: hdMoonray's percentDone stays 0 until
 // the first one arrives.
 bool
 moonRayProgressed(const VtDictionary& stats)
 {
-    const VtDictionary::const_iterator percent = stats.find("percentDone");
-    if (percent == stats.end()) {
-        return false;
-    }
-    if (percent->second.IsHolding<float>()) {
-        return percent->second.UncheckedGet<float>() > 0.f;
-    }
-    if (percent->second.IsHolding<double>()) {
-        return percent->second.UncheckedGet<double>() > 0.;
-    }
-
-    return false;
+    return moonRayPercentOf(stats) > 0.;
 }
 
 /**
@@ -296,6 +308,40 @@ samplesOf(const VtDictionary& stats,
     }
 
     return -1;
+}
+
+// MoonRay's samples per pixel out of a cap in samples per pixel, read off the progress of a pass
+// that rendered, -1 when there is none. It renders the square of the pixel samples the cap takes,
+// which may be more than the cap: the count stays under the cap until the frame is complete, so
+// that n of n means done. A frame with any pixels counts at least one, so that it is shown.
+// hdMoonray reports no stats once its frame is complete, and its IsConverged says so only on the
+// call after that. Stats without progress count as done only once it converged: until then the
+// count holds at previous, the count of the pass before, and under the cap.
+int
+moonRaySamplesOf(const VtDictionary& stats,
+                 int cap,
+                 bool rendered,
+                 bool converged,
+                 int previous)
+{
+    if ((cap <= 0) || !rendered) {
+        return -1;
+    }
+    if (stats.find("percentDone") == stats.end()) {
+        return converged ? cap : std::min(std::max(1, cap - 1), std::max(1, previous));
+    }
+    const double done = moonRayPercentOf(stats);
+    if (done < 0.) {
+        return -1;
+    }
+    if (done == 0.) {
+        return 0;
+    }
+    const int side = MoonRaySettings::pixelSamplesFor(cap);
+    const double rendering = (double)side * side;
+    const int samples = (int)std::lround(std::min(100., done) / 100. * rendering);
+
+    return std::min(std::max(1, cap - 1), std::max(1, samples));
 }
 
 std::int64_t
@@ -1747,6 +1793,53 @@ componentToFloat(HdFormat componentFormat,
         return 0.f;
     }
 }
+
+// A finite value stays finite as a half: past the largest half it saturates, where a plain
+// conversion gives infinity, which no later scale such as the viewer's exposure can bring back.
+GfHalf
+saturatedHalf(float value)
+{
+    const float largest = 65504.f;
+    if (std::isnan(value)) {
+        return GfHalf(value);
+    }
+
+    return GfHalf(std::min(std::max(value, -largest), largest));
+}
+
+void
+saturatedHalvesScalar(const float* from,
+                      GfHalf* to,
+                      std::size_t count)
+{
+    for (std::size_t i = 0; i < count; ++i) {
+        to[i] = saturatedHalf(from[i]);
+    }
+}
+
+#if defined(__x86_64__)
+// F16C rounds to nearest even as GfHalf does. It quiets a signalling NaN where GfHalf keeps it, so
+// any group of eight holding a NaN goes through GfHalf.
+[[gnu::target("avx,f16c")]] void
+saturatedHalvesF16c(const float* from,
+                    GfHalf* to,
+                    std::size_t count)
+{
+    const __m256 largest = _mm256_set1_ps(65504.f);
+    const __m256 smallest = _mm256_set1_ps(-65504.f);
+    std::size_t i = 0;
+    for (; i + 8 <= count; i += 8) {
+        const __m256 value = _mm256_loadu_ps(from + i);
+        if (_mm256_movemask_ps(_mm256_cmp_ps(value, value, _CMP_UNORD_Q)) != 0) {
+            saturatedHalvesScalar(from + i, to + i, 8);
+            continue;
+        }
+        const __m256 clamped = _mm256_max_ps(_mm256_min_ps(value, largest), smallest);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(to + i), _mm256_cvtps_ph(clamped, _MM_FROUND_TO_NEAREST_INT));
+    }
+    saturatedHalvesScalar(from + i, to + i, count - i);
+}
+#endif
 
 // The request's AOVs of entry's last render, the pixels of those in aovPixels (of all when it is
 // null), and the metadata its delegate's stats hold for them; false when cancel is set before
@@ -3868,6 +3961,25 @@ getMoonRayProgressReads()
 }
 
 void
+toSaturatedHalves(const float* from,
+                  GfHalf* to,
+                  std::size_t count)
+{
+#if defined(__x86_64__)
+    static const bool f16c = []() {
+        __builtin_cpu_init();
+        return __builtin_cpu_supports("avx") && __builtin_cpu_supports("f16c");
+    }();
+    if (f16c) {
+        saturatedHalvesF16c(from, to, count);
+
+        return;
+    }
+#endif
+    saturatedHalvesScalar(from, to, count);
+}
+
+void
 setStormTranslucentIds(bool enabled)
 {
     gStormTranslucentIds = enabled;
@@ -3911,6 +4023,7 @@ namespace {
 
     std::mutex gPassHookMutex;
     std::function<void()> gPassHook;
+    std::function<void()> gSnapshotHook;
 
     // The workers alive and the ProgressiveRenders alive: the workers beyond those are the
     // detached ones still ending. Never destroyed, as a worker may end during static destruction.
@@ -3986,37 +4099,31 @@ namespace {
         (void)setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), kRefineNice);
     }
 
-    // Linear [0, 1] to 8-bit sRGB, by 4096 steps.
-    const std::vector<unsigned char>&
-    srgbTable()
+    /**
+     * Whether an engine of the delegate id lights the view from the camera when on asks it to:
+     * HdxTaskController makes the light a simpleLight or distantLight sprim, and MoonRay may make
+     * neither, when it renders the stage's lights instead, saying so once. May make a MoonRay
+     * delegate, once, to read its types.
+     **/
+    bool
+    headlightFor(const std::string& id,
+                 bool on)
     {
-        static const std::vector<unsigned char> table = []() {
-            std::vector<unsigned char> t(4096);
-            for (int i = 0; i < 4096; ++i) {
-                const double v = i / 4095.;
-                const double s = (v <= 0.0031308) ? (v * 12.92) : (1.055 * std::pow(v, 1. / 2.4) - 0.055);
-                t[i] = (unsigned char)std::lround(std::min(1., std::max(0., s)) * 255.);
-            }
-
-            return t;
-        }();
-
-        return table;
-    }
-
-    // A premultiplied linear pixel over the background, then encoded.
-    void
-    encodePixel(const float c[4],
-                float background,
-                const std::vector<unsigned char>& table,
-                unsigned char* out)
-    {
-        const float under = background * (1.f - std::min(1.f, std::max(0.f, c[3])));
-        for (int k = 0; k < 3; ++k) {
-            const float value = std::min(1.f, std::max(0.f, c[k] + under));
-            out[k] = table[(std::size_t)(value * 4095.f + 0.5f)];
+        if (!on || !MoonRayAovs::isMoonRay(id)) {
+            return on;
         }
-        out[3] = 255;
+        const TfTokenVector& types = MoonRayAovs::supportedPrimTypes();
+        for (const TfToken& type : types) {
+            if ((type == HdPrimTypeTokens->distantLight) || (type == HdPrimTypeTokens->simpleLight)) {
+                return true;
+            }
+        }
+        static std::atomic<bool> warned { false };
+        if (!warned.exchange(true)) {
+            qWarning("MoonRay has no distant light to light the view from the camera: it renders the stage's lights instead.");
+        }
+
+        return false;
     }
 } // anon namespace
 
@@ -4026,7 +4133,6 @@ struct ProgressiveRender::Implementation {
     StageLock stageLock;
     const std::function<bool(SceneStageSnapshot*)> snapshotOf;
     const std::function<void()> listener;
-    const float background;
     // setDeviceColor()'s; readFrame() reads it without mutex.
     std::atomic<bool> deviceColor { false };
     SceneWriteBarrier::ParticipantId participant = 0;
@@ -4105,6 +4211,9 @@ struct ProgressiveRender::Implementation {
     // soon after the delegate starts for its counts to show it, which makes the engine again, and
     // so on without end on a loaded machine.
     bool carriedHeadlight = false;
+    // The view's headlight the engine rendered with, which decides its enableSceneLights.
+    bool engineViewHeadlight = false;
+    bool engineLightsKnown = false;
     bool paused = false;
     // StopRenderer() stopped the delegate's threads for an edit, or for stop() where it cannot
     // pause; the next pass restarts them.
@@ -4124,12 +4233,10 @@ struct ProgressiveRender::Implementation {
 
     Implementation(const StageLock& stageLock_,
                    const std::function<bool(SceneStageSnapshot*)>& snapshot_,
-                   const std::function<void()>& listener_,
-                   float background_)
+                   const std::function<void()>& listener_)
         : stageLock(stageLock_)
         , snapshotOf(snapshot_)
         , listener(listener_)
-        , background(background_)
     {
     }
 
@@ -4211,6 +4318,7 @@ struct ProgressiveRender::Implementation {
         }
         drawFilter = SceneDrawFilter::WeakPtr();
         headlit = false;
+        engineLightsKnown = false;
         engine.reset();
         engineRenderer.clear();
         samplesKey = TfToken();
@@ -4320,7 +4428,9 @@ struct ProgressiveRender::Implementation {
         for (RendererSettings::const_iterator it = settings.begin(); it != settings.end(); ++it) {
             made->SetRendererSetting(TfToken(it->first), it->second);
         }
-        // Last: a prim's settings must not override these.
+        // Last: a prim's settings must not override these. These frames go through the viewer's
+        // display grade, which applies the camera's exposure.
+        made->SetRendererSetting(HdRenderSettingsTokens->enableExposureCompensation, VtValue(false));
         if (cycles) {
             CyclesAovs::configureEngine(made.get());
         } else if (moonRay) {
@@ -4341,7 +4451,8 @@ struct ProgressiveRender::Implementation {
             return false;
         }
         const UsdImagingGLRendererSettingsList list = made->GetRendererSettingsList();
-        // MoonRay's samples per pixel is a scene variable its delegate does not declare.
+        // MoonRay's pixel samples are a scene variable its delegate does not declare, and the square
+        // root of the samples per pixel the cap counts.
         const TfToken key = moonRay ? TfToken(MoonRaySettings::samplesKey()) : samplesSettingKey(list);
         int cap = 0;
         if (!key.IsEmpty()) {
@@ -4351,6 +4462,9 @@ struct ProgressiveRender::Implementation {
                     cap = intOf(setting.defValue, 0);
                 }
             }
+        }
+        if (moonRay && (cap > 0)) {
+            cap *= cap;
         }
         // Before the first render, which populates the render index, so seeding sends nothing.
         const SceneDrawFilter::WeakPtr filter = filterId.empty() ? SceneDrawFilter::WeakPtr() : SceneDrawFilter::find(filterId);
@@ -4363,6 +4477,7 @@ struct ProgressiveRender::Implementation {
         drawFilter = filter;
         appliedDrawEdits = rulesEdits;
         headlit = false;
+        engineLightsKnown = false;
         engineRenderer = id;
         engineSettings = primSettings;
         depthAov = moonRay ? MoonRayAovs::depthAov() : HdAovTokens->depth;
@@ -4385,7 +4500,6 @@ struct ProgressiveRender::Implementation {
         const int width = v.width;
         const int height = v.height;
         const std::size_t pixels = (std::size_t)width * (std::size_t)height;
-        const std::vector<unsigned char>& table = srgbTable();
         out->width = width;
         out->height = height;
 #ifdef NATRON_HAVE_GPU
@@ -4409,13 +4523,21 @@ struct ProgressiveRender::Implementation {
             const std::size_t components = HdGetComponentCount(color.format());
             const std::size_t componentSize = HdDataSizeOfFormat(componentFormat);
             out->rgba.resize(pixels * 4);
-            for (std::size_t i = 0; i < pixels; ++i) {
-                const unsigned char* at = color.pixel(i);
-                float c[4] = { 0.f, 0.f, 0.f, 1.f };
-                for (std::size_t k = 0; (k < components) && (k < 4); ++k) {
-                    c[k] = componentToFloat(componentFormat, at + k * componentSize);
+            if (color.format() == HdFormatFloat16Vec4) {
+                std::memcpy(out->rgba.data(), color.pixel(0), pixels * 4 * sizeof(GfHalf));
+            } else if (color.format() == HdFormatFloat32Vec4) {
+                toSaturatedHalves(reinterpret_cast<const float*>(color.pixel(0)), out->rgba.data(), pixels * 4);
+            } else {
+                for (std::size_t i = 0; i < pixels; ++i) {
+                    const unsigned char* at = color.pixel(i);
+                    float c[4] = { 0.f, 0.f, 0.f, 1.f };
+                    for (std::size_t k = 0; (k < components) && (k < 4); ++k) {
+                        c[k] = componentToFloat(componentFormat, at + k * componentSize);
+                    }
+                    for (int k = 0; k < 4; ++k) {
+                        out->rgba[i * 4 + k] = saturatedHalf(c[k]);
+                    }
                 }
-                encodePixel(c, background, table, &out->rgba[i * 4]);
             }
         }
         {
@@ -4576,7 +4698,7 @@ struct ProgressiveRender::Implementation {
 
 #ifdef NATRON_HAVE_GPU
     bool hostColorOf(const Frame& from,
-                     std::vector<unsigned char>* rgba,
+                     std::vector<GfHalf>* rgba,
                      std::string* error) const
     {
         if (!from.deviceColor) {
@@ -4594,11 +4716,8 @@ struct ProgressiveRender::Implementation {
         if (!from.deviceColor->download(&linear, error)) {
             return false;
         }
-        const std::vector<unsigned char>& table = srgbTable();
         rgba->resize(pixels * 4);
-        for (std::size_t i = 0; i < pixels; ++i) {
-            encodePixel(&linear[i * 4], background, table, &(*rgba)[i * 4]);
-        }
+        toSaturatedHalves(linear.data(), rgba->data(), pixels * 4);
 
         return true;
     }
@@ -4620,7 +4739,7 @@ struct ProgressiveRender::Implementation {
         std::shared_ptr<Frame> hosted;
         if (shown) {
             // Read back while the film is still held: the engine's release lets go of it.
-            std::vector<unsigned char> rgba;
+            std::vector<GfHalf> rgba;
             std::string error;
             if (hostColorOf(*shown, &rgba, &error)) {
                 hosted = std::make_shared<Frame>(*shown);
@@ -4712,6 +4831,8 @@ void
 ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
 {
     int lastSamples = -1;
+    // MoonRay's image refines between whole samples per pixel: a move of its progress is a new one.
+    double lastProgress = -1.;
     std::size_t lastUtilitySamples = 0;
     RestartWatch restartWatch;
     bool lastConverged = false;
@@ -4757,6 +4878,8 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             status.converged = false;
             status.paused = false;
             status.samples = -1;
+            status.headlightAsked = false;
+            status.headlight = false;
             if ((renderer == failedRenderer) && (sceneEdits != failedEdits)) {
                 if (pending) {
                     const Clock::time_point due = std::min(lastPending + kRestartQuiet, firstPending + kRestartMaxWait);
@@ -4818,6 +4941,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
             keepFrame = false;
             lastSamples = -1;
+            lastProgress = -1.;
             lastUtilitySamples = 0;
             lastConverged = false;
             engineRendered = false;
@@ -4843,6 +4967,15 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         if (settings != engineSettings) {
             // Some settings, such as Cycles' integrator's, restart a render only when the engine
             // is made under them: the engine is made again, the frame shown kept until the new one.
+            lock.unlock();
+            dropEngine();
+            lock.lock();
+            keepFrame = true;
+            continue;
+        }
+        if (engineLightsKnown && hasView && (headlightFor(engineRenderer, view.headlight) != engineViewHeadlight)) {
+            // Turning enableSceneLights back on for a live engine leaves a refining delegate's
+            // restored lights unlit: a change of the lighting mode makes the engine again.
             lock.unlock();
             dropEngine();
             lock.lock();
@@ -4951,6 +5084,16 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
         }
         lock.unlock();
+        {
+            std::function<void()> hook;
+            {
+                std::lock_guard<std::mutex> hookLock(gPassHookMutex);
+                hook = gSnapshotHook;
+            }
+            if (hook) {
+                hook();
+            }
+        }
         View v;
         int cap = 0;
         std::uint64_t passGeneration = 0;
@@ -4974,6 +5117,8 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         std::string sessionFailure;
         std::shared_ptr<Frame> read;
         bool lightsChanged = false;
+        bool viewHeadlight = false;
+        bool lightingMoved = false;
         const std::uint64_t passEngineChanges = engineChanges.load();
         std::atomic<bool> exportCut { false };
         if (hasStage) {
@@ -5001,14 +5146,18 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 }
             }
             const UsdStageRefPtr stage = workerStage->getStage();
-            if (stage && engine) {
+            // The lighting mode the snapshot took may have changed after the check that makes the
+            // engine again for it.
+            lightingMoved = engine && engineLightsKnown && (headlightFor(engineRenderer, v.headlight) != engineViewHeadlight);
+            if (stage && engine && !lightingMoved) {
                 if (rendererStopped) {
                     (void)engine->RestartRenderer();
                     rendererStopped = false;
                 }
                 if (!samplesKey.IsEmpty() && (cap > 0) && (cap != appliedCap)) {
                     // A change of a setting restarts the delegate's render.
-                    engine->SetRendererSetting(samplesKey, VtValue(cap));
+                    const int value = MoonRayAovs::isMoonRay(engineRenderer) ? MoonRaySettings::pixelSamplesFor(cap) : cap;
+                    engine->SetRendererSetting(samplesKey, VtValue(value));
                     appliedCap = cap;
                 }
                 const bool viewMoved = !engineHasView || (engineView != v);
@@ -5019,11 +5168,15 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                     engineView = v;
                     engineHasView = true;
                 }
+                viewHeadlight = headlightFor(engineRenderer, v.headlight);
+                engineViewHeadlight = viewHeadlight;
+                engineLightsKnown = true;
                 UsdImagingGLRenderParams params;
                 params.frame = v.time;
                 params.drawMode = UsdImagingGLDrawMode::DRAW_SHADED_SMOOTH;
                 params.enableLighting = true;
-                params.enableSceneLights = !v.headlight;
+                // UsdImagingGL prunes the stage's lights from any delegate's scene without them.
+                params.enableSceneLights = !viewHeadlight;
                 params.enableSceneMaterials = true;
                 params.clearColor = GfVec4f(0.f, 0.f, 0.f, 0.f);
                 params.colorCorrectionMode = HdxColorCorrectionTokens->disabled;
@@ -5037,7 +5190,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                     }
                     appliedDrawEdits = passDrawEdits;
                 }
-                const bool headlight = v.headlight || carriedHeadlight || wantsHeadlight(stage);
+                const bool headlight = viewHeadlight || carriedHeadlight || wantsHeadlight(stage);
                 carriedHeadlight = false;
                 if ((headlight != headlit) || (headlight && viewMoved)) {
                     applyHeadlight(headlight, v);
@@ -5051,7 +5204,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 }
                 // The render's sync may have brought the stage's lights to the filter, as an
                 // engine's first does, or taken them away.
-                lightsChanged = renderedPass && ((v.headlight || wantsHeadlight(stage)) != headlit);
+                lightsChanged = renderedPass && ((viewHeadlight || wantsHeadlight(stage)) != headlit);
                 if (renderedPass) {
                     rendered = true;
                     converged = engine->IsConverged();
@@ -5066,11 +5219,24 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 }
             }
         }
-        const int samples = samplesOf(stats, cap);
+        const bool moonRay = MoonRayAovs::isMoonRay(engineRenderer);
+        const int samples = moonRay ? moonRaySamplesOf(stats, cap, rendered, converged, lastSamples) : samplesOf(stats, cap);
+        const double progress = moonRay ? moonRayPercentOf(stats) : -1.;
         lock.lock();
         engineRendered = engineRendered || rendered;
+        if (hasStage && !lightingMoved) {
+            status.headlightAsked = v.headlight;
+            status.headlight = viewHeadlight;
+        }
         if (quit) {
             break;
+        }
+        if (lightingMoved) {
+            lock.unlock();
+            dropEngine();
+            lock.lock();
+            keepFrame = true;
+            continue;
         }
         if (exportCut) {
             // The engine has the missing-texture colour where the cut export's image goes, and
@@ -5149,11 +5315,12 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             keepFrame = true;
             continue;
         }
-        const bool changed = (samples != lastSamples) || (converged != lastConverged);
+        const bool changed = (samples != lastSamples) || (converged != lastConverged) || (progress != lastProgress);
         if (samples != lastSamples) {
             stallSince = now;
         }
         lastSamples = samples;
+        lastProgress = progress;
         lastConverged = converged;
         status.samples = samples;
         status.maxSamples = cap;
@@ -5221,17 +5388,15 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
 
 ProgressiveRender::ProgressiveRender(std::mutex* stageLock,
                                      const std::function<bool(SceneStageSnapshot*)>& snapshot,
-                                     const std::function<void()>& listener,
-                                     float background)
-    : ProgressiveRender(StageLock { [stageLock]() { return stageLock->try_lock(); }, [stageLock]() { stageLock->unlock(); } }, snapshot, listener, background)
+                                     const std::function<void()>& listener)
+    : ProgressiveRender(StageLock { [stageLock]() { return stageLock->try_lock(); }, [stageLock]() { stageLock->unlock(); } }, snapshot, listener)
 {
 }
 
 ProgressiveRender::ProgressiveRender(const StageLock& stageLock,
                                      const std::function<bool(SceneStageSnapshot*)>& snapshot,
-                                     const std::function<void()>& listener,
-                                     float background)
-    : _imp(new Implementation(stageLock, snapshot, listener, background))
+                                     const std::function<void()>& listener)
+    : _imp(new Implementation(stageLock, snapshot, listener))
 {
 #ifdef NATRON_HAVE_GPU
     // A Natron Utility engine idle since its device was lost would keep it from recovering.
@@ -5496,7 +5661,7 @@ ProgressiveRender::setDeviceColor(bool onDevice)
 
 bool
 ProgressiveRender::hostColor(const Frame& frame,
-                             std::vector<unsigned char>* rgba,
+                             std::vector<GfHalf>* rgba,
                              std::string* error) const
 {
     return _imp->hostColorOf(frame, rgba, error);
@@ -5628,6 +5793,14 @@ ProgressiveRender::setPassHook(const std::function<void()>& hook)
     std::lock_guard<std::mutex> l(gPassHookMutex);
 
     gPassHook = hook;
+}
+
+void
+ProgressiveRender::setSnapshotHook(const std::function<void()>& hook)
+{
+    std::lock_guard<std::mutex> l(gPassHookMutex);
+
+    gSnapshotHook = hook;
 }
 } // namespace HydraRender
 

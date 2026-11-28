@@ -134,6 +134,9 @@ struct ViewerTabPrivate
     Button* toggleGainButton;
     SpinBox* gainBox;
     ScaleSliderQWidget* gainSlider;
+    // Apply Camera Exposure, and the exposure of the camera the 3D view looks through.
+    Button* applyCameraExposureButton;
+    Label* cameraExposureLabel;
     SpinBox* gammaBox;
     Button* toggleGammaButton;
     ScaleSliderQWidget* gammaSlider;

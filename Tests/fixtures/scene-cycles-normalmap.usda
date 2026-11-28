@@ -24,7 +24,7 @@ def Xform "World"
     def DistantLight "Sun"
     {
         # Intensity is radiance, and this light fills only a 0.5 degree disc: this is what it takes to shade the card near 0.4.
-        float inputs:intensity = 12000
+        float inputs:intensity = 48000
         float inputs:angle = 0.5
         float3 xformOp:rotateXYZ = (-30, 50, 0)
         uniform token[] xformOpOrder = ["xformOp:rotateXYZ"]

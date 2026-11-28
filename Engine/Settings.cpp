@@ -1448,7 +1448,7 @@ Settings::initializeKnobsViewers()
     {
         std::vector<ChoiceOption> entries;
         entries.push_back(ChoiceOption("auto", "Auto", tr("The scene's lights when it has any, else a light at the camera.").toStdString()));
-        entries.push_back(ChoiceOption("scene", "Scene Lights", tr("Only the scene's lights: a scene with none shows its lit surfaces black, as USDRender does by default.").toStdString()));
+        entries.push_back(ChoiceOption("scene", "Scene Lights", tr("Only the scene's lights: a scene with none shows as USDRender renders it, its lit surfaces black in Storm and lit by the renderer's own world in Cycles and MoonRay.").toStdString()));
         entries.push_back(ChoiceOption("headlight", "Headlight", tr("Only a light at the camera.").toStdString()));
         _viewer3DLighting->populateChoices(entries);
     }
@@ -2005,7 +2005,7 @@ Settings::setDefaultValues()
     _viewer3DNavigation->setDefaultValue((int)eViewer3DNavigationNuke);
     _viewer3DGuideSize->setDefaultValue(3.);
     _viewer3DTransformTarget->setDefaultValue((int)eViewer3DTransformTargetOwner);
-    _viewer3DLighting->setDefaultValue((int)eViewer3DLightingScene);
+    _viewer3DLighting->setDefaultValue((int)eViewer3DLightingAuto);
     _sceneStandInMode->setDefaultValue((int)eSceneStandInModeInteraction);
     _sceneStandInBudget->setDefaultValue(33);
     _sceneStandInBoxes->setDefaultValue((int)eSceneStandInBoxesModels);

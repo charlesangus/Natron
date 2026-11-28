@@ -309,34 +309,32 @@ const char* const kGradeVertexShader = "#version 400 compatibility\n"
                                        "}\n";
 
 #ifdef NATRON_HAVE_GPU
-// The pass that turns a GPU frame of the Natron Utility renderer, linear and premultiplied, into
-// the pixels ProgressiveRender::Frame::rgba holds: over the background, clamped, sRGB encoded.
+// The pass that copies a GPU frame of the Natron Utility renderer, linear and premultiplied, into
+// the half-float texture the grade reads, as ProgressiveRender::Frame::rgba holds it. A finite value
+// saturates at the largest half, where the conversion would give infinity.
 std::string
 deviceColorFragmentShader()
 {
-    std::string source = "#version 400 compatibility\n"
-                         "uniform sampler2D colorFrame;\n"
-                         "uniform float background;\n"
-                         "\n";
-    source += kSrgbDisplayFunction;
-    source += "\n"
-              "void main() {\n"
-              "    vec4 c = texelFetch(colorFrame, ivec2(gl_FragCoord.xy), 0);\n"
-              "    vec3 v = clamp(c.rgb + vec3(background * (1.0 - clamp(c.a, 0.0, 1.0))), 0.0, 1.0);\n"
-              "    gl_FragColor = vec4(toDisplay(vec4(v, 1.0)).rgb, 1.0);\n"
-              "}\n";
-
-    return source;
+    return "#version 400 compatibility\n"
+           "uniform sampler2D colorFrame;\n"
+           "\n"
+           "void main() {\n"
+           "    vec4 c = texelFetch(colorFrame, ivec2(gl_FragCoord.xy), 0);\n"
+           "    gl_FragColor = clamp(c, vec4(-65504.0), vec4(65504.0));\n"
+           "}\n";
 }
 #endif
 
 /**
- * @brief The pass that draws Storm's colour AOV onto the framebuffer, around displayFunction, which
- * defines vec4 toDisplay(vec4). The AOV is premultiplied over a transparent clear, and a display
- * transform is not linear, so each pixel is graded unpremultiplied (gain, toDisplay, then gamma, as
- * the 2D viewer applies them) and premultiplied again for the blend over the ungraded background.
- * Pixels nothing was rendered to are left to the background. The AOV's depth goes with it, for
- * the grid and guides drawn after; without one, what was rendered stays in front of them.
+ * @brief The pass that draws a rendered colour, Storm's colour AOV or a progressive delegate's
+ * frame, onto the framebuffer, around displayFunction, which defines vec4 toDisplay(vec4). The
+ * colour is premultiplied over a transparent clear, and a display transform is not linear, so each
+ * pixel is graded unpremultiplied (gain, toDisplay, then gamma, as the 2D viewer applies them) and
+ * premultiplied again for the blend over the ungraded background. Light that covers nothing, at
+ * alpha 0, such as a light Cycles sees straight from the camera, is graded as it is and added to
+ * the background. Pixels nothing was rendered to are left to the background. The colour's depth
+ * goes with it, for the grid and guides drawn after; without one, what was rendered stays in
+ * front of them. A colour of another size than the view is stretched over it, filtered.
  **/
 std::string
 gradeFragmentShader(const std::string& displayFunction)
@@ -345,6 +343,8 @@ gradeFragmentShader(const std::string& displayFunction)
                          "uniform sampler2D colorAov;\n"
                          "uniform sampler2D depthAov;\n"
                          "uniform bool hasDepth;\n"
+                         "uniform bool stretched;\n"
+                         "uniform vec2 viewSize;\n"
                          "uniform float gain;\n"
                          "uniform float gamma;\n"
                          "\n";
@@ -352,18 +352,19 @@ gradeFragmentShader(const std::string& displayFunction)
     source += "\n"
               "void main() {\n"
               "    ivec2 p = ivec2(gl_FragCoord.xy);\n"
-              "    vec4 c = texelFetch(colorAov, p, 0);\n"
+              "    vec4 c = stretched ? texture(colorAov, gl_FragCoord.xy / viewSize) : texelFetch(colorAov, p, 0);\n"
               "    float a = clamp(c.a, 0.0, 1.0);\n"
-              "    if (a <= 0.0) {\n"
+              "    if ((a <= 0.0) && (max(max(c.r, c.g), c.b) <= 0.0)) {\n"
               "        discard;\n"
               "    }\n"
-              "    vec3 shown = toDisplay(vec4(c.rgb / a * gain, 1.0)).rgb;\n"
+              "    float cover = (a > 0.0) ? a : 1.0;\n"
+              "    vec3 shown = toDisplay(vec4(c.rgb / cover * gain, 1.0)).rgb;\n"
               "    if (gamma <= 0.0) {\n"
               "        shown = vec3(greaterThanEqual(shown, vec3(1.0)));\n"
               "    } else {\n"
               "        shown = pow(max(shown, vec3(0.0)), vec3(1.0 / gamma));\n"
               "    }\n"
-              "    gl_FragColor = vec4(shown * a, a);\n"
+              "    gl_FragColor = vec4(shown * cover, a);\n"
               "    gl_FragDepth = hasDepth ? texelFetch(depthAov, p, 0).r : 0.0;\n"
               "}\n";
 
@@ -1087,7 +1088,7 @@ struct SceneViewportRenderer::Implementation {
     bool showProxy = true;
     bool showRender = false;
     bool showGuidePurpose = false;
-    LightingModeEnum lightingMode = eLightingModeScene;
+    LightingModeEnum lightingMode = eLightingModeAuto;
     // Whether the stage's lights lit the last frame rendered; written by the render thread.
     std::atomic<bool> sceneLit { false };
     FreeCamera freeCamera;
@@ -1211,7 +1212,7 @@ struct SceneViewportRenderer::Implementation {
         int height = 0;
         GfFrustum frustum;
         UsdImagingGLRenderParams params;
-        LightingModeEnum lightingMode = eLightingModeScene;
+        LightingModeEnum lightingMode = eLightingModeAuto;
         OCIO_NAMESPACE::ConstProcessorRcPtr displayProcessor;
         double gain = 1.;
         double gamma = 1.;
@@ -1242,7 +1243,7 @@ struct SceneViewportRenderer::Implementation {
         GfMatrix4d viewMatrix;
         GfMatrix4d projection;
         UsdImagingGLRenderParams params;
-        LightingModeEnum lightingMode = eLightingModeScene;
+        LightingModeEnum lightingMode = eLightingModeAuto;
         OCIO_NAMESPACE::ConstProcessorRcPtr displayProcessor;
         double gain = 1.;
         double gamma = 1.;
@@ -1316,6 +1317,10 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<bool> guideBatchesValid { false };
 
     DisplayTransform displayTransform;
+    // What the last render or background frame read from the camera looked through, under
+    // cameraExposureMutex: the main thread reads it while the render thread may set it.
+    mutable std::mutex cameraExposureMutex;
+    CameraExposure cameraExposure;
     // displayTransform's display, view and look, null for the sRGB encoding.
     OCIO_NAMESPACE::ConstProcessorRcPtr displayProcessor;
     // The background as shown: the display transform of kBackgroundLinear, without the viewer's
@@ -1378,11 +1383,11 @@ struct SceneViewportRenderer::Implementation {
     // from the main thread, which holds no lock, asks the next render to forget it.
     std::string refineRenderer;
     std::atomic<bool> refineReleased { false };
-    // The texture its frames are drawn from, the buffer holding their depth, and the frame they
-    // hold: shared by every context sharing the one of render(), any of which may draw them. The
-    // framebuffer reading the texture is made for each draw, as framebuffers are not shared.
+    // The textures of its frames' colour, half-float, and window depth, which drawGrade() draws,
+    // and the frame they hold: shared by every context sharing the one of render(), any of which
+    // may draw them.
     GLuint refineTexture = 0;
-    GLuint refineDepthBuffer = 0;
+    GLuint refineDepthTexture = 0;
     int refineWidth = 0;
     int refineHeight = 0;
     // The frame in the texture. Kept alive, so that a later frame cannot have its address, and not
@@ -1534,6 +1539,9 @@ struct SceneViewportRenderer::Implementation {
         for (const std::pair<const std::string, VtValue>& setting : wanted) {
             engine->SetRendererSetting(TfToken(setting.first), setting.second);
         }
+        // The display grade applies the look-through camera's exposure; Storm applying it too, as
+        // it does when it renders through a scene camera, would apply it twice.
+        engine->SetRendererSetting(HdRenderSettingsTokens->enableExposureCompensation, VtValue(false));
         stormSettings = wanted;
         stormSettingsEngine = engineCount;
     }
@@ -1864,6 +1872,40 @@ struct SceneViewportRenderer::Implementation {
         UsdGeomCamera camera(stage->GetPrimAtPath(SdfPath(lookThrough)));
 
         return camera;
+    }
+
+    // Needs stageMutex.
+    void readCameraExposure()
+    {
+        CameraExposure exposure;
+        if (const UsdGeomCamera camera = lookThroughCamera()) {
+            for (const UsdAttribute& attribute : { camera.GetExposureAttr(), camera.GetExposureTimeAttr(), camera.GetExposureIsoAttr(),
+                                                   camera.GetExposureFStopAttr(), camera.GetExposureResponsivityAttr() }) {
+                exposure.authored = exposure.authored || (attribute && attribute.HasAuthoredValue());
+            }
+            if (exposure.authored) {
+                const double scale = camera.ComputeLinearExposureScale(UsdTimeCode(timeCode()));
+                if (std::isfinite(scale) && (scale > 0.)) {
+                    exposure.scale = scale;
+                    exposure.stops = std::log2(scale);
+                }
+            }
+        }
+        std::lock_guard<std::mutex> l(cameraExposureMutex);
+        cameraExposure = exposure;
+    }
+
+    CameraExposure getCameraExposure() const
+    {
+        std::lock_guard<std::mutex> l(cameraExposureMutex);
+
+        return cameraExposure;
+    }
+
+    // What the grade multiplies rendered pixels by before the display transform.
+    double gradeGain() const
+    {
+        return displayTransform.gain * (displayTransform.applyCameraExposure ? getCameraExposure().scale : 1.);
     }
 
     bool hasLookThroughOverride() const
@@ -2225,9 +2267,9 @@ struct SceneViewportRenderer::Implementation {
         releaseSelectionTint();
         if (refineTexture) {
             glDeleteTextures(1, &refineTexture);
-            glDeleteBuffers(1, &refineDepthBuffer);
+            glDeleteTextures(1, &refineDepthTexture);
             refineTexture = 0;
-            refineDepthBuffer = 0;
+            refineDepthTexture = 0;
         }
         refineWidth = 0;
         refineHeight = 0;
@@ -2586,7 +2628,7 @@ struct SceneViewportRenderer::Implementation {
             && (frame.frustum.ComputeProjectionMatrix() == frustum.ComputeProjectionMatrix())
             && (frame.params == params)
             && std::equal(frame.background, frame.background + 3, backgroundShown)
-            && (frame.displayProcessor == displayProcessor) && (frame.gain == displayTransform.gain) && (frame.gamma == displayTransform.gamma)
+            && (frame.displayProcessor == displayProcessor) && (frame.gain == gradeGain()) && (frame.gamma == displayTransform.gamma)
             && (frame.editCount == sceneStage->getEditCount())
             && (frame.loadEditCount == sceneStage->getLoadEditCount())
             && (frame.previewGeneration == sceneStage->getPreviewGeneration())
@@ -2777,7 +2819,6 @@ struct SceneViewportRenderer::Implementation {
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, deviceTexture);
         glUniform1i(glGetUniformLocation(deviceProgram, "colorFrame"), 0);
-        glUniform1f(glGetUniformLocation(deviceProgram, "background"), kBackgroundLinear);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glUseProgram(0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -2900,21 +2941,42 @@ struct SceneViewportRenderer::Implementation {
         gradeProcessor = processor;
     }
 
-    // Needs the GL context current and an engine that has rendered, whose program, vertex array
-    // and texture bindings it changes.
+    // Needs the GL context current and an engine that has rendered.
+    void drawStormGrade(unsigned int fbo,
+                        int width,
+                        int height,
+                        const OCIO_NAMESPACE::ConstProcessorRcPtr& processor,
+                        double gain,
+                        double gamma)
+    {
+        const HgiTextureHandle color = engine->GetAovTexture(HdAovTokens->color);
+        if (!color) {
+            return;
+        }
+        const HgiTextureHandle depth = engine->GetAovTexture(HdAovTokens->depth);
+        drawGrade(fbo, width, height, (GLuint)color->GetRawResource(), depth ? (GLuint)depth->GetRawResource() : 0, false, processor, gain, gamma);
+    }
+
+    /**
+     * Grades the texture color, and the window depth in the texture depth (0 for none) when it is
+     * of the view's size, onto fbo's width by height pixels. A stretched colour is of another size
+     * and writes no depth, leaving the grid and guides in front of it. Needs the GL context
+     * current; changes its program, vertex array and texture bindings.
+     **/
     void drawGrade(unsigned int fbo,
                    int width,
                    int height,
+                   GLuint color,
+                   GLuint depth,
+                   bool stretched,
                    const OCIO_NAMESPACE::ConstProcessorRcPtr& processor,
                    double gain,
                    double gamma)
     {
         ensureGrade(processor);
-        const HgiTextureHandle color = engine->GetAovTexture(HdAovTokens->color);
         if (!gradeProgram || !color) {
             return;
         }
-        const HgiTextureHandle depth = engine->GetAovTexture(HdAovTokens->depth);
 
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
         glViewport(0, 0, width, height);
@@ -2927,7 +2989,7 @@ struct SceneViewportRenderer::Implementation {
         glDisable(GL_FRAMEBUFFER_SRGB);
         glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
         glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-        glDepthMask(GL_TRUE);
+        glDepthMask(stretched ? GL_FALSE : GL_TRUE);
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_ALWAYS);
         glEnable(GL_BLEND);
@@ -2937,13 +2999,15 @@ struct SceneViewportRenderer::Implementation {
         glUseProgram(gradeProgram);
         glActiveTexture(GL_TEXTURE0);
         glBindSampler(0, 0);
-        glBindTexture(GL_TEXTURE_2D, (GLuint)color->GetRawResource());
+        glBindTexture(GL_TEXTURE_2D, color);
         glUniform1i(glGetUniformLocation(gradeProgram, "colorAov"), 0);
         glActiveTexture(GL_TEXTURE1);
         glBindSampler(1, 0);
-        glBindTexture(GL_TEXTURE_2D, depth ? (GLuint)depth->GetRawResource() : 0);
+        glBindTexture(GL_TEXTURE_2D, depth);
         glUniform1i(glGetUniformLocation(gradeProgram, "depthAov"), 1);
         glUniform1i(glGetUniformLocation(gradeProgram, "hasDepth"), depth ? 1 : 0);
+        glUniform1i(glGetUniformLocation(gradeProgram, "stretched"), stretched ? 1 : 0);
+        glUniform2f(glGetUniformLocation(gradeProgram, "viewSize"), (GLfloat)width, (GLfloat)height);
         glUniform1f(glGetUniformLocation(gradeProgram, "gain"), (GLfloat)gain);
         glUniform1f(glGetUniformLocation(gradeProgram, "gamma"), (GLfloat)gamma);
         for (std::size_t i = 0; i < gradeLuts.size(); ++i) {
@@ -2987,6 +3051,7 @@ struct SceneViewportRenderer::Implementation {
         glBindTexture(GL_TEXTURE_2D, 0);
         glUseProgram(0);
         glDisable(GL_BLEND);
+        glDepthMask(GL_TRUE);
         glDepthFunc(GL_LESS);
         glDisable(GL_DEPTH_TEST);
     }
@@ -4206,7 +4271,7 @@ SceneViewportRenderer::SceneViewportRenderer()
         }
         if (listener) {
             listener();
-        } }, kBackgroundLinear));
+        } }));
     _imp->progressive->setThreads(&refineThreads);
 #ifdef NATRON_HAVE_GPU
     _imp->progressive->setDeviceColor(true);
@@ -4250,7 +4315,7 @@ SceneViewportRenderer::~SceneViewportRenderer()
     _imp->boxes.reset();
     SceneWriteBarrier::unregisterParticipant(_imp->participant);
     // The engine owns GL objects: whoever owns this must have called releaseGL() in its context.
-    if (_imp->refineTexture || _imp->refineDepthBuffer) {
+    if (_imp->refineTexture || _imp->refineDepthTexture) {
         qDebug() << "SceneViewportRenderer destroyed without releaseGL(); leaking its refinement texture";
     }
     if (_imp->gradeProgram || !_imp->gradeLuts.empty()) {
@@ -4788,6 +4853,7 @@ SceneViewportRenderer::prepareBackgroundFrame(int width,
     if (_imp->currentStage() && (!summary || (summary->editCount != _imp->sceneStage->getEditCount() + _imp->sceneStage->getLoadEditCount()))) {
         return false;
     }
+    _imp->readCameraExposure();
     Implementation::BackgroundView view;
     view.valid = true;
     view.width = width;
@@ -4798,7 +4864,7 @@ SceneViewportRenderer::prepareBackgroundFrame(int width,
     view.params = _imp->currentRenderParams();
     view.lightingMode = _imp->lightingMode;
     view.displayProcessor = _imp->displayProcessor;
-    view.gain = _imp->displayTransform.gain;
+    view.gain = _imp->gradeGain();
     view.gamma = _imp->displayTransform.gamma;
     std::copy(_imp->backgroundShown, _imp->backgroundShown + 3, view.background);
     if (!stageChanged && (view == _imp->backgroundView)) {
@@ -4815,7 +4881,7 @@ SceneViewportRenderer::prepareBackgroundFrame(int width,
     frame.params = view.params;
     frame.lightingMode = _imp->lightingMode;
     frame.displayProcessor = _imp->displayProcessor;
-    frame.gain = _imp->displayTransform.gain;
+    frame.gain = view.gain;
     frame.gamma = _imp->displayTransform.gamma;
     std::copy(_imp->backgroundShown, _imp->backgroundShown + 3, frame.background);
     frame.imageKept = false;
@@ -4914,7 +4980,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
         _imp->lastFramePasses = 0;
         _imp->noteDrawFilterRendered(false);
         Implementation::bindFrameTarget(fbo, frame.width, frame.height);
-        _imp->drawGrade(fbo, frame.width, frame.height, frame.displayProcessor, frame.gain, frame.gamma);
+        _imp->drawStormGrade(fbo, frame.width, frame.height, frame.displayProcessor, frame.gain, frame.gamma);
         if (!_imp->drawSelectionPass(section, fbo, frame.width, frame.height, frame.params)) {
             return false;
         }
@@ -4997,7 +5063,7 @@ SceneViewportRenderer::renderBackgroundFrame(unsigned int fbo,
         const double gpuTailMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - renderEnd).count();
         timing->frameEnded(renderEnd, passes, gpuTailMs, false);
     }
-    _imp->drawGrade(fbo, frame.width, frame.height, frame.displayProcessor, frame.gain, frame.gamma);
+    _imp->drawStormGrade(fbo, frame.width, frame.height, frame.displayProcessor, frame.gain, frame.gamma);
     if (!_imp->drawSelectionPass(section, fbo, frame.width, frame.height, frame.params)) {
         return false;
     }
@@ -5829,6 +5895,12 @@ SceneViewportRenderer::hasLookThroughTransform() const
     return _imp->hasLookThroughOverride();
 }
 
+SceneViewportRenderer::CameraExposure
+SceneViewportRenderer::getCameraExposure() const
+{
+    return _imp->getCameraExposure();
+}
+
 void
 SceneViewportRenderer::setSelectedPrims(const std::vector<std::string>& paths)
 {
@@ -6300,6 +6372,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
     if ((width <= 0) || (height <= 0) || !appPTR->isOpenGLLoaded()) {
         return eRenderStatusDone;
     }
+    _imp->readCameraExposure();
     // Scene Default follows the renderer the stage's render settings prim names. A paint keeps
     // the renderer it has and leaves the switch to followSceneRenderer(), outside Qt's paint.
     const std::string effective = _imp->effectiveRenderer();
@@ -6377,7 +6450,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
         }
         _imp->lastFramePasses = 0;
         Implementation::bindFrameTarget(fbo, width, height);
-        _imp->drawGrade(fbo, width, height, _imp->displayProcessor, _imp->displayTransform.gain, _imp->displayTransform.gamma);
+        _imp->drawStormGrade(fbo, width, height, _imp->displayProcessor, _imp->gradeGain(), _imp->displayTransform.gamma);
         if (!_imp->drawSelectionPass(section, fbo, width, height, params)) {
             return eRenderStatusDone;
         }
@@ -6432,7 +6505,7 @@ SceneViewportRenderer::renderLocked(unsigned int fbo,
             timing->frameEnded(std::chrono::steady_clock::now(), passes, -1., true);
         }
         // A kept image was graded and tinted by the frame that left it.
-        _imp->drawGrade(fbo, width, height, _imp->displayProcessor, _imp->displayTransform.gain, _imp->displayTransform.gamma);
+        _imp->drawStormGrade(fbo, width, height, _imp->displayProcessor, _imp->gradeGain(), _imp->displayTransform.gamma);
         if (!_imp->drawSelectionPass(section, fbo, width, height, params)) {
             return eRenderStatusDone;
         }
@@ -6627,25 +6700,26 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
         const GLsizei frameHeight = frame->height;
         if (!_imp->refineTexture) {
             glGenTextures(1, &_imp->refineTexture);
-            glGenBuffers(1, &_imp->refineDepthBuffer);
+            glGenTextures(1, &_imp->refineDepthTexture);
         }
         if (frame != _imp->uploadedFrame) {
             const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
             glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, _imp->refineTexture);
             glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
             glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
             glPixelStorei(GL_UNPACK_ROW_LENGTH, 0);
-            const unsigned char* hostPixels = frame->rgba.empty() ? nullptr : frame->rgba.data();
-            if ((frameWidth != _imp->refineWidth) || (frameHeight != _imp->refineHeight)) {
+            const GfHalf* hostPixels = frame->rgba.empty() ? nullptr : frame->rgba.data();
+            const bool resized = (frameWidth != _imp->refineWidth) || (frameHeight != _imp->refineHeight);
+            glBindTexture(GL_TEXTURE_2D, _imp->refineTexture);
+            if (resized) {
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, frameWidth, frameHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, hostPixels);
-                _imp->refineWidth = frameWidth;
-                _imp->refineHeight = frameHeight;
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, frameWidth, frameHeight, 0, GL_RGBA, GL_HALF_FLOAT, hostPixels);
             } else if (hostPixels) {
-                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frameWidth, frameHeight, GL_RGBA, GL_UNSIGNED_BYTE, hostPixels);
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frameWidth, frameHeight, GL_RGBA, GL_HALF_FLOAT, hostPixels);
             }
             _imp->framePath = "upload";
 #ifdef NATRON_HAVE_GPU
@@ -6660,12 +6734,12 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
                     if (!off) {
                         _imp->deviceColorFailed(progressive, error);
                     }
-                    std::vector<unsigned char> host;
+                    std::vector<GfHalf> host;
                     if (progressive.hostColor(*frame, &host, &error)) {
                         glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
                         glActiveTexture(GL_TEXTURE0);
                         glBindTexture(GL_TEXTURE_2D, _imp->refineTexture);
-                        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frameWidth, frameHeight, GL_RGBA, GL_UNSIGNED_BYTE, host.data());
+                        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frameWidth, frameHeight, GL_RGBA, GL_HALF_FLOAT, host.data());
                     } else {
                         qDebug() << "SceneViewport: the GPU frame could not be read back:" << error.c_str();
                     }
@@ -6675,39 +6749,27 @@ SceneViewportRenderer::renderProgressive(unsigned int fbo,
                 glViewport(0, 0, width, height);
             }
 #endif
-            // The depth stays in a buffer of the GPU's, for the paints that draw the grid over the
-            // frame again before the next one.
-            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, _imp->refineDepthBuffer);
-            glBufferData(GL_PIXEL_UNPACK_BUFFER, (GLsizeiptr)(frame->depth.size() * sizeof(float)), frame->depth.data(), GL_STREAM_DRAW);
-            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+            // Kept on the GPU for the paints that draw the grid over the frame again before the next one.
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, _imp->refineDepthTexture);
+            if (resized) {
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_R32F, frameWidth, frameHeight, 0, GL_RED, GL_FLOAT, frame->depth.data());
+                _imp->refineWidth = frameWidth;
+                _imp->refineHeight = frameHeight;
+            } else {
+                glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, frameWidth, frameHeight, GL_RED, GL_FLOAT, frame->depth.data());
+            }
+            glBindTexture(GL_TEXTURE_2D, 0);
             _imp->uploadMs = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
             _imp->uploadPixels = frameWidth * frameHeight;
             _imp->uploadedFrame = frame;
         }
         // A frame of another size, while the one of this size renders, is stretched to the view.
-        GLuint readFramebuffer = 0;
-        glGenFramebuffers(1, &readFramebuffer);
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, readFramebuffer);
-        glFramebufferTexture2D(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, _imp->refineTexture, 0);
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
-        glBlitFramebuffer(0, 0, frameWidth, frameHeight, 0, 0, width, height, GL_COLOR_BUFFER_BIT, ((frameWidth == width) && (frameHeight == height)) ? GL_NEAREST : GL_LINEAR);
-        glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-        glDeleteFramebuffers(1, &readFramebuffer);
-        if (_imp->drawsOverlays() && (frameWidth == width) && (frameHeight == height)) {
-            // The frame's depth, so that the grid and guides hide behind what it shows.
-            glUseProgram(0);
-            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-            glEnable(GL_DEPTH_TEST);
-            glDepthFunc(GL_ALWAYS);
-            glWindowPos2i(0, 0);
-            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, _imp->refineDepthBuffer);
-            glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-            glDrawPixels(frameWidth, frameHeight, GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
-            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
-            glDepthFunc(GL_LESS);
-            glDisable(GL_DEPTH_TEST);
-            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-        }
+        const bool stretched = (frameWidth != width) || (frameHeight != height);
+        _imp->drawGrade(fbo, width, height, _imp->refineTexture, stretched ? 0 : _imp->refineDepthTexture, stretched, _imp->displayProcessor, _imp->gradeGain(), _imp->displayTransform.gamma);
         _imp->drawnSamples = frame->samples;
     } else {
         _imp->drawnSamples = -1;
@@ -7256,6 +7318,8 @@ SceneViewportRenderer::getRefineStatus() const
     result.restarts = status.restarts;
     result.frames = status.frames;
     result.drawnSamples = _imp->drawnSamples;
+    result.headlightAsked = status.headlightAsked;
+    result.headlight = status.headlight;
 
     return result;
 }
@@ -8387,6 +8451,8 @@ struct SceneViewport::Implementation {
     bool glInitialized = false;
     // The delegate rendering as of the last rendererChanged().
     std::string announcedRenderer = kRenderDelegateStormId;
+    // The camera exposure as of the last cameraExposureChanged().
+    SceneViewportRenderer::CameraExposure announcedExposure;
     // A switch of renderer waits for the background frame: making it waits on the render thread.
     bool followSceneOwed = false;
 
@@ -9642,6 +9708,12 @@ SceneViewport::SceneViewport(QWidget* parent)
     setProperty("natronGeoSelection", QString());
     setProperty("natronGeoSelectionCount", 0);
     setProperty("natronSceneHighlightCount", 0);
+    // Whether the camera looked through authors an exposure, in stops and as a linear scale, as
+    // the last paint read it.
+    {
+        const SceneViewportRenderer::CameraExposure& exposure = _imp->announcedExposure;
+        setProperty("natronSceneCameraExposure", QVariantList { exposure.authored, exposure.stops, exposure.scale });
+    }
     _imp->renderer.setStageEditor(_imp->geoDisplay);
     // A paint skipped while the worker syncs leaves the framebuffer as it was. Assumed from Qt's
     // documentation of QOpenGLWidget::UpdateBehavior, which says PartialUpdate keeps the
@@ -11567,6 +11639,10 @@ SceneViewport::publishRefineState()
     setProperty("natronSceneRefineFrames", QVariant::fromValue<qulonglong>(status.frames));
     setProperty("natronSceneUploadMs", _imp->renderer.getLastUploadMs());
     setProperty("natronSceneUploadPixels", _imp->renderer.getLastUploadPixels());
+    // The lighting the view renders with, "scene" or "headlight": natronSceneLighting is the mode
+    // asked for, which a delegate without a light at the camera renders with the stage's lights.
+    const bool headlight = status.active ? status.headlight : !_imp->renderer.isSceneLit();
+    setProperty("natronSceneLightingEffective", QString::fromUtf8(headlight ? "headlight" : "scene"));
     setProperty("natronSceneFramePath", QString::fromStdString(_imp->renderer.getLastFramePath()));
     setProperty("natronSceneHandoffUnsupported", _imp->renderer.isHandoffUnsupported());
     setProperty("natronSceneHandoffBest", QString::fromStdString(_imp->renderer.getHandoffBest()));
@@ -13423,6 +13499,13 @@ SceneViewport::paintGL()
     // The fill is the Storm engine's, which another delegate leaves where it was.
     const bool fillComplete = !stormPaint || _imp->renderer.isFillComplete();
     converged = converged && fillComplete;
+    const SceneViewportRenderer::CameraExposure exposure = _imp->renderer.getCameraExposure();
+    if (!(exposure == _imp->announcedExposure)) {
+        _imp->announcedExposure = exposure;
+        setProperty("natronSceneCameraExposure", QVariantList { exposure.authored, exposure.stops, exposure.scale });
+        // The toolbar label changing inside this paint could relayout the viewer around it.
+        QTimer::singleShot(0, this, [this]() { Q_EMIT cameraExposureChanged(); });
+    }
     const SceneViewportRenderer::RefineStatus refine = _imp->renderer.getRefineStatus();
     publishRefineState();
     publishTransformState();
@@ -13548,6 +13631,9 @@ SceneViewport::paintGL()
             }
             if (refine.stopped) {
                 hud += tr(" (paused)");
+            }
+            if (refine.headlightAsked && !refine.headlight) {
+                hud += tr(" | no headlight: scene lights");
             }
         }
         if (property("natronSceneHud").toString() != hud) {

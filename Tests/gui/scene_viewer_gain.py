@@ -18,8 +18,8 @@ cube. The script checks:
     the 0.3 cube; at gamma 2 its colour is graded unpremultiplied and laid over the ungraded
     background by that alpha, which grading the premultiplied colour would not give.
 
-Progressive delegates (Cycles) are not checked: their frames reach the view already encoded, and
-their grading belongs to the delegate display transform work. Looks and views that lift black are
+Progressive delegates (Cycles) go through the same grade pass and are checked in
+m365_delegate_display_transform.py. Looks and views that lift black are
 checked in SceneViewport_Test, which builds its own OpenColorIO config.
 
 Screenshots for sign-off, each with a CAPTION line in results.txt: scene-gain-reference,

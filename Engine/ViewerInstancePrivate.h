@@ -623,6 +623,7 @@ public:
         KnobBoolWPtr renderEverything;
         KnobIntWPtr maxSamples; // 0: the render delegate's own count
         KnobBoolWPtr refinementPaused;
+        KnobBoolWPtr applyCameraExposure;
     };
     Knobs knobs;
 

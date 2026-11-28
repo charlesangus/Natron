@@ -50,6 +50,33 @@ namespace {
         emitKey(em, "knob");
         em << YAML::Value;
         emitKnobValue(em, knob);
+        if (knob.isUserKnob) {
+            return;
+        }
+        // A project file leaves a plug-in knob's defaults and choice entries to the live plug-in,
+        // but a side's state is compared and restored before any live knob is at hand.
+        KnobSerialization defaults;
+        defaults.name = knob.name;
+        bool hasDefault = false;
+        for (const KnobDimensionSerialization& dimension : knob.dimensions) {
+            KnobDimensionSerialization entry;
+            entry.value = dimension.defaultValue;
+            defaults.dimensions.push_back(entry);
+            hasDefault = hasDefault || dimension.defaultValue.has_value();
+        }
+        if (hasDefault) {
+            emitKey(em, "default");
+            em << YAML::Value;
+            emitKnobValue(em, defaults);
+        }
+        if (const KnobChoiceExtraSerialization* choice = std::get_if<KnobChoiceExtraSerialization>(&knob.extraData)) {
+            emitKey(em, "entries");
+            em << YAML::Value;
+            emitStringList(em, choice->entries);
+            emitKey(em, "helps");
+            em << YAML::Value;
+            emitStringList(em, choice->helpStrings);
+        }
     }
 
     KnobSerialization
@@ -63,6 +90,25 @@ namespace {
         const std::string typeName = readString(reader.get("type"), context + ".type");
         const int dimensions = readInt(reader.get("dimensions"), context + ".dimensions");
         KnobSerialization result = readKnob(knobName, knob, context + ".knob", warnings);
+        if (YAML::Node defaults = reader.get("default")) {
+            const KnobSerialization values = readKnob(knobName, defaults, context + ".default", warnings);
+            if (result.dimensions.size() < values.dimensions.size()) {
+                result.dimensions.resize(values.dimensions.size());
+            }
+            for (std::size_t i = 0; i < values.dimensions.size(); ++i) {
+                result.dimensions[i].defaultValue = values.dimensions[i].value;
+            }
+        }
+        if (reader.has("entries") || reader.has("helps")) {
+            KnobChoiceExtraSerialization choice;
+            if (YAML::Node entries = reader.get("entries")) {
+                choice.entries = readStringVector(entries, context + ".entries");
+            }
+            if (YAML::Node helps = reader.get("helps")) {
+                choice.helpStrings = readStringVector(helps, context + ".helps");
+            }
+            result.extraData = choice;
+        }
         completeKnobSerialization(&result, typeName, dimensions);
 
         return result;

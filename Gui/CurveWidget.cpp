@@ -42,12 +42,13 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include <QWindow>
 
 #include "Engine/Bezier.h"
-#include "Engine/PyParameter.h" // IntParam
-#include "Engine/Project.h"
 #include "Engine/Image.h"
+#include "Engine/KnobTypes.h"
+#include "Engine/NodeCreationStageLog.h"
+#include "Engine/Project.h"
+#include "Engine/PyParameter.h" // IntParam
 #include "Engine/RotoContext.h"
 #include "Engine/Settings.h"
-#include "Engine/KnobTypes.h"
 
 #include "Gui/ActionShortcuts.h"
 #include "Gui/CurveEditor.h"
@@ -706,6 +707,7 @@ drawParametricBackground(const ParametricBackground& background)
 void
 CurveWidget::paintGL()
 {
+    NodeCreationStageLog::Scope creationStage("curveEditorPaint");
     // always running in the main thread
     assert( qApp && qApp->thread() == QThread::currentThread() );
     assert( QOpenGLContext::currentContext() == context() );

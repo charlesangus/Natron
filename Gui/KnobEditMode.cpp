@@ -1096,7 +1096,6 @@ KnobEditMode::setActive(bool active)
         }
         _imp->active = true;
         ++gActiveEditModes;
-        panel->ensureKnobGuisCreated();
         QVBoxLayout* column = panel->getPagesColumnLayout();
         if (!_imp->palette) {
             _imp->palette = new KnobEditPalette(this, panel);

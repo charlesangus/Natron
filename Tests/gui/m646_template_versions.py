@@ -42,10 +42,18 @@ try:
     import guitest as gt
     from guitest import check, require
 
+    _held = []
+
+    def hold(obj):
+        """Keeps a wrapper alive for the script's lifetime: child wrappers die with their parent's."""
+        if obj is not None and not any(obj is h for h in _held):
+            _held.append(obj)
+        return obj
+
     def main_window():
         for w in QApplication.topLevelWidgets():
             if isinstance(w, QMainWindow) and gt.class_name(w) == "Gui":
-                return w
+                return hold(w)
         return None
 
     def status_message():
@@ -57,7 +65,7 @@ try:
         if win is None or win.menuBar() is None:
             return None
         for act in win.menuBar().actions():
-            menu = gt.menu_of(act)
+            menu = hold(gt.menu_of(act))
             if menu is not None and act.text().lower().startswith("edit"):
                 for a in menu.actions():
                     if a.text().lower().startswith(prefix):
@@ -170,7 +178,7 @@ try:
 
     def graph_view():
         views = [v for v in gt.widgets_of("NodeGraph") if v.isVisible()]
-        return views[0] if views else None
+        return hold(views[0]) if views else None
 
     def scene_click(view, scene_pos, button):
         view.centerOn(scene_pos)
@@ -200,7 +208,7 @@ try:
         later(lambda: scene_click(view, centre_of(node), Qt.RightButton), flag)
         ok = yield ("until", lambda: isinstance(QApplication.activePopupWidget(), QMenu), DIALOG_TIMEOUT_S)
         require(ok, label + ": right-clicking " + name + " opens the node graph's menu")
-        return flag, QApplication.activePopupWidget()
+        return flag, hold(QApplication.activePopupWidget())
 
     def menu_names(name, label):
         """The object names of the context menu's actions on node name, closing the menu."""

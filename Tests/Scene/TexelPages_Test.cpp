@@ -225,9 +225,9 @@ TEST(TexelPages, BaseFileRegionsMatchTheWholeTile)
     const std::string path = dir.path().toStdString() + "/ramp.exr";
     writeRamp(path, 128, 128);
 
-    // At the file's size, then resampled up and down, over regions at its corners and middle.
+    // At the file's size, then resampled up and down, over regions inside the tile at its corners and middle.
     for (int size : { 128, 200, 96 }) {
-        for (const RectI& texels : { RectI(0, 0, 64, 64), RectI(64, 0, 128, 64), RectI(size - 37, size - 5, size, size), RectI(20, 30, 50, 33) }) {
+        for (const RectI& texels : { RectI(0, 0, 64, 64), RectI(size - 64, 0, size, 64), RectI(size - 37, size - 5, size, size), RectI(20, 30, 50, 33) }) {
             expectRegionMatchesTile(path, size, texels);
         }
     }

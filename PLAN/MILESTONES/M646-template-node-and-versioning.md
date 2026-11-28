@@ -278,3 +278,4 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
 - 2026-11-27 — **Anyone may publish the next version of the same ID, imports included (user).** That is how a supervisor publishes v002 from a fresh import of v001.
 - 2026-11-27 — The low-match guard threshold is 25% of base's nodes (planner): low enough for heavy supervisor rewrites, and it still catches a file with no shared identity.
 - 2026-11-27 — "Update does nothing" on a second template: no content-hash early return exists, and an unchanged file correctly applies nothing. The likely real cause is the context menu's single-selected-node rule. P2.T2 replaces that rule and adds the up-to-date message (code finding).
+- 2026-11-27 — **Claimed despite a shared file with M351 - Shader Graph Presentation (user):** `Gui/NodeGraph.cpp` overlaps; claim now, resolve conflicts when merging.

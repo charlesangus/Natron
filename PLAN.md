@@ -659,7 +659,7 @@ future core work has solid ground to build on.
 | M595 | Native EdgeDetail | todo | M238 |  | E3 | F39 | | [M595-native-edgedetail.md](PLAN/MILESTONES/M595-native-edgedetail.md) |
 | M596 | Remove Old User Knob Dialogs | todo | M247 |  | E10 | | | [M596-remove-old-user-knob-dialogs.md](PLAN/MILESTONES/M596-remove-old-user-knob-dialogs.md) |
 | M597 | Curve Editor Expanded Knob Rows | todo | - |  | E10 | | | [M597-curve-editor-expanded-knob-rows.md](PLAN/MILESTONES/M597-curve-editor-expanded-knob-rows.md) |
-| M598 | Progressive Render GIL Flake | todo | - |  | E14 | | | [M598-progressive-render-gil-flake.md](PLAN/MILESTONES/M598-progressive-render-gil-flake.md) |
+| M598 | Progressive Render GIL Flake | doing | - | bosley-executor | E14 | | | [M598-progressive-render-gil-flake.md](PLAN/MILESTONES/M598-progressive-render-gil-flake.md) |
 | M599 | Runner Efficiency | done | - | bosley-executor | E2 | | | [M599-runner-efficiency.md](PLAN/MILESTONES/M599-runner-efficiency.md) |
 | M600 | Native Geometry UAT Round 2 | done | - | bosley-executor | E9 | F15 | | [M600-native-geometry-uat-round-2.md](PLAN/MILESTONES/M600-native-geometry-uat-round-2.md) |
 | M616 | Packed Instances In Viewer Cycles | done | M600 | bosley-executor | E9 | |  | [M616-packed-instances-in-viewer-cycles.md](PLAN/MILESTONES/M616-packed-instances-in-viewer-cycles.md) |
@@ -697,14 +697,14 @@ future core work has solid ground to build on.
 | M636 | For-Each Loop Thread Scaling | todo | - |  | E22 |  | | [M636-for-each-loop-thread-scaling.md](PLAN/MILESTONES/M636-for-each-loop-thread-scaling.md) |
 | M637 | User Knob Property Persistence | todo | - |  | E10 |  | | [M637-user-knob-property-persistence.md](PLAN/MILESTONES/M637-user-knob-property-persistence.md) |
 | M638 | Self-Dimension Expression Listeners | todo | - |  | E14 |  | | [M638-self-dimension-expression-listeners.md](PLAN/MILESTONES/M638-self-dimension-expression-listeners.md) |
-| M639 | Ctest Load Flakes | todo | - |  | E2 |  | | [M639-ctest-load-flakes.md](PLAN/MILESTONES/M639-ctest-load-flakes.md) |
+| M639 | Ctest Load Flakes | doing | - | bosley-executor | E2 |  | | [M639-ctest-load-flakes.md](PLAN/MILESTONES/M639-ctest-load-flakes.md) |
 | M640 | USDToGeo Primvar Promotion | todo | M611 |  | E9 | F42 | | [M640-usdtogeo-primvar-promotion.md](PLAN/MILESTONES/M640-usdtogeo-primvar-promotion.md) |
 | M641 | Quiet Info Messages | todo | M418 |  | E14 |  | | [M641-quiet-info-messages.md](PLAN/MILESTONES/M641-quiet-info-messages.md) |
 | M642 | Pause At Loop Wrap | todo | - |  | E10 |  | | [M642-pause-at-loop-wrap.md](PLAN/MILESTONES/M642-pause-at-loop-wrap.md) |
 | M643 | AdjustBBox Zero Pixels Fix | todo | - |  | E3 |  | | [M643-adjustbbox-zero-pixels-fix.md](PLAN/MILESTONES/M643-adjustbbox-zero-pixels-fix.md) |
 | M644 | MoonRay Subdivision Holes | todo | M554 |  | E9 |  | | [M644-moonray-subdivision-holes.md](PLAN/MILESTONES/M644-moonray-subdivision-holes.md) |
 | M645 | Aurora Delegate Evaluation | todo | - |  | E9 |  | | [M645-aurora-delegate-evaluation.md](PLAN/MILESTONES/M645-aurora-delegate-evaluation.md) |
-| M646 | Template Node And Versioning | todo | M103, M104 | | E12 | F33 | | [M646-template-node-and-versioning.md](PLAN/MILESTONES/M646-template-node-and-versioning.md) |
+| M646 | Template Node And Versioning | doing | M103, M104 | bosley-executor | E12 | F33 | | [M646-template-node-and-versioning.md](PLAN/MILESTONES/M646-template-node-and-versioning.md) |
 | M647 | Template Compare Layout | doing | M104 | bosley-executor | E12 | F33 | | [M647-template-compare-layout.md](PLAN/MILESTONES/M647-template-compare-layout.md) |
 | M648 | Cycles Live Volume Refresh | todo | M554 | | E9 | F1 | | [M648-cycles-live-volume-refresh.md](PLAN/MILESTONES/M648-cycles-live-volume-refresh.md) |
 

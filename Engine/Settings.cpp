@@ -1550,11 +1550,27 @@ Settings::initializeKnobsNodeGraph()
 
     _pipeWidth = AppManager::createKnob<KnobInt>(this, tr("Pipe Width"));
     _pipeWidth->setName("pipeWidth");
-    _pipeWidth->setHintToolTip(tr("The width in pixels of the pipes between nodes, connected or not. Arrow heads are three "
-                                  "times as wide, and the distance from which a pipe can be grabbed grows with it."));
+    _pipeWidth->setHintToolTip(tr("The width in pixels of the pipes between nodes, connected or not. Arrowheads are sized "
+                                  "in multiples of it, and the distance from which a pipe can be grabbed grows with it."));
     _pipeWidth->disableSlider();
     _pipeWidth->setMinimum(1);
     _nodegraphTab->addKnob(_pipeWidth);
+
+    _arrowheadWidth = AppManager::createKnob<KnobDouble>(this, tr("Arrowhead Width"));
+    _arrowheadWidth->setName("arrowheadWidth");
+    _arrowheadWidth->setHintToolTip(tr("How wide the arrowhead at the end of a pipe is across its base, as a multiple of the "
+                                       "Pipe Width. A pipe can be grabbed from anywhere on its arrowhead."));
+    _arrowheadWidth->disableSlider();
+    _arrowheadWidth->setMinimum(1.);
+    _nodegraphTab->addKnob(_arrowheadWidth);
+
+    _arrowheadLength = AppManager::createKnob<KnobDouble>(this, tr("Arrowhead Length"));
+    _arrowheadLength->setName("arrowheadLength");
+    _arrowheadLength->setHintToolTip(tr("How long the arrowhead at the end of a pipe is from its tip to its base, as a multiple "
+                                        "of the Pipe Width."));
+    _arrowheadLength->disableSlider();
+    _arrowheadLength->setMinimum(1.);
+    _nodegraphTab->addKnob(_arrowheadLength);
 
     _disconnectedArrowLength = AppManager::createKnob<KnobInt>(this, tr("Disconnected Arrow Length"));
     _disconnectedArrowLength->setName("disconnectedArrowLength");
@@ -2049,6 +2065,8 @@ Settings::setDefaultValues()
     _snapNodesToConnections->setDefaultValue(true);
     _maxUndoSteps->setDefaultValue(200, 0);
     _pipeWidth->setDefaultValue(3);
+    _arrowheadWidth->setDefaultValue(5.);
+    _arrowheadLength->setDefaultValue(8.);
     _disconnectedArrowLength->setDefaultValue(40);
     _outputStubLength->setDefaultValue(20);
     _outputStyle->setDefaultValue((int)eOutputStyleNub);
@@ -3836,6 +3854,18 @@ int
 Settings::getPipeWidth() const
 {
     return _pipeWidth->getValue();
+}
+
+double
+Settings::getArrowheadWidth() const
+{
+    return _arrowheadWidth->getValue();
+}
+
+double
+Settings::getArrowheadLength() const
+{
+    return _arrowheadLength->getValue();
 }
 
 int

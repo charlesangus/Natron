@@ -117,6 +117,32 @@ TEST(EdgeNearbyGrab, ACandidateOnItsNubStillNeedsToBeWithinItsRadius)
     EXPECT_EQ(0, pickNearestEdgeCandidate(QPointF(5, 0), candidates, 20., 20.));
 }
 
+TEST(EdgeNearbyGrab, ADotRingIsPickedInItsHitAreaWhateverItsLine)
+{
+    std::vector<EdgeNearbyCandidate> candidates;
+
+    // A ring's line is a point at the Dot's centre, here further away than either radius.
+    candidates.push_back(makeCandidate(QPointF(5, 40), QPointF(5, 40), true));
+    candidates[0].isDotRing = true;
+
+    EXPECT_EQ(-1, pickNearestEdgeCandidate(QPointF(5, 0), candidates, 20., 20.));
+    candidates[0].onNub = true;
+    EXPECT_EQ(0, pickNearestEdgeCandidate(QPointF(5, 0), candidates, 20., 20.));
+}
+
+TEST(EdgeNearbyGrab, ADotRingGivesWayToAPipeWithinReach)
+{
+    std::vector<EdgeNearbyCandidate> candidates;
+
+    candidates.push_back(makeCandidate(QPointF(5, 0), QPointF(5, 0), true));
+    candidates[0].isDotRing = true;
+    candidates[0].onNub = true;
+    candidates.push_back(makeCandidate(QPointF(0, 15), QPointF(10, 15), false)); // 15 away
+
+    EXPECT_EQ(1, pickNearestEdgeCandidate(QPointF(5, 0), candidates, 20., 20.));
+    EXPECT_EQ(0, pickNearestEdgeCandidate(QPointF(5, 0), candidates, 10., 10.));
+}
+
 TEST(EdgeNearbyGrab, NoCandidatesReturnsNone)
 {
     std::vector<EdgeNearbyCandidate> candidates;

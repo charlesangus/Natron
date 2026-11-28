@@ -351,8 +351,10 @@ try:
         return float(NatronEngine.natron.getSettings().getParam(name).getValue())
 
     def dangling_grab_radius():
-        """Edge::grabRadiusPixels(true), in viewport pixels."""
-        return max(18.0, 8.0 * pipe_pref("pipeWidth"))
+        """Edge::grabRadiusPixels(true), in viewport pixels: it never falls short of half the
+        arrowhead's width either."""
+        width = pipe_pref("pipeWidth")
+        return max(18.0, 8.0 * width, pipe_pref("arrowheadWidth") * width / 2.0)
 
     def stub_direction(node, input_nb):
         """The stub's direction in scene coordinates (y down), from NodeGui::initializeInputs,

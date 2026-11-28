@@ -110,28 +110,32 @@ try:
 
     def bend_point(graph, src, dst):
         """The scene position of the bend point of the pipe from src to dst, from the Edge item.
-        Edge::initLineNow() sets the item's line from dst's boundary to src's centre; the bend
-        point (Edge::middlePoint, grabbed within 10 scene units by Edge::isNearbyBendPoint) is the
-        midpoint of the part of that line between the two node boundaries."""
+        Edge::initLineNow() sets the item's line from dst's boundary to src's centre, or in the
+        Nub output style (the default) to the middle of src's bottom edge, where the nub is; the
+        bend point (Edge::middlePoint, grabbed within 10 scene units by Edge::isNearbyBendPoint) is
+        the midpoint of the part of that line between the two node boundaries."""
         sx, sy, sw, sh = box(src)
         src_c = QPointF(sx + sw / 2.0, sy + sh / 2.0)
+        src_bottom = QPointF(sx + sw / 2.0, sy + sh)
         for item in graph.scene().items():
             if not isinstance(item, QGraphicsLineItem):
                 continue
             line = item.line()
             p1 = item.mapToScene(line.p1())
             p2 = item.mapToScene(line.p2())
-            if (p2 - src_c).manhattanLength() > 3.0:
+            from_nub = (p2 - src_bottom).manhattanLength() <= 3.0
+            if not from_nub and (p2 - src_c).manhattanLength() > 3.0:
                 continue
             dx, dy, dw, dh = box(dst)
             if not (dx - 3.0 <= p1.x() <= dx + dw + 3.0 and dy - 3.0 <= p1.y() <= dy + dh + 3.0):
                 continue
-            # Walk from the source centre towards the destination boundary until leaving the source box.
+            # Walk from the source centre towards the destination boundary until leaving the source
+            # box; a pipe from the nub already starts on the boundary.
             d = p1 - p2
-            tmin = 1.0
-            if abs(d.x()) > 1e-9:
+            tmin = 0.0 if from_nub else 1.0
+            if not from_nub and abs(d.x()) > 1e-9:
                 tmin = min(tmin, (sw / 2.0) / abs(d.x()))
-            if abs(d.y()) > 1e-9:
+            if not from_nub and abs(d.y()) > 1e-9:
                 tmin = min(tmin, (sh / 2.0) / abs(d.y()))
             leave = p2 + d * tmin
             mid = (leave + p1) / 2.0

@@ -1,11 +1,14 @@
 """Checks the node graph pipe preferences: Pipe Width sets the pen of every pipe, connected or not,
 Disconnected Arrow Length and Output Stub Length set where a dangling input and an output stub end,
 and the grab radii grow with the width (12 / 24 viewport pixels for a connected / dangling pipe at
-the default width 3) but never shrink below 10 / 18. Arrow heads are three pipe widths wide. Output
-Style draws an output that feeds nothing as an arrow stub, or any output as a nub, a half circle
-under the node (the default), which is grabbed to drag a connection like the stub; on a node that
-already feeds another, the nub adds a connection and leaves the existing one. With no button down,
-the pipe a click would pick up is highlighted.
+the default width 3) but never shrink below 10 / 18, nor below half the arrowhead's width. Arrowhead
+Width and Arrowhead Length size the heads in pipe widths (5 and 8 by default). Output Style draws an
+output that feeds nothing as an arrow stub, or any output as a nub, a half circle under the node (the
+default), which is grabbed to drag a connection like the stub; on a node that already feeds another,
+the nub adds a connection and leaves the existing one. In the Nub style every pipe a node feeds
+leaves from the nub's centre. A Dot has no nub: hovering it shows a ring around its disk, a drag
+from the ring pulls a new pipe and a drag from the disk moves the Dot, whose pipes leave from its
+centre. With no button down, the pipe a click would pick up is highlighted.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh):
     NATRON_GUI_TEST_OUT=build/pipe-grab/out Tests/gui/run-gui-test.sh Tests/gui/pipe_grab.py build/fast/App/Natron
@@ -13,7 +16,8 @@ Shots (the node graph viewport): pipe-grab-nub-geometry.png, pipe-grab-nub.png a
 (the two output styles), pipe-grab-defaults.png and pipe-grab-defaults-zoom2.png (every pipe
 preference at its default: a Blur feeding two others through its nub, their unconnected outputs'
 nubs and the pipes' arrow heads), pipe-grab-nub-hover.png (a connected output's nub highlighted
-under the cursor), pipe-grab-hover.png (a dangling input highlighted under the cursor).
+under the cursor), pipe-grab-hover.png (a dangling input highlighted under the cursor),
+pipe-grab-dot.png and pipe-grab-dot-ring.png (a Dot without and with the pointer on it).
 """
 import os
 import sys
@@ -27,9 +31,11 @@ SETTLE_MS = 400
 LINE_ITEM_TYPE = 6
 # Pipe ends are laid out from the node's outline, which can sit a pixel or two off getSize().
 POSITION_TOLERANCE = 3.0
-DEFAULTS = {"pipeWidth": 3, "disconnectedArrowLength": 40, "outputStubLength": 20}
+DEFAULTS = {"pipeWidth": 3, "disconnectedArrowLength": 40, "outputStubLength": 20,
+            "arrowheadWidth": 5, "arrowheadLength": 8}
 LABELS = {"pipeWidth": "Pipe Width", "disconnectedArrowLength": "Disconnected Arrow Length",
-          "outputStubLength": "Output Stub Length", "outputStyle": "Output Style"}
+          "outputStubLength": "Output Stub Length", "outputStyle": "Output Style",
+          "arrowheadWidth": "Arrowhead Width", "arrowheadLength": "Arrowhead Length"}
 OUTPUT_STYLE_ARROW = 0
 OUTPUT_STYLE_NUB = 1
 OUTPUT_STYLE_IDS = ["arrow", "nub"]
@@ -37,8 +43,15 @@ OUTPUT_STYLE_IDS = ["arrow", "nub"]
 NUB_RADIUS = 0.6 * DEFAULTS["outputStubLength"]
 GRAB_RADIUS_DEFAULT = 12.0
 DANGLING_RADIUS_DEFAULT = 24.0
-# Edge.cpp: an arrow head is 3 pipe widths across its base; its bounds are padded a pixel each side.
-ARROW_HEAD_WIDTH_DEFAULT = 3.0 * DEFAULTS["pipeWidth"]
+# Edge.cpp: an arrow head is Arrowhead Width pipe widths across its base and Arrowhead Length pipe
+# widths long; its bounds are padded a pixel each side.
+ARROW_HEAD_WIDTH_DEFAULT = DEFAULTS["arrowheadWidth"] * DEFAULTS["pipeWidth"]
+# Edge.cpp ARROW_OFFSET: the head's tip stops this far short of the node it points at.
+ARROW_OFFSET = 3.0
+# DotGui.cpp DOT_GUI_DIAMETER; a Dot cannot be resized, so getSize() can report 0 x 0.
+DOT_DIAMETER = 15.0
+# Edge.cpp DOT_RING_GAP: between the disk and the inner edge of the ring.
+DOT_RING_GAP = 3.0
 GRAB_RADIUS_MIN = 10.0
 DANGLING_RADIUS_MIN = 18.0
 # Edge::kHoverHighlightDataKey
@@ -123,11 +136,17 @@ try:
                 return (p1, p2)
         return None
 
+    def bottom_centre(node):
+        x, y = node.getPosition()
+        w, h = node.getSize()
+        return (x + w / 2.0, y + h)
+
     def output_stub(node):
-        """The output stub of node, as (free end, node end), or None."""
-        c = centre(node)
+        """The output stub of node, as (free end, node end), or None. The node end is the node's
+        centre in the Arrow style and the nub's centre, the middle of the bottom edge, in the Nub
+        style."""
         for p1, p2, _ in pipes():
-            if near(p2, c) and abs(p2[0] - p1[0]) < 1.0 and p1[1] > p2[1]:
+            if (near(p2, centre(node)) or near(p2, bottom_centre(node))) and abs(p2[0] - p1[0]) < 1.0 and p1[1] > p2[1]:
                 return (p1, p2)
         return None
 
@@ -169,10 +188,8 @@ try:
         """Whether the output nub of node is hover-highlighted, or None if no nub is shown. Told apart
         from a pipe the node feeds straight down by its free end, NUB_RADIUS below the node."""
         graph = root_graph()
-        c = centre(node)
-        x, y = node.getPosition()
-        w, h = node.getSize()
-        free = (c[0], y + h + NUB_RADIUS)
+        c = bottom_centre(node)
+        free = (c[0], c[1] + NUB_RADIUS)
         for it in (list(graph.items()) if graph is not None else []):
             try:
                 if it.type() != LINE_ITEM_TYPE or not it.isVisible():
@@ -201,6 +218,64 @@ try:
             except RuntimeError:
                 continue
         return None
+
+    def pipe_item(src_end, dst, tol):
+        """The pipe item into dst whose source end is within tol of the scene point src_end, or None."""
+        graph = root_graph()
+        for it in (list(graph.items()) if graph is not None else []):
+            try:
+                if it.type() != LINE_ITEM_TYPE or not it.isVisible():
+                    continue
+                line = it.line()
+                p1 = it.mapToScene(line.p1())
+                p2 = it.mapToScene(line.p2())
+                if near((p2.x(), p2.y()), src_end, tol) and near((p1.x(), p1.y()), centre(dst), dst.getSize()[1]):
+                    return it
+            except RuntimeError:
+                continue
+        return None
+
+    def head_contains(item, along, across):
+        """Whether the item's shape (pipe and arrow head) holds the scene point along px back from the
+        head's tip and across px to the side of the pipe's axis."""
+        line = item.line()
+        p1 = item.mapToScene(line.p1())
+        p2 = item.mapToScene(line.p2())
+        dx, dy = p2.x() - p1.x(), p2.y() - p1.y()
+        n = (dx * dx + dy * dy) ** 0.5
+        ux, uy = dx / n, dy / n
+        t = ARROW_OFFSET + along
+        pt = QPointF(p1.x() + ux * t - uy * across, p1.y() + uy * t + ux * across)
+        return item.shape().contains(item.mapFromScene(pt))
+
+    def dot_centre(dot):
+        x, y = dot.getPosition()
+        w, h = dot.getSize()
+        if w <= 0 or h <= 0:
+            w, h = DOT_DIAMETER, DOT_DIAMETER
+        return (x + w / 2.0, y + h / 2.0)
+
+    def dot_ring(dot):
+        """The output item of a Dot in the Nub style, a ring whose line is a point at the Dot's
+        centre, or None."""
+        graph = root_graph()
+        c = dot_centre(dot)
+        for it in (list(graph.items()) if graph is not None else []):
+            try:
+                if it.type() != LINE_ITEM_TYPE or not it.isVisible():
+                    continue
+                line = it.line()
+                p1 = it.mapToScene(line.p1())
+                p2 = it.mapToScene(line.p2())
+                if near((p1.x(), p1.y()), c, 1.0) and near((p2.x(), p2.y()), c, 1.0):
+                    return it
+            except RuntimeError:
+                continue
+        return None
+
+    def ring_hovered(dot):
+        ring = dot_ring(dot)
+        return None if ring is None else bool(ring.data(HOVER_DATA_KEY))
 
     def connected_pipe(src, dst, tol):
         """The pipe from src into dst, as (dst end, src end), or None."""
@@ -279,7 +354,8 @@ try:
 
     def nearest_pipe_px(press_view):
         p = to_scene(press_view)
-        ds = [dist_to_segment(p, a, b) for a, b, _ in pipes()]
+        # A Dot's ring is a point, not a pipe.
+        ds = [dist_to_segment(p, a, b) for a, b, _ in pipes() if not near(a, b, 0.5)]
         return min(ds) if ds else float("inf")
 
     def steps():
@@ -297,7 +373,7 @@ try:
         for name, value in sorted(DEFAULTS.items()):
             p = settings.getParam(name)
             require(p is not None, "Preferences have a parameter named " + name)
-            check(p.getDefaultValue() == value, "%s defaults to %d (got %d)" % (name, value, p.getDefaultValue()))
+            check(p.getDefaultValue() == value, "%s defaults to %g (got %g)" % (name, value, p.getDefaultValue()))
             check(p.getLabel() == LABELS[name], "%s is labelled %r (got %r)" % (name, LABELS[name], p.getLabel()))
             set_pref(name, value)
         style = settings.getParam("outputStyle")
@@ -547,9 +623,21 @@ try:
         check(nub_hovered(taker) is not None and nub_hovered(second) is not None,
               "the two takers, which feed nothing, show their nubs")
 
+        gt.section("pipes-leave-the-nub")
+        fb = bottom_centre(feeder)
+        for target in (taker, second):
+            check(pipe_item(fb, target, POSITION_TOLERANCE) is not None,
+                  "in the Nub style the pipe into %s leaves from the feeder's nub centre %r" % (target.getScriptName(), fb))
+        set_pref("outputStyle", OUTPUT_STYLE_ARROW)
+        yield ("sleep", SETTLE_MS)
+        check(pipe_item(fc, second, POSITION_TOLERANCE) is not None,
+              "in the Arrow style the pipe into %s leaves from the feeder's centre %r" % (second.getScriptName(), fc))
+        set_pref("outputStyle", OUTPUT_STYLE_NUB)
+        yield ("sleep", SETTLE_MS)
+
         gt.section("defaults-shots")
         for name, value in sorted(DEFAULTS.items()):
-            check(settings.getParam(name).getValue() == value, "%s is at its default %d" % (name, value))
+            check(settings.getParam(name).getValue() == value, "%s is at its default %g" % (name, value))
         check(settings.getParam("outputStyle").getValue() == OUTPUT_STYLE_NUB, "outputStyle is at its default Nub")
         tw = pipe_bounds_width(feeder, taker, fh)
         check(tw is not None and abs(tw - (ARROW_HEAD_WIDTH_DEFAULT + 2.0)) <= 1.0,
@@ -565,6 +653,57 @@ try:
         yield ("sleep", SETTLE_MS)
         shoot("pipe-grab-defaults-zoom2.png")
         root_graph().resetTransform()
+        yield ("sleep", SETTLE_MS)
+
+        gt.section("arrowhead-prefs")
+        root_graph().centerOn(fc[0], (fc[1] + tc[1]) / 2.0)
+        yield ("sleep", SETTLE_MS)
+        pw = DEFAULTS["pipeWidth"]
+        for head_width, width in ((DEFAULTS["arrowheadWidth"], pw), (8, pw), (8, 2)):
+            set_pref("arrowheadWidth", head_width)
+            set_pref("pipeWidth", width)
+            yield ("sleep", SETTLE_MS)
+            tw = pipe_bounds_width(feeder, taker, fh)
+            check(tw is not None and abs(tw - (head_width * width + 2.0)) <= 1.0,
+                  "Arrowhead Width %g at Pipe Width %d: the straight-down pipe's bounds are a %g px head plus a "
+                  "pixel each side (got %r)" % (head_width, width, head_width * width, tw))
+        set_pref("arrowheadWidth", DEFAULTS["arrowheadWidth"])
+        set_pref("pipeWidth", pw)
+        yield ("sleep", SETTLE_MS)
+        # A quarter head width off the axis is outside the pipe's own stroke, and inside the head
+        # from half way back from the tip to its base.
+        across = DEFAULTS["arrowheadWidth"] * pw / 4.0
+        default_length = DEFAULTS["arrowheadLength"] * pw
+        item = pipe_item(bottom_centre(feeder), taker, POSITION_TOLERANCE)
+        require(item is not None, "the feeder-to-taker pipe is shown")
+        check(head_contains(item, 0.75 * default_length, across),
+              "at the default Arrowhead Length the head holds a point %g px back from its tip" % (0.75 * default_length))
+        check(not head_contains(item, 1.2 * default_length, across),
+              "at the default Arrowhead Length the head ends %g px back from its tip" % default_length)
+        set_pref("arrowheadLength", 4)
+        yield ("sleep", SETTLE_MS)
+        item = pipe_item(bottom_centre(feeder), taker, POSITION_TOLERANCE)
+        require(item is not None, "the feeder-to-taker pipe is shown at Arrowhead Length 4")
+        check(not head_contains(item, 0.75 * default_length, across),
+              "at Arrowhead Length 4 the head no longer reaches %g px back from its tip" % (0.75 * default_length))
+        check(head_contains(item, 0.75 * 4 * pw, across),
+              "at Arrowhead Length 4 the head holds a point %g px back from its tip" % (0.75 * 4 * pw))
+        set_pref("arrowheadLength", DEFAULTS["arrowheadLength"])
+        # A head wider than twice the grab radius widens the radius to half the head.
+        set_pref("arrowheadWidth", 12)
+        yield ("sleep", SETTLE_MS)
+        pipe = connected_pipe(feeder, taker, fh)
+        require(pipe is not None, "the feeder-to-taker pipe is shown at Arrowhead Width 12")
+        offset = GRAB_RADIUS_DEFAULT + 3
+        press = beside_at(pipe, 0.35, offset)
+        report("NOTE wide-head press %g px beside, nearest pipe %.1f px" % (offset, nearest_pipe_px(press)))
+        followed = drag_from(press)
+        check(any(near(a, centre(taker), fh) for a, _ in followed),
+              "with a %g px head a press %g px beside the connected pipe drags it (%r)" % (12 * pw, offset, followed))
+        yield ("sleep", SETTLE_MS)
+        if not taker.getInput(0):
+            taker.connectInput(0, feeder)
+        set_pref("arrowheadWidth", DEFAULTS["arrowheadWidth"])
         yield ("sleep", SETTLE_MS)
 
         gt.section("hover-highlight")
@@ -583,6 +722,80 @@ try:
         send_mouse(QEvent.MouseMove, away, Qt.NoButton, Qt.NoButton)
         yield ("sleep", SETTLE_MS)
         check(dangling_input_hovered(lone) is False, "the highlight clears with the pointer away from every pipe")
+
+        gt.section("dot-ring")
+        set_pref("outputStyle", OUTPUT_STYLE_NUB)
+        dot = create("Dot", 1400, 0)
+        dc = dot_centre(dot)
+        # The Dot is fed from straight above and feeds a Blur straight to its right, so the pipes
+        # leave its left side free.
+        upper = create("Blur", 0, 0)
+        uw, uh = upper.getSize()
+        upper.setPosition(dc[0] - uw / 2.0, dc[1] - 150.0 - uh)
+        right = create("Blur", 0, 0)
+        rw, rh = right.getSize()
+        right.setPosition(dc[0] + 200.0, dc[1] - rh / 2.0)
+        lower = create("Blur", dc[0] - 250.0, dc[1] + 150.0)
+        dot.connectInput(0, upper)
+        right.connectInput(0, dot)
+        app.clearSelection()
+        require(lower.getInput(0) is None, "the Blur under the Dot starts unconnected")
+        yield ("sleep", SETTLE_MS)
+        root_graph().centerOn(dc[0], dc[1])
+        yield ("sleep", SETTLE_MS)
+        dc = dot_centre(dot)
+        ring = dot_ring(dot)
+        require(ring is not None, "the Dot's output is laid out as a ring around its disk")
+        disk_bottom = (dc[0], dc[1] + DOT_DIAMETER / 2.0)
+        nubs = [(p1, p2) for p1, p2, _ in pipes() if near(p2, disk_bottom) and near(p1, (disk_bottom[0], disk_bottom[1] + NUB_RADIUS))]
+        check(not nubs, "no nub is drawn under the Dot in the Nub style (%r)" % nubs)
+        check(pipe_item(dc, right, POSITION_TOLERANCE) is not None,
+              "the Dot's pipe into the Blur leaves from the disk's centre %r" % (dc,))
+        away = to_view((dc[0] - 100.0, dc[1] + 100.0))
+        require(nearest_pipe_px(away) > DANGLING_RADIUS_DEFAULT, "no pipe lies near the parked pointer")
+        send_mouse(QEvent.MouseMove, away, Qt.NoButton, Qt.NoButton)
+        yield ("sleep", SETTLE_MS)
+        check(ring_hovered(dot) is False, "the ring is hidden with the pointer away from the Dot")
+        shoot("pipe-grab-dot.png")
+        send_mouse(QEvent.MouseMove, to_view(dc), Qt.NoButton, Qt.NoButton)
+        yield ("sleep", SETTLE_MS)
+        check(ring_hovered(dot) is True, "the ring shows with the pointer on the Dot's disk")
+        shoot("pipe-grab-dot-ring.png")
+        ring_radius = DOT_DIAMETER / 2.0 + DOT_RING_GAP + DEFAULTS["pipeWidth"] / 2.0
+        on_ring = to_view((dc[0] - ring_radius - 2.0, dc[1]))
+        report("NOTE ring press at %r, nearest pipe %.1f px" % (on_ring, nearest_pipe_px(on_ring)))
+        require(nearest_pipe_px(on_ring) > GRAB_RADIUS_DEFAULT, "no pipe is within grab reach of the ring press")
+        send_mouse(QEvent.MouseMove, on_ring, Qt.NoButton, Qt.NoButton)
+        yield ("sleep", SETTLE_MS)
+        check(ring_hovered(dot) is True, "the ring shows with the pointer on it")
+        send_mouse(QEvent.MouseMove, away, Qt.NoButton, Qt.NoButton)
+        yield ("sleep", SETTLE_MS)
+        check(ring_hovered(dot) is False, "the ring hides again with the pointer away")
+        drag_between(on_ring, to_view(centre(lower)))
+        yield ("sleep", SETTLE_MS)
+        fed = lower.getInput(0)
+        check(fed is not None and fed.getScriptName() == dot.getScriptName(),
+              "a drag from the ring onto a Blur connects the Dot to it (input %r)" % (fed.getScriptName() if fed else None))
+        fed = right.getInput(0)
+        check(fed is not None and fed.getScriptName() == dot.getScriptName(),
+              "the Dot still feeds its first Blur (input %r)" % (fed.getScriptName() if fed else None))
+        fed = dot.getInput(0)
+        check(fed is not None and fed.getScriptName() == upper.getScriptName(),
+              "the ring drag left the Dot's own input alone (input %r)" % (fed.getScriptName() if fed else None))
+        app.clearSelection()
+        yield ("sleep", SETTLE_MS)
+        before = dot.getPosition()
+        disk = to_view(dot_centre(dot))
+        drag_between(disk, (disk[0] - 60, disk[1] + 40))
+        yield ("sleep", SETTLE_MS)
+        after = dot.getPosition()
+        check(abs(after[0] - before[0]) > 20.0 or abs(after[1] - before[1]) > 20.0,
+              "a drag from the disk moves the Dot (%r -> %r)" % (before, after))
+        for taker_node in (right, lower):
+            fed = taker_node.getInput(0)
+            check(fed is not None and fed.getScriptName() == dot.getScriptName(),
+                  "moving the Dot keeps it feeding %s (input %r)"
+                  % (taker_node.getScriptName(), fed.getScriptName() if fed else None))
 
         for name, value in sorted(DEFAULTS.items()):
             set_pref(name, value)

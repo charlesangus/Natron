@@ -39,6 +39,7 @@
 #include "Engine/Settings.h"
 #include "Engine/ViewerInstance.h"
 #include "Global/Enums.h"
+#include "Gui/DotGui.h"
 #include "Gui/EdgeLabelMetrics.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/NodeGraph.h"
@@ -57,10 +58,6 @@
 
 #define EDGE_LENGTH_MIN 0.1
 #define ARROW_OFFSET 3 // offset of the arrow tip from the object border
-// Pipe arrow heads are this many pipe widths across their base, so they stay as bold as the pipe.
-#define ARROW_HEAD_WIDTH_PER_PIPE_WIDTH 3.
-#define ARROW_HEAD_WIDTH_MIN 6.
-#define ARROW_HEAD_LENGTH_PER_WIDTH 1.6
 #define ARROW_HEAD_ANGLE ( (2 * M_PI) / 15 ) // 24 degrees opening angle is a nice thin arrow
 // Dash lengths are in pen widths; they are scaled to stay the pixel lengths of a pipe this wide.
 #define DASH_PEN_WIDTH 2.
@@ -73,6 +70,8 @@
 #define DANGLING_GRAB_RADIUS_PER_WIDTH 8.
 // The nub's radius as a fraction of the Output Stub Length.
 #define OUTPUT_NUB_RADIUS_PER_STUB_LENGTH 0.6
+// Viewport pixels between a Dot's disk and the inner edge of its output ring.
+#define DOT_RING_GAP 3.
 
 NATRON_NAMESPACE_ENTER
 
@@ -83,6 +82,20 @@ pipeWidthPreference()
     return std::max(1, appPTR->getCurrentSettings()->getPipeWidth());
 }
 
+// The Arrowhead Width and Length preferences are multiples of the pipe width. As with the pipe
+// width, a Python script can store values under the knob minimum.
+static double
+arrowheadWidthMultiple()
+{
+    return std::max(1., appPTR->getCurrentSettings()->getArrowheadWidth());
+}
+
+static double
+arrowheadLengthMultiple()
+{
+    return std::max(1., appPTR->getCurrentSettings()->getArrowheadLength());
+}
+
 static void
 layArrowHead(const QPointF& tip,
              double angle,
@@ -90,8 +103,8 @@ layArrowHead(const QPointF& tip,
              double scale,
              QPolygonF* head)
 {
-    const double width = std::max(TO_DPIX(ARROW_HEAD_WIDTH_MIN), ARROW_HEAD_WIDTH_PER_PIPE_WIDTH * pipeWidth) * scale;
-    const double length = width * ARROW_HEAD_LENGTH_PER_WIDTH;
+    const double width = arrowheadWidthMultiple() * pipeWidth * scale;
+    const double length = arrowheadLengthMultiple() * pipeWidth * scale;
     const QPointF along(std::cos(angle), std::sin(angle));
     const QPointF across(-along.y(), along.x());
     const QPointF base = tip + along * length;
@@ -132,6 +145,10 @@ struct EdgePrivate
     // The full circle of the output nub, drawn as its lower half; null unless this is an output
     // stub laid out in the Nub style and not being dragged.
     QRectF nubRect;
+    // A Dot's output in the Nub style is a ring around its disk instead, drawn only while hovered.
+    // ringRect is the circle the ring's stroke is centred on; null when there is no ring.
+    QRectF ringRect;
+    double dotRadius;
 
     EdgePrivate(Edge* publicInterface,
                 int inputNb,
@@ -163,6 +180,8 @@ struct EdgePrivate
         , kindTint()
         , middlePoint()
         , nubRect()
+        , ringRect()
+        , dotRadius(0.)
     {
     }
 
@@ -578,13 +597,27 @@ Edge::initLineNow()
 
     QPointF dst;
     QRectF nubRect;
+    QRectF ringRect;
+    double dotRadius = 0.;
+
+    const bool nubStyle = appPTR->getCurrentSettings()->getOutputStyle() == Settings::eOutputStyleNub;
+    const bool sourceIsDot = dynamic_cast<DotGui*>(source.get()) != 0;
+    // In the Nub style a node's pipes all leave from the nub's centre, the middle of its bottom
+    // edge. A Dot's pipes leave from its centre in any direction, as in the other styles.
+    const bool fromNub = source && nubStyle && !sourceIsDot;
+    const QPointF bottomCentre = QPointF(sourceBBOX.x(), sourceBBOX.y()) + QPointF(srcNodeSize.width() / 2., srcNodeSize.height());
 
     if (dest) {
         dst = destBBOX.center();
     } else if (source && !dest) {
-        const QPointF bottomCentre = QPointF(sourceBBOX.x(), sourceBBOX.y()) + QPointF(srcNodeSize.width() / 2., srcNodeSize.height());
         const double stubLength = TO_DPIY(appPTR->getCurrentSettings()->getOutputStubLength());
-        if (appPTR->getCurrentSettings()->getOutputStyle() == Settings::eOutputStyleNub) {
+        if (nubStyle && sourceIsDot) {
+            dotRadius = sourceBBOX.width() / 2.;
+            const double ringRadius = dotRadius + TO_DPIX(DOT_RING_GAP) * sc + pen().widthF() / 2.;
+            const QPointF centre = sourceBBOX.center();
+            ringRect = QRectF(centre.x() - ringRadius, centre.y() - ringRadius, 2. * ringRadius, 2. * ringRadius);
+            dst = centre;
+        } else if (nubStyle) {
             const double radius = stubLength * OUTPUT_NUB_RADIUS_PER_STUB_LENGTH;
             nubRect = QRectF(bottomCentre.x() - radius, bottomCentre.y() - radius, 2. * radius, 2. * radius);
             dst = bottomCentre + QPointF(0., radius);
@@ -607,7 +640,7 @@ Edge::initLineNow()
 
     if (source && dest) {
         /// This is a connected edge, either input or output
-        srcpt = sourceBBOX.center();
+        srcpt = fromNub ? bottomCentre : sourceBBOX.center();
         setLine( dst.x(), dst.y(), srcpt.x(), srcpt.y() );
     } else if (!source && dest) {
         /// The edge is an input edge which is unconnected
@@ -616,7 +649,8 @@ Edge::initLineNow()
         setLine( dst.x(), dst.y(), srcpt.x(), srcpt.y() );
     } else if (source && !dest) {
         /// The edge is an output edge which is unconnected
-        srcpt = QPointF( sourceBBOX.x(), sourceBBOX.y() ) + QPointF(srcNodeSize.width() / 2., srcNodeSize.height() / 2.);
+        // From the nub's centre, so that a pipe dragged out of the nub leaves from there.
+        srcpt = fromNub ? bottomCentre : sourceBBOX.center();
         setLine( dst.x(), dst.y(), srcpt.x(), srcpt.y() );
     }
 
@@ -638,7 +672,12 @@ Edge::initLineNow()
     if (source && dest) {
         QPointF srcInteresect;
         bool foundSrcIntersection = false;
-        if (foundDstIntersection) {
+        if (foundDstIntersection && fromNub) {
+            // The pipe ends on the source's bottom edge, where a bounded intersection with that
+            // edge is down to rounding.
+            srcInteresect = srcpt;
+            foundSrcIntersection = true;
+        } else if (foundDstIntersection) {
             ///Find the intersection with the source bbox
             for (int i = 0; i < 4; ++i) {
                 QLineF::IntersectionType type = srcEdges[i].intersects(line(), &srcInteresect);
@@ -749,7 +788,9 @@ Edge::initLineNow()
     prepareGeometryChange();
     _imp->arrowHead.clear();
     _imp->nubRect = nubRect;
-    if (nubRect.isNull()) {
+    _imp->ringRect = ringRect;
+    _imp->dotRadius = dotRadius;
+    if (nubRect.isNull() && ringRect.isNull()) {
         layArrowHead(arrowIntersect, a, pen().widthF(), sc, &_imp->arrowHead);
     }
     reportGeometryToGraph(this);
@@ -783,6 +824,11 @@ Edge::boundingRect() const
         lowerHalf.setTop(_imp->nubRect.center().y());
         rect = rect.united(lowerHalf.adjusted(-1., -1., 1., 1.));
     }
+    if (!_imp->ringRect.isNull()) {
+        // The ring's stroke, padded a pixel for antialiasing.
+        const double pad = pen().widthF() / 2. + 1.;
+        rect = rect.united(_imp->ringRect.adjusted(-pad, -pad, pad, pad));
+    }
 
     return rect;
 }
@@ -799,6 +845,19 @@ nubPath(const QRectF& circle)
     return path;
 }
 
+static QPainterPath
+ringPath(const QRectF& circle,
+         double strokeWidth)
+{
+    const double half = strokeWidth / 2.;
+    QPainterPath path;
+
+    path.addEllipse(circle.adjusted(-half, -half, half, half));
+    path.addEllipse(circle.adjusted(half, half, -half, -half));
+
+    return path;
+}
+
 QPainterPath
 Edge::shape() const
 {
@@ -807,6 +866,9 @@ Edge::shape() const
     path.addPolygon(_imp->arrowHead);
     if (!_imp->nubRect.isNull()) {
         path.addPath(nubPath(_imp->nubRect));
+    }
+    if (!_imp->ringRect.isNull()) {
+        path.addPath(ringPath(_imp->ringRect, pen().widthF()));
     }
 
     return path;
@@ -852,15 +914,23 @@ Edge::dist2ToSegment(const QLineF& line,
 }
 
 double
+Edge::arrowheadWidthPixels()
+{
+    return arrowheadWidthMultiple() * pipeWidthPreference();
+}
+
+double
 Edge::grabRadiusPixels(bool dangling)
 {
     const double width = pipeWidthPreference();
+    // A press anywhere on the arrowhead is within reach of the line through its axis.
+    const double headReach = arrowheadWidthPixels() / 2.;
 
     if (dangling) {
-        return TO_DPIX(std::max(DANGLING_GRAB_RADIUS_MIN, DANGLING_GRAB_RADIUS_PER_WIDTH * width));
+        return std::max(TO_DPIX(std::max(DANGLING_GRAB_RADIUS_MIN, DANGLING_GRAB_RADIUS_PER_WIDTH * width)), headReach);
     }
 
-    return TO_DPIX(std::max(GRAB_RADIUS_MIN, GRAB_RADIUS_PER_WIDTH * width));
+    return std::max(TO_DPIX(std::max(GRAB_RADIUS_MIN, GRAB_RADIUS_PER_WIDTH * width)), headReach);
 }
 
 bool
@@ -870,9 +940,24 @@ Edge::isDangling() const
 }
 
 bool
-Edge::isScenePointOnNub(const QPointF& scenePoint) const
+Edge::isScenePointOnNub(const QPointF& scenePoint,
+                        double ringReach) const
 {
+    if (!_imp->ringRect.isNull()) {
+        const QPointF p = mapFromScene(scenePoint);
+        const double d = QLineF(_imp->ringRect.center(), p).length();
+        const double outer = _imp->ringRect.width() / 2. + pen().widthF() / 2. + ringReach;
+
+        return (d > _imp->dotRadius) && (d <= outer);
+    }
+
     return !_imp->nubRect.isNull() && nubPath(_imp->nubRect).contains(mapFromScene(scenePoint));
+}
+
+bool
+Edge::isDotRing() const
+{
+    return !_imp->ringRect.isNull();
 }
 
 void
@@ -898,12 +983,25 @@ pickNearestEdgeCandidate(const QPointF& scenePos,
     double nearestDist2 = 0.;
 
     for (std::size_t i = 0; i < candidates.size(); ++i) {
-        double radius = candidates[i].isDangling ? danglingGrabRadius : grabRadius;
         double d2 = Edge::dist2ToSegment(candidates[i].line, scenePos);
+        if (candidates[i].isDotRing) {
+            // A Dot's ring has no line to grab along, only its own hit area, and gives way to every
+            // pipe within reach.
+            if (!candidates[i].onNub) {
+                continue;
+            }
+            if (nearestIndex == -1) {
+                nearestIndex = (int)i;
+                nearestDist2 = d2;
+            }
+            continue;
+        }
+        double radius = candidates[i].isDangling ? danglingGrabRadius : grabRadius;
         if (d2 > radius * radius) {
             continue;
         }
-        const bool beatsNearest = (nearestIndex == -1) || (candidates[i].onNub && !candidates[nearestIndex].onNub) || ((candidates[i].onNub == candidates[nearestIndex].onNub) && (d2 < nearestDist2));
+        const bool nearestIsRing = (nearestIndex != -1) && candidates[nearestIndex].isDotRing;
+        const bool beatsNearest = (nearestIndex == -1) || nearestIsRing || (candidates[i].onNub && !candidates[nearestIndex].onNub) || ((candidates[i].onNub == candidates[nearestIndex].onNub) && (d2 < nearestDist2));
         if (beatsNearest) {
             nearestIndex = (int)i;
             nearestDist2 = d2;
@@ -925,6 +1023,7 @@ Edge::dragSource(const QPointF & src)
 
     prepareGeometryChange();
     _imp->nubRect = QRectF();
+    _imp->ringRect = QRectF();
     layArrowHead(line().p1(), a, pen().widthF(), 1., &_imp->arrowHead);
 
     if (_imp->label) {
@@ -947,6 +1046,7 @@ Edge::dragDest(const QPointF & dst)
 
     prepareGeometryChange();
     _imp->nubRect = QRectF();
+    _imp->ringRect = QRectF();
     layArrowHead(line().p1(), a, pen().widthF(), 1., &_imp->arrowHead);
 
     if (_imp->label) {
@@ -1097,6 +1197,16 @@ Edge::paint(QPainter* painter,
 
     if (!_imp->nubRect.isNull()) {
         painter->fillPath(nubPath(_imp->nubRect), color);
+
+        return;
+    }
+    if (!_imp->ringRect.isNull()) {
+        // Shown only while a press would pull a pipe from the Dot, so always in the hover colour.
+        if (_imp->hoverHighlight) {
+            painter->setPen(QPen(color, pen().widthF()));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawEllipse(_imp->ringRect);
+        }
 
         return;
     }

@@ -26,6 +26,7 @@
 #include "NodeGraph.h"
 #include "NodeGraphPrivate.h"
 
+#include <algorithm> // max
 #include <cmath>
 #include <cstddef>
 #include <stdexcept>
@@ -539,7 +540,13 @@ NodeGraph::hasItemNearbyMouse(const QPoint& mousePosViewport,
     // The broad-phase square reaches as far as the largest grab radius below (a dangling edge's)
     // on every side of the cursor. It still runs against each edge's drawn shape; the radii that
     // decide which one actually wins are applied afterwards, against the nearest point on its line.
-    double tolerance = Edge::grabRadiusPixels(true);
+    // Grab radii are kept in viewport pixels (not scene units) so they don't shrink when the
+    // graph is zoomed out. An arrowhead grows with the zoom, so the radius never falls short of
+    // half its width in scene units.
+    const double zoomFactor = transform().mapRect(QRectF(0, 0, 1, 1)).width();
+    assert(zoomFactor != 0);
+    const double headReach = Edge::arrowheadWidthPixels() / 2.;
+    double tolerance = std::max(Edge::grabRadiusPixels(true), headReach * zoomFactor);
     QRect toleranceRect(mousePosViewport.x() - tolerance,
                         mousePosViewport.y() - tolerance,
                         2. * tolerance,
@@ -601,12 +608,8 @@ NodeGraph::hasItemNearbyMouse(const QPoint& mousePosViewport,
     if (!edges.empty()) {
         QPointF scenePos = mapToScene(mousePosViewport);
 
-        // Grab radii are kept in viewport pixels (not scene units) so they don't shrink when the
-        // graph is zoomed out.
-        double zoomFactor = transform().mapRect(QRectF(0, 0, 1, 1)).width();
-        assert(zoomFactor != 0);
-        double grabRadius = Edge::grabRadiusPixels(false) / zoomFactor;
-        double danglingGrabRadius = Edge::grabRadiusPixels(true) / zoomFactor;
+        double grabRadius = std::max(Edge::grabRadiusPixels(false) / zoomFactor, headReach);
+        double danglingGrabRadius = std::max(Edge::grabRadiusPixels(true) / zoomFactor, headReach);
 
         std::vector<Edge*> edgeList(edges.begin(), edges.end());
         std::vector<EdgeNearbyCandidate> candidates;
@@ -615,7 +618,9 @@ NodeGraph::hasItemNearbyMouse(const QPoint& mousePosViewport,
             EdgeNearbyCandidate candidate;
             candidate.line = QLineF((*it)->mapToScene((*it)->line().p1()), (*it)->mapToScene((*it)->line().p2()));
             candidate.isDangling = (*it)->isDangling();
-            candidate.onNub = (*it)->isScenePointOnNub(scenePos);
+            // A Dot's ring is grabbed from its disk's edge out to a grab radius past the ring.
+            candidate.onNub = (*it)->isScenePointOnNub(scenePos, grabRadius);
+            candidate.isDotRing = (*it)->isDotRing();
             candidates.push_back(candidate);
         }
 

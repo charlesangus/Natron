@@ -78,11 +78,20 @@ public:
      **/
     static double grabRadiusPixels(bool dangling);
 
+    // The width across the base of a pipe's arrowhead in pixels, at node scale 1, from the Pipe
+    // Width and Arrowhead Width preferences.
+    static double arrowheadWidthPixels();
+
     // An input with no source, or an output stub.
     bool isDangling() const;
 
-    // Whether scenePoint is on the drawn output nub; false for every edge not drawn as one.
-    bool isScenePointOnNub(const QPointF& scenePoint) const;
+    // Whether scenePoint is on the drawn output nub; false for every edge not drawn as one. For a
+    // Dot's ring (isDotRing()) it is whether scenePoint is outside the Dot's disk and at most
+    // ringReach, in scene units, outside the ring.
+    bool isScenePointOnNub(const QPointF& scenePoint, double ringReach = 0.) const;
+
+    // The output of a Dot in the Nub style: a ring around the disk, drawn only while hovered.
+    bool isDotRing() const;
 
     // Re-reads the Pipe Width preference into the pen. The caller re-lays the line, whose arrow
     // head scales with the width.
@@ -193,13 +202,16 @@ struct EdgeNearbyCandidate {
     // scenePos is on the candidate's drawn output nub. The pipes a connected output feeds leave from
     // under its nub, so a press there must pull a new pipe rather than pick one of them up.
     bool onNub = false;
+    // The candidate is a Dot's ring: it is picked only when scenePos is in its hit area (onNub),
+    // and then only when no other candidate is within its grab radius.
+    bool isDotRing = false;
 };
 
 /**
  * @brief Returns the index into candidates of the one whose line is closest to scenePos, among
  * those within their own grab radius (danglingGrabRadius for an unconnected input or output stub,
  * grabRadius for everything else), or -1 if none qualify. A candidate with onNub set wins over
- * every one without it.
+ * every one without it, except that a Dot's ring loses to every other qualifying candidate.
  **/
 int pickNearestEdgeCandidate(const QPointF& scenePos,
                              const std::vector<EdgeNearbyCandidate>& candidates,

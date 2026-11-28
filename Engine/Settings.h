@@ -283,6 +283,10 @@ public:
 
     int getPipeWidth() const;
 
+    double getArrowheadWidth() const;
+
+    double getArrowheadLength() const;
+
     int getOutputStubLength() const;
 
     OutputStyleEnum getOutputStyle() const;
@@ -769,6 +773,8 @@ private:
     KnobBoolPtr _snapNodesToConnections;
     KnobIntPtr _maxUndoSteps;
     KnobIntPtr _pipeWidth;
+    KnobDoublePtr _arrowheadWidth;
+    KnobDoublePtr _arrowheadLength;
     KnobIntPtr _disconnectedArrowLength;
     KnobIntPtr _outputStubLength;
     KnobChoicePtr _outputStyle;

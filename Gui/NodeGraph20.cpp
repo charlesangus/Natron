@@ -1145,6 +1145,12 @@ NodeGraph::mouseMoveEvent(QMouseEvent* e)
             NearbyItemEnum nearbyItemCode = hasItemNearbyMouse(e->pos(), &nearbyNode, &nearbyEdge);
             if (nearbyItemCode == eNearbyItemNodeEdge) {
                 hoverEdge = nearbyEdge;
+            } else if ((nearbyItemCode == eNearbyItemNode) && nearbyNode) {
+                // Hovering a Dot shows its ring, from which a new pipe can be pulled.
+                Edge* output = nearbyNode->getInputArrow(-1);
+                if (output && output->isDotRing() && output->isVisible()) {
+                    hoverEdge = output;
+                }
             }
 
             switch (nearbyItemCode) {

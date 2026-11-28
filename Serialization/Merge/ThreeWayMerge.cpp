@@ -26,6 +26,7 @@
 #include <list>
 #include <optional>
 #include <random>
+#include <string>
 #include <tuple>
 
 #include "Serialization/Merge/MergePrivate.h"
@@ -186,7 +187,7 @@ namespace {
             return !a && !b;
         }
 
-        return (a->path == b->path) && (a->contentHash == b->contentHash) && (a->importedAt == b->importedAt) && (templateBaseText(*a) == templateBaseText(*b));
+        return (a->templateId == b->templateId) && (a->name == b->name) && (a->version == b->version) && (a->publishDir == b->publishDir) && (a->path == b->path) && (a->contentHash == b->contentHash) && (a->importedAt == b->importedAt) && (a->excluded == b->excluded) && (templateBaseText(*a) == templateBaseText(*b));
     }
 
     // Each import as a whole: theirs' when mine left it as base had it, else mine's. The result
@@ -589,9 +590,18 @@ planMerge(const ProjectSerialization& base,
     const MergeGraph theirsGraph(theirs);
     MergePlan plan;
     plan.templateKey = templateKey;
-    plan.baseToMine = matchNodes(baseGraph, mineGraph, templateKey);
-    plan.baseToTheirs = matchNodes(baseGraph, theirsGraph, std::string());
-    plan.scope = mergeScope(mineGraph, plan.baseToMine);
+    MatchOptions mineOptions;
+    mineOptions.skipTemplateNodes = true;
+    if (const TemplateImportSerialization* entry = templateImportNamed(mine.templates, templateKey)) {
+        mineOptions.ignored = entry->excluded;
+    }
+    MatchOptions theirsOptions;
+    theirsOptions.skipTemplateNodes = true;
+    theirsOptions.followOrigins = true;
+    plan.baseToMine = matchNodesWithOptions(baseGraph, mineGraph, templateKey, mineOptions);
+    plan.baseToTheirs = matchNodesWithOptions(baseGraph, theirsGraph, std::string(), theirsOptions);
+    plan.scope = mergeScope(mineGraph, plan.baseToMine, mineOptions.ignored);
+    plan.baseNodeCount = baseGraph.nodes().size();
 
     return plan;
 }
@@ -614,6 +624,16 @@ planProjectMerge(const ProjectSerialization& base,
     return plan;
 }
 
+bool
+sharesTooFewNodes(const MergePlan& plan)
+{
+    if (plan.templateKey.empty() || (plan.baseNodeCount == 0)) {
+        return false;
+    }
+
+    return (plan.baseToTheirs.baseToOther.size() * 4) < plan.baseNodeCount;
+}
+
 MergeResult
 threeWayMerge(const ProjectSerialization& base,
               const ProjectSerialization& mine,
@@ -621,6 +641,12 @@ threeWayMerge(const ProjectSerialization& base,
               const MergePlan& plan,
               const MergeOptions& options)
 {
+    if (sharesTooFewNodes(plan)) {
+        MergeResult refused;
+        refused.error = "The template file shares " + std::to_string(plan.baseToTheirs.baseToOther.size()) + " of " + std::to_string(plan.baseNodeCount) + " nodes with the imported base, too few to be a version of it";
+
+        return refused;
+    }
     MergeDetail::MergeContext context(base, mine, theirs, plan, options);
     MergeDetail::mergeExistence(&context);
     MergeDetail::mergeParents(&context);

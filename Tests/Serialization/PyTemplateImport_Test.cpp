@@ -154,11 +154,11 @@ effects = @APP@.importTemplate('@PATH@')
 assert len(effects) == 2, len(effects)
 names = sorted(e.getScriptName() for e in effects)
 assert names == ['Blur1', 'Grade1'], names
-assert sorted(e.getScriptName() for e in @APP@.getChildren()) == names
+assert sorted(e.getScriptName() for e in @APP@.getChildren() if e.getPluginID() != 'Template') == names
 )",
              path));
     ASSERT_EQ(project()->getTemplateImports().size(), 1u);
-    EXPECT_EQ(project()->getNodes().size(), 2u);
+    EXPECT_EQ(project()->getNodes().size(), 3u);
 }
 
 TEST_F(PyTemplateImportTest, ImportIntoAGroupMakesThemItsChildren)
@@ -174,7 +174,7 @@ assert g is not None
 before = len(g.getChildren())
 effects = @APP@.importTemplate('@PATH@', g)
 assert len(effects) == 2, len(effects)
-children = sorted(e.getScriptName() for e in g.getChildren())
+children = sorted(e.getScriptName() for e in g.getChildren() if e.getPluginID() != 'Template')
 assert len(children) == before + 2, children
 for e in effects:
     assert e.getScriptName() in children, e.getScriptName()
@@ -195,10 +195,10 @@ TEST_F(PyTemplateImportTest, TheAppAsGroupImportsIntoTheRoot)
     run(fill(R"(
 effects = @APP@.importTemplate('@PATH@', @APP@)
 assert len(effects) == 2, len(effects)
-assert sorted(e.getScriptName() for e in @APP@.getChildren()) == ['Blur1', 'Grade1']
+assert sorted(e.getScriptName() for e in @APP@.getChildren() if e.getPluginID() != 'Template') == ['Blur1', 'Grade1']
 )",
              path));
-    EXPECT_EQ(project()->getNodes().size(), 2u);
+    EXPECT_EQ(project()->getNodes().size(), 3u);
     EXPECT_EQ(project()->getTemplateImports().size(), 1u);
 }
 
@@ -217,11 +217,11 @@ bn = set(e.getScriptName() for e in b)
 assert an == set(['Blur1', 'Grade1']), an
 assert len(bn) == 2, bn
 assert not (an & bn), (an, bn)
-assert set(e.getScriptName() for e in @APP@.getChildren()) == (an | bn)
+assert set(e.getScriptName() for e in @APP@.getChildren() if e.getPluginID() != 'Template') == (an | bn)
 )",
              path));
     EXPECT_EQ(project()->getTemplateImports().size(), 2u);
-    EXPECT_EQ(project()->getNodes().size(), 4u);
+    EXPECT_EQ(project()->getNodes().size(), 6u);
 }
 
 TEST_F(PyTemplateImportTest, AMissingFileRaisesRuntimeErrorWithTheLoaderMessageAndCreatesNothing)

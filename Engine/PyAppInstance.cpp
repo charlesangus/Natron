@@ -26,8 +26,9 @@
 #include "PyAppInstance.h"
 
 #include <cassert>
-#include <stdexcept>
+#include <optional>
 #include <sstream> // stringstream
+#include <stdexcept>
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -43,6 +44,8 @@
 #include "Engine/Nodes/Loop/LoopPair.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Project.h"
+#include "Engine/ProjectMerge.h"
+#include "Engine/ProjectTemplate.h"
 #include "Engine/PyParameter.h"
 #include "Engine/PythonUndoCommands.h"
 #include "Engine/Settings.h"
@@ -558,6 +561,53 @@ App::loadProject(const QString& filename)
     return new App(app);
 }
 
+namespace {
+// The collection group names in app, the project's root for None. False with error set when it
+// is not a group of app, or is a PyPlug that is not unlocked for editing.
+bool
+targetCollection(const AppInstancePtr& app,
+                 Group* group,
+                 NodeCollectionPtr* collection,
+                 QString* error)
+{
+    if (!group) {
+        *collection = std::dynamic_pointer_cast<NodeCollection>(app->getProject());
+
+        return true;
+    }
+    App* isApp = dynamic_cast<App*>(group);
+    Effect* isEffect = dynamic_cast<Effect*>(group);
+    if (isApp) {
+        if (isApp->getInternalApp() == app) {
+            *collection = std::dynamic_pointer_cast<NodeCollection>(app->getProject());
+        }
+    } else if (isEffect) {
+        NodePtr node = isEffect->getInternalNode();
+        if (node && node->getApp() == app && node->getEffectInstance()) {
+            NodeGroupPtr isGroup = std::dynamic_pointer_cast<NodeGroup>(node->getEffectInstance()->shared_from_this());
+            if (!isGroup) {
+                *error = QString::fromUtf8("%1 is not a group").arg(QString::fromStdString(node->getScriptName_mt_safe()));
+
+                return false;
+            }
+            if (Project::isLockedPyPlug(isGroup)) {
+                *error = QString::fromUtf8("%1 is a PyPlug that is not unlocked for editing").arg(QString::fromStdString(node->getScriptName_mt_safe()));
+
+                return false;
+            }
+            *collection = isGroup;
+        }
+    }
+    if (!*collection) {
+        *error = QString::fromUtf8("The group is not a group of this application");
+
+        return false;
+    }
+
+    return true;
+}
+} // anon namespace
+
 std::list<Effect*>
 App::importTemplateChecked(const QString& filename,
                            Group* group,
@@ -575,40 +625,10 @@ App::importTemplateChecked(const QString& filename,
 
     AppInstancePtr app = getInternalApp();
     NodeCollectionPtr collection;
-    if (group) {
-        App* isApp = dynamic_cast<App*>(group);
-        Effect* isEffect = dynamic_cast<Effect*>(group);
-        if (isApp) {
-            if (isApp->getInternalApp() == app) {
-                collection = std::dynamic_pointer_cast<NodeCollection>(app->getProject());
-            }
-        } else if (isEffect) {
-            NodePtr node = isEffect->getInternalNode();
-            if (node && node->getApp() == app && node->getEffectInstance()) {
-                NodeGroupPtr isGroup = std::dynamic_pointer_cast<NodeGroup>(node->getEffectInstance()->shared_from_this());
-                if (!isGroup) {
-                    *errorKind = eImportTemplateErrorBadGroup;
-                    *error = QString::fromUtf8("%1 is not a group").arg(QString::fromStdString(node->getScriptName_mt_safe()));
+    if (!targetCollection(app, group, &collection, error)) {
+        *errorKind = eImportTemplateErrorBadGroup;
 
-                    return ret;
-                }
-                if (Project::isLockedPyPlug(isGroup)) {
-                    *errorKind = eImportTemplateErrorBadGroup;
-                    *error = QString::fromUtf8("%1 is a PyPlug that is not unlocked for editing").arg(QString::fromStdString(node->getScriptName_mt_safe()));
-
-                    return ret;
-                }
-                collection = isGroup;
-            }
-        }
-        if (!collection) {
-            *errorKind = eImportTemplateErrorBadGroup;
-            *error = QString::fromUtf8("The group to import into is not a group of this application");
-
-            return ret;
-        }
-    } else {
-        collection = std::dynamic_pointer_cast<NodeCollection>(app->getProject());
+        return ret;
     }
 
     const ProjectPtr project = app->getProject();
@@ -640,6 +660,142 @@ App::importTemplate(const QString& /*filename*/,
 {
     // The binding's inject code calls importTemplateChecked() and never reaches this body.
     return std::list<Effect*>();
+}
+
+Effect*
+App::defineTemplateChecked(const std::list<Effect*>& nodes,
+                           const QString& name,
+                           Group* group,
+                           QString* error)
+{
+    if (QThread::currentThread() != qApp->thread()) {
+        *error = QString::fromUtf8("defineTemplate() can only be called from the main thread");
+
+        return 0;
+    }
+    AppInstancePtr app = getInternalApp();
+    NodeCollectionPtr collection;
+    if (!targetCollection(app, group, &collection, error)) {
+        return 0;
+    }
+    NodesList members;
+    for (Effect* effect : nodes) {
+        NodePtr node = effect ? effect->getInternalNode() : NodePtr();
+        if (!node || (node->getApp() != app)) {
+            *error = QString::fromUtf8("A node to make a template of is not a node of this application");
+
+            return 0;
+        }
+        members.push_back(node);
+    }
+    const ProjectPtr project = app->getProject();
+    NodePtr templateNode;
+    app->runTemplateEdit(QString::fromUtf8("Define Template"), [&](TemplateEdit* edit) {
+        if (!project->defineTemplate(members, name.toStdString(), collection, edit)) {
+            *error = edit->error;
+
+            return false;
+        }
+        templateNode = edit->templateNode;
+
+        return true;
+    });
+    if (!templateNode) {
+        if (error->isEmpty()) {
+            *error = QString::fromUtf8("The template was not defined");
+        }
+
+        return 0;
+    }
+
+    return new Effect(templateNode);
+}
+
+Effect*
+App::defineTemplate(const std::list<Effect*>& /*nodes*/,
+                    const QString& /*name*/,
+                    Group* /*group*/)
+{
+    // The binding's inject code calls defineTemplateChecked() and never reaches this body.
+    return 0;
+}
+
+QString
+App::publishTemplateChecked(const QString& templateKey,
+                            QString* error)
+{
+    if (QThread::currentThread() != qApp->thread()) {
+        *error = QString::fromUtf8("publishTemplate() can only be called from the main thread");
+
+        return QString();
+    }
+    AppInstancePtr app = getInternalApp();
+    const ProjectPtr project = app->getProject();
+    // Not an undo step: like a save, it writes a file that an undo would not take back.
+    TemplateEdit edit;
+    if (!project->publishTemplate(templateKey.toStdString(), error, &edit)) {
+        return QString();
+    }
+
+    return edit.path;
+}
+
+QString
+App::publishTemplate(const QString& /*templateKey*/)
+{
+    // The binding's inject code calls publishTemplateChecked() and never reaches this body.
+    return QString();
+}
+
+QString
+App::updateTemplateToLatestChecked(const QString& templateKey,
+                                   QString* error)
+{
+    if (QThread::currentThread() != qApp->thread()) {
+        *error = QString::fromUtf8("updateTemplateToLatest() can only be called from the main thread");
+
+        return QString();
+    }
+    AppInstancePtr app = getInternalApp();
+    const ProjectPtr project = app->getProject();
+    std::optional<Serialization::TemplateImportSerialization> entry;
+    for (const Serialization::TemplateImportSerialization& import : project->getTemplateImports()) {
+        if (import.key == templateKey.toStdString()) {
+            entry = import;
+        }
+    }
+    if (!entry) {
+        *error = QString::fromUtf8("The project has no template import named %1").arg(templateKey);
+
+        return QString();
+    }
+    const QString dir = QString::fromStdString(entry->publishDir);
+    const std::optional<ProjectMerge::TemplateVersion> latest = ProjectMerge::findLatestVersion(dir, entry->templateId);
+    if (!latest) {
+        *error = QString::fromUtf8("No version of the template %1 is published in \"%2\"").arg(QString::fromStdString(entry->name)).arg(dir);
+
+        return QString();
+    }
+    ProjectMerge::UpdateResult result;
+    app->runTemplateEdit(QString::fromUtf8("Update from Template"), [&](TemplateEdit* edit) {
+        result = ProjectMerge::updateFromTemplate(project, entry->key, latest->path, edit->applier);
+
+        return result.ok;
+    });
+    if (result.status == ProjectMerge::UpdateStatus::eError) {
+        *error = result.error;
+
+        return QString();
+    }
+
+    return ProjectTemplateDetail::updateStatusName(result.status);
+}
+
+QString
+App::updateTemplateToLatest(const QString& /*templateKey*/)
+{
+    // The binding's inject code calls updateTemplateToLatestChecked() and never reaches this body.
+    return QString();
 }
 
 ///Close the current project but keep the window

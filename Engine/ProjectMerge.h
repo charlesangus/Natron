@@ -29,6 +29,8 @@
 
 #include <QString>
 
+class QThreadPool;
+
 #include "Engine/EngineFwd.h"
 #include "Serialization/Merge/MergeConflict.h"
 #include "Serialization/Ops/GraphOp.h"
@@ -55,10 +57,23 @@ std::vector<Serialization::OpResult> applyAllOrNothing(const ProjectPtr& project
                                                        const std::vector<Serialization::GraphOp>& ops,
                                                        bool* restored = nullptr);
 
+enum class UpdateStatus {
+    // The merge changed the graph or raised conflicts.
+    eUpdated,
+    // The merge changed nothing and raised no conflict.
+    eUpToDate,
+    // The file is not a version of the import's template: its template ID differs or it has none.
+    eTemplateMismatch,
+    // Too few of the base's nodes are in the file for it to be a version of it.
+    eLowMatch,
+    eError,
+};
+
 struct UpdateResult {
     // False when nothing was merged or an operation could not be applied; error says why. The
     // graph, the template import and the project's saved conflicts are then left as they were.
     bool ok = false;
+    UpdateStatus status = UpdateStatus::eError;
     QString error;
     // The conflicts this merge raised. Each is already resolved in the graph, mostly by keeping mine.
     std::vector<Serialization::MergeConflict> conflicts;
@@ -68,18 +83,54 @@ struct UpdateResult {
 };
 
 /**
- * @brief Merges the current version of a template into the project: base is the import's stored
- * snapshot, mine is the live project, theirs is the template file newPath, or the path the import
- * recorded when newPath is empty. The operations that turn the live graph into the merged one go
- * through applier (applyAllOrNothing() when it is empty). When one fails, the graph is put back as
- * it was before the update. When all of them apply, the import's base becomes theirs and the
+ * @brief Merges a version of a template into the project: base is the import's stored snapshot,
+ * mine is the live project, theirs is the template file newPath without its template node. A file
+ * whose template ID is not the import's is refused as eTemplateMismatch unless allowMismatch is
+ * set. The operations that turn the live graph into the merged one go through applier
+ * (applyAllOrNothing() when it is empty). When one fails, the graph is put back as it was before
+ * the update. When all of them apply, the import's base, path and version become theirs, and the
  * project's saved conflicts become the earlier ones still open plus this merge's; when merging the
- * same file again the graph does not change.
+ * same file again the graph does not change and the status is eUpToDate.
  **/
 UpdateResult updateFromTemplate(const ProjectPtr& project,
                                 const std::string& templateKey,
                                 const QString& newPath,
-                                const OpApplier& applier = OpApplier());
+                                const OpApplier& applier = OpApplier(),
+                                bool allowMismatch = false);
+
+struct TemplateVersion {
+    QString path;
+    int version = 0;
+};
+
+// A template file and the template identity and version its template node holds.
+struct PublishedFile {
+    QString path;
+    std::string templateId;
+    int version = 0;
+};
+
+/**
+ * @brief Every template file (*.ntpz) in dir with a template node, in file-name order. Only each
+ * file's project.yaml is read, never its payloads; files that cannot be read are skipped. Safe to
+ * call from any thread.
+ **/
+std::vector<PublishedFile> listPublishedFiles(const QString& dir);
+
+/**
+ * @brief The single low-priority thread that publish folders are scanned on, apart from the render
+ * threads, which a slow network share must not hold. Main thread only.
+ **/
+QThreadPool* folderScanPool();
+
+/**
+ * @brief The newest version of the template templateId among the template files (*.ntpz) in dir,
+ * by the version their template node holds, or nothing when none has that ID. Only each file's
+ * project.yaml is read, never its payloads; files that cannot be read are skipped. Safe to call
+ * from any thread.
+ **/
+std::optional<TemplateVersion> findLatestVersion(const QString& dir,
+                                                 const std::string& templateId);
 
 // Scene units a node may move within its group, past its group's offset, before it counts as moved.
 const double kMovedThreshold = 10.;

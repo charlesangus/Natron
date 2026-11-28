@@ -196,11 +196,17 @@ public:
     QString importTemplateAsUndoStep(const QString& filePath);
 
     /**
-     * @brief Merges the current version of the template import templateKey into the project as one
-     * undo step: the file at filePath, or the one the import recorded when filePath is empty.
-     * Returns the number of conflicts the update raised, or -1 when it failed.
+     * @brief Merges a version of the template import templateKey into the project as one undo
+     * step: the file at filePath, or the one the import recorded when filePath is empty. Returns
+     * the status: "updated", "upToDate", "lowMatch" when too few of the base's nodes are in the
+     * file, or "templateMismatch" when the file's template ID is not the import's and
+     * allowMismatch is not set; nothing is merged for the last two. Raises RuntimeError when the
+     * merge failed.
      **/
-    int updateFromTemplate(const QString& templateKey, const QString& filePath = QString());
+    QString updateFromTemplate(const QString& templateKey, const QString& filePath = QString(), bool allowMismatch = false);
+
+    // updateFromTemplate() reporting a failure in error, with an empty status, instead of raising it.
+    QString updateFromTemplateChecked(const QString& templateKey, const QString& filePath, bool allowMismatch, QString* error);
 
     // Whether effect's node shows the badge of a node with unresolved merge conflicts.
     bool isMergeConflictBadgeShown(Effect* effect) const;

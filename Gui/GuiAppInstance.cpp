@@ -41,6 +41,7 @@
 #include <QEvent>
 #include <QInputDialog>
 #include <QMutex>
+#include <QPointer>
 #include <QSettings>
 #include <QStatusBar>
 #include <QStringList>
@@ -81,6 +82,7 @@
 #include "Gui/Gui.h"
 #include "Gui/GuiApplicationManager.h"
 #include "Gui/KnobGuiFile.h"
+#include "Gui/MergeConflictResolve.h"
 #include "Gui/MultiInstancePanel.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
@@ -1473,6 +1475,53 @@ GuiAppInstance::showStatusMessage(const QString& message)
     if (gui && gui->statusBar()) {
         gui->statusBar()->showMessage(message, 5000);
     }
+}
+
+void
+GuiAppInstance::runTemplateNodeAction(const NodePtr& templateNode,
+                                      const std::string& templateKey,
+                                      TemplateNodeActionEnum action)
+{
+    // The buttons call this from the template node's knobChanged(), and Detach deletes that node.
+    const NodeWPtr weakNode = templateNode;
+    QPointer<Gui> gui(getGui());
+    if (!gui) {
+        return;
+    }
+    QTimer::singleShot(0, gui.data(), [gui, weakNode, templateKey, action]() {
+        if (!gui || !weakNode.lock()) {
+            return;
+        }
+        switch (action) {
+        case eTemplateNodeActionPublish:
+            gui->publishTemplate(templateKey);
+            break;
+        case eTemplateNodeActionUpdateToLatest:
+            gui->updateTemplateToLatest(templateKey);
+            break;
+        case eTemplateNodeActionUpdateFromFile:
+            gui->updateTemplateFromFile(templateKey);
+            break;
+        case eTemplateNodeActionCompareWithBase:
+            gui->compareWithTemplateBase(templateKey);
+            break;
+        case eTemplateNodeActionDetach:
+            gui->detachTemplate(templateKey);
+            break;
+        }
+    });
+}
+
+bool
+GuiAppInstance::runTemplateEdit(const QString& text,
+                                const std::function<bool(TemplateEdit*)>& edit)
+{
+    Gui* gui = getGui();
+    if (!gui) {
+        return AppInstance::runTemplateEdit(text, edit);
+    }
+
+    return MergeConflictResolve::runTemplateEdit(gui, 0, text, edit);
 }
 
 void

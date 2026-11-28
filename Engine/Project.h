@@ -69,6 +69,7 @@ CLANG_DIAG_ON(uninitialized)
 NATRON_NAMESPACE_ENTER
 
 struct ProjectPrivate;
+struct TemplateEdit;
 
 class Project
     : public KnobHolder
@@ -197,6 +198,60 @@ public:
      * When only some nodes could be created, they are returned with error listing the problems.
      **/
     NodesList importTemplate(const QString& filePath, const NodeCollectionPtr& group, QString* error);
+
+    /**
+     * @brief Makes nodes, all of group's nodes that belong to no template when nodes is empty, a
+     * template named name: a new template ID and entry at version 0 whose base is a snapshot of
+     * them, each member's origin naming the entry and its own ID, and a template node above them.
+     * Returns false with edit->error set, changing nothing, when a node is in another group or
+     * template or none is left. Main thread only, as are the template edits below; see TemplateEdit
+     * (Engine/ProjectTemplate.h) for edit.
+     **/
+    bool defineTemplate(const NodesList& nodes, const std::string& name, const NodeCollectionPtr& group, TemplateEdit* edit);
+
+    /**
+     * @brief Makes node, and the nodes inside it, members of the template import key: their origin
+     * names it and their own ID, and they are no longer excluded from it.
+     **/
+    bool addToTemplate(const std::string& key, const NodePtr& node, TemplateEdit* edit);
+
+    /**
+     * @brief Takes node, and the nodes inside it, out of the template import key: their origin is
+     * cleared and they are excluded, so a merge leaves them alone even between members.
+     **/
+    bool removeFromTemplate(const std::string& key, const NodePtr& node, TemplateEdit* edit);
+
+    /**
+     * @brief Ends the template import key: every member's origin is cleared, its template node is
+     * deleted, and its entry, stored base and saved conflicts are removed. The members stay.
+     **/
+    bool detachTemplate(const std::string& key, TemplateEdit* edit);
+
+    /**
+     * @brief Writes the template import key as its next version, <name>_v<NNN>.ntpz in its publish
+     * folder: its members, each with the ID of the template node it stands for (its own for a node
+     * the template did not have, which becomes its origin), and a template node with the new
+     * version. The entry's base and version become the written ones. The newest version is
+     * looked for by template ID, whatever the files are named. Returns false with error set,
+     * writing nothing, when the folder is missing or not writable, when that version or a newer
+     * one is already there, and when a file of another template has the same name.
+     **/
+    bool publishTemplate(const std::string& key, QString* error, TemplateEdit* edit = nullptr);
+
+    /**
+     * @brief Gives the template nodes among pasted, the nodes a paste or a duplicate made, each with
+     * the serialization it was made from, a template of their own. A template node whose cut
+     * original removed its entry takes that entry back, so a cut and paste moves the template. A
+     * copy of a template node another one still stands for, or one from another project, becomes a
+     * new template, as Define Template makes, of the pasted nodes that came from the copied one;
+     * the original is left as it was. Main thread only.
+     **/
+    void adoptPastedTemplateNodes(const std::list<std::pair<Serialization::NodeSerializationPtr, NodePtr>>& pasted);
+
+    /**
+     * @brief The active template node standing for the template import key, at any depth, or null.
+     **/
+    NodePtr findTemplateNode(const std::string& key) const;
 
     /**
      * @brief Whether group is a PyPlug whose graph the user has not unlocked for editing, which
@@ -891,6 +946,9 @@ Q_SIGNALS:
 
     // Emitted on the main thread when the list getTemplateImports() returns may have changed.
     void templateImportsChanged();
+
+    // Emitted when a node's origin template or node changed, from whichever thread changed it.
+    void nodeOriginsChanged();
 
 private:
     U64 computeContentDigestWithoutFileStamps(const std::shared_ptr<const std::vector<LayerRegistryEntry>>& layers,

@@ -24,6 +24,7 @@
 
 #include <list>
 #include <memory>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -77,19 +78,36 @@ struct ProjectSavedByVersionSerialization {
 };
 
 /**
- * @brief One template import: its key, unique in the project and named by the imported nodes'
- * origins, the template file it was read from, the SHA-256 of that file's project.yaml, when it
- * was imported (ISO 8601, UTC) and the imported snapshot, which is the base of the next update
- * merge. The base is stored as the bundle member templates/<key>/base.yaml so the merge still has
- * it after the published file is overwritten.
+ * @brief One template in the project, defined here or imported: its key, unique in the project and
+ * named by the member nodes' origins, the template's identity shared by every version and every
+ * import of it, its name and the version its base is, the folder its versions are published to,
+ * the template file it was last read from, the SHA-256 of that file's project.yaml, when it was
+ * read (ISO 8601, UTC), the nodes taken out of it by hand, and the snapshot that is the base of
+ * the next update merge. The base is stored as the bundle member templates/<key>/base.yaml so the
+ * merge still has it after the published file is overwritten.
  **/
 struct TemplateImportSerialization {
     std::string key;
+    // A UUID, 32 lowercase hex characters.
+    std::string templateId;
+    std::string name;
+    // 0 for a template defined here and not yet published.
+    int version = 0;
+    std::string publishDir;
     std::string path;
     std::string contentHash;
     std::string importedAt;
+    // The IDs of the project nodes Remove from Template took out, which the merge leaves alone
+    // even when they lie between members.
+    std::set<std::string> excluded;
     std::shared_ptr<ProjectSerialization> base;
 };
+
+/**
+ * @brief The plug-in ID of the template node, which stands for a template in the node graph and
+ * is never a member of one.
+ **/
+inline constexpr std::string_view kTemplateNodePluginId = "Template";
 
 /**
  * @brief Whether a template key is usable: non-empty ASCII letters, digits and underscores, so it

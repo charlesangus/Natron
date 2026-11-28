@@ -36,6 +36,7 @@
 #include "Serialization/Merge/ThreeWayMerge.h"
 #include "Serialization/Ops/SnapshotDiff.h"
 #include "Serialization/Sha256.h"
+#include "Serialization/TemplateNodeSerialization.h"
 #include "Serialization/Yaml/BlobSink.h"
 #include "Serialization/Yaml/GraphOpYaml.h"
 #include "Serialization/Yaml/ManifestYaml.h"
@@ -232,7 +233,7 @@ runMerge(const std::string& basePath,
          const std::optional<std::string>& templateKey,
          const std::string& root)
 {
-    const LoadedProject base = load(basePath);
+    LoadedProject base = load(basePath);
     const LoadedProject mine = load(minePath);
     LoadedProject theirs = load(theirsPath);
     MergePlan plan;
@@ -241,6 +242,9 @@ runMerge(const std::string& basePath,
         // A template's own imports and conflicts are not the shot's, as when updating in Natron.
         theirs.project.templates.clear();
         theirs.project.mergeConflicts.clear();
+        // Published versions hold the template node, which is not the template's content.
+        eraseTemplateNodes(&base.project.nodes.nodes);
+        eraseTemplateNodes(&theirs.project.nodes.nodes);
         const bool imported = std::any_of(mine.project.templates.begin(), mine.project.templates.end(), [&](const TemplateImportSerialization& entry) { return entry.key == *templateKey; });
         if (!imported) {
             throw std::runtime_error(minePath + ": no template import has the key " + *templateKey);
@@ -258,6 +262,9 @@ runMerge(const std::string& basePath,
         }
     }
     MergeResult result = threeWayMerge(base.project, mine.project, theirs.project, plan, options);
+    if (!result.error.empty()) {
+        throw std::runtime_error(theirsPath + ": " + result.error);
+    }
     result.merged.mergeConflicts = conflictsToSave(base.project, mine.project, theirs.project, plan, result);
     save(result.merged, root.empty() ? mine.root : root, mine.manifest, outPath);
     for (const MergeConflict& conflict : result.conflicts) {

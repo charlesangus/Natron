@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <cstddef>
+#include <functional>
 #include <list>
 #include <string>
 #include <vector>
@@ -43,6 +44,8 @@
 #include "Serialization/ProjectSerialization.h"
 
 NATRON_NAMESPACE_ENTER
+
+struct TemplateEdit;
 
 /**
  * @brief An undo step that also puts back the project's template imports and merge conflicts as
@@ -65,6 +68,7 @@ public:
 
 private:
     void restore(const std::list<Serialization::TemplateImportSerialization>& imports,
+                 const std::list<Serialization::TemplateImportSerialization>& reference,
                  const std::vector<Serialization::MergeConflict>& conflicts);
 
     ProjectWPtr _project;
@@ -90,12 +94,25 @@ std::string importTemplate(Gui* gui,
 
 /**
  * @brief ProjectMerge::updateFromTemplate() on the open project as one undo step, which also puts
- * the import's base and the saved conflicts back. A partly applied update is still recorded so it
- * can be undone. The Merge Conflicts panel is shown when the update raised conflicts.
+ * the import's base and the saved conflicts back. An empty path is the file the import records.
+ * A partly applied update is still recorded so it can be undone. The Merge Conflicts panel is
+ * shown when the update raised conflicts.
  **/
 ProjectMerge::UpdateResult updateFromTemplate(Gui* gui,
                                               const std::string& templateKey,
-                                              const QString& path);
+                                              const QString& path,
+                                              bool allowMismatch = false);
+
+/**
+ * @brief Calls edit with a TemplateEdit whose applier records its graph edits, with the template
+ * imports and merge conflicts, as one undo step titled text on graph, or on the graph last worked
+ * in when graph is null. What edit applied before failing is still recorded. The Merge Conflicts
+ * panel is shown when the edit raised conflicts. Returns what edit returned.
+ **/
+bool runTemplateEdit(Gui* gui,
+                     NodeGraph* graph,
+                     const QString& text,
+                     const std::function<bool(TemplateEdit*)>& edit);
 
 /**
  * @brief Gives each conflict at indices, in the project's list, the state side had, and removes

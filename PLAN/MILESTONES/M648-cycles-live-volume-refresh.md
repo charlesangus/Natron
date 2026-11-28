@@ -32,3 +32,4 @@ The Cycles Hydra delegate's `src/hydra/field.cpp` (~:140 on `natron/m554-shutter
   - size: M
 
 **Verification gate:** a remote gate (debug, tests) on the F1 branch with the new Cycles pin. Every `VolumeRender*` test passes, including the new live-field tests, and no new "requires emulation" coding errors show up in the Scene tests.
+- 2026-11-28 — m648-gate1 (run 46114401928): Cycles live edit refreshed the volume (no remake) but MarkAllRprimsDirty is emulation-only too under 26.08 scene-index Hydra; the dependency is already forwarded, so the fork's field dirtying is removed. MoonRay variant fails in hdMoonray (MarkRprimDirty emulation + volume warning) — out of scope, test committed DISABLED_, filed as M651 - MoonRay Live Volume Refresh. NatronUtilityGoldenTest ulp diffs are the known pre-#401 golden tolerance (F1 needs main merged).

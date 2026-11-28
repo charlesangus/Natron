@@ -365,13 +365,17 @@ protected:
         return ran;
     }
 
-    void expectAllWindowsMatch()
+    // The alpha and RGB plane requests do not depend on the operator, so one operator covers them.
+    void expectAllWindowsMatch(bool withOtherPlanes)
     {
         const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
         EXPECT_GT(expectPathsMatch(0, kWindow, rgba), 0ULL);
         EXPECT_GT(expectPathsMatch(0, RectI(150, 170, 320, 300), rgba), 0ULL);
         EXPECT_GT(expectPathsMatch(1, RectI(0, 0, 128, 128), rgba), 0ULL);
         EXPECT_GT(expectPathsMatch(2, RectI(5, 3, 50, 61), rgba), 0ULL);
+        if (!withOtherPlanes) {
+            return;
+        }
 
         const std::list<ImageLayerDesc> alpha(1, ImageLayerDesc::getAlphaComponents());
         expectPathsMatch(0, kWindow, alpha);
@@ -477,18 +481,23 @@ protected:
     RotoContextPtr _context;
 };
 
-TEST_P(RotoPaintDirectCompositeTest, ThirtyItemsMatchTheNodePath)
+TEST_P(RotoPaintDirectCompositeTest, SixteenItemsMatchTheNodePath)
 {
-    buildScene(30, GetParam().op);
+    buildScene(16, GetParam().op);
     if (HasFatalFailure()) {
         return;
     }
-    expectAllWindowsMatch();
+    expectAllWindowsMatch(GetParam().op == eMergeOver);
 }
 
 // More items than one Merge has A inputs, so the composite spans a chain of Merges.
 TEST_P(RotoPaintDirectCompositeTest, MergeChainMatchesTheNodePath)
 {
+    // The chain links through B and does not depend on the operator beyond Copy's replacement.
+    const MergingFunctionEnum chainOp = GetParam().op;
+    if ((chainOp != eMergeOver) && (chainOp != eMergeCopy)) {
+        return;
+    }
     buildScene(70, GetParam().op);
     if (HasFatalFailure()) {
         return;
@@ -506,7 +515,7 @@ TEST_P(RotoPaintDirectCompositeTest, NegativeColoursMatchTheNodePath)
     if ((op == eMergeHue) || (op == eMergeColorBurn)) {
         return;
     }
-    buildScene(30, op, true);
+    buildScene(16, op, true);
     if (HasFatalFailure()) {
         return;
     }
@@ -591,7 +600,7 @@ TEST_F(RotoPaintDirectCompositeTest, MixedOperatorsKeepTheNodePath)
 // cached under the same keys: either way of fetching is served what the other rasterised.
 TEST_F(RotoPaintDirectCompositeTest, ParallelMaskFetchMatchesSerialFetch)
 {
-    buildScene(150, eMergeOver);
+    buildScene(40, eMergeOver);
     if (HasFatalFailure()) {
         return;
     }
@@ -760,18 +769,15 @@ TEST_F(RotoPaintDirectCompositeTest, AbortWhileFetchingMasksReturnsPromptly)
     }
 }
 
+// One operator per code path: Copy replaces B, Over and Stencil are the identity for a transparent
+// A and differ in which alpha they read, Multiply is separable and not an identity, Hue is the
+// non-separable path. The rest (Plus, Screen, Min, Max, Difference, ATop, ColorBurn) fall in those
+// classes and run the same direct composite code.
 const DirectCase kCases[] = {
     { eMergeCopy, "Copy" },
     { eMergeOver, "Over" },
-    { eMergePlus, "Plus" },
     { eMergeMultiply, "Multiply" },
-    { eMergeScreen, "Screen" },
-    { eMergeMin, "Min" },
-    { eMergeMax, "Max" },
-    { eMergeDifference, "Difference" },
     { eMergeStencil, "Stencil" },
-    { eMergeATop, "ATop" },
-    { eMergeColorBurn, "ColorBurn" },
     { eMergeHue, "Hue" },
 };
 

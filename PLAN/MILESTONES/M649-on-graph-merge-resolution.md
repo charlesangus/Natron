@@ -117,25 +117,25 @@ Code facts (scout of 2026-11-27, on the F33 branch tip 488b376fef):
 
 ## Phase 649.1: Engine — choices, picks and persistence
 
-- [ ] M649.P1.T1 — Audit every conflict choice
+- [x] M649.P1.T1 — Audit every conflict choice
   - files: none changed; read `Serialization/Merge/MergeConflict.h`, `Serialization/Merge/MergeHandler.cpp`, `Serialization/Merge/ConflictResolution.cpp`, `Engine/ProjectMerge.cpp`
   - approach: for each conflict kind × each choice (Mine, Theirs, Base, every option), state when it is offered today, what it produces, and whether it is impossible, a duplicate of another choice (and when), or keep. Return the table; the PM records it under this file's `## Decisions` and P1.T2 implements it. Same-frame Keep Both Keys is impossible by user decision.
   - verify: the table has a row for every kind in `MergeConflict.h:40-69` and every choice, each with a keep/drop rule.
   - size: L
 
-- [ ] M649.P1.T2 — Offer only possible, distinct choices
+- [x] M649.P1.T2 — Offer only possible, distinct choices
   - files: `Serialization/Merge/MergeHandler.cpp`, `Serialization/Merge/MergeConflict.h`, `Serialization/Merge/MergeConflict.cpp`, `Engine/ProjectMerge.h`, `Engine/ProjectMerge.cpp`, `Gui/MergeConflictPanel.cpp`, `Tests/Serialization/ConflictResolution_Test.cpp`
   - approach: add one `availableChoices(conflict)` that every UI and binding uses, implementing P1.T1's table: drop impossible choices, and drop a choice whose result equals an earlier one in Mine, Theirs, Base, options order. Remove Keep Both Keys for keys at the same frame and delete the `time + 1`/halfway rule (`MergeHandler.cpp:147-174`); keep it where the keys are at different frames. `canChooseSide`/`canChooseOption` agree with it. The panel builds its buttons from it.
   - verify: compiled at P1.T8. gtests per table row: a same-frame key conflict offers Mine and Theirs only; Base is hidden when base equals mine; different-frame Keep Both still works.
   - size: M
 
-- [ ] M649.P1.T3 — Keep the other version's nodes on the comparison
+- [x] M649.P1.T3 — Keep the other version's nodes on the comparison
   - files: `Engine/ProjectMerge.h`, `Engine/ProjectMerge.cpp`, `Tests/ProjectMerge_Test.cpp`
   - approach: `ChangeSummary` holds a `shared_ptr<const ProjectSerialization>` of the other snapshot and the live snapshot it was compared against, and each removed `NodeChange` can look up its `NodeSerialization` (with children for a Group) by node ID. No GUI change.
   - verify: compiled at P1.T8. A gtest compares against a base with a deleted Blur and a deleted Group, and reads both serializations, children included, from the summary.
   - size: M
 
-- [ ] M649.P1.T4 — Restore operations with splice
+- [x] M649.P1.T4 — Restore operations with splice
   - files: `Engine/ProjectMerge.h`, `Engine/ProjectMerge.cpp`, `Tests/ProjectMerge_Test.cpp`
   - approach: `ProjectMerge::restoreOperations(summary, nodeIds, SpliceMode{eAsk, eKeepMine, eEverywhere})` returns ops plus a list of pending splice choices `{reader, input, restored}`:
     - `CreateNodeOp` per node at `placedX/placedY`, Groups whole, fresh script names on collision with references remapped inside the restored set;
@@ -144,19 +144,19 @@ Code facts (scout of 2026-11-27, on the F33 branch tip 488b376fef):
   - verify: compiled at P1.T8. gtests: a deleted middle node restores spliced; two adjacent deleted nodes restore as a chain; a rewired reader is reported under eAsk, left under eKeepMine, re-routed under eEverywhere; a name collision gets a fresh name.
   - size: L
 
-- [ ] M649.P1.T5 — Revert, take, remove and position operations
+- [x] M649.P1.T5 — Revert, take, remove and position operations
   - files: `Engine/ProjectMerge.h`, `Engine/ProjectMerge.cpp`, `Tests/ProjectMerge_Test.cpp`
   - approach: from the summary: `revertOperations(nodeIds)` (every changed knob, input and appearance back to the other version), `takeKnobOperations(nodeId, knobName)` (`SetKnobOp` from `KnobChange::before`/`after` as the other side), `removeAddedOperations(nodeIds)` (delete, bridging the main input to each downstream reader as a normal delete does), `restorePositionOperations(nodeIds)` (other version's position plus the template offset).
   - verify: compiled at P1.T8. One gtest per function, each applied through `applyAllOrNothing` and re-compared to show the node no longer differs in that respect.
   - size: M
 
-- [ ] M649.P1.T6 — Pending splice choices in the conflict list
+- [x] M649.P1.T6 — Pending splice choices in the conflict list
   - files: `Serialization/Merge/MergeConflict.h`, `Serialization/Merge/MergeConflict.cpp`, `Serialization/Merge/ConflictResolution.cpp`, `Engine/ProjectMerge.cpp`, `Tests/Serialization/ConflictResolution_Test.cpp`
   - approach: a new conflict kind `eSpliceChoice` on the reader node, with choices Keep My Wiring and Splice In (through `availableChoices`), built from P1.T4's report and appended to the project's conflict list, so badge, panel, popover and save handle it like any conflict. Splice In is a `SetInputOp`; Keep My Wiring just removes the entry.
   - verify: compiled at P1.T8. A gtest adds a splice choice, resolves each way, and round-trips it through the conflict serialization.
   - size: M
 
-- [ ] M649.P1.T7 — Persist every side's structural state
+- [x] M649.P1.T7 — Persist every side's structural state
   - files: the conflict serialization in `Serialization/Merge/MergeConflict.cpp` (and `Serialization/ProjectSerialization*` if `merge/conflicts.yaml` is written there), `Tests/Serialization/ConflictResolution_Test.cpp`
   - approach: check that `merge/conflicts.yaml` writes and reads each side's `connections`, `removedNodes`, `parent`, `knobs` and `node`; add any field that's missing. No change if it all round-trips.
   - verify: compiled at P1.T8. A gtest saves and reloads one conflict of each structural kind and compares the sides field by field.
@@ -267,3 +267,4 @@ Code facts (scout of 2026-11-27, on the F33 branch tip 488b376fef):
 - 2026-11-27 — **A removed Group restores whole (user).**
 - 2026-11-27 — **Per-knob Take in both the popover and the diff panel (user):** one pattern for everything on the graph.
 - 2026-11-27 — Pending splice choices are a conflict kind, so badge, panel, popover and save handle them with no new path (planner). Conflicts reloaded from a file keep structural previews, so P1.T7 makes sure side state persists (planner).
+- 2026-11-28 — Phase 1 in f00d619581; m649-gate1 (P1.T8) running. Audit table in the commit's report: a choice is hidden only when impossible or equal to an earlier one; same-frame Keep Both is gone; Base stays on a same-frame key conflict when it means "remove the key" (a distinct outcome — PM reading of P1.T2's verify). PendingSplice carries sourceId. Open: nodes restored from a template version get no template origin/key back — fold into Phase 2 once M646 lands.

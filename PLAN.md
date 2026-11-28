@@ -249,7 +249,7 @@ future core work has solid ground to build on.
 | M414 | Geometry Advanced Modeling | todo | M359, M415 |  | E9 | F21 | | [M414-geometry-advanced-modeling.md](PLAN/MILESTONES/M414-geometry-advanced-modeling.md) |
 | M416 | Geometry Deformers And Time | todo | M359, M415 |  | E9 | F21 | | [M416-geometry-deformers-and-time.md](PLAN/MILESTONES/M416-geometry-deformers-and-time.md) |
 | M417 | VDB Volume Primitive | done | M358 | bosley-executor | E9 | F22 | | [M417-vdb-volume-primitive.md](PLAN/MILESTONES/M417-vdb-volume-primitive.md) |
-| M418 | VDB Conversion Ops | doing | M417 | bosley-executor | E9 | F22 | | [M418-vdb-conversion-ops.md](PLAN/MILESTONES/M418-vdb-conversion-ops.md) |
+| M418 | VDB Conversion Ops | done | M417 | bosley-executor | E9 | F22 | | [M418-vdb-conversion-ops.md](PLAN/MILESTONES/M418-vdb-conversion-ops.md) |
 | M419 | VDB SDF Ops And Wrangle | todo | M418, M360 |  | E9 | F22 | | [M419-vdb-sdf-ops-and-wrangle.md](PLAN/MILESTONES/M419-vdb-sdf-ops-and-wrangle.md) |
 | M376 | Geometry Display | done | M328, M358 | | E9 | F15 | | [M376-geometry-display.md](PLAN/MILESTONES/M376-geometry-display.md) |
 | M377 | Readable CI Names | done | - | bosley-native-nodes | E2 | | | [M377-readable-ci-names.md](PLAN/MILESTONES/M377-readable-ci-names.md) |

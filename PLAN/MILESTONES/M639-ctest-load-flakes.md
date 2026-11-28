@@ -32,7 +32,7 @@ None of these suites carry a `RESOURCE_LOCK` or `LABELS` (`Tests/CMakeLists.txt:
 
 ## Phase 639.2: Fix
 
-- [ ] M639.P2.T1 — Fix the delegate render tests' shared cause
+- [x] M639.P2.T1 — Fix the delegate render tests' shared cause (8df78bf37d)
   - files: per T1: `Tests/Scene/USDRender*_Test.cpp`, `NatronUtilitySampling_Test.cpp`, `ProgressiveRender_Test.cpp`, the shared render-test fixture, and the product teardown code T1 names (`Engine/Nodes/Scene/HydraRenderImpl.cpp` or a delegate)
   - approach: per T1's diagnosis: fix a teardown use-after-free in the product, give each test its own engine instead of a reused one, or add a ctest `RESOURCE_LOCK` for a GPU or engine resource that can't be shared. Prefer a product fix over test isolation when the product is wrong.
   - verify: the T1 repeat command passes 20 of 20 for these suites under load
@@ -42,7 +42,7 @@ None of these suites carry a `RESOURCE_LOCK` or `LABELS` (`Tests/CMakeLists.txt:
   - approach: per T1: if the check reads before the filter's edit reaches the render, wait on the render that follows the edit rather than on time. If the filter edit is lost, fix the product.
   - verify: `ctest -R CyclesDelegate --repeat until-fail:50 -j8` passes under load
   - size: M
-- [ ] M639.P2.T3 — Fix the SplitOnGapsTest startup stall
+- [x] M639.P2.T3 — Fix the SplitOnGapsTest startup stall (8df78bf37d)
   - files: `Tests/FileSystemModel_Test.cpp` (:349), `Tests/TestWatchdog.h`, and whatever T1 shows process start waiting on
   - approach: per T1's stacks: remove the start-up wait (a shared lock file, a Qt platform plugin, a font cache scan). If several startup-phase stalls share it, fix it once in the shared test main.
   - verify: `ctest -R SplitOnGaps --repeat until-fail:50 -j8` under load passes with no stall
@@ -54,3 +54,4 @@ None of these suites carry a `RESOURCE_LOCK` or `LABELS` (`Tests/CMakeLists.txt:
   - **USDRenderCyclesMaterialTest (1/6):** product teardown-order null deref at process exit — a scene-worker job (`readGivenSettingsSummaries` → `getHashValue`) runs after its app is destroyed; `Node.cpp:1565` calls `getProject()` on a null app. `~AppManager` quits apps before waiting for scene-worker jobs. P2.T1: drain a project's scene jobs before its app is released, guard the null app, test with a job held at a barrier. May also explain the earlier ProgressiveRender / NatronUtilitySampling segfaults (re-check after the fix).
   - **USDRenderMoonRayProjectionTest (2/6):** hangs in `ClipNearFarPutsTheCardOutside`; the client sits in `recv` while `execComp` is alive and silent; the pre-first-frame stall guard waits 300 s (= the ctest timeout), so it hangs instead of failing. Root cause unknown (lost start message, concurrent MoonRay suites sharing /dev/shm or arras sockets, or an execComp deadlock); stacks need `--cap-add=SYS_PTRACE` on the CI test container. Follow-up repeat run once ptrace is enabled.
   - No stack involves `makeInheritedTLSData`. CyclesDelegate / NatronUtilitySamplingDelegate / ProgressiveRender did not fail in this run (inconclusive; one repeat run each after the teardown fix).
+- 2026-11-27 (PM) — After 8df78bf37d: m639-repro2 (run 46104265102, 6 shuffled runs × 13 suites) all green; m639-moonray1 (run 46104341753, USDRenderMoonRayProjectionTest × 20 under parallel load, ptrace on) 20/20, no hang. P2.T2 (CyclesDelegate draw filter) and the MoonRay hang did not reproduce; the two-PR-CI gate stands as their check. PR #408 (draft, to main), review round 1 running.

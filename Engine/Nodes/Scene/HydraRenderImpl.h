@@ -465,6 +465,12 @@ std::uint64_t getEngineRenderCount();
 std::uint64_t getMoonRayProgressReads();
 
 /**
+ * @brief Converts count floats to halves. A finite value past the largest half saturates to it, so
+ * a later scale such as the viewer's exposure can still bring it down; NaN stays NaN.
+ **/
+void toSaturatedHalves(const float* from, PXR_NS::GfHalf* to, std::size_t count);
+
+/**
  * @brief Whether Storm renders write the ids of translucent prims into their primId plane, as
  * they do unless turned off; for tests, to compare against Storm's own ids. Read when a render's
  * ids are first decoded.
@@ -776,6 +782,13 @@ public:
      * (never the stage lock). Empty for none.
      **/
     static void setPassHook(const std::function<void()>& hook);
+
+    /**
+     * @brief For tests: hook is called on every worker in each pass, after the checks that make
+     * its engine again and before it takes the pass's snapshot, without any of its locks. Empty
+     * for none.
+     **/
+    static void setSnapshotHook(const std::function<void()>& hook);
 
     struct Implementation;
 

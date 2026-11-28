@@ -40,6 +40,8 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -456,6 +458,7 @@ protected:
     {
         _watchdog.setPhase("teardown");
         ProgressiveRender::setPassHook(std::function<void()>());
+        ProgressiveRender::setSnapshotHook(std::function<void()>());
         hold(false);
         _render.reset();
         // A worker still ending would hold a Cycles session of its thread count into the next test.
@@ -1029,6 +1032,45 @@ TEST_F(ProgressiveRenderTest, TheHeadlightLightsFromTheCameraAndTheStatusSaysSo)
     const float back = centreRed(*frames.back());
     EXPECT_NEAR(sceneLit, back, 0.1f * std::max(sceneLit, 0.01f));
     EXPECT_FALSE(_render->getStatus().headlightAsked);
+}
+
+// A lighting mode asked for after the pass's check that makes the engine again, but before its
+// snapshot, which then takes it, still makes the engine again rather than rendering it on the
+// engine made for the other mode.
+TEST_F(ProgressiveRenderTest, AHeadlightAskedForAsThePassSnapshotsMakesTheEngineAgain)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    ASSERT_TRUE(start());
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    ASSERT_FALSE(frames.empty());
+    const float sceneLit = centreRed(*frames.back());
+    EXPECT_FALSE(_render->getStatus().headlight);
+
+    const std::uint64_t builds = HydraRender::getEngineBuildCount();
+    const std::size_t mark = publishedCount();
+    ProgressiveRender* render = _render.get();
+    ProgressiveRender::View lit = _view;
+    lit.headlight = true;
+    std::shared_ptr<std::atomic<bool>> armed = std::make_shared<std::atomic<bool>>(true);
+    ProgressiveRender::setSnapshotHook([render, lit, armed]() {
+        if (armed->exchange(false)) {
+            render->setView(lit);
+        }
+    });
+    _render->invalidate();
+    frames.clear();
+    ASSERT_TRUE(collectUntilDone(mark, &frames));
+    ProgressiveRender::setSnapshotHook(std::function<void()>());
+    ASSERT_FALSE(armed->load()) << "no pass took a snapshot";
+    ASSERT_FALSE(frames.empty());
+    EXPECT_GT(HydraRender::getEngineBuildCount(), builds) << "the headlight was rendered on the scene lights' engine";
+    EXPECT_TRUE(_render->getStatus().headlight);
+    const float headlit = centreRed(*frames.back());
+    std::printf("[          ] the cube's red: %g by the stage's lights, %g by the headlight\n", sceneLit, headlit);
+    EXPECT_GT(std::fabs(headlit - sceneLit), 0.1f * std::max(sceneLit, headlit)) << "the headlight changed nothing";
 }
 
 // A finished render's worker woken asks for its Cycles thread count without the render's lock. A
@@ -2288,6 +2330,41 @@ TEST(MoonRaySettingsTest, MaxSamplesTakeThePixelSamplesWhoseSquareReachesThem)
     EXPECT_EQ(3, MoonRaySettings::pixelSamplesFor(9));
     EXPECT_EQ(4, MoonRaySettings::pixelSamplesFor(16));
     EXPECT_EQ(64, MoonRaySettings::pixelSamplesFor(4096));
+}
+
+// The bulk conversion a frame's colour goes through gives the bits a saturating GfHalf does, for
+// floats across the whole range, the specials and a tail shorter than a vector.
+TEST(SaturatedHalvesTest, MatchASaturatingGfHalfBitForBit)
+{
+    std::vector<float> values;
+    for (std::uint64_t bits = 0; bits <= 0xffffffffull; bits += 997) {
+        const std::uint32_t word = (std::uint32_t)bits;
+        float value;
+        std::memcpy(&value, &word, sizeof(value));
+        values.push_back(value);
+    }
+    const std::uint32_t signalling = 0x7f800001u;
+    float signallingNan;
+    std::memcpy(&signallingNan, &signalling, sizeof(signallingNan));
+    const float specials[] = { 0.f, -0.f, 1.f, -1.f, 65504.f, -65504.f, 65519.f, 65520.f, 1e10f, -1e10f,
+                               std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(),
+                               std::numeric_limits<float>::quiet_NaN(), signallingNan, 5.96e-8f, 2.98e-8f, 1e-45f, 6.1e-5f };
+    values.insert(values.end(), std::begin(specials), std::end(specials));
+    values.insert(values.end(), std::begin(specials), std::begin(specials) + 3);
+    std::vector<PXR_NS::GfHalf> halves(values.size());
+    HydraRender::toSaturatedHalves(values.data(), halves.data(), values.size());
+    std::size_t mismatches = 0;
+    for (std::size_t i = 0; i < values.size(); ++i) {
+        const float value = values[i];
+        const PXR_NS::GfHalf expected = std::isnan(value) ? PXR_NS::GfHalf(value) : PXR_NS::GfHalf(std::min(std::max(value, -65504.f), 65504.f));
+        if (expected.bits() != halves[i].bits()) {
+            if (mismatches < 8) {
+                ADD_FAILURE() << "float " << value << ": half bits " << halves[i].bits() << ", expected " << expected.bits();
+            }
+            ++mismatches;
+        }
+    }
+    EXPECT_EQ(0u, mismatches);
 }
 
 // MoonRay counts its samples per pixel off its progress against the square of its pixel samples,

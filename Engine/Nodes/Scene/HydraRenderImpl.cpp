@@ -45,6 +45,10 @@
 #include <thread>
 #include <utility>
 
+#if defined(__x86_64__)
+#include <immintrin.h>
+#endif
+
 #include <sys/resource.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -310,18 +314,21 @@ samplesOf(const VtDictionary& stats,
 // that rendered, -1 when there is none. It renders the square of the pixel samples the cap takes,
 // which may be more than the cap: the count stays under the cap until the frame is complete, so
 // that n of n means done. A frame with any pixels counts at least one, so that it is shown.
-// hdMoonray reports no stats exactly when its frame is complete: its IsConverged says so only on
-// the call after that, so a fast render's first frame may be complete and not yet converged.
+// hdMoonray reports no stats once its frame is complete, and its IsConverged says so only on the
+// call after that. Stats without progress count as done only once it converged: until then the
+// count holds at previous, the count of the pass before, and under the cap.
 int
 moonRaySamplesOf(const VtDictionary& stats,
                  int cap,
-                 bool rendered)
+                 bool rendered,
+                 bool converged,
+                 int previous)
 {
     if ((cap <= 0) || !rendered) {
         return -1;
     }
     if (stats.find("percentDone") == stats.end()) {
-        return cap;
+        return converged ? cap : std::min(std::max(1, cap - 1), std::max(1, previous));
     }
     const double done = moonRayPercentOf(stats);
     if (done < 0.) {
@@ -1799,6 +1806,40 @@ saturatedHalf(float value)
 
     return GfHalf(std::min(std::max(value, -largest), largest));
 }
+
+void
+saturatedHalvesScalar(const float* from,
+                      GfHalf* to,
+                      std::size_t count)
+{
+    for (std::size_t i = 0; i < count; ++i) {
+        to[i] = saturatedHalf(from[i]);
+    }
+}
+
+#if defined(__x86_64__)
+// F16C rounds to nearest even as GfHalf does. It quiets a signalling NaN where GfHalf keeps it, so
+// any group of eight holding a NaN goes through GfHalf.
+[[gnu::target("avx,f16c")]] void
+saturatedHalvesF16c(const float* from,
+                    GfHalf* to,
+                    std::size_t count)
+{
+    const __m256 largest = _mm256_set1_ps(65504.f);
+    const __m256 smallest = _mm256_set1_ps(-65504.f);
+    std::size_t i = 0;
+    for (; i + 8 <= count; i += 8) {
+        const __m256 value = _mm256_loadu_ps(from + i);
+        if (_mm256_movemask_ps(_mm256_cmp_ps(value, value, _CMP_UNORD_Q)) != 0) {
+            saturatedHalvesScalar(from + i, to + i, 8);
+            continue;
+        }
+        const __m256 clamped = _mm256_max_ps(_mm256_min_ps(value, largest), smallest);
+        _mm_storeu_si128(reinterpret_cast<__m128i*>(to + i), _mm256_cvtps_ph(clamped, _MM_FROUND_TO_NEAREST_INT));
+    }
+    saturatedHalvesScalar(from + i, to + i, count - i);
+}
+#endif
 
 // The request's AOVs of entry's last render, the pixels of those in aovPixels (of all when it is
 // null), and the metadata its delegate's stats hold for them; false when cancel is set before
@@ -3920,6 +3961,25 @@ getMoonRayProgressReads()
 }
 
 void
+toSaturatedHalves(const float* from,
+                  GfHalf* to,
+                  std::size_t count)
+{
+#if defined(__x86_64__)
+    static const bool f16c = []() {
+        __builtin_cpu_init();
+        return __builtin_cpu_supports("avx") && __builtin_cpu_supports("f16c");
+    }();
+    if (f16c) {
+        saturatedHalvesF16c(from, to, count);
+
+        return;
+    }
+#endif
+    saturatedHalvesScalar(from, to, count);
+}
+
+void
 setStormTranslucentIds(bool enabled)
 {
     gStormTranslucentIds = enabled;
@@ -3963,6 +4023,7 @@ namespace {
 
     std::mutex gPassHookMutex;
     std::function<void()> gPassHook;
+    std::function<void()> gSnapshotHook;
 
     // The workers alive and the ProgressiveRenders alive: the workers beyond those are the
     // detached ones still ending. Never destroyed, as a worker may end during static destruction.
@@ -4465,11 +4526,7 @@ struct ProgressiveRender::Implementation {
             if (color.format() == HdFormatFloat16Vec4) {
                 std::memcpy(out->rgba.data(), color.pixel(0), pixels * 4 * sizeof(GfHalf));
             } else if (color.format() == HdFormatFloat32Vec4) {
-                const float* from = reinterpret_cast<const float*>(color.pixel(0));
-                GfHalf* to = out->rgba.data();
-                for (std::size_t i = 0; i < pixels * 4; ++i) {
-                    to[i] = saturatedHalf(from[i]);
-                }
+                toSaturatedHalves(reinterpret_cast<const float*>(color.pixel(0)), out->rgba.data(), pixels * 4);
             } else {
                 for (std::size_t i = 0; i < pixels; ++i) {
                     const unsigned char* at = color.pixel(i);
@@ -4660,9 +4717,7 @@ struct ProgressiveRender::Implementation {
             return false;
         }
         rgba->resize(pixels * 4);
-        for (std::size_t i = 0; i < pixels * 4; ++i) {
-            (*rgba)[i] = saturatedHalf(linear[i]);
-        }
+        toSaturatedHalves(linear.data(), rgba->data(), pixels * 4);
 
         return true;
     }
@@ -5029,6 +5084,16 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
         }
         lock.unlock();
+        {
+            std::function<void()> hook;
+            {
+                std::lock_guard<std::mutex> hookLock(gPassHookMutex);
+                hook = gSnapshotHook;
+            }
+            if (hook) {
+                hook();
+            }
+        }
         View v;
         int cap = 0;
         std::uint64_t passGeneration = 0;
@@ -5053,6 +5118,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
         std::shared_ptr<Frame> read;
         bool lightsChanged = false;
         bool viewHeadlight = false;
+        bool lightingMoved = false;
         const std::uint64_t passEngineChanges = engineChanges.load();
         std::atomic<bool> exportCut { false };
         if (hasStage) {
@@ -5080,7 +5146,10 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 }
             }
             const UsdStageRefPtr stage = workerStage->getStage();
-            if (stage && engine) {
+            // The lighting mode the snapshot took may have changed after the check that makes the
+            // engine again for it.
+            lightingMoved = engine && engineLightsKnown && (headlightFor(engineRenderer, v.headlight) != engineViewHeadlight);
+            if (stage && engine && !lightingMoved) {
                 if (rendererStopped) {
                     (void)engine->RestartRenderer();
                     rendererStopped = false;
@@ -5151,16 +5220,23 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
             }
         }
         const bool moonRay = MoonRayAovs::isMoonRay(engineRenderer);
-        const int samples = moonRay ? moonRaySamplesOf(stats, cap, rendered) : samplesOf(stats, cap);
+        const int samples = moonRay ? moonRaySamplesOf(stats, cap, rendered, converged, lastSamples) : samplesOf(stats, cap);
         const double progress = moonRay ? moonRayPercentOf(stats) : -1.;
         lock.lock();
         engineRendered = engineRendered || rendered;
-        if (hasStage) {
+        if (hasStage && !lightingMoved) {
             status.headlightAsked = v.headlight;
             status.headlight = viewHeadlight;
         }
         if (quit) {
             break;
+        }
+        if (lightingMoved) {
+            lock.unlock();
+            dropEngine();
+            lock.lock();
+            keepFrame = true;
+            continue;
         }
         if (exportCut) {
             // The engine has the missing-texture colour where the cut export's image goes, and
@@ -5717,6 +5793,14 @@ ProgressiveRender::setPassHook(const std::function<void()>& hook)
     std::lock_guard<std::mutex> l(gPassHookMutex);
 
     gPassHook = hook;
+}
+
+void
+ProgressiveRender::setSnapshotHook(const std::function<void()>& hook)
+{
+    std::lock_guard<std::mutex> l(gPassHookMutex);
+
+    gSnapshotHook = hook;
 }
 } // namespace HydraRender
 

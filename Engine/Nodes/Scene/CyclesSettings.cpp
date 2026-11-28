@@ -186,7 +186,7 @@ make()
 
     // direct_light_sampling_type has no entry: Cycles declares it only when built with
     // WITH_CYCLES_DEBUG, and a knob here would be a control the delegate ignores.
-    add("lights", setting("natron:matchLightLevels", "matchLightLevels", "Lights the scene as brightly as Storm and MoonRay do for the same lights and exposure. Turn it off for the levels Cycles gives on its own, where dome lights are about 3.14 times brighter and distant lights 4 times brighter.", VtValue(true)));
+    add("lights", setting("natron:matchLightLevels", "matchLightLevels", "Lights the scene as brightly as Storm does for the same lights and exposure. Turn it off for the levels Cycles gives on its own, where dome lights are about 3.14 times brighter and distant lights 4 times brighter.", VtValue(true)));
     add("lights", setting("cycles:integrator:use_light_tree", "useLightTree", "Picks the lights that matter most to each point rather than treating them alike. It greatly reduces noise with many lights, at a small cost to prepare, so leave it on. Light Sampling Threshold works only with this off.", VtValue(true)));
     add("lights", setting("cycles:integrator:light_sampling_threshold", "lightSamplingThreshold", "Skips most shadow rays to lights too weak to matter at a point. Higher is faster and can add noise; 0.01 is a good start and 0 turns it off.", VtValue(0.f)));
 

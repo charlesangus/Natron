@@ -9708,6 +9708,12 @@ SceneViewport::SceneViewport(QWidget* parent)
     setProperty("natronGeoSelection", QString());
     setProperty("natronGeoSelectionCount", 0);
     setProperty("natronSceneHighlightCount", 0);
+    // Whether the camera looked through authors an exposure, in stops and as a linear scale, as
+    // the last paint read it.
+    {
+        const SceneViewportRenderer::CameraExposure& exposure = _imp->announcedExposure;
+        setProperty("natronSceneCameraExposure", QVariantList { exposure.authored, exposure.stops, exposure.scale });
+    }
     _imp->renderer.setStageEditor(_imp->geoDisplay);
     // A paint skipped while the worker syncs leaves the framebuffer as it was. Assumed from Qt's
     // documentation of QOpenGLWidget::UpdateBehavior, which says PartialUpdate keeps the
@@ -11588,12 +11594,6 @@ SceneViewport::publishState()
     // How many scenes were handed to the worker: navigation alone must not add to it.
     setProperty("natronSceneSyncRequests", QVariant::fromValue<qulonglong>(_imp->requestedSerial));
     setProperty("natronSceneLookThrough", QString::fromStdString(_imp->renderer.getLookThroughCamera()));
-    // Whether the camera looked through authors an exposure, in stops and as a linear scale, as
-    // the last paint read it.
-    {
-        const SceneViewportRenderer::CameraExposure& exposure = _imp->announcedExposure;
-        setProperty("natronSceneCameraExposure", QVariantList { exposure.authored, exposure.stops, exposure.scale });
-    }
     setProperty("natronSceneEngineCount", QVariant::fromValue<qulonglong>(_imp->renderer.getEngineCount()));
     // A release posted or owed has let go of the engine, as far as anyone may use it.
     setProperty("natronSceneEngineHeld", _imp->renderer.hasEngine() && !_imp->engineReleasePending());

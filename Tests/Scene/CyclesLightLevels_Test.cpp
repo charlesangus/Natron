@@ -315,6 +315,31 @@ lightCases(const std::string& environment)
           "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
           "    }\n";
 
+    // A square of half side b at distance d gives a point under its centre 4 I t atan(t), with
+    // t = (b / d) / sqrt(1 + (b / d)^2).
+    const double rectSlope = (2. / 40.) / std::sqrt(1. + (2. / 40.) * (2. / 40.));
+    const double rectIntensity = 1. / (4. * rectSlope * std::atan(rectSlope));
+    const std::string rect = "    def RectLight \"Panel\" {\n"
+                             "        float inputs:width = 4\n"
+                             "        float inputs:height = 4\n"
+                             "        float inputs:intensity = "
+        + std::to_string(rectIntensity) + "\n"
+        + "        bool inputs:normalize = 0\n"
+          "        double3 xformOp:translate = (0, 0, 40)\n"
+          "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+          "    }\n";
+
+    // A disk of radius r at distance d gives a point under its centre I pi r^2 / (r^2 + d^2).
+    const double diskIntensity = (2. * 2. + 40. * 40.) / (M_PI * 2. * 2.);
+    const std::string disk = "    def DiskLight \"Disk\" {\n"
+                             "        float inputs:radius = 2\n"
+                             "        float inputs:intensity = "
+        + std::to_string(diskIntensity) + "\n"
+        + "        bool inputs:normalize = 0\n"
+          "        double3 xformOp:translate = (0, 0, 40)\n"
+          "        uniform token[] xformOpOrder = [\"xformOp:translate\"]\n"
+          "    }\n";
+
     // Normalized, the intensity of a distant light is the irradiance it gives.
     const std::string normalizedDistant = "    def DistantLight \"Sun\" {\n"
                                           "        float inputs:angle = 0.53\n"
@@ -337,6 +362,8 @@ lightCases(const std::string& environment)
     // shader's, so a dome strength other than 1 that reached both would be squared in it.
     cases.push_back({ "dome of intensity 2", dome("2"), 2. * kAlbedo, M_PI, true });
     cases.push_back({ "sphere", sphere, kAlbedo / M_PI, 1., true });
+    cases.push_back({ "rect", rect, kAlbedo / M_PI, 1., true });
+    cases.push_back({ "disk", disk, kAlbedo / M_PI, 1., true });
     cases.push_back({ "normalized distant", normalizedDistant, kAlbedo / M_PI, 4., false });
     cases.push_back({ "distant", distant, kAlbedo / M_PI, 4., true });
 
@@ -376,10 +403,10 @@ TEST(CyclesLightLevels, MatchedLevelsAgreeWithStormAndMoonRay)
 
 // With it off, the dome is pi brighter, as the delegate scales its radiance by the pi that turns the
 // other lights' intensity into flux, and the distant light 4 times brighter, by the delegate's own
-// factor, while the sphere light, which already matched, is unchanged. A ratio of
-// pi (1 + (pi - 1) ln(17) / 16), about 4.33, for the dome is its strength squared in its direct
-// light, whose share of the card's light under the power heuristic, for the cosine pdf of the BSDF
-// against the uniform pdf of a white dome, is ln(17) / 16.
+// factor, while the sphere, rect and disk lights, which already matched, are unchanged. A dome whose
+// strength reached its direct light twice would show about 4.33 here, pi (1 + (pi - 1) ln(17) / 16):
+// ln(17) / 16 is that direct light's share of the card's light under the power heuristic, for the
+// cosine pdf of the BSDF against the uniform pdf of a white dome.
 TEST(CyclesLightLevels, UnmatchedLevelsAreCyclesOwn)
 {
     if (!CyclesTestUtils::cyclesOrSkip()) {

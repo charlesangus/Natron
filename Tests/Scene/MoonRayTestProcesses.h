@@ -172,7 +172,8 @@ public:
         return _stopped;
     }
 
-    // False if one of the stopped processes was not reaped within the bound.
+    // False if one of the stopped processes was not reaped within the bound. Any such process is
+    // killed, as one left stopped or running would end its session inside a later test.
     bool continueAndReap()
     {
         const std::vector<int> stopped = stopNoMore();
@@ -189,6 +190,12 @@ public:
                 return true;
             }
             if (Clock::now() - start >= _reapBound) {
+                for (int pid : stopped) {
+                    if (isUnreapedChild(pid)) {
+                        (void)::kill(pid, SIGKILL);
+                    }
+                }
+
                 return false;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(20));

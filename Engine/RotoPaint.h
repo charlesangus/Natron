@@ -28,6 +28,8 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
+
 #include "Engine/EffectInstance.h"
 #include "Engine/ViewIdx.h"
 #include "Engine/EngineFwd.h"
@@ -57,6 +59,33 @@ public:
     virtual ~RotoPaint();
 
     bool isDefaultBehaviourPaintContext() const;
+
+    /**
+     * @brief Whether render() composites a concatenated tree's masks itself rather than
+     * rendering its internal nodes; on by default. Process-wide, for tests comparing the two.
+     **/
+    static void setDirectCompositeEnabled(bool enabled);
+    static bool isDirectCompositeEnabled();
+
+    /**
+     * @brief The renders of any RotoPaint that composited their tree directly so far.
+     **/
+    static unsigned long long getDirectCompositeRenderCount();
+
+    /**
+     * @brief How many threads a direct composite fetches or rasterises its items' masks on: 0,
+     * the default, for as many as the effect may use; 1 fetches them one after another; more
+     * splits the fetch that many ways whatever the load. Process-wide, for tests comparing the
+     * two ways.
+     **/
+    static void setMaskFetchThreadCount(int threads);
+
+    /**
+     * @brief Called on whichever thread fetches an item's mask for a direct composite, just
+     * before it does. For tests that act on a render while it fetches masks: set it only while
+     * no render runs.
+     **/
+    static void setDirectMaskFetchHook(const std::function<void()>& hook);
 
     virtual bool isRotoPaintNode() const OVERRIDE FINAL WARN_UNUSED_RETURN  { return true; }
 

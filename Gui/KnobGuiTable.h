@@ -166,6 +166,29 @@ private:
     KnobLayersWPtr _knob;
 };
 
+// A new row is a primvar st, the one primvar every UV-mapped mesh has.
+class KnobGuiRenderVars
+    : public KnobGuiTable {
+public:
+    static KnobGui* BuildKnobGui(KnobIPtr knob,
+                                 KnobGuiContainerI* container)
+    {
+        return new KnobGuiRenderVars(knob, container);
+    }
+
+    KnobGuiRenderVars(KnobIPtr knob,
+                      KnobGuiContainerI* container);
+
+    virtual ~KnobGuiRenderVars() OVERRIDE;
+
+    virtual KnobIPtr getKnob() const OVERRIDE FINAL;
+
+private:
+    virtual bool addNewUserEntry(QStringList& row) OVERRIDE FINAL;
+
+    KnobRenderVarsWPtr _knob;
+};
+
 NATRON_NAMESPACE_EXIT
 
 #endif // Gui_KnobGuiLayer_h

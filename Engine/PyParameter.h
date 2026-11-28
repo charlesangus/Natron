@@ -1178,6 +1178,39 @@ public:
     void getTable(std::list<std::vector<std::string> >* table) const;
 };
 
+/////////////////RenderVarsParam
+
+class RenderVarsParam
+    : public StringParamBase {
+    KnobRenderVarsWPtr _tKnob;
+
+public:
+    RenderVarsParam(const KnobRenderVarsPtr& knob);
+
+    virtual ~RenderVarsParam();
+
+    /**
+     * @brief One [name, sourceType, dataType, layer] row per RenderVar. sourceType is "raw",
+     * "primvar" or "lpe" (empty is raw); dataType and layer may be empty.
+     **/
+    void getTable(std::list<std::vector<std::string>>* table) const;
+
+    /**
+     * @brief Replaces every row. Raises ValueError when a row does not have 4 cells.
+     **/
+    void setTable(const std::list<std::vector<std::string>>& table);
+
+    /**
+     * @brief Raises ValueError when the row does not have 4 cells.
+     **/
+    void appendRow(const std::vector<std::string>& row);
+
+    /**
+     * @brief Raises ValueError when index is out of range.
+     **/
+    void removeRow(int index);
+};
+
 /////////////////ChannelSetParam
 
 class ChannelSetParam

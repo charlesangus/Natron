@@ -6799,6 +6799,7 @@ KnobHelper::createDuplicateOnHolder(KnobHolder* otherHolder,
     KnobOutputFile* isOutputFile = dynamic_cast<KnobOutputFile*>(this);
     KnobPath* isPath = dynamic_cast<KnobPath*>(this);
     KnobLayers* isLayers = dynamic_cast<KnobLayers*>(this);
+    KnobRenderVars* isRenderVars = dynamic_cast<KnobRenderVars*>(this);
     KnobChannelSet* isChannelSet = dynamic_cast<KnobChannelSet*>(this);
     KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(this);
     KnobChannelSelect* isChannelSelect = dynamic_cast<KnobChannelSelect*>(this);
@@ -6900,6 +6901,10 @@ KnobHelper::createDuplicateOnHolder(KnobHolder* otherHolder,
         output = newKnob;
     } else if (isLayers) {
         KnobLayersPtr newKnob = AppManager::createKnob<KnobLayers>(otherHolder, newLabel, getDimension(), false);
+        newKnob->setAsUserKnob(isUserKnob);
+        output = newKnob;
+    } else if (isRenderVars) {
+        KnobRenderVarsPtr newKnob = AppManager::createKnob<KnobRenderVars>(otherHolder, newLabel, getDimension(), false);
         newKnob->setAsUserKnob(isUserKnob);
         output = newKnob;
     } else if (isChannelSet) {

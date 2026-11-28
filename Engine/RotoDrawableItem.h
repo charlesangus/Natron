@@ -219,7 +219,18 @@ public:
                                   const unsigned int mipmapLevel,
                                   const RectD& rotoNodeSrcRod);
 
+    /**
+     * @brief Whether the mask is the same at every frame: no keyframed point or feather, no
+     * animated, expression-driven or linked render-hashed knob, no track link and no per-shape
+     * motion blur. Activation and lifetime are left out, since an inactive item renders as an
+     * identity. Memoized against getContentHash(). MT-safe.
+     **/
+    bool isMaskFrameInvariant() const;
+
 private:
+    bool isMaskFrameInvariant(U64 contentHash) const;
+    bool computeMaskFrameInvariant() const;
+
     ImagePtr renderMaskInternal(const RectI& roi,
                                 const ImageLayerDesc& components,
                                 const double startTime,

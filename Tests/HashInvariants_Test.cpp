@@ -28,7 +28,11 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <map>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -61,6 +65,7 @@
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
@@ -960,4 +965,157 @@ TEST_F(HashInvariantsTest, ViewerCachedFramesFollowTheLastLookup)
     held.clear();
     appPTR->removeAllCacheEntriesForHolder(holder.get(), true);
     project()->reset(false, true);
+}
+
+// ---------------------------------------------------------------------------------------------
+// A scene job that holds a node across its app's teardown.
+// ---------------------------------------------------------------------------------------------
+
+namespace {
+// Shared with a scene job, which may outlive a wait that timed out.
+struct HeldJob {
+    std::mutex lock;
+    std::condition_variable changed;
+    bool started = false;
+    bool released = false;
+    bool done = false;
+    bool dropped = false;
+
+    void set(bool HeldJob::* flag)
+    {
+        {
+            std::lock_guard<std::mutex> l(lock);
+            this->*flag = true;
+        }
+        changed.notify_all();
+    }
+
+    bool waitFor(bool HeldJob::* flag)
+    {
+        std::unique_lock<std::mutex> l(lock);
+
+        return changed.wait_for(l, std::chrono::seconds(60), [this, flag]() { return this->*flag; });
+    }
+};
+} // namespace
+
+TEST_F(HashInvariantsTest, QuittingAnAppWaitsForItsSceneJobsAlreadyRunning)
+{
+    const AppInstancePtr original = getApp();
+    CLArgs args;
+    AppInstancePtr app = appPTR->newBackgroundInstance(args, true);
+    ASSERT_TRUE(bool(app));
+    appPTR->setAsTopLevelInstance(original->getAppID());
+
+    const std::shared_ptr<HeldJob> job = std::make_shared<HeldJob>();
+    std::shared_ptr<std::atomic<bool>> finished = std::make_shared<std::atomic<bool>>(false);
+    SceneWorker worker;
+    const SceneWorker::Task run = [job, finished]() {
+        job->set(&HeldJob::started);
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        *finished = true;
+    };
+    worker.post(app, run, SceneWorker::Task());
+    ASSERT_TRUE(job->waitFor(&HeldJob::started));
+
+    appPTR->quitNow(app);
+    EXPECT_TRUE(finished->load());
+    app.reset();
+    appPTR->setAsTopLevelInstance(original->getAppID());
+}
+
+TEST_F(HashInvariantsTest, RetiringAnAppDoesNotWaitForAnotherAppsSceneJobs)
+{
+    const AppInstancePtr original = getApp();
+    CLArgs args;
+    AppInstancePtr app = appPTR->newBackgroundInstance(args, true);
+    ASSERT_TRUE(bool(app));
+    appPTR->setAsTopLevelInstance(original->getAppID());
+
+    const std::shared_ptr<HeldJob> job = std::make_shared<HeldJob>();
+    SceneWorker worker;
+    const SceneWorker::Task run = [job]() {
+        job->set(&HeldJob::started);
+        job->waitFor(&HeldJob::released);
+        job->set(&HeldJob::done);
+    };
+    worker.post(original, run, SceneWorker::Task());
+    ASSERT_TRUE(job->waitFor(&HeldJob::started));
+
+    EXPECT_TRUE(SceneWorker::retireApp(app, 5000));
+    job->set(&HeldJob::released);
+    EXPECT_TRUE(job->waitFor(&HeldJob::done));
+    appPTR->quitNow(app);
+    app.reset();
+    appPTR->setAsTopLevelInstance(original->getAppID());
+}
+
+TEST_F(HashInvariantsTest, ASceneJobOfARetiredAppIsDroppedUnrun)
+{
+    const AppInstancePtr original = getApp();
+    CLArgs args;
+    AppInstancePtr app = appPTR->newBackgroundInstance(args, true);
+    ASSERT_TRUE(bool(app));
+    appPTR->setAsTopLevelInstance(original->getAppID());
+
+    EXPECT_TRUE(SceneWorker::retireApp(app, 5000));
+    const std::shared_ptr<HeldJob> job = std::make_shared<HeldJob>();
+    SceneWorker worker;
+    worker.post(app, [job]() { job->set(&HeldJob::started); }, [job]() { job->set(&HeldJob::dropped); });
+    EXPECT_TRUE(job->waitFor(&HeldJob::dropped));
+    {
+        std::lock_guard<std::mutex> l(job->lock);
+        EXPECT_FALSE(job->started);
+    }
+
+    const std::shared_ptr<HeldJob> appless = std::make_shared<HeldJob>();
+    worker.post(AppInstancePtr(), [appless]() { appless->set(&HeldJob::started); }, [appless]() { appless->set(&HeldJob::dropped); });
+    {
+        std::lock_guard<std::mutex> l(appless->lock);
+        EXPECT_TRUE(appless->dropped);
+        EXPECT_FALSE(appless->started);
+    }
+
+    appPTR->quitNow(app);
+    app.reset();
+    appPTR->setAsTopLevelInstance(original->getAppID());
+}
+
+TEST_F(HashInvariantsTest, ASceneJobRunningPastItsAppsRetirementKeepsTheApp)
+{
+    const AppInstancePtr original = getApp();
+    CLArgs args;
+    AppInstancePtr app = appPTR->newBackgroundInstance(args, true);
+    ASSERT_TRUE(bool(app));
+    appPTR->setAsTopLevelInstance(original->getAppID());
+    NodePtr blur = buildChain(app, 3.).blur;
+    ASSERT_TRUE(bool(blur));
+    const AppInstanceWPtr weakApp = app;
+    const NodeWPtr weakBlur = blur;
+
+    const std::shared_ptr<HeldJob> job = std::make_shared<HeldJob>();
+    SceneWorker worker;
+    // The node is reached weakly so that the test, not the worker, releases it.
+    const SceneWorker::Task run = [job, weakBlur]() {
+        job->set(&HeldJob::started);
+        job->waitFor(&HeldJob::released);
+        if (const NodePtr node = weakBlur.lock()) {
+            node->markHashDirty();
+            (void)node->getHashValue();
+        }
+        job->set(&HeldJob::done);
+    };
+    worker.post(app, run, SceneWorker::Task());
+    ASSERT_TRUE(job->waitFor(&HeldJob::started));
+
+    EXPECT_FALSE(SceneWorker::retireApp(app, 50));
+    job->set(&HeldJob::released);
+    ASSERT_TRUE(job->waitFor(&HeldJob::done));
+
+    // The app quits with its job already over, so the quit does not wait out its bound.
+    blur.reset();
+    appPTR->quitNow(app);
+    app.reset();
+    EXPECT_FALSE(weakApp.expired());
+    appPTR->setAsTopLevelInstance(original->getAppID());
 }

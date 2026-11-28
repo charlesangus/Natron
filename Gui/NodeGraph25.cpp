@@ -59,6 +59,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h" // isKeyBind
 #include "Gui/GuiMacros.h"
+#include "Gui/NodeCreationTrace.h"
 #include "Gui/NodeGraphLowDetailLayer.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
@@ -647,12 +648,14 @@ NodeGraph::keyPressEvent(QKeyEvent* e)
                         group.push_back(groupingSplit[j]);
                     }
                     if ( isKeybind(group.toStdString(), plugin->getPluginID().toStdString(), modifiers, key) ) {
+                        NodeCreationTrace::begin("its shortcut", plugin->getPluginID());
                         QPointF hint = mapToScene( mapFromGlobal( QCursor::pos() ) );
                         CreateNodeArgs args( plugin->getPluginID().toStdString(), getGroup() );
                         args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, hint.x(), 0);
                         args.setProperty<double>(kCreateNodeArgsPropNodeInitialPosition, hint.y(), 1);
                         args.setProperty<bool>(kCreateNodeArgsPropDeferSettingsPanel, true);
                         getGui()->getApp()->createNode(args);
+                        buildScheduledPanels();
 
                         intercepted = true;
                         break;

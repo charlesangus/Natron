@@ -667,6 +667,63 @@ support()
     return cycles;
 }
 
+const std::vector<std::string>&
+catalogue()
+{
+    static const std::vector<std::string> names = { "color", "depth", "primId", "instanceId", "normal" };
+
+    return names;
+}
+
+bool
+passLayout(const std::string& aovName,
+           AovLayers::Layout* layout)
+{
+    static const std::string prefix("cycles:");
+    static const std::string lightgroupPrefix("cycles:lightgroup:");
+    if (aovName.compare(0, prefix.size(), prefix) != 0) {
+        return false;
+    }
+    if ((aovName.size() > lightgroupPrefix.size()) && (aovName.compare(0, lightgroupPrefix.size(), lightgroupPrefix) == 0)) {
+        *layout = AovLayers::Layout { AovLayers::eKindColor, 3 };
+
+        return true;
+    }
+    // The channel counts the delegate gives each pass's buffer: Cycles' own, with no alpha.
+    static const std::map<std::string, AovLayers::Layout> table = {
+        { "emission", { AovLayers::eKindColor, 3 } },
+        { "background", { AovLayers::eKindColor, 3 } },
+        { "ao", { AovLayers::eKindColor, 3 } },
+        { "diffuse", { AovLayers::eKindColor, 3 } },
+        { "diffuse_direct", { AovLayers::eKindColor, 3 } },
+        { "diffuse_indirect", { AovLayers::eKindColor, 3 } },
+        { "diffuse_color", { AovLayers::eKindColor, 3 } },
+        { "glossy", { AovLayers::eKindColor, 3 } },
+        { "glossy_direct", { AovLayers::eKindColor, 3 } },
+        { "glossy_indirect", { AovLayers::eKindColor, 3 } },
+        { "glossy_color", { AovLayers::eKindColor, 3 } },
+        { "transmission", { AovLayers::eKindColor, 3 } },
+        { "transmission_direct", { AovLayers::eKindColor, 3 } },
+        { "transmission_indirect", { AovLayers::eKindColor, 3 } },
+        { "transmission_color", { AovLayers::eKindColor, 3 } },
+        { "volume", { AovLayers::eKindColor, 3 } },
+        { "volume_direct", { AovLayers::eKindColor, 3 } },
+        { "volume_indirect", { AovLayers::eKindColor, 3 } },
+        { "position", { AovLayers::eKindVector, 3 } },
+        { "normal", { AovLayers::eKindVector, 3 } },
+        { "roughness", { AovLayers::eKindScalar, 1 } },
+        { "uv", { AovLayers::eKindUv, 3 } },
+        { "mist", { AovLayers::eKindScalar, 1 } },
+    };
+    const std::map<std::string, AovLayers::Layout>::const_iterator found = table.find(aovName.substr(prefix.size()));
+    if (found == table.end()) {
+        return false;
+    }
+    *layout = found->second;
+
+    return true;
+}
+
 void
 configureEngine(UsdImagingGLEngine* engine)
 {

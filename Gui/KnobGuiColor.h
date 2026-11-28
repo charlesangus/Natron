@@ -147,8 +147,14 @@ public:
     virtual bool wantsTopAlignedLabel() const OVERRIDE FINAL WARN_UNUSED_RETURN;
 
     /**
-     * @brief The row's adjustment panel, or null for simplified and viewer knobs and for knobs
-     * that share their line with other knobs, which keep the colour selector popup.
+     * @brief Whether the row has an adjustment panel: false for simplified and viewer knobs and for knobs
+     * that share their line with other knobs, which keep the colour selector popup. True for an unbuilt
+     * row that will have one once built.
+     **/
+    bool hasAdjustPanel() const;
+
+    /**
+     * @brief The row's adjustment panel, built on the first call, or null without one (see hasAdjustPanel()).
      **/
     ColorAdjustPanel* getAdjustPanel() const;
     bool isAdjustPanelExpanded() const;
@@ -272,6 +278,10 @@ private:
     virtual void updateExtraGui(const std::vector<double>& values) OVERRIDE FINAL;
     virtual QWidget* createBelowRowWidget(QWidget* parent) OVERRIDE FINAL;
 
+    ColorAdjustPanel* ensureAdjustPanel();
+
+    void ensureColorSelector();
+
     ProjectColorManagementPtr getColorManagement() const;
     void refreshAdjustPanelColorManagement();
     bool isAdjustPanelEditable() const;
@@ -297,6 +307,8 @@ private:
     QToolButton* _globalModeButton;
     std::vector<double> _lastColor;
     bool _useSimplifiedUI;
+    // Holds the panel in the row's below-row slot; only the holder exists until the panel is first needed.
+    QPointer<QWidget> _adjustPanelHost;
     QPointer<ColorAdjustPanel> _adjustPanel;
     QPointer<QWidget> _rowContainer;
     std::unique_ptr<ColorKnobEditSession> _editSession;

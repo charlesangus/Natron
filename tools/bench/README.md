@@ -462,6 +462,69 @@ numbers. `Tests/BezierEditScaling_Test.cpp` prints the same single-shape figures
 directly, without the Python binding's overhead, and fails a release build when keying stops
 scaling linearly with the keyframe count.
 
+## Roto render throughput
+
+`roto_render_bench.py` times one Roto scenario per NatronRenderer run: Read (a looping checkerboard
+plate) -> Grade -> Roto or RotoPaint -> Write. Shape scenarios build N closed 24-point Beziers
+through the Python roto API, still or keyed on every frame, with a feather of 0 or more pixels.
+Stroke scenarios load a RotoPaint project of solid brush strokes. Frames 1..`BENCH_FRAMES` render one
+at a time, then the last frame renders again unchanged, after one item's colour changes and after
+the Grade's multiply changes. Each run appends one JSON line: `frame_cold_s` (frame 1),
+`frame_wall_med_s` and `frame_p95_s` (frames 2 on), `rerender_s`, `edit_color_s`, `edit_grade_s`,
+`build_s` and `rss_before_mb`, keyed by `topo` (`roto_<node>_<shapes|strokes>_<still|keyed>_f<feather>`),
+`n`, `res` and `settings`, so `compare.py` diffs two result files and prints the roto fields too.
+
+`roto_render_bench.sh` runs the matrix against an AppImage (`--appimage-extract-and-run`, no
+`LD_LIBRARY_PATH`, `xvfb-run` when there is no display). It writes the plates first, then runs
+every node x count x feather x motion x resolution, then the stroke projects it finds. Every run has
+`NATRON_CACHE_DISK_TIER=off`: the disk tier persists across processes (at the `diskTierLocation`
+setting, which `NATRON_DISK_CACHE_PATH` does not move), so a scenario would otherwise reuse the
+outputs of an identical scene run before it.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `BENCH_ROTO_NODES` | `roto rotopaint` | node kinds of the shape scenarios |
+| `BENCH_ROTO_COUNTS` | `1 30 100 300` | shape counts |
+| `BENCH_ROTO_FEATHERS` | `0 20` | feather distances in pixels |
+| `BENCH_ROTO_MOTIONS` | `still keyed` | still shapes, or a keyframe on every frame |
+| `BENCH_ROTO_RES` | `2k uhd` | 2K_DCP (2048x1080) and UHD_4K (3840x2160) |
+| `BENCH_ROTO_STROKES` | `50 300` | stroke projects to render; empty for none |
+| `BENCH_FRAMES` | `12` | frames per scenario |
+| `BENCH_THREADS` | unset | `--setting noRenderThreads=N`, recorded as `settings` |
+| `BENCH_LABEL` | empty | free text in every record |
+| `BENCH_ROTO_PROFILE` | `0` | `1` writes `NATRON_ROTO_RENDER_PROFILE` per scenario to `<out>/profile/` |
+| `BENCH_PLATES_DIR`, `BENCH_ROTO_STROKES_DIR` | `build/bench/fixtures` | plates and stroke projects |
+
+The single-run variables (`BENCH_ROTO_NODE`, `BENCH_ROTO_SOURCE`, `BENCH_N`, `BENCH_RES`,
+`BENCH_ROTO_FEATHER`, `BENCH_ROTO_MOTION`, `BENCH_ROTO_PLATES_ONLY`, ...) are in the script's header.
+
+```
+# The stroke projects, once per machine: 50 and 300 strokes at 2K and UHD.
+GUI_TEST_TIMEOUT=3600 Tests/gui/run-gui-test.sh tools/bench/gui/make_roto_strokes.py build/release/Natron.AppImage
+
+tools/bench/roto_render_bench.sh main.AppImage build/bench/roto-render/main
+tools/bench/roto_render_bench.sh branch.AppImage build/bench/roto-render/branch
+tools/bench/compare.py build/bench/roto-render/main/results.jsonl build/bench/roto-render/branch/results.jsonl
+```
+
+`make_roto_strokes.py` paints the strokes through synthetic pen events on the viewer, as
+`gui/roto_bench.py` does, since the Python API cannot create strokes. It sets every stroke's life
+time to All and saves `roto_strokes_<count>_<2k|uhd>.ntp`, which holds no images; an existing project
+is kept, so every machine renders the same strokes once it has them.
+
+### Per-stage profile
+
+With `NATRON_ROTO_RENDER_PROFILE=<path>` set, Natron and NatronRenderer append one JSON line per
+mask render and per RotoPaint render to the file. A mask line has `kind` `mask`, the node and item
+script names, `type` (`bezier` or `stroke`), `time`, `mipmap`, `hit` (cache hit), `pixels`,
+`total_ms`, `other_ms` and `<stage>_ms` / `<stage>_calls` for `cache_lookup`, `allocate`, `polygon`,
+`feather_setup`, `fill`, `feather` and `conversion`. A `rotopaint` line has the node, `time`,
+`mipmap`, `items`, `pixels` (the RoI area) and the stages `setup` (curves by render order, the
+tree nodes and the bottom merge) and `tree` (the merge tree render). Stage times are exclusive: a
+stage nested in another counts only in the inner one, and `other_ms` is the rest of the total. The
+masks a RotoPaint render draws on its own thread also count in its `tree_ms`. Unset, the timers cost
+one branch each.
+
 ## Heavy scene fixtures
 
 `heavy_scene_make.py` generates the two scenes the scene-viewer budgets run against, under

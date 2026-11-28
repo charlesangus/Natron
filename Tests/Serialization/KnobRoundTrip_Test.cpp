@@ -58,7 +58,7 @@ namespace {
 
 // Every type a project file can create a knob of.
 const char* const kKnobTypeNames[] = {
-    "Int", "Bool", "Double", "Choice", "String", "Parametric", "Color", "Path", "Layers", "ChannelSet",
+    "Int", "Bool", "Double", "Choice", "String", "Parametric", "Color", "Path", "Layers", "RenderVars", "ChannelSet",
     "LayerSelect", "ChannelSelect", "ShuffleMap", "InputFile", "OutputFile", "Button", "Separator", "Group", "Page"
 };
 
@@ -132,6 +132,8 @@ createKnobOfType(KnobHolder* holder,
         knob = AppManager::createKnob<KnobPath>(holder, name, dimension, false);
     } else if (typeName == KnobLayers::typeNameStatic()) {
         knob = AppManager::createKnob<KnobLayers>(holder, name, dimension, false);
+    } else if (typeName == KnobRenderVars::typeNameStatic()) {
+        knob = AppManager::createKnob<KnobRenderVars>(holder, name, dimension, false);
     } else if (typeName == KnobChannelSet::typeNameStatic()) {
         knob = AppManager::createKnob<KnobChannelSet>(holder, name, dimension, false);
     } else if (typeName == KnobLayerSelect::typeNameStatic()) {
@@ -252,6 +254,8 @@ setDistinctiveValues(const KnobIPtr& knob)
         isChannelSet->addRegex("spec.*");
     } else if (KnobLayerSelect* isLayerSelect = dynamic_cast<KnobLayerSelect*>(knob.get())) {
         isLayerSelect->setLayer("diffuse");
+    } else if (KnobRenderVars* isRenderVars = dynamic_cast<KnobRenderVars*>(knob.get())) {
+        isRenderVars->setTable({ { "st", "primvar", "texCoord2f", "uv" }, { "cycles:normal", "raw", "", "" } });
     } else if ((typeName == KnobString::typeNameStatic()) || (typeName == KnobFile::typeNameStatic()) || (typeName == KnobOutputFile::typeNameStatic()) || (typeName == KnobPath::typeNameStatic())) {
         KnobStringBase* isString = dynamic_cast<KnobStringBase*>(knob.get());
         isString->setValue(std::string("saved value"));
@@ -304,9 +308,9 @@ variantApplies(const std::string& typeName,
     case eKnobVariantLinked:
         return isAnimatableValueType(typeName);
     case eKnobVariantUserKnob:
-        // Pages and groups are saved as user-page layout, not as regular user knobs, and a
-        // Layers knob was never offered as a user knob.
-        return (typeName != KnobPage::typeNameStatic()) && (typeName != KnobGroup::typeNameStatic()) && (typeName != KnobLayers::typeNameStatic());
+        // Pages and groups are saved as user-page layout, not as regular user knobs, and Layers
+        // and RenderVars knobs are never offered as user knobs.
+        return (typeName != KnobPage::typeNameStatic()) && (typeName != KnobGroup::typeNameStatic()) && (typeName != KnobLayers::typeNameStatic()) && (typeName != KnobRenderVars::typeNameStatic());
     }
 
     return false;

@@ -63,6 +63,7 @@
 #include <QDir>
 #include <QFileInfo>
 #include <QString>
+#include <QTemporaryDir>
 
 #include <pxr/base/plug/registry.h>
 #include <pxr/base/tf/diagnosticMgr.h>
@@ -84,12 +85,15 @@
 #include "Engine/Nodes/Image/ExtentKnobs.h"
 #include "Engine/Nodes/Metadata/ImageMetadata.h"
 #include "Engine/Nodes/NativeEffectBase.h"
+#include "Engine/Nodes/Scene/AovLayers.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
 #include "Engine/Nodes/Scene/CyclesSettings.h"
+#include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/HydraRenderImpl.h"
 #include "Engine/Nodes/Scene/LiveTextureSharedMemory.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/RenderSettingsKnobs.h"
+#include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
@@ -420,6 +424,56 @@ protected:
 
         return true;
     }
+
+    /**
+     * Renders sceneText through its /World/Cam, kSize x kSize, with Cycles' denoiser off and the
+     * AOVs named besides the ones every render has. False after a gtest failure.
+     **/
+    bool renderAovs(const char* sceneText,
+                    const std::vector<std::string>& aovs,
+                    HydraRender::Result* result)
+    {
+        QTemporaryDir tmp;
+        if (!tmp.isValid()) {
+            ADD_FAILURE() << "no temporary directory";
+
+            return false;
+        }
+        const std::string path = (tmp.path() + QString::fromUtf8("/aovs.usda")).toStdString();
+        {
+            std::ofstream file(path.c_str());
+            file << sceneText;
+            if (!file) {
+                ADD_FAILURE() << "cannot write " << path;
+
+                return false;
+            }
+        }
+        std::map<std::string, PXR_NS::VtValue> settings = fixedSampling(16);
+        settings["cycles:integrator:use_denoise"] = PXR_NS::VtValue(false);
+        HydraRender::setRendererSettings(kRenderDelegateCyclesId, settings);
+        NodePtr reader;
+        NodePtr node = createGraph(&reader, path.c_str());
+        if (!node) {
+            return false;
+        }
+        static const int owner = 0;
+        HydraRender::Request request;
+        if (!cyclesRequest(reader, &owner, &request)) {
+            return false;
+        }
+        for (const std::string& name : aovs) {
+            HydraRender::Aov aov;
+            aov.name = PXR_NS::TfToken(name);
+            request.aovs.push_back(aov);
+        }
+        std::string error;
+        const bool ok = HydraRender::render(request, result, &error);
+        EXPECT_TRUE(ok) << error;
+        HydraRender::release(&owner);
+
+        return ok;
+    }
 };
 
 // Cycles lights a stage with no light by a grey world of its own, and Natron adds no headlight.
@@ -445,6 +499,325 @@ TEST_F(USDRenderCyclesTest, BeautyAndDepth)
     const std::size_t corner = pixelIndex(0, 0);
     EXPECT_TRUE(std::isinf(depth[corner]) && (depth[corner] > 0.f)) << depth[corner];
     EXPECT_EQ(0.f, rgba[corner * 4 + 3]);
+}
+
+// Until hdCycles publishes an aovNames stat, the checklist offers the AOVs Natron maps for it; a
+// published stat replaces them.
+TEST_F(USDRenderCyclesTest, AvailableAovs)
+{
+    if (!cyclesOrSkip()) {
+        return;
+    }
+    const std::vector<std::string> aovs = DelegateSupport::availableAovs(kRenderDelegateCyclesId);
+    const std::vector<std::string>& published = CyclesAovs::support().publishedAovs;
+    if (!published.empty()) {
+        EXPECT_EQ(published, aovs);
+        for (const char* name : { "cycles:diffuse_direct", "cycles:ao", "cycles:mist" }) {
+            EXPECT_NE(aovs.end(), std::find(aovs.begin(), aovs.end(), name)) << name;
+            EXPECT_EQ(std::string(name), RenderSettingsPrim::delegateAovName(name, kRenderDelegateCyclesId));
+        }
+        EXPECT_EQ(aovs.end(), std::find(aovs.begin(), aovs.end(), "elementId"));
+        EXPECT_EQ(aovs.end(), std::find(aovs.begin(), aovs.end(), "cycles:elementId"));
+        EXPECT_EQ(std::string("moonray:normal"), RenderSettingsPrim::delegateAovName("moonray:normal", kRenderDelegateCyclesId));
+        EXPECT_EQ(std::string("primvars:st"), RenderSettingsPrim::delegateAovName("primvars:st", kRenderDelegateCyclesId));
+
+        return;
+    }
+    EXPECT_EQ(std::vector<std::string>({ "color", "depth", "primId", "instanceId", "normal" }), aovs);
+    EXPECT_EQ(std::string("normal"), RenderSettingsPrim::delegateAovName("cycles:normal", kRenderDelegateCyclesId));
+    EXPECT_EQ(std::string("cycles:ao"), RenderSettingsPrim::delegateAovName("cycles:ao", kRenderDelegateCyclesId));
+    EXPECT_EQ(std::string("moonray:normal"), RenderSettingsPrim::delegateAovName("moonray:normal", kRenderDelegateCyclesId));
+    EXPECT_EQ(std::string("primvars:st"), RenderSettingsPrim::delegateAovName("primvars:st", kRenderDelegateCyclesId));
+}
+
+namespace {
+// A card past the frame on every side, its st running from 0 at its left and bottom edges to 1 at
+// its right and top ones, lit by two sphere lights in the light groups "key" (left) and "fill"
+// (right). With lights in the scene and no dome, the world is black.
+const char* const kAovScene = R"(#usda 1.0
+(
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Camera "Cam"
+    {
+        double3 xformOp:translate = (0, 0, 10)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Mesh "Card"
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-3, -3, 0), (3, -3, 0), (3, 3, 0), (-3, 3, 0)]
+        texCoord2f[] primvars:st = [(0, 0), (1, 0), (1, 1), (0, 1)] (
+            interpolation = "vertex"
+        )
+        uniform token subdivisionScheme = "none"
+    }
+
+    def SphereLight "Key"
+    {
+        float inputs:intensity = 40
+        float inputs:radius = 0.5
+        string inputs:cycles:lightgroup = "key"
+        double3 xformOp:translate = (-4, 0, 4)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def SphereLight "Fill"
+    {
+        float inputs:intensity = 15
+        float inputs:radius = 0.5
+        string inputs:cycles:lightgroup = "fill"
+        double3 xformOp:translate = (4, 0, 4)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}
+)";
+
+// Whether hdCycles renders Cycles' own passes, which a build image before them does not.
+bool
+cyclesPassesOrSkip()
+{
+    if (!cyclesOrSkip()) {
+        return false;
+    }
+    const std::vector<std::string>& published = CyclesAovs::support().publishedAovs;
+    if (std::find(published.begin(), published.end(), "cycles:diffuse_direct") != published.end()) {
+        return true;
+    }
+    const char* reason = "hdCycles publishes no Cycles passes; this build image predates them (tools/ci/local/Dockerfile)";
+    const char* require = std::getenv("NATRON_TEST_REQUIRE_CYCLES");
+    if (require && (std::strcmp(require, "1") == 0)) {
+        ADD_FAILURE() << "NATRON_TEST_REQUIRE_CYCLES=1 but " << reason;
+    } else {
+        std::printf("[  SKIPPED ] %s\n", reason);
+    }
+
+    return false;
+}
+
+const HydraRender::AovPlane*
+aovPlane(const HydraRender::Result& result,
+         const std::string& name)
+{
+    for (const HydraRender::AovPlane& plane : result.aovs) {
+        if (plane.name.GetString() == name) {
+            EXPECT_EQ((std::size_t)kSize * kSize * plane.channels, plane.pixels.size()) << name;
+
+            return &plane;
+        }
+    }
+    ADD_FAILURE() << "Cycles rendered no " << name;
+
+    return nullptr;
+}
+
+// The sum over the planes of the lighting colour * light pairs named, 3 per pixel.
+std::vector<float>
+litSum(const HydraRender::Result& result,
+       const std::vector<std::pair<std::string, std::string>>& colourAndLight)
+{
+    std::vector<float> sum((std::size_t)kSize * kSize * 3, 0.f);
+    for (const std::pair<std::string, std::string>& pair : colourAndLight) {
+        const HydraRender::AovPlane* colour = pair.first.empty() ? nullptr : aovPlane(result, pair.first);
+        const HydraRender::AovPlane* light = aovPlane(result, pair.second);
+        if ((!pair.first.empty() && (!colour || (colour->channels != 3))) || !light || (light->channels != 3)) {
+            ADD_FAILURE() << pair.first << " * " << pair.second << " is not two RGB planes";
+
+            return std::vector<float>();
+        }
+        for (std::size_t i = 0; i < sum.size(); ++i) {
+            sum[i] += (colour ? colour->pixels[i] : 1.f) * light->pixels[i];
+        }
+    }
+
+    return sum;
+}
+
+// The pixels of a whose channels differ from b's by more than an absolute and relative 1e-3.
+std::size_t
+mismatches(const std::vector<float>& a,
+           const std::vector<float>& b,
+           int aChannels,
+           std::string* first)
+{
+    std::size_t count = 0;
+    const std::size_t pixels = (std::size_t)kSize * kSize;
+    for (std::size_t p = 0; p < pixels; ++p) {
+        for (int c = 0; c < 3; ++c) {
+            const float x = a[p * aChannels + c];
+            const float y = b[p * 3 + c];
+            if (std::fabs(x - y) > 1e-3f + 1e-3f * std::fabs(x)) {
+                if (count == 0) {
+                    *first = "pixel " + std::to_string(p) + " channel " + std::to_string(c) + ": " + std::to_string(x) + " against " + std::to_string(y);
+                }
+                ++count;
+                break;
+            }
+        }
+    }
+
+    return count;
+}
+} // anon namespace
+
+TEST_F(USDRenderCyclesTest, CyclesPassesHaveTheirKinds)
+{
+    AovLayers::Layout layout;
+    ASSERT_TRUE(AovLayers::layoutFromName(kRenderDelegateCyclesId, "cycles:diffuse_direct", &layout));
+    EXPECT_EQ(AovLayers::eKindColor, layout.kind);
+    EXPECT_EQ(std::vector<std::string>({ "R", "G", "B" }), AovLayers::channelNames("cycles:diffuse_direct", layout));
+    ASSERT_TRUE(AovLayers::layoutFromName(kRenderDelegateCyclesId, "cycles:uv", &layout));
+    EXPECT_EQ(AovLayers::eKindUv, layout.kind);
+    EXPECT_EQ(std::vector<std::string>({ "U", "V", "W" }), AovLayers::channelNames("cycles:uv", layout));
+    ASSERT_TRUE(AovLayers::layoutFromName(kRenderDelegateCyclesId, "cycles:mist", &layout));
+    EXPECT_EQ(AovLayers::eKindScalar, layout.kind);
+    EXPECT_EQ(std::vector<std::string>({ "Y" }), AovLayers::channelNames("cycles:mist", layout));
+    ASSERT_TRUE(AovLayers::layoutFromName(kRenderDelegateCyclesId, "cycles:position", &layout));
+    EXPECT_EQ(AovLayers::eKindVector, layout.kind);
+    ASSERT_TRUE(AovLayers::layoutFromName(kRenderDelegateCyclesId, "cycles:lightgroup:key", &layout));
+    EXPECT_EQ(AovLayers::eKindColor, layout.kind);
+    EXPECT_EQ(3, layout.channels);
+    EXPECT_FALSE(AovLayers::layoutFromName(kRenderDelegateCyclesId, "cycles:shadow_catcher", &layout));
+    EXPECT_FALSE(AovLayers::layoutFromName("NatronTestAovRenderer", "cycles:diffuse_direct", &layout));
+}
+
+// Each pass renders in a buffer of its own channels, and the elementId USD asks for with colour
+// is neither rendered nor warned of.
+TEST_F(USDRenderCyclesTest, RendersCyclesPasses)
+{
+    if (!cyclesPassesOrSkip()) {
+        return;
+    }
+    const std::vector<std::string>& published = CyclesAovs::support().publishedAovs;
+    for (const char* name : { "cycles:ao", "cycles:mist", "cycles:uv", "cycles:glossy_indirect" }) {
+        EXPECT_NE(published.end(), std::find(published.begin(), published.end(), name)) << name;
+    }
+    EXPECT_EQ(published.end(), std::find(published.begin(), published.end(), "elementId"));
+    HydraRender::Result result;
+    ASSERT_TRUE(renderAovs(kAovScene, { "cycles:diffuse_direct", "cycles:ao", "cycles:mist", "cycles:uv" }, &result));
+    EXPECT_TRUE(result.rejectedAovs.empty());
+    EXPECT_EQ(std::string::npos, result.errors.find("elementId")) << result.errors;
+    const HydraRender::AovPlane* diffuse = aovPlane(result, "cycles:diffuse_direct");
+    const HydraRender::AovPlane* ao = aovPlane(result, "cycles:ao");
+    const HydraRender::AovPlane* mist = aovPlane(result, "cycles:mist");
+    const HydraRender::AovPlane* uv = aovPlane(result, "cycles:uv");
+    ASSERT_TRUE(diffuse && ao && mist && uv);
+    EXPECT_EQ(3, diffuse->channels);
+    EXPECT_EQ(3, ao->channels);
+    EXPECT_EQ(1, mist->channels);
+    EXPECT_EQ(3, uv->channels);
+    const std::size_t centre = pixelIndex(kNearX, kNearY);
+    EXPECT_GT(diffuse->pixels[centre * 3], 0.f);
+    EXPECT_GT(ao->pixels[centre * 3], 0.f);
+    EXPECT_GT(mist->pixels[centre], 0.f);
+    EXPECT_LE(mist->pixels[centre], 1.f);
+}
+
+// With the denoiser off, the colour of each kind of surface lighting times its direct and
+// indirect light, the emission and the background add up to the beauty.
+TEST_F(USDRenderCyclesTest, LightPassesSumToTheBeauty)
+{
+    if (!cyclesPassesOrSkip()) {
+        return;
+    }
+    const std::vector<std::pair<std::string, std::string>> terms = {
+        { "cycles:diffuse_color", "cycles:diffuse_direct" },
+        { "cycles:diffuse_color", "cycles:diffuse_indirect" },
+        { "cycles:glossy_color", "cycles:glossy_direct" },
+        { "cycles:glossy_color", "cycles:glossy_indirect" },
+        { "cycles:transmission_color", "cycles:transmission_direct" },
+        { "cycles:transmission_color", "cycles:transmission_indirect" },
+        { "", "cycles:volume_direct" },
+        { "", "cycles:volume_indirect" },
+        { "", "cycles:emission" },
+        { "", "cycles:background" },
+    };
+    std::vector<std::string> aovs;
+    for (const std::pair<std::string, std::string>& term : terms) {
+        for (const std::string& name : { term.first, term.second }) {
+            if (!name.empty() && (std::find(aovs.begin(), aovs.end(), name) == aovs.end())) {
+                aovs.push_back(name);
+            }
+        }
+    }
+    HydraRender::Result result;
+    ASSERT_TRUE(renderAovs(kAovScene, aovs, &result));
+    const std::vector<float> sum = litSum(result, terms);
+    ASSERT_EQ((std::size_t)kSize * kSize * 3, sum.size());
+    ASSERT_EQ((std::size_t)kSize * kSize * 4, result.rgba.size());
+    const std::size_t centre = pixelIndex(kNearX, kNearY);
+    EXPECT_GT(result.rgba[centre * 4], 0.01f);
+    std::string first;
+    EXPECT_EQ(0u, mismatches(result.rgba, sum, 4, &first)) << first;
+}
+
+// Each light's group holds its light alone, and the groups add up to the direct lighting, all
+// the lighting a lone card gets.
+TEST_F(USDRenderCyclesTest, LightGroupsSumToTheDirectLighting)
+{
+    if (!cyclesPassesOrSkip()) {
+        return;
+    }
+    HydraRender::Result result;
+    ASSERT_TRUE(renderAovs(kAovScene,
+                           { "cycles:lightgroup:key", "cycles:lightgroup:fill", "cycles:diffuse_color", "cycles:diffuse_direct", "cycles:glossy_color", "cycles:glossy_direct", "cycles:transmission_color", "cycles:transmission_direct" },
+                           &result));
+    const std::vector<float> groups = litSum(result, { { "", "cycles:lightgroup:key" }, { "", "cycles:lightgroup:fill" } });
+    const std::vector<float> direct = litSum(result, { { "cycles:diffuse_color", "cycles:diffuse_direct" }, { "cycles:glossy_color", "cycles:glossy_direct" }, { "cycles:transmission_color", "cycles:transmission_direct" } });
+    ASSERT_EQ((std::size_t)kSize * kSize * 3, groups.size());
+    ASSERT_EQ(groups.size(), direct.size());
+    std::string first;
+    EXPECT_EQ(0u, mismatches(groups, direct, 3, &first)) << first;
+
+    // The key light, on the left, lights the card's left edge more than the fill on the right.
+    const HydraRender::AovPlane* key = aovPlane(result, "cycles:lightgroup:key");
+    const HydraRender::AovPlane* fill = aovPlane(result, "cycles:lightgroup:fill");
+    ASSERT_TRUE(key && fill);
+    const std::size_t left = pixelIndex(4, kSize / 2);
+    const std::size_t right = pixelIndex(kSize - 5, kSize / 2);
+    EXPECT_GT(key->pixels[left * 3], key->pixels[right * 3]);
+    EXPECT_GT(fill->pixels[right * 3], fill->pixels[left * 3]);
+    EXPECT_GT(key->pixels[left * 3], 0.f);
+    EXPECT_GT(fill->pixels[right * 3], 0.f);
+}
+
+// A primvar AOV renders the card's st as authored: a ramp from 0 to 1 across the card, the same
+// distance below 0.5 on one side of the frame's centre as above it on the other.
+TEST_F(USDRenderCyclesTest, APrimvarAovMatchesTheAuthoredRamp)
+{
+    if (!cyclesPassesOrSkip()) {
+        return;
+    }
+    HydraRender::Result result;
+    ASSERT_TRUE(renderAovs(kAovScene, { "primvars:st" }, &result));
+    const HydraRender::AovPlane* st = aovPlane(result, "primvars:st");
+    ASSERT_TRUE(st);
+    ASSERT_EQ(3, st->channels);
+    const float tolerance = 0.01f;
+    for (int k = 0; k < kSize / 2; k += 5) {
+        for (int other = 0; other < kSize; other += 9) {
+            const float uLow = st->pixels[pixelIndex(kSize / 2 - 1 - k, other) * 3];
+            const float uHigh = st->pixels[pixelIndex(kSize / 2 + k, other) * 3];
+            EXPECT_NEAR(1.f, uLow + uHigh, tolerance) << "columns at " << k << " from the centre, row " << other;
+            const float vLow = st->pixels[pixelIndex(other, kSize / 2 - 1 - k) * 3 + 1];
+            const float vHigh = st->pixels[pixelIndex(other, kSize / 2 + k) * 3 + 1];
+            EXPECT_NEAR(1.f, vLow + vHigh, tolerance) << "rows at " << k << " from the centre, column " << other;
+            EXPECT_NEAR(0.f, st->pixels[pixelIndex(other, k) * 3 + 2], tolerance);
+        }
+    }
+    const float u0 = st->pixels[pixelIndex(0, kSize / 2) * 3];
+    const float u1 = st->pixels[pixelIndex(kSize - 1, kSize / 2) * 3];
+    EXPECT_GT(u0, 0.f);
+    EXPECT_LT(u1, 1.f);
+    EXPECT_GT(u1 - u0, 0.3f);
+    const float v0 = st->pixels[pixelIndex(kSize / 2, 0) * 3 + 1];
+    const float v1 = st->pixels[pixelIndex(kSize / 2, kSize - 1) * 3 + 1];
+    EXPECT_GT(v1 - v0, 0.3f);
 }
 
 TEST_F(USDRenderCyclesTest, PrimIdAndNormal)

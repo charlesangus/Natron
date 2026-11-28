@@ -384,7 +384,18 @@ try:
     def storm_tree():
         """The Storm tab's table from its parameters: groups, with their knobs, in layout order."""
         everything = [hold(p) for p in settings.getParams()]
-        mine = [p for p in everything if p.getScriptName().startswith("storm") and p.getScriptName() != "storm"]
+
+        def page_of(p):
+            top = p
+            while True:
+                parent = top.getParent()
+                if parent is None:
+                    return top.getScriptName()
+                top = hold(parent)
+
+        # The AOVs tab holds a stormAovs group too, so the prefix alone takes in knobs of other tabs.
+        mine = [p for p in everything
+                if p.getScriptName().startswith("storm") and p.getScriptName() != "storm" and page_of(p) == "storm"]
         by_name = {p.getScriptName(): p for p in mine}
         children = {}
         for p in mine:

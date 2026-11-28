@@ -4006,6 +4006,14 @@ protected:
                                                 int* passThroughInput);
 
     /**
+     * @brief Called from getComponentsNeededAndProduced() when its answer is incomplete for now:
+     * neither it nor the answers of the nodes downstream computed from it in the same call are
+     * cached. The node drops the cached answers (refreshMetadataSideEffects()) once the complete
+     * one is available, so that the readers given the incomplete one ask again.
+     **/
+    void markComponentsProvisional();
+
+    /**
      * @brief Whether a non-multiplanar effect reads input inputNb in layers its own selectors
      * pick, rather than in the ones planned for every non-mask input. When true, layers holds
      * them, and they replace that input's planes in the default components needed, so the

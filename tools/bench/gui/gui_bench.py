@@ -37,8 +37,15 @@ Configured by the environment:
                           tab_menu_create, create_then_key), which run only when named: 20 reps each,
                           timed from the key event to the end of the event-loop pass that painted the
                           result
+    GUI_BENCH_OPS         also selects open_panel, which runs only when named: for each plug-in of
+                          GUI_BENCH_PANEL_PLUGINS, GUI_BENCH_PANEL_REPS times (default 10), it creates the
+                          node without a panel (untimed) and times opening its panel, from the open to the
+                          end of the event-loop pass that painted the complete panel
+    GUI_BENCH_PANEL_PLUGINS  comma-separated plug-in IDs for open_panel (default Blur, Merge, Grade, Roto,
+                          Transform, USDCamera, USDRenderSettings)
     NATRON_NODE_CREATION_STAGE_LOG  a file Natron appends engine and GUI stage spans of node creation to
-                          (see README.md); the node-creation ops then also report a per-stage split
+                          (see README.md); the node-creation ops then also report a per-stage split, and
+                          open_panel a per-stage and per-knob-type split of each panel's build
     GUI_BENCH_SELF_CHECK  1 adds an op that blocks the main thread for 300 ms once and checks
                           that the stall log attributes exactly one stall to it
     GUI_BENCH_OUT         JSON-lines output (default $NATRON_GUI_TEST_OUT/gui_bench.jsonl)
@@ -121,6 +128,8 @@ AUTO_MAX_SAMPLES = 5
 AUTO_MAX_S = 3.0
 AUTO_ONE_REP_EVENTS = 10
 ONLY_OPS = set(env_list("GUI_BENCH_OPS", ""))
+PANEL_PLUGINS = env_list("GUI_BENCH_PANEL_PLUGINS", "Blur,Merge,Grade,Roto,Transform,USDCamera,USDRenderSettings")
+PANEL_REPS = int(os.environ.get("GUI_BENCH_PANEL_REPS", "10"))
 OP_TIMEOUT_S = float(os.environ.get("GUI_BENCH_OP_TIMEOUT_S", "120"))
 GRAPH_CACHE = os.environ.get("GUI_BENCH_GRAPH_CACHE", "")
 BASELINE_PATH = os.environ.get("GUI_BENCH_BASELINE", "")
@@ -1145,14 +1154,20 @@ try:
             self.armed = False
             self.fired = False
             self.paints = 0
+            # With track_accepted, accepted_at is the time of the last accepted paint, so a settle
+            # can be told apart from repaints elsewhere in the application.
+            self.track_accepted = False
+            self.accepted_at = None
 
         def eventFilter(self, obj, event):
             if event.type() == QEvent.Paint:
                 self.paints += 1
-                if self.armed and not self.fired:
+                if self.armed and (not self.fired or self.track_accepted):
                     try:
                         if self.accepts(obj):
                             self.fired = True
+                            if self.track_accepted:
+                                self.accepted_at = mono_ms()
                     except RuntimeError:
                         pass
             return False
@@ -1196,28 +1211,39 @@ try:
         finally:
             qapp.removeEventFilter(watch)
 
-    def measure_paint(hosts, accepts, send, drain=True, settle=True):
+    def measure_paint(hosts, accepts, send, drain=True, settle=True, watch_after_send=False, detail=None):
         """(t0, t1) in ms: just before send() posts the key event, and the end of the event-loop pass that
         delivered the first accepted paint to one of hosts, or to the whole application when hosts is
         None. With settle, t1 is instead the end of the last pass that painted one of them before
         SETTLE_QUIET_MS went by without a paint, so the repaints a step queues behind its first one
         count; settling stops SETTLE_LIMIT_MS after the first paint. With drain, the work earlier reps
-        left queued runs first. A paint taken during send() does not count. Raises when none arrives in
-        CREATE_PAINT_TIMEOUT_S."""
+        left queued runs first. A paint taken during send() does not count. With watch_after_send, the
+        paint filter is installed only once send() returns: an app-wide Python filter sees every event a
+        synchronous step sends, which would add its own cost to the step. With a detail dict, it gets
+        first_ms (t0 to the end of the first accepted paint's pass) and accepted_settle_ms (t0 to the
+        last accepted paint), so other widgets' repaints can be told from the target's own. Raises when
+        none arrives in CREATE_PAINT_TIMEOUT_S."""
         if drain:
             drain_events()
         watch = PaintWatch(accepts)
+        watch.track_accepted = detail is not None
         targets = list(hosts) if hosts is not None else [QApplication.instance()]
-        for target in targets:
-            target.installEventFilter(watch)
+        if not watch_after_send:
+            for target in targets:
+                target.installEventFilter(watch)
         t0 = mono_ms()
         try:
             send()
+            if watch_after_send:
+                for target in targets:
+                    target.installEventFilter(watch)
             watch.armed = True
             deadline = t0 + CREATE_PAINT_TIMEOUT_S * 1000.0
             while not watch.fired and mono_ms() < deadline:
                 QApplication.processEvents()
             t1 = mono_ms()
+            if detail is not None:
+                detail["first_ms"] = t1 - t0
             if watch.fired and settle:
                 settle_end = t1 + SETTLE_LIMIT_MS
                 while True:
@@ -1237,6 +1263,8 @@ try:
                     pass
         if not watch.fired:
             raise RuntimeError("no paint showed the result within %.0f s" % CREATE_PAINT_TIMEOUT_S)
+        if detail is not None and watch.accepted_at is not None:
+            detail["accepted_settle_ms"] = watch.accepted_at - t0
         return t0, t1
 
     def focus_graph_for_keys():
@@ -1591,6 +1619,152 @@ try:
         return {"setup": create_setup(True), "before": prepare_keys, "events": events, "after": after,
                 "teardown": teardown, "reps": reps}
 
+    # ---- panel build op ------------------------------------------------------------------------
+
+    PANEL_KNOB_STAGE = "panelKnob:"
+    PANEL_BUDGET_MS = 16.0
+
+    def settings_panels():
+        return gt.widgets_of("NodeSettingsPanel")
+
+    def in_visible_panel(obj):
+        """Whether obj is a widget inside a shown NodeSettingsPanel: setup closes every other panel."""
+        if not obj.isWidgetType():
+            return False
+        w = obj
+        while w is not None:
+            if gt.class_name(w) == "NodeSettingsPanel":
+                return w.isVisible()
+            w = w.parentWidget()
+        return False
+
+    def knob_type_spans(spans, t0, t1):
+        """{knob type: [ms of each row of that type]} from the panelKnob:<type> stages inside [t0, t1]."""
+        found = {}
+        for stage, start, end in spans:
+            if start >= t0 and end <= t1 and stage.startswith(PANEL_KNOB_STAGE):
+                found.setdefault(stage[len(PANEL_KNOB_STAGE):], []).append(end - start)
+        return found
+
+    def ms_summary(values):
+        return {"median": round(statistics.median(values), 3), "max": round(max(values), 3)} if values else None
+
+    def panel_record(entry):
+        rec = {"reps": len(entry["paint"]), "build_ms": ms_summary(entry["build"]),
+               "paint_ms": ms_summary(entry["paint"]),
+               "first_paint_ms": ms_summary(entry["first_paint"]),
+               "panel_settle_ms": ms_summary(entry["panel_settle"])}
+        if entry["stages"]:
+            rec["stages_ms"] = stage_summary(entry["stages"])
+        if entry["knobs"]:
+            types = sorted(set(t for rep in entry["knobs"] for t in rep))
+            knob_types = {}
+            for t in types:
+                per_rep = [rep.get(t, []) for rep in entry["knobs"]]
+                rows = [v for r in per_rep for v in r]
+                knob_types[t] = {"rows": int(statistics.median(len(r) for r in per_rep)),
+                                 "total_median_ms": round(statistics.median(sum(r) for r in per_rep), 3),
+                                 "per_row_median_ms": round(statistics.median(rows), 3) if rows else 0.0}
+            rec["knob_types"] = knob_types
+        return rec
+
+    def op_open_panel():
+        """One rep per panel opened: each plug-in in turn, PANEL_REPS times. The node is created through
+        Python, which builds no panel, so each open builds a fresh one on the synchronous path."""
+        registered = [pid for pid in PANEL_PLUGINS if pid in gt._plugin_ids]
+        missing = [pid for pid in PANEL_PLUGINS if pid not in gt._plugin_ids]
+
+        def setup(ctx, st):
+            gt.close_all_panels()
+            if not registered:
+                raise RuntimeError("none of the panel plug-ins is registered: %s" % ", ".join(PANEL_PLUGINS))
+            if missing:
+                report("NOTE open_panel skips unregistered plug-ins: %s" % ", ".join(missing))
+            st["plugins"] = list(registered)
+            st["panels"] = dict((pid, {"build": [], "paint": [], "first_paint": [], "panel_settle": [], "stages": [], "knobs": []}) for pid in registered)
+            st["record"] = {"headline": "panels", "budget_ms": PANEL_BUDGET_MS, "missing_plugins": list(missing)}
+            st["all_knobs"] = {}
+
+        def before(ctx, st, rep):
+            pid = st["plugins"][rep % len(st["plugins"])]
+            st["pid"] = pid
+            gt.close_all_panels()
+            clear_selection()
+            panels_before = len(settings_panels())
+            node = app.createNode(pid)
+            if node is None:
+                raise RuntimeError("createNode(%s) returned None: %s" % (pid, gt.plugin_problem(pid)))
+            st["node"] = node.getScriptName()
+            node = None
+            if len(settings_panels()) != panels_before:
+                raise RuntimeError("creating %s from Python built a panel; open_panel would time no build" % pid)
+            select([st["node"]])
+            drain_events()
+
+        def events(ctx, st, rep):
+            graph = root_graph()
+            panels_before = len(settings_panels())
+            st["offset"] = stage_offset()
+            built = {}
+
+            def send():
+                b0 = mono_ms()
+                QMetaObject.invokeMethod(graph, "showSelectedNodeSettingsPanel")
+                built["ms"] = mono_ms() - b0
+            detail = {}
+            t0, t1 = measure_paint(None, in_visible_panel, send, drain=False, watch_after_send=True, detail=detail)
+            if len(settings_panels()) != panels_before + 1:
+                raise RuntimeError("opening %s's panel did not build exactly one panel" % st["pid"])
+            entry = st["panels"][st["pid"]]
+            entry["build"].append(built["ms"])
+            entry["paint"].append(t1 - t0)
+            entry["first_paint"].append(detail["first_ms"])
+            entry["panel_settle"].append(detail.get("accepted_settle_ms", detail["first_ms"]))
+            st["window"] = (t0, t1)
+            yield None
+
+        def after(ctx, st, rep):
+            QApplication.processEvents()
+            entry = st["panels"][st["pid"]]
+            if STAGE_LOG:
+                spans = read_stage_spans(st["offset"])
+                entry["stages"].append(split_spans(spans, *st["window"])[0])
+                knobs = knob_type_spans(spans, *st["window"])
+                entry["knobs"].append(knobs)
+                for t, rows in knobs.items():
+                    st["all_knobs"].setdefault(t, []).extend(rows)
+            gt.close_all_panels()
+            node = app.getNode(st["node"])
+            if node is not None:
+                node.destroy(False)
+            node = None
+            drain_events()
+
+        def teardown(ctx, st):
+            panels = dict((pid, panel_record(entry)) for pid, entry in st["panels"].items())
+            st["record"]["panels"] = panels
+            if st["all_knobs"]:
+                st["record"]["knob_types_ms"] = dict(
+                    (t, {"rows": len(v), "per_row_median_ms": round(statistics.median(v), 3),
+                         "per_row_p90_ms": round(percentile(v, 0.9), 3)})
+                    for t, v in st["all_knobs"].items())
+            for pid in st["plugins"]:
+                rec = panels[pid]
+                report("PANEL %-20s paint median %s ms max %s ms, build median %s ms, first paint median %s ms, "
+                       "panel-only settle median %s ms (%d opens)" % (
+                           pid, (rec["paint_ms"] or {}).get("median"), (rec["paint_ms"] or {}).get("max"),
+                           (rec["build_ms"] or {}).get("median"), (rec["first_paint_ms"] or {}).get("median"),
+                           (rec["panel_settle_ms"] or {}).get("median"), rec["reps"]))
+                for stage, v in sorted((rec.get("stages_ms") or {}).items(), key=lambda kv: -kv[1]["median"]):
+                    report("PANEL %-20s   stage %-28s median %8.3f ms" % (pid, stage, v["median"]))
+                for t, v in sorted((rec.get("knob_types") or {}).items(), key=lambda kv: -kv[1]["total_median_ms"]):
+                    report("PANEL %-20s   knob  %-28s %3d rows, %8.3f ms, %6.3f ms/row" % (
+                        pid, t, v["rows"], v["total_median_ms"], v["per_row_median_ms"]))
+        return {"setup": setup, "before": before, "events": events, "after": after, "teardown": teardown,
+                "reps": PANEL_REPS * len(registered)}
+
+    PANEL_OPS = [("open_panel", op_open_panel)]
+
     CREATE_OPS = [("create_by_shortcut", op_create_by_shortcut), ("tab_menu_open", op_tab_menu_open),
                   ("tab_menu_create", op_tab_menu_create), ("create_then_key", op_create_then_key)]
 
@@ -1924,6 +2098,7 @@ try:
             elif selected(name):
                 plan.append((name, make, "edit", None, None))
         plan.extend((name, make, "edit", None, None) for name, make in CREATE_OPS if name in ONLY_OPS)
+        plan.extend((name, make, "edit", None, None) for name, make in PANEL_OPS if name in ONLY_OPS)
         if selected("load"):
             plan.append(("load", op_load, "interaction", None, None))
         if SELF_CHECK:

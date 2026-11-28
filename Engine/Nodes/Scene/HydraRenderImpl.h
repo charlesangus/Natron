@@ -34,6 +34,8 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -43,6 +45,7 @@
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/ScenePayload.h"
 #include <pxr/base/gf/vec2d.h>
+#include <pxr/base/vt/dictionary.h>
 #include <pxr/base/vt/value.h>
 #include <pxr/imaging/cameraUtil/framing.h>
 
@@ -135,6 +138,26 @@ std::uint32_t primPathHash(const std::string& path) WARN_UNUSED_RETURN;
 // The hash's bits as a float, the value primId.id holds.
 float hashToFloat(std::uint32_t hash) WARN_UNUSED_RETURN;
 
+// An AOV asked of the delegate on top of the ones every render has.
+struct Aov {
+    PXR_NS::TfToken name;
+    // The descriptor's aovSettings the delegate gets for it (HdAovDescriptor::aovSettings).
+    PXR_NS::VtDictionary settings;
+
+    bool operator==(const Aov& other) const
+    {
+        return (name == other.name) && (settings == other.settings);
+    }
+};
+
+// An AOV's pixels, as many floats per pixel as its HdFormat has components.
+struct AovPlane {
+    PXR_NS::TfToken name;
+    int channels = 0;
+    // Empty when the request's aovPixels leaves the AOV out.
+    std::vector<float> pixels;
+};
+
 struct Request {
     // Whose stage and engine render it. A request of the owner's last render with the same stack,
     // time, camera, size, headlight and purposes, and no barrier write since, reuses that render, so the
@@ -171,6 +194,16 @@ struct Request {
     // defaults. The owner's engine is made again when they change: Cycles restarts a converged
     // render only for some of its settings.
     std::map<std::string, PXR_NS::VtValue> settings;
+    // The AOVs to render besides color, depth, primId, instanceId and the normal. A change of them
+    // makes the owner's engine again.
+    std::vector<Aov> aovs;
+    // The AOVs every render has that RenderVars name, by the delegate's name of each, with the
+    // settings those give them, if any. A change of them makes the owner's engine again.
+    std::vector<Aov> builtInAovs;
+    // The aovs whose pixels the result carries, every one's when unset. The others come back with
+    // their channel count and no pixels: converting each pass of a large frame costs time and memory
+    // a render asked for a few of its layers does not need.
+    std::optional<std::set<PXR_NS::TfToken>> aovPixels;
     // The camera's shutter:open and shutter:close, in frames relative to time.
     double shutterOpen = 0.;
     double shutterClose = 0.;
@@ -214,6 +247,12 @@ struct Result {
     std::string warning;
     // The errors the delegate logged that name no prim of the scene, one per line; empty if none.
     std::string errors;
+    // The request's aovs the delegate rendered, in the request's order.
+    std::vector<AovPlane> aovs;
+    // The request's aovs it gave no buffer for.
+    std::vector<PXR_NS::TfToken> rejectedAovs;
+    // The dictionary the delegate's render stats hold for an AOV under "aovMetadata:<aov>", by AOV.
+    std::map<PXR_NS::TfToken, PXR_NS::VtDictionary> aovMetadata;
     // The device the delegate says it rendered on; empty for a delegate that does not say.
     std::string device;
 };
@@ -368,6 +407,18 @@ void setPurposes(PXR_NS::UsdImagingGLEngine* engine,
 bool engineSetting(const void* owner,
                    const std::string& key,
                    PXR_NS::VtValue* value) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The aovSettings of owner's engine's descriptor for aov, as its task controller holds
+ * them, waiting for the engine's thread. False if owner has no engine.
+ **/
+bool engineAovSettings(const void* owner,
+                       const std::string& aov,
+                       PXR_NS::VtDictionary* settings) WARN_UNUSED_RETURN;
+
+// Render stats laid over those of every engine of renderer when a render reads them; for tests. Empty clears them.
+void setRenderStatsForTests(const std::string& renderer,
+                            const PXR_NS::VtDictionary& stats);
 
 // Drops owner's stage and engine, whichever delegate it is of, without waiting.
 void release(const void* owner);

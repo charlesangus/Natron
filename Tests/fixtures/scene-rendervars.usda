@@ -1,0 +1,65 @@
+#usda 1.0
+(
+    renderSettingsPrimPath = "/Render/rendersettings"
+)
+
+def Xform "World"
+{
+    def Cube "Box"
+    {
+        double size = 2
+    }
+
+    def Camera "Cam"
+    {
+        double3 xformOp:translate = (0, 0, 10)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+
+    def Camera "Away"
+    {
+        double3 xformOp:translate = (100, 0, 10)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+    }
+}
+
+def Scope "Render"
+{
+    def RenderSettings "rendersettings"
+    {
+        rel camera = </World/Away>
+        uniform int2 resolution = (32, 32)
+        rel products = </Render/Products/beauty>
+    }
+
+    def Scope "Products"
+    {
+        def RenderProduct "beauty"
+        {
+            rel camera = </World/Cam>
+            uniform int2 resolution = (64, 48)
+            rel orderedVars = [</Render/Products/Vars/depth>, </Render/Products/Vars/normal>, </Render/Products/Vars/instance>]
+        }
+
+        def Scope "Vars"
+        {
+            def RenderVar "depth"
+            {
+                uniform string sourceName = "depth"
+            }
+
+            def RenderVar "normal"
+            {
+                uniform string sourceName = "normal"
+                uniform token dataType = "normal3f"
+            }
+
+            def RenderVar "instance"
+            {
+                uniform string sourceName = "instanceId"
+                uniform token dataType = "int"
+                string natron:layer = "instance"
+            }
+        }
+    }
+}

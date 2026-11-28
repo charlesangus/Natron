@@ -495,7 +495,10 @@ TEST(MoonRayCamera, WidePixelsAndOffsetsFrameAsTheFrustum)
 // At 64 x 48 the quads cover about columns 4 to 22, 23 to 41 and 42 to 60 over rows 15 to 33. The
 // faces after the hole keep their own colours, given per face or per face vertex: a remap that
 // dropped the wrong entries would shift the hole's red onto the middle quad, or the middle's
-// green onto the right.
+// green onto the right. The light shines along the view, so the middle quad mirrors it into the
+// camera as a white specular highlight, which adds the same to every channel: a quad's colour is
+// what its own channel has over the other two, and those two stay equal unless another face's
+// colour reached it.
 TEST(MoonRayCamera, TheFacesBesideAHoleKeepTheirOwnPrimvars)
 {
     if (!moonRayOrSkip()) {
@@ -518,12 +521,12 @@ TEST(MoonRayCamera, TheFacesBesideAHoleKeepTheirOwnPrimvars)
             middle[c] = channelOf(image, width, c, 27, 37, y0, y1);
             right[c] = channelOf(image, width, c, 46, 56, y0, y1);
         }
-        ASSERT_GT(middle[1], 0.05f) << what << ": the middle quad is not green";
-        EXPECT_GT(middle[1], 4.f * middle[0]) << what << ": the middle quad has the hole's red";
-        EXPECT_GT(middle[1], 4.f * middle[2]) << what << ": the middle quad has the right's blue";
-        ASSERT_GT(right[2], 0.05f) << what << ": the right quad is not blue";
-        EXPECT_GT(right[2], 4.f * right[0]) << what << ": the right quad has the hole's red";
-        EXPECT_GT(right[2], 4.f * right[1]) << what << ": the right quad has the middle's green";
+        const float middleGreen = middle[1] - std::max(middle[0], middle[2]);
+        const float rightBlue = right[2] - std::max(right[0], right[1]);
+        ASSERT_GT(middleGreen, 0.05f) << what << ": the middle quad is not green";
+        EXPECT_LT(std::fabs(middle[0] - middle[2]), 0.25f * middleGreen) << what << ": the middle quad has the hole's red or the right's blue: " << middle[0] << ", " << middle[1] << ", " << middle[2];
+        ASSERT_GT(rightBlue, 0.05f) << what << ": the right quad is not blue";
+        EXPECT_LT(std::fabs(right[0] - right[1]), 0.25f * rightBlue) << what << ": the right quad has the hole's red or the middle's green: " << right[0] << ", " << right[1] << ", " << right[2];
         EXPECT_LT(hole, 0.02f * middle[1]) << what << ": the hole face is drawn";
     }
 }

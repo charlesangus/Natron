@@ -16,9 +16,12 @@ graph before the update, so the update is one undo step.
 
 The conflicted scenario has a version 2 that sets both sizes (Blur1 to 4, Blur2 to 6) while the artist
 set them to 2 and 3. Update from Template on Blur1's context menu keeps the artist's values and raises
-two conflicts, listed in the Merge Conflicts panel. Theirs resolves the first from the panel. The project is saved with the other still
-unresolved, reset and reopened: the panel lists the one conflict again, with the badge on its node and
-the artist's value kept, and resolving it from the reopened panel clears the badge.
+two conflicts. The Merge Conflicts panel does not open by itself: the node graph's merge bar counts
+them and the graph frames the first conflicted node. Open Panel on the merge bar shows the panel,
+which lists both, and Theirs resolves the first from it. The project is saved with the other still
+unresolved, reset and reopened: the merge bar counts the one conflict again and the panel lists it,
+with the badge on its node and the artist's value kept, and resolving it from the panel clears the
+badge.
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m97_template_merge.py
 """
@@ -42,8 +45,8 @@ CONFLICT_ARTIST = {"Blur1": 2.0, "Blur2": 3.0}
 try:
     from PySide6.QtCore import QEvent, QPoint, QPointF, Qt, QTimer
     from PySide6.QtGui import QAction, QKeyEvent, QMouseEvent
-    from PySide6.QtWidgets import (QAbstractButton, QApplication, QLineEdit, QMainWindow, QMenu, QPushButton, QTabBar,
-                                   QTreeWidget)
+    from PySide6.QtWidgets import (QAbstractButton, QApplication, QLabel, QLineEdit, QMainWindow, QMenu, QPushButton,
+                                   QTabBar, QTreeWidget)
 
     import guitest as gt
     from guitest import check, report, require
@@ -90,6 +93,49 @@ try:
 
     def tree():
         return widget(QTreeWidget, "mergeConflictTree")
+
+    def shown_widget(cls, name):
+        """The visible widget of class cls called name: every node graph has its own merge bar."""
+        for w in QApplication.allWidgets():
+            try:
+                if isinstance(w, cls) and w.objectName() == name and w.isVisible():
+                    return w
+            except RuntimeError:
+                continue
+        return None
+
+    def bar_count():
+        label = shown_widget(QLabel, "mergeBarConflictCount")
+        return label.text() if label is not None else None
+
+    def bar_counts(count):
+        want = "1 merge conflict" if count == 1 else "%d merge conflicts" % count
+        return app.mergeBarMode() == "conflicts" and bar_count() == want
+
+    def first_conflicted_name():
+        conflicts = app.getMergeConflicts()
+        return str(conflicts[0]["node"]) if conflicts else ""
+
+    def framed(node):
+        """Whether node's centre lies in the middle half of the node graph's view."""
+        view = graph_view()
+        if view is None or node is None:
+            return False
+        x, y = node.getPosition()
+        w, h = node.getSize()
+        at = view.mapFromScene(QPointF(x + w / 2.0, y + h / 2.0))
+        port = view.viewport().rect()
+        return (abs(at.x() - port.center().x()) <= port.width() / 4.0
+                and abs(at.y() - port.center().y()) <= port.height() / 4.0)
+
+    def open_panel(label):
+        """Opens the Merge Conflicts panel with the merge bar's Open Panel button."""
+        b = shown_widget(QPushButton, "mergeBarOpenPanel")
+        require(b is not None and b.isEnabled(), "%s: the merge bar shows Open Panel" % label)
+        b.click()
+        QApplication.processEvents()
+        ok = yield ("until", panel_shown, POLL_TIMEOUT_S)
+        require(ok, "%s: Open Panel shows the Merge Conflicts panel" % label)
 
     def rows():
         """The conflict rows as (node row text, conflict row text); plain values only, since every
@@ -411,8 +457,13 @@ try:
         shutil.copyfile(conflict_v2, live)
         count = 2
         yield from graph_menu("Blur1", "actionGraphUpdateFromTemplate", "Update from Template")
-        ok = yield ("until", lambda: panel_shown() and len(rows()) == count, POLL_TIMEOUT_S)
-        require(ok, "the Merge Conflicts panel lists the conflicts")
+        ok = yield ("until", lambda: bar_counts(count) and len(rows()) == count, POLL_TIMEOUT_S)
+        require(ok, "the merge bar counts the conflicts (%r, %r)" % (app.mergeBarMode(), bar_count()))
+        first = first_conflicted_name()
+        check(first in ("Blur1", "Blur2"), "the first conflict is on Blur1 or Blur2 (%r)" % first)
+        check(framed(app.getNode(first)), "the update frames %s, the first conflicted node" % first)
+        check(not panel_shown(), "the Merge Conflicts panel does not open by itself after the update")
+        yield from open_panel("after the update")
         yield ("sleep", SETTLE_MS)
         check_panel(count, "after the update")
         for name in ("Blur1", "Blur2"):
@@ -445,8 +496,10 @@ try:
         check(QApplication.activeModalWidget() is None, "opening a project with a conflict raises no modal dialog")
         ok = yield ("until", lambda: app.getNode(left) is not None and len(rows()) > 0, POLL_TIMEOUT_S)
         require(ok, "the reopened project lists its conflict")
-        ok = yield ("until", panel_shown, POLL_TIMEOUT_S)
-        check(ok, "opening a project with a conflict shows the Merge Conflicts panel")
+        ok = yield ("until", lambda: bar_counts(count - 1), POLL_TIMEOUT_S)
+        check(ok, "the reopened project's merge bar counts its conflict (%r, %r)" % (app.mergeBarMode(), bar_count()))
+        if not panel_shown():
+            yield from open_panel("after reopening")
         yield ("sleep", SETTLE_MS)
         check_panel(count - 1, "after reopening")
         check(any(left in group for group, _ in rows()), "the persisted conflict is listed under " + left)

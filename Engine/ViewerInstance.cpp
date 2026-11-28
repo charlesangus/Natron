@@ -4213,6 +4213,12 @@ ViewerInstance::prepareViewerRender(ViewIdx view,
     }
 
     if (inArgs.sceneUpstream) {
+        // The scene action runs under no frame args of this render, so the thread is the only
+        // place aborted() can find it: without this no edit or newer request stops the cook.
+        if (AbortableThread* isAbortable = dynamic_cast<AbortableThread*>(QThread::currentThread())) {
+            isAbortable->setAbortInfo(!isSequentialRender, inArgs.params->abortInfo, getNode()->getEffectInstance());
+        }
+
         return evaluateSceneInput(inArgs);
     }
 

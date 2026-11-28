@@ -818,6 +818,20 @@
                 %PYARG_0 = %CONVERTTOPYTHON[%RETURN_TYPE](%0);
             </inject-code>
         </modify-function>
+        <modify-function signature="createLoopPair(QString,Group*)const">
+            <inject-code class="target" position="beginning">
+                std::list&lt;Effect*&gt; effects = %CPPSELF.%FUNCTION_NAME(%ARGUMENT_NAMES);
+                PyObject* ret = PyList_New((int) effects.size());
+                int idx = 0;
+                for (std::list&lt;Effect*&gt;::iterator it = effects.begin(); it!=effects.end(); ++it,++idx) {
+                PyObject* item = %CONVERTTOPYTHON[Effect*](*it);
+                // Ownership transferences.
+                Shiboken::Object::getOwnership(item);
+                PyList_SET_ITEM(ret, idx, item);
+                }
+                return ret;
+            </inject-code>
+        </modify-function>
         <modify-function signature="createReader(QString,Group*,std::map&lt; QString, NodeCreationProperty* &gt;)const">
             <modify-argument index="return">
                 <define-ownership class="target" owner="target"/>

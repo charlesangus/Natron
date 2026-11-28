@@ -104,6 +104,8 @@ public:
 
     void setMousePos(QPoint p);
 
+    /** @brief Shows, or hides, that the frame shown is one a simulation kept rather than solved. */
+    void setShowingKeptSimulationFrame(bool kept);
 
 public Q_SLOTS:
 
@@ -139,6 +141,7 @@ private:
     Label* hvl_lastOption;
     Label* deepValues;
     Label* _fpsLabel;
+    Label* _simulationLabel;
     ImageLayerDesc _comp;
     bool _colorValid;
     bool _colorApprox;

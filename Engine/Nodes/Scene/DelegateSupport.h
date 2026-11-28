@@ -30,6 +30,9 @@
 
 #include <functional>
 #include <string>
+#include <vector>
+
+#include <pxr/base/vt/dictionary.h>
 
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
@@ -52,11 +55,27 @@ struct Support {
     PXR_NS::TfTokenVector tessellated;
     // Whether the delegate builds a node of a shader id; every id when unset.
     std::function<bool(const PXR_NS::TfToken&)> takesShader;
+    // The delegate's aovNames render stat; empty when it publishes none.
+    std::vector<std::string> publishedAovs;
 };
 
 // The types, contexts and binding purpose of a delegate of rendererId made with no settings, for
 // a delegate that starts no render on being made.
 Support probe(const std::string& rendererId) WARN_UNUSED_RETURN;
+
+// The AOV names of an aovNames render stat, held as tokens or strings; empty when stats has none.
+std::vector<std::string> publishedAovs(const PXR_NS::VtDictionary& stats) WARN_UNUSED_RETURN;
+
+/**
+ * @brief The AOV names a render through rendererId can ask for: its delegate's aovNames stat when
+ * it publishes one, else the names Natron knows it renders. Empty for a delegate that publishes
+ * none and that Natron knows nothing of, which is never made for this. Safe from any thread.
+ **/
+std::vector<std::string> availableAovs(const std::string& rendererId) WARN_UNUSED_RETURN;
+
+// Has availableAovs(rendererId) give aovs; an empty list gives the delegate's own back.
+void setAvailableAovsForTests(const std::string& rendererId,
+                              const std::vector<std::string>& aovs);
 
 /**
  * @brief The node's warning about what rendererName cannot render of stage, one line per kind:

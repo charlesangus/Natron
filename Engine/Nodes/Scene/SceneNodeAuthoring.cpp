@@ -60,6 +60,7 @@
 #include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
 #include "Engine/Project.h"
 #include "Engine/ViewerInstance.h"
@@ -1759,9 +1760,12 @@ releaseOnMainThread(std::shared_ptr<const EffectInstance>* effect)
 
         return;
     }
-    // A copy left on this thread would drop the last reference here, off the main thread.
-    auto release = [held = std::move(*effect)]() mutable { held.reset(); };
-    QMetaObject::invokeMethod(app, std::move(release), Qt::QueuedConnection);
+    // Not a posted functor owning the effect: one still queued when the QApplication goes is
+    // deleted under its posted-event lock, and the effect's QObject destructor takes that lock again.
+    // SceneTeardown::shutdown() destroys what the event loop did not reach.
+    std::shared_ptr<EffectInstance> held = std::const_pointer_cast<EffectInstance>(std::move(*effect));
+    effect->reset();
+    SceneTeardown::releaseOnMainThread(std::move(held));
 }
 
 std::size_t

@@ -165,6 +165,16 @@ std::vector<Light> unsupportedLights(const PXR_NS::UsdStageRefPtr& stage,
 // MoonRay is not loadable.
 const PXR_NS::TfTokenVector& supportedPrimTypes();
 
+// hdMoonray's aovNames render stat, from the same delegate; empty when it publishes none.
+const std::vector<std::string>& publishedAovs();
+
+/**
+ * @brief The AOVs hdMoonray renders, for when it publishes no aovNames stat: the names its render
+ * buffers map to MoonRay outputs, less wireframe (which stops the render), elementId (which no
+ * Hydra render takes), depth (cameraDepth is the distance it remaps) and primvars:st (St).
+ **/
+const std::vector<std::string>& catalogue();
+
 /**
  * @brief The node's warning about what MoonRay could not render, one line per kind (lights,
  * materials, other prims) naming the prims, and one naming the texture files it could not read;

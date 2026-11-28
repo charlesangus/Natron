@@ -136,6 +136,9 @@ registerLiveEffect(EffectInstance* effect)
     liveEffects()[effect] = effect;
 }
 
+// Set by markComponentsProvisional() during the getComponentsNeededAndProduced() call the thread
+// is in; one per thread because a node's answer asks the nodes upstream for theirs on the same thread.
+thread_local bool computingProvisionalComponents = false;
 } // anon namespace
 
 EffectInstance::EffectInstance(NodePtr node)
@@ -6748,6 +6751,12 @@ appendPresentLayers(const EffectInstance::ComponentsNeededResults& results,
     mergeLayersList(layers, presentLayers);
 }
 
+void
+EffectInstance::markComponentsProvisional()
+{
+    computingProvisionalComponents = true;
+}
+
 EffectInstance::ComponentsNeededResultsPtr
 EffectInstance::getComponentsNeededAndProducedShared(U64 hash,
                                                      double time,
@@ -6763,8 +6772,13 @@ EffectInstance::getComponentsNeededAndProducedShared(U64 hash,
     const CleanHashSnapshot clean(getNode(), getCurrentRestrictedRenderContext());
     std::shared_ptr<ComponentsNeededResults> results = std::make_shared<ComponentsNeededResults>();
     int passThroughView = 0;
+    const bool outerProvisional = computingProvisionalComponents;
+    computingProvisionalComponents = false;
     computeComponentsNeededAndProduced(time, view, &results->neededComps, &results->passThroughLayers, &results->passThroughTime, &passThroughView,
                                        &results->processChannels, &results->processChannelsPerPlane, &results->passThroughInputNb);
+    const bool provisional = computingProvisionalComponents;
+    // A provisional answer upstream makes the caller's answer, computed from it, provisional too.
+    computingProvisionalComponents = outerProvisional || provisional;
     results->passThroughView = ViewIdx(passThroughView);
 
     // Kept apart, so a getPresentLayers() on a hit builds nothing.
@@ -6772,7 +6786,7 @@ EffectInstance::getComponentsNeededAndProducedShared(U64 hash,
 
     // Computed while this effect's own isIdentity() is choosing its pass-through input, the
     // result used the preferred-input fallback and must not outlive that query.
-    if (!isResolvingLayersPassThrough() && clean.allowsStoreUnder(hash)) {
+    if (!provisional && !isResolvingLayersPassThrough() && clean.allowsStoreUnder(hash)) {
         _imp->actionsCache->setComponentsNeededResults(hash, time, view, results);
     }
 

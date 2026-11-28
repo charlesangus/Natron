@@ -25,6 +25,7 @@
 
 #include "MoonRayAovs.h"
 
+#include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 
 #include <algorithm>
@@ -611,26 +612,54 @@ unsupportedLights(const UsdStageRefPtr& stage,
     return lights;
 }
 
+namespace {
+    struct Probe {
+        TfTokenVector primTypes;
+        std::vector<std::string> publishedAovs;
+    };
+
+    const Probe&
+    probe()
+    {
+        static const Probe probed = [] {
+            Probe out;
+            HdRendererPluginRegistry& registry = HdRendererPluginRegistry::GetInstance();
+            // A delegate on hdMoonray's NullRenderer, which starts no Arras session.
+            HdRenderSettingsMap settings;
+            settings[TfToken("disableRender")] = VtValue(true);
+            HdPluginRenderDelegateUniqueHandle delegate = registry.CreateRenderDelegate(TfToken(kMoonRayRendererId), settings);
+            if (delegate) {
+                for (const TfTokenVector* types : { &delegate->GetSupportedSprimTypes(), &delegate->GetSupportedRprimTypes(), &delegate->GetSupportedBprimTypes() }) {
+                    out.primTypes.insert(out.primTypes.end(), types->begin(), types->end());
+                }
+                out.publishedAovs = DelegateSupport::publishedAovs(delegate->GetRenderStats());
+            }
+
+            return out;
+        }();
+
+        return probed;
+    }
+} // anon namespace
+
 const TfTokenVector&
 supportedPrimTypes()
 {
-    static const TfTokenVector types = [] {
-        TfTokenVector list;
-        HdRendererPluginRegistry& registry = HdRendererPluginRegistry::GetInstance();
-        // A delegate on hdMoonray's NullRenderer, which starts no Arras session.
-        HdRenderSettingsMap settings;
-        settings[TfToken("disableRender")] = VtValue(true);
-        HdPluginRenderDelegateUniqueHandle delegate = registry.CreateRenderDelegate(TfToken(kMoonRayRendererId), settings);
-        if (delegate) {
-            for (const TfTokenVector* types : { &delegate->GetSupportedSprimTypes(), &delegate->GetSupportedRprimTypes(), &delegate->GetSupportedBprimTypes() }) {
-                list.insert(list.end(), types->begin(), types->end());
-            }
-        }
+    return probe().primTypes;
+}
 
-        return list;
-    }();
+const std::vector<std::string>&
+publishedAovs()
+{
+    return probe().publishedAovs;
+}
 
-    return types;
+const std::vector<std::string>&
+catalogue()
+{
+    static const std::vector<std::string> names = { "color", "beauty", "alpha", "cameraDepth", "primId", "instanceId", "edgeId", "pointId", "heat_map", "weight", "beauty_aux", "alpha_aux", "P", "Ng", "N", "normal", "St", "dPds", "dPdt", "dSdx", "dSdy", "dTdx", "dTdy", "Wp", "Z", "motionvec" };
+
+    return names;
 }
 
 std::string

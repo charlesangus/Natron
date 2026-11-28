@@ -620,43 +620,6 @@ downloadFilm(const std::shared_ptr<UtilityDeviceFilm>& film,
     return status;
 }
 
-// A copy of the film's pixels in a film of its own, made once the frame's writes so far are done.
-gpu::GpuStatus
-copyFilm(const std::shared_ptr<UtilityDeviceFilm>& film,
-         std::shared_ptr<UtilityDeviceFilm>* out)
-{
-    UtilityDeviceFilm::Lease lease;
-
-    if (!film->lease(&lease)) {
-        return failure("The Utility renderer's film was released with its GPU");
-    }
-
-    const VkDeviceSize bytes = static_cast<VkDeviceSize>(film->width) * film->height * kFilmPixelBytes;
-    std::shared_ptr<UtilityDeviceFilm> copy = std::make_shared<UtilityDeviceFilm>(film->registry, film->pool, lease.kernels, lease.runtimeHold, film->width, film->height);
-    UtilityDeviceFilm::Lease copyLease;
-    std::unique_ptr<gpu::GpuRecordContext> context;
-
-    if (gpu::GpuStatus s = copy->allocate(bytes, false); !s) {
-        return s;
-    }
-    if (!copy->lease(&copyLease)) {
-        return failure("The Utility renderer's film was released with its GPU");
-    }
-    if (gpu::GpuStatus s = gpu::GpuRecordContext::create(film->registry, context, &film->pool); !s) {
-        return s;
-    }
-    context->computeBarrier();
-    if (gpu::GpuStatus s = context->copyBuffer(lease.pixels.buffer(), 0, copyLease.pixels.buffer(), 0, bytes); !s) {
-        return s;
-    }
-    if (gpu::GpuStatus s = context->submitAndWait(); !s) {
-        return s;
-    }
-    registerFilm(copy);
-    *out = std::move(copy);
-
-    return gpu::GpuStatus();
-}
 } // anon namespace
 
 std::shared_ptr<const UtilityFilmKernels>
@@ -1719,49 +1682,18 @@ void
 UtilityRenderBuffer::publishPass()
 {
 #ifdef NATRON_HAVE_GPU
-    std::shared_ptr<UtilityDeviceFilm> live;
     {
         const std::lock_guard<std::mutex> l(_deviceMutex);
 
+        // Readers share the live film: the next pass's beginDeviceFrame() sees it held and writes into a copy of
+        // its own, recorded in that pass's submission, so a publish costs no copy and no wait.
         if (_onDevice && _film && !_film->released()) {
-            live = _film;
-        }
-    }
-    if (live) {
-        std::shared_ptr<UtilityDeviceFilm> copy;
-        const gpu::GpuStatus status = copyFilm(live, &copy);
-        const std::lock_guard<std::mutex> l(_deviceMutex);
-
-        if (status) {
             retireFrontLocked();
-            _frontFilm = std::move(copy);
+            _frontFilm = _film;
             _frontPicks.reset();
 
             return;
         }
-        // Readers still get the pass, through the host, rather than the pass before.
-        std::shared_ptr<std::vector<std::uint8_t>> host = std::move(_spare);
-
-        if (!host) {
-            host = std::make_shared<std::vector<std::uint8_t>>();
-        }
-        host->resize(_pixels.size());
-
-        const gpu::GpuStatus downloaded = downloadFilm(live, host->data(), host->size());
-
-        if (!downloaded) {
-            TF_WARN("The Utility renderer could not hand its frame over from the GPU: %s; %s", status.message.c_str(), downloaded.message.c_str());
-            _spare = std::move(host);
-
-            return;
-        }
-        ++gDeviceDownloads;
-        retireFrontLocked();
-        _front = std::move(host);
-        _frontFilm.reset();
-        _frontPicks.reset();
-
-        return;
     }
 #endif
     std::shared_ptr<std::vector<std::uint8_t>> next;

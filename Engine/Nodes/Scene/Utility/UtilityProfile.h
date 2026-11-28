@@ -43,7 +43,8 @@ NATRON_NAMESPACE_ENTER
  *
  * Only the thread that opened a UtilityProfileFrame is timed. Stages nest and each one's time excludes the stages
  * opened inside it, so the stages of a frame add up to its time less what no stage covers. GPU work shows up where
- * the host waits for it: under the submit stages, not under the stage that recorded it.
+ * the host waits for it: under the submit stages, not under the stage that recorded it. The device's own time for
+ * the submissions, where it writes timestamps, goes to those stages' gpu_ms.
  **/
 namespace utilityProfile {
 enum class Stage : std::size_t {
@@ -99,6 +100,8 @@ struct FrameState {
     std::array<double, kStageCount> ms {};
     std::array<double, kStageCount> inPassMs {};
     std::array<std::uint64_t, kStageCount> calls {};
+    // Device time of the submissions waited for under each stage, from timestamps the device wrote around them.
+    std::array<double, kStageCount> gpuMs {};
     std::vector<double> passMs;
     bool inPass = false;
     Clock::time_point passStart;
@@ -106,6 +109,10 @@ struct FrameState {
 };
 
 FrameState* currentFrame();
+
+// Adds ms of device time to stage of the frame open on this thread; nothing outside one.
+void addGpuTime(Stage stage,
+                double ms);
 
 // The thread's state for scopes outside a frame's draw, which its outermost scope adds to the process-wide one.
 FrameState* looseFrame();

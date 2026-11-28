@@ -823,6 +823,48 @@ TEST_F(USDRenderNodeTest, OnlyARenderOfThePrimIdPlaneStoresTheTableForTheMainThr
     EXPECT_EQ(std::optional<std::string>("/World/Box"), effect->getOutputMetadata(1., ViewIdx(0)).getString(key));
 }
 
+TEST_F(USDRenderNodeTest, ARenderReusesItsSetupUntilAKnobOrTheTimeMoves)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr node = createRender();
+    ASSERT_TRUE(node != nullptr);
+    KnobBool* headlight = dynamic_cast<KnobBool*>(node->getKnobByName(kUSDRenderParamHeadlight).get());
+    ASSERT_TRUE(headlight != nullptr);
+    const std::list<ImageLayerDesc> colour(1, ImageLayerDesc::getRGBAComponents());
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    auto render = [&](double time) {
+        planes.clear();
+
+        return renderNodePlanesDirect(node, time, ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), colour, &planes, &error);
+    };
+
+    ASSERT_TRUE(render(1.)) << error;
+    const std::uint64_t reads = USDRender::renderSetupReadCount();
+    const std::uint64_t reuses = USDRender::renderSetupReuseCount();
+    const std::vector<float> first = planes[0].pixels;
+
+    ASSERT_TRUE(render(1.)) << error;
+    EXPECT_EQ(reads, USDRender::renderSetupReadCount());
+    EXPECT_EQ(reuses + 1, USDRender::renderSetupReuseCount());
+    EXPECT_EQ(first, planes[0].pixels);
+
+    headlight->setValue(!headlight->getValue());
+    ASSERT_TRUE(render(1.)) << error;
+    EXPECT_EQ(reads + 1, USDRender::renderSetupReadCount());
+    EXPECT_EQ(reuses + 1, USDRender::renderSetupReuseCount());
+
+    ASSERT_TRUE(render(1.)) << error;
+    EXPECT_EQ(reads + 1, USDRender::renderSetupReadCount());
+    EXPECT_EQ(reuses + 2, USDRender::renderSetupReuseCount());
+
+    ASSERT_TRUE(render(2.)) << error;
+    EXPECT_EQ(reads + 2, USDRender::renderSetupReadCount());
+    EXPECT_EQ(reuses + 2, USDRender::renderSetupReuseCount());
+}
+
 TEST_F(USDRenderNodeTest, APrimCameraTheSceneLacksIsANodeErrorNamingIt)
 {
     if (skipWithoutGL()) {

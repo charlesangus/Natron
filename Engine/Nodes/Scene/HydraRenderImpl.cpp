@@ -1988,6 +1988,7 @@ RenderThread::renderEngine(const HydraRender::Request& request,
         engine->SetRendererSetting(TfToken(kRenderDelegateUtilityCameraTimesSetting), VtValue(times));
         engine->SetRendererSetting(TfToken(kRenderDelegateUtilityCameraViewsSetting), VtValue(views));
         engine->SetRendererSetting(TfToken(kRenderDelegateUtilityCameraProjectionsSetting), VtValue(projections));
+        engine->SetRendererSetting(TfToken(kRenderDelegateUtilityInteractiveSetting), VtValue(request.interactive));
     }
 
     UsdImagingGLRenderParams params;

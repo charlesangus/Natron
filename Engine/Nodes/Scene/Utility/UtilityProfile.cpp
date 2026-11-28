@@ -211,6 +211,15 @@ currentFrame()
     return tFrame;
 }
 
+void
+addGpuTime(Stage stage,
+           double ms)
+{
+    if (FrameState* frame = currentFrame()) {
+        frame->gpuMs[static_cast<std::size_t>(stage)] += ms;
+    }
+}
+
 FrameState*
 looseFrame()
 {
@@ -313,6 +322,7 @@ UtilityProfileFrame::write()
     const std::vector<double>& passes = _state.passMs;
     const double passSum = std::accumulate(passes.begin(), passes.end(), 0.);
     const double staged = std::accumulate(_state.ms.begin(), _state.ms.end(), 0.);
+    const double gpu = std::accumulate(_state.gpuMs.begin(), _state.gpuMs.end(), 0.);
     const double drawn = passes.empty() ? 1. : static_cast<double>(passes.size());
     const std::uint64_t submits = _state.calls[static_cast<std::size_t>(Stage::GpuSubmitWait)] + _state.calls[static_cast<std::size_t>(Stage::RasterSubmitWait)];
     std::string line = "{\"record\":\"utility_profile\"";
@@ -331,6 +341,7 @@ UtilityProfileFrame::write()
     line += ",\"outside_passes_ms\":" + number(total - passSum);
     line += ",\"unstaged_ms\":" + number(total - staged);
     line += ",\"submits\":" + std::to_string(submits);
+    line += ",\"gpu_ms\":" + number(gpu);
     line += ",\"pass_ms\":{\"sum\":" + number(passSum) + ",\"mean\":" + number(passes.empty() ? 0. : passSum / drawn);
     line += ",\"min\":" + number(passes.empty() ? 0. : *std::min_element(passes.begin(), passes.end()));
     line += ",\"max\":" + number(passes.empty() ? 0. : *std::max_element(passes.begin(), passes.end())) + "}";
@@ -352,7 +363,8 @@ UtilityProfileFrame::write()
         line += ":{\"ms\":" + number(_state.ms[i]);
         line += ",\"calls\":" + std::to_string(_state.calls[i]);
         line += ",\"in_passes_ms\":" + number(_state.inPassMs[i]);
-        line += ",\"per_pass_ms\":" + number(_state.inPassMs[i] / drawn) + "}";
+        line += ",\"per_pass_ms\":" + number(_state.inPassMs[i] / drawn);
+        line += ",\"gpu_ms\":" + number(_state.gpuMs[i]) + "}";
     }
     line += "}}\n";
     appendLine(line);

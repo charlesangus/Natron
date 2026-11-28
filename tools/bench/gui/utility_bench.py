@@ -43,6 +43,7 @@ Output: one host record, then per edit a "frame" record and per pass count one "
     fallback            a device root drawn from a download instead (the legacy path)
     downloads, pick_readbacks  how many device downloads and pick readbacks the edit cost
     hydra_ms, hydra     the HydraRender calls in the edit's window: total and per kind and stage
+    gpu                 per kind and stage, the device time the stage's submissions took, from GPU timestamps
     placement           (summary) the USDRender tasks the scheduler ran on the gpu and on the cpu
     segments            the edit's steps from the profile's stamp and span records: to_<step> is the ms from the
                         step before to that step's end (knob, viewer_request, task_graph_build, viewer_prepare,
@@ -333,9 +334,12 @@ try:
         first = [f["first_ms"] for f in frames if f["first_ms"] is not None]
         hydra = [f["hydra_ms"] for f in frames if f["hydra_ms"] is not None]
         stages = {}
+        gpu_stages = {}
         for f in frames:
             for key, ms in f["hydra"].items():
                 stages.setdefault(key, []).append(ms)
+            for key, ms in f.get("gpu", {}).items():
+                gpu_stages.setdefault(key, []).append(ms)
         segments = {}
         for f in frames:
             for key, ms in f.get("segments", {}).items():
@@ -357,6 +361,7 @@ try:
             "first_median_ms": rounded(median(first)),
             "hydra_median_ms": rounded(median(hydra)),
             "hydra_mean_ms": dict((k, round(sum(v) / len(frames), 3)) for k, v in sorted(stages.items())),
+            "gpu_mean_ms": dict((k, round(sum(v) / len(frames), 3)) for k, v in sorted(gpu_stages.items())),
             "segment_median_ms": dict((k, rounded(median(v))) for k, v in sorted(segments.items())),
             "frames_per_edit": rounded(sum(f["frames"] for f in frames) / float(len(frames))) if frames else None,
             "rungs": sorted(set(f["rung"] for f in frames if f["rung"])),
@@ -470,12 +475,15 @@ try:
                     break
             message = str(render.getPersistentMessage() or "")
             stages = {}
+            gpu_stages = {}
             hydra_ms = 0.0
             for r in hydra:
                 hydra_ms += r.get("total_ms", 0.0)
                 for name, stage in (r.get("stages") or {}).items():
                     key = "%s.%s" % (r.get("kind", "?"), name)
                     stages[key] = stages.get(key, 0.0) + stage.get("ms", 0.0)
+                    if stage.get("gpu_ms"):
+                        gpu_stages[key] = gpu_stages.get(key, 0.0) + stage["gpu_ms"]
             last = seen[-1] if seen else {}
             first = seen[0] if seen else {}
             previous = state.get("counters")
@@ -493,6 +501,7 @@ try:
                 "hydra_ms": rounded(hydra_ms) if hydra else None,
                 "hydra_calls": dict((k, sum(1 for r in hydra if r.get("kind") == k)) for k in set(r.get("kind") for r in hydra)),
                 "hydra": dict((k, round(v, 3)) for k, v in stages.items()),
+                "gpu": dict((k, round(v, 3)) for k, v in gpu_stages.items()),
                 "segments": segments_of(t0, seen, hydra, marks),
                 "raster_fallback": FALLBACK_TEXT in message,
                 "message": message,

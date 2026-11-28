@@ -1899,6 +1899,69 @@ GPU_TEST_F(NatronUtilityRaster, PicksPublishedEveryPassStayAsTheyWere)
 }
 
 namespace {
+// Shows only the frame's last pass, so that the executor may leave the passes before it running.
+class LastPassFilm : public DeviceFilm {
+public:
+    virtual bool showsNextPass() override
+    {
+        return false;
+    }
+};
+} // anon namespace
+
+// Passes left running on the device, several ahead of the host, accumulate the colour that passes waited for one by one
+// do, in Ray and Raster mode and with the short submissions of an interactive frame.
+GPU_TEST_F(NatronUtilityRaster, PassesLeftRunningDrawWhatPassesWaitedForDraw)
+{
+    UtilityScene scene;
+
+    cardAndCube(scene);
+
+    WavefrontGpu executor(*_registry, *_pool, std::make_shared<int>(0));
+    const std::atomic<bool> stop(false);
+
+    for (const bool raster : { false, true }) {
+        for (const bool interactive : { false, true }) {
+            SCOPED_TRACE(std::string(raster ? "Raster" : "Ray") + (interactive ? ", interactive" : ""));
+
+            WavefrontFrame frame = perspectiveFrame();
+
+            frame.raster = raster;
+            frame.rasterSamples = 8;
+            frame.sampling.samplesPerSide = 3;
+            frame.sampling.filter = eKernelPixelFilterBlackmanHarris;
+            frame.sampling.filterWidth = 2.f;
+            frame.interactive = interactive;
+
+            DeviceFilm waited;
+            LastPassFilm ahead;
+
+            ASSERT_TRUE(wavefrontDrawSamples(executor, scene.snapshot(), frame, openShutter(), waited, stop, 2, std::function<void(std::size_t)>())) << executor.status().message;
+            ASSERT_TRUE(wavefrontDrawSamples(executor, scene.snapshot(), frame, openShutter(), ahead, stop, 2, std::function<void(std::size_t)>())) << executor.status().message;
+            EXPECT_EQ(0u, ahead.tiles);
+            ASSERT_TRUE(ahead.resolved);
+
+            const std::vector<GfVec4f> expected = waited.read<GfVec4f>(waited.color);
+            const std::vector<GfVec4f> colour = ahead.read<GfVec4f>(ahead.color);
+            int mismatches = 0;
+            int lit = 0;
+
+            ASSERT_EQ(expected.size(), colour.size());
+            for (std::size_t pixel = 0; pixel < colour.size(); ++pixel) {
+                lit += expected[pixel][3] > 0.f;
+                if (colour[pixel] != expected[pixel]) {
+                    if (++mismatches <= 8) {
+                        ADD_FAILURE() << "pixel " << pixel << ": ahead " << colour[pixel] << ", waited " << expected[pixel];
+                    }
+                }
+            }
+            EXPECT_EQ(0, mismatches);
+            EXPECT_GT(lit, 100);
+        }
+    }
+}
+
+namespace {
 // cardAndCube() unlit: both black, fully metallic and emitting their displayColor, under a sun, so that what a
 // camera ray hits first decides its pixel whatever the lights and the bounces.
 void

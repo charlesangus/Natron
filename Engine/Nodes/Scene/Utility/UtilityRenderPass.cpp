@@ -214,10 +214,22 @@ public:
 #endif
     }
 
+    virtual bool showsNextPass() OVERRIDE
+    {
+        // Latched, so that the passDrawn() that follows shows the pass the executor finished for it.
+        _showsNext = _progressive && ((_published == 0) || (std::chrono::steady_clock::now() - _publishedAt >= kProgressivePublishInterval));
+        _showsNextLatched = true;
+
+        return _showsNext;
+    }
+
     virtual void passDrawn() OVERRIDE
     {
+        const bool shows = _showsNextLatched ? _showsNext : showsNextPass();
+
+        _showsNextLatched = false;
         ++_drawn;
-        if (_progressive && ((_published == 0) || (std::chrono::steady_clock::now() - _publishedAt >= kProgressivePublishInterval))) {
+        if (shows) {
             publish();
         }
     }
@@ -298,6 +310,8 @@ private:
     std::size_t _drawn = 0;
     std::size_t _published = 0;
     std::chrono::steady_clock::time_point _publishedAt;
+    bool _showsNext = false;
+    bool _showsNextLatched = false;
 #ifdef NATRON_HAVE_GPU
     std::unique_ptr<UtilityDeviceAovs> _deviceAovs;
 #endif
@@ -803,8 +817,10 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     const HdRenderPassAovBindingVector frameBindings = bindings;
     const VtValue progressiveValue = GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kRenderDelegateUtilityProgressiveSetting));
     const bool progressive = progressiveValue.IsHolding<bool>() && progressiveValue.UncheckedGet<bool>();
+    const VtValue interactiveValue = GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kRenderDelegateUtilityInteractiveSetting));
+    const bool interactive = interactiveValue.IsHolding<bool>() && interactiveValue.UncheckedGet<bool>();
 
-    (void)_renderParam->startFrame([this, snapshot, frame, motion, frameBindings, threads, device, progressive]() {
+    (void)_renderParam->startFrame([this, snapshot, frame, motion, frameBindings, threads, device, progressive, interactive]() {
         const std::atomic<bool>& cancel = _renderParam->cancelFlag();
         bool finished = false;
         std::string failure;
@@ -812,6 +828,8 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
         try {
             AovFilm film(frameBindings, progressive);
             WavefrontFrame drawn = frame;
+
+            drawn.interactive = interactive;
             std::string rasterWarning;
             // Raster mode runs only on the GPU executor; every other way the frame renders as Ray mode does.
             const auto drawInRay = [&](const std::string& reason) {

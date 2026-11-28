@@ -55,6 +55,9 @@
 // frame shows its samples so far every so often, while any other is read only once it is whole, which spares
 // it reading the device back each sample.
 #define kRenderDelegateUtilityProgressiveSetting "natron:progressive"
+// Whether someone waits to see the utility renderer's frame, a bool set on each render, false when unset: its
+// submissions to the GPU are kept short, so that its first sample shows and a stop takes hold soon.
+#define kRenderDelegateUtilityInteractiveSetting "natron:interactive"
 
 // The id of a Renderer menu entry that renders with the renderer the active render settings prim
 // names (natron:renderer), Storm when it names none. No Hydra plug-in has it.

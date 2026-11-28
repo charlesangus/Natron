@@ -177,6 +177,12 @@ struct WavefrontFrame {
     bool raster = false;
     int rasterSamples = kWavefrontDefaultRasterSamples;
     WavefrontRasterPass rasterPass;
+    // Set by wavefrontDrawSamples(), which calls WavefrontExecutor::finishPasses() before the film shows a pass:
+    // render() may then return with the pass's last submission still running on the device.
+    bool passesMayRun = false;
+    // A frame someone is waiting to see, whose submissions are kept short so that its first pass shows and a stop
+    // takes hold soon, rather than one rendered for a file.
+    bool interactive = false;
 };
 
 // The outputs a film takes in tiles. An executor may leave the arrays of the others null.
@@ -241,6 +247,12 @@ public:
         return WavefrontAovs();
     }
 
+    // Whether the passDrawn() that follows the pass now drawing will show it to readers.
+    virtual bool showsNextPass()
+    {
+        return true;
+    }
+
     // Each time a sample pass was drawn in full, before the next one starts: readers may be shown it.
     virtual void passDrawn()
     {
@@ -273,6 +285,18 @@ public:
                         const std::atomic<bool>& stop,
                         int threads)
         = 0;
+
+    /**
+     * @brief Waits for the work the frame's render() calls left running, for a frame with passesMayRun set, so
+     * that what they wrote may be read. False when stop ended the wait or the work failed; render()'s outcome
+     * then says why.
+     **/
+    virtual bool finishPasses(const std::atomic<bool>& stop)
+    {
+        (void)stop;
+
+        return true;
+    }
 
     // The bounces after the camera rays' that the last render() traced with any ray left: the deepest
     // any ray took.

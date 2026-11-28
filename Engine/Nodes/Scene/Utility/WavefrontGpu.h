@@ -114,6 +114,9 @@ public:
                         const std::atomic<bool>& stop,
                         int threads) OVERRIDE;
 
+    // Waits for the passes render() left running; false when stop ended the wait or the device failed.
+    virtual bool finishPasses(const std::atomic<bool>& stop) OVERRIDE;
+
     // Why the last render() returned false, or the reason the executor cannot run at all.
     Tracer::Outcome status() const;
 

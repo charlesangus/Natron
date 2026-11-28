@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <cstdint>
 #include <list>
 #include <map>
 #include <memory>
@@ -62,6 +63,8 @@
 #define kUSDRenderMetadataPrimIdPrefix "primId/"
 
 NATRON_NAMESPACE_ENTER
+
+class SceneLoadSet;
 
 class USDRender
     : public NativeEffectBase {
@@ -179,6 +182,11 @@ public:
      **/
     bool activeRenderer(double time, ViewIdx view, std::string* rendererId, std::string* error) const;
 
+    // Of every render's setup, how many were read from the input's stage and how many reused one read
+    // before for the same input scene, time, view, level, renderer, knobs and project format.
+    static std::uint64_t renderSetupReadCount();
+    static std::uint64_t renderSetupReuseCount();
+
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void initializeKnobs() OVERRIDE FINAL;
@@ -231,7 +239,13 @@ private:
 
     // False with *error set to the message the node shows if the scene or its prim cannot be read.
     // The input is evaluated, and its stage composed, with load's payloads open.
-    bool readActiveSettings(double time, ViewIdx view, SettingsLoadEnum load, ActiveSettings* active, std::string* error) const;
+    // sceneEvaluated: active->scene already holds the input evaluated with every payload, for load
+    // eSettingsLoadEverything.
+    bool readActiveSettings(double time, ViewIdx view, SettingsLoadEnum load, ActiveSettings* active, std::string* error, bool sceneEvaluated = false) const;
+
+    // Sets active->scene to the input at time and view evaluated on loadSet under contextId,
+    // everything without one.
+    bool evaluateInput(double time, ViewIdx view, U64 contextId, const std::shared_ptr<const SceneLoadSet>& loadSet, ActiveSettings* active, std::string* error) const;
 
     // What the output format and the renderer take from the active render settings prim.
     struct SettingsSummary {
@@ -278,6 +292,31 @@ private:
                        bool primIdPlane,
                        RenderSetup* setup,
                        std::string* error);
+
+    // What a render setup depends on besides what the stage says.
+    struct RenderSetupKey {
+        U64 sceneHash = 0;
+        double time = 0.;
+        int view = 0;
+        unsigned int level = 0;
+        std::string renderer;
+        U64 knobs = 0;
+        U64 project = 0;
+
+        bool operator==(const RenderSetupKey& other) const;
+    };
+
+    // False when the setup cannot be kept, because a knob has an expression.
+    bool renderSetupKey(double time, ViewIdx view, unsigned int level, const ActiveSettings& active, RenderSetupKey* key) const;
+
+    // prepareRender() past the evaluation of the input, which active holds.
+    bool readRenderSetup(double time, ViewIdx view, unsigned int level, bool primIdPlane, ActiveSettings* active, RenderSetup* setup, std::string* error);
+
+    // Renders the live textures of active's scene at time into their store, and lists them in setup.
+    void prepareLiveTextures(const ActiveSettings& active, double time, RenderSetup* setup);
+
+    // Whether the render under way is one a viewer waits for, rather than one for a file.
+    bool rendersForViewer() const;
 
     // Shows warning, or clears the node's message when it is empty.
     void showWarning(const std::string& warning);
@@ -341,6 +380,10 @@ private:
     std::map<std::pair<double, int>, ImageMetadata> _primIdTables;
     std::set<std::pair<double, int>> _primIdTablesMissed;
     mutable SceneWorker _settingsWorker;
+    typedef std::pair<RenderSetupKey, std::shared_ptr<const RenderSetup>> KeptRenderSetup;
+    std::mutex _renderSetupsMutex;
+    // Under _renderSetupsMutex: the setups read last, most recently used first.
+    std::list<KeptRenderSetup> _renderSetups;
 };
 
 NATRON_NAMESPACE_EXIT

@@ -190,6 +190,9 @@ struct Request {
     int overscanBottom = 0;
     int overscanRight = 0;
     int overscanTop = 0;
+    // Whether someone waits to see the render, as a viewer does: Natron Utility then keeps its GPU submissions
+    // short rather than sized for throughput.
+    bool interactive = false;
 };
 
 /**

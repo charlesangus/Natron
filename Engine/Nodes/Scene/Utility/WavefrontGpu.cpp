@@ -39,6 +39,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -176,6 +177,14 @@ const std::uint64_t kMaxLearnedSubmitWork = std::uint64_t(1) << 32;
 // How long a submission is meant to keep the device busy, as the work it holds is learned. A frame that fits
 // this goes in one submission; one that does not is split, so that the device leaves a stopped frame soon.
 const std::uint64_t kSubmitTargetNs = 50'000'000ull;
+// The same for an interactive frame, whose first pass is waited for and whose stop must take hold within a frame
+// of the display. The device runs at most about this much of a frame's passes ahead of the host as well.
+const std::uint64_t kInteractiveSubmitTargetNs = 16'000'000ull;
+// How long a wait for a pass left running sleeps between looks at the stop flag.
+const std::uint64_t kPassWaitSliceNs = 2'000'000ull;
+// The timestamp pairs a profiled executor cycles through, far more than it has submissions in flight.
+const std::uint32_t kTimestampPairs = 512;
+const std::uint32_t kNoTimestamp = ~0u;
 // The threads one ray of a batch costs at most in its largest dispatches, the camera rays and their hits
 // then a full light batch of shadow rays, so that a batch's first submission stays near the learned work.
 const std::uint64_t kWorkPerBatchRay = 2 + kLightBatch;
@@ -500,6 +509,76 @@ struct PendingRaster {
     bool signalled = false;
     std::unique_ptr<gpu::GpuRecordContext> ctx;
 };
+
+// The timeline the passes left running signal, one value each, in submission order.
+struct PassTimeline {
+    explicit PassTimeline(gpu::GpuDevice& device)
+        : device(device)
+    {
+    }
+
+    ~PassTimeline()
+    {
+        if (semaphore != VK_NULL_HANDLE) {
+            vkDestroySemaphore(device.device(), semaphore, nullptr);
+        }
+    }
+
+    PassTimeline(const PassTimeline&) = delete;
+    PassTimeline& operator=(const PassTimeline&) = delete;
+
+    std::uint64_t reached() const
+    {
+        std::uint64_t value = 0;
+
+        if (vkGetSemaphoreCounterValue(device.device(), semaphore, &value) != VK_SUCCESS) {
+            return 0;
+        }
+
+        return value;
+    }
+
+    gpu::GpuDevice& device;
+    VkSemaphore semaphore = VK_NULL_HANDLE;
+    std::uint64_t submitted = 0;
+};
+
+/**
+ * @brief A batch's last submission, left running when the film is not to be shown its pass yet, with every
+ * context of the batch: the earlier ones hold scratch buffers it binds. It goes once the device is done with it;
+ * on a device that never finishes it, its contexts and the timeline are left to the device.
+ **/
+struct DeferredPass {
+    DeferredPass() = default;
+
+    ~DeferredPass()
+    {
+        if (!signalled) {
+            return;
+        }
+        if (!timeline->device.waitSemaphore(timeline->semaphore, value, kSubmitTimeoutNs)) {
+            for (std::unique_ptr<gpu::GpuRecordContext>& ctx : contexts) {
+                (void)ctx.release();
+            }
+            (void)new std::shared_ptr<PassTimeline>(timeline);
+        }
+    }
+
+    DeferredPass(const DeferredPass&) = delete;
+    DeferredPass& operator=(const DeferredPass&) = delete;
+
+    std::shared_ptr<PassTimeline> timeline;
+    std::uint64_t value = 0;
+    bool signalled = false;
+    std::vector<std::unique_ptr<gpu::GpuRecordContext>> contexts;
+    // The work it holds and its estimated device time, and whether nothing else was running ahead of it, which
+    // makes the time to its end that of the work alone.
+    std::uint64_t work = 0;
+    std::uint64_t estimatedNs = 0;
+    bool alone = false;
+    std::chrono::steady_clock::time_point submittedAt;
+    std::uint32_t timestamp = kNoTimestamp;
+};
 } // anon namespace
 
 struct WavefrontGpu::Implementation {
@@ -520,6 +599,10 @@ struct WavefrontGpu::Implementation {
     // device.
     ~Implementation()
     {
+        deferred.clear();
+        if (timestamps != VK_NULL_HANDLE) {
+            vkDestroyQueryPool(device.device(), timestamps, nullptr);
+        }
         if (warmUpThread.joinable()) {
             warmUp->abandon.store(true, std::memory_order_relaxed);
             warmUpThread.detach();
@@ -590,29 +673,37 @@ struct WavefrontGpu::Implementation {
     }
 
     /**
-     * @brief Records a batch's work into as many submissions as submitWork asks for, each submitted and
-     * waited for before the next is recorded, the stop flag looked at between them and during each wait. The
+     * @brief Records a batch's work into as many submissions as its work asks for, each submitted and waited
+     * for before the next is recorded, the stop flag looked at between them and during each wait, but for a last
+     * one that defer() leaves running. The
      * contexts submitted are kept until the recorder goes away, as they hold the scratch buffers later
      * submissions bind. A stop during a wait leaves that submission to finish on the device on its own.
      **/
     class Recorder {
     public:
         Recorder(Implementation& imp,
-                 const std::atomic<bool>& stop)
+                 const std::atomic<bool>& stop,
+                 std::uint64_t work)
             : _imp(imp)
             , _stop(stop)
+            , _work(work)
         {
         }
 
         bool begin();
         gpu::GpuRecordContext& ctx() { return *_current; }
         // Makes room for `work` more kernel threads, submitting what is recorded first when it would take the
-        // submission past submitWork. False when the frame was stopped or a submission failed.
+        // submission past the work the recorder was given. False when the frame was stopped or a submission failed.
         bool reserve(std::uint64_t work);
+        // The work a submission is given, which the film's clears and copies split by as well.
+        std::uint64_t work() const { return _work; }
         // Submits what is recorded and waits for it, so that the host may read what it wrote, then goes on
         // recording. False when the frame was stopped or the submission failed.
         bool sync() { return next(); }
         bool finish(const std::string& what);
+        // Submits what is recorded without waiting for it, handing the batch's contexts to the passes left
+        // running. False when the frame was stopped or the submission failed.
+        bool defer(const std::string& what);
         const std::atomic<bool>& stop() const { return _stop; }
 
     private:
@@ -621,6 +712,8 @@ struct WavefrontGpu::Implementation {
 
         Implementation& _imp;
         const std::atomic<bool>& _stop;
+        const std::uint64_t _work;
+        std::uint32_t _timestamp = kNoTimestamp;
         std::vector<std::unique_ptr<gpu::GpuRecordContext>> _submitted;
         std::unique_ptr<gpu::GpuRecordContext> _current;
         std::uint64_t _recorded = 0;
@@ -685,6 +778,23 @@ struct WavefrontGpu::Implementation {
                      std::uint32_t& deepest);
     void learnSubmitWork(std::uint64_t work,
                          std::uint64_t ns);
+    std::uint64_t submitWorkFor(const WavefrontFrame& frame) const;
+    std::uint64_t estimatedNs(std::uint64_t work) const;
+    // Drops the passes left running that the device has finished, learning from them.
+    void retirePasses();
+    bool waitPass(DeferredPass& pass,
+                  const std::atomic<bool>* stop);
+    // Waits for every pass left running; with no stop flag, as long as the device takes.
+    bool finishPasses(const std::atomic<bool>* stop);
+    // Before anything the passes left running read is replaced.
+    bool settlePasses() { return deferred.empty() || finishPasses(nullptr); }
+    // The pair of timestamps a profiled submission writes at its start and end; kNoTimestamp when not profiled.
+    std::uint32_t takeTimestamp();
+    // Adds the device time between a pair's timestamps to the profile, once the device has written them.
+    void readTimestamp(std::uint32_t pair);
+    // Keeps the device no further ahead of the host than one submission of the frame's.
+    bool throttlePasses(const WavefrontFrame& frame,
+                        const std::atomic<bool>& stop);
     std::uint64_t batchBytesPerRay(const WavefrontFrame& frame) const;
     std::uint64_t batchRaysFor(const WavefrontFrame& frame) const;
     bool haveFilmKernels();
@@ -744,6 +854,17 @@ struct WavefrontGpu::Implementation {
     // The kernel threads a submission holds, learned from how long the frames' submissions take on this device.
     std::uint64_t submitWork = kMaxSubmitWork;
     std::size_t submissions = 0;
+    std::shared_ptr<PassTimeline> passTimeline;
+    VkQueryPool timestamps = VK_NULL_HANDLE;
+    bool timestampsTried = false;
+    std::uint32_t nextTimestamp = 0;
+    double timestampPeriodNs = 1.;
+    std::uint64_t timestampMask = 0;
+    // The scene version the passes left running draw, whose structures stay until they are done.
+    std::uint64_t deferredVersion = 0;
+    bool deferredTraces = false;
+    // Last, so that the passes left running are waited for before anything they read goes.
+    std::deque<std::unique_ptr<DeferredPass>> deferred;
 };
 
 /**
@@ -856,6 +977,9 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version,
     }
     if (stop.load(std::memory_order_relaxed)) {
         return stopped();
+    }
+    if (!settlePasses()) {
+        return false;
     }
 
     std::unique_ptr<gpu::GpuRecordContext> ctx;
@@ -991,6 +1115,9 @@ WavefrontGpu::Implementation::uploadUnwrap(const WavefrontUnwrapConstPtr& next)
     if (next == unwrap && unwrapGrid && unwrapTriangles && unwrapAddresses) {
         return true;
     }
+    if (!settlePasses()) {
+        return false;
+    }
     unwrap.reset();
     unwrapGrid = gpu::GpuBufferHandle();
     unwrapTriangles = gpu::GpuBufferHandle();
@@ -1032,6 +1159,9 @@ WavefrontGpu::Implementation::uploadCameraSteps(const std::vector<float>& steps)
 {
     if (cameraStepsBuffer && steps == cameraSteps) {
         return true;
+    }
+    if (!settlePasses()) {
+        return false;
     }
     cameraStepsBuffer = gpu::GpuBufferHandle();
 
@@ -1167,6 +1297,15 @@ WavefrontGpu::Implementation::Recorder::begin()
         return _imp.fail("WavefrontGpu could not create a record context", s);
     }
     _recorded = 0;
+    _timestamp = _imp.takeTimestamp();
+    if (_timestamp != kNoTimestamp) {
+        _current->resetQueries(_imp.timestamps, 2 * _timestamp, 2);
+        _current->writeTimestamp(_imp.timestamps, 2 * _timestamp);
+    }
+    // Passes left running are ahead on the queue, and the barrier orders their writes before this one's reads.
+    if (!_imp.deferred.empty()) {
+        _current->computeBarrier();
+    }
 
     return true;
 }
@@ -1177,6 +1316,9 @@ WavefrontGpu::Implementation::Recorder::submit(const std::string& what)
     gpu::GpuStatus submitted;
     const auto begin = std::chrono::steady_clock::now();
 
+    if (_timestamp != kNoTimestamp) {
+        _current->writeTimestamp(_imp.timestamps, 2 * _timestamp + 1);
+    }
     {
         const utilityProfile::Scope timed(utilityProfile::Stage::GpuSubmitWait);
 
@@ -1190,6 +1332,7 @@ WavefrontGpu::Implementation::Recorder::submit(const std::string& what)
 
         return _imp.fail(what, submitted);
     }
+    _imp.readTimestamp(_timestamp);
     _imp.learnSubmitWork(_recorded, static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - begin).count()));
 
     return true;
@@ -1220,7 +1363,7 @@ WavefrontGpu::Implementation::Recorder::reserve(std::uint64_t work)
     if (_stop.load(std::memory_order_relaxed)) {
         return _imp.stopped();
     }
-    if (_recorded > 0 && _recorded + work > _imp.submitWork && !next()) {
+    if (_recorded > 0 && _recorded + work > _work && !next()) {
         return false;
     }
     _recorded += work;
@@ -1232,6 +1375,59 @@ bool
 WavefrontGpu::Implementation::Recorder::finish(const std::string& what)
 {
     return submit(what);
+}
+
+bool
+WavefrontGpu::Implementation::Recorder::defer(const std::string& what)
+{
+    if (!_imp.passTimeline) {
+        std::shared_ptr<PassTimeline> timeline = std::make_shared<PassTimeline>(_imp.device);
+
+        if (gpu::GpuStatus s = _imp.device.createTimelineSemaphore(0, timeline->semaphore); !s) {
+            return _imp.fail("WavefrontGpu could not create the semaphore of its passes", s);
+        }
+        _imp.passTimeline = std::move(timeline);
+    }
+    _imp.retirePasses();
+
+    std::unique_ptr<DeferredPass> pass(new DeferredPass);
+
+    pass->timeline = _imp.passTimeline;
+    pass->value = _imp.passTimeline->submitted + 1;
+    pass->work = _recorded;
+    pass->estimatedNs = _imp.estimatedNs(_recorded);
+    pass->alone = _imp.deferred.empty();
+    pass->submittedAt = std::chrono::steady_clock::now();
+    pass->timestamp = _timestamp;
+    if (_timestamp != kNoTimestamp) {
+        _current->writeTimestamp(_imp.timestamps, 2 * _timestamp + 1);
+    }
+
+    gpu::GpuStatus submitted;
+
+    {
+        const utilityProfile::Scope timed(utilityProfile::Stage::GpuSubmitWait);
+
+        submitted = _current->submit({}, gpu::TimelineValue { pass->timeline->semaphore, pass->value }, [this]() { return _stop.load(std::memory_order_relaxed); });
+    }
+    ++_imp.submissions;
+    // An aborted context still submits the signal; one never submitted signals nothing and frees at once.
+    pass->signalled = submitted || submitted.aborted;
+    if (pass->signalled) {
+        pass->timeline->submitted = pass->value;
+    }
+    pass->contexts = std::move(_submitted);
+    pass->contexts.push_back(std::move(_current));
+    _imp.deferred.push_back(std::move(pass));
+    if (!submitted) {
+        if (submitted.result == VK_INCOMPLETE && _stop.load(std::memory_order_relaxed)) {
+            return _imp.stopped();
+        }
+
+        return _imp.fail(what, submitted);
+    }
+
+    return true;
 }
 
 void
@@ -1248,6 +1444,181 @@ WavefrontGpu::Implementation::learnSubmitWork(std::uint64_t work,
     const std::uint64_t measured = sample >= static_cast<double>(kMaxLearnedSubmitWork) ? kMaxLearnedSubmitWork : std::max(kMaxSubmitWork, static_cast<std::uint64_t>(sample));
 
     submitWork = (submitWork * 3 + measured) / 4;
+}
+
+// The learned work scaled to the frame's submission time.
+std::uint64_t
+WavefrontGpu::Implementation::submitWorkFor(const WavefrontFrame& frame) const
+{
+    if (!frame.interactive) {
+        return submitWork;
+    }
+
+    return std::max<std::uint64_t>(1, static_cast<std::uint64_t>(static_cast<double>(submitWork) * static_cast<double>(kInteractiveSubmitTargetNs) / static_cast<double>(kSubmitTargetNs)));
+}
+
+std::uint64_t
+WavefrontGpu::Implementation::estimatedNs(std::uint64_t work) const
+{
+    return static_cast<std::uint64_t>(static_cast<double>(work) * static_cast<double>(kSubmitTargetNs) / static_cast<double>(std::max<std::uint64_t>(1, submitWork)));
+}
+
+void
+WavefrontGpu::Implementation::retirePasses()
+{
+    if (deferred.empty()) {
+        return;
+    }
+
+    const std::uint64_t reached = passTimeline->reached();
+
+    while (!deferred.empty() && (!deferred.front()->signalled || deferred.front()->value <= reached)) {
+        if (deferred.front()->signalled) {
+            readTimestamp(deferred.front()->timestamp);
+        }
+        deferred.pop_front();
+    }
+}
+
+std::uint32_t
+WavefrontGpu::Implementation::takeTimestamp()
+{
+    if (!utilityProfile::enabled() || !utilityProfile::currentFrame()) {
+        return kNoTimestamp;
+    }
+    if (!timestampsTried) {
+        timestampsTried = true;
+
+        std::uint32_t families = 0;
+
+        vkGetPhysicalDeviceQueueFamilyProperties(device.physicalDevice(), &families, nullptr);
+
+        std::vector<VkQueueFamilyProperties> properties(families);
+
+        vkGetPhysicalDeviceQueueFamilyProperties(device.physicalDevice(), &families, properties.data());
+
+        const std::uint32_t family = device.queueFamily(gpu::QueueKind::Compute);
+        const std::uint32_t bits = family < families ? properties[family].timestampValidBits : 0;
+        VkPhysicalDeviceProperties limits;
+
+        vkGetPhysicalDeviceProperties(device.physicalDevice(), &limits);
+        if (bits != 0) {
+            VkQueryPoolCreateInfo info { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+
+            info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+            info.queryCount = 2 * kTimestampPairs;
+            if (vkCreateQueryPool(device.device(), &info, nullptr, &timestamps) != VK_SUCCESS) {
+                timestamps = VK_NULL_HANDLE;
+            }
+            timestampMask = bits >= 64 ? ~0ull : ((1ull << bits) - 1);
+            timestampPeriodNs = limits.limits.timestampPeriod;
+        }
+    }
+    if (timestamps == VK_NULL_HANDLE) {
+        return kNoTimestamp;
+    }
+
+    const std::uint32_t pair = nextTimestamp;
+
+    nextTimestamp = (nextTimestamp + 1) % kTimestampPairs;
+
+    return pair;
+}
+
+void
+WavefrontGpu::Implementation::readTimestamp(std::uint32_t pair)
+{
+    if (pair == kNoTimestamp || timestamps == VK_NULL_HANDLE) {
+        return;
+    }
+
+    std::uint64_t ticks[2] = { 0, 0 };
+
+    if (vkGetQueryPoolResults(device.device(), timestamps, 2 * pair, 2, sizeof(ticks), ticks, sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT) != VK_SUCCESS) {
+        return;
+    }
+    utilityProfile::addGpuTime(utilityProfile::Stage::GpuSubmitWait, static_cast<double>((ticks[1] - ticks[0]) & timestampMask) * timestampPeriodNs / 1e6);
+}
+
+bool
+WavefrontGpu::Implementation::waitPass(DeferredPass& pass,
+                                       const std::atomic<bool>* stop)
+{
+    if (!pass.signalled) {
+        return true;
+    }
+    if (pass.timeline->reached() >= pass.value) {
+        readTimestamp(pass.timestamp);
+
+        return true;
+    }
+
+    const auto start = std::chrono::steady_clock::now();
+    gpu::GpuStatus waited;
+
+    {
+        const utilityProfile::Scope timed(utilityProfile::Stage::GpuSubmitWait);
+
+        for (;;) {
+            if (stop && stop->load(std::memory_order_relaxed)) {
+                return stopped();
+            }
+            waited = device.waitSemaphore(pass.timeline->semaphore, pass.value, stop ? kPassWaitSliceNs : kSubmitTimeoutNs);
+            if (waited || (waited.result != VK_TIMEOUT) || !stop) {
+                break;
+            }
+            if (std::chrono::steady_clock::now() - start >= std::chrono::nanoseconds(kSubmitTimeoutNs)) {
+                break;
+            }
+        }
+    }
+    if (!waited) {
+        return fail("WavefrontGpu could not wait for a pass", waited);
+    }
+    readTimestamp(pass.timestamp);
+    // Waited for, the device was still on it, so the time since it went is what the work alone took.
+    if (pass.alone) {
+        learnSubmitWork(pass.work, static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - pass.submittedAt).count()));
+    }
+
+    return true;
+}
+
+bool
+WavefrontGpu::Implementation::throttlePasses(const WavefrontFrame& frame,
+                                             const std::atomic<bool>& stop)
+{
+    const std::uint64_t ahead = frame.interactive ? kInteractiveSubmitTargetNs : kSubmitTargetNs;
+
+    retirePasses();
+    for (;;) {
+        std::uint64_t running = 0;
+
+        for (const std::unique_ptr<DeferredPass>& pass : deferred) {
+            running += pass->estimatedNs;
+        }
+        // The last pass alone may be over the bound: a pass is never split by this.
+        if (deferred.size() <= 1 || running <= ahead) {
+            return true;
+        }
+        if (!waitPass(*deferred.front(), &stop)) {
+            return false;
+        }
+        deferred.pop_front();
+    }
+}
+
+bool
+WavefrontGpu::Implementation::finishPasses(const std::atomic<bool>* stop)
+{
+    while (!deferred.empty()) {
+        if (!waitPass(*deferred.front(), stop)) {
+            return false;
+        }
+        deferred.pop_front();
+    }
+
+    return true;
 }
 
 // The device bytes renderBatch() asks for per ray of a batch, an upper bound for the frame's settings.
@@ -1985,6 +2356,9 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         }
     }
 
+    // Nothing of a batch with no AOV to hand over is read on the host but the bounce flags, which only tell
+    // bouncesTraced() how deep the rays went: it is left running, and counts the bounces that ran.
+    const bool defers = frame.passesMayRun && !aovs.any();
     // The geometry array comes first in the hit ids, as Kernels/UtilityTypes.slang lays them out.
     const struct {
         bool wanted;
@@ -1999,7 +2373,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
         { aovs.primId, primId, &readback.primId, count * sizeof(std::int32_t) },
         { aovs.instanceId, instanceId, &readback.instanceId, count * sizeof(std::int32_t) },
         // Which of the bounces that ran had a path to trace.
-        { ran > 0, liveBounces, &flagReadback, ran * sizeof(std::uint32_t) },
+        { ran > 0 && !defers, liveBounces, &flagReadback, ran * sizeof(std::uint32_t) },
     };
 
     {
@@ -2017,6 +2391,11 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
                 return fail("WavefrontGpu could not read a batch back", s);
             }
         }
+    }
+    if (defers) {
+        deepest = ran;
+
+        return rec.defer("WavefrontGpu could not render a batch of " + rayCount) && throttlePasses(frame, rec.stop());
     }
     if (!rec.finish("WavefrontGpu could not render a batch of " + rayCount)) {
         return false;
@@ -2200,6 +2579,11 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
     if (!imp.warm(stop)) {
         return false;
     }
+    // Another scene rebuilds the structures the passes left running trace.
+    if ((imp.deferredVersion != snapshot.version) && !imp.settlePasses()) {
+        return false;
+    }
+    imp.deferredVersion = snapshot.version;
     {
         const utilityProfile::Scope timed(utilityProfile::Stage::ShadeTables);
 
@@ -2219,6 +2603,11 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
     const bool traces = !frame.raster || (!imp.untraced && (imp.shadeTables.hasHoles() || imp.shadeTables.lightCount() > 0 || wavefrontBounceLimit(frame, imp.shadeTables.hasTransmission()) > 0));
     bool updated = false;
 
+    // Switching between a tracing and a raster-only update may rebuild what the passes left running read.
+    if ((imp.deferredTraces != traces) && !imp.settlePasses()) {
+        return false;
+    }
+    imp.deferredTraces = traces;
     {
         const utilityProfile::Scope timed(utilityProfile::Stage::TracerUpdate);
 
@@ -2271,7 +2660,7 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
             return imp.stopped();
         }
 
-        Implementation::Recorder rec(imp, stop);
+        Implementation::Recorder rec(imp, stop, imp.submitWorkFor(frame));
 
         if (!rec.begin()) {
             return false;
@@ -2291,7 +2680,7 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
             bool superseded = false;
             const utilityProfile::Scope timed(utilityProfile::Stage::FilmBegin);
 
-            if (gpu::GpuStatus s = deviceColor->beginDeviceFrame(record, imp.submitWork, imp.registry, imp.pool, imp.filmKernels, imp.runtimeHold, &superseded); !s) {
+            if (gpu::GpuStatus s = deviceColor->beginDeviceFrame(record, rec.work(), imp.registry, imp.pool, imp.filmKernels, imp.runtimeHold, &superseded); !s) {
                 // The recorder has already said why: the frame was stopped or a submission failed.
                 if (halted) {
                     return false;
@@ -2342,6 +2731,12 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
     }
 
     return true;
+}
+
+bool
+WavefrontGpu::finishPasses(const std::atomic<bool>& stop)
+{
+    return _imp->finishPasses(&stop);
 }
 
 std::size_t

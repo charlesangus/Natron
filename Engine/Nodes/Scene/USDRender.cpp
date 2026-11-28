@@ -71,6 +71,7 @@
 #include "Engine/Nodes/Scene/Utility/UtilityProfile.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
+#include "Engine/ParallelRenderArgs.h"
 #include "Engine/PoolParallelFor.h"
 #include "Engine/SceneLoadSet.h"
 
@@ -207,6 +208,10 @@ USDRender::~USDRender()
 void
 USDRender::purgeCaches()
 {
+    {
+        const std::lock_guard<std::mutex> l(_renderSetupsMutex);
+        _renderSetups.clear();
+    }
     HydraRender::release(this);
 }
 
@@ -473,11 +478,46 @@ struct USDRender::ActiveSettings {
 };
 
 bool
+USDRender::evaluateInput(double time,
+                         ViewIdx view,
+                         U64 contextId,
+                         const SceneLoadSetPtr& loadSet,
+                         ActiveSettings* active,
+                         std::string* error) const
+{
+    const SceneNodeAuthoring::EffectReleasedOnMainThread heldInput(getInput(0));
+    const EffectInstancePtr& input = heldInput.get();
+    if (!input) {
+        *error = tr("USDRender needs a scene on its Scene input.").toStdString();
+
+        return false;
+    }
+    const SceneEvaluationContext context = loadSet ? SceneEvaluationContext(contextId, loadSet) : SceneEvaluationContext();
+    active->lease.release();
+    active->stage.Reset();
+    if (input->evaluateScene(EvaluateSceneArgs(time, view, context), &active->scene, error) != eRenderRoIRetCodeOk) {
+        if (error->empty()) {
+            *error = tr("The input scene could not be evaluated.").toStdString();
+        }
+
+        return false;
+    }
+    if (active->scene.isEmpty()) {
+        *error = tr("The input scene is empty: there is no camera to render through.").toStdString();
+
+        return false;
+    }
+
+    return true;
+}
+
+bool
 USDRender::readActiveSettings(double time,
                               ViewIdx view,
                               SettingsLoadEnum load,
                               ActiveSettings* active,
-                              std::string* error) const
+                              std::string* error,
+                              bool sceneEvaluated) const
 {
     auto failWith = [error](const std::string& message) {
         *error = message;
@@ -485,28 +525,8 @@ USDRender::readActiveSettings(double time,
         return false;
     };
 
-    const SceneNodeAuthoring::EffectReleasedOnMainThread heldInput(getInput(0));
-    const EffectInstancePtr& input = heldInput.get();
-    if (!input) {
-        return failWith(tr("USDRender needs a scene on its Scene input.").toStdString());
-    }
-    // The input scene evaluated on loadSet, under id; everything without one.
     auto evaluate = [&](U64 id, const SceneLoadSetPtr& loadSet) {
-        const SceneEvaluationContext context = loadSet ? SceneEvaluationContext(id, loadSet) : SceneEvaluationContext();
-        active->lease.release();
-        active->stage.Reset();
-        if (input->evaluateScene(EvaluateSceneArgs(time, view, context), &active->scene, error) != eRenderRoIRetCodeOk) {
-            if (error->empty()) {
-                *error = tr("The input scene could not be evaluated.").toStdString();
-            }
-
-            return false;
-        }
-        if (active->scene.isEmpty()) {
-            return failWith(tr("The input scene is empty: there is no camera to render through.").toStdString());
-        }
-
-        return true;
+        return evaluateInput(time, view, id, loadSet, active, error);
     };
     auto borrowStage = [active, error](const SceneLoadSetPtr& loadSet) {
         active->lease.release();
@@ -521,7 +541,7 @@ USDRender::readActiveSettings(double time,
     const std::string chosenPrim = settingsPrimOverride();
     if (load == eSettingsLoadEverything) {
         // A render draws the whole scene.
-        if (!evaluate(0, SceneLoadSetPtr()) || !borrowStage(SceneLoadSet::everything())) {
+        if ((!sceneEvaluated && !evaluate(0, SceneLoadSetPtr())) || !borrowStage(SceneLoadSet::everything())) {
             return false;
         }
     } else {
@@ -1161,6 +1181,95 @@ fitModeForPolicy(const PXR_NS::TfToken& policy,
 }
 } // anon namespace
 
+namespace {
+std::atomic<std::uint64_t> gRenderSetupReads { 0 };
+std::atomic<std::uint64_t> gRenderSetupReuses { 0 };
+
+// Past this many, the setup least recently used is dropped: a viewer, its other planes and a Write
+// rendering another frame at once each keep theirs.
+const std::size_t kRenderSetupsKept = 4;
+} // anon namespace
+
+std::uint64_t
+USDRender::renderSetupReadCount()
+{
+    return gRenderSetupReads.load();
+}
+
+std::uint64_t
+USDRender::renderSetupReuseCount()
+{
+    return gRenderSetupReuses.load();
+}
+
+bool
+USDRender::RenderSetupKey::operator==(const RenderSetupKey& other) const
+{
+    return (sceneHash == other.sceneHash) && (time == other.time) && (view == other.view) && (level == other.level) && (renderer == other.renderer) && (knobs == other.knobs) && (project == other.project);
+}
+
+bool
+USDRender::renderSetupKey(double time,
+                          ViewIdx view,
+                          unsigned int level,
+                          const ActiveSettings& active,
+                          RenderSetupKey* key) const
+{
+    const NodePtr node = getNode();
+    if (!node) {
+        return false;
+    }
+    // An expression may read what no digest here covers, such as another node's knob.
+    bool hasExpression = false;
+    key->knobs = node->getKnobsContentDigest(&hasExpression);
+    if (hasExpression) {
+        return false;
+    }
+    ContentHasher namespaced;
+    for (const std::pair<const std::string, U64>& digest : node->getKnobsNamespaceDigests()) {
+        namespaced.appendString(digest.first);
+        namespaced.appendU64(digest.second);
+    }
+    namespaced.appendU64(key->knobs);
+    key->knobs = namespaced.finalize();
+    key->sceneHash = active.scene.getStackHash();
+    key->time = time;
+    key->view = view.value();
+    key->level = level;
+    key->renderer = rendererOverride();
+    // Without a settings prim the render takes the project's format, and the frame's time code
+    // follows the project's frame rate.
+    ContentHasher project;
+    AppInstancePtr app = getApp();
+    if (app && app->getProject()) {
+        Format format;
+        app->getProject()->getProjectDefaultFormat(&format);
+        project.appendI64(format.x1);
+        project.appendI64(format.y1);
+        project.appendI64(format.x2);
+        project.appendI64(format.y2);
+        project.appendDouble(format.getPixelAspectRatio());
+        project.appendDouble(app->getProject()->getProjectFrameRate());
+    }
+    key->project = project.finalize();
+
+    return true;
+}
+
+void
+USDRender::prepareLiveTextures(const ActiveSettings& active,
+                               double time,
+                               RenderSetup* setup)
+{
+    // Hydra reads live textures from the store and never renders them: render the frame's first.
+    const LiveTextureSourceList liveTextures = SceneOps::getLiveTextures(active.scene);
+    LiveTextureStore::instance().prepare(liveTextures, time, [this]() { return aborted(); });
+    setup->liveTextureUris.clear();
+    for (const LiveTextureSource& source : liveTextures) {
+        setup->liveTextureUris.push_back(source.getUri(time));
+    }
+}
+
 bool
 USDRender::prepareRender(double time,
                          ViewIdx view,
@@ -1170,6 +1279,68 @@ USDRender::prepareRender(double time,
                          std::string* error)
 {
     const utilityProfile::Span timed("prepare_render");
+    ActiveSettings active;
+    if (!evaluateInput(time, view, 0, SceneLoadSetPtr(), &active, error)) {
+        return false;
+    }
+    RenderSetupKey key;
+    const bool keyed = renderSetupKey(time, view, level, active, &key);
+    if (keyed) {
+        std::shared_ptr<const RenderSetup> kept;
+        {
+            const std::lock_guard<std::mutex> l(_renderSetupsMutex);
+            for (std::list<KeptRenderSetup>::iterator it = _renderSetups.begin(); it != _renderSetups.end(); ++it) {
+                if (it->first == key) {
+                    kept = it->second;
+                    _renderSetups.splice(_renderSetups.begin(), _renderSetups, it);
+                    break;
+                }
+            }
+        }
+        // The primId table is stored by a render that reads the stage, which a reused setup does not.
+        ImageMetadata primIds;
+        if (kept && (!primIdPlane || findPrimIdTable(primIdTableHash(), time, view, false, &primIds))) {
+            ++gRenderSetupReuses;
+            *setup = *kept;
+            setup->request.owner = this;
+            setup->request.aborted = [this]() { return aborted(); };
+            setup->request.scene = active.scene;
+            prepareLiveTextures(active, time, setup);
+
+            return true;
+        }
+    }
+    ++gRenderSetupReads;
+    if (!readRenderSetup(time, view, level, primIdPlane, &active, setup, error)) {
+        return false;
+    }
+    // Stored only when nothing the key covers moved during the read, so that it is never kept under
+    // a key it was not read for.
+    RenderSetupKey after;
+    if (keyed && renderSetupKey(time, view, level, active, &after) && (after == key)) {
+        std::shared_ptr<RenderSetup> keep = std::make_shared<RenderSetup>(*setup);
+        keep->request.aborted = std::function<bool()>();
+        keep->request.scene = ScenePayload();
+        const std::lock_guard<std::mutex> l(_renderSetupsMutex);
+        _renderSetups.remove_if([&key](const KeptRenderSetup& kept) { return kept.first == key; });
+        _renderSetups.emplace_front(key, std::move(keep));
+        while (_renderSetups.size() > kRenderSetupsKept) {
+            _renderSetups.pop_back();
+        }
+    }
+
+    return true;
+}
+
+bool
+USDRender::readRenderSetup(double time,
+                           ViewIdx view,
+                           unsigned int level,
+                           bool primIdPlane,
+                           ActiveSettings* activeSettings,
+                           RenderSetup* setup,
+                           std::string* error)
+{
     auto failWith = [error](const std::string& message) {
         *error = message;
 
@@ -1178,8 +1349,8 @@ USDRender::prepareRender(double time,
 
     // The render draws every prim, and the camera fallback looks through all of them.
     const NodePtr node = getNode();
-    ActiveSettings active;
-    if (!readActiveSettings(time, view, eSettingsLoadEverything, &active, error)) {
+    ActiveSettings& active = *activeSettings;
+    if (!readActiveSettings(time, view, eSettingsLoadEverything, &active, error, true)) {
         return false;
     }
     // The output's primId table, which the main thread is never given the whole stage to read. Only
@@ -1196,12 +1367,7 @@ USDRender::prepareRender(double time,
     const PXR_NS::UsdStageRefPtr& stage = active.stage;
     const QString primPath = active.prim ? QString::fromStdString(active.prim.GetPath().GetString()) : QString();
 
-    // Hydra reads live textures from the store and never renders them: render the frame's first.
-    const LiveTextureSourceList liveTextures = SceneOps::getLiveTextures(active.scene);
-    LiveTextureStore::instance().prepare(liveTextures, time, [this]() { return aborted(); });
-    for (const LiveTextureSource& source : liveTextures) {
-        setup->liveTextureUris.push_back(source.getUri(time));
-    }
+    prepareLiveTextures(active, time, setup);
     auto addWarning = [setup](const std::string& warning) {
         setup->warning = setup->warning.empty() ? warning : setup->warning + "\n" + warning;
     };
@@ -1329,7 +1495,7 @@ USDRender::prepareRender(double time,
     }
 
     return true;
-} // USDRender::prepareRender
+} // USDRender::readRenderSetup
 
 StatusEnum
 USDRender::render(const RenderActionArgs& args)
@@ -1366,6 +1532,7 @@ USDRender::render(const RenderActionArgs& args)
         return std::string();
     };
     request.aborted = [this, noRoom]() { return aborted() || !noRoom().empty(); };
+    request.interactive = rendersForViewer();
     request.threads = appPTR->getNCPUsAvailableForEffect();
     request.planes = 0;
     for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
@@ -1612,6 +1779,20 @@ USDRender::gpuWeight(double time,
     return NativeEffectBase::gpuWeight(time, view, mipmapLevel);
 }
 
+bool
+USDRender::rendersForViewer() const
+{
+    const ParallelRenderArgsPtr args = getFrameArgs();
+
+    if (!args) {
+        return false;
+    }
+
+    const NodePtr root = args->treeRoot;
+
+    return args->isRenderResponseToUserInteraction || (root && root->isEffectViewer());
+}
+
 StatusEnum
 USDRender::renderGpu(const GpuRenderArgs& args)
 {
@@ -1635,6 +1816,7 @@ USDRender::renderGpu(const GpuRenderArgs& args)
     if (setup.request.renderer == kRenderDelegateUtilityId) {
         setup.request.aborted = [this]() { return aborted(); };
         setup.request.threads = appPTR->getNCPUsAvailableForEffect();
+        setup.request.interactive = rendersForViewer();
         HydraRender::Result info;
         if (!HydraRender::recordDeviceWindow(setup.request, window, args.context, args.output, args.outputRect, &info, &error)) {
             return eStatusFailed;

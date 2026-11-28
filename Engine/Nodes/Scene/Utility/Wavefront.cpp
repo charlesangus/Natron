@@ -1757,6 +1757,17 @@ wavefrontDrawSamples(WavefrontExecutor& executor,
     }
     const UtilityScene::Snapshot& scene = blurred ? *shuttered : snapshot;
     WavefrontFrame drawn = frame;
+    // The film is shown only what the device has finished.
+    const auto passDrawn = [&executor, &film, &stop](bool last) -> bool {
+        if ((film.showsNextPass() || last) && !executor.finishPasses(stop)) {
+            return false;
+        }
+        film.passDrawn();
+
+        return true;
+    };
+
+    drawn.passesMayRun = true;
 
     if (unwrapping) {
         std::string error;
@@ -1784,10 +1795,10 @@ wavefrontDrawSamples(WavefrontExecutor& executor,
 
             atPass.rasterPass = pass;
             atPass.cameraSteps.clear();
-            if (!executor.render(scene, atPass, film, stop, threads)) {
+            atPass.passesMayRun = true;
+            if (!executor.render(scene, atPass, film, stop, threads) || !passDrawn(i + 1 == passes)) {
                 return false;
             }
-            film.passDrawn();
             if (progress) {
                 progress(static_cast<std::size_t>(i) + 1);
             }
@@ -1805,10 +1816,9 @@ wavefrontDrawSamples(WavefrontExecutor& executor,
         const utilityProfile::Pass timedPass;
 
         drawn.sampling.sampleIndex = i;
-        if (!executor.render(scene, drawn, film, stop, threads)) {
+        if (!executor.render(scene, drawn, film, stop, threads) || !passDrawn(i + 1 == samples)) {
             return false;
         }
-        film.passDrawn();
         if (progress) {
             progress(static_cast<std::size_t>(i) + 1);
         }

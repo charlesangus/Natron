@@ -74,6 +74,7 @@
 #include "Engine/Nodes/Scene/Utility/UtilityKernels.h"
 #include "Engine/Nodes/Scene/Utility/UtilityLight.h"
 #include "Engine/Nodes/Scene/Utility/UtilityMaterial.h"
+#include "Engine/Nodes/Scene/Utility/UtilityRenderBuffer.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/UtilityScene.h"
 #include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
@@ -1358,6 +1359,132 @@ GPU_TEST_F(NatronUtilityRaster, BenchAProjectedCardWithMotionBlurInRayAndRasterM
                 ray,
                 raster,
                 raster > 0. ? ray / raster : 0.);
+}
+
+namespace {
+// Keeps every AOV on the device, as the render pass's film does, and reads them back once the frame is drawn.
+class DeviceFilm : public WavefrontFilm {
+public:
+    DeviceFilm()
+        : color(SdfPath("/color"))
+        , depth(SdfPath("/depth"))
+        , primId(SdfPath("/primId"))
+        , instanceId(SdfPath("/instanceId"))
+    {
+        const GfVec3i size(kFrameSize, kFrameSize, 1);
+
+        color.Allocate(size, HdFormatFloat32Vec4, false);
+        depth.Allocate(size, HdFormatFloat32, false);
+        primId.Allocate(size, HdFormatInt32, false);
+        instanceId.Allocate(size, HdFormatInt32, false);
+        // The tile film's miss values.
+        color.clear(VtValue(GfVec4f(0.f)));
+        depth.clear(VtValue(0.f));
+        primId.clear(VtValue(-1));
+        instanceId.clear(VtValue(-1));
+    }
+
+    virtual void writeTile(const WavefrontTile&) override
+    {
+        ++tiles;
+    }
+
+    virtual UtilityRenderBuffer* deviceColor() const override
+    {
+        return &color;
+    }
+
+    virtual UtilityDeviceAovs* deviceAovs() const override
+    {
+        return &picks;
+    }
+
+    virtual WavefrontAovs aovs() const override
+    {
+        return WavefrontAovs();
+    }
+
+    virtual void frameDrawn() override
+    {
+        std::string error;
+
+        resolved = picks.resolve({ &depth }, { &primId }, { &instanceId }, 2, &error);
+        EXPECT_TRUE(resolved) << error;
+        for (UtilityRenderBuffer* buffer : { &color, &depth, &primId, &instanceId }) {
+            buffer->publishPass();
+        }
+    }
+
+    template <typename T>
+    std::vector<T> read(UtilityRenderBuffer& buffer)
+    {
+        const T* pixels = static_cast<const T*>(buffer.Map());
+        std::vector<T> values(pixels, pixels + static_cast<std::size_t>(kFrameSize) * kFrameSize);
+
+        buffer.Unmap();
+
+        return values;
+    }
+
+    mutable UtilityRenderBuffer color;
+    UtilityRenderBuffer depth;
+    UtilityRenderBuffer primId;
+    UtilityRenderBuffer instanceId;
+    mutable UtilityDeviceAovs picks;
+    std::size_t tiles = 0;
+    bool resolved = false;
+};
+} // anon namespace
+
+// Every pass's depth and ids kept on the device and read back at the end are those a film taking each pass's
+// tiles keeps: each pixel's heaviest sample, the first of equal ones, and the clear values where it missed.
+GPU_TEST_F(NatronUtilityRaster, DepthAndIdsKeptOnTheDeviceMatchThoseTakenInTiles)
+{
+    UtilityScene scene;
+
+    cardAndCube(scene);
+
+    WavefrontGpu executor(*_registry, *_pool, std::make_shared<int>(0));
+    const std::atomic<bool> stop(false);
+
+    for (const bool raster : { false, true }) {
+        SCOPED_TRACE(raster ? "Raster" : "Ray");
+
+        WavefrontFrame frame = perspectiveFrame();
+
+        frame.raster = raster;
+        frame.rasterSamples = 4;
+        frame.sampling.samplesPerSide = 2;
+        frame.sampling.filter = eKernelPixelFilterBlackmanHarris;
+        frame.sampling.filterWidth = 2.f;
+
+        AovFilm tiles;
+        DeviceFilm device;
+
+        ASSERT_TRUE(wavefrontDrawSamples(executor, scene.snapshot(), frame, openShutter(), tiles, stop, 2, std::function<void(std::size_t)>())) << executor.status().message;
+        ASSERT_TRUE(wavefrontDrawSamples(executor, scene.snapshot(), frame, openShutter(), device, stop, 2, std::function<void(std::size_t)>())) << executor.status().message;
+        EXPECT_EQ(0u, device.tiles);
+        ASSERT_TRUE(device.resolved);
+
+        const std::vector<float> depth = device.read<float>(device.depth);
+        const std::vector<std::int32_t> primId = device.read<std::int32_t>(device.primId);
+        const std::vector<std::int32_t> instanceId = device.read<std::int32_t>(device.instanceId);
+        int hits = 0;
+        int mismatches = 0;
+
+        for (std::size_t pixel = 0; pixel < depth.size(); ++pixel) {
+            hits += tiles.geometry[pixel] != Tracer::kNoHit;
+            if ((depth[pixel] != tiles.depth[pixel]) || (primId[pixel] != tiles.primId[pixel]) || (instanceId[pixel] != tiles.instanceId[pixel])) {
+                if (++mismatches <= 8) {
+                    ADD_FAILURE() << "pixel " << pixel << ": device " << depth[pixel] << "/" << primId[pixel] << "/" << instanceId[pixel] << ", tiles " << tiles.depth[pixel] << "/"
+                                  << tiles.primId[pixel] << "/" << tiles.instanceId[pixel];
+                }
+            }
+        }
+        EXPECT_EQ(0, mismatches);
+        EXPECT_GT(hits, 100);
+        EXPECT_LT(hits, kFrameSize * kFrameSize);
+    }
 }
 
 #endif // NATRON_HAVE_GPU

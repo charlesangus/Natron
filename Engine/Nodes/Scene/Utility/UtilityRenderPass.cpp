@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <exception>
@@ -120,11 +121,18 @@ sameWindow(const WavefrontRect& a,
     return a.x == b.x && a.y == b.y && a.width == b.width && a.height == b.height;
 }
 
+// A watched frame's samples are shown no more often than this, as showing them reads the device back.
+const std::chrono::milliseconds kProgressivePublishInterval(50);
+
 // Writes tiles to the buffers bound under the AOV names the shading produces. Any other AOV keeps its
 // clear value.
 class AovFilm : public WavefrontFilm {
 public:
-    explicit AovFilm(const HdRenderPassAovBindingVector& bindings)
+    AovFilm(const HdRenderPassAovBindingVector& bindings,
+            bool progressive,
+            int threads)
+        : _progressive(progressive)
+        , _threads(threads)
     {
         for (const HdRenderPassAovBinding& binding : bindings) {
             UtilityRenderBuffer* buffer = dynamic_cast<UtilityRenderBuffer*>(binding.renderBuffer);
@@ -142,6 +150,11 @@ public:
                 _instanceId.push_back(buffer);
             }
         }
+#ifdef NATRON_HAVE_GPU
+        if (!_depth.empty() || !_primId.empty() || !_instanceId.empty()) {
+            _deviceAovs.reset(new UtilityDeviceAovs);
+        }
+#endif
     }
 
     // Only the colour is filtered; the other AOVs take the heaviest sample's value.
@@ -181,13 +194,49 @@ public:
         return (_color.size() == 1) ? _color.front() : nullptr;
     }
 
+    virtual UtilityDeviceAovs* deviceAovs() const OVERRIDE
+    {
+#ifdef NATRON_HAVE_GPU
+        return _deviceAovs.get();
+#else
+        return nullptr;
+#endif
+    }
+
     virtual void passDrawn() OVERRIDE
     {
-        for (const std::vector<UtilityRenderBuffer*>* buffers : { &_color, &_depth, &_primId, &_instanceId }) {
-            for (UtilityRenderBuffer* buffer : *buffers) {
-                buffer->publishPass();
-            }
+        ++_drawn;
+        if (_progressive && ((_published == 0) || (std::chrono::steady_clock::now() - _publishedAt >= kProgressivePublishInterval))) {
+            publish();
         }
+    }
+
+    virtual void frameDrawn() OVERRIDE
+    {
+        if (_published != _drawn) {
+            publish();
+        }
+    }
+
+    /**
+     * @brief The passes a reader may be shown of done drawn: those published, for a watched frame, whose reader
+     * looks again each time the count changes.
+     **/
+    std::size_t shownPasses(std::size_t done) const
+    {
+        return _progressive ? _published : done;
+    }
+
+    // Before the frame starts over on the host: what the device drew is not shown.
+    void leaveDevice()
+    {
+#ifdef NATRON_HAVE_GPU
+        if (_deviceAovs) {
+            _deviceAovs->drop();
+        }
+#endif
+        _drawn = 0;
+        _published = 0;
     }
 
     virtual WavefrontAovs aovs() const OVERRIDE
@@ -203,10 +252,40 @@ public:
     }
 
 private:
+    void publish()
+    {
+        const utilityProfile::Scope timed(utilityProfile::Stage::PublishPass);
+
+#ifdef NATRON_HAVE_GPU
+        if (_deviceAovs) {
+            std::string error;
+
+            if (!_deviceAovs->resolve(_depth, _primId, _instanceId, _threads, &error)) {
+                throw std::runtime_error(error);
+            }
+        }
+#endif
+        for (const std::vector<UtilityRenderBuffer*>* buffers : { &_color, &_depth, &_primId, &_instanceId }) {
+            for (UtilityRenderBuffer* buffer : *buffers) {
+                buffer->publishPass();
+            }
+        }
+        _published = _drawn;
+        _publishedAt = std::chrono::steady_clock::now();
+    }
+
     std::vector<UtilityRenderBuffer*> _color;
     std::vector<UtilityRenderBuffer*> _depth;
     std::vector<UtilityRenderBuffer*> _primId;
     std::vector<UtilityRenderBuffer*> _instanceId;
+    const bool _progressive;
+    const int _threads;
+    std::size_t _drawn = 0;
+    std::size_t _published = 0;
+    std::chrono::steady_clock::time_point _publishedAt;
+#ifdef NATRON_HAVE_GPU
+    std::unique_ptr<UtilityDeviceAovs> _deviceAovs;
+#endif
 };
 
 void
@@ -701,14 +780,16 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
     // The thread budget belongs to this thread, not the frame's.
     const int threads = std::max(1, appPTR->getNCPUsAvailableForEffect());
     const HdRenderPassAovBindingVector frameBindings = bindings;
+    const VtValue progressiveValue = GetRenderIndex()->GetRenderDelegate()->GetRenderSetting(TfToken(kRenderDelegateUtilityProgressiveSetting));
+    const bool progressive = progressiveValue.IsHolding<bool>() && progressiveValue.UncheckedGet<bool>();
 
-    (void)_renderParam->startFrame([this, snapshot, frame, motion, frameBindings, threads, device]() {
+    (void)_renderParam->startFrame([this, snapshot, frame, motion, frameBindings, threads, device, progressive]() {
         const std::atomic<bool>& cancel = _renderParam->cancelFlag();
         bool finished = false;
         std::string failure;
 
         try {
-            AovFilm film(frameBindings);
+            AovFilm film(frameBindings, progressive, threads);
             WavefrontFrame drawn = frame;
             std::string rasterWarning;
             // Raster mode runs only on the GPU executor; every other way the frame renders as Ray mode does.
@@ -725,8 +806,11 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
 
                 _renderParam->setSampleProgress(0, wanted);
 
-                const bool drew = wavefrontDrawSamples(executor, *snapshot, drawn, motion, film, cancel, threads, [this, wanted](std::size_t done) { _renderParam->setSampleProgress(done, wanted); });
+                const bool drew = wavefrontDrawSamples(executor, *snapshot, drawn, motion, film, cancel, threads, [this, wanted, &film](std::size_t done) { _renderParam->setSampleProgress(film.shownPasses(done), wanted); });
 
+                if (drew) {
+                    _renderParam->setSampleProgress(film.shownPasses(wanted), wanted);
+                }
                 profile.setFinished(drew && !cancel.load());
 
                 return drew;
@@ -775,6 +859,9 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
                     }
                     renderedOn = "GPU (" + gpu->deviceName() + ")";
                     finished = drawSamples(*gpu);
+                    if (!finished) {
+                        film.leaveDevice();
+                    }
 
                     const Tracer::Outcome outcome = finished ? Tracer::Outcome() : gpu->status();
                     const bool outOfMemory = outcome.status == Tracer::Status::OutOfMemory;

@@ -51,6 +51,7 @@
 
 NATRON_NAMESPACE_ENTER
 
+class UtilityDeviceAovs;
 class UtilityRenderBuffer;
 
 // A rectangle of pixels in the render buffers. Row 0 is the bottom of the image.
@@ -224,6 +225,16 @@ public:
         return nullptr;
     }
 
+    /**
+     * @brief Where an executor on a device may keep the depth and ids, as long as it also keeps the colour on
+     * the device, rather than hand them over in tiles; null when they must come in tiles. Taking a frame's first
+     * pass there, the executor keeps every pass of the frame there.
+     **/
+    virtual UtilityDeviceAovs* deviceAovs() const
+    {
+        return nullptr;
+    }
+
     // What writeTile() reads, the colour included even when deviceColor() may take it instead.
     virtual WavefrontAovs aovs() const
     {
@@ -232,6 +243,11 @@ public:
 
     // Each time a sample pass was drawn in full, before the next one starts: readers may be shown it.
     virtual void passDrawn()
+    {
+    }
+
+    // Once the frame's last pass was drawn, after its passDrawn(): readers must be shown it.
+    virtual void frameDrawn()
     {
     }
 };

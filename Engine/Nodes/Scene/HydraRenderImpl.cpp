@@ -4104,6 +4104,9 @@ struct ProgressiveRender::Implementation {
             made->SetRendererSetting(TfToken(it->first), it->second);
         }
         // Last: a prim's settings must not override these.
+        if (id == kRenderDelegateUtilityId) {
+            made->SetRendererSetting(TfToken(kRenderDelegateUtilityProgressiveSetting), VtValue(true));
+        }
         if (cycles) {
             CyclesAovs::configureEngine(made.get());
         } else if (moonRay) {

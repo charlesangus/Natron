@@ -632,8 +632,13 @@ struct WavefrontGpu::Implementation {
                      Recorder& rec,
                      WavefrontFilm& film,
                      UtilityRenderBuffer* deviceColor,
+                     UtilityDeviceAovs* deviceAovs,
                      std::uint32_t& deepest);
+    bool haveFilmKernels();
     UtilityRenderBuffer* deviceColorOf(const WavefrontFilm& film);
+    UtilityDeviceAovs* deviceAovsOf(const WavefrontFilm& film,
+                                    const gpu::GpuRecordContext& ctx,
+                                    const WavefrontRect& window);
 
     using Outcome = Tracer::Outcome;
     using Status = Tracer::Status;
@@ -1054,14 +1059,9 @@ WavefrontGpu::Implementation::readFlags(Recorder& rec,
     return true;
 }
 
-UtilityRenderBuffer*
-WavefrontGpu::Implementation::deviceColorOf(const WavefrontFilm& film)
+bool
+WavefrontGpu::Implementation::haveFilmKernels()
 {
-    UtilityRenderBuffer* buffer = film.deviceColor();
-
-    if (!buffer || !buffer->canRenderOnDevice()) {
-        return nullptr;
-    }
     if (!filmKernelsTried) {
         filmKernelsTried = true;
 
@@ -1070,8 +1070,35 @@ WavefrontGpu::Implementation::deviceColorOf(const WavefrontFilm& film)
         filmKernels = makeUtilityFilmKernels(device, &status);
     }
 
+    return filmKernels != nullptr;
+}
+
+UtilityRenderBuffer*
+WavefrontGpu::Implementation::deviceColorOf(const WavefrontFilm& film)
+{
+    UtilityRenderBuffer* buffer = film.deviceColor();
+
+    if (!buffer || !buffer->canRenderOnDevice()) {
+        return nullptr;
+    }
+
     // Without the film's kernels the colour comes back in tiles, as every other AOV does.
-    return filmKernels ? buffer : nullptr;
+    return haveFilmKernels() ? buffer : nullptr;
+}
+
+UtilityDeviceAovs*
+WavefrontGpu::Implementation::deviceAovsOf(const WavefrontFilm& film,
+                                           const gpu::GpuRecordContext& ctx,
+                                           const WavefrontRect& window)
+{
+    UtilityDeviceAovs* aovs = film.deviceAovs();
+
+    // A window too large for one binding hands its depth and ids over in tiles, batch by batch.
+    if (!aovs || !haveFilmKernels() || !UtilityDeviceAovs::fits(ctx, window.width, window.height)) {
+        return nullptr;
+    }
+
+    return aovs;
 }
 
 bool
@@ -1420,6 +1447,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
                                           Recorder& rec,
                                           WavefrontFilm& film,
                                           UtilityRenderBuffer* deviceColor,
+                                          UtilityDeviceAovs* deviceAovs,
                                           std::uint32_t& deepest)
 {
     const std::size_t count = static_cast<std::size_t>(rect.width) * rect.height;
@@ -1428,6 +1456,11 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
 
     if (deviceColor) {
         aovs.color = false;
+    }
+    if (deviceAovs) {
+        aovs.depth = false;
+        aovs.primId = false;
+        aovs.instanceId = false;
     }
     if (!reserveReadback(count, aovs)) {
         return false;
@@ -1760,6 +1793,13 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
             return fail("WavefrontGpu could not write a batch's colours to the film", s);
         }
     }
+    if (deviceAovs) {
+        const utilityProfile::Scope timed(utilityProfile::Stage::FilmAccumulate);
+
+        if (gpu::GpuStatus s = deviceAovs->recordBatch(rec.ctx(), *hitIds, *weights, *depth, *primId, *instanceId, rect.y, rect.height); !s) {
+            return fail("WavefrontGpu could not keep a batch's depth and ids on the device", s);
+        }
+    }
 
     // The geometry array comes first in the hit ids, as Kernels/UtilityTypes.slang lays them out.
     const struct {
@@ -1779,8 +1819,12 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     };
 
     {
-        const utilityProfile::Scope timed(utilityProfile::Stage::Readback);
+        // Only the AOVs count as read back; the bounce flags are a few words every batch needs.
+        std::optional<utilityProfile::Scope> timed;
 
+        if (aovs.any()) {
+            timed.emplace(utilityProfile::Stage::Readback);
+        }
         for (const auto& copy : copies) {
             if (!copy.wanted) {
                 continue;
@@ -2011,6 +2055,7 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
 
     const WavefrontRect& window = frame.window;
     UtilityRenderBuffer* deviceColor = imp.deviceColorOf(film);
+    UtilityDeviceAovs* deviceAovs = nullptr;
     int row = 0;
 
     while (row < window.height) {
@@ -2049,6 +2094,12 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
 
                 return imp.fail("WavefrontGpu could not hold the film on the device", s);
             }
+            if (UtilityDeviceAovs* aovs = imp.deviceAovsOf(film, rec.ctx(), window)) {
+                if (gpu::GpuStatus s = aovs->beginPass(rec.ctx(), imp.pool, imp.filmKernels, imp.runtimeHold, window.x, window.y, window.width, window.height); !s) {
+                    return imp.fail("WavefrontGpu could not keep the depth and ids on the device", s);
+                }
+                deviceAovs = aovs;
+            }
             rec.ctx().computeBarrier();
         }
 
@@ -2072,11 +2123,14 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
         rect.height = static_cast<int>(rows);
         std::uint32_t deepest = 0;
 
-        if (!imp.renderBatch(frame, rect, rec, film, deviceColor, deepest)) {
+        if (!imp.renderBatch(frame, rect, rec, film, deviceColor, deviceAovs, deepest)) {
             return false;
         }
         noteBounceTraced(deepest);
         row += rect.height;
+    }
+    if (deviceAovs) {
+        deviceAovs->endPass();
     }
 
     return true;

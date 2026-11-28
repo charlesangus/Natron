@@ -51,6 +51,10 @@
 #define kRenderDelegateUtilityCameraTimesSetting "natron:cameraMotionTimes"
 #define kRenderDelegateUtilityCameraViewsSetting "natron:cameraMotionViews"
 #define kRenderDelegateUtilityCameraProjectionsSetting "natron:cameraMotionProjections"
+// Whether the utility renderer's frames are watched while they render, a bool, false when unset: a watched
+// frame shows its samples so far every so often, while any other is read only once it is whole, which spares
+// it reading the device back each sample.
+#define kRenderDelegateUtilityProgressiveSetting "natron:progressive"
 
 // The id of a Renderer menu entry that renders with the renderer the active render settings prim
 // names (natron:renderer), Storm when it names none. No Hydra plug-in has it.

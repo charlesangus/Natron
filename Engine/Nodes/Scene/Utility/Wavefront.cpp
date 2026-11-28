@@ -1727,15 +1727,12 @@ wavefrontDrawSamples(WavefrontExecutor& executor,
             if (!executor.render(scene, atPass, film, stop, threads)) {
                 return false;
             }
-            {
-                const utilityProfile::Scope timed(utilityProfile::Stage::PublishPass);
-
-                film.passDrawn();
-            }
+            film.passDrawn();
             if (progress) {
                 progress(static_cast<std::size_t>(i) + 1);
             }
         }
+        film.frameDrawn();
 
         return true;
     } else {
@@ -1751,15 +1748,12 @@ wavefrontDrawSamples(WavefrontExecutor& executor,
         if (!executor.render(scene, drawn, film, stop, threads)) {
             return false;
         }
-        {
-            const utilityProfile::Scope timed(utilityProfile::Stage::PublishPass);
-
-            film.passDrawn();
-        }
+        film.passDrawn();
         if (progress) {
             progress(static_cast<std::size_t>(i) + 1);
         }
     }
+    film.frameDrawn();
 
     return true;
 }

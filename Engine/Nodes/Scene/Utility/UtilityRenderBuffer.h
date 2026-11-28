@@ -139,6 +139,79 @@ public:
 private:
     std::shared_ptr<UtilityDeviceFilm> _film;
 };
+
+class UtilityRenderBuffer;
+
+/**
+ * @brief One frame's depth, prim id and instance id kept on the device: for each pixel of the window the frame
+ * draws, the heaviest of its samples so far, as an unfiltered UtilityRenderBuffer::addSample() keeps it. The
+ * frame's thread alone uses it, from its first pass until resolve() hands the samples to the host buffers.
+ **/
+class UtilityDeviceAovs {
+public:
+    UtilityDeviceAovs();
+    ~UtilityDeviceAovs();
+
+    UtilityDeviceAovs(const UtilityDeviceAovs&) = delete;
+    UtilityDeviceAovs& operator=(const UtilityDeviceAovs&) = delete;
+
+    // Whether a window of width x height pixels fits the one binding of context's device the picks take.
+    static bool fits(const gpu::GpuRecordContext& context,
+                     int width,
+                     int height);
+
+    /**
+     * @brief Starts a pass over the window from (x, y). The frame's first pass over a window writes every pixel's
+     * sample without reading what the device held, so the picks need no clear. runtimeHold keeps pool and
+     * context's device valid while the picks live.
+     **/
+    gpu::GpuStatus beginPass(gpu::GpuRecordContext& context,
+                             gpu::GpuBufferPool& pool,
+                             const std::shared_ptr<const UtilityFilmKernels>& kernels,
+                             const std::shared_ptr<void>& runtimeHold,
+                             int x,
+                             int y,
+                             int width,
+                             int height);
+
+    /**
+     * @brief Records into context the keeping of a batch's samples, for the rays of the window's whole rows from
+     * y on, rows of them; the buffers are laid out as the shading kernel writes them, weights as the ray
+     * generation does. After beginPass() only.
+     **/
+    gpu::GpuStatus recordBatch(gpu::GpuRecordContext& context,
+                               const gpu::GpuBuffer& hitIds,
+                               const gpu::GpuBuffer& weights,
+                               const gpu::GpuBuffer& depth,
+                               const gpu::GpuBuffer& primId,
+                               const gpu::GpuBuffer& instanceId,
+                               int y,
+                               int rows);
+
+    // The pass begun last was drawn over the whole window.
+    void endPass();
+
+    // Whether a whole pass was drawn since the picks were made or dropped.
+    bool drawn() const;
+
+    /**
+     * @brief Reads the picks back, waiting for the copy, and adds each pixel's sample to every buffer of its AOV
+     * with addSample(), on up to threads threads. Without a pass drawn the buffers are left as they are. False
+     * with *error set when the device cannot.
+     **/
+    bool resolve(const std::vector<UtilityRenderBuffer*>& depth,
+                 const std::vector<UtilityRenderBuffer*>& primId,
+                 const std::vector<UtilityRenderBuffer*>& instanceId,
+                 int threads,
+                 std::string* error);
+
+    // Lets go of the device memory; the next pass starts the picks over.
+    void drop();
+
+private:
+    struct Implementation;
+    std::unique_ptr<Implementation> _imp;
+};
 #endif // NATRON_HAVE_GPU
 
 /**

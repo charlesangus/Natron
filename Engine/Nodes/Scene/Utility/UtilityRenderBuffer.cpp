@@ -43,6 +43,7 @@
 #include <array>
 #include <limits>
 #include <numeric>
+#include <optional>
 #include <span>
 #include <utility>
 
@@ -53,9 +54,12 @@
 #include "Engine/Gpu/GpuKernelRegistry.h"
 #include "Engine/Gpu/GpuRecord.h"
 #include "Engine/GpuContext.h"
+#include "Engine/Nodes/Scene/Utility/UtilityProfile.h"
+#include "Engine/PoolParallelFor.h"
 
 #include "utility_film_clear_spirv.h"
 #include "utility_film_pack_spirv.h"
+#include "utility_film_pick_spirv.h"
 #include "utility_film_scatter_spirv.h"
 #endif
 
@@ -138,7 +142,7 @@ encodeComponent(HdFormat componentFormat,
     }
 }
 #ifdef NATRON_HAVE_GPU
-// Kernels/FilmClear.slang, FilmScatter.slang and FilmPack.slang declare these push constants.
+// Kernels/FilmClear.slang, FilmScatter.slang, FilmPack.slang and FilmPick.slang declare these push constants.
 struct KernelFilmClearParams {
     std::uint32_t value[4];
     std::uint32_t width;
@@ -174,10 +178,21 @@ struct KernelFilmPackParams {
     std::uint32_t padding2;
 };
 
+struct KernelFilmPickParams {
+    std::uint32_t first;
+    std::uint32_t count;
+    std::uint32_t fresh;
+    std::uint32_t padding0;
+};
+
+// Kernels/FilmPick.slang's words a pixel: weight, hit, depth, prim id, instance id.
+const std::size_t kFilmPickWords = 5;
+
 static_assert(sizeof(KernelFilmClearParams) == utility_film_clear_push_bytes);
 static_assert(sizeof(KernelFilmScatterParams) == utility_film_scatter_push_bytes);
 static_assert(sizeof(KernelFilmPackParams) == utility_film_pack_push_bytes);
-static_assert(utility_film_clear_storage_buffers == 2 && utility_film_scatter_storage_buffers == 5 && utility_film_pack_storage_buffers == 2);
+static_assert(sizeof(KernelFilmPickParams) == utility_film_pick_push_bytes);
+static_assert(utility_film_clear_storage_buffers == 2 && utility_film_scatter_storage_buffers == 5 && utility_film_pack_storage_buffers == 2 && utility_film_pick_storage_buffers == 6);
 
 gpu::GpuStatus
 failure(const std::string& message)
@@ -279,6 +294,7 @@ struct UtilityFilmKernels {
     std::shared_ptr<gpu::GpuKernel> clear;
     std::shared_ptr<gpu::GpuKernel> scatter;
     std::shared_ptr<gpu::GpuKernel> pack;
+    std::shared_ptr<gpu::GpuKernel> pick;
 };
 
 class UtilityDeviceFilm {
@@ -593,6 +609,9 @@ makeUtilityFilmKernels(gpu::GpuDevice& device,
     const gpu::GpuKernelDesc pack {
         utility_film_pack_spirv, utility_film_pack_spirv_words, utility_film_pack_entry, utility_film_pack_storage_buffers, utility_film_pack_push_bytes, { utility_film_pack_group_size[0], utility_film_pack_group_size[1], utility_film_pack_group_size[2] }
     };
+    const gpu::GpuKernelDesc pick {
+        utility_film_pick_spirv, utility_film_pick_spirv_words, utility_film_pick_entry, utility_film_pick_storage_buffers, utility_film_pick_push_bytes, { utility_film_pick_group_size[0], utility_film_pick_group_size[1], utility_film_pick_group_size[2] }
+    };
 
     *status = makeKernel(device, clear, &kernels->clear);
     if (status->ok()) {
@@ -601,6 +620,9 @@ makeUtilityFilmKernels(gpu::GpuDevice& device,
     if (status->ok()) {
         *status = makeKernel(device, pack, &kernels->pack);
     }
+    if (status->ok()) {
+        *status = makeKernel(device, pick, &kernels->pick);
+    }
 
     return status->ok() ? kernels : std::shared_ptr<const UtilityFilmKernels>();
 }
@@ -608,7 +630,7 @@ makeUtilityFilmKernels(gpu::GpuDevice& device,
 std::vector<std::shared_ptr<gpu::GpuKernel>>
 utilityFilmKernelList(const UtilityFilmKernels& kernels)
 {
-    return { kernels.clear, kernels.scatter, kernels.pack };
+    return { kernels.clear, kernels.scatter, kernels.pack, kernels.pick };
 }
 
 UtilityDeviceResource::UtilityDeviceResource()
@@ -706,6 +728,251 @@ UtilityDeviceResource::download(std::vector<float>* out,
     }
 
     return true;
+}
+struct UtilityDeviceAovs::Implementation {
+    // Destroyed after the buffers below, whose pool and device it keeps alive.
+    std::shared_ptr<void> runtimeHold;
+    gpu::GpuKernelRegistry* registry = nullptr;
+    gpu::GpuBufferPool* pool = nullptr;
+    std::shared_ptr<const UtilityFilmKernels> kernels;
+    // Shared with the submissions that write it, so that a frame stopped with one in flight leaves it its buffer.
+    std::shared_ptr<gpu::GpuBufferHandle> picks;
+    gpu::GpuBuffer staging;
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+    bool fresh = true;
+    bool drawn = false;
+
+    std::uint64_t bytes() const
+    {
+        return static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) * kFilmPickWords * sizeof(std::uint32_t);
+    }
+};
+
+UtilityDeviceAovs::UtilityDeviceAovs()
+    : _imp(new Implementation)
+{
+}
+
+UtilityDeviceAovs::~UtilityDeviceAovs()
+{
+}
+
+bool
+UtilityDeviceAovs::fits(const gpu::GpuRecordContext& context,
+                        int width,
+                        int height)
+{
+    if ((width <= 0) || (height <= 0)) {
+        return false;
+    }
+
+    const std::uint64_t bytes = static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) * kFilmPickWords * sizeof(std::uint32_t);
+
+    // The kernel indexes the words in 32 bits.
+    return (bytes <= context.maxStorageBufferBytes()) && (bytes / sizeof(std::uint32_t) <= std::numeric_limits<std::uint32_t>::max());
+}
+
+gpu::GpuStatus
+UtilityDeviceAovs::beginPass(gpu::GpuRecordContext& context,
+                             gpu::GpuBufferPool& pool,
+                             const std::shared_ptr<const UtilityFilmKernels>& kernels,
+                             const std::shared_ptr<void>& runtimeHold,
+                             int x,
+                             int y,
+                             int width,
+                             int height)
+{
+    Implementation& imp = *_imp;
+
+    if (!kernels || !kernels->pick) {
+        return failure("The Utility renderer has no kernel to keep its depth and ids on the GPU");
+    }
+    if (!fits(context, width, height)) {
+        return failure("The Utility renderer's depth and ids of " + std::to_string(width) + "x" + std::to_string(height) + " pixels do not fit the GPU's storage buffer range");
+    }
+
+    const bool same = imp.picks && (imp.registry == &context.registry()) && (imp.pool == &pool) && (imp.x == x) && (imp.y == y) && (imp.width == width) && (imp.height == height);
+
+    if (!same) {
+        drop();
+
+        gpu::GpuBufferHandle picks;
+
+        if (gpu::GpuStatus s = pool.acquire(static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) * kFilmPickWords * sizeof(std::uint32_t), picks); !s) {
+            return s;
+        }
+        imp.runtimeHold = runtimeHold;
+        imp.registry = &context.registry();
+        imp.pool = &pool;
+        imp.kernels = kernels;
+        imp.picks = std::make_shared<gpu::GpuBufferHandle>(std::move(picks));
+        imp.x = x;
+        imp.y = y;
+        imp.width = width;
+        imp.height = height;
+    }
+    imp.fresh = !imp.drawn;
+
+    return gpu::GpuStatus();
+}
+
+gpu::GpuStatus
+UtilityDeviceAovs::recordBatch(gpu::GpuRecordContext& context,
+                               const gpu::GpuBuffer& hitIds,
+                               const gpu::GpuBuffer& weights,
+                               const gpu::GpuBuffer& depth,
+                               const gpu::GpuBuffer& primId,
+                               const gpu::GpuBuffer& instanceId,
+                               int y,
+                               int rows)
+{
+    Implementation& imp = *_imp;
+
+    if (!imp.picks) {
+        return failure("The Utility renderer's depth and ids are not on the GPU");
+    }
+    if (rows <= 0) {
+        return gpu::GpuStatus();
+    }
+    if ((y < imp.y) || (y + rows > imp.y + imp.height)) {
+        return failure("The Utility renderer drew a batch outside the window its depth and ids were kept for");
+    }
+
+    const KernelFilmPickParams params = {
+        static_cast<std::uint32_t>(y - imp.y) * static_cast<std::uint32_t>(imp.width), static_cast<std::uint32_t>(imp.width) * static_cast<std::uint32_t>(rows), imp.fresh ? 1u : 0u, 0
+    };
+    const std::array<gpu::GpuBinding, 6> bindings = {
+        gpu::GpuBinding::storage(0, hitIds),
+        gpu::GpuBinding::storage(1, weights),
+        gpu::GpuBinding::storage(2, depth),
+        gpu::GpuBinding::storage(3, primId),
+        gpu::GpuBinding::storage(4, instanceId),
+        gpu::GpuBinding::storage(5, imp.picks->buffer(), 0, imp.bytes()),
+    };
+
+    context.computeBarrier();
+    if (gpu::GpuStatus s = context.dispatchBindings(imp.kernels->pick, bindings, std::as_bytes(std::span(&params, 1)), { params.count, 1, 1 }); !s) {
+        return s;
+    }
+    context.hold(imp.picks);
+
+    return gpu::GpuStatus();
+}
+
+void
+UtilityDeviceAovs::endPass()
+{
+    if (_imp->picks) {
+        _imp->drawn = true;
+        _imp->fresh = false;
+    }
+}
+
+bool
+UtilityDeviceAovs::drawn() const
+{
+    return _imp->drawn;
+}
+
+bool
+UtilityDeviceAovs::resolve(const std::vector<UtilityRenderBuffer*>& depth,
+                           const std::vector<UtilityRenderBuffer*>& primId,
+                           const std::vector<UtilityRenderBuffer*>& instanceId,
+                           int threads,
+                           std::string* error)
+{
+    Implementation& imp = *_imp;
+
+    if (!imp.drawn || !imp.picks || (depth.empty() && primId.empty() && instanceId.empty())) {
+        return true;
+    }
+
+    const std::uint64_t bytes = imp.bytes();
+    std::unique_ptr<gpu::GpuRecordContext> context;
+    gpu::GpuStatus status;
+    std::optional<utilityProfile::Scope> timed;
+
+    timed.emplace(utilityProfile::Stage::Readback);
+    if (!imp.staging || (imp.staging.size() < bytes)) {
+        imp.staging = gpu::GpuBuffer();
+        status = gpu::GpuBuffer::createStaging(imp.registry->device(), bytes, gpu::kGpuBufferDefaultUsage, imp.staging);
+    }
+    if (status) {
+        status = gpu::GpuRecordContext::create(*imp.registry, context, imp.pool);
+    }
+    if (status) {
+        // The passes' writes were made by earlier submissions on the same queue.
+        context->computeBarrier();
+        status = context->copyBuffer(imp.picks->buffer(), 0, imp.staging, 0, bytes);
+    }
+    if (status) {
+        status = context->submitAndWait();
+    }
+    if (!status) {
+        imp.staging = gpu::GpuBuffer();
+        *error = "The Utility renderer could not read its depth and ids back from the GPU: " + status.message;
+
+        return false;
+    }
+
+    timed.reset();
+    timed.emplace(utilityProfile::Stage::WriteTile);
+
+    const std::uint32_t* const words = static_cast<const std::uint32_t*>(imp.staging.mapped());
+    const int width = imp.width;
+    const int left = imp.x;
+    const int bottom = imp.y;
+
+    parallelForOnGlobalPool(imp.height, std::max(1, threads), [&](int row) {
+        const std::uint32_t* pick = words + static_cast<std::size_t>(row) * width * kFilmPickWords;
+        const unsigned int y = static_cast<unsigned int>(bottom + row);
+
+        for (int column = 0; column < width; ++column, pick += kFilmPickWords) {
+            float weight = 0.f;
+            float z = 0.f;
+            std::int32_t prim = 0;
+            std::int32_t instance = 0;
+
+            std::memcpy(&weight, pick, sizeof(float));
+            std::memcpy(&z, pick + 2, sizeof(float));
+            std::memcpy(&prim, pick + 3, sizeof(std::int32_t));
+            std::memcpy(&instance, pick + 4, sizeof(std::int32_t));
+
+            const bool hit = pick[1] != 0;
+            const unsigned int x = static_cast<unsigned int>(left + column);
+
+            for (UtilityRenderBuffer* buffer : depth) {
+                buffer->addSample(x, y, hit ? &z : nullptr, 1, weight, false);
+            }
+            for (UtilityRenderBuffer* buffer : primId) {
+                buffer->addSample(x, y, hit ? &prim : nullptr, weight);
+            }
+            for (UtilityRenderBuffer* buffer : instanceId) {
+                buffer->addSample(x, y, hit ? &instance : nullptr, weight);
+            }
+        }
+    });
+
+    return true;
+}
+
+void
+UtilityDeviceAovs::drop()
+{
+    Implementation& imp = *_imp;
+
+    imp.staging = gpu::GpuBuffer();
+    imp.picks.reset();
+    imp.kernels.reset();
+    imp.registry = nullptr;
+    imp.pool = nullptr;
+    imp.x = imp.y = imp.width = imp.height = 0;
+    imp.fresh = true;
+    imp.drawn = false;
+    imp.runtimeHold.reset();
 }
 #endif // NATRON_HAVE_GPU
 

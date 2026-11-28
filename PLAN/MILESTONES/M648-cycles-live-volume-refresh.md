@@ -20,12 +20,12 @@ The Cycles Hydra delegate's `src/hydra/field.cpp` (~:140 on `natron/m554-shutter
 
 ## Phase 648.1: Live Field Refresh
 
-- [ ] M648.P1.T1 — Test that a live field edit refreshes a Cycles volume
+- [x] M648.P1.T1 — Test that a live field edit refreshes a Cycles volume
   - files: `Tests/Scene/VolumeRender_Test.cpp` (on `feature/f1-vdb-volumes`)
   - approach: reuse the file's `Session`/`Render` helpers. Render frame 1 on a Cycles engine. Then edit the field prim on the live stage, without changing the frame: point its `filePath` at the grid file the frame-2 render uses, or change `fieldName` to a grid that is missing. Render again on the same engine. Assert `trace.freshEngine` is false and `trace.remakes` is 0, that the image moved the way the edit implies (side swap, or the volume gone), and that `codingErrors` does not contain "emulation". Add the same test for MoonRay as a cross-check. If Cycles fails on the current pin, commit the test as `DISABLED_` with a comment naming P1.T2. The bundled gtest is old: no `GTEST_SKIP`, no `ASSERT_TRUE(ptr)`.
   - verify: the volume-render tests run. The MoonRay variant passes. The Cycles variant either passes (bug not real) or fails on the refresh or emulation assertion, and is committed `DISABLED_`.
   - size: M
-- [ ] M648.P1.T2 — Fix field.cpp's dirtying in the Cycles fork and bump the pin
+- [x] M648.P1.T2 — Fix field.cpp's dirtying in the Cycles fork and bump the pin
   - files: the Cycles fork `src/hydra/field.cpp` (charlesangus/cycles, branched from the pin M554 - Scene Camera For Delegate Renders landed), `tools/ci/local/Dockerfile` (`NATRON_CYCLES_COMMIT`/`NATRON_CYCLES_SHA256`), `Tests/Scene/VolumeRender_Test.cpp`
   - approach: mirror M554's mesh.cpp fix. In field.cpp, replace the single-rprim dirtying during sync with `MarkAllRprimsDirty(HdChangeTracker::DirtyTopology)` on the render index's change tracker, or the narrowest bit that makes the volume re-read its field, matching how mesh.cpp does it. Push it as `natron/m648-live-field-refresh`, bump the commit and archive SHA256 in the Dockerfile, and re-enable P1.T1's Cycles test.
   - verify: the Cycles live-field test passes on the new pin, and every other `VolumeRender*` test still passes.
@@ -36,3 +36,4 @@ The Cycles Hydra delegate's `src/hydra/field.cpp` (~:140 on `natron/m554-shutter
 - 2026-11-28 — m648-gate2 (run 46120899148, fork 8798dfea8c with no field dirtying): Cycles volume no longer refreshes on frame change or live edit — scene-index forwarding does not happen in our chain; the earlier MarkRprimDirty/MarkAllRprimsDirty calls worked while logging the emulation error. Opus investigating the proper Hydra 2.0 dependency (volume → field). NatronUtilityGoldenTest reference_f1/f24 differ by ≤4.2e-7 on the F1 branch even with main's #401 (rounding-only; per the ulp rule, re-record goldens on F1 with --record-goldens rather than chase).
 - 2026-11-28 — Cause found: USD leaves volume→field dependency forwarding to each renderer (Storm and hdPrman register a dependency index + HdDependencyForwardingSceneIndex for their names); nothing was registered for Cycles, and with a terminal scene index the change tracker rejects per-prim dirtying. The fork (e42c0987f8) now registers both for "Cycles" (phases 900/1000). M651 needs the same for MoonRay plus dropping its MarkRprimDirty. m648-gate3 running.
 - 2026-11-28 — m648-gate3 (fork e42c0987f8): VolumeRenderCycles TheVolumeDarkensItsSide and ALiveFieldEditMovesTheVolume pass (no emulation errors, no remake). Remaining failures: SplitOnGaps flake (M639) and NatronUtilityGoldenTest ulp diffs — re-recording on this branch (m648-goldens).
+- 2026-11-28 — Merged into F1 (PR #412, squash). Follow-ups: M651 (MoonRay), M652 (Cycles shutter/subdivision emulation calls).

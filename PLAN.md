@@ -706,7 +706,7 @@ future core work has solid ground to build on.
 | M645 | Aurora Delegate Evaluation | todo | - |  | E9 |  | | [M645-aurora-delegate-evaluation.md](PLAN/MILESTONES/M645-aurora-delegate-evaluation.md) |
 | M646 | Template Node And Versioning | done | M103, M104 | | E12 | F33 | | [M646-template-node-and-versioning.md](PLAN/MILESTONES/M646-template-node-and-versioning.md) |
 | M647 | Template Compare Layout | done | M104 | | E12 | F33 | | [M647-template-compare-layout.md](PLAN/MILESTONES/M647-template-compare-layout.md) |
-| M648 | Cycles Live Volume Refresh | doing | M554 | bosley-executor | E9 | F1 | | [M648-cycles-live-volume-refresh.md](PLAN/MILESTONES/M648-cycles-live-volume-refresh.md) |
+| M648 | Cycles Live Volume Refresh | done | M554 | | E9 | F1 | | [M648-cycles-live-volume-refresh.md](PLAN/MILESTONES/M648-cycles-live-volume-refresh.md) |
 | M649 | On-Graph Merge Resolution | doing | M104, M647 | bosley-executor | E12 | F33 | | [M649-on-graph-merge-resolution.md](PLAN/MILESTONES/M649-on-graph-merge-resolution.md) |
 | M650 | Delegate Preview Surface Refraction | todo | - | | E9 | | | [M650-delegate-preview-surface-refraction.md](PLAN/MILESTONES/M650-delegate-preview-surface-refraction.md) |
 | M651 | MoonRay Live Volume Refresh | todo | M648 | | E9 | F1 | | [M651-moonray-live-volume-refresh.md](PLAN/MILESTONES/M651-moonray-live-volume-refresh.md) |

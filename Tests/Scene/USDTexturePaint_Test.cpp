@@ -1831,6 +1831,14 @@ catchUpDirect(const NodePtr& paint,
     EXPECT_TRUE(pumpUntil([&]() { return !effect->isBaking(); }, 30000));
 }
 
+// A stroke's own knobs have no holder, so neither adding it nor setting them reaches the node: the
+// pen stroke's end does, through the curve context.
+void
+endStroke(const NodePtr& paint)
+{
+    paint->getRotoContext()->evaluateChange();
+}
+
 // Waits for the baker to bring session's texels up to date on its own, as it does after any edit.
 void
 awaitDirectCatchUp(const NodePtr& paint,
@@ -2059,11 +2067,13 @@ TEST_F(USDTexturePaintTest, UndoingADirectStrokeIsExactFromTheJournalAndFromARep
     USDTexturePaint* effect = getUSDTexturePaint(paint);
     USDTexturePaint::setSessionPaintModel(session, USDTexturePaint::ePaintModelDirect);
     setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "first", kRedU, 0.5), 0., 1., 0.);
+    endStroke(paint);
     awaitDirectCatchUp(paint, session);
     const std::vector<float> previous = tileTexels(renderTile(paint));
 
     RotoStrokeItemPtr stroke = addBrushStroke(paint, session, eRotoStrokeTypeSolid, "second", kRedU + 0.02, 0.5);
     setColor(stroke, 1., 0., 1.);
+    endStroke(paint);
     RotoCurveInteractPtr interact = RotoCurveInteract::create(effect);
     ASSERT_TRUE(bool(interact));
     AddStrokeUndoCommand command(interact, stroke);

@@ -667,6 +667,9 @@ TexelPages::read(const PageKey& key,
     }
     std::vector<GfHalf> halves;
     toHalves(filled, &halves);
+    // Every later read comes from the cached halves, so the first must be rounded the same way
+    // or a texel's base depends on how often its page was read.
+    fromHalves(halves.data(), &filled);
     PagePtr winner;
     {
         PagePtr made = makePage(_imp->budget, _imp->spill, true, std::move(halves));

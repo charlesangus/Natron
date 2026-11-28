@@ -984,3 +984,8 @@ Reference: Nuke 17's EdgeExtend (`.local/docs/nuke/html/content/reference_guide/
   3. **Compare with base:** ghosts are drawn at their absolute base-file positions instead of relative to the surrounding nodes.
   4. **Node moves count as changes:** moving the whole template shouldn't count; moving a node within the template possibly should — needs a rule.
   5. **Probable bug:** importing a second template, changing knobs, then Update from template appears to do nothing.
+
+### 2026-11-27 — change-request — Cycles VDB field changes may not refresh a live volume
+- from: bosley-executor (cat-pm)
+- refs: M554
+- body: In the Cycles fork, `src/hydra/field.cpp` (~:140) marks a single rprim dirty during a scene-index sync, which Hydra rejects ("requires emulation"). A VDB field that changes on a live engine probably won't refresh its volume. M554 - Scene Camera For Delegate Renders fixed the same pattern in mesh.cpp by calling `MarkAllRprimsDirty(DirtyTopology)`. Apply the same fix to field.cpp and add a live-edit volume refresh test (F1 - VDB Volumes area).

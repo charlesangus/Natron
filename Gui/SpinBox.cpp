@@ -1054,8 +1054,12 @@ SpinBox::setAnimation(int i)
 {
     if (animation != i) {
         animation = i;
-        style()->unpolish(this);
-        style()->polish(this);
+        // An unpolished widget gets the new state from its first polish; polishing it here too
+        // would only be paid twice.
+        if (testAttribute(Qt::WA_WState_Polished)) {
+            style()->unpolish(this);
+            style()->polish(this);
+        }
         update();
     }
 }
@@ -1065,8 +1069,10 @@ SpinBox::setDirty(bool d)
 {
     if (dirty != d) {
         dirty = d;
-        style()->unpolish(this);
-        style()->polish(this);
+        if (testAttribute(Qt::WA_WState_Polished)) {
+            style()->unpolish(this);
+            style()->polish(this);
+        }
         update();
     }
 }

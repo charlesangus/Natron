@@ -82,6 +82,9 @@
 // without such inputs.
 #define kNodesMenuPropInputKinds "natronInputKinds"
 
+// On actions creating a loop's begin and end nodes together: the name of the LoopPairKind.
+#define kNodesMenuPropLoopPair "natronLoopPair"
+
 // On grouping submenus' menu actions: the grouping's name, unescaped, and the icon the
 // toolbar draws for it.
 #define kNodesMenuPropGrouping "natronGrouping"

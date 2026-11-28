@@ -347,11 +347,17 @@ public:
     void registerFrameDependentNode(NodeGui* node);
 
     /**
-     * @brief Builds the node's properties panel once the graph has painted, so that a new node is
-     * on screen before its panel's cost is paid. A node queued twice is built once, and a panel
-     * created in the meantime by any other caller is left as it is.
+     * @brief Builds the node's properties panel once the creation that queued it has finished, so
+     * that the panel reads the node as its creation callbacks and connections left it. The build
+     * runs before the next paint, so the node and its panel are shown in the same frame. A node
+     * queued twice is built once, and a panel created in the meantime by any other caller is left
+     * as it is.
      **/
     void schedulePanelBuild(const NodeGuiPtr& node);
+
+    // Builds every queued panel now. Interactive creation calls it once the node is created, so
+    // that no event, paint included, runs between the creation and its panel.
+    void buildScheduledPanels();
 
     // Takes the node out of the schedulePanelBuild() queue; returns whether it was queued.
     bool cancelPanelBuild(const NodeGuiPtr& node);
@@ -473,9 +479,7 @@ public Q_SLOTS:
     void onSettingsSaved();
 
 private:
-    void armPanelBuildWait();
     void postPanelBuildFlush();
-    void flushPanelBuilds();
 
     NodeGraph(const NodeGraph&) = delete;
 

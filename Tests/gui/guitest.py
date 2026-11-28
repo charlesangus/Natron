@@ -171,8 +171,9 @@ def viewer_messages():
     return messages
 
 
-def viewer_centre_colour():
-    """The colour on screen at the centre of the first visible viewer, or None if there is none.
+def viewer_centre_colour(offset=(0, 0)):
+    """The colour on screen at the centre of the first visible viewer (plus offset in pixels), or None
+    if there is none.
     Read from a screen grab: a widget grab of the GL viewer can come out blank under llvmpipe."""
     visible = [w for w in widgets_of("ViewerGL") if w.isVisible()]
     if not visible:
@@ -180,7 +181,7 @@ def viewer_centre_colour():
     w = visible[0]
     centre = w.mapToGlobal(w.rect().center())
     image = QGuiApplication.primaryScreen().grabWindow(0).toImage()
-    c = image.pixelColor(centre.x(), centre.y())
+    c = image.pixelColor(centre.x() + offset[0], centre.y() + offset[1])
     return (c.red(), c.green(), c.blue())
 
 

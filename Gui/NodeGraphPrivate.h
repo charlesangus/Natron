@@ -478,12 +478,9 @@ public:
     std::vector<std::pair<NodeGuiWPtr, int>> refreshPending;
     std::unordered_map<NodeGui*, std::size_t> refreshPendingIndex;
 
-    // Panels waiting for the graph's next paint, then those whose build is already queued.
+    // Panels waiting for the end of the creation that queued them.
     std::vector<NodeGuiWPtr> panelBuildsPending;
-    std::vector<NodeGuiWPtr> panelBuildsPosted;
     bool panelBuildFlushPosted = false;
-    // Bumped to cancel a pending wait for a paint.
-    unsigned panelBuildGeneration = 0;
 
     // Nodes whose rendering counters or persistent message changed since refreshRenderStateTimer
     // last fired, keyed by address so that a node queued twice is refreshed once.

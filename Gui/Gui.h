@@ -405,13 +405,8 @@ public:
     void setUndoRedoStackLimit(int limit);
 
     /**
-     * @brief Make a new viewer interface for the given node.
-     * This will create new widgets and enrich the interface of the viewer tab.
-     **/
-    void createNodeViewerInterface(const NodeGuiPtr& n);
-
-    /**
-     * @brief Set the viewer interface for a plug-in to be the one of the node n to be active on all viewers.
+     * @brief Set the viewer interface for a plug-in to be the one of the node n to be active on all viewers,
+     * creating the node's interface on a viewer that has none yet.
      **/
     void setNodeViewerInterface(const NodeGuiPtr& n);
 

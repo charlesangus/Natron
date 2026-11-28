@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <atomic>
 #include <list>
 #include <memory>
 #include <string>
@@ -203,6 +204,14 @@ void refreshLoopMessage(const NodePtr& node,
                         MessageTypeEnum type,
                         const std::string& message,
                         std::string* posted);
+
+/**
+ * @brief Raises *editedAt to the sequence of the latest render request made, for a loop end told
+ * of an edit held back by the renders reading it. A viewer edit keeps the oldest viewer render
+ * running and a loop can cook for minutes, so the cooks of every render with a sequence up to
+ * *editedAt are stale, even one that reaches the loop end later. MT-safe.
+ **/
+void noteEditAtLatestRenderSequence(std::atomic<U64>* editedAt);
 
 NATRON_NAMESPACE_EXIT
 

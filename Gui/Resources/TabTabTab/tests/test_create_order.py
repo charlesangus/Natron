@@ -1,5 +1,5 @@
-"""TabTabTabWidget.create() and the show that follows it: when the choice
-is invoked relative to closing the popup, and where the pre-filled query
+"""TabTabTabWidget.create() and the show that follows it: that the popup
+closes before the choice is invoked, and where the pre-filled query
 is filtered. Runs against stubbed PySide6, without real Qt.
 """
 
@@ -90,13 +90,9 @@ class _Input(object):
 
 
 class _Plugin(object):
-    def __init__(self, events, opens_window, items):
+    def __init__(self, events, items):
         self._events = events
-        self._opens_window = opens_window
         self.items = items
-
-    def invoke_opens_window(self, thing):
-        return self._opens_window
 
     def invoke(self, thing):
         self._events.append(("invoke", thing["menupath"]))
@@ -142,7 +138,7 @@ class _Weights(object):
         pass
 
 
-def _widget(module, opens_window):
+def _widget(module):
     events = []
     thing = {"text": "Blur [Filter]", "menupath": "Filter/Blur", "menuobj": object()}
     items = [thing]
@@ -151,7 +147,7 @@ def _widget(module, opens_window):
     widget.things.selectedIndexes.return_value = [0]
     widget.things_model = _Model(events, thing)
     widget.weights = _Weights(events)
-    widget.plugin = _Plugin(events, opens_window, items)
+    widget.plugin = _Plugin(events, items)
     widget.input = _Input(events, text="blu")
     widget.close = lambda: events.append(("close",))
     widget._pending_text = None
@@ -160,33 +156,18 @@ def _widget(module, opens_window):
     return widget, events
 
 
-def test_windowless_choice_is_invoked_before_the_popup_closes():
+def test_choice_closes_the_popup_before_it_is_invoked():
     module = _load_core()
-    widget, events = _widget(module, opens_window=False)
-
-    widget.create()
-
-    assert events == [("increment", "Filter/Blur"), ("invoke", "Filter/Blur"), ("close",)]
-
-
-def test_choice_that_opens_a_window_closes_the_popup_first():
-    module = _load_core()
-    widget, events = _widget(module, opens_window=True)
+    widget, events = _widget(module)
 
     widget.create()
 
     assert events == [("increment", "Filter/Blur"), ("close",), ("invoke", "Filter/Blur")]
 
 
-def test_default_plugin_closes_first():
-    module = _load_core()
-
-    assert module.TabTabTabPlugin().invoke_opens_window({"menupath": "x"}) is True
-
-
 def test_create_leaves_the_input_and_model_alone():
     module = _load_core()
-    widget, events = _widget(module, opens_window=False)
+    widget, events = _widget(module)
 
     widget.create()
 
@@ -197,7 +178,7 @@ def test_create_leaves_the_input_and_model_alone():
 
 def test_next_show_filters_the_pending_query_once_with_the_new_weight():
     module = _load_core()
-    widget, events = _widget(module, opens_window=False)
+    widget, events = _widget(module)
     widget.create()
     del events[:]
 
@@ -210,7 +191,7 @@ def test_next_show_filters_the_pending_query_once_with_the_new_weight():
 
 def test_pending_query_filters_alone_when_rows_are_current():
     module = _load_core()
-    widget, events = _widget(module, opens_window=False)
+    widget, events = _widget(module)
     widget._pending_text = " Blur [Filter]"
 
     widget._refresh_before_show()
@@ -220,7 +201,7 @@ def test_pending_query_filters_alone_when_rows_are_current():
 
 def test_show_without_pending_query_does_not_filter():
     module = _load_core()
-    widget, events = _widget(module, opens_window=False)
+    widget, events = _widget(module)
 
     widget._refresh_before_show()
 
@@ -229,7 +210,7 @@ def test_show_without_pending_query_does_not_filter():
 
 def test_pending_query_already_in_the_input_is_not_refiltered():
     module = _load_core()
-    widget, events = _widget(module, opens_window=False)
+    widget, events = _widget(module)
     widget.input = _Input(events, text=" Blur [Filter]")
     widget._pending_text = " Blur [Filter]"
 

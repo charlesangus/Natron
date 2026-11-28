@@ -137,7 +137,7 @@ KnobGuiSeparator::_hide()
 void
 KnobGuiSeparator::_show()
 {
-    _line->show();
+    KnobGui::showWidget(_line);
 }
 
 KnobIPtr

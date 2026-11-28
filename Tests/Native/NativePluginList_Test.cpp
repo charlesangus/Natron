@@ -47,6 +47,7 @@
 #include "Engine/LibraryBinary.h"
 #include "Engine/Node.h"
 #include "Engine/Nodes/Deep/DeepWrite.h"
+#include "Engine/Nodes/Geometry/GeoFileCache.h"
 #include "Engine/Nodes/IO/NativeRead.h"
 #include "Engine/Nodes/IO/NativeWrite.h"
 #include "Engine/Nodes/Merge/Merge.h"
@@ -352,8 +353,9 @@ TEST_F(NativePluginListTest, NativeWriteIsTheOnlyImageWriter)
     for (const auto& versions : appPTR->getPluginsList()) {
         for (const Plugin* plugin : versions.second) {
             if (plugin->isWriter()) {
-                // USDWrite writes scenes, not images.
-                EXPECT_TRUE(versions.first == PLUGINID_NATRON_WRITE || versions.first == PLUGINID_NATRON_DEEPWRITE || versions.first == PLUGINID_NATRON_USDWRITE) << versions.first;
+                // isWriter is the render-target role NatronRenderer -w needs. USDWrite writes scenes and
+                // GeoFileCache writes native geometry files, neither an image format.
+                EXPECT_TRUE(versions.first == PLUGINID_NATRON_WRITE || versions.first == PLUGINID_NATRON_DEEPWRITE || versions.first == PLUGINID_NATRON_USDWRITE || versions.first == PLUGINID_NATRON_GEOFILECACHE) << versions.first;
             }
         }
     }

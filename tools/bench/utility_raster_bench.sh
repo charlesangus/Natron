@@ -9,7 +9,8 @@
 #
 # Environment (see utility_raster_bench.py for the bench's own):
 #   BENCH_PASSES, BENCH_FRAMES, BENCH_SESSIONS, BENCH_WARMUPS, BENCH_OUTPUT, BENCH_BLUR_PASSES, BENCH_SPEEDUP_AT,
-#   BENCH_RAY_BASELINE_MS, BENCH_SIZE, BENCH_DEVICE, BENCH_PIXEL_FILTER   passed through
+#   BENCH_RAY_BASELINE_MS, BENCH_SIZE, BENCH_DEVICE, BENCH_PIXEL_FILTER, BENCH_VIEWER, BENCH_VIEWER_FRAMES,
+#   BENCH_VIEWER_PASSES   passed through
 #   BENCH_PROFILE=0      renders without the renderer's profile (default on, to <out-dir>/profile.jsonl)
 #   NATRON_GPU_DEVICE    the GPU to use (default: the first hardware device)
 #   BENCH_APP_ARGS       arguments placed before the script (default "-b")

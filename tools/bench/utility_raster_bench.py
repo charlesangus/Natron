@@ -44,6 +44,12 @@
 #   BENCH_DEVICE       Natron Utility Device, GPU or CPU (default GPU); on the CPU Raster falls back to Ray, which
 #                      fails the bench, so CPU only checks the scene and the blur gate
 #   BENCH_PIXEL_FILTER Natron Utility Pixel Filter label, e.g. Box (default: the renderer's default)
+#   BENCH_VIEWER       1 also runs the viewer-equivalent sessions after the others, "only" runs nothing else: Raster,
+#                      colour only, BENCH_VIEWER_FRAMES consecutive frames (default 12) a session, BENCH_SESSIONS
+#                      sessions at each of BENCH_VIEWER_PASSES (default "1 4"). Each frame is reported as the Write's
+#                      wall time and as the wall time of the renderer's HydraRender call from the profile, which is
+#                      what a viewer waits for without the graph around it or any encode; one "viewer_frame" record a
+#                      frame, one "viewer" record a pass count with the medians and the per-stage means
 #   NATRON_UTILITY_PROFILE  the renderer's profile, one JSON line a frame; read back when set
 #   BENCH_DRY_RUN      1 writes the stage, prints the plan and renders nothing; needs no Natron
 #   BENCH_BLUR_CHECK   space-separated PNG paths: prints each one's blur record and exits 3 if any shows no blur;
@@ -81,6 +87,9 @@ BLUR_CHECK = os.environ.get("BENCH_BLUR_CHECK", "").split()
 PROFILE_REPORT = os.environ.get("BENCH_PROFILE_REPORT", "")
 PROFILE = os.environ.get("NATRON_UTILITY_PROFILE", "")
 PIXEL_FILTER = os.environ.get("BENCH_PIXEL_FILTER", "")
+VIEWER = os.environ.get("BENCH_VIEWER", "0")
+VIEWER_FRAMES = int(os.environ.get("BENCH_VIEWER_FRAMES", "12"))
+VIEWER_PASSES = [int(s) for s in os.environ.get("BENCH_VIEWER_PASSES", "1 4").split()]
 UTILITY_ID = "HdNatronUtilityRendererPlugin"
 FALLBACK_TEXT = "Render Mode is Raster, but"
 MODES = ("Ray", "Raster")
@@ -338,6 +347,11 @@ def gated(passes):
 
 def plan():
     lines = []
+    for passes in VIEWER_PASSES if VIEWER in ("1", "only") else []:
+        lines.append("viewer-equivalent Raster %d passes: %d sessions of frames 1-%d, colour only, at %dx%d" % (
+            passes, SESSIONS, VIEWER_FRAMES, SIZE[0], SIZE[1]))
+    if VIEWER == "only":
+        return lines
     for passes in PASSES:
         for m in MODES:
             lines.append("%s %d passes (Pixel Samples %d): %d sessions of frames 1-%d to %s after %d warmups at %dx%d" % (
@@ -375,6 +389,7 @@ class ProfileTail(object):
 
     def __init__(self, path):
         self.path = path
+        self.hydra = []
         self.offset = os.path.getsize(path) if os.path.isfile(path) else 0
 
     def read_new(self):
@@ -386,10 +401,12 @@ class ProfileTail(object):
         # A line still being written is left for the next read.
         cut = data.rfind(b"\n") + 1
         self.offset += cut
-        return parse_profile(data[:cut].decode("utf-8", "replace"))
+        text = data[:cut].decode("utf-8", "replace")
+        self.hydra = parse_profile(text, "hydra_profile")
+        return parse_profile(text)
 
 
-def parse_profile(text):
+def parse_profile(text, kind="utility_profile"):
     records = []
     for line in text.splitlines():
         line = line.strip()
@@ -399,7 +416,7 @@ def parse_profile(text):
             record = json.loads(line)
         except ValueError:
             continue
-        if record.get("record") == "utility_profile":
+        if record.get("record") == kind:
             records.append(record)
     return records
 
@@ -598,6 +615,49 @@ def report_targets(fits, frames):
             SPEEDUP_AT, ray, raster, ray / raster if raster > 0 else float("nan"), per_pass))
 
 
+def run_viewer(configure, render_frame, tail, failures):
+    """The viewer-equivalent sessions: Raster frames whose wall time is also read off the HydraRender call."""
+    for passes in VIEWER_PASSES:
+        side_of(passes)
+        for _ in range(WARMUPS):
+            configure("Raster", passes)
+            render_frame("Raster", passes, 1)
+        walls = []
+        renders = []
+        stages = {}
+        for session in range(SESSIONS):
+            configure("Raster", passes)
+            for frame in range(1, VIEWER_FRAMES + 1):
+                elapsed, message, _ = render_frame("Raster", passes, frame)
+                # USDRender renders through a whole-frame call on the CPU path, a device window on the GPU one.
+                calls = list(tail.hydra) if tail else []
+                call = calls[-1] if calls else None
+                walls.append(elapsed)
+                if call:
+                    renders.append(call["total_ms"])
+                    for name, stage in call.get("stages", {}).items():
+                        stages.setdefault(name, []).append(stage.get("ms", 0.0))
+                emit({"record": "viewer_frame", "passes": passes, "session": session, "frame": frame, "write_wall_ms": round(1000 * elapsed, 3),
+                      "render_wall_ms": call["total_ms"] if call else None, "hydra_calls": len(calls), "width": SIZE[0], "height": SIZE[1],
+                      "device": DEVICE, "message": message, "hydra": call})
+            log("viewer Raster %3d passes session %d: Write %s ms" % (
+                passes, session, " ".join("%.1f" % (1000 * w) for w in walls[-VIEWER_FRAMES:])))
+        means = dict((name, round(sum(v) / len(walls), 3)) for name, v in stages.items())
+        record = {"record": "viewer", "passes": passes, "frames": len(walls), "write_wall_median_ms": round(1000 * median(walls), 3),
+                  "write_wall_p95_ms": round(1000 * percentile(walls, 95), 3),
+                  "render_wall_median_ms": round(median(renders), 3) if renders else None,
+                  "render_wall_p95_ms": round(percentile(renders, 95), 3) if renders else None,
+                  "stage_mean_ms": means, "width": SIZE[0], "height": SIZE[1]}
+        emit(record)
+        log("viewer Raster %3d passes: Write median %.1f ms (p95 %.1f); HydraRender call median %s ms (p95 %s) over %d frames" % (
+            passes, record["write_wall_median_ms"], record["write_wall_p95_ms"],
+            "%.1f" % record["render_wall_median_ms"] if renders else "-", "%.1f" % record["render_wall_p95_ms"] if renders else "-", len(walls)))
+        for name in sorted(means, key=lambda n: -means[n]):
+            log("  %-20s %10.3f ms a frame" % (name, means[name]))
+        if tail and not renders:
+            failures.append("viewer %d passes: no hydra_profile record came back; this build does not time its HydraRender calls" % passes)
+
+
 def run():
     for passes in PASSES:
         side_of(passes)
@@ -630,6 +690,12 @@ def run():
         if not os.path.isfile(out_path) or (mode == "Raster" and FALLBACK_TEXT in message):
             failures.append("%s %d passes frame %d: %s" % (mode, passes, frame, message or "no image written"))
         return elapsed, message, tail.read_new() if tail else []
+
+    if VIEWER == "only":
+        run_viewer(configure, lambda m, passes, frame: render_frame(timing, timing_path(frame), m, passes, frame), tail, failures)
+        for failure in failures:
+            log("FAILED " + failure)
+        return 3 if failures else 0
 
     for passes in PASSES:
         for m in MODES:
@@ -673,6 +739,9 @@ def run():
                 emit({"record": "stage_fit", "mode": mode, "stages": by_stage})
         else:
             log("no profile records came back: this build has no NATRON_UTILITY_PROFILE support")
+
+    if VIEWER == "1":
+        run_viewer(configure, lambda m, passes, frame: render_frame(timing, timing_path(frame), m, passes, frame), tail, failures)
 
     for passes in PASSES:
         if not gated(passes):
@@ -739,6 +808,8 @@ def main():
         return check_blur(BLUR_CHECK)
     if PROFILE_REPORT:
         return report_profile(PROFILE_REPORT)
+    if VIEWER not in ("0", "1", "only"):
+        raise RuntimeError("BENCH_VIEWER must be 0, 1 or only, got %r" % VIEWER)
     if OUTPUT not in ("exr", "png"):
         raise RuntimeError("BENCH_OUTPUT must be exr or png, got %r" % OUTPUT)
     if not os.path.isabs(RENDER_DIR) or not os.path.isdir(RENDER_DIR):
@@ -747,8 +818,11 @@ def main():
         log("stage " + write_stage())
         for line in plan():
             log("would render " + line)
+        others = 0 if VIEWER == "only" else 1
         log("%d timed frames, %d warmup and %d blur-gate renders" % (
-            len(PASSES) * len(MODES) * SESSIONS * FRAMES, len(PASSES) * len(MODES) * WARMUPS, len(MODES) * len([p for p in PASSES if gated(p)])))
+            others * len(PASSES) * len(MODES) * SESSIONS * FRAMES + (len(VIEWER_PASSES) * SESSIONS * VIEWER_FRAMES if VIEWER != "0" else 0),
+            others * len(PASSES) * len(MODES) * WARMUPS + (len(VIEWER_PASSES) * WARMUPS if VIEWER != "0" else 0),
+            others * len(MODES) * len([p for p in PASSES if gated(p)])))
         return 0
     return run()
 

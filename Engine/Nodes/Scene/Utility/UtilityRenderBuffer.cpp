@@ -70,6 +70,7 @@ NATRON_NAMESPACE_ENTER
 namespace {
 std::atomic<int> gLiveBuffers { 0 };
 std::atomic<std::uint64_t> gDeviceDownloads { 0 };
+std::atomic<std::uint64_t> gPickReadbacks { 0 };
 
 // Device films hold RGBA floats.
 const std::size_t kFilmPixelBytes = 4 * sizeof(float);
@@ -182,11 +183,16 @@ struct KernelFilmPickParams {
     std::uint32_t first;
     std::uint32_t count;
     std::uint32_t fresh;
+    std::uint32_t pixels;
+    std::uint32_t missDepth;
+    std::uint32_t missPrimId;
+    std::uint32_t missInstanceId;
     std::uint32_t padding0;
 };
 
-// Kernels/FilmPick.slang's words a pixel: weight, hit, depth, prim id, instance id.
-const std::size_t kFilmPickWords = 5;
+// Kernels/FilmPick.slang's planes of a word a pixel: weight, hit, depth, prim id, instance id.
+const std::size_t kFilmPickPlanes = 5;
+const std::size_t kFilmPickHitPlane = 1;
 
 static_assert(sizeof(KernelFilmClearParams) == utility_film_clear_push_bytes);
 static_assert(sizeof(KernelFilmScatterParams) == utility_film_scatter_push_bytes);
@@ -729,6 +735,64 @@ UtilityDeviceResource::download(std::vector<float>* out,
 
     return true;
 }
+
+/**
+ * @brief A copy of a frame's picks on the device, as Kernels/FilmPick.slang lays them out, over the window from
+ * (x, y), and the miss words the AOV planes were written with.
+ **/
+class UtilityPickSnapshot {
+public:
+    std::shared_ptr<UtilityDeviceFilm> film;
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+    std::array<std::uint32_t, 3> misses {};
+
+    std::size_t pixels() const
+    {
+        return static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    }
+
+    bool released() const
+    {
+        return !film || film->released();
+    }
+
+    // Copies plane's pixels() words into out, waiting for the copy.
+    gpu::GpuStatus readPlane(std::size_t plane,
+                             std::uint32_t* out) const
+    {
+        const utilityProfile::Scope timed(utilityProfile::Stage::PickReadback);
+        UtilityDeviceFilm::Lease lease;
+
+        if (!film || !film->lease(&lease)) {
+            return failure("The Utility renderer's depth and ids were released with its GPU");
+        }
+
+        const VkDeviceSize bytes = static_cast<VkDeviceSize>(pixels()) * sizeof(std::uint32_t);
+        std::unique_ptr<gpu::GpuRecordContext> context;
+        gpu::GpuBuffer staging;
+        gpu::GpuStatus status = gpu::GpuRecordContext::create(film->registry, context, &film->pool);
+
+        if (status) {
+            status = gpu::GpuBuffer::createStaging(film->device, bytes, gpu::kGpuBufferDefaultUsage, staging);
+        }
+        if (status) {
+            status = context->copyBuffer(lease.pixels.buffer(), plane * bytes, staging, 0, bytes);
+        }
+        if (status) {
+            status = context->submitAndWait();
+        }
+        if (status) {
+            std::memcpy(out, staging.mapped(), bytes);
+            ++gPickReadbacks;
+        }
+
+        return status;
+    }
+};
+
 struct UtilityDeviceAovs::Implementation {
     // Destroyed after the buffers below, whose pool and device it keeps alive.
     std::shared_ptr<void> runtimeHold;
@@ -737,7 +801,7 @@ struct UtilityDeviceAovs::Implementation {
     std::shared_ptr<const UtilityFilmKernels> kernels;
     // Shared with the submissions that write it, so that a frame stopped with one in flight leaves it its buffer.
     std::shared_ptr<gpu::GpuBufferHandle> picks;
-    gpu::GpuBuffer staging;
+    std::array<std::uint32_t, 3> misses {};
     int x = 0;
     int y = 0;
     int width = 0;
@@ -747,7 +811,7 @@ struct UtilityDeviceAovs::Implementation {
 
     std::uint64_t bytes() const
     {
-        return static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) * kFilmPickWords * sizeof(std::uint32_t);
+        return static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) * kFilmPickPlanes * sizeof(std::uint32_t);
     }
 };
 
@@ -769,7 +833,7 @@ UtilityDeviceAovs::fits(const gpu::GpuRecordContext& context,
         return false;
     }
 
-    const std::uint64_t bytes = static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) * kFilmPickWords * sizeof(std::uint32_t);
+    const std::uint64_t bytes = static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) * kFilmPickPlanes * sizeof(std::uint32_t);
 
     // The kernel indexes the words in 32 bits.
     return (bytes <= context.maxStorageBufferBytes()) && (bytes / sizeof(std::uint32_t) <= std::numeric_limits<std::uint32_t>::max());
@@ -801,7 +865,7 @@ UtilityDeviceAovs::beginPass(gpu::GpuRecordContext& context,
 
         gpu::GpuBufferHandle picks;
 
-        if (gpu::GpuStatus s = pool.acquire(static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) * kFilmPickWords * sizeof(std::uint32_t), picks); !s) {
+        if (gpu::GpuStatus s = pool.acquire(static_cast<std::uint64_t>(width) * static_cast<std::uint64_t>(height) * kFilmPickPlanes * sizeof(std::uint32_t), picks); !s) {
             return s;
         }
         imp.runtimeHold = runtimeHold;
@@ -842,7 +906,14 @@ UtilityDeviceAovs::recordBatch(gpu::GpuRecordContext& context,
     }
 
     const KernelFilmPickParams params = {
-        static_cast<std::uint32_t>(y - imp.y) * static_cast<std::uint32_t>(imp.width), static_cast<std::uint32_t>(imp.width) * static_cast<std::uint32_t>(rows), imp.fresh ? 1u : 0u, 0
+        static_cast<std::uint32_t>(y - imp.y) * static_cast<std::uint32_t>(imp.width),
+        static_cast<std::uint32_t>(imp.width) * static_cast<std::uint32_t>(rows),
+        imp.fresh ? 1u : 0u,
+        static_cast<std::uint32_t>(imp.width) * static_cast<std::uint32_t>(imp.height),
+        imp.misses[0],
+        imp.misses[1],
+        imp.misses[2],
+        0
     };
     const std::array<gpu::GpuBinding, 6> bindings = {
         gpu::GpuBinding::storage(0, hitIds),
@@ -877,28 +948,50 @@ UtilityDeviceAovs::drawn() const
     return _imp->drawn;
 }
 
+void
+UtilityDeviceAovs::setMisses(const std::vector<UtilityRenderBuffer*>& depth,
+                             const std::vector<UtilityRenderBuffer*>& primId,
+                             const std::vector<UtilityRenderBuffer*>& instanceId)
+{
+    const std::vector<UtilityRenderBuffer*>* aovs[] = { &depth, &primId, &instanceId };
+
+    for (std::size_t aov = 0; aov < 3; ++aov) {
+        std::uint32_t word = 0;
+
+        _imp->misses[aov] = (!aovs[aov]->empty() && aovs[aov]->front()->clearWord(&word)) ? word : 0;
+    }
+}
+
 bool
-UtilityDeviceAovs::resolve(const std::vector<UtilityRenderBuffer*>& depth,
+UtilityDeviceAovs::publish(const std::vector<UtilityRenderBuffer*>& depth,
                            const std::vector<UtilityRenderBuffer*>& primId,
                            const std::vector<UtilityRenderBuffer*>& instanceId,
-                           int threads,
                            std::string* error)
 {
     Implementation& imp = *_imp;
+    const std::vector<UtilityRenderBuffer*>* aovs[] = { &depth, &primId, &instanceId };
 
-    if (!imp.drawn || !imp.picks || (depth.empty() && primId.empty() && instanceId.empty())) {
+    if (!imp.drawn || !imp.picks) {
+        for (const std::vector<UtilityRenderBuffer*>* buffers : aovs) {
+            for (UtilityRenderBuffer* buffer : *buffers) {
+                buffer->publishPass();
+            }
+        }
+
+        return true;
+    }
+    if (depth.empty() && primId.empty() && instanceId.empty()) {
         return true;
     }
 
     const std::uint64_t bytes = imp.bytes();
+    std::shared_ptr<UtilityDeviceFilm> copy = std::make_shared<UtilityDeviceFilm>(*imp.registry, *imp.pool, imp.kernels, imp.runtimeHold, imp.width, imp.height);
+    UtilityDeviceFilm::Lease lease;
     std::unique_ptr<gpu::GpuRecordContext> context;
-    gpu::GpuStatus status;
-    std::optional<utilityProfile::Scope> timed;
+    gpu::GpuStatus status = copy->allocate(bytes, false);
 
-    timed.emplace(utilityProfile::Stage::Readback);
-    if (!imp.staging || (imp.staging.size() < bytes)) {
-        imp.staging = gpu::GpuBuffer();
-        status = gpu::GpuBuffer::createStaging(imp.registry->device(), bytes, gpu::kGpuBufferDefaultUsage, imp.staging);
+    if (status && !copy->lease(&lease)) {
+        status = failure("the copy was released with the GPU");
     }
     if (status) {
         status = gpu::GpuRecordContext::create(*imp.registry, context, imp.pool);
@@ -906,55 +999,34 @@ UtilityDeviceAovs::resolve(const std::vector<UtilityRenderBuffer*>& depth,
     if (status) {
         // The passes' writes were made by earlier submissions on the same queue.
         context->computeBarrier();
-        status = context->copyBuffer(imp.picks->buffer(), 0, imp.staging, 0, bytes);
+        status = context->copyBuffer(imp.picks->buffer(), 0, lease.pixels.buffer(), 0, bytes);
     }
     if (status) {
         status = context->submitAndWait();
     }
     if (!status) {
-        imp.staging = gpu::GpuBuffer();
-        *error = "The Utility renderer could not read its depth and ids back from the GPU: " + status.message;
+        *error = "The Utility renderer could not keep a copy of its depth and ids on the GPU: " + status.message;
 
         return false;
     }
+    registerFilm(copy);
 
-    timed.reset();
-    timed.emplace(utilityProfile::Stage::WriteTile);
+    std::shared_ptr<UtilityPickSnapshot> picks = std::make_shared<UtilityPickSnapshot>();
 
-    const std::uint32_t* const words = static_cast<const std::uint32_t*>(imp.staging.mapped());
-    const int width = imp.width;
-    const int left = imp.x;
-    const int bottom = imp.y;
+    picks->film = std::move(copy);
+    picks->x = imp.x;
+    picks->y = imp.y;
+    picks->width = imp.width;
+    picks->height = imp.height;
+    picks->misses = imp.misses;
 
-    parallelForOnGlobalPool(imp.height, std::max(1, threads), [&](int row) {
-        const std::uint32_t* pick = words + static_cast<std::size_t>(row) * width * kFilmPickWords;
-        const unsigned int y = static_cast<unsigned int>(bottom + row);
+    const UtilityPickAov kinds[] = { UtilityPickAov::Depth, UtilityPickAov::PrimId, UtilityPickAov::InstanceId };
 
-        for (int column = 0; column < width; ++column, pick += kFilmPickWords) {
-            float weight = 0.f;
-            float z = 0.f;
-            std::int32_t prim = 0;
-            std::int32_t instance = 0;
-
-            std::memcpy(&weight, pick, sizeof(float));
-            std::memcpy(&z, pick + 2, sizeof(float));
-            std::memcpy(&prim, pick + 3, sizeof(std::int32_t));
-            std::memcpy(&instance, pick + 4, sizeof(std::int32_t));
-
-            const bool hit = pick[1] != 0;
-            const unsigned int x = static_cast<unsigned int>(left + column);
-
-            for (UtilityRenderBuffer* buffer : depth) {
-                buffer->addSample(x, y, hit ? &z : nullptr, 1, weight, false);
-            }
-            for (UtilityRenderBuffer* buffer : primId) {
-                buffer->addSample(x, y, hit ? &prim : nullptr, weight);
-            }
-            for (UtilityRenderBuffer* buffer : instanceId) {
-                buffer->addSample(x, y, hit ? &instance : nullptr, weight);
-            }
+    for (std::size_t aov = 0; aov < 3; ++aov) {
+        for (UtilityRenderBuffer* buffer : *aovs[aov]) {
+            buffer->publishPicks(picks, kinds[aov]);
         }
-    });
+    }
 
     return true;
 }
@@ -964,7 +1036,6 @@ UtilityDeviceAovs::drop()
 {
     Implementation& imp = *_imp;
 
-    imp.staging = gpu::GpuBuffer();
     imp.picks.reset();
     imp.kernels.reset();
     imp.registry = nullptr;
@@ -975,6 +1046,28 @@ UtilityDeviceAovs::drop()
     imp.runtimeHold.reset();
 }
 #endif // NATRON_HAVE_GPU
+
+namespace {
+// Fills out, a whole number of pixels long, with pixel, in copies that double each time.
+void
+fillWithPixel(std::vector<std::uint8_t>* out,
+              const std::vector<std::uint8_t>& pixel)
+{
+    if (out->empty() || pixel.empty()) {
+        return;
+    }
+
+    std::size_t done = std::min(pixel.size(), out->size());
+
+    std::memcpy(out->data(), pixel.data(), done);
+    while (done < out->size()) {
+        const std::size_t next = std::min(done, out->size() - done);
+
+        std::memcpy(out->data() + done, out->data(), next);
+        done += next;
+    }
+}
+} // anon namespace
 
 UtilityRenderBuffer::UtilityRenderBuffer(const SdfPath& id)
     : HdRenderBuffer(id)
@@ -1035,6 +1128,11 @@ UtilityRenderBuffer::Allocate(const GfVec3i& dimensions,
 
     const std::lock_guard<std::mutex> l(_deviceMutex);
 
+    if (!_hostReady.load()) {
+        _sampleSums.assign(static_cast<std::size_t>(_width) * _height * _clearComponents.size(), 0.f);
+        _sampleWeights.assign(static_cast<std::size_t>(_width) * _height, -1.f);
+        _hostReady.store(true);
+    }
     publishHostLocked();
 
     return true;
@@ -1116,7 +1214,7 @@ UtilityRenderBuffer::IsConverged() const
 
     // A lost GPU releases the published film without a releaseDevice() to read it back first, so
     // the frame's pixels are gone and the frame must be drawn again rather than left as finished.
-    if (_frontFilm && _frontFilm->released()) {
+    if ((_frontFilm && _frontFilm->released()) || (_frontPicks && _frontPicks->released())) {
         return false;
     }
 #endif
@@ -1144,8 +1242,58 @@ UtilityRenderBuffer::deviceDownloadCount()
     return gDeviceDownloads.load();
 }
 
+std::uint64_t
+UtilityRenderBuffer::pickReadbackCount()
+{
+    return gPickReadbacks.load();
+}
+
+bool
+UtilityRenderBuffer::clearWord(std::uint32_t* word) const
+{
+    const std::lock_guard<std::mutex> l(_deviceMutex);
+
+    if (_clearPixel.size() != sizeof(std::uint32_t)) {
+        return false;
+    }
+    std::memcpy(word, _clearPixel.data(), sizeof(std::uint32_t));
+
+    return true;
+}
+
+void
+UtilityRenderBuffer::ensureHost()
+{
+    if (_hostReady.load(std::memory_order_acquire)) {
+        return;
+    }
+
+    const std::lock_guard<std::mutex> l(_deviceMutex);
+
+    ensureHostLocked();
+}
+
+void
+UtilityRenderBuffer::ensureHostLocked()
+{
+    if (_hostReady.load(std::memory_order_relaxed)) {
+        return;
+    }
+    fillWithPixel(&_pixels, _clearPixel);
+    _sampleSums.assign(static_cast<std::size_t>(_width) * _height * _clearComponents.size(), 0.f);
+    _sampleWeights.assign(static_cast<std::size_t>(_width) * _height, -1.f);
+    _hostReady.store(true, std::memory_order_release);
+}
+
 void
 UtilityRenderBuffer::clear(const VtValue& value)
+{
+    clear(value, false);
+}
+
+void
+UtilityRenderBuffer::clear(const VtValue& value,
+                           bool deferHost)
 {
     const std::lock_guard<std::mutex> l(_deviceMutex);
 
@@ -1158,24 +1306,20 @@ UtilityRenderBuffer::clear(const VtValue& value)
         }
     }
 #endif
+    const std::vector<double> components = (value.IsEmpty() || _pixels.empty()) ? std::vector<double>() : clearComponents(value);
+
+    // Without a value the buffer stays as it is, which an earlier deferred clear may not have filled yet.
+    if (components.empty()) {
+        ensureHostLocked();
+    }
     _clearPixel.clear();
     _deviceRestart = true;
     ++_deviceEpoch;
     _clearComponents.assign((_format == HdFormatInvalid) ? 0 : HdGetComponentCount(_format), 0.f);
-    _sampleSums.assign(static_cast<std::size_t>(_width) * _height * _clearComponents.size(), 0.f);
-    _sampleWeights.assign(static_cast<std::size_t>(_width) * _height, -1.f);
-    if (value.IsEmpty() || _pixels.empty()) {
-        // What the device holds is the buffer as it is, and a frame that follows writes the host's.
-        if (_onDevice) {
-            downloadLocked();
-        }
-        publishHostLocked();
-
-        return;
-    }
-    const std::vector<double> components = clearComponents(value);
-
     if (components.empty()) {
+        _sampleSums.assign(static_cast<std::size_t>(_width) * _height * _clearComponents.size(), 0.f);
+        _sampleWeights.assign(static_cast<std::size_t>(_width) * _height, -1.f);
+        // What the device holds is the buffer as it is, and a frame that follows writes the host's.
         if (_onDevice) {
             downloadLocked();
         }
@@ -1194,10 +1338,19 @@ UtilityRenderBuffer::clear(const VtValue& value)
         encodeComponent(componentFormat, components[c], pixel.data() + c * componentSize);
         _clearComponents[c] = static_cast<float>(components[c]);
     }
-    for (std::size_t offset = 0; offset < _pixels.size(); offset += pixelSize) {
-        std::memcpy(_pixels.data() + offset, pixel.data(), pixelSize);
-    }
     _clearPixel = std::move(pixel);
+    _hostReady.store(false, std::memory_order_relaxed);
+    if (deferHost) {
+        // Readers until the first pass get the clear value, which frontToHostLocked() fills in for them.
+        retireFrontLocked();
+#ifdef NATRON_HAVE_GPU
+        _frontFilm.reset();
+        _frontPicks.reset();
+#endif
+
+        return;
+    }
+    ensureHostLocked();
     publishHostLocked();
 }
 
@@ -1221,6 +1374,7 @@ UtilityRenderBuffer::publishPass()
         if (status) {
             retireFrontLocked();
             _frontFilm = std::move(copy);
+            _frontPicks.reset();
 
             return;
         }
@@ -1244,6 +1398,7 @@ UtilityRenderBuffer::publishPass()
         retireFrontLocked();
         _front = std::move(host);
         _frontFilm.reset();
+        _frontPicks.reset();
 
         return;
     }
@@ -1252,6 +1407,7 @@ UtilityRenderBuffer::publishPass()
     {
         const std::lock_guard<std::mutex> l(_deviceMutex);
 
+        ensureHostLocked();
         next = std::move(_spare);
     }
     if (!next) {
@@ -1266,12 +1422,15 @@ UtilityRenderBuffer::publishPass()
     _front = std::move(next);
 #ifdef NATRON_HAVE_GPU
     _frontFilm.reset();
+    _frontPicks.reset();
 #endif
 }
 
 void
 UtilityRenderBuffer::publishHostLocked()
 {
+    ensureHostLocked();
+
     std::shared_ptr<std::vector<std::uint8_t>> next = std::move(_spare);
 
     if (!next) {
@@ -1282,6 +1441,7 @@ UtilityRenderBuffer::publishHostLocked()
     _front = std::move(next);
 #ifdef NATRON_HAVE_GPU
     _frontFilm.reset();
+    _frontPicks.reset();
 #endif
 }
 
@@ -1310,7 +1470,11 @@ UtilityRenderBuffer::frontToHostLocked()
     if (_frontFilm && !_frontFilm->released()) {
         host->resize(_pixels.size());
 
-        const gpu::GpuStatus status = downloadFilm(_frontFilm, host->data(), host->size());
+        const gpu::GpuStatus status = [&]() {
+            const utilityProfile::Scope timed(utilityProfile::Stage::ColorDownload);
+
+            return downloadFilm(_frontFilm, host->data(), host->size());
+        }();
 
         if (status) {
             ++gDeviceDownloads;
@@ -1321,10 +1485,118 @@ UtilityRenderBuffer::frontToHostLocked()
         // The host keeps the frame's clear value: the frame is lost with the device, not partly shown.
         TF_WARN("The Utility renderer could not read its frame back from the GPU: %s", status.message.c_str());
     }
+    if (_frontPicks && !_frontPicks->released()) {
+        const gpu::GpuStatus status = picksToHostLocked(host.get());
+
+        if (status) {
+            _front = std::move(host);
+
+            return;
+        }
+        TF_WARN("The Utility renderer could not read its depth or ids back from the GPU: %s", status.message.c_str());
+    }
 #endif
+    ensureHostLocked();
     host->assign(_pixels.begin(), _pixels.end());
     _front = std::move(host);
 }
+
+#ifdef NATRON_HAVE_GPU
+gpu::GpuStatus
+UtilityRenderBuffer::picksToHostLocked(std::vector<std::uint8_t>* out)
+{
+    const UtilityPickSnapshot& picks = *_frontPicks;
+    const std::size_t aov = static_cast<std::size_t>(_frontPickAov);
+    const std::size_t plane = 2 + aov;
+    const std::int64_t width = _width;
+    const std::int64_t height = _height;
+    const bool inside = (picks.x >= 0) && (picks.y >= 0) && (picks.x + picks.width <= width) && (picks.y + picks.height <= height);
+    const bool whole = inside && (picks.x == 0) && (picks.y == 0) && (picks.width == width) && (picks.height == height);
+    const HdFormat wordFormat = (_frontPickAov == UtilityPickAov::Depth) ? HdFormatFloat32 : HdFormatInt32;
+    // The plane holds the buffer's own pixels when it has their format and its misses are the buffer's clear value.
+    const bool asIs = inside && (_format == wordFormat) && (_clearPixel.size() == sizeof(std::uint32_t)) && (std::memcmp(_clearPixel.data(), &picks.misses[aov], sizeof(std::uint32_t)) == 0);
+
+    if (asIs && whole) {
+        out->resize(_pixels.size());
+
+        return picks.readPlane(plane, reinterpret_cast<std::uint32_t*>(out->data()));
+    }
+    if (_clearPixel.empty()) {
+        ensureHostLocked();
+        out->assign(_pixels.begin(), _pixels.end());
+    } else {
+        out->resize(_pixels.size());
+        fillWithPixel(out, _clearPixel);
+    }
+    if (out->empty() || (picks.pixels() == 0)) {
+        return gpu::GpuStatus();
+    }
+
+    std::vector<std::uint32_t> values(picks.pixels());
+
+    if (gpu::GpuStatus s = picks.readPlane(plane, values.data()); !s) {
+        return s;
+    }
+    if (asIs) {
+        for (int row = 0; row < picks.height; ++row) {
+            std::memcpy(out->data() + (static_cast<std::size_t>(picks.y + row) * _width + picks.x) * sizeof(std::uint32_t), values.data() + static_cast<std::size_t>(row) * picks.width, picks.width * sizeof(std::uint32_t));
+        }
+
+        return gpu::GpuStatus();
+    }
+
+    // A miss is the clear value, already there, or with none the pixel as it was.
+    std::vector<std::uint32_t> hits(picks.pixels());
+
+    if (gpu::GpuStatus s = picks.readPlane(kFilmPickHitPlane, hits.data()); !s) {
+        return s;
+    }
+
+    const HdFormat componentFormat = HdGetComponentFormat(_format);
+    const std::size_t pixelSize = HdDataSizeOfFormat(_format);
+
+    for (int row = 0; row < picks.height; ++row) {
+        const std::int64_t y = picks.y + row;
+
+        for (int column = 0; column < picks.width; ++column) {
+            const std::int64_t x = picks.x + column;
+            const std::size_t at = static_cast<std::size_t>(row) * picks.width + column;
+
+            if ((x < 0) || (y < 0) || (x >= width) || (y >= height) || !hits[at]) {
+                continue;
+            }
+
+            std::uint8_t* pixel = out->data() + (static_cast<std::size_t>(y) * _width + static_cast<std::size_t>(x)) * pixelSize;
+
+            if (_frontPickAov == UtilityPickAov::Depth) {
+                float depth = 0.f;
+
+                std::memcpy(&depth, &values[at], sizeof(float));
+                encodeComponent(componentFormat, depth, pixel);
+            } else {
+                std::int32_t id = 0;
+
+                std::memcpy(&id, &values[at], sizeof(std::int32_t));
+                encodeComponent(componentFormat, static_cast<double>(id), pixel);
+            }
+        }
+    }
+
+    return gpu::GpuStatus();
+}
+
+void
+UtilityRenderBuffer::publishPicks(const std::shared_ptr<UtilityPickSnapshot>& picks,
+                                  UtilityPickAov aov)
+{
+    const std::lock_guard<std::mutex> l(_deviceMutex);
+
+    retireFrontLocked();
+    _frontFilm.reset();
+    _frontPicks = picks;
+    _frontPickAov = aov;
+}
+#endif
 
 void
 UtilityRenderBuffer::setConverged(bool converged)
@@ -1474,7 +1746,9 @@ UtilityRenderBuffer::_Deallocate()
 #ifdef NATRON_HAVE_GPU
     _film.reset();
     _frontFilm.reset();
+    _frontPicks.reset();
 #endif
+    _hostReady.store(true);
     _onDevice = false;
     _front.reset();
     _spare.reset();
@@ -1484,6 +1758,7 @@ UtilityRenderBuffer::_Deallocate()
 void
 UtilityRenderBuffer::downloadLocked()
 {
+    ensureHostLocked();
     _onDevice = false;
 #ifdef NATRON_HAVE_GPU
     if (!_film) {
@@ -1533,6 +1808,12 @@ UtilityRenderBuffer::releaseDevice()
             _frontFilm->releaseIfLost();
             frontToHostLocked();
             front = std::move(_frontFilm);
+        }
+        // The other AOVs' buffers share the picks, so each only reads its own back and lets go of them.
+        if (_frontPicks) {
+            _frontPicks->film->releaseIfLost();
+            frontToHostLocked();
+            _frontPicks.reset();
         }
     }
     // Every holder lets go too: a strip still to copy its window renders again on the CPU, and a viewer

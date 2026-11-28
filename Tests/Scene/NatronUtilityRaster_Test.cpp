@@ -1611,7 +1611,8 @@ namespace {
 // Keeps every AOV on the device, as the render pass's film does, and reads them back once the frame is drawn.
 class DeviceFilm : public WavefrontFilm {
 public:
-    DeviceFilm()
+    // Without deviceMisses the device leaves misses as zero, which the buffers clearing ids to -1 patch on the host.
+    explicit DeviceFilm(bool deviceMisses = true)
         : color(SdfPath("/color"))
         , depth(SdfPath("/depth"))
         , primId(SdfPath("/primId"))
@@ -1628,6 +1629,19 @@ public:
         depth.clear(VtValue(0.f));
         primId.clear(VtValue(-1));
         instanceId.clear(VtValue(-1));
+        if (deviceMisses) {
+            picks.setMisses({ &depth }, { &primId }, { &instanceId });
+        }
+    }
+
+    // As the render pass starts a frame.
+    void startOver()
+    {
+        color.clear(VtValue(GfVec4f(0.f)));
+        depth.clear(VtValue(0.f));
+        primId.clear(VtValue(-1));
+        instanceId.clear(VtValue(-1));
+        picks.drop();
     }
 
     virtual void writeTile(const WavefrontTile&) override
@@ -1654,11 +1668,9 @@ public:
     {
         std::string error;
 
-        resolved = picks.resolve({ &depth }, { &primId }, { &instanceId }, 2, &error);
+        color.publishPass();
+        resolved = picks.publish({ &depth }, { &primId }, { &instanceId }, &error);
         EXPECT_TRUE(resolved) << error;
-        for (UtilityRenderBuffer* buffer : { &color, &depth, &primId, &instanceId }) {
-            buffer->publishPass();
-        }
     }
 
     template <typename T>
@@ -1712,9 +1724,75 @@ GPU_TEST_F(NatronUtilityRaster, DepthAndIdsKeptOnTheDeviceMatchThoseTakenInTiles
         EXPECT_EQ(0u, device.tiles);
         ASSERT_TRUE(device.resolved);
 
+        // Publishing reads nothing back: each AOV comes back on its own, when it is mapped.
+        const std::uint64_t readbacks = UtilityRenderBuffer::pickReadbackCount();
+
+        (void)device.read<float>(device.color);
+        EXPECT_EQ(readbacks, UtilityRenderBuffer::pickReadbackCount());
+
+        const std::vector<float> depth = device.read<float>(device.depth);
+
+        EXPECT_EQ(readbacks + 1, UtilityRenderBuffer::pickReadbackCount());
+        const std::vector<std::int32_t> primId = device.read<std::int32_t>(device.primId);
+        const std::vector<std::int32_t> instanceId = device.read<std::int32_t>(device.instanceId);
+        int hits = 0;
+        int mismatches = 0;
+
+        for (std::size_t pixel = 0; pixel < depth.size(); ++pixel) {
+            hits += tiles.geometry[pixel] != Tracer::kNoHit;
+            if ((depth[pixel] != tiles.depth[pixel]) || (primId[pixel] != tiles.primId[pixel]) || (instanceId[pixel] != tiles.instanceId[pixel])) {
+                if (++mismatches <= 8) {
+                    ADD_FAILURE() << "pixel " << pixel << ": device " << depth[pixel] << "/" << primId[pixel] << "/" << instanceId[pixel] << ", tiles " << tiles.depth[pixel] << "/"
+                                  << tiles.primId[pixel] << "/" << tiles.instanceId[pixel];
+                }
+            }
+        }
+        EXPECT_EQ(0, mismatches);
+        EXPECT_GT(hits, 100);
+        EXPECT_LT(hits, kFrameSize * kFrameSize);
+    }
+}
+
+// Frames whose depth and ids nobody maps read none of them back, and a later frame's mapped after them are its own.
+GPU_TEST_F(NatronUtilityRaster, DepthAndIdsReadBackOnlyWhenMapped)
+{
+    UtilityScene scene;
+
+    cardAndCube(scene);
+
+    WavefrontGpu executor(*_registry, *_pool, std::make_shared<int>(0));
+    const std::atomic<bool> stop(false);
+    WavefrontFrame frame = perspectiveFrame();
+
+    frame.raster = true;
+    frame.rasterSamples = 4;
+
+    for (const bool deviceMisses : { true, false }) {
+        SCOPED_TRACE(deviceMisses ? "misses written on the device" : "misses patched on the host");
+
+        AovFilm tiles;
+        DeviceFilm device(deviceMisses);
+        const std::uint64_t before = UtilityRenderBuffer::pickReadbackCount();
+
+        for (int colourOnly = 0; colourOnly < 2; ++colourOnly) {
+            device.startOver();
+            ASSERT_TRUE(wavefrontDrawSamples(executor, scene.snapshot(), frame, openShutter(), device, stop, 2, std::function<void(std::size_t)>())) << executor.status().message;
+            ASSERT_TRUE(device.resolved);
+            (void)device.read<float>(device.color);
+        }
+        EXPECT_EQ(before, UtilityRenderBuffer::pickReadbackCount());
+
+        device.startOver();
+        ASSERT_TRUE(wavefrontDrawSamples(executor, scene.snapshot(), frame, openShutter(), device, stop, 2, std::function<void(std::size_t)>())) << executor.status().message;
+        ASSERT_TRUE(wavefrontDrawSamples(executor, scene.snapshot(), frame, openShutter(), tiles, stop, 2, std::function<void(std::size_t)>())) << executor.status().message;
+
         const std::vector<float> depth = device.read<float>(device.depth);
         const std::vector<std::int32_t> primId = device.read<std::int32_t>(device.primId);
         const std::vector<std::int32_t> instanceId = device.read<std::int32_t>(device.instanceId);
+
+        // One plane each, and the hit plane too for each id buffer whose misses are patched on the host.
+        EXPECT_EQ(before + (deviceMisses ? 3u : 5u), UtilityRenderBuffer::pickReadbackCount());
+
         int hits = 0;
         int mismatches = 0;
 

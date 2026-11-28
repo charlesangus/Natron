@@ -129,10 +129,8 @@ const std::chrono::milliseconds kProgressivePublishInterval(50);
 class AovFilm : public WavefrontFilm {
 public:
     AovFilm(const HdRenderPassAovBindingVector& bindings,
-            bool progressive,
-            int threads)
+            bool progressive)
         : _progressive(progressive)
-        , _threads(threads)
     {
         for (const HdRenderPassAovBinding& binding : bindings) {
             UtilityRenderBuffer* buffer = dynamic_cast<UtilityRenderBuffer*>(binding.renderBuffer);
@@ -153,6 +151,7 @@ public:
 #ifdef NATRON_HAVE_GPU
         if (!_depth.empty() || !_primId.empty() || !_instanceId.empty()) {
             _deviceAovs.reset(new UtilityDeviceAovs);
+            _deviceAovs->setMisses(_depth, _primId, _instanceId);
         }
 #endif
     }
@@ -160,6 +159,18 @@ public:
     // Only the colour is filtered; the other AOVs take the heaviest sample's value.
     virtual void writeTile(const WavefrontTile& tile) OVERRIDE
     {
+        // The buffers were cleared for a frame that may stay on the device; a tile is the first need of their host pixels.
+        if (tile.color) {
+            for (UtilityRenderBuffer* buffer : _color) {
+                buffer->ensureHost();
+            }
+        }
+        for (const std::vector<UtilityRenderBuffer*>* buffers : { &_depth, &_primId, &_instanceId }) {
+            for (UtilityRenderBuffer* buffer : *buffers) {
+                buffer->ensureHost();
+            }
+        }
+
         std::size_t index = 0;
 
         for (int row = 0; row < tile.rect.height; ++row) {
@@ -256,18 +267,23 @@ private:
     {
         const utilityProfile::Scope timed(utilityProfile::Stage::PublishPass);
 
+        for (UtilityRenderBuffer* buffer : _color) {
+            buffer->publishPass();
+        }
 #ifdef NATRON_HAVE_GPU
         if (_deviceAovs) {
             std::string error;
 
-            if (!_deviceAovs->resolve(_depth, _primId, _instanceId, _threads, &error)) {
+            if (!_deviceAovs->publish(_depth, _primId, _instanceId, &error)) {
                 throw std::runtime_error(error);
             }
-        }
+        } else
 #endif
-        for (const std::vector<UtilityRenderBuffer*>* buffers : { &_color, &_depth, &_primId, &_instanceId }) {
-            for (UtilityRenderBuffer* buffer : *buffers) {
-                buffer->publishPass();
+        {
+            for (const std::vector<UtilityRenderBuffer*>* buffers : { &_depth, &_primId, &_instanceId }) {
+                for (UtilityRenderBuffer* buffer : *buffers) {
+                    buffer->publishPass();
+                }
             }
         }
         _published = _drawn;
@@ -279,7 +295,6 @@ private:
     std::vector<UtilityRenderBuffer*> _primId;
     std::vector<UtilityRenderBuffer*> _instanceId;
     const bool _progressive;
-    const int _threads;
     std::size_t _drawn = 0;
     std::size_t _published = 0;
     std::chrono::steady_clock::time_point _publishedAt;
@@ -301,14 +316,16 @@ setBuffersConverged(const HdRenderPassAovBindingVector& bindings,
     }
 }
 
+// deferHost leaves the host pixels unfilled until the frame or a reader needs them.
 void
-clearBuffers(const HdRenderPassAovBindingVector& bindings)
+clearBuffers(const HdRenderPassAovBindingVector& bindings,
+             bool deferHost)
 {
     for (const HdRenderPassAovBinding& binding : bindings) {
         UtilityRenderBuffer* buffer = dynamic_cast<UtilityRenderBuffer*>(binding.renderBuffer);
 
         if (buffer) {
-            buffer->clear(binding.clearValue);
+            buffer->clear(binding.clearValue, deferHost);
         }
     }
 }
@@ -751,7 +768,11 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
         _converged.store(false);
         setBuffersConverged(bindings, false);
     }
-    clearBuffers(bindings);
+    {
+        const utilityProfile::Scope timed(utilityProfile::Stage::Clear);
+
+        clearBuffers(bindings, true);
+    }
 
     const std::size_t samplesWanted = static_cast<std::size_t>(frame.raster ? frame.rasterSamples : frame.sampling.samplesPerPixel());
 
@@ -789,7 +810,7 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
         std::string failure;
 
         try {
-            AovFilm film(frameBindings, progressive, threads);
+            AovFilm film(frameBindings, progressive);
             WavefrontFrame drawn = frame;
             std::string rasterWarning;
             // Raster mode runs only on the GPU executor; every other way the frame renders as Ray mode does.
@@ -888,7 +909,7 @@ UtilityRenderPass::_Execute(const HdRenderPassStateSharedPtr& renderPassState,
                         renderedOn = "CPU";
                         onCpu = true;
                         // The GPU's batches that landed before the failure must not show through.
-                        clearBuffers(frameBindings);
+                        clearBuffers(frameBindings, false);
                     } else if (failed) {
                         throw std::runtime_error("The Utility renderer failed on the GPU: " + outcome.message);
                     }

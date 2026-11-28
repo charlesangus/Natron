@@ -167,6 +167,9 @@ struct Request {
     // a change of this asks for it, and the Cycles engines made under another, the viewers'
     // included, are made again.
     int threads = 0;
+    // The planes render() returns from a delegate that renders on the CPU, as bits 1 << PlaneEnum; the others'
+    // vectors are left empty, unconverted. Every plane by default; the windows ignore it.
+    unsigned int planes = ~0u;
     // The delegate's settings (UsdImagingGLEngine::SetRendererSetting) that differ from its
     // defaults. The owner's engine is made again when they change: Cycles restarts a converged
     // render only for some of its settings.

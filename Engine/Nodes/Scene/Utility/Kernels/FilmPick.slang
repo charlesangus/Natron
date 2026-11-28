@@ -8,12 +8,19 @@ struct FilmPickParams
     uint count;
     // Whether this is the frame's first pass, whose samples replace what the picks hold.
     uint fresh;
+    // The window's pixels, the length of each plane of the picks.
+    uint pixels;
+    // What a miss leaves in the depth, prim id and instance id planes, as their buffers' clear values encode them.
+    uint missDepth;
+    uint missPrimId;
+    uint missInstanceId;
     uint padding0;
 };
 
-// kFilmPickWords words a pixel: the heaviest sample's weight, whether it hit, then its depth, prim id and
-// instance id, which mean nothing for a miss.
-static const uint kFilmPickWords = 5;
+// kFilmPickPlanes planes of a word a pixel, one after the other: the heaviest sample's weight, whether it hit,
+// then its depth, prim id and instance id, which hold the miss values for a miss. A plane apart is what a
+// reader of one AOV copies back.
+static const uint kFilmPickPlanes = 5;
 
 // The geometry array comes first in the hit ids, so the first count values tell hit from miss.
 [[vk::binding(0, 0)]] StructuredBuffer<uint> hitIds;
@@ -32,18 +39,17 @@ void utilityFilmPick(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= params.count)
         return;
-    const uint at = (params.first + id.x) * kFilmPickWords;
+    const uint at = params.first + id.x;
+    const uint n = params.pixels;
     const float weight = weights[id.x];
     const float heaviest = (params.fresh != 0) ? -1.0 : asfloat(picks[at]);
-    if (weight <= heaviest) {
-        if (params.fresh != 0)
-            picks[at] = asuint(-1.0f);
+    if ((weight <= heaviest) && (params.fresh == 0))
         return;
-    }
-    const bool hit = hitIds[kHitGeometry * params.count + id.x] != kNoHit;
-    picks[at] = asuint(weight);
-    picks[at + 1] = hit ? 1u : 0u;
-    picks[at + 2] = asuint(depth[id.x]);
-    picks[at + 3] = asuint(primId[id.x]);
-    picks[at + 4] = asuint(instanceId[id.x]);
+    const bool taken = weight > heaviest;
+    const bool hit = taken && (hitIds[kHitGeometry * params.count + id.x] != kNoHit);
+    picks[at] = asuint(taken ? weight : -1.0f);
+    picks[n + at] = hit ? 1u : 0u;
+    picks[2 * n + at] = hit ? asuint(depth[id.x]) : params.missDepth;
+    picks[3 * n + at] = hit ? asuint(primId[id.x]) : params.missPrimId;
+    picks[4 * n + at] = hit ? asuint(instanceId[id.x]) : params.missInstanceId;
 }

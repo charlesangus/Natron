@@ -43,6 +43,7 @@
 #include <optional>
 #include <set>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 
 #include <sys/resource.h>
@@ -120,6 +121,8 @@
 #include "Engine/RectI.h"
 #endif
 #include "Engine/Nodes/Scene/StormTextureBudget.h"
+#include "Engine/Nodes/Scene/Utility/UtilityProfile.h"
+#include "Engine/PoolParallelFor.h"
 #include "Engine/TLSHolder.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -143,6 +146,7 @@ renderGuarded(UsdImagingGLEngine* engine,
         if (RenderDelegates::isStorm(engine->GetCurrentRendererId().GetString())) {
             StormTextureBudget::sampleFreeVideoMemory();
         }
+        const utilityProfile::Scope timed(utilityProfile::Stage::RenderCall);
         engine->Render(root, params);
     } catch (const std::exception& e) {
         *what = e.what();
@@ -897,9 +901,11 @@ struct EngineEntry {
     std::vector<float> primId;
     std::map<std::uint32_t, std::string> primPaths;
 
-    // A CPU engine's render converted by cpuFrame(), for the windows of the render with serial
-    // cpuSerial, so tiles and planes do not each convert the whole frame.
+    // A CPU engine's render converted by cpuFrame(), plane by plane as they are first asked for, for the
+    // windows of the render with serial cpuSerial, so tiles and planes do not each convert the whole frame.
+    // cpuPlanes has bit 1 << PlaneEnum set for each plane cpuResult holds; the prim ids stay in primId.
     std::uint64_t cpuSerial = 0;
+    unsigned int cpuPlanes = 0;
     HydraRender::Result cpuResult;
 };
 
@@ -1352,6 +1358,7 @@ public:
     // The whole frame's planes of entry's render, as pack() gives them, or converted on the CPU
     // when the context cannot pack.
     bool frame(EngineEntry& entry,
+               unsigned int planes,
                HydraRender::Result* result,
                std::string* error);
 
@@ -1388,8 +1395,9 @@ public:
     }
 
 private:
+    // Converts into entry.cpuResult those of planes, as bits 1 << PlaneEnum, it does not hold yet.
     bool cpuFrame(EngineEntry& entry,
-                  HydraRender::Result* result,
+                  unsigned int planes,
                   std::string* error);
 
     // window of entry's render cut from cpuFrame()'s planes, as pack() would give it.
@@ -1661,6 +1669,7 @@ private:
              const TfToken& name,
              std::string* error)
     {
+        const utilityProfile::Scope timed(utilityProfile::Stage::MapAov);
         _buffer = engine->GetAovRenderBuffer(name);
         if (!_buffer) {
             *error = renderer + " rendered no " + name.GetString() + " AOV.";
@@ -2256,17 +2265,42 @@ RenderThread::renderEngine(const HydraRender::Request& request,
     return &_engines[owner];
 } // RenderThread::renderEngine
 
+namespace {
+    // The threads a CPU conversion runs on: the calling task's budget, or every core without one.
+    int
+    conversionThreads()
+    {
+        const int budget = AppTLS::currentThreadBudget();
+
+        return (budget > 0) ? budget : std::max(1, (int)std::thread::hardware_concurrency());
+    }
+} // anon namespace
+
 bool
 RenderThread::cpuFrame(EngineEntry& entry,
-                       HydraRender::Result* result,
+                       unsigned int planes,
                        std::string* error)
 {
+    const utilityProfile::Scope timed(utilityProfile::Stage::CpuFrame);
+
+    if (entry.cpuSerial != entry.serial) {
+        entry.cpuResult = HydraRender::Result();
+        entry.cpuPlanes = 0;
+        entry.cpuSerial = entry.serial;
+    }
+    if (!entry.normal) {
+        planes &= ~(1u << HydraRender::ePlaneNormal);
+    }
+
+    const unsigned int wanted = planes & ~entry.cpuPlanes;
     const int width = entry.width;
     const int height = entry.height;
     const GfMatrix4d& projection = entry.projection;
     const std::size_t pixels = (std::size_t)width * (std::size_t)height;
+    const int threads = conversionThreads();
+    HydraRender::Result* result = &entry.cpuResult;
 
-    {
+    if (wanted & (1u << HydraRender::ePlaneColor)) {
         MappedAov color(entry, HdAovTokens->color, error);
         if (!color.valid()) {
             return false;
@@ -2274,57 +2308,71 @@ RenderThread::cpuFrame(EngineEntry& entry,
         const HdFormat componentFormat = HdGetComponentFormat(color.format());
         const std::size_t components = HdGetComponentCount(color.format());
         const std::size_t componentSize = HdDataSizeOfFormat(componentFormat);
-        result->rgba.assign(pixels * 4, 0.f);
-        for (std::size_t i = 0; i < pixels; ++i) {
-            const unsigned char* at = color.pixel(i);
-            for (std::size_t c = 0; (c < components) && (c < 4); ++c) {
-                result->rgba[i * 4 + c] = componentToFloat(componentFormat, at + c * componentSize);
+        const bool asIs = color.format() == HdFormatFloat32Vec4;
+        result->rgba.resize(pixels * 4);
+        float* const rgba = result->rgba.data();
+        parallelForOnGlobalPool(height, threads, [&](int y) {
+            const std::size_t first = (std::size_t)y * (std::size_t)width;
+            if (asIs) {
+                std::memcpy(rgba + first * 4, color.pixel(first), (std::size_t)width * 4 * sizeof(float));
+
+                return;
             }
-            if (components < 4) {
-                result->rgba[i * 4 + 3] = 1.f;
+            for (std::size_t i = first; i < first + (std::size_t)width; ++i) {
+                const unsigned char* at = color.pixel(i);
+                for (std::size_t c = 0; c < 4; ++c) {
+                    rgba[i * 4 + c] = (c < components) ? componentToFloat(componentFormat, at + c * componentSize) : (c == 3) ? 1.f
+                                                                                                                              : 0.f;
+                }
             }
-        }
+        });
+        entry.cpuPlanes |= 1u << HydraRender::ePlaneColor;
     }
 
-    {
+    if (wanted & (1u << HydraRender::ePlaneDepth)) {
         MappedAov depth(entry, entry.depthAov, error);
         if (!depth.valid()) {
             return false;
         }
         const HdFormat componentFormat = HdGetComponentFormat(depth.format());
         const GfMatrix4d inverse = projection.GetInverse();
-        result->depth.assign(pixels, std::numeric_limits<float>::infinity());
+        result->depth.resize(pixels);
+        float* const out = result->depth.data();
         const bool cycles = CyclesAovs::isCycles(entry.renderer);
         const bool moonRay = MoonRayAovs::isMoonRay(entry.renderer);
-        // Cycles' depth and MoonRay's cameraDepth are already the distance along the view axis.
-        for (std::size_t i = 0; cycles && (i < pixels); ++i) {
-            result->depth[i] = CyclesAovs::depthToDistance(componentToFloat(componentFormat, depth.pixel(i)));
-        }
-        for (std::size_t i = 0; moonRay && (i < pixels); ++i) {
-            result->depth[i] = MoonRayAovs::cameraDepth(componentToFloat(componentFormat, depth.pixel(i)));
-        }
-        // Storm's depth, and that of the delegates keeping to Hydra's convention, is the window
-        // depth in [0, 1]: back to the camera space, the inverse projection gives the point's
-        // distance along the view axis.
-        for (int y = 0; !cycles && !moonRay && (y < height); ++y) {
+        parallelForOnGlobalPool(height, threads, [&](int y) {
+            const std::size_t first = (std::size_t)y * (std::size_t)width;
+            // Cycles' depth and MoonRay's cameraDepth are already the distance along the view axis.
+            if (cycles || moonRay) {
+                for (std::size_t i = first; i < first + (std::size_t)width; ++i) {
+                    const float value = componentToFloat(componentFormat, depth.pixel(i));
+                    out[i] = cycles ? CyclesAovs::depthToDistance(value) : MoonRayAovs::cameraDepth(value);
+                }
+
+                return;
+            }
+            // Storm's depth, and that of the delegates keeping to Hydra's convention, is the window
+            // depth in [0, 1]: back to the camera space, the inverse projection gives the point's
+            // distance along the view axis.
             const double ndcY = (y + 0.5) / height * 2. - 1.;
             for (int x = 0; x < width; ++x) {
-                const std::size_t i = (std::size_t)y * (std::size_t)width + (std::size_t)x;
+                const std::size_t i = first + (std::size_t)x;
                 const double window = componentToFloat(componentFormat, depth.pixel(i));
                 if (window >= 1.) {
+                    out[i] = std::numeric_limits<float>::infinity();
                     continue;
                 }
                 const double ndcX = (x + 0.5) / width * 2. - 1.;
                 const double ndcZ = window * 2. - 1.;
                 const double z = ndcX * inverse[0][2] + ndcY * inverse[1][2] + ndcZ * inverse[2][2] + inverse[3][2];
                 const double w = ndcX * inverse[0][3] + ndcY * inverse[1][3] + ndcZ * inverse[2][3] + inverse[3][3];
-                result->depth[i] = (float)(-z / w);
+                out[i] = (float)(-z / w);
             }
-        }
+        });
+        entry.cpuPlanes |= 1u << HydraRender::ePlaneDepth;
     }
 
-    result->normal.clear();
-    if (entry.normal) {
+    if (wanted & (1u << HydraRender::ePlaneNormal)) {
         // Hydra's normal AOV is in world space; the normal matrix of the view takes it to the
         // camera's. MoonRay's is in camera space already.
         MappedAov normal(entry, HdAovTokens->normal, error);
@@ -2336,31 +2384,33 @@ RenderThread::cpuFrame(EngineEntry& entry,
         const std::size_t componentSize = HdDataSizeOfFormat(componentFormat);
         const GfMatrix4d toCamera = entry.view.GetInverse().GetTranspose();
         result->normal.assign(pixels * 3, 0.f);
-        for (std::size_t i = 0; (components >= 3) && (i < pixels); ++i) {
-            const unsigned char* at = normal.pixel(i);
-            GfVec3d n(componentToFloat(componentFormat, at), componentToFloat(componentFormat, at + componentSize), componentToFloat(componentFormat, at + 2 * componentSize));
-            if (n.GetLengthSq() == 0.) {
-                continue;
+        float* const out = result->normal.data();
+        parallelForOnGlobalPool((components >= 3) ? height : 0, threads, [&](int y) {
+            const std::size_t first = (std::size_t)y * (std::size_t)width;
+            for (std::size_t i = first; i < first + (std::size_t)width; ++i) {
+                const unsigned char* at = normal.pixel(i);
+                GfVec3d n(componentToFloat(componentFormat, at), componentToFloat(componentFormat, at + componentSize), componentToFloat(componentFormat, at + 2 * componentSize));
+                if (n.GetLengthSq() == 0.) {
+                    continue;
+                }
+                if (!entry.normalInCameraSpace) {
+                    n = toCamera.TransformDir(n);
+                }
+                n.Normalize();
+                for (int c = 0; c < 3; ++c) {
+                    out[i * 3 + (std::size_t)c] = (float)n[c];
+                }
             }
-            if (!entry.normalInCameraSpace) {
-                n = toCamera.TransformDir(n);
-            }
-            n.Normalize();
-            for (int c = 0; c < 3; ++c) {
-                result->normal[i * 3 + (std::size_t)c] = (float)n[c];
-            }
+        });
+        entry.cpuPlanes |= 1u << HydraRender::ePlaneNormal;
+    }
+
+    if (wanted & (1u << HydraRender::ePlanePrimId)) {
+        if (!decodeIds(entry, error)) {
+            return false;
         }
+        entry.cpuPlanes |= 1u << HydraRender::ePlanePrimId;
     }
-
-    result->warning = entry.warning;
-    result->errors = entry.errors;
-    result->device = entry.device;
-
-    if (!decodeIds(entry, error)) {
-        return false;
-    }
-    result->primId = entry.primId;
-    result->primPaths = entry.primPaths;
 
     return true;
 } // RenderThread::cpuFrame
@@ -2371,44 +2421,70 @@ RenderThread::cpuWindow(EngineEntry& entry,
                         std::vector<float>* pixels,
                         std::string* error)
 {
-    if (entry.cpuSerial != entry.serial) {
-        HydraRender::Result converted;
-        if (!cpuFrame(entry, &converted, error)) {
-            return false;
-        }
-        entry.cpuResult = std::move(converted);
-        entry.cpuSerial = entry.serial;
+    const utilityProfile::Scope timed(utilityProfile::Stage::CpuWindow);
+
+    if (!cpuFrame(entry, 1u << window.plane, error)) {
+        return false;
     }
     const HydraRender::Result& frame = entry.cpuResult;
     const int width = entry.width;
     const int height = entry.height;
     const int nComps = window.nComps;
     const int windowWidth = window.x2 - window.x1;
-    for (int y = window.y1; y < window.y2; ++y) {
+    const float outside = (window.plane == HydraRender::ePlaneDepth) ? std::numeric_limits<float>::infinity() : 0.f;
+    // The value of channel c of pixel i of the render.
+    auto value = [&](std::size_t i, int c) -> float {
+        switch (window.plane) {
+        case HydraRender::ePlaneColor: {
+            // A one-channel colour plane is alpha.
+            const int channel = (nComps == 1) ? 3 : c;
+
+            return (channel < 4) ? frame.rgba[i * 4 + (std::size_t)channel] : 0.f;
+        }
+        case HydraRender::ePlaneDepth:
+            return frame.depth[i];
+        case HydraRender::ePlanePrimId:
+            return entry.primId[i];
+        case HydraRender::ePlaneNormal:
+            return ((c < 3) && !frame.normal.empty()) ? frame.normal[i * 3 + (std::size_t)c] : 0.f;
+        }
+
+        return 0.f;
+    };
+    // The part of the window's rows the render covers, which goes as it is when the plane has the window's channels.
+    const float* asIs = nullptr;
+    if ((window.plane == HydraRender::ePlaneColor) && (nComps == 4)) {
+        asIs = frame.rgba.data();
+    } else if ((window.plane == HydraRender::ePlaneDepth) && (nComps == 1)) {
+        asIs = frame.depth.data();
+    } else if ((window.plane == HydraRender::ePlanePrimId) && (nComps == 1)) {
+        asIs = entry.primId.data();
+    }
+    const int x1 = std::clamp(window.x1, 0, width);
+    const int x2 = std::clamp(window.x2, 0, width);
+
+    parallelForOnGlobalPool(window.y2 - window.y1, conversionThreads(), [&](int row) {
+        const int y = window.y1 + row;
+        float* const out = pixels->data() + (std::size_t)row * (std::size_t)windowWidth * (std::size_t)nComps;
+        const bool rowInside = (y >= 0) && (y < height);
+        if (asIs && rowInside && (x1 < x2)) {
+            std::fill(out, out + (std::size_t)(x1 - window.x1) * (std::size_t)nComps, outside);
+            std::memcpy(out + (std::size_t)(x1 - window.x1) * (std::size_t)nComps,
+                        asIs + ((std::size_t)y * (std::size_t)width + (std::size_t)x1) * (std::size_t)nComps,
+                        (std::size_t)(x2 - x1) * (std::size_t)nComps * sizeof(float));
+            std::fill(out + (std::size_t)(x2 - window.x1) * (std::size_t)nComps, out + (std::size_t)windowWidth * (std::size_t)nComps, outside);
+
+            return;
+        }
         for (int x = window.x1; x < window.x2; ++x) {
-            const bool inside = (x >= 0) && (y >= 0) && (x < width) && (y < height);
+            const bool inside = rowInside && (x >= 0) && (x < width);
             const std::size_t i = inside ? (std::size_t)y * (std::size_t)width + (std::size_t)x : 0;
-            float* out = pixels->data() + ((std::size_t)(y - window.y1) * (std::size_t)windowWidth + (std::size_t)(x - window.x1)) * (std::size_t)nComps;
+            float* const at = out + (std::size_t)(x - window.x1) * (std::size_t)nComps;
             for (int c = 0; c < nComps; ++c) {
-                switch (window.plane) {
-                case HydraRender::ePlaneColor: {
-                    const int channel = (nComps == 1) ? 3 : c;
-                    out[c] = (inside && (channel < 4)) ? frame.rgba[i * 4 + (std::size_t)channel] : 0.f;
-                    break;
-                }
-                case HydraRender::ePlaneDepth:
-                    out[c] = inside ? frame.depth[i] : std::numeric_limits<float>::infinity();
-                    break;
-                case HydraRender::ePlanePrimId:
-                    out[c] = inside ? frame.primId[i] : 0.f;
-                    break;
-                case HydraRender::ePlaneNormal:
-                    out[c] = (inside && (c < 3) && !frame.normal.empty()) ? frame.normal[i * 3 + (std::size_t)c] : 0.f;
-                    break;
-                }
+                at[c] = inside ? value(i, c) : outside;
             }
         }
-    }
+    });
 
     return true;
 } // RenderThread::cpuWindow
@@ -2441,25 +2517,38 @@ RenderThread::decodeIds(EngineEntry& entry,
         entry.primId.assign(pixels, 0.f);
         entry.primPaths.clear();
         const bool cycles = CyclesAovs::isCycles(entry.renderer);
-        std::map<std::pair<std::int32_t, std::int32_t>, std::uint32_t> decoded;
+        const utilityProfile::Scope timed(utilityProfile::Stage::DecodeIds);
+        // Neighbouring pixels mostly show the same prim, so the last key is tried before the map.
+        std::unordered_map<std::uint64_t, std::uint32_t> decoded;
+        std::uint64_t lastKey = 0;
+        std::uint32_t lastHash = 0;
+        bool haveLast = false;
         for (std::size_t i = 0; i < pixels; ++i) {
             const std::int32_t prim = readInt(primIds.pixel(i));
             if (prim < 0) {
                 continue;
             }
             const std::int32_t instance = readInt(instanceIds.pixel(i));
-            const std::pair<std::int32_t, std::int32_t> key(prim, cycles ? CyclesAovs::instanceIndex(instance) : instance);
-            std::map<std::pair<std::int32_t, std::int32_t>, std::uint32_t>::const_iterator found = decoded.find(key);
+            const std::int32_t index = cycles ? CyclesAovs::instanceIndex(instance) : instance;
+            const std::uint64_t key = ((std::uint64_t)(std::uint32_t)prim << 32) | (std::uint64_t)(std::uint32_t)index;
             std::uint32_t hash = 0;
-            if (found != decoded.end()) {
-                hash = found->second;
+            if (haveLast && (key == lastKey)) {
+                hash = lastHash;
             } else {
-                SdfPath path;
-                if (engine->DecodeIntersection(key.first, key.second, &path) && !path.IsEmpty()) {
-                    hash = HydraRender::primPathHash(path.GetString());
-                    entry.primPaths[hash] = path.GetString();
+                std::unordered_map<std::uint64_t, std::uint32_t>::const_iterator found = decoded.find(key);
+                if (found != decoded.end()) {
+                    hash = found->second;
+                } else {
+                    SdfPath path;
+                    if (engine->DecodeIntersection(prim, index, &path) && !path.IsEmpty()) {
+                        hash = HydraRender::primPathHash(path.GetString());
+                        entry.primPaths[hash] = path.GetString();
+                    }
+                    decoded.emplace(key, hash);
                 }
-                decoded[key] = hash;
+                lastKey = key;
+                lastHash = hash;
+                haveLast = true;
             }
             if (hash) {
                 entry.primId[i] = HydraRender::hashToFloat(hash);
@@ -2520,6 +2609,7 @@ RenderThread::translucentIds(EngineEntry& entry,
 
 bool
 RenderThread::frame(EngineEntry& entry,
+                    unsigned int planes,
                     HydraRender::Result* result,
                     std::string* error)
 {
@@ -2527,7 +2617,39 @@ RenderThread::frame(EngineEntry& entry,
     enterGLSection(&section);
     std::string packError;
     if (!_gl || !packAvailable(&packError)) {
-        return cpuFrame(entry, result, error);
+        if (!cpuFrame(entry, planes, error)) {
+            return false;
+        }
+        // The planes move out rather than copy: a window asked of them after converts them again.
+        HydraRender::Result& converted = entry.cpuResult;
+        const struct {
+            HydraRender::PlaneEnum plane;
+            std::vector<float>* from;
+            std::vector<float>* to;
+        } moved[] = {
+            { HydraRender::ePlaneColor, &converted.rgba, &result->rgba },
+            { HydraRender::ePlaneDepth, &converted.depth, &result->depth },
+            { HydraRender::ePlaneNormal, &converted.normal, &result->normal },
+        };
+        for (const auto& plane : moved) {
+            plane.to->clear();
+            if (planes & (1u << plane.plane)) {
+                *plane.to = std::move(*plane.from);
+                plane.from->clear();
+                entry.cpuPlanes &= ~(1u << plane.plane);
+            }
+        }
+        result->primId.clear();
+        result->primPaths.clear();
+        if (planes & (1u << HydraRender::ePlanePrimId)) {
+            result->primId = entry.primId;
+            result->primPaths = entry.primPaths;
+        }
+        result->warning = entry.warning;
+        result->errors = entry.errors;
+        result->device = entry.device;
+
+        return true;
     }
     HydraRender::PlaneWindow window;
     window.x2 = entry.width;
@@ -3110,6 +3232,7 @@ render(const Request& request,
        Result* result,
        std::string* error)
 {
+    const UtilityProfileHydraCall profiled("render", request.renderer, request.width, request.height);
     if (request.scene.isEmpty() || (request.width <= 0) || (request.height <= 0)) {
         *error = "Nothing to render.";
 
@@ -3131,7 +3254,7 @@ render(const Request& request,
 
         try {
             EngineEntry* entry = thread.renderEngine(request, &cancel, error);
-            ok = entry && thread.frame(*entry, result, error);
+            ok = entry && thread.frame(*entry, request.planes, result, error);
         } catch (const std::exception& e) {
             *error = std::string("Hydra failed: ") + e.what();
             ok = false;
@@ -3220,6 +3343,7 @@ renderWindow(const Request& request,
              std::map<std::uint32_t, std::string>* primPaths,
              std::string* error)
 {
+    const UtilityProfileHydraCall profiled("window", request.renderer, request.width, request.height);
     if (request.scene.isEmpty() || (request.width <= 0) || (request.height <= 0)) {
         *error = "Nothing to render.";
 
@@ -3367,6 +3491,7 @@ recordDeviceWindow(const Request& request,
                    Result* info,
                    std::string* error)
 {
+    const UtilityProfileHydraCall profiled("device_window", request.renderer, request.width, request.height);
     if (request.scene.isEmpty() || (request.width <= 0) || (request.height <= 0)) {
         *error = "Nothing to render.";
 

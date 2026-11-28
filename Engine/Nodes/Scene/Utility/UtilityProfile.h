@@ -63,6 +63,15 @@ enum class Stage : std::size_t {
     GpuSubmitWait,
     WriteTile,
     PublishPass,
+    // Outside a frame's draw, on the threads Hydra and its callers run.
+    Clear,
+    RenderCall,
+    MapAov,
+    ColorDownload,
+    PickReadback,
+    CpuFrame,
+    CpuWindow,
+    DecodeIds,
     Count
 };
 
@@ -97,12 +106,22 @@ struct FrameState {
 
 FrameState* currentFrame();
 
+// The thread's state for scopes outside a frame's draw, which its outermost scope adds to the process-wide one.
+FrameState* looseFrame();
+
+// Adds a thread's loose state to the process-wide one and zeroes it.
+void flushLoose(FrameState* loose);
+
 class Scope {
 public:
     explicit Scope(Stage stage)
         : _frame(enabled() ? currentFrame() : nullptr)
         , _stage(stage)
     {
+        if (enabled() && !_frame) {
+            _frame = looseFrame();
+            _loose = true;
+        }
         if (_frame) {
             _parent = _frame->open;
             _frame->open = this;
@@ -125,6 +144,7 @@ private:
 
     FrameState* _frame;
     Stage _stage;
+    bool _loose = false;
     Scope* _parent = nullptr;
     FrameState::Clock::time_point _start;
     double _childMs = 0.;
@@ -172,6 +192,33 @@ private:
     int _height;
     int _passes;
     utilityProfile::FrameState _state;
+};
+
+/**
+ * @brief Times one HydraRender call, from construction until it is destroyed, and then appends a hydra_profile
+ * record with the stages timed outside any frame's draw meanwhile, on any thread. Calls nested on the thread are
+ * not timed; overlapping calls on other threads share those stages.
+ **/
+class UtilityProfileHydraCall {
+public:
+    UtilityProfileHydraCall(const std::string& kind,
+                            const std::string& renderer,
+                            int width,
+                            int height);
+    ~UtilityProfileHydraCall();
+
+    UtilityProfileHydraCall(const UtilityProfileHydraCall&) = delete;
+    UtilityProfileHydraCall& operator=(const UtilityProfileHydraCall&) = delete;
+
+private:
+    void write();
+
+    bool _owner = false;
+    std::string _kind;
+    std::string _renderer;
+    int _width;
+    int _height;
+    std::chrono::steady_clock::time_point _start;
 };
 
 NATRON_NAMESPACE_EXIT

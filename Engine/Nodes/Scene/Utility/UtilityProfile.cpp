@@ -38,7 +38,45 @@ NATRON_NAMESPACE_ENTER
 
 namespace utilityProfile {
 namespace {
+    const char* profilePath();
+
     thread_local FrameState* tFrame = nullptr;
+    thread_local FrameState tLoose;
+    thread_local bool tHydraCall = false;
+
+    struct LooseTotals {
+        std::mutex mutex;
+        std::array<double, kStageCount> ms {};
+        std::array<std::uint64_t, kStageCount> calls {};
+    };
+
+    LooseTotals&
+    looseTotals()
+    {
+        static LooseTotals* totals = new LooseTotals;
+
+        return *totals;
+    }
+
+    std::uint64_t
+    nextSequence()
+    {
+        static std::atomic<std::uint64_t> sequence { 0 };
+
+        return sequence.fetch_add(1);
+    }
+
+    void
+    appendLine(const std::string& line)
+    {
+        static std::mutex fileMutex;
+        const std::lock_guard<std::mutex> l(fileMutex);
+
+        if (std::FILE* f = std::fopen(profilePath(), "a")) {
+            std::fputs(line.c_str(), f);
+            std::fclose(f);
+        }
+    }
 
     const char*
     profilePath()
@@ -128,6 +166,22 @@ stageName(Stage stage)
         return "write_tile";
     case Stage::PublishPass:
         return "publish_pass";
+    case Stage::Clear:
+        return "clear";
+    case Stage::RenderCall:
+        return "render_call";
+    case Stage::MapAov:
+        return "map_aov";
+    case Stage::ColorDownload:
+        return "color_download";
+    case Stage::PickReadback:
+        return "pick_readback";
+    case Stage::CpuFrame:
+        return "cpu_frame";
+    case Stage::CpuWindow:
+        return "cpu_window";
+    case Stage::DecodeIds:
+        return "decode_ids";
     case Stage::Count:
         break;
     }
@@ -147,6 +201,27 @@ currentFrame()
     return tFrame;
 }
 
+FrameState*
+looseFrame()
+{
+    return &tLoose;
+}
+
+void
+flushLoose(FrameState* loose)
+{
+    LooseTotals& totals = looseTotals();
+    const std::lock_guard<std::mutex> l(totals.mutex);
+
+    for (std::size_t i = 0; i < kStageCount; ++i) {
+        totals.ms[i] += loose->ms[i];
+        totals.calls[i] += loose->calls[i];
+    }
+    loose->ms.fill(0.);
+    loose->inPassMs.fill(0.);
+    loose->calls.fill(0);
+}
+
 void
 Scope::close()
 {
@@ -162,6 +237,8 @@ Scope::close()
     _frame->open = _parent;
     if (_parent) {
         _parent->_childMs += elapsed;
+    } else if (_loose) {
+        flushLoose(_frame);
     }
 }
 
@@ -222,9 +299,6 @@ UtilityProfileFrame::write()
 {
     using namespace utilityProfile;
 
-    static std::atomic<std::uint64_t> sequence { 0 };
-    static std::mutex fileMutex;
-
     const double total = std::chrono::duration<double, std::milli>(FrameState::Clock::now() - _state.start).count();
     const std::vector<double>& passes = _state.passMs;
     const double passSum = std::accumulate(passes.begin(), passes.end(), 0.);
@@ -233,7 +307,7 @@ UtilityProfileFrame::write()
     const std::uint64_t submits = _state.calls[static_cast<std::size_t>(Stage::GpuSubmitWait)] + _state.calls[static_cast<std::size_t>(Stage::RasterSubmitWait)];
     std::string line = "{\"record\":\"utility_profile\"";
 
-    line += ",\"sequence\":" + std::to_string(sequence.fetch_add(1));
+    line += ",\"sequence\":" + std::to_string(nextSequence());
     line += ",\"pid\":" + std::to_string(static_cast<long>(::getpid()));
     line += ",\"mode\":" + jsonString(_mode);
     line += ",\"device\":" + jsonString(_device);
@@ -271,13 +345,88 @@ UtilityProfileFrame::write()
         line += ",\"per_pass_ms\":" + number(_state.inPassMs[i] / drawn) + "}";
     }
     line += "}}\n";
+    appendLine(line);
+}
 
-    const std::lock_guard<std::mutex> l(fileMutex);
+UtilityProfileHydraCall::UtilityProfileHydraCall(const std::string& kind,
+                                                 const std::string& renderer,
+                                                 int width,
+                                                 int height)
+    : _width(width)
+    , _height(height)
+{
+    using namespace utilityProfile;
 
-    if (std::FILE* f = std::fopen(profilePath(), "a")) {
-        std::fputs(line.c_str(), f);
-        std::fclose(f);
+    if (!enabled() || tHydraCall) {
+        return;
     }
+    _owner = true;
+    tHydraCall = true;
+    _kind = kind;
+    _renderer = renderer;
+
+    // What was timed before the call is not the call's.
+    LooseTotals& totals = looseTotals();
+    const std::lock_guard<std::mutex> l(totals.mutex);
+
+    totals.ms.fill(0.);
+    totals.calls.fill(0);
+    _start = std::chrono::steady_clock::now();
+}
+
+UtilityProfileHydraCall::~UtilityProfileHydraCall()
+{
+    if (!_owner) {
+        return;
+    }
+    utilityProfile::tHydraCall = false;
+    try {
+        write();
+    } catch (...) {
+    }
+}
+
+void
+UtilityProfileHydraCall::write()
+{
+    using namespace utilityProfile;
+
+    const double total = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _start).count();
+    std::array<double, kStageCount> ms {};
+    std::array<std::uint64_t, kStageCount> calls {};
+    {
+        LooseTotals& totals = looseTotals();
+        const std::lock_guard<std::mutex> l(totals.mutex);
+
+        std::swap(ms, totals.ms);
+        std::swap(calls, totals.calls);
+    }
+
+    std::string line = "{\"record\":\"hydra_profile\"";
+
+    line += ",\"sequence\":" + std::to_string(nextSequence());
+    line += ",\"pid\":" + std::to_string(static_cast<long>(::getpid()));
+    line += ",\"kind\":" + jsonString(_kind);
+    line += ",\"renderer\":" + jsonString(_renderer);
+    line += ",\"width\":" + std::to_string(_width);
+    line += ",\"height\":" + std::to_string(_height);
+    line += ",\"timing\":\"cpu_wall\"";
+    line += ",\"total_ms\":" + number(total);
+    line += ",\"stages\":{";
+
+    bool first = true;
+
+    for (std::size_t i = 0; i < kStageCount; ++i) {
+        if (calls[i] == 0) {
+            continue;
+        }
+        line += first ? "" : ",";
+        first = false;
+        line += jsonString(stageName(static_cast<Stage>(i)));
+        line += ":{\"ms\":" + number(ms[i]) + ",\"calls\":" + std::to_string(calls[i]) + "}";
+    }
+    line += "}}\n";
+    appendLine(line);
 }
 
 NATRON_NAMESPACE_EXIT

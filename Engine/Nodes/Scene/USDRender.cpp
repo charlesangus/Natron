@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 #include <string>
 #include <utility>
@@ -67,6 +68,7 @@
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
+#include "Engine/PoolParallelFor.h"
 #include "Engine/SceneLoadSet.h"
 
 #include <pxr/usd/usd/primRange.h>
@@ -1333,6 +1335,17 @@ USDRender::render(const RenderActionArgs& args)
     };
     request.aborted = [this, noRoom]() { return aborted() || !noRoom().empty(); };
     request.threads = appPTR->getNCPUsAvailableForEffect();
+    request.planes = 0;
+    for (std::list<std::pair<ImageLayerDesc, ImagePtr>>::const_iterator it = args.outputLayers.begin(); it != args.outputLayers.end(); ++it) {
+        if (!it->second) {
+            continue;
+        }
+        const std::string& layerID = it->first.getLayerID();
+        request.planes |= it->first.isColorLayer() ? (1u << HydraRender::ePlaneColor) : (layerID == "depth") ? (1u << HydraRender::ePlaneDepth)
+            : (layerID == "primId")                                                                          ? (1u << HydraRender::ePlanePrimId)
+            : (layerID == "normal")                                                                          ? (1u << HydraRender::ePlaneNormal)
+                                                                                                             : 0u;
+    }
 
     HydraRender::Result result;
     const bool rendered = HydraRender::render(request, &result, &error);
@@ -1377,10 +1390,25 @@ USDRender::render(const RenderActionArgs& args)
             continue;
         }
         Image::WriteAccess access(image.get());
-        for (int y = roi.y1; y < roi.y2; ++y) {
+        // The part of the window's rows the render covers, which an RGBA colour plane takes as it is.
+        const int insideX1 = std::max(roi.x1, pixels.x1);
+        const int insideX2 = std::min(roi.x2, pixels.x2);
+        const bool asIs = (plane == ePlaneColor) && (nComps == 4) && (insideX1 < insideX2);
+        parallelForOnGlobalPool(roi.y2 - roi.y1, std::max(1, request.threads), [&](int r) {
+            const int y = roi.y1 + r;
             float* row = reinterpret_cast<float*>(access.pixelAt(roi.x1, y));
             if (!row) {
-                continue;
+                return;
+            }
+            if (asIs && (y >= pixels.y1) && (y < pixels.y2)) {
+                const std::size_t rowStart = (std::size_t)(y - pixels.y1) * width;
+                std::fill(row, row + (std::size_t)(insideX1 - roi.x1) * 4, 0.f);
+                std::memcpy(row + (std::size_t)(insideX1 - roi.x1) * 4,
+                            result.rgba.data() + (rowStart + (std::size_t)(insideX1 - pixels.x1)) * 4,
+                            (std::size_t)(insideX2 - insideX1) * 4 * sizeof(float));
+                std::fill(row + (std::size_t)(insideX2 - roi.x1) * 4, row + (std::size_t)(roi.x2 - roi.x1) * 4, 0.f);
+
+                return;
             }
             for (int x = roi.x1; x < roi.x2; ++x) {
                 float* out = row + (std::size_t)(x - roi.x1) * (std::size_t)nComps;
@@ -1410,7 +1438,7 @@ USDRender::render(const RenderActionArgs& args)
                     out[c] = value;
                 }
             }
-        }
+        });
     }
     showRenderMessages(setup.warning, result.warning, result.errors, result.device);
 

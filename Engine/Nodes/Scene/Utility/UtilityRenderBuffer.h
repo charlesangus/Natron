@@ -141,11 +141,18 @@ private:
 };
 
 class UtilityRenderBuffer;
+class UtilityPickSnapshot;
+
+enum class UtilityPickAov {
+    Depth,
+    PrimId,
+    InstanceId
+};
 
 /**
  * @brief One frame's depth, prim id and instance id kept on the device: for each pixel of the window the frame
  * draws, the heaviest of its samples so far, as an unfiltered UtilityRenderBuffer::addSample() keeps it. The
- * frame's thread alone uses it, from its first pass until resolve() hands the samples to the host buffers.
+ * frame's thread alone uses it, from its first pass on; publish() hands the buffers copies of it.
  **/
 class UtilityDeviceAovs {
 public:
@@ -195,14 +202,21 @@ public:
     bool drawn() const;
 
     /**
-     * @brief Reads the picks back, waiting for the copy, and adds each pixel's sample to every buffer of its AOV
-     * with addSample(), on up to threads threads. Without a pass drawn the buffers are left as they are. False
-     * with *error set when the device cannot.
+     * @brief What a miss leaves in each AOV: the clear value of the first of its buffers, when that is one 32-bit
+     * component; zero otherwise. Before the frame's first pass.
      **/
-    bool resolve(const std::vector<UtilityRenderBuffer*>& depth,
+    void setMisses(const std::vector<UtilityRenderBuffer*>& depth,
+                   const std::vector<UtilityRenderBuffer*>& primId,
+                   const std::vector<UtilityRenderBuffer*>& instanceId);
+
+    /**
+     * @brief Hands every buffer its AOV of the picks as they are, in a copy on the device made once the passes so
+     * far are done; each buffer reads back only its own AOV, on the first Map() that asks for it. Without a pass
+     * drawn the buffers publish their host pixels instead. False with *error set when the device cannot.
+     **/
+    bool publish(const std::vector<UtilityRenderBuffer*>& depth,
                  const std::vector<UtilityRenderBuffer*>& primId,
                  const std::vector<UtilityRenderBuffer*>& instanceId,
-                 int threads,
                  std::string* error);
 
     // Lets go of the device memory; the next pass starts the picks over.
@@ -257,6 +271,17 @@ public:
      * the value does not have are written as zero. An empty value leaves the buffer as it is.
      **/
     void clear(const PXR_NS::VtValue& value);
+    /**
+     * @brief clear(), but with deferHost the host pixels and sample sums are only filled on the first need of
+     * them: ensureHost() before writing them with setPixel() or addSample(), or a reader's Map(). A frame
+     * drawn on the device never needs them.
+     **/
+    void clear(const PXR_NS::VtValue& value,
+               bool deferHost);
+    // MT-safe; returns at once when the host pixels are filled.
+    void ensureHost();
+    // Whether the last clear() value is one 32-bit component, and its bits in *word if so.
+    bool clearWord(std::uint32_t* word) const;
     void setConverged(bool converged);
 
     /**
@@ -297,6 +322,8 @@ public:
 
     // How many times Map() has copied a device frame to the host, over every buffer. MT-safe.
     static std::uint64_t deviceDownloadCount();
+    // How many times an AOV was read back from the device picks, process-wide.
+    static std::uint64_t pickReadbackCount();
 
 #ifdef NATRON_HAVE_GPU
     /**
@@ -342,6 +369,13 @@ public:
      * out as the shading kernel reads and writes them, weights as the ray generation writes them.
      * After beginDeviceFrame() only.
      **/
+    /**
+     * @brief Readers get aov of picks from here on, read back on the first Map() that asks for it. For the thread
+     * drawing the frame, between passes.
+     **/
+    void publishPicks(const std::shared_ptr<UtilityPickSnapshot>& picks,
+                      UtilityPickAov aov);
+
     gpu::GpuStatus recordDeviceBatch(gpu::GpuRecordContext& context,
                                      const gpu::GpuBuffer& hitIds,
                                      const gpu::GpuBuffer& color,
@@ -362,6 +396,12 @@ private:
     void retireFrontLocked();
     // Under _deviceMutex: makes the readers' host copy from the published device pixels if it has none.
     void frontToHostLocked();
+    // Under _deviceMutex: fills the host pixels and sample sums a deferred clear() left unfilled.
+    void ensureHostLocked();
+#ifdef NATRON_HAVE_GPU
+    // Under _deviceMutex: *out becomes the published picks' AOV over the clear value.
+    gpu::GpuStatus picksToHostLocked(std::vector<std::uint8_t>* out);
+#endif
 
     virtual void _Deallocate() OVERRIDE;
 
@@ -398,7 +438,12 @@ private:
     std::shared_ptr<std::vector<std::uint8_t>> _mapped;
 #ifdef NATRON_HAVE_GPU
     std::shared_ptr<UtilityDeviceFilm> _frontFilm;
+    // Published depth or ids, still on the device, when _front is null.
+    std::shared_ptr<UtilityPickSnapshot> _frontPicks;
+    UtilityPickAov _frontPickAov = UtilityPickAov::Depth;
 #endif
+    // Cleared by a deferred clear() until the host pixels and sample sums are filled; written under _deviceMutex.
+    std::atomic<bool> _hostReady { true };
 };
 
 NATRON_NAMESPACE_EXIT

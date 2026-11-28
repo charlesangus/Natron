@@ -367,7 +367,42 @@ try:
                                 return a
         return None
 
+    def screen_grab():
+        v = view()
+        if v is None:
+            return QImage()
+        QApplication.processEvents()
+        top_left = v.mapToGlobal(v.rect().topLeft())
+        image = QGuiApplication.primaryScreen().grabWindow(0).toImage()
+        return image.copy(top_left.x(), top_left.y(), v.width(), v.height()).convertToFormat(QImage.Format_RGBX8888)
+
+    def flat(image):
+        data = bytes(image.constBits())[:image.sizeInBytes()]
+        return data == data[:4] * (len(data) // 4)
+
+    def grab():
+        """The view's area of the screen once the window shows the view. Under Xvfb the window is at
+        times flushed without the GL widget's texture for many seconds, leaving the view's area one
+        flat window colour while the view goes on painting, which a pixel comparison would take for a
+        change in the scene. The view came back after the script activated the window."""
+        image = screen_grab()
+        tries = 0
+        while (image.isNull() or flat(image)) and tries < 10:
+            if tries == 0:
+                report("NOTE the view's area of the screen is blank; activating the window")
+            v = view()
+            if v is not None:
+                v.window().raise_()
+                v.window().activateWindow()
+                v.update()
+            yield ("sleep", SETTLE_MS)
+            image = screen_grab()
+            tries += 1
+        check(not image.isNull() and not flat(image), "the view is on screen")
+        return image
+
     def save(name):
+        yield from grab()
         shot(name + ".png")
 
     def check_farthest_first(label):
@@ -406,7 +441,7 @@ try:
         check(int(b.get("demoted", -1)) == 0 and int(b.get("culled", -1)) == 0,
               "nothing is demoted or culled under the default limit (%r, %r)" % (b.get("demoted"), b.get("culled")))
         check(budget_boxes() == [], "no budget box is drawn (%r)" % budget_boxes()[:3])
-        save("scene-budget-none")
+        yield from save("scene-budget-none")
 
         section("limit")
         limit = TOTAL_FACES // 2
@@ -552,7 +587,7 @@ try:
             else:
                 check(boxes_drawn + instances > 0 and markers == 0, "%s draws boxes and no marker (%r, %r, %r)" %
                       (label, boxes_drawn, instances, markers))
-            save("scene-budget-boxes-" + label)
+            yield from save("scene-budget-boxes-" + label)
         viewer.getParam("budgetBoxes").setValue(0)
 
         section("count whole scene")
@@ -676,7 +711,7 @@ try:
               "the filter hides nothing (%r, %r, %r)" % (b.get("hidden"), b.get("masked"), b.get("facedMeshes")))
         check(budget_boxes() == [], "no budget box is drawn (%r)" % budget_boxes()[:3])
         check(hud() == "", "the HUD line is hidden (%r)" % hud())
-        save("scene-budget-off")
+        yield from save("scene-budget-off")
 
         section("rows inside a native instance")
 
@@ -688,15 +723,6 @@ try:
         def presented():
             v = view()
             return int(v.property("natronSceneDrawPresented") or 0) if v is not None else 0
-
-        def grab():
-            v = view()
-            if v is None:
-                return QImage()
-            QApplication.processEvents()
-            top_left = v.mapToGlobal(v.rect().topLeft())
-            image = QGuiApplication.primaryScreen().grabWindow(0).toImage()
-            return image.copy(top_left.x(), top_left.y(), v.width(), v.height()).convertToFormat(QImage.Format_RGBX8888)
 
         def changed_pixels(first, second):
             if first.isNull() or first.size() != second.size():
@@ -737,31 +763,31 @@ try:
         check(ok, "Load All on /World/Island loads the mountain's payload")
         frame_all()
         yield ("sleep", 2 * SETTLE_MS)
-        shot("scene-budget-instance-shown.png")
-        base = grab()
+        yield from save("scene-budget-instance-shown")
+        base = yield from grab()
         changes = {}
         for part in MOUNTAIN_PARTS:
             yield from draw_edit("Hidden on %s" % part, "setDrawState", Q_ARG("QString", part), Q_ARG("QString", "hidden"))
-            changes[part] = changed_pixels(base, grab())
+            changes[part] = changed_pixels(base, (yield from grab()))
             check(bool(changes[part]), "Hidden on %s changes the image (%r)" % (part, changes[part]))
             check(int(draw_stats().get("maskedInstances", -1)) == 0,
                   "Hidden on %s masks no instance (%r)" % (part, draw_stats().get("maskedInstances")))
             if part.endswith("xgPalms"):
-                shot("scene-budget-instance-xg-hidden.png")
+                yield from save("scene-budget-instance-xg-hidden")
             yield from draw_edit("Full on %s" % part, "setDrawState", Q_ARG("QString", part), Q_ARG("QString", "full"))
-            restored = changed_pixels(base, grab())
+            restored = changed_pixels(base, (yield from grab()))
             check(restored == 0, "Full on %s gives back the first image (%r pixels differ)" % (part, restored))
             QMetaObject.invokeMethod(view(), "clearDrawState", Q_ARG("QString", part))
             yield settle()
         report("NOTE pixels each hidden part changed: %r" % changes)
         for part in MOUNTAIN_PARTS:
             yield from draw_edit("Hidden on %s" % part, "setDrawState", Q_ARG("QString", part), Q_ARG("QString", "hidden"))
-        everything = changed_pixels(base, grab())
+        everything = changed_pixels(base, (yield from grab()))
         check(everything is not None and everything > max(v or 0 for v in changes.values()),
               "Hidden on every part hides more than any one part (%r)" % (everything,))
         for part in MOUNTAIN_PARTS:
             yield from draw_edit("clear %s" % part, "clearDrawState", Q_ARG("QString", part))
-        restored = changed_pixels(base, grab())
+        restored = changed_pixels(base, (yield from grab()))
         check(restored == 0, "clearing the parts gives back the first image (%r pixels differ)" % (restored,))
 
         section("loading stops at the load limit")
@@ -821,7 +847,7 @@ try:
         held_line = held_hud()
         check(held_line.startswith("Load limit reached") and "load again to override" in held_line and str(faces) in held_line,
               "the HUD says the load limit is reached and how to override it (%r)" % held_line)
-        shot("scene-budget-loading-stopped.png")
+        yield from save("scene-budget-loading-stopped")
         yield ("sleep", 2 * SETTLE_MS)
         check(loaded_faces() == faces and loads_held() == "budget", "held loads stay held (%d faces)" % loaded_faces())
 
@@ -901,7 +927,7 @@ try:
               "the budget demotes part of the city (%r demoted, %r drawn)" % (budget().get("demoted"), budget().get("drawn")))
         check(after["boxFrames"] > before["boxFrames"] and budget_boxes() != [],
               "the demoted houses are drawn as budget boxes (%d boxes)" % len(budget_boxes()))
-        shot("scene-budget-city-loaded.png")
+        yield from save("scene-budget-city-loaded")
 
         before = churn()
         frame_all()

@@ -158,8 +158,14 @@ TEST(SceneStageLoadToKind, RootInsideTheSceneLoadsOnlyItsSubtree)
 
 namespace {
 // /World/Outer is a component payload holding /World/Outer/Inner, a component payload of its own,
-// which holds /World/Outer/Inner/Detail, a subcomponent payload.
-ScenePayload
+// which holds /World/Outer/Inner/Detail, a subcomponent payload. The payload names the anonymous
+// layers by identifier only, so they must outlive the stage that composes them.
+struct NestedComponents {
+    std::vector<PXR_NS::SdfLayerRefPtr> layers;
+    ScenePayload payload;
+};
+
+NestedComponents
 nestedComponentsPayload()
 {
     const PXR_NS::SdfLayerRefPtr detail = PXR_NS::SdfLayer::CreateAnonymous(".usda");
@@ -178,14 +184,15 @@ nestedComponentsPayload()
                                         "        prepend payload = @"
                                         + outer->GetIdentifier() + "@\n    )\n    {\n    }\n}\n"));
 
-    return SceneOps::appendLayer(ScenePayload(), world, 1);
+    return NestedComponents { { detail, inner, outer, world }, SceneOps::appendLayer(ScenePayload(), world, 1) };
 }
 } // anonymous namespace
 
 TEST(SceneStageLoadToKind, LoadToAKindOnAPrimOfThatKindLoadsTheNearestBelowIt)
 {
+    const NestedComponents nested = nestedComponentsPayload();
     SceneStage stage(PXR_NS::UsdStage::LoadNone);
-    ASSERT_TRUE(stage.sync(nestedComponentsPayload()));
+    ASSERT_TRUE(stage.sync(nested.payload));
 
     stage.requestLoadToKind({ PXR_NS::SdfPath("/World/Outer") }, PXR_NS::KindTokens->component);
     serviceAll(stage);
@@ -195,8 +202,9 @@ TEST(SceneStageLoadToKind, LoadToAKindOnAPrimOfThatKindLoadsTheNearestBelowIt)
 
 TEST(SceneStageLoadToKind, UnloadBelowAKindOnAPrimOfThatKindKeepsTheNearestBelowIt)
 {
+    const NestedComponents nested = nestedComponentsPayload();
     SceneStage stage(PXR_NS::UsdStage::LoadNone);
-    ASSERT_TRUE(stage.sync(nestedComponentsPayload()));
+    ASSERT_TRUE(stage.sync(nested.payload));
     stage.requestLoad(kRoot, true);
     serviceAll(stage);
     ASSERT_EQ(3u, loaded(stage).size());

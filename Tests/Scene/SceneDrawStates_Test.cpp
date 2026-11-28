@@ -120,8 +120,9 @@ TEST(SceneDrawStates, BoxAndHiddenStopWhatIsBelowAndRememberIt)
 TEST(SceneDrawStates, FullSwitchesBlockingAncestorsToPassThrough)
 {
     SceneDrawStates states;
-    states.setState("/World", eSceneDrawStateBBox);
+    // Setting /World/a under a boxed /World would switch /World, so the ancestor is boxed last.
     states.setState("/World/a", eSceneDrawStateHidden);
+    states.setState("/World", eSceneDrawStateBBox);
 
     const SceneDrawDelta delta = states.setState("/World/a/b/c", eSceneDrawStateFull);
 
@@ -152,8 +153,8 @@ TEST(SceneDrawStates, EveryStateSwitchesBlockingAncestorsToPassThrough)
 {
     for (SceneDrawStateEnum state : { eSceneDrawStateBBox, eSceneDrawStatePassThrough, eSceneDrawStateHidden }) {
         SceneDrawStates states;
-        states.setState("/World", eSceneDrawStateBBox);
         states.setState("/World/a", eSceneDrawStateHidden);
+        states.setState("/World", eSceneDrawStateBBox);
 
         const SceneDrawDelta delta = states.setState("/World/a/b/c", state);
 
@@ -737,10 +738,12 @@ TEST(SceneDrawStates, OneDeltaOverAHundredThousandStoredStatesLooksOnlyAtItsSubt
     EXPECT_EQ(1000u, block.cleared.size());
     EXPECT_LE(block.visited, 1002u);
 
-    // The boxed row switches to Pass Through, which unblocks the rows remembered below it.
+    // The boxed row switches to Pass Through, which unblocks the rows remembered below it; boxed r500
+    // is what a Pass Through row's child already is, so it has no rule of its own.
     const SceneDrawDelta blockedBelow = states.setState("/World/b50/r1", eSceneDrawStateHidden);
     EXPECT_EQ(Paths { "/World/b50" }, blockedBelow.passThrough);
-    EXPECT_EQ(1000u, blockedBelow.hidden.size());
+    EXPECT_EQ(999u, blockedBelow.hidden.size());
+    EXPECT_TRUE(blockedBelow.boxed.empty());
     EXPECT_LE(blockedBelow.visited, 1002u);
 }
 

@@ -1156,8 +1156,9 @@ SceneDrawFilter::Rules
 mixedRules(SceneDrawStates& states)
 {
     SceneDrawFilter::Rules rules;
-    SceneDrawFilter::applyToRules(states.setState("/World/a", eSceneDrawStateBBox), &rules);
+    // Hiding /World/a/deep under a boxed /World/a would switch /World/a, so the ancestor is boxed last.
     SceneDrawFilter::applyToRules(states.setState("/World/a/deep", eSceneDrawStateHidden), &rules);
+    SceneDrawFilter::applyToRules(states.setState("/World/a", eSceneDrawStateBBox), &rules);
     SceneDrawFilter::applyToRules(states.setState("/World/b", eSceneDrawStatePassThrough), &rules);
     SceneDrawFilter::applyToRules(states.setState("/World/c", eSceneDrawStateHidden), &rules);
 

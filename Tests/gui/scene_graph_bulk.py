@@ -72,6 +72,7 @@ BUTTONS = ["load", "unload", "bbox", "passThrough", "geometry", "loadAndDraw", "
 STATE_NONE, STATE_UNLOADED, STATE_LOADING, STATE_LOADED, STATE_FAILED = range(5)
 DRAW_BBOX, DRAW_PASS_THROUGH, DRAW_GEOMETRY, DRAW_LOAD_AND_DRAW, DRAW_HIDE = range(5)
 ORIGIN_VIEWER = 0
+ORIGIN_INHERITED = 2
 
 try:
     import NatronEngine
@@ -638,11 +639,15 @@ try:
         ok = yield ("until", lambda: set_here(ISLAND, DRAW_HIDE), POLL_TIMEOUT_S)
         check(ok, "the island is hidden again (got %r)" % (draw(ISLAND),))
 
-        # To Component on a component walks through it, and finds no component in the tree.
+        # To Component on a component walks through it, and finds no component in the tree; its leaves
+        # are not loaded yet, so the walk skips their payload rather than loading it.
         summary = invoke("setDrawStateOnRowsScoped", [TREE_A], "bbox", "component")
-        check(summary == "No loaded components under 1 row",
+        check(summary == "No loaded components under 1 row; 1 unloaded payload skipped",
               "BBox To Component on tree A looks below it, not at it (got %r)" % (summary,))
-        check(set_here(TREE_A, DRAW_HIDE), "tree A keeps its own state (got %r)" % (draw(TREE_A),))
+        yield ("sleep", SETTLE_MS)
+        check(draw(TREE_A) == (DRAW_HIDE, ORIGIN_INHERITED) and set_here(ISLAND, DRAW_HIDE),
+              "BBox To Component on tree A sets nothing on it or above it, so the hidden island still covers it "
+              "(got %r, %r)" % (draw(TREE_A), draw(ISLAND)))
 
         # Load Below, then Unload Below Component.
         select_rows([ISLAND])

@@ -11844,6 +11844,47 @@ SceneViewport::clearScene()
 
 // Lets GUI tests and scripts read the state through the widget.
 void
+SceneViewport::publishFrameHolds()
+{
+    // Each gate that keeps a new frame from starting now: a viewer that stays grey shows which
+    // one never cleared.
+    QStringList holds;
+    if (_imp->backgroundFrameRunning) {
+        holds.push_back(QString::fromUtf8("frameRunning"));
+    }
+    if (_imp->widgetContextLost) {
+        holds.push_back(QString::fromUtf8("contextLost"));
+    }
+    if (_imp->drawJobsQueued > 0) {
+        holds.push_back(QString::fromUtf8("drawJobsQueued:%1").arg(_imp->drawJobsQueued));
+    }
+    if (_imp->rendererSwitchRunning || _imp->followSceneRunning || (_imp->renderContextRebuilds > 0) || _imp->engineReleaseRunning) {
+        holds.push_back(QString::fromUtf8("renderThreadBusy"));
+    }
+    if (_imp->presentPacer.pending()) {
+        holds.push_back(QString::fromUtf8("presentPending"));
+    }
+    if (_imp->syncedSerial < _imp->paintHeldUntilSerial) {
+        holds.push_back(QString::fromUtf8("paintHeld"));
+    }
+    if (_imp->stageAwaitsTakeIn()) {
+        holds.push_back(QString::fromUtf8("stageAwaitsTakeIn"));
+    }
+    if (_imp->policyHeld()) {
+        holds.push_back(QString::fromUtf8("policyHeld"));
+    } else if (_imp->renderer.isStageHeld()) {
+        holds.push_back(QString::fromUtf8("stageHeld"));
+    }
+    if (_imp->standInHoldsFrames()) {
+        holds.push_back(QString::fromUtf8("standIn"));
+    }
+    if (!_imp->renderer.isFillComplete()) {
+        holds.push_back(QString::fromUtf8("filling"));
+    }
+    setProperty("natronSceneFrameHolds", holds);
+}
+
+void
 SceneViewport::publishState()
 {
     setProperty("natronSceneError", _imp->error);
@@ -11860,44 +11901,7 @@ SceneViewport::publishState()
     setProperty("natronSceneMainWaitMs", _imp->renderer.getMainThreadWaitMs());
     setProperty("natronSceneMainWaitMaxMs", _imp->renderer.getMainThreadWaitMaxMs());
     publishDrawStats();
-    {
-        // Each gate that keeps a new frame from starting now: a viewer that stays grey shows which
-        // one never cleared.
-        QStringList holds;
-        if (_imp->backgroundFrameRunning) {
-            holds.push_back(QString::fromUtf8("frameRunning"));
-        }
-        if (_imp->widgetContextLost) {
-            holds.push_back(QString::fromUtf8("contextLost"));
-        }
-        if (_imp->drawJobsQueued > 0) {
-            holds.push_back(QString::fromUtf8("drawJobsQueued:%1").arg(_imp->drawJobsQueued));
-        }
-        if (_imp->rendererSwitchRunning || _imp->followSceneRunning || (_imp->renderContextRebuilds > 0) || _imp->engineReleaseRunning) {
-            holds.push_back(QString::fromUtf8("renderThreadBusy"));
-        }
-        if (_imp->presentPacer.pending()) {
-            holds.push_back(QString::fromUtf8("presentPending"));
-        }
-        if (_imp->syncedSerial < _imp->paintHeldUntilSerial) {
-            holds.push_back(QString::fromUtf8("paintHeld"));
-        }
-        if (_imp->stageAwaitsTakeIn()) {
-            holds.push_back(QString::fromUtf8("stageAwaitsTakeIn"));
-        }
-        if (_imp->policyHeld()) {
-            holds.push_back(QString::fromUtf8("policyHeld"));
-        } else if (_imp->renderer.isStageHeld()) {
-            holds.push_back(QString::fromUtf8("stageHeld"));
-        }
-        if (_imp->standInHoldsFrames()) {
-            holds.push_back(QString::fromUtf8("standIn"));
-        }
-        if (!_imp->renderer.isFillComplete()) {
-            holds.push_back(QString::fromUtf8("filling"));
-        }
-        setProperty("natronSceneFrameHolds", holds);
-    }
+    publishFrameHolds();
     {
         QVariantList failures;
         for (const std::pair<std::string, std::string>& failure : _imp->renderer.getStageLoadFailures()) {
@@ -13709,6 +13713,8 @@ SceneViewport::paintGL()
             return;
         }
     }
+    // The last state published may have seen the frame this paint took still on its way.
+    publishFrameHolds();
     const bool stormPaint = (_imp->renderer.getActiveRendererId() == kRenderDelegateStormId);
     const double paintStartMs = epochMs();
     const std::chrono::steady_clock::time_point paintStart = std::chrono::steady_clock::now();

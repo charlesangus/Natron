@@ -1654,6 +1654,9 @@ private:
     // natronSceneMainWaitMaxMs.
     void publishState();
 
+    // Each gate that keeps a new frame from starting now, into natronSceneFrameHolds.
+    void publishFrameHolds();
+
     void publishRefineState();
 
     /**

@@ -49,7 +49,7 @@ enum KernelRayMapping : std::uint32_t {
     eKernelRayMappingUvUnwrap = 3,
 };
 
-// Mirrors VisibilityParams in Kernels/RasterVisibility.slang, whose comments say what each field holds.
+// Mirrors VisibilityParams in Kernels/RasterDraw.slang, whose comments say what each field holds.
 struct KernelVisibilityParams {
     float viewProjection[4][4];
     float jitter[2];
@@ -66,6 +66,36 @@ struct KernelVisibilityParams {
 };
 
 static_assert(sizeof(KernelVisibilityParams) == 112, "KernelVisibilityParams must match VisibilityParams");
+
+// Mirrors CutoutParams in Kernels/RasterCutout.slang, whose comments say what each field holds.
+struct KernelCutoutParams {
+    KernelVisibilityParams draw;
+    std::uint32_t hitTablesLow;
+    std::uint32_t hitTablesHigh;
+    std::int32_t origin[2];
+};
+
+static_assert(sizeof(KernelCutoutParams) == 128, "KernelCutoutParams must match CutoutParams");
+
+// Mirrors CutoutFrame in Kernels/RasterCutout.slang, whose comments say what each field holds. Each position
+// and step takes four floats, the fourth holding the field after it.
+struct KernelCutoutFrame {
+    float nearAtCentre[3];
+    float jitterX;
+    float nearPerX[3];
+    float jitterY;
+    float nearPerY[3];
+    std::int32_t windowWidth;
+    float farAtCentre[3];
+    std::int32_t windowHeight;
+    float farPerX[3];
+    std::uint32_t padding0;
+    float farPerY[3];
+    std::uint32_t padding1;
+    float pixelFootprint[4];
+};
+
+static_assert(sizeof(KernelCutoutFrame) == 112, "KernelCutoutFrame must match CutoutFrame");
 
 // Mirrors RasterHitsParams in Kernels/RasterHits.slang, whose comments say what each field holds. Each position
 // is a float3 with the scalar after it in the same 16 bytes.

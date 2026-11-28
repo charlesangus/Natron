@@ -1,4 +1,5 @@
 import UtilityTypes;
+import RasterDraw;
 
 // KernelRasterHitsParams in UtilityKernels.h mirrors this. One dispatch covers one tile of a batch: a rectangle of
 // the visibility buffer RasterVisibility drew, tileWidth by tileHeight texels, the first of them the pixel tileX
@@ -43,79 +44,6 @@ struct RasterHitsParams
 [[vk::binding(4, 0)]] StructuredBuffer<uint> visibility;
 [[vk::push_constant]] ConstantBuffer<RasterHitsParams> params;
 
-float3 pointAt(FloatTable points, uint index)
-{
-    return float3(points[3 * index], points[3 * index + 1], points[3 * index + 2]);
-}
-
-// The triangle's corners in world space at the pass's time, as visibilityVertex() places them.
-void worldCorners(uint4 placement, uint primitive, out float3 corners[3])
-{
-    const Uint4Table tables = Uint4Table(params.tables);
-    const uint4 header = tables[0];
-    const uint4 where = tables[placement.z];
-    const uint4 counts = tables[placement.z + 1];
-    const FloatTable points = FloatTable(where.xy);
-    const UintTable triangles = UintTable(where.zw);
-    const Float4Table rows = Float4Table(header.xy);
-    const uint first = placement.y;
-
-    float4 o0, o1, o2, o3;
-    if (asuint(rows[first].x) == 0) {
-        o0 = rows[first + 1];
-        o1 = rows[first + 2];
-        o2 = rows[first + 3];
-        o3 = rows[first + 4];
-    } else {
-        float4 w0, w1, w2, w3;
-        composeStep(stepAtTime(rows, first, params.time), o0, o1, o2, o3, w0, w1, w2, w3);
-    }
-
-    uint span = 0;
-    float fraction = 0.0;
-    if (counts.y > 1)
-        motionSpan(params.time, counts.y, span, fraction);
-    for (uint c = 0; c < 3; ++c) {
-        const uint index = triangles[3 * primitive + c];
-        float3 local;
-        if (counts.y > 1) {
-            const uint from = span * counts.x + index;
-            local = lerp(pointAt(points, from), pointAt(points, from + counts.x), fraction);
-        } else {
-            local = pointAt(points, index);
-        }
-        corners[c] = transformRow(float4(local, 1.0), o0, o1, o2, o3).xyz;
-    }
-}
-
-// The ray's crossing of the triangle's plane, with barycentrics as a ray query reports them. The raster's
-// coverage decided that the ray hits this triangle, so a crossing just past an edge by rounding is pulled back
-// onto it; only a ray along the plane misses.
-bool planeHit(float3 origin, float3 direction, float tMax, float3 p0, float3 p1, float3 p2, out float t, out float2 barycentrics)
-{
-    t = 0.0;
-    barycentrics = float2(0.0);
-    const float3 e1 = p1 - p0;
-    const float3 e2 = p2 - p0;
-    const float3 pv = cross(direction, e2);
-    const float determinant = dot(e1, pv);
-    if (determinant == 0.0 || isnan(determinant))
-        return false;
-    const float inverse = 1.0 / determinant;
-    const float3 s = origin - p0;
-    const float3 q = cross(s, e1);
-    float u = max(dot(s, pv) * inverse, 0.0);
-    float v = max(dot(direction, q) * inverse, 0.0);
-    const float sum = u + v;
-    if (sum > 1.0) {
-        u /= sum;
-        v /= sum;
-    }
-    t = clamp(dot(e2, q) * inverse, 0.0, tMax);
-    barycentrics = float2(u, v);
-    return true;
-}
-
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void utilityRasterHits(uint3 id : SV_DispatchThreadID)
@@ -128,13 +56,12 @@ void utilityRasterHits(uint3 id : SV_DispatchThreadID)
     const uint ray = uint(row) * uint(params.windowWidth) + uint(column);
     const uint count = params.count;
 
-    const float ndcX = 2.0 * (float(column) + 0.5 + params.jitterX) / float(params.windowWidth) - 1.0;
-    const float ndcY = 2.0 * (float(params.batchRow + row) + 0.5 + params.jitterY) / float(params.windowHeight) - 1.0;
-    const float3 origin = params.nearAtCentre + ndcX * params.nearPerX + ndcY * params.nearPerY;
-    const float3 end = params.farAtCentre + ndcX * params.farPerX + ndcY * params.farPerY;
-    const float3 span = end - origin;
-    const float tMax = length(span);
-    const float3 direction = span / tMax;
+    float3 origin;
+    float3 direction;
+    float tMax;
+    cameraRay(params.nearAtCentre, params.nearPerX, params.nearPerY, params.farAtCentre, params.farPerX, params.farPerY,
+              float2(params.jitterX, params.jitterY), int2(params.windowWidth, params.windowHeight),
+              int2(column, params.batchRow + row), origin, direction, tMax);
 
     weights[ray] = params.weight;
     rays[kRayOriginX * count + ray] = origin.x;
@@ -156,9 +83,10 @@ void utilityRasterHits(uint3 id : SV_DispatchThreadID)
     const uint drawnPrimitive = visibility[2 * id.x + 1];
 
     if (drawnPlacement != kNoHit) {
-        const uint4 placement = Uint4Table(params.tables)[1 + drawnPlacement];
+        const Uint4Table tables = Uint4Table(params.tables);
+        const uint4 placement = tables[1 + drawnPlacement];
         float3 corners[3];
-        worldCorners(placement, drawnPrimitive, corners);
+        worldCorners(tables, params.time, placement, drawnPrimitive, corners);
 
         float hitT;
         float2 hitBarycentrics;

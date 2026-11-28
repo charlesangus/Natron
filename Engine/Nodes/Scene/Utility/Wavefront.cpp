@@ -417,6 +417,30 @@ mayTransmit(const KernelMaterialRecord& material,
     return material.coverage[0] < 1.f;
 }
 
+// Whether a geometry's hits on its material take nothing from lights or from other surfaces. Project3D and
+// a material with no shading model end their paths unlit. A PreviewSurface does when it is opaque, fully
+// metallic and black, with no clearcoat: Kernels/PreviewSurface.slang's diffuse lobe then weighs 1 - metallic
+// and its specular one the diffuse colour, both nothing, whatever the lights and the bounces.
+bool
+materialShadesUnlit(const KernelMaterialRecord& material,
+                    const UtilityScene::Geometry& geometry)
+{
+    if (material.kind[0] != static_cast<std::uint32_t>(UtilityMaterialDesc::eKindPreviewSurface)) {
+        return true;
+    }
+    if (mayTransmit(material, geometry) || material.specularColor[3] != 0.f || (material.kind[2] & kKernelMaterialDiffuseFromDisplayColor) != 0) {
+        return false;
+    }
+    for (const UtilityMaterialDesc::Slot slot : { UtilityMaterialDesc::eSlotDiffuseColor, UtilityMaterialDesc::eSlotMetallic, UtilityMaterialDesc::eSlotClearcoat }) {
+        if (material.textures[slot] >= 0) {
+            return false;
+        }
+    }
+
+    return material.surface[0] == 1.f && material.surface[2] == 0.f && material.diffuseColor[0] == 0.f && material.diffuseColor[1] == 0.f
+        && material.diffuseColor[2] == 0.f;
+}
+
 // The camera as the spherical and cylindrical mappings see it.
 struct MappedCamera {
     GfVec3d apex;
@@ -869,6 +893,7 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
     _geometries.clear();
     _geometries.reserve(snapshot.geometries.size());
     _transmission = false;
+    _unlit = true;
 
     std::uint32_t colorOffset = 0;
     std::uint32_t triangleOffset = 0;
@@ -914,6 +939,7 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
 
         _geometries.push_back(record);
         _transmission = _transmission || mayTransmit(_materials[record.materialIndex], geometry);
+        _unlit = _unlit && materialShadesUnlit(_materials[record.materialIndex], geometry);
         if (recopy) {
             if (fits) {
                 _colors.insert(_colors.end(), geometry.colors.cbegin(), geometry.colors.cend());
@@ -1150,6 +1176,12 @@ bool
 WavefrontShadeTables::hasTransmission() const
 {
     return _transmission;
+}
+
+bool
+WavefrontShadeTables::shadesUnlit() const
+{
+    return _unlit;
 }
 
 std::uint32_t

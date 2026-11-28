@@ -456,6 +456,9 @@ public:
     // Whether any surface may let light through it, which then refracts camera rays, and shadow rays
     // need ResolveHits to go on through.
     bool hasTransmission() const;
+    // Whether every surface shows the same whatever lights it and whatever it reflects, so that a camera
+    // ray's first hit alone decides its pixel.
+    bool shadesUnlit() const;
     // The 32-bit words of each light-link and shadow-link mask.
     std::uint32_t linkWords() const;
     // What lets an occlusion query skip the casters a shadow ray's light is not shadow-linked to;
@@ -516,6 +519,7 @@ private:
     bool _background = false;
     bool _holes = false;
     bool _transmission = false;
+    bool _unlit = true;
     std::vector<std::uint32_t> _linkMasks;
     // Material paths in the order of _materials from index 1.
     std::map<PXR_NS::SdfPath, std::uint32_t> _materialIndices;

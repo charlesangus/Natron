@@ -638,7 +638,8 @@ struct WavefrontGpu::Implementation {
                     gpu::GpuBuffer& rays,
                     gpu::GpuBuffer& weights,
                     gpu::GpuBuffer& hitValues,
-                    gpu::GpuBuffer& hitIds);
+                    gpu::GpuBuffer& hitIds,
+                    bool cutouts);
     bool renderBatch(const WavefrontFrame& frame,
                      const WavefrontRect& rect,
                      Recorder& rec,
@@ -675,6 +676,9 @@ struct WavefrontGpu::Implementation {
     std::unique_ptr<gpu::GpuTexture> visibilityColour;
     std::unique_ptr<gpu::GpuTexture> visibilityDepth;
     std::uint32_t rasterTileLimit = 0;
+    bool alwaysTraceRaster = false;
+    // Whether the frame render() draws is a Raster one whose pixels its camera hits decide alone.
+    bool untraced = false;
     const std::shared_ptr<void> runtimeHold;
     std::shared_ptr<const UtilityFilmKernels> filmKernels;
     bool filmKernelsTried = false;
@@ -1372,7 +1376,8 @@ WavefrontGpu::Implementation::rasterHits(const WavefrontFrame& frame,
                                          gpu::GpuBuffer& rays,
                                          gpu::GpuBuffer& weights,
                                          gpu::GpuBuffer& hitValues,
-                                         gpu::GpuBuffer& hitIds)
+                                         gpu::GpuBuffer& hitIds,
+                                         bool cutouts)
 {
     std::shared_ptr<const GpuTracer::RasterScene> scene;
 
@@ -1434,6 +1439,34 @@ WavefrontGpu::Implementation::rasterHits(const WavefrontFrame& frame,
     ctx->setAbortCheck([&stop]() {
         return stop.load(std::memory_order_relaxed);
     });
+
+    std::array<const gpu::GpuBuffer*, 6> cutoutBuffers {};
+
+    if (cutouts) {
+        KernelCutoutFrame cutoutFrame {};
+        const KernelShadeParams shade = makeShadeParams(frame, static_cast<std::uint32_t>(count));
+        gpu::GpuBuffer* frameBuffer = nullptr;
+
+        std::copy(std::begin(params.nearAtCentre), std::end(params.nearAtCentre), cutoutFrame.nearAtCentre);
+        std::copy(std::begin(params.nearPerX), std::end(params.nearPerX), cutoutFrame.nearPerX);
+        std::copy(std::begin(params.nearPerY), std::end(params.nearPerY), cutoutFrame.nearPerY);
+        std::copy(std::begin(params.farAtCentre), std::end(params.farAtCentre), cutoutFrame.farAtCentre);
+        std::copy(std::begin(params.farPerX), std::end(params.farPerX), cutoutFrame.farPerX);
+        std::copy(std::begin(params.farPerY), std::end(params.farPerY), cutoutFrame.farPerY);
+        std::copy(std::begin(shade.pixelFootprint), std::end(shade.pixelFootprint), cutoutFrame.pixelFootprint);
+        cutoutFrame.jitterX = params.jitterX;
+        cutoutFrame.jitterY = params.jitterY;
+        cutoutFrame.windowWidth = params.windowWidth;
+        cutoutFrame.windowHeight = params.windowHeight;
+        if (gpu::GpuStatus s = ctx->scratch(sizeof(cutoutFrame), frameBuffer); !s) {
+            return fail("WavefrontGpu could not hold the camera of a visibility pass", s);
+        }
+        if (gpu::GpuStatus s = ctx->updateBuffer(*frameBuffer, 0, std::as_bytes(std::span(&cutoutFrame, 1))); !s) {
+            return failUnlessStopped("WavefrontGpu could not set the camera of a visibility pass", s);
+        }
+        cutoutBuffers = { &tables.addresses.buffer(), &tables.materials.buffer(), &tables.textureBindings.buffer(),
+                          &tables.images.buffer(), &tables.projections.buffer(), frameBuffer };
+    }
     for (int tileY = 0; tileY < rect.height; tileY += step) {
         for (int tileX = 0; tileX < rect.width; tileX += step) {
             const int tileWidth = std::min(step, rect.width - tileX);
@@ -1481,6 +1514,11 @@ WavefrontGpu::Implementation::rasterHits(const WavefrontFrame& frame,
             visibilityPass.jitter[0] = pass.jitter[0];
             visibilityPass.jitter[1] = pass.jitter[1];
             visibilityPass.time = pass.time;
+            if (cutouts) {
+                visibilityPass.cutoutBuffers = cutoutBuffers;
+                visibilityPass.origin[0] = tileX;
+                visibilityPass.origin[1] = params.batchRow + tileY;
+            }
             if (gpu::GpuStatus s = ctx->beginRasterUint(*visibilityColour, { Tracer::kNoHit, Tracer::kNoHit, 0u, 0u }, visibilityDepth.get(), 1.0f); !s) {
                 return failUnlessStopped("WavefrontGpu could not begin a visibility pass", s);
             }
@@ -1615,7 +1653,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     } else if (frame.raster) {
         const utilityProfile::Scope timed(utilityProfile::Stage::Raster);
 
-        if (!rasterHits(frame, rect, rec, *rays, *weights, *hitValues, *hitIds)) {
+        if (!rasterHits(frame, rect, rec, *rays, *weights, *hitValues, *hitIds, untraced && shadeTables.hasHoles())) {
             return false;
         }
     } else {
@@ -1633,11 +1671,12 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
     rec.ctx().computeBarrier();
 
     KernelShadeParams shadeParams = makeShadeParams(frame, static_cast<std::uint32_t>(count));
-    const bool holes = shadeTables.hasHoles();
+    // An untraced frame's visibility pass left its holes undrawn, and nothing its lights or bounces would add shows.
+    const bool holes = !untraced && shadeTables.hasHoles();
     const bool transmission = shadeTables.hasTransmission();
     // Shadow rays then take closest hits, so that a hole or a transmissive surface lets them go on.
-    const bool resolveShadows = holes || transmission;
-    const std::uint32_t limit = wavefrontBounceLimit(frame, transmission);
+    const bool resolveShadows = !untraced && (holes || transmission);
+    const std::uint32_t limit = untraced ? 0u : wavefrontBounceLimit(frame, transmission);
     KernelResolveParams resolveParams {};
     ResolveScratch scratch;
 
@@ -1691,7 +1730,7 @@ WavefrontGpu::Implementation::renderBatch(const WavefrontFrame& frame,
 
     const std::uint32_t lightCount = shadeTables.lightCount();
     const std::uint64_t bindable = std::min(rec.ctx().maxScratchBytes(), rec.ctx().maxStorageBufferBytes()) / (kRayArrays * sizeof(float));
-    const std::uint32_t batch = static_cast<std::uint32_t>(std::min<std::uint64_t>({ lightCount, kLightBatch, std::max<std::uint64_t>(1, bindable / count) }));
+    const std::uint32_t batch = untraced ? 0u : static_cast<std::uint32_t>(std::min<std::uint64_t>({ lightCount, kLightBatch, std::max<std::uint64_t>(1, bindable / count) }));
     const std::size_t shadowCount = count * batch;
     gpu::GpuBuffer* shadowRays = rays;
     gpu::GpuBuffer* contributions = rays;
@@ -2077,6 +2116,18 @@ WavefrontGpu::limitRasterTile(std::uint32_t texels)
     _imp->rasterTileLimit = texels;
 }
 
+void
+WavefrontGpu::alwaysTraceRasterFrames(bool on)
+{
+    _imp->alwaysTraceRaster = on;
+}
+
+bool
+WavefrontGpu::drewUntraced() const
+{
+    return _imp->untraced;
+}
+
 bool
 WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
                      const WavefrontFrame& frame,
@@ -2090,6 +2141,7 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
     imp.outcome = Tracer::Outcome();
     imp.sceneFailed = false;
     imp.submissions = 0;
+    imp.untraced = false;
     resetBouncesTraced();
     if (!imp.usable) {
         imp.outcome = imp.unusable;
@@ -2108,9 +2160,14 @@ WavefrontGpu::render(const UtilityScene::Snapshot& snapshot,
     }
 
     // A Raster frame takes its camera hits from the visibility buffer, so only cutouts, shadows and bounces
-    // trace; without them the structures, whose builds outweigh the draws, are left for a frame that does.
-    const bool traces = !frame.raster || imp.shadeTables.hasHoles() || imp.shadeTables.lightCount() > 0
-        || wavefrontBounceLimit(frame, imp.shadeTables.hasTransmission()) > 0;
+    // trace; without them the structures, whose builds outweigh the draws, are left for a frame that does. When
+    // no light or bounce changes a pixel, its cutouts are left undrawn by the visibility pass instead.
+    const bool unlit = imp.shadeTables.shadesUnlit()
+        || (imp.shadeTables.lightCount() == 0 && wavefrontBounceLimit(frame, imp.shadeTables.hasTransmission()) == 0);
+
+    imp.untraced = frame.raster && frame.mapping == WavefrontMapping::Camera && unlit && !imp.alwaysTraceRaster;
+
+    const bool traces = !frame.raster || (!imp.untraced && (imp.shadeTables.hasHoles() || imp.shadeTables.lightCount() > 0 || wavefrontBounceLimit(frame, imp.shadeTables.hasTransmission()) > 0));
     bool updated = false;
 
     {

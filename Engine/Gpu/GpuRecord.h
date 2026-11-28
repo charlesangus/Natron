@@ -211,8 +211,8 @@ public:
     // without multiDrawIndirect does; 0 removes the cap.
     static void setMaxDrawIndirectCountForTests(uint32_t count);
 
-    // Records a write of `data` into dst at `offset`, visible to later dispatches. Both offset and size
-    // must be multiples of 4, and the size at most 65536 bytes.
+    // Records a write of `data` into dst at `offset`, visible to later dispatches and, on a raster context,
+    // to later draws. Both offset and size must be multiples of 4, and the size at most 65536 bytes.
     GpuStatus updateBuffer(const GpuBuffer& dst, VkDeviceSize offset, std::span<const std::byte> data);
 
     // The compute-side halves of the ownership transfers of uploads and downloads made with

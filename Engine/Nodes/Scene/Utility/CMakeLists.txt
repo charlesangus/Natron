@@ -34,6 +34,10 @@ if(NATRON_GPU)
     slang_add_raster(utility_raster_visibility ${CMAKE_CURRENT_SOURCE_DIR}/Kernels/RasterVisibility.slang
                      VERTEX visibilityVertex FRAGMENT visibilityFragment)
     target_link_libraries(NatronEngine PRIVATE utility_raster_visibility)
+    # The same, leaving undrawn the texels where a surface has a hole, for frames that trace nothing.
+    slang_add_raster(utility_raster_cutout ${CMAKE_CURRENT_SOURCE_DIR}/Kernels/RasterCutout.slang
+                     VERTEX cutoutVertex FRAGMENT cutoutFragment)
+    target_link_libraries(NatronEngine PRIVATE utility_raster_cutout)
     # Rebuilds a raster pass's hits from its visibility buffer; device addresses keep it off the CPU.
     slang_add_kernel(utility_raster_hits ${CMAKE_CURRENT_SOURCE_DIR}/Kernels/RasterHits.slang ENTRY utilityRasterHits)
     target_link_libraries(NatronEngine PRIVATE utility_raster_hits)

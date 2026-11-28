@@ -875,6 +875,48 @@ protected:
         EXPECT_GT(fromPlain, effect / 2.);
     }
 
+    // The scene's Raster frame drawn from its camera hits alone shows what it shows when its cutouts are resolved
+    // and its lights and bounces traced: the same surface, depth and ids at every pixel but a few where a hole's
+    // edge falls by rounding, and the same colours but for those. The untraced frame builds no structure.
+    void expectUntracedMatchesTraced(const UtilityScene& scene,
+                                     WavefrontFrame frame,
+                                     const WavefrontMotion& motion)
+    {
+        WavefrontGpu untraced(*_registry, *_pool, std::make_shared<int>(0));
+        WavefrontGpu traced(*_registry, *_pool, std::make_shared<int>(0));
+        AovFilm fast;
+        AovFilm shared;
+
+        frame.raster = true;
+        traced.alwaysTraceRasterFrames(true);
+        ASSERT_TRUE(drawPasses(untraced, scene, frame, motion, fast));
+        EXPECT_TRUE(untraced.drewUntraced());
+        EXPECT_EQ(0u, untraced.tracerStats().geometryBuilds);
+        EXPECT_EQ(0u, untraced.tracerStats().instanceSceneBuilds);
+        ASSERT_TRUE(drawPasses(traced, scene, frame, motion, shared));
+        EXPECT_FALSE(traced.drewUntraced());
+
+        int hits = 0;
+        int mismatches = 0;
+        std::map<std::uint32_t, int> seen;
+
+        for (std::size_t pixel = 0; pixel < fast.geometry.size(); ++pixel) {
+            if (shared.geometry[pixel] != Tracer::kNoHit) {
+                ++hits;
+                ++seen[shared.geometry[pixel]];
+            }
+            if (fast.geometry[pixel] != shared.geometry[pixel] || fast.primId[pixel] != shared.primId[pixel] || fast.instanceId[pixel] != shared.instanceId[pixel]
+                || std::fabs(fast.depth[pixel] - shared.depth[pixel]) > 1e-4f * std::max(1.f, std::fabs(shared.depth[pixel]))) {
+                ++mismatches;
+            }
+        }
+        std::printf("[   NOTE   ] untraced from traced: %.6f; %d of %d hit pixels differ in depth or ids\n", meanDifference(fast, shared), mismatches, hits);
+        EXPECT_GT(hits, kFrameSize * kFrameSize / 16);
+        EXPECT_GE(seen.size(), 2u);
+        EXPECT_LE(mismatches, hits / 100);
+        EXPECT_LT(meanDifference(fast, shared), 1e-3);
+    }
+
     gputest::ValidationCheck _check;
     std::unique_ptr<gpu::GpuDevice> _device;
     std::unique_ptr<gpu::GpuKernelRegistry> _registry;
@@ -1688,6 +1730,159 @@ GPU_TEST_F(NatronUtilityRaster, DepthAndIdsKeptOnTheDeviceMatchThoseTakenInTiles
         EXPECT_EQ(0, mismatches);
         EXPECT_GT(hits, 100);
         EXPECT_LT(hits, kFrameSize * kFrameSize);
+    }
+}
+
+namespace {
+// cardAndCube() unlit: both black, fully metallic and emitting their displayColor, under a sun, so that what a
+// camera ray hits first decides its pixel whatever the lights and the bounces.
+void
+unlitCardAndCube(UtilityScene& scene)
+{
+    cardAndCube(scene);
+
+    UtilityMaterialDesc unlit = emitting(GfVec3f(0.f));
+
+    unlit.emissiveFromDisplayColor = true;
+    scene.setMaterial(SdfPath("/Emissive"), std::make_shared<const UtilityMaterialDesc>(unlit));
+
+    UtilityLightDesc sun;
+
+    sun.type = UtilityLightDesc::eTypeDistant;
+    sun.angleDegrees = 0.f;
+    sun.emission = GfVec3f(3.f);
+    scene.setLight(SdfPath("/Sun"), std::make_shared<const UtilityLightDesc>(sun));
+}
+
+// A card sliding and turning over the shutter in front of an emitting backdrop, carrying a plate projected
+// from a camera whose view covers only the card's middle: the rest of the card is a hole the backdrop shows
+// through.
+void
+projectedCardOverBackdrop(UtilityScene& scene,
+                          const std::string& plate)
+{
+    GfFrustum projector;
+
+    projector.SetPerspective(14., 1., 0.5, 100.);
+    projector.SetPosition(GfVec3d(0., 0., 10.));
+
+    GfMatrix4d toUnit(1.);
+
+    toUnit.SetRow(0, GfVec4d(0.5, 0., 0., 0.));
+    toUnit.SetRow(1, GfVec4d(0., 0.5, 0., 0.));
+    toUnit.SetRow(3, GfVec4d(0.5, 0.5, 0., 1.));
+
+    UtilityTextureRef texture;
+
+    texture.asset = plate;
+    texture.colorSpace = UtilityTextureRef::eColorSpaceRaw;
+
+    UtilityMaterialDesc material;
+
+    material.kind = UtilityMaterialDesc::eKindProject3D;
+    material.projection.worldToProjector = projector.ComputeViewMatrix() * projector.ComputeProjectionMatrix() * toUnit;
+    material.projection.projectorOrigin = GfVec4f(0.f, 0.f, 10.f, 1.f);
+    material.projection.plate = 0;
+    material.textureRefs.push_back(texture);
+
+    const UtilityScene::GeometryId card = scene.addGeometry(SdfPath("/card"), 1);
+
+    scene.setTopology(card, VtVec3fArray { GfVec3f(-2.f, -2.f, 0.f), GfVec3f(2.f, -2.f, 0.f), GfVec3f(2.f, 2.f, 0.f), GfVec3f(-2.f, 2.f, 0.f) }, quadTriangles());
+    scene.setMaterial(SdfPath("/Projection"), std::make_shared<const UtilityMaterialDesc>(material));
+    scene.setMaterialId(card, SdfPath("/Projection"));
+    moveInstance(scene, card, placed(GfVec3d(0., 1., 0.), -10., GfVec3d(-0.3, 0., 0.)), placed(GfVec3d(0., 1., 0.), 10., GfVec3d(0.3, 0., 0.)));
+    addPanel(scene, "Backdrop", 2, GfVec3d(0., 0., -3.), GfVec3d(6., 0., 0.), GfVec3d(0., 6., 0.), addMaterial(scene, "Backdrop", emitting(GfVec3f(0.2f, 0.4f, 0.9f))));
+}
+} // anon namespace
+
+// Unlit surfaces under a sun, at the default ray depth: neither the light nor the bounces change a pixel, so the
+// frame is drawn from its camera hits alone and matches the frame that traces them.
+GPU_TEST_F(NatronUtilityRaster, AnUnlitCardAndCubeDrawUntracedAsTraced)
+{
+    UtilityScene scene;
+
+    unlitCardAndCube(scene);
+
+    WavefrontFrame frame = perspectiveFrame();
+
+    frame.maxRayDepth = kWavefrontDefaultMaxRayDepth;
+    frame.rasterSamples = 4;
+    expectUntracedMatchesTraced(scene, frame, WavefrontMotion());
+}
+
+// A projection's holes are left undrawn by the visibility pass, which shows the backdrop behind them as tracing
+// past them does, over a shutter that moves the card between the passes.
+GPU_TEST_F(NatronUtilityRaster, AProjectedCardWithHolesAndMotionBlurDrawsUntracedAsTraced)
+{
+    QTemporaryDir dir;
+
+    ASSERT_TRUE(dir.isValid());
+
+    const std::string plate = dir.filePath(QString::fromUtf8("plate.png")).toStdString();
+
+    ASSERT_TRUE(writeCheckerPlate(plate, 256));
+
+    UtilityScene scene;
+
+    projectedCardOverBackdrop(scene, plate);
+    EXPECT_TRUE(scene.warnings().empty());
+
+    WavefrontFrame frame = perspectiveFrame();
+
+    frame.maxRayDepth = kWavefrontDefaultMaxRayDepth;
+    frame.rasterSamples = 9;
+    expectUntracedMatchesTraced(scene, frame, openShutter());
+
+    // The holes show: the backdrop is seen through the card's edges as well as around it.
+    WavefrontGpu executor(*_registry, *_pool, std::make_shared<int>(0));
+    AovFilm film;
+
+    frame.raster = true;
+    ASSERT_TRUE(drawPasses(executor, scene, frame, openShutter(), film));
+
+    int card = 0;
+    int backdrop = 0;
+
+    for (int y = kFrameSize / 4; y < 3 * kFrameSize / 4; ++y) {
+        for (int x = kFrameSize / 4; x < 3 * kFrameSize / 4; ++x) {
+            const std::uint32_t geometry = film.geometry[static_cast<std::size_t>(y) * kFrameSize + x];
+
+            card += geometry != Tracer::kNoHit && geometry == film.geometry[static_cast<std::size_t>(kFrameSize / 2) * kFrameSize + kFrameSize / 2];
+            backdrop += geometry != Tracer::kNoHit && geometry != film.geometry[static_cast<std::size_t>(kFrameSize / 2) * kFrameSize + kFrameSize / 2];
+        }
+    }
+    EXPECT_GT(card, 20);
+    EXPECT_GT(backdrop, 20);
+}
+
+// What lights or bounces change keeps tracing: a lit floor under a sun with a shadow on it, a mirror at the
+// default ray depth, and a black PreviewSurface that emits but whose default specular lobe still reflects.
+GPU_TEST_F(NatronUtilityRaster, AFrameThatShadowsOrReflectsIsTraced)
+{
+    for (int which = 0; which < 3; ++which) {
+        SCOPED_TRACE(which == 0 ? "shadows" : which == 1 ? "mirror"
+                                                         : "specular");
+
+        UtilityScene scene;
+        WavefrontFrame frame = which == 2 ? perspectiveFrame() : pixelFrame();
+
+        if (which == 0) {
+            shadowedFloor(scene, true);
+        } else if (which == 1) {
+            mirrorAndBall(scene);
+        } else {
+            cardAndCube(scene);
+        }
+        frame.maxRayDepth = kWavefrontDefaultMaxRayDepth;
+        frame.raster = true;
+        frame.rasterSamples = 1;
+
+        WavefrontGpu executor(*_registry, *_pool, std::make_shared<int>(0));
+        AovFilm film;
+
+        ASSERT_TRUE(drawPasses(executor, scene, frame, WavefrontMotion(), film));
+        EXPECT_FALSE(executor.drewUntraced());
+        EXPECT_GT(executor.tracerStats().instanceSceneBuilds, 0u);
     }
 }
 

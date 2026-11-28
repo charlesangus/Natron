@@ -135,6 +135,15 @@ public:
     // frames. Never raises it past the device's image limit; 0 removes the limit.
     void limitRasterTile(std::uint32_t texels);
 
+    // Makes a Raster frame whose camera hits alone decide its pixels resolve its cutouts and shade its lights and
+    // bounces anyway, as any other frame does, so that tests compare the two.
+    void alwaysTraceRasterFrames(bool on);
+
+    // Whether the last render() drew a Raster frame from its camera hits alone: every surface unlit, or nothing
+    // lighting it and no bounce, so that no structure was built, no ray traced, and its cutouts were left undrawn
+    // by the visibility pass.
+    bool drewUntraced() const;
+
     // The compute and graphics queue submissions the last render() drew its pass in, the uploads of the scene and
     // of the frame's settings aside.
     std::size_t submissions() const;

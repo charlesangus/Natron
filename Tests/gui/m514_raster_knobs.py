@@ -87,10 +87,10 @@ def Xform "World"
 try:
     from PySide6.QtGui import QImage
     from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QTabBar
-    from PySide6.QtCore import QMetaObject
+    from PySide6.QtCore import Q_ARG, QMetaObject
 
-    from guitest import (OUT, check, close_all_panels, finish, plugin_problem, report, require, run, section,
-                         shot, widgets_of)
+    from guitest import (OUT, check, class_name, close_all_panels, finish, plugin_problem, report, require, run,
+                         section, shot, widgets_of)
 
     if not os.path.isdir(OUT):
         os.makedirs(OUT)
@@ -197,13 +197,28 @@ try:
         return None
 
     def graph_view():
-        views = [v for v in widgets_of("NodeGraph") if v.isVisible()]
-        return views[0] if views else None
+        graphs = widgets_of("NodeGraph")
+        views = [v for v in graphs if v.isVisible()]
+        if views:
+            return views[0]
+        # A finished render (renderBlocking) leaves the Progress panel current in the node graph's pane.
+        for graph in graphs:
+            pane = graph.parentWidget()
+            while pane is not None and class_name(pane) != "TabWidget":
+                pane = pane.parentWidget()
+            bars = pane.findChildren(QTabBar) if pane is not None else []
+            for i in range(bars[0].count() if bars else 0):
+                QMetaObject.invokeMethod(pane, "makeCurrentTab", Q_ARG(int, i))
+                QApplication.processEvents()
+                if graph.isVisible():
+                    return graph
+        # showSelectedNodeSettingsPanel does not need the graph on screen, so any NodeGraph will do.
+        return graphs[0] if graphs else None
 
     def open_settings_panel():
         """Steps that open the settings node's panel and show its Natron Utility tab; returns whether it opened.
         showSelectedNodeSettingsPanel does nothing unless the node is the only selected node."""
-        for _attempt in range(2):
+        for attempt in range(2):
             close_all_panels()
             yield ("sleep", 300)
             app.clearSelection()
@@ -214,8 +229,9 @@ try:
             app.selectNode(settings, True)
             QApplication.processEvents()
             view = graph_view()
-            if view is not None:
-                QMetaObject.invokeMethod(view, "showSelectedNodeSettingsPanel")
+            invoked = view is not None and QMetaObject.invokeMethod(view, "showSelectedNodeSettingsPanel")
+            if not invoked:
+                report("NOTE showSelectedNodeSettingsPanel was not invoked (attempt %d)" % (attempt + 1))
             ok = yield ("until", lambda: settings_panel() is not None, POLL_TIMEOUT_S / 2)
             if ok:
                 panel = settings_panel()

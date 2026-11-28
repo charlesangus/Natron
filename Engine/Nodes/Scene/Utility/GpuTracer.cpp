@@ -62,6 +62,7 @@
 
 #include "utility_intersect_spirv.h"
 #include "utility_occluded_spirv.h"
+#include "utility_raster_cutout_spirv.h"
 #include "utility_raster_visibility_spirv.h"
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -686,6 +687,7 @@ struct GpuTracer::Implementation {
     std::shared_ptr<gpu::GpuKernel> occludedKernel;
     // Registered with registry when the device has GpuDeviceInfo::rasterVisibility.
     gpu::GpuRasterId visibilityRaster {};
+    gpu::GpuRasterId cutoutRaster {};
     bool rasterizes = false;
     bool usable = false;
     std::size_t maxInstancesPerStructure = 0;
@@ -1360,6 +1362,14 @@ GpuTracer::GpuTracer(gpu::GpuKernelRegistry& registry,
         };
 
         imp.visibilityRaster = imp.registry.registerRaster(visibilityDesc);
+
+        const gpu::GpuRasterDesc cutoutDesc {
+            utility_raster_cutout_vertex_spirv, utility_raster_cutout_vertex_spirv_words,
+            utility_raster_cutout_fragment_spirv, utility_raster_cutout_fragment_spirv_words,
+            utility_raster_cutout_entry, utility_raster_cutout_storage_buffers, utility_raster_cutout_push_bytes
+        };
+
+        imp.cutoutRaster = imp.registry.registerRaster(cutoutDesc);
         imp.rasterizes = true;
     }
     imp.usable = true;
@@ -1960,7 +1970,8 @@ GpuTracer::recordOccludedFiltered(gpu::GpuRecordContext& ctx,
     return _imp->recordTrace(ctx, Entry::Occluded, _imp->scene, rays, count, blocked, blocked, DeviceFilter { &rayLights, &casterMasks, maskStride, maskOffset });
 }
 
-static_assert(sizeof(KernelVisibilityParams) == utility_raster_visibility_push_bytes, "KernelVisibilityParams must match VisibilityParams in Kernels/RasterVisibility.slang");
+static_assert(sizeof(KernelVisibilityParams) == utility_raster_visibility_push_bytes, "KernelVisibilityParams must match VisibilityParams in Kernels/RasterDraw.slang");
+static_assert(sizeof(KernelCutoutParams) == utility_raster_cutout_push_bytes, "KernelCutoutParams must match CutoutParams in Kernels/RasterCutout.slang");
 
 gpu::GpuStatus
 GpuTracer::Implementation::buildRasterTables(std::shared_ptr<const RasterTables>& out) const
@@ -2176,7 +2187,19 @@ GpuTracer::recordVisibility(gpu::GpuRecordContext& ctx,
     params.rowsLow = static_cast<std::uint32_t>(transforms & 0xffffffffull);
     params.rowsHigh = static_cast<std::uint32_t>(transforms >> 32);
 
-    const std::span<const std::byte> push(reinterpret_cast<const std::byte*>(&params), sizeof(params));
+    KernelCutoutParams cutoutParams {};
+    const bool cutouts = !pass.cutoutBuffers.empty();
+
+    if (cutouts) {
+        const VkDeviceAddress hitTables = scene->hitTables ? scene->hitTables->deviceAddress(imp.device) : 0;
+
+        cutoutParams.hitTablesLow = static_cast<std::uint32_t>(hitTables & 0xffffffffull);
+        cutoutParams.hitTablesHigh = static_cast<std::uint32_t>(hitTables >> 32);
+        cutoutParams.origin[0] = pass.origin[0];
+        cutoutParams.origin[1] = pass.origin[1];
+    }
+
+    const std::span<const std::byte> push = cutouts ? std::as_bytes(std::span(&cutoutParams, 1)) : std::as_bytes(std::span(&params, 1));
 
     for (std::size_t g = 0; g < scene->geometries.size(); ++g) {
         const RasterGeometry& geometry = scene->geometries[g];
@@ -2186,8 +2209,9 @@ GpuTracer::recordVisibility(gpu::GpuRecordContext& ctx,
         params.pointSteps = geometry.pointSteps;
         params.pointsLow = static_cast<std::uint32_t>(points & 0xffffffffull);
         params.pointsHigh = static_cast<std::uint32_t>(points >> 32);
+        cutoutParams.draw = params;
         // The context's abort check runs before each draw, so a cancelled render stops between geometries.
-        if (gpu::GpuStatus s = ctx.drawIndexedIndirect(imp.visibilityRaster, gpu::GpuRasterBlend::Replace, std::span<const gpu::GpuBuffer* const>(), push, *geometry.indices, *scene->commands, 1, static_cast<std::uint32_t>(g)); !s) {
+        if (gpu::GpuStatus s = ctx.drawIndexedIndirect(cutouts ? imp.cutoutRaster : imp.visibilityRaster, gpu::GpuRasterBlend::Replace, pass.cutoutBuffers, push, *geometry.indices, *scene->commands, 1, static_cast<std::uint32_t>(g)); !s) {
             return s;
         }
     }

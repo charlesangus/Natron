@@ -572,6 +572,9 @@ GpuRecordContext::updateBuffer(const GpuBuffer& dst, VkDeviceSize offset, std::s
     mb.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
     mb.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     mb.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    if (isRaster()) {
+        mb.dstStageMask |= VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+    }
     mb.dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT;
     VkDependencyInfo dep { VK_STRUCTURE_TYPE_DEPENDENCY_INFO };
     dep.memoryBarrierCount = 1;

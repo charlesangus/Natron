@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -191,6 +192,11 @@ public:
         // The pass's time, from 0 at the shutter's opening to 1 at its closing, as a ray's: points are
         // interpolated linearly, translation and stretch linearly and rotation by slerp.
         float time = 0.5f;
+        // When not empty, what RasterCutout.slang binds, in its binding order, so that a texel where a surface has
+        // a hole is left to the surface behind it rather than drawn.
+        std::span<const gpu::GpuBuffer* const> cutoutBuffers;
+        // The window pixel of the attachment's first texel, which the cutout test's camera rays go through.
+        int origin[2] = { 0, 0 };
     };
 
     /**

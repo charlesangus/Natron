@@ -287,18 +287,21 @@ struct LightCase {
     bool moonRay;
 };
 
-// Each light gives the card an irradiance of 1 at the centre of the frame (pi for the dome, whose
-// radiance is 1 from the whole hemisphere), so the expected level is the albedo over pi (the
-// albedo for the dome).
+// Each light gives the card an irradiance of 1 at the centre of the frame (pi times its intensity
+// for a dome, whose radiance is that intensity from the whole hemisphere), so the expected level is
+// the albedo over pi (the albedo times the intensity for a dome).
 std::vector<LightCase>
 lightCases(const std::string& environment)
 {
-    const std::string dome = "    def DomeLight \"Dome\" {\n"
-                             "        asset inputs:texture:file = @"
-        + environment + "@\n"
-        + "        token inputs:texture:format = \"latlong\"\n"
-          "        float inputs:intensity = 1\n"
-          "    }\n";
+    auto dome = [&environment](const char* intensity) {
+        return "    def DomeLight \"Dome\" {\n"
+               "        asset inputs:texture:file = @"
+            + environment + "@\n"
+            + "        token inputs:texture:format = \"latlong\"\n"
+              "        float inputs:intensity = "
+            + intensity + "\n"
+            + "    }\n";
+    };
 
     // Far enough that the irradiance across the frame stays within 1% of the centre's: radiance
     // I over a sphere of radius r at distance d gives I pi r^2 / d^2.
@@ -329,7 +332,10 @@ lightCases(const std::string& environment)
           "    }\n";
 
     std::vector<LightCase> cases;
-    cases.push_back({ "dome", dome, kAlbedo, M_PI, true });
+    cases.push_back({ "dome", dome("1"), kAlbedo, M_PI, true });
+    // Cycles shades a background light's direct light by the light's strength on top of its
+    // shader's, so a dome strength other than 1 that reached both would be squared in it.
+    cases.push_back({ "dome of intensity 2", dome("2"), 2. * kAlbedo, M_PI, true });
     cases.push_back({ "sphere", sphere, kAlbedo / M_PI, 1., true });
     cases.push_back({ "normalized distant", normalizedDistant, kAlbedo / M_PI, 4., false });
     cases.push_back({ "distant", distant, kAlbedo / M_PI, 4., true });
@@ -368,8 +374,12 @@ TEST(CyclesLightLevels, MatchedLevelsAgreeWithStormAndMoonRay)
     HydraRender::releaseAllCpuEngines();
 }
 
-// With it off, the dome is pi brighter and the distant light 4 times brighter, while the sphere
-// light, which already matched, is unchanged.
+// With it off, the dome is pi brighter, as the delegate scales its radiance by the pi that turns the
+// other lights' intensity into flux, and the distant light 4 times brighter, by the delegate's own
+// factor, while the sphere light, which already matched, is unchanged. A ratio of
+// pi (1 + (pi - 1) ln(17) / 16), about 4.33, for the dome is its strength squared in its direct
+// light, whose share of the card's light under the power heuristic, for the cosine pdf of the BSDF
+// against the uniform pdf of a white dome, is ln(17) / 16.
 TEST(CyclesLightLevels, UnmatchedLevelsAreCyclesOwn)
 {
     if (!CyclesTestUtils::cyclesOrSkip()) {

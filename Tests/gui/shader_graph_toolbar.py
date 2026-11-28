@@ -33,7 +33,7 @@ try:
 
     import NatronGui
     from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QApplication, QToolBar
+    from PySide6.QtWidgets import QApplication
 
     import guitest as gt
     from guitest import check, report, require
@@ -44,20 +44,7 @@ try:
     _watchdog_file = open(os.path.join(gt.OUT, "watchdog.txt"), "w")
     faulthandler.dump_traceback_later(WATCHDOG_S, exit=True, file=_watchdog_file)
 
-    def toolbox_buttons():
-        # AutoHideToolBar has no Q_OBJECT, so its class name reads as QToolBar; it is the
-        # window's only toolbar.
-        win = sg.main_window()
-        bars = win.findChildren(QToolBar) if win is not None else []
-        if not bars:
-            return []
-        bar = bars[0]
-        buttons = []
-        for a in bar.actions():
-            w = bar.widgetForAction(a)
-            if w is not None and hasattr(w, "menu") and gt.menu_of(w) is not None:
-                buttons.append(w)
-        return buttons
+    toolbox_buttons = sg.toolbox_buttons
 
     def menu_plugin_ids(menu, found):
         for a in menu.actions():
@@ -193,6 +180,9 @@ try:
         kinds = shader_kinds()
 
         gt.section("main graph at startup")
+        expected = len(main_groupings())
+        ok = yield ("until", sg.toolbox_settled(lambda n: n == expected), 20.0)
+        check(ok, "the startup toolbar settles on %d buttons (%d)" % (expected, len(toolbox_buttons())))
         check_main_toolbox(shaders, "the startup toolbar")
 
         gt.section("builder graph")
@@ -212,7 +202,7 @@ try:
         require(len(targets) >= 2, "the builder has several targets (%r)" % (targets,))
         first = tabtabtab_natron._network_target(context)
         sg.close_tab_menu(popup)
-        yield ("sleep", SETTLE_MS)
+        yield ("until", sg.toolbox_settled(lambda n: n == len(targets) + 1), 20.0)
         check_builder_toolbox(shaders, kinds, targets, "the builder's toolbar")
         before = toolbox_snapshot()
         gt.shot("shader_graph_toolbar_builder.png")
@@ -231,13 +221,13 @@ try:
         gt.section("back on the main graph")
         root = sg.show_root_graph(app)
         require(root is not None, "the main graph is shown")
-        yield ("sleep", SETTLE_MS)
+        yield ("until", sg.toolbox_settled(lambda n: n == expected), 20.0)
         check_main_toolbox(shaders, "the main graph's toolbar")
         gt.shot("shader_graph_toolbar_main.png")
 
         gt.section("builder graph again")
         require(sg.open_graph(app, builder), "the builder's graph tab is shown again")
-        yield ("sleep", SETTLE_MS)
+        yield ("until", sg.toolbox_settled(lambda n: n == len(targets) + 1), 20.0)
         check_builder_toolbox(shaders, kinds, targets, "the builder's toolbar on coming back")
         check(toolbox_snapshot() == before, "the builder's toolbar on coming back is the one it had")
 

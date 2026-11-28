@@ -6,11 +6,12 @@ Scene items are read through the graph's scene() and are never walked up with pa
 """
 import json
 import os
+import time
 
 import NatronEngine
 from PySide6.QtCore import QEvent, QPointF, Qt, QTimer
 from PySide6.QtGui import QCursor, QFocusEvent, QKeyEvent, QMouseEvent
-from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QListView, QMainWindow, QMessageBox
+from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QListView, QMainWindow, QMessageBox, QToolBar
 
 import guitest as gt
 
@@ -133,6 +134,52 @@ def main_window():
         if isinstance(w, QMainWindow) and w.isVisible():
             return w
     return None
+
+
+# The window's and toolbar's wrappers toolbox_buttons() went through. A wrapper PySide returns
+# from a parent's call is marked deleted once the parent's wrapper is collected, although the
+# C++ widget lives on, so the buttons' wrappers last only as long as these do.
+_toolbox_parents = []
+
+
+def _keep(wrapper):
+    if not any(kept is wrapper for kept in _toolbox_parents):
+        _toolbox_parents.append(wrapper)
+    return wrapper
+
+
+def toolbox_buttons():
+    """The left toolbar's buttons that carry a menu, in order. AutoHideToolBar has no Q_OBJECT,
+    so its class name reads as QToolBar; it is the window's only toolbar."""
+    win = main_window()
+    if win is None:
+        return []
+    bars = _keep(win).findChildren(QToolBar)
+    if not bars:
+        return []
+    bar = _keep(bars[0])
+    buttons = []
+    for a in bar.actions():
+        w = bar.widgetForAction(a)
+        if w is not None and hasattr(w, "menu") and gt.menu_of(w) is not None:
+            buttons.append(w)
+    return buttons
+
+
+def toolbox_settled(count_ok, settle_s=1.0):
+    """A predicate for ("until", ...): true once count_ok(number of toolbar buttons) has held for
+    settle_s, so the buttons a script then lists are not about to be replaced."""
+    state = {"since": None}
+
+    def settled():
+        if not count_ok(len(toolbox_buttons())):
+            state["since"] = None
+            return False
+        if state["since"] is None:
+            state["since"] = time.monotonic()
+        return time.monotonic() - state["since"] >= settle_s
+
+    return settled
 
 
 def focus_graph(view, cursor_scene_pos=None):

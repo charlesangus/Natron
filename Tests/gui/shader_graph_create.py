@@ -3,8 +3,9 @@ with a typed filter and Enter, the tab menu's row clicked, and the graph's right
 Node, each asserting the node lands inside the builder. The right-click menu's node submenus offer
 no shader, and a shader action of the network nodes menu triggered over the main graph creates
 nothing there. Inside the builder the right-click menu's and the toolbar's node menus offer no
-compositing node (Backdrop and Dot stay), and a Python createNode of Blur into the builder is refused
-without a message box (a script call is silent) and creates nothing. It is driven by Tests/gui/run-gui-test.sh (1920x1080), not ctest.
+compositing node (Backdrop and Dot stay; the toolbar lists the builder's shader nodes by target),
+and a Python createNode of Blur into the builder is refused without a message box (a script call
+is silent) and creates nothing. It is driven by Tests/gui/run-gui-test.sh (1920x1080), not ctest.
 
 Usage (natron-dev container; see Tests/gui/run-gui-test.sh):
     docker exec natron-dev bash -c 'cd /home/bosley/git/Natron && \\
@@ -170,15 +171,8 @@ try:
         QTimer.singleShot(0, press)
 
     def toolbar_buttons():
-        """The visible toolbar buttons whose menu is a group of the nodes menu."""
-        found = []
-        for button in gt.widgets_of("QToolButton"):
-            if not button.isVisible():
-                continue
-            menu = gt.menu_of(button)
-            if menu is not None and any(a.property("natronPluginOwned") for a in menu.actions()):
-                found.append(button)
-        return found
+        """The left toolbar's buttons: inside the builder one per target and Backdrop."""
+        return sg.toolbox_buttons()
 
     def press_toolbar_button(button, outcome):
         """Presses button on the next event loop turn; its menu's exec() runs there, and outcome
@@ -272,8 +266,9 @@ try:
         gt.shot("shader_graph_create.png")
 
         gt.section("toolbar and Python")
+        yield ("until", sg.toolbox_settled(lambda n: n > 1), 20.0)
         buttons = toolbar_buttons()
-        require(len(buttons) > 1, "the toolbar has node group buttons (%d)" % len(buttons))
+        require(len(buttons) > 1, "the toolbar has the target buttons and Backdrop (%d)" % len(buttons))
         shown = 0
         kept = set()
         for button in buttons:
@@ -289,11 +284,12 @@ try:
                 continue
             shown += 1
             kept.update(ids)
-            compositing = sorted(pid for pid in ids if pid not in KEPT_IN_BUILDER)
-            check(not compositing, "the toolbar group %r offers no compositing node inside the builder (got %r)"
+            compositing = sorted(pid for pid in ids if pid not in KEPT_IN_BUILDER and pid not in shaders)
+            check(not compositing, "the toolbar button %r offers no compositing node inside the builder (got %r)"
                   % (button.toolTip(), compositing[:5]))
         check("Backdrop" in kept, "the toolbar still offers Backdrop inside the builder (offered %r)" % sorted(kept))
-        check(shown >= 1, "a toolbar group menu was shown inside the builder (%d)" % shown)
+        check(BSDF in kept, "the toolbar offers %s inside the builder" % BSDF)
+        check(shown >= 1, "a toolbar button's menu was shown inside the builder (%d)" % shown)
 
         before = sorted(n.getPluginID() for n in builder.getChildren())
         created, asked = sg.answering(lambda: app.createNode("Blur", -1, builder))

@@ -433,6 +433,7 @@ try:
         got = yield from hull_selection("the hull after Add to Template")
         check(got == sorted(members + ["Blur3"]), "Add to Template puts Blur3 back in the hull (%r)" % got)
         mid = blur("Mid", 0, 100, app.getNode("Blur1"))
+        app.getNode("Blur2").disconnectInput(0)
         require(app.getNode("Blur2").connectInput(0, mid), "connect Mid to Blur2")
         yield ("sleep", SETTLE_MS)
         got = yield from hull_selection("the hull with Mid between members")

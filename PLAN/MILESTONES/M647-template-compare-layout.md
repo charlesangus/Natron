@@ -53,7 +53,7 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
 
 ## Phase 647.1: Offset-aware compare and placement
 
-- [ ] M647.P1.T1 — Template offset, moved flag and ghost placement in compare
+- [x] M647.P1.T1 — Template offset, moved flag and ghost placement in compare
   - files: `Engine/ProjectMerge.h`, `Engine/ProjectMerge.cpp`, `Tests/ProjectMerge_Test.cpp`
   - approach: in `ProjectMerge::compare`:
     - compute the per-group median offset over matched nodes;
@@ -68,13 +68,13 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
     - nodes inside a group use the group's own offset.
   - size: M
 
-- [ ] M647.P1.T2 — Place nodes added by an update
+- [x] M647.P1.T2 — Place nodes added by an update
   - files: `Engine/ProjectMerge.cpp`, `Tests/ProjectMerge_Test.cpp`
   - approach: after the merge, and before the ops are applied in `updateFromTemplate`, give each node theirs added a position from P1.T1's helper: its theirs position plus the offset of its nearest matched neighbour in theirs. Keep it a separate function called from the result path, so it doesn't tangle with M646 - Template Node And Versioning's status changes to the same function.
   - verify: compiled at P1.T4. A gtest moves the artist's template by (500, 300); the supervisor adds a node beside an existing one; after the update the new node sits beside that node's live position.
   - size: M
 
-- [ ] M647.P1.T3 — Overlay and diff panel use placement and the moved state
+- [x] M647.P1.T3 — Overlay and diff panel use placement and the moved state
   - files: `Gui/NodeGraphDiffOverlay.cpp`, `Gui/NodeGraphDiffOverlay.h`, `Gui/NodeDiffPanel.cpp`, `Tests/gui/m104_diff_overlay.py`
   - approach:
     - Ghosts draw at `placedX/placedY`.
@@ -84,7 +84,7 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
   - verify: compiled at P1.T4. The GUI test passes.
   - size: M
 
-- [ ] M647.P1.T4 — Build, ctest and GUI checkpoint
+- [x] M647.P1.T4 — Build, ctest and GUI checkpoint
   - files: none
   - approach: syntax-check the touched TUs, then a remote gate build with ctest and `--gui` for `m104_diff_overlay.py` and `m97_template_merge.py`.
   - verify: green. The build is required.
@@ -102,3 +102,4 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
 - 2026-11-27 — **Moves get their own "moved" state (user, F33 UAT round 1 grill):** remove the template's overall offset, then outline a node moved relative to the template, with no tint. Colour and size still count as appearance.
 - 2026-11-27 — Ghosts and nodes an update adds are placed by the nearest matched neighbour's offset, falling back to the group median (planner). The diagnosis found that import doesn't offset positions, so absolute base coordinates only line up when the template was never moved.
 - 2026-11-27 — **Split from M646 - Template Node And Versioning (user):** two members, run in parallel.
+- 2026-11-28 — Merged into F33 (PR #409, squash).

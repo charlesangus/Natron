@@ -2234,6 +2234,47 @@ TEST_F(ProgressiveRenderTest, MoonRayReturnsAtOnceFromChangesMidPass)
     interruptsMidPass(kMoonRayRendererId, MoonRaySettings::samplesKey(), cycles ? std::string(kRenderDelegateCyclesId) : std::string());
 }
 
+// MoonRay counts its samples off its progress against its pixel samples, as the viewer's sample
+// count shows them, and its render ends converged at the cap.
+TEST_F(ProgressiveRenderTest, AMoonRayRenderCountsItsSamplesToConvergence)
+{
+    if (!moonRayOrSkip()) {
+        return;
+    }
+    const int kPixelSamples = 4;
+    std::map<std::string, PXR_NS::VtValue> settings;
+    settings[MoonRaySettings::samplesKey()] = PXR_NS::VtValue(kPixelSamples);
+    ASSERT_TRUE(start(settings, kMoonRayRendererId));
+    _render->setMaxSamples(kPixelSamples);
+    sync(withKey(_base));
+    std::vector<std::shared_ptr<const ProgressiveRender::Frame>> frames;
+    ASSERT_TRUE(collectUntilDone(0, &frames));
+    ASSERT_FALSE(frames.empty());
+
+    const ProgressiveRender::Frame& last = *frames.back();
+    std::cout << "[   NOTE   ] samples per frame:";
+    int previous = 0;
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+        if (frames[i]->restart != last.restart) {
+            continue;
+        }
+        std::cout << " " << frames[i]->samples;
+        EXPECT_GT(frames[i]->samples, 0) << "frame " << i;
+        EXPECT_LE(frames[i]->samples, kPixelSamples) << "frame " << i;
+        EXPECT_GE(frames[i]->samples, previous) << "frame " << i;
+        EXPECT_EQ(kPixelSamples, frames[i]->maxSamples) << "frame " << i;
+        previous = frames[i]->samples;
+    }
+    std::cout << std::endl;
+    EXPECT_TRUE(last.converged);
+    EXPECT_EQ(kPixelSamples, last.samples);
+
+    const ProgressiveRender::Status status = _render->getStatus();
+    EXPECT_TRUE(status.converged);
+    EXPECT_EQ(kPixelSamples, status.samples);
+    EXPECT_EQ(kPixelSamples, status.maxSamples);
+}
+
 // MoonRay reports no reset counts: an edit restarts its render in place, and its frames are
 // published without waiting out kRestartUnseen and making the engine again.
 TEST_F(ProgressiveRenderTest, AMoonRayEditRestartsInPlace)

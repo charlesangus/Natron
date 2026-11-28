@@ -295,6 +295,40 @@ samplesOf(const VtDictionary& stats,
     return -1;
 }
 
+// MoonRay's samples per pixel out of a cap of its pixel samples, read off its progress, -1 when it
+// reports none. A frame with any pixels counts at least one, so that it is shown. hdMoonray drops
+// its stats once the frame is complete, so a converged render is at the cap.
+int
+moonRaySamplesOf(const VtDictionary& stats,
+                 int cap,
+                 bool converged)
+{
+    if (cap <= 0) {
+        return -1;
+    }
+    if (converged && stats.find("percentDone") == stats.end()) {
+        return cap;
+    }
+    const VtDictionary::const_iterator percent = stats.find("percentDone");
+    if (percent == stats.end()) {
+        return -1;
+    }
+    double done = 0.;
+    if (percent->second.IsHolding<float>()) {
+        done = percent->second.UncheckedGet<float>();
+    } else if (percent->second.IsHolding<double>()) {
+        done = percent->second.UncheckedGet<double>();
+    } else {
+        return -1;
+    }
+    if (done <= 0.) {
+        return 0;
+    }
+    const int samples = (int)std::floor(done / 100. * cap + 1e-6);
+
+    return std::min(cap, std::max(1, samples));
+}
+
 std::int64_t
 countOf(const VtDictionary& stats,
         const char* key)
@@ -4886,7 +4920,7 @@ ProgressiveRender::Implementation::refine(std::unique_lock<std::mutex>& lock)
                 }
             }
         }
-        const int samples = samplesOf(stats, cap);
+        const int samples = MoonRayAovs::isMoonRay(engineRenderer) ? moonRaySamplesOf(stats, cap, converged) : samplesOf(stats, cap);
         lock.lock();
         engineRendered = engineRendered || rendered;
         if (hasStage) {

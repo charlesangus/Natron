@@ -168,6 +168,31 @@ try:
             yield ("sleep", SETTLE_MS)
         return ok
 
+    def requests_after(mono_ms):
+        """How many viewer_request stamps the profile holds after mono_ms."""
+        n = 0
+        try:
+            with open(PROFILE) as f:
+                for line in f:
+                    try:
+                        record = json.loads(line)
+                    except ValueError:
+                        continue
+                    if record.get("name") == "viewer_request" and record.get("mono_ms", 0.) > mono_ms:
+                        n += 1
+        except (IOError, OSError):
+            pass
+        return n
+
+    def report_stalled_refinement(edit, frames):
+        """Says where a refining chain stopped: no frame, or a refining frame the viewer asked nothing after."""
+        if not frames:
+            report("NOTE refine: edit %d showed no frame" % edit)
+            return
+        last = frames[-1]
+        report("NOTE refine: edit %d showed %d frames, the last refining=%s; %d viewer requests followed it" % (
+            edit, len(frames), last.get("refining"), requests_after(last.get("mono_ms", 0.))))
+
     def refine_session(seed):
         """Steps of the refining check: EDITS Seed changes, each awaited until its frame converged."""
         section("refine")
@@ -177,6 +202,7 @@ try:
             ok = yield from converged_after(count)
             check(ok, "refine: edit %d converges within %g s" % (i + 1, POLL_TIMEOUT_S))
             if not ok:
+                report_stalled_refinement(i + 1, viewer_frames()[count:])
                 continue
             frames = viewer_frames()[count:]
             last = next(k for k, f in enumerate(frames) if not f.get("refining"))

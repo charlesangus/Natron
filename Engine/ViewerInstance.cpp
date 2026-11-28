@@ -6470,25 +6470,13 @@ ViewerInstance::ViewerInstancePrivate::requestRefinement(const UpdateViewerParam
     if (!params->refining || params->isPartialRect || params->isSequential || !params->abortInfo || params->abortInfo->isSuperseded()) {
         return;
     }
-    const int textureIndex = params->textureIndex;
-    if ((textureIndex < 0) || (textureIndex > 1)) {
+    if (!refinement.note(params->textureIndex, params->abortInfo)) {
         return;
     }
-    refineFrom[textureIndex] = params->abortInfo;
-    if (refineScheduled) {
-        return;
-    }
-    refineScheduled = true;
     // Forcing the render would bypass the scheduler the device frame comes through: the pass shown is in no cache,
     // so a plain request renders it again.
     QTimer::singleShot(0, this, [this]() {
-        refineScheduled = false;
-        bool wanted = false;
-        for (int i = 0; i < 2; ++i) {
-            const AbortableRenderInfoPtr from = refineFrom[i].lock();
-            refineFrom[i].reset();
-            wanted = wanted || (from && !from->isSuperseded());
-        }
+        const bool wanted = refinement.take();
         ViewerInstance* viewer = const_cast<ViewerInstance*>(instance);
         if (!wanted || viewer->isDoingSequentialRender()) {
             return;

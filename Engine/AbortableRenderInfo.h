@@ -195,6 +195,29 @@ private:
     std::unique_ptr<AbortableRenderInfoPrivate> _imp;
 };
 
+/**
+ * @brief The requests of the two viewer textures whose refining pass was shown and whose next pass is not asked for
+ * yet. Holds them strongly: the render that showed a pass lets go of its request as soon as the frame is on screen,
+ * often before the follow-up runs, and a request nothing holds any more still wants its next pass. Not thread safe.
+ **/
+class RefinementFollowUp {
+public:
+    /**
+     * @brief Notes that the pass of info for textureIndex was shown. Returns true when no follow-up was pending, in
+     * which case the caller schedules one call to take().
+     **/
+    bool note(int textureIndex, const AbortableRenderInfoPtr& info);
+
+    /**
+     * @brief Clears what was noted, returning whether any of it is still the latest request of its texture.
+     **/
+    bool take();
+
+private:
+    AbortableRenderInfoPtr _pending[2];
+    bool _scheduled = false;
+};
+
 NATRON_NAMESPACE_EXIT
 
 #endif // ABORTABLERENDERINFO_H

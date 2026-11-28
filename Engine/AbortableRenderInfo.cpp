@@ -261,4 +261,33 @@ AbortableRenderInfo::killRegisteredThreads()
     }
 }
 
+bool
+RefinementFollowUp::note(int textureIndex,
+                         const AbortableRenderInfoPtr& info)
+{
+    if ((textureIndex < 0) || (textureIndex > 1) || !info) {
+        return false;
+    }
+    _pending[textureIndex] = info;
+    if (_scheduled) {
+        return false;
+    }
+    _scheduled = true;
+
+    return true;
+}
+
+bool
+RefinementFollowUp::take()
+{
+    _scheduled = false;
+    bool wanted = false;
+    for (int i = 0; i < 2; ++i) {
+        wanted = wanted || (_pending[i] && !_pending[i]->isSuperseded());
+        _pending[i].reset();
+    }
+
+    return wanted;
+}
+
 NATRON_NAMESPACE_EXIT

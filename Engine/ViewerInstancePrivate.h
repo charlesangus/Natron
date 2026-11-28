@@ -547,8 +547,7 @@ public:
     mutable QMutex forceRenderMutex;
     bool forceRender[2]; /*!< true when we want to by-pass the cache*/
     // Only accessed from MT
-    bool refineScheduled = false;
-    std::weak_ptr<AbortableRenderInfo> refineFrom[2];
+    RefinementFollowUp refinement;
     mutable QMutex adaptiveDraftMutex;
     AdaptiveDraft adaptiveDraft;
     mutable QMutex isViewerPausedMutex;

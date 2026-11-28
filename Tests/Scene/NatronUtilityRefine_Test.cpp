@@ -195,6 +195,54 @@ TEST(NatronUtilityRefineInfo, RefinementBitsStartUnsetAndStaySet)
     EXPECT_TRUE(info->isRefining());
 }
 
+// The render that showed a pass drops its request as the frame reaches the screen, usually before the follow-up runs:
+// the follow-up must still ask for the next pass, or the viewer keeps that pass and never shows the converged frame.
+TEST(NatronUtilityRefineFollowUp, APassShownIsFollowedUpAfterItsRenderDroppedTheRequest)
+{
+    RefinementFollowUp followUp;
+    AbortableRenderInfoPtr shown = AbortableRenderInfo::create(true, 0);
+
+    shown->setAcceptsRefinement();
+    shown->markRefining();
+    ASSERT_TRUE(followUp.note(0, shown)) << "the first pass shown should schedule a follow-up";
+    shown.reset();
+    EXPECT_TRUE(followUp.take()) << "the follow-up lost a request only it still held";
+    EXPECT_FALSE(followUp.take()) << "a follow-up asked twice for one pass";
+}
+
+// An edit landing between a pass shown and its follow-up supersedes the request: the edit's own render shows its first
+// pass and is followed up in turn, from a fresh schedule.
+TEST(NatronUtilityRefineFollowUp, AnEditBeforeTheFollowUpHandsTheChainToTheEdit)
+{
+    RefinementFollowUp followUp;
+    const AbortableRenderInfoPtr chain = AbortableRenderInfo::create(true, 0);
+
+    ASSERT_TRUE(followUp.note(0, chain));
+    chain->setSuperseded();
+    EXPECT_FALSE(followUp.take()) << "a superseded request asked for a pass of the frame before the edit";
+
+    AbortableRenderInfoPtr edit = AbortableRenderInfo::create(true, 1);
+
+    ASSERT_TRUE(followUp.note(0, edit)) << "the edit's first pass found a follow-up still scheduled";
+    edit.reset();
+    EXPECT_TRUE(followUp.take()) << "the edit's chain stopped at its first pass";
+}
+
+// Both textures' passes shown before one follow-up runs share it, and it asks while either is still latest.
+TEST(NatronUtilityRefineFollowUp, BothTexturesShareOneFollowUp)
+{
+    RefinementFollowUp followUp;
+    const AbortableRenderInfoPtr a = AbortableRenderInfo::create(true, 0);
+    const AbortableRenderInfoPtr b = AbortableRenderInfo::create(true, 0);
+
+    EXPECT_TRUE(followUp.note(0, a));
+    EXPECT_FALSE(followUp.note(1, b)) << "a second pass scheduled a second follow-up";
+    a->setSuperseded();
+    EXPECT_TRUE(followUp.take());
+    EXPECT_FALSE(followUp.note(2, b)) << "a texture index out of range scheduled a follow-up";
+    EXPECT_FALSE(followUp.note(0, AbortableRenderInfoPtr()));
+}
+
 // A second window of one request takes the frame as the first left it; the next request takes the frame on until it
 // converges.
 TEST(NatronUtilityRefine, OneRequestSeesOnePassAndTheNextAdvancesIt)

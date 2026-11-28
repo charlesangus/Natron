@@ -1435,7 +1435,11 @@ USDRender::showRenderMessages(const std::string& setupWarning,
     } else if (!warning.empty()) {
         showWarning(rendered.empty() ? warning : warning + "\n" + rendered);
     } else if (!rendered.empty()) {
-        setPersistentMessage(eMessageTypeInfo, rendered);
+        // A posted information message only reaches the log in the GUI and leaves the last
+        // render's warning standing; the quiet one replaces it.
+        if (const NodePtr node = getNode()) {
+            node->setQuietInfoMessage(rendered);
+        }
     } else {
         showWarning(warning);
     }

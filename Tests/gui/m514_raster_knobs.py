@@ -86,7 +86,7 @@ def Xform "World"
 
 try:
     from PySide6.QtGui import QImage
-    from PySide6.QtWidgets import QApplication, QTabBar
+    from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QTabBar
     from PySide6.QtCore import QMetaObject
 
     from guitest import (OUT, check, close_all_panels, finish, plugin_problem, report, require, run, section,
@@ -183,10 +183,17 @@ try:
         check(colours >= MIN_COLOURS, "%s: the image has several colours (%d)" % (name, colours))
 
     def settings_panel():
+        # A docked panel has no window title; its name field holds the node's label.
         label = settings.getLabel()
         for panel in widgets_of("NodeSettingsPanel"):
-            if panel.isVisible() and (label in (panel.windowTitle() or "") or settings.getScriptName() in (panel.windowTitle() or "")):
-                return panel
+            try:
+                if not panel.isVisible():
+                    continue
+                for w in panel.findChildren(QLineEdit) + panel.findChildren(QLabel):
+                    if w.text() == label:
+                        return panel
+            except RuntimeError:
+                continue
         return None
 
     def graph_view():

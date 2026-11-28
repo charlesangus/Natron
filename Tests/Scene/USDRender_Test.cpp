@@ -1630,6 +1630,60 @@ TEST_F(USDRenderRendererTest, AnAutoUtilityRenderThatFallsBackToTheCpuWarnsOnThe
     HydraRender::releaseAll();
 }
 
+TEST_F(USDRenderRendererTest, ARayRenderAfterARasterFallbackClearsTheFallbackWarning)
+{
+    QTemporaryDir tmp;
+    ASSERT_TRUE(tmp.isValid());
+    const std::string id = kRenderDelegateUtilityId;
+    const std::string onCpu = std::string("        token ") + RenderSettingsPrim::attributeName(id, kUtilitySettingDevice) + " = \"" + kUtilityDeviceCpu + "\"\n";
+    const std::string raster = onCpu + "        token " + RenderSettingsPrim::attributeName(id, kUtilitySettingRenderMode) + " = \"" + kUtilityRenderModeRaster + "\"\n";
+    std::vector<std::string> paths;
+    for (const std::pair<const char*, std::string>& c : { std::make_pair("raster", raster), std::make_pair("ray", onCpu) }) {
+        const QString filePath = tmp.path() + QString::fromUtf8("/mode-") + QString::fromUtf8(c.first) + QString::fromUtf8(".usda");
+        QFile file(filePath);
+        ASSERT_TRUE(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        ASSERT_GT(file.write(shutterScene(-0.25, 0.25, c.second).c_str()), 0);
+        paths.push_back(filePath.toStdString());
+    }
+    NodePtr reader = createReader(paths[0].c_str());
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(reader && node);
+    connectNodes(reader, node, 0, true);
+    USDRender* effect = renderOf(node);
+    ASSERT_TRUE(effect);
+    effect->refreshSettingsPrimMenu();
+    ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateUtilityId));
+    KnobFile* file = dynamic_cast<KnobFile*>(reader->getKnobByName(kUSDReadParamFile).get());
+    ASSERT_TRUE(file);
+    HydraRender::setRendererSettings(kRenderDelegateUtilityId, { { kUtilitySettingPixelSamples, PXR_NS::VtValue(1) }, { kUtilitySettingMaxRayDepth, PXR_NS::VtValue(0) } });
+    const QString fallback = QString::fromUtf8("Render Mode is Raster");
+
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+        file->setValue(paths[i]);
+        std::vector<RenderedPlane> planes;
+        std::list<ImageLayerDesc> rgba;
+        rgba.push_back(ImageLayerDesc::getRGBAComponents());
+        std::string error;
+        appPTR->clearAllCaches();
+        ASSERT_TRUE(renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, 32, 16), rgba, &planes, &error, false)) << paths[i] << ": " << error;
+
+        QString message;
+        int type = -1;
+
+        node->getPersistentMessage(&message, &type, false);
+        if (i == 0) {
+            EXPECT_EQ((int)eMessageTypeWarning, type) << message.toStdString();
+            EXPECT_TRUE(message.contains(fallback)) << message.toStdString();
+        } else {
+            EXPECT_EQ((int)eMessageTypeInfo, type) << message.toStdString();
+            EXPECT_FALSE(message.contains(fallback)) << message.toStdString();
+            EXPECT_TRUE(message.contains(QString::fromUtf8("Rendered on CPU"))) << message.toStdString();
+        }
+    }
+    HydraRender::setRendererSettings(kRenderDelegateUtilityId, {});
+    HydraRender::releaseAllCpuEngines();
+}
+
 namespace {
 struct SchedulerFrame {
     AbortableRenderInfoPtr abortInfo;

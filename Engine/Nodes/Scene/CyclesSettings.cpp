@@ -111,7 +111,7 @@ make()
     c.groups.push_back(groupSpec("clamping", "lightPaths", false, "Limits very bright samples to remove fireflies, at the cost of some light energy."));
     c.groups.push_back(groupSpec("caustics", "lightPaths", false, "Light focused by shiny or glassy surfaces. Pretty but noisy, so these controls can reduce or remove it."));
     c.groups.push_back(groupSpec("fastGi", "lightPaths", false, "Replaces distant indirect light with a cheap approximation. Faster and cleaner, but less accurate."));
-    c.groups.push_back(groupSpec("lights", "", false, "How the render chooses which lights to sample. It affects noise in scenes with many lights."));
+    c.groups.push_back(groupSpec("lights", "", false, "How bright the lights are, and how the render chooses which lights to sample, which affects noise in scenes with many lights."));
     c.groups.push_back(groupSpec("volumes", "", false, "How rays travel through smoke, fog and other volumes, trading accuracy against noise and time."));
     c.groups.push_back(groupSpec("subdivision", "", false, "Renders meshes as smooth subdivision surfaces, by the subdivision scheme each mesh authors, diced finer where they cover more of the image."));
     c.groups.push_back(groupSpec("pathGuiding", "", false, "Learns where light comes from and steers rays towards it. This build of Cycles has no path guiding, so nothing in this group has any effect."));
@@ -186,6 +186,7 @@ make()
 
     // direct_light_sampling_type has no entry: Cycles declares it only when built with
     // WITH_CYCLES_DEBUG, and a knob here would be a control the delegate ignores.
+    add("lights", setting("natron:matchLightLevels", "matchLightLevels", "Lights the scene as brightly as Storm and MoonRay do for the same lights and exposure. Turn it off for the levels Cycles gives on its own, where dome lights are about 3.14 times brighter and distant lights 4 times brighter.", VtValue(true)));
     add("lights", setting("cycles:integrator:use_light_tree", "useLightTree", "Picks the lights that matter most to each point rather than treating them alike. It greatly reduces noise with many lights, at a small cost to prepare, so leave it on. Light Sampling Threshold works only with this off.", VtValue(true)));
     add("lights", setting("cycles:integrator:light_sampling_threshold", "lightSamplingThreshold", "Skips most shadow rays to lights too weak to matter at a point. Higher is faster and can add noise; 0.01 is a good start and 0 turns it off.", VtValue(0.f)));
 

@@ -49,7 +49,7 @@ try:
           G("cyclesClamping", False, "cyclesSampleClampDirect", "cyclesSampleClampIndirect"),
           G("cyclesCaustics", False, "cyclesCausticsReflective", "cyclesCausticsRefractive", "cyclesFilterGlossy"),
           G("cyclesFastGi", False, "cyclesAoBounces", "cyclesAoFactor", "cyclesAoDistance", "cyclesAoAdditiveFactor")),
-        G("cyclesLights", False, "cyclesUseLightTree", "cyclesLightSamplingThreshold"),
+        G("cyclesLights", False, "cyclesMatchLightLevels", "cyclesUseLightTree", "cyclesLightSamplingThreshold"),
         G("cyclesVolumes", False, "cyclesVolumeRayMarching", "cyclesVolumeMaxSteps", "cyclesVolumeStepRate"),
         G("cyclesSubdivision", False, "cyclesSubdivisionSurfaces", "cyclesDicingRate", "cyclesMaxSubdivisionLevel",
           "cyclesAdaptiveSpace", "cyclesDicingCamera"),

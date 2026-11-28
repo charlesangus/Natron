@@ -94,7 +94,10 @@ with no settings says only that.
   - Clamping: the brightness limits on samples, against fireflies.
   - Caustics: reflective and refractive caustics, and Filter Glossy.
   - Fast GI: the approximation of distant indirect light.
-- Lights: Use Light Tree and Light Sampling Threshold.
+- Lights: Match Light Levels, Use Light Tree and Light Sampling Threshold.
+  Match Light Levels, on by default, lights the scene as brightly as Storm
+  and MoonRay do for the same lights and exposure. Off, dome lights are about
+  3.14 times brighter and distant lights 4 times brighter.
 - Volumes: ray marching and its steps.
 - Subdivision: Subdivision Surfaces, and how finely the meshes are diced.
 - Path Guiding: this build of Cycles has no path guiding, so these controls

@@ -372,6 +372,8 @@ enum RotoPaintItemLifeTimeTypeEnum
 
 NATRON_NAMESPACE_ENTER
 
+class RenderCancellation;
+
 struct RotoFeatherVertex
 {
     double x,y;
@@ -1052,9 +1054,6 @@ public:
 #endif
     std::list<KnobIPtr> knobs; //< list for easy access to all knobs
 
-    //Used to prevent 2 threads from writing the same image in the rotocontext
-    mutable QReadWriteLock cacheAccessMutex;
-
     // The knob part of the item's content hash, one entry per knob in list order, memoized against
     // knobsGeneration, which every content change of the knobs moves. A knob reading another knob
     // through a master link or an expression changes with it, so it is kept live and rehashed on
@@ -1069,6 +1068,11 @@ public:
     mutable std::vector<KnobHashEntry> knobsHashEntries;
     mutable U64 knobsHashGeneration = 0;
     mutable bool knobsHashValid = false;
+
+    // isMaskFrameInvariant()'s answer for the content hash it was computed under, 0 for none.
+    mutable QMutex frameInvarianceMutex;
+    mutable U64 frameInvarianceHash = 0;
+    mutable bool frameInvariant = false;
 
     void observeKnob(const KnobIPtr& knob)
     {
@@ -1126,7 +1130,6 @@ public:
         , timeOffset()
         , timeOffsetMode()
         , knobs()
-        , cacheAccessMutex()
     {
         opacity = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoOpacityParamLabel), 1, true);
         opacity->setHintToolTip( tr(kRotoOpacityHint) );
@@ -2549,6 +2552,62 @@ public:
                                double opacity,
                                double time,
                                unsigned int mipmapLevel);
+
+    struct StrokeDab {
+        Point center;
+        double pressure;
+        double internalRadius;
+        double externalRadius;
+        int stops;
+    };
+
+    /**
+     * @brief A stroke's dabs in drawing order, in the pixel coordinates of its mip level. Each dab
+     * names its radial opacity stops in stopLists, which dabs drawn with equal stops share; an
+     * empty list draws the dab flat at the stroke's opacity.
+     **/
+    struct StrokeDabs {
+        std::vector<StrokeDab> dabs;
+        std::vector<std::vector<std::pair<double, double>>> stopLists;
+    };
+
+    /**
+     * @brief The dabs renderStroke() draws for strokes, read from the item's knobs at time on the
+     * calling thread, appended to dabs. Returns the distance left to the next dab, as
+     * renderStroke() does.
+     **/
+    static double evaluateStrokeDabs(const std::list<std::list<std::pair<Point, double>>>& strokes,
+                                     double distToNext,
+                                     const RotoDrawableItem* stroke,
+                                     double opacity,
+                                     double time,
+                                     unsigned int mipmapLevel,
+                                     StrokeDabs* dabs);
+
+    typedef std::function<void(const RectI& band, cairo_surface_t* surface)> StrokeBandSink;
+
+    /**
+     * @brief Draws dabs over roi, the way renderStroke() draws them on one cairo surface of format
+     * covering roi, in nBands bands of rows run in parallel, each on its own surface holding only
+     * its rows, so the result does not depend on nBands. Once every band is drawn, hands them to
+     * sink on the calling thread in increasing rows: surface is band.width() x band.height(),
+     * row 0 at band.y1. Returns false, without calling sink, when cancel reports an abort or a
+     * surface could not be had. Must be called on the thread that built cancel.
+     **/
+    static bool renderStrokeDabsInBands(const StrokeDabs& dabs,
+                                        const RectI& roi,
+                                        cairo_format_t format,
+                                        bool doBuildUp,
+                                        double opacity,
+                                        int nBands,
+                                        RenderCancellation& cancel,
+                                        const StrokeBandSink& sink);
+
+    /**
+     * @brief The bands renderStrokeDabsInBands() splits roi into, from the threads this render
+     * may use, with a floor on the rows per band so small masks stay on one thread.
+     **/
+    static int strokeBandCount(const RectI& roi);
     typedef std::function<void(const RectI& tile, const float* alpha)> AlphaTileSink;
 
     /**

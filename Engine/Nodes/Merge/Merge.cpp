@@ -667,6 +667,13 @@ NativeMerge::knobChanged(KnobI* k,
     return false;
 }
 
+NativeMergeOp::Params
+NativeMerge::mergeParams(double time,
+                         ViewIdx view) const
+{
+    return bakeParams(op(), time, view);
+}
+
 void
 NativeMerge::followContainerLayer(const NodePtr& node,
                                   const std::string& layerID)

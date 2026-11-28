@@ -163,6 +163,10 @@ set(Tests_SOURCES
     RotoOverlayHomography_Test.cpp
     RotoDragRenderThrottle_Test.cpp
     RotoKeyDuringRender_Test.cpp
+    RotoRenderProfile_Test.cpp
+    RotoMaskCache_Test.cpp
+    RotoPaintDirectComposite_Test.cpp
+    RotoStrokeBands_Test.cpp
     RotoPaintExtraBgRoD_Test.cpp
     StrokeRenderCoalescer_Test.cpp
     Knob_Test.cpp

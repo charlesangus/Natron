@@ -44,6 +44,7 @@
 #include "Engine/RotoContextPrivate.h"
 
 #include "Engine/AppInstance.h"
+#include "Engine/Bezier.h"
 #include "Engine/BezierCP.h"
 #include "Engine/ContentHasher.h"
 #include "Engine/CoonsRegularization.h"
@@ -718,6 +719,96 @@ RotoDrawableItem::appendLiveContentHash(ContentHasher& h) const
             h.appendU64(entries[i].liveKnob ? entries[i].liveKnob->getContentHash() : entries[i].hash);
         }
     }
+}
+
+bool
+RotoDrawableItem::isMaskFrameInvariant() const
+{
+    return isMaskFrameInvariant(getContentHash());
+}
+
+bool
+RotoDrawableItem::isMaskFrameInvariant(U64 contentHash) const
+{
+#ifdef NATRON_ROTO_ENABLE_MOTION_BLUR
+    // The motion blur type lives on the context, outside the item's content hash.
+    if (dynamic_cast<const Bezier*>(this) && (getContext()->getMotionBlurTypeKnob()->getValue() == 0) && (_imp->motionBlur->getValue() > 0.)) {
+        return false;
+    }
+#endif
+    {
+        QMutexLocker l(&_imp->frameInvarianceMutex);
+        if ((_imp->frameInvarianceHash != 0) && (_imp->frameInvarianceHash == contentHash)) {
+            return _imp->frameInvariant;
+        }
+    }
+    const bool invariant = computeMaskFrameInvariant();
+    // An edit made while the answer was computed may not show in it, so it is kept only when the
+    // content is still the one it was asked for.
+    if (getContentHash() == contentHash) {
+        QMutexLocker l(&_imp->frameInvarianceMutex);
+        _imp->frameInvarianceHash = contentHash;
+        _imp->frameInvariant = invariant;
+    }
+
+    return invariant;
+}
+
+namespace {
+
+// A single keyframe holds its value at every frame, so only a second one makes a knob vary. A
+// knob keeps one curve per dimension for every view, so view 0's count is every view's.
+bool
+knobVariesOverFrames(const KnobIPtr& knob)
+{
+    for (int i = 0; i < knob->getDimension(); ++i) {
+        if (knob->getKeyFramesCount(ViewIdx(0), i) > 1) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+} // anon namespace
+
+bool
+RotoDrawableItem::computeMaskFrameInvariant() const
+{
+    const std::list<KnobIPtr>& knobs = getKnobs();
+    for (std::list<KnobIPtr>::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
+        const KnobIPtr& knob = *it;
+        if (!knob->isRenderHashed() || (knob == _imp->activated) || (knob == _imp->lifeTime) || (knob == _imp->lifeTimeFrame)) {
+            continue;
+        }
+        bool hasExpression = false;
+        bool readsOutsideKnob = false;
+        knob->getContentHashDependencies(&hasExpression, &readsOutsideKnob);
+        if (hasExpression || readsOutsideKnob || knobVariesOverFrames(knob)) {
+            return false;
+        }
+    }
+
+    const Bezier* isBezier = dynamic_cast<const Bezier*>(this);
+    if (isBezier) {
+        if (isBezier->hasTrackLinks()) {
+            return false;
+        }
+        const std::list<BezierCPPtr> points = isBezier->getControlPoints_mt_safe(false);
+        for (std::list<BezierCPPtr>::const_iterator it = points.begin(); it != points.end(); ++it) {
+            if ((*it)->getKeyframesCount(false) > 1) {
+                return false;
+            }
+        }
+        const std::list<BezierCPPtr> feathers = isBezier->getFeatherPoints_mt_safe(false);
+        for (std::list<BezierCPPtr>::const_iterator it = feathers.begin(); it != feathers.end(); ++it) {
+            if ((*it)->getKeyframesCount(false) > 1) {
+                return false;
+            }
+        }
+    }
+
+    return true;
 }
 
 NodePtr

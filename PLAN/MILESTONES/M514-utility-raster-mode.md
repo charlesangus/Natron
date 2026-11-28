@@ -210,10 +210,26 @@ After P4 the per-pass cost is 5.6 ms (Raster) and 10.8 ms (Ray), but every frame
 - [ ] M514.P5.T16 — After converge take the AOV without extra Render() calls
   - files: `HydraRenderImpl.cpp` render loop
   - size: S
-- [ ] M514.P5.T17 — Progressive frames on the GPU viewer path: the device window returns after the first published pass, the viewer re-requests until converged; partial frames never cached as final
+- [x] M514.P5.T17 — Progressive frames on the GPU viewer path: the device window returns after the first published pass, the viewer re-requests until converged; partial frames never cached as final
   - files: `HydraRenderImpl.cpp` (~2082-2150, DeviceFrame cache), `USDRender.cpp` renderGpu, `ViewerInstance.cpp`
   - size: L
-- [ ] M514.P5.T18 — Cut the ~30 ms before the region once P5.T13 names it
+- [ ] M514.P5.T18 — Cut the ~30 ms before the region: the settings summary survives camera-only edits
+  - files: `USDRender.cpp` (getSettingsSummary ~621-640, summarizeSettings), `ViewerInstance.cpp` (~4257-4400)
+  - approach: add sub-spans (`settings_summary`, `rod_lookup`, `request_pass`) inside viewer_prepare; key the settings summary on a digest of the /Render subtree (and whatever else it really reads), not the node hash, so a camera move doesn't recook upstream under `_settingsNothingContextId` or borrow a stage
+  - size: M
+- [ ] M514.P5.T20 — prepare_render reuses its setup across camera edits: split renderSetupKey so settings/format exclude the camera stack hash; take the camera from the render thread's synced SceneStage (or one prim query); pass ActiveSettings from T18 instead of evaluating the scene again
+  - files: `USDRender.cpp` (renderSetupKey ~1213-1255, readRenderSetup, prepareRender ~1275)
+  - size: M
+- [ ] M514.P5.T21 — One Render() per frame: waitForConverged loops on the converge signal (checking cancel) instead of returning after kConvergencePoll and re-calling Render()
+  - files: `HydraRenderImpl.cpp` (~169, ~2203-2224)
+  - size: S
+- [ ] M514.P5.T22 — Upload only changed shade tables (content key, as textures do); no settlePasses when nothing uploads
+  - files: `WavefrontGpu.cpp` (uploadTables ~972)
+  - size: M
+- [ ] M514.P5.T23 — One blocking submit per frame, viewer hand-off by GPU semaphore rather than a CPU fence wait (with T7); spans around the clock-dependent gaps either side of the region
+  - size: M
+- [ ] M514.P5.T24 — Bench: continuous-drag mode (one edit per 33 ms, steady state), per-edit GPU pstate, `first_ms` as the interactive headline at >1 pass; segment labels name the gap's span
+  - files: `tools/bench/gui/utility_bench.py`
   - size: M
 - [ ] M514.P5.T19 — No full stage resync per transform edit (stable edit-layer identity / TransferContent so only the edited prim's notices fire) — check pxr notice granularity first
   - files: `SceneOps.cpp` (~265), SceneLayerMemo, `SceneStage.cpp` sync
@@ -258,3 +274,5 @@ After P4 the per-pass cost is 5.6 ms (Raster) and 10.8 ms (Ray), but every frame
 - 2026-11-28 — Viewer-loop bench on a real GPU (cloud-gpu-20261128T104320Z, RTX 3060, 1080p, camera edits, zerocopy, 30/30 device roots, 0 downloads): edit→frame median 101.8 ms at 1 pass (p95 259; Hydra call 40.8 ms, render_call ~9.6 ms), 195.9 ms at 16 passes (Hydra 132 ms). ~5× better than the 0.5 s CPU path; target ≤50 ms not yet met. Consultant attributing the rest.
 - 2026-11-28 — Breakdown (consultant) at 1 pass ≈ 30 ms before the region (unrecorded) + 19 ms prepareRender + 41 ms Hydra call (render_call ~10, delegate frame ~28: uploads 4–6, two blocking submits 13–16, publish with pick copy 10–13) + ~10 ms tail. p95 from GPU-wide slowdowns in a sawtooth (likely clocks/P-state). Per pass at 16 passes ≈ 6.7 ms of CPU-side waits. Plan: P5.T13–T19, with P5.T7 batching.
 - 2026-11-28 — P5.T17 design (consultant): pull model — each current-frame viewer request advances the engine by one published pass, all strips read it (DeviceFrame keyed by request sequence), AbortableRenderInfo carries acceptsRefinement/refining bits, the viewer re-requests once in showFrame after a complete frame is displayed (age-checked, coalesced, forceRender), partials never enter the viewer/node caches. In progress (T17a–d).
+
+- 2026-11-28 — vast g16 (RTX 3060, HEAD 417fa53331): 1 pass median 101.5 ms (hydra 30.7), 16 passes first 81 / last 133 (was 196); results in build/m514-bench-g16. Consultant timeline: ~35 ms inside viewer_prepare before the task graph (settings summary recook), prepare_render 19 ms (setup cache never hits on camera edits), Hydra 31 ms of which 3 Render() calls and table uploads; the ~200 ms outliers are GPU P-state decay during the bench's 400 ms gaps, not Hydra. Ranked fixes → T18, T20–T24; estimate 30–40 ms at P0. Refine stall (weak pointer to the shown request expired before the follow-up) fixed in 9215c8a696.

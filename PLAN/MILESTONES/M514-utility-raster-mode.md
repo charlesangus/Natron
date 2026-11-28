@@ -157,6 +157,34 @@ Raster replaces only raygen and intersect; each pass still runs the shared wavef
   - verify: fast-path images match the shared-pipeline Raster render within noise (unit test); bench shows the per-pass cost at 1080p in single-digit ms on the vast RTX 3060.
   - size: L
 
+## Phase 514.5: Per-frame fixed cost
+
+After P4 the per-pass cost is 5.6 ms (Raster) and 10.8 ms (Ray), but every frame pays ~0.5 s fixed: ~150 ms resolving depth/primId/instanceId on the CPU (UtilityDeviceAovs::resolve, readback of the 41 MB pick buffer) that the caller often never reads, and ~310 ms outside the profiled renderer (host clears, 10 ms Render() poll, colour download, single-threaded cpuFrame/decodeIds over every plane, cpuWindow copy, per-frame texture rebuild). Diagnosis 2026-11-28 (consultant) in the progress notes.
+
+- [ ] M514.P5.T1 — Instrument the outside: clear, shutter snapshot, Render() count/time, map download, cpuFrame, cpuWindow, Write encode; the bench gains a viewer-equivalent output (colour only, no EXR encode)
+  - files: `Engine/Nodes/Scene/Utility/UtilityProfile.{h,cpp}`, `Engine/Nodes/Scene/HydraRenderImpl.cpp`, `tools/bench/utility_raster_bench.{py,sh}`
+  - size: M
+- [ ] M514.P5.T2 — Resolve depth and ids lazily or on the GPU; read back only planes that are mapped
+  - files: `UtilityRenderBuffer.cpp` (~883-960, ~1290-1320), `UtilityRenderPass.cpp` (~254-275), `Kernels/FilmPick.slang`
+  - size: L
+- [ ] M514.P5.T3 — HydraRender converts only the requested plane, in parallel, memcpy for float32, decodeIds only when ids are asked for
+  - files: `HydraRenderImpl.cpp` (~2260-2470)
+  - size: M
+- [ ] M514.P5.T4 — No host clears or publish copies for device-resident buffers
+  - files: `UtilityRenderBuffer.cpp` (~1064-1135)
+  - size: M
+- [ ] M514.P5.T5 — Wait on frame completion instead of the 10 ms Render() poll, keeping fast cancel
+  - files: `HydraRenderImpl.cpp` (~164, ~2069-2129)
+  - size: M
+- [ ] M514.P5.T6 — Reuse unchanged textures across frames (live texture keyed by content; per-asset texel rebuild)
+  - files: `Wavefront.cpp` (~836-842, ~1115-1150), `LiveTextureStore.cpp` (~428-437)
+  - size: M
+- [ ] M514.P5.T7 — Batch several passes per submission (raster/shade/accumulate for K passes in one command buffer), keeping stop latency
+  - files: `WavefrontGpu.cpp` (~1145, ~1561)
+  - size: L
+
+**Phase 514.5 target (proposed, pending user):** 1080p RTX-3060-class, emissive Project3D Raster scene, steady frames, viewer-equivalent output: ≤150 ms wall at 1 pass and ≤200 ms at 16 passes (stretch 100/150); Utility profile ≤50 ms fixed + ≤2 ms/pass; Ray ≤33 ms/pass. Replaces "Raster ≥5× Ray at 32 passes".
+
 **Verification gate:**
 - Build and ctest green on both legs.
 - GpuRaster, NatronUtilityRaster, NatronUtilityCancel, Motion and Golden pass on llvmpipe.

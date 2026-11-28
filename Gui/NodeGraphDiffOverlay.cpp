@@ -68,6 +68,12 @@ tintColor(NodeGraphDiffOverlay::TintEnum tint)
     return (tint == NodeGraphDiffOverlay::eTintAdded) ? QColor(70, 200, 90) : QColor(255, 176, 30);
 }
 
+bool
+onlyMoved(const ProjectMerge::NodeChange& change)
+{
+    return change.moved && change.knobs.empty() && change.inputs.empty() && !change.renamed && !change.appearance && !change.userKnobs && !change.roto && !change.tracker && !change.recreated;
+}
+
 QGraphicsRectItem*
 tintItemOf(NodeGui* gui)
 {
@@ -252,6 +258,16 @@ NodeGraphDiffOverlay::ghostCount() const
     return _ghosts->isVisible() ? (int)_ghosts->ghostCount() : 0;
 }
 
+QRectF
+NodeGraphDiffOverlay::ghostRect(int index) const
+{
+    if ((index < 0) || (index >= ghostCount())) {
+        return QRectF();
+    }
+
+    return _ghosts->ghosts()[index].rect;
+}
+
 void
 NodeGraphDiffOverlay::fitTint(NodeGui* gui)
 {
@@ -303,7 +319,7 @@ NodeGraphDiffOverlay::refresh()
             if (found->second->kind == ProjectMerge::NodeChange::eAdded) {
                 tint = eTintAdded;
             } else if (found->second->kind == ProjectMerge::NodeChange::eChanged) {
-                tint = eTintChanged;
+                tint = onlyMoved(*found->second) ? eTintMoved : eTintChanged;
             }
         }
         QGraphicsRectItem* item = tintItemOf(node.get());
@@ -318,7 +334,7 @@ NodeGraphDiffOverlay::refresh()
         tints[node.get()] = tint;
         const QColor color = tintColor(tint);
         QColor fill = color;
-        fill.setAlphaF(0.35);
+        fill.setAlphaF((tint == eTintMoved) ? 0. : 0.35);
         QPen pen(color);
         pen.setWidthF(2.);
         pen.setCosmetic(true);
@@ -349,7 +365,7 @@ NodeGraphDiffOverlay::refresh()
             if ((change.kind != ProjectMerge::NodeChange::eRemoved) || (change.parentId != groupId) || !change.hasPosition) {
                 continue;
             }
-            const QRectF rect(QPointF(change.x, change.y), size);
+            const QRectF rect(QPointF(change.placedX, change.placedY), size);
             ghostRects[change.nodeId] = rect;
             ghosts.push_back(NodeDiffGhostItem::Ghost { rect, QString::fromStdString(change.label.empty() ? change.scriptName : change.label) });
         }

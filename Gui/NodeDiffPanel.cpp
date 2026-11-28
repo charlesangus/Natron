@@ -410,6 +410,9 @@ NodeDiffPanel::describe(const ProjectMerge::NodeChange& change)
         const QString name = input.label.empty() ? tr("Input") : tr("Input %1").arg(QString::fromStdString(input.label));
         rows << changeRow(name, sourceText(input.before), sourceText(input.after));
     }
+    if (change.moved) {
+        rows << tr("Moved");
+    }
     if (change.appearance) {
         rows << tr("Appearance changed");
     }

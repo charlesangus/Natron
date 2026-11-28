@@ -1047,6 +1047,8 @@ GuiApp::getDiffTint(Effect* effect) const
         return QString::fromUtf8("added");
     case NodeGraphDiffOverlay::eTintChanged:
         return QString::fromUtf8("changed");
+    case NodeGraphDiffOverlay::eTintMoved:
+        return QString::fromUtf8("moved");
     case NodeGraphDiffOverlay::eTintNone:
         break;
     }
@@ -1054,8 +1056,10 @@ GuiApp::getDiffTint(Effect* effect) const
     return QString();
 }
 
-int
-GuiApp::getDiffGhostCount(Group* group) const
+namespace {
+NodeGraph*
+diffGraphOf(GuiAppInstance* app,
+            Group* group)
 {
     NodeGraph* graph = 0;
     if (Effect* isEffect = dynamic_cast<Effect*>(group)) {
@@ -1063,11 +1067,31 @@ GuiApp::getDiffGhostCount(Group* group) const
             graph = dynamic_cast<NodeGraph*>(nodeGrp->getNodeGraph());
         }
     } else {
-        graph = getInternalGuiApp()->getGui()->getNodeGraph();
+        graph = app->getGui()->getNodeGraph();
     }
+
+    return graph;
+}
+} // anon namespace
+
+int
+GuiApp::getDiffGhostCount(Group* group) const
+{
+    NodeGraph* graph = diffGraphOf(getInternalGuiApp().get(), group);
     NodeGraphDiffOverlay* overlay = graph ? graph->getDiffOverlay() : 0;
 
     return overlay ? overlay->ghostCount() : 0;
+}
+
+RectD
+GuiApp::getDiffGhostRect(int index,
+                         Group* group) const
+{
+    NodeGraph* graph = diffGraphOf(getInternalGuiApp().get(), group);
+    NodeGraphDiffOverlay* overlay = graph ? graph->getDiffOverlay() : 0;
+    const QRectF rect = overlay ? overlay->ghostRect(index) : QRectF();
+
+    return RectD(rect.left(), rect.top(), rect.right(), rect.bottom());
 }
 
 QStringList

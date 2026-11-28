@@ -132,6 +132,9 @@ QThreadPool* folderScanPool();
 std::optional<TemplateVersion> findLatestVersion(const QString& dir,
                                                  const std::string& templateId);
 
+// Scene units a node may move within its group, past its group's offset, before it counts as moved.
+const double kMovedThreshold = 10.;
+
 struct NodeChange {
     enum Kind {
         eAdded,
@@ -150,6 +153,12 @@ struct NodeChange {
     bool hasPosition = false;
     double x = 0.;
     double y = 0.;
+    // Where the node belongs in the live graph: x and y, except for a removed node, whose base
+    // position is shifted by the offset of its nearest matched neighbour in the other snapshot's
+    // wiring, or by its group's offset when no neighbour is matched. A group's offset is the median
+    // of how far its matched nodes moved, so moving a whole template is no change.
+    double placedX = 0.;
+    double placedY = 0.;
     // eChanged: what differs, by knob name and input label.
     std::vector<std::string> knobs;
     std::vector<std::string> inputs;
@@ -184,6 +193,10 @@ struct NodeChange {
     std::vector<Link> sources;
     std::vector<Link> readers;
     bool renamed = false;
+    // eChanged: the node moved more than kMovedThreshold within its group, its group's offset
+    // taken off.
+    bool moved = false;
+    // eChanged: the node's size, colour or overlay colour changed.
     bool appearance = false;
     bool userKnobs = false;
     bool roto = false;

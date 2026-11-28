@@ -44,6 +44,7 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -526,6 +527,20 @@ protected:
         return _calls;
     }
 
+    // What the render last reported, for a wait that ran out: whether its engine was being made
+    // again, had failed, or rendered on without ending.
+    std::string describeStatus() const
+    {
+        if (!_render) {
+            return std::string();
+        }
+        const ProgressiveRender::Status status = _render->getStatus();
+        std::ostringstream text;
+        text << "; the render: active " << status.active << ", stopped " << status.stopped << ", paused " << status.paused << ", converged " << status.converged << ", samples " << status.samples << " of " << status.maxSamples << ", restarts " << status.restarts << ", engines " << status.engines << " (" << status.unseenRemakes << " for an unseen restart, " << status.stallRemakes << " for a stall), frames " << status.frames << ", error '" << status.error << "'";
+
+        return text.str();
+    }
+
     // Waits, under _signalMutex, until reached() holds, reading it again at each call of the
     // listener and at least every 10 ms for what the listener is not told of. False, with a
     // failure, if it did not hold within kTimeout.
@@ -538,7 +553,7 @@ protected:
 
         while (!reached()) {
             if (std::chrono::steady_clock::now() >= end) {
-                ADD_FAILURE() << what << " did not happen in " << kTimeout.count() << " s";
+                ADD_FAILURE() << what << " did not happen in " << kTimeout.count() << " s" << describeStatus();
 
                 return false;
             }

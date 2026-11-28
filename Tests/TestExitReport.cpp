@@ -16,3 +16,42 @@
  * You should have received a copy of the GNU General Public License
  * along with Natron.  If not, see <http://www.gnu.org/licenses/gpl-2.0.html>
  * ***** END LICENSE BLOCK ***** */
+
+#include <cstdlib>
+
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#include "TestWatchdog.h"
+
+// These definitions replace glibc's for the whole process: a call from this executable binds to
+// them at link time, and one from a shared library binds through its PLT to the first definition in
+// global scope, which is the executable's as long as the link exports them
+// (--export-dynamic-symbol in CMakeLists.txt). glibc's own exit() and abort() call a hidden
+// internal _exit that no definition here can replace; exit() is reported by the on_exit handler.
+
+namespace {
+
+[[noreturn]] void
+endProcess(int status)
+{
+    for (;;) {
+        syscall(SYS_exit_group, status);
+    }
+}
+
+} // namespace
+
+extern "C" void
+_exit(int status)
+{
+    TestWatchdog::reportDirectExit(status);
+    endProcess(status);
+}
+
+extern "C" void
+_Exit(int status) noexcept
+{
+    TestWatchdog::reportDirectExit(status);
+    endProcess(status);
+}

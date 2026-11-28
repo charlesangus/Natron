@@ -24,7 +24,7 @@ None of these suites carry a `RESOURCE_LOCK` or `LABELS` (`Tests/CMakeLists.txt:
 
 ## Phase 639.1: Reproduce
 
-- [ ] M639.P1.T1 — Reproduce the flakes under parallel load and capture stacks
+- [x] M639.P1.T1 — Reproduce the flakes under parallel load and capture stacks
   - files: read-only: the test files above, `Tests/TestWatchdog.h`, `Tests/SuiteProperties.cmake`; notes and logs to `build/m639/repro.md`
   - approach: run `ctest -j8 --repeat until-fail:20 --schedule-random` over the named suites (fast preset) with background CPU load, and run the debug build with ASan where it builds. Collect core-dump stacks for segfaults and watchdog stacks for timeouts. For SplitOnGapsTest, read rep8's watchdog stacks to find what process start waits on. Group the failures by cause.
   - verify: repro.md gives each test's failure rate, a stack per failure mode, and a named cause per group
@@ -49,3 +49,8 @@ None of these suites carry a `RESOURCE_LOCK` or `LABELS` (`Tests/CMakeLists.txt:
   - size: M
 
 **Verification gate:** full build and ctest green; the T1 load-repeat run over every named suite passes 20 of 20; two consecutive PR CI runs of this branch pass with no retries.
+- 2026-11-27 (PM) — P1.T1 diagnosis (repro run 46099492660, 6 runs × 15 suites; report in the lane's build/m639/repro.md):
+  - **SplitOnGapsTest (3/6):** product deadlock in `Engine/FileSystemModel.cpp`, inside the test body (phase 'start' only means the suite never calls setPhase). The gatherer thread holds the model's last reference, so `~FileSystemModel` runs on it and `quitGatherer()` waits on itself; the next test's inotify event then blocks the main thread on the stuck gatherer. **P2.T3 rescoped:** no strong model reference in the gatherer, quit/abort safe from the gatherer's own thread, disconnect the watcher first; with a test that drops the last model reference from the gatherer.
+  - **USDRenderCyclesMaterialTest (1/6):** product teardown-order null deref at process exit — a scene-worker job (`readGivenSettingsSummaries` → `getHashValue`) runs after its app is destroyed; `Node.cpp:1565` calls `getProject()` on a null app. `~AppManager` quits apps before waiting for scene-worker jobs. P2.T1: drain a project's scene jobs before its app is released, guard the null app, test with a job held at a barrier. May also explain the earlier ProgressiveRender / NatronUtilitySampling segfaults (re-check after the fix).
+  - **USDRenderMoonRayProjectionTest (2/6):** hangs in `ClipNearFarPutsTheCardOutside`; the client sits in `recv` while `execComp` is alive and silent; the pre-first-frame stall guard waits 300 s (= the ctest timeout), so it hangs instead of failing. Root cause unknown (lost start message, concurrent MoonRay suites sharing /dev/shm or arras sockets, or an execComp deadlock); stacks need `--cap-add=SYS_PTRACE` on the CI test container. Follow-up repeat run once ptrace is enabled.
+  - No stack involves `makeInheritedTLSData`. CyclesDelegate / NatronUtilitySamplingDelegate / ProgressiveRender did not fail in this run (inconclusive; one repeat run each after the teardown fix).

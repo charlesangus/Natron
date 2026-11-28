@@ -65,8 +65,12 @@ NATRON_NAMESPACE_ENTER
  * - beyond Cull Distance a unit is culled;
  * - beyond Fraction Distance an instancer keeps a hashed Fraction Percent of its instances, the
  *   rest being budget boxes, and a mesh keeps that fraction of its faces;
- * - the faces of the units left whose sphere meets the frustum, or of all of them when Count Whole
- *   Scene is on, are counted, and the farthest are demoted to budget boxes until the count fits.
+ * - the faces of the units left whose sphere meets the frustum, widened by a tenth of the view on
+ *   each side, or of all of them when Count Whole Scene is on, are counted, and the farthest are
+ *   demoted to budget boxes until the count fits;
+ * - with Count Whole Scene off, the units out of view are budget boxes too, except the nearest of
+ *   them whose faces fit in what the counted units leave of the limit. A camera move onto them
+ *   shows boxes until the next solve, never more than the limit.
  * Only drawn, loaded units change; a boxed, hidden or unloaded one counts nothing and is never in a
  * result. The hashes depend on the path and the instance or face index alone, so the kept subset
  * never changes with the camera.
@@ -194,7 +198,7 @@ public:
         std::unordered_map<PXR_NS::SdfPath, double, PXR_NS::SdfPath::Hash> keptFaceFraction;
         // Only the instancers with an instance demoted, culled or fractioned.
         std::unordered_map<PXR_NS::SdfPath, InstancerResult, PXR_NS::SdfPath::Hash> instancers;
-        // The faces counted before demotion, and those left after it.
+        // The faces counted before demotion, and those left drawn after it, in view or not.
         U64 counted = 0;
         U64 drawn = 0;
         U64 limit = 0;

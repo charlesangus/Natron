@@ -195,7 +195,10 @@ TEST(SceneViewBudget, OnlyUnitsInTheFrustumCountUnlessTheWholeSceneDoes)
     Budget::Settings settings = limitOf(250);
     const Budget::Result framed = Budget::solve(units, cameraAt(kEye), settings, Budget::Result());
     EXPECT_EQ(framed.counted, 200u);
-    EXPECT_TRUE(framed.demoted.empty());
+    // Out of view, it gets the 50 faces the view leaves, which it does not fit in.
+    EXPECT_EQ(framed.demotedCount, 1u);
+    EXPECT_TRUE(framed.isDemoted(SdfPath("/Behind")));
+    EXPECT_EQ(framed.drawn, 200u);
 
     settings.countWholeScene = true;
     const Budget::Result whole = Budget::solve(units, cameraAt(kEye), settings, Budget::Result());
@@ -378,4 +381,83 @@ TEST(SceneViewBudget, BoxedHiddenAndUnloadedUnitsAreNeverChangedOrCounted)
     }
     EXPECT_TRUE(result.isCulled(SdfPath("/Drawn")));
     EXPECT_EQ(result.culledCount, 1u);
+}
+
+TEST(SceneViewBudget, UnitsOutOfViewAreBudgetBoxesUnlessTheViewLeavesThemFaces)
+{
+    const std::vector<Budget::Unit> units {
+        gprim("/InView", GfVec3f(0, 0, 0), 100),
+        gprim("/BehindNear", GfVec3f(0, 0, 15), 100),
+        gprim("/BehindFar", GfVec3f(0, 0, 40), 100),
+        instancer("/Instancer", { GfVec3f(0, 0, -5), GfVec3f(0, 0, 22) }, 50),
+    };
+
+    // In view: /InView and instance 0, 150 faces; 100 left go to the nearest out of view.
+    const Budget::Result tight = Budget::solve(units, cameraAt(kEye), limitOf(250), Budget::Result());
+    EXPECT_EQ(tight.counted, 150u);
+    EXPECT_FALSE(tight.isDemoted(SdfPath("/InView")));
+    EXPECT_FALSE(tight.isInstanceDemoted(SdfPath("/Instancer"), 0));
+    EXPECT_FALSE(tight.isDemoted(SdfPath("/BehindNear")));
+    EXPECT_TRUE(tight.isInstanceDemoted(SdfPath("/Instancer"), 1));
+    EXPECT_TRUE(tight.isDemoted(SdfPath("/BehindFar")));
+    EXPECT_EQ(tight.drawn, 250u);
+
+    // A view over the limit leaves nothing: everything out of view is a budget box.
+    const Budget::Result over = Budget::solve(units, cameraAt(kEye), limitOf(120), Budget::Result());
+    EXPECT_TRUE(over.isDemoted(SdfPath("/BehindNear")));
+    EXPECT_TRUE(over.isDemoted(SdfPath("/BehindFar")));
+    EXPECT_TRUE(over.isInstanceDemoted(SdfPath("/Instancer"), 1));
+    EXPECT_LE(over.drawn, 120u);
+
+    // Everything fits: nothing is a budget box, in view or not.
+    const Budget::Result roomy = Budget::solve(units, cameraAt(kEye), limitOf(1000), Budget::Result());
+    EXPECT_TRUE(roomy.demoted.empty());
+    EXPECT_EQ(roomy.demotedCount, 0u);
+    EXPECT_EQ(roomy.drawn, 400u);
+
+    // Counting the whole scene ignores the view: the farthest go, wherever they are.
+    Budget::Settings whole = limitOf(220);
+    whole.countWholeScene = true;
+    const Budget::Result wholeResult = Budget::solve(units, cameraAt(kEye), whole, Budget::Result());
+    EXPECT_EQ(wholeResult.counted, 400u);
+    EXPECT_FALSE(wholeResult.isDemoted(SdfPath("/BehindNear")));
+    EXPECT_FALSE(wholeResult.isDemoted(SdfPath("/InView")));
+    EXPECT_TRUE(wholeResult.isInstanceDemoted(SdfPath("/Instancer"), 1));
+    EXPECT_TRUE(wholeResult.isInstanceDemoted(SdfPath("/Instancer"), 0));
+    EXPECT_TRUE(wholeResult.isDemoted(SdfPath("/BehindFar")));
+}
+
+TEST(SceneViewBudget, AUnitComingIntoViewGetsDetailOnlyFromTheNextSolve)
+{
+    const std::vector<Budget::Unit> units {
+        gprim("/Here", GfVec3f(0, 0, 0), 100),
+        // Well to the side of the first view, past its margin.
+        gprim("/There", GfVec3f(60, 0, 0), 100),
+    };
+
+    const Budget::Result before = Budget::solve(units, cameraAt(kEye), limitOf(150), Budget::Result());
+    EXPECT_FALSE(before.isDemoted(SdfPath("/Here")));
+    EXPECT_TRUE(before.isDemoted(SdfPath("/There")));
+
+    // Panned onto /There, which until this solve stays a box; this solve gives it the detail and
+    // boxes /Here, now out of view.
+    const Budget::Result after = Budget::solve(units, cameraAt(GfVec3d(60, 0, 10)), limitOf(150), before);
+    EXPECT_EQ(after.counted, 100u);
+    EXPECT_FALSE(after.isDemoted(SdfPath("/There")));
+    EXPECT_TRUE(after.isDemoted(SdfPath("/Here")));
+}
+
+TEST(SceneViewBudget, AUnitJustPastTheViewsSideStillCountsAsInView)
+{
+    // The view is 60 degrees across: at 10 units away its side is at x = 10 tan 30 = 5.77; the
+    // margin takes it to 6.35.
+    const std::vector<Budget::Unit> units {
+        gprim("/Edge", GfVec3f(6.f, 0, 0), 100),
+        gprim("/Beyond", GfVec3f(9.f, 0, 0), 100),
+    };
+
+    const Budget::Result result = Budget::solve(units, cameraAt(kEye), limitOf(150), Budget::Result());
+    EXPECT_EQ(result.counted, 100u);
+    EXPECT_FALSE(result.isDemoted(SdfPath("/Edge")));
+    EXPECT_TRUE(result.isDemoted(SdfPath("/Beyond")));
 }

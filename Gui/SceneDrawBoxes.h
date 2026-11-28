@@ -349,6 +349,20 @@ public:
                                  const std::function<bool()>& stale,
                                  BudgetBoxSet* budgetBoxSet);
 
+    // The budget boxes standing for boxes, each as a demoted gprim's.
+    static BudgetBoxSet gprimBudgetBoxes(std::vector<Box>&& boxes);
+
+    /**
+     * @brief The boxes of what a load brought in under root: one per gprim, PointInstancer and
+     * unloaded payload the units pass would find there under rules at time, world space, a marker
+     * for one without bounds. None when the rules hide root, or once cancelled() is true. A
+     * PointInstancer is bounded by its authored extent alone. Needs the stage read lock.
+     */
+    static std::vector<Box> loadedBoxes(const PXR_NS::UsdPrim& root,
+                                        const SceneDrawFilter::Rules& rules,
+                                        double time,
+                                        const std::function<bool()>& cancelled);
+
     /**
      * @brief The budget box nearest the eye under pixel, as pick() finds a box or marker; with markers,
      * each is hit as a marker at its box's centre.

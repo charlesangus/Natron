@@ -21,9 +21,11 @@ natronSceneBoxes lists the budget boxes drawn while natronSceneRecordBoxes is se
     instancers, Load All then Hidden on each part of the instance hides that part alone, with no
     instance masked, and clearing the rows gives back the first image exactly;
   - on a third scene of many payloads, Load All under a Polygon Limit the first chunk reaches
-    stops loading, says so on the HUD, and a limit high enough loads the rest;
+    stops loading, says so on the HUD, and a limit high enough loads the rest; Load To Component
+    stops there too, and loading again goes past it;
   - on a fourth scene of twelve load chunks, counting the whole scene under a low Polygon Limit,
-    Load All ends with part of the scene drawn as budget boxes, and Load All, framing the scene and a
+    the houses each load chunk brings in are drawn as budget boxes while the budget holds them
+    back, Load All ends with part of the scene drawn as budget boxes, and Load All, framing the scene and a
     Hidden row set and cleared each end with nothing held back, budget boxes that went out at most
     once, and no budget applied nor Storm frame rendered once settled.
 
@@ -69,7 +71,7 @@ try:
     from PySide6.QtGui import QContextMenuEvent, QGuiApplication, QImage, QMouseEvent, QWheelEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QMainWindow, QSpinBox, QWidgetAction
-    from pxr import Gf, Sdf, Usd, UsdGeom, Vt
+    from pxr import Gf, Kind, Sdf, Usd, UsdGeom, Vt
 
     import NatronEngine
 
@@ -165,6 +167,8 @@ try:
         house = UsdGeom.Xform.Define(stage, "/World/Town/H%d" % k)
         house.AddTranslateOp().Set(Gf.Vec3d(3.0 * (k % 8), 0.0, 3.0 * (k // 8)))
         house.GetPrim().GetPayloads().AddInternalPayload(Sdf.Path("/House"))
+        # For Load To Component, which walks down to the houses.
+        Usd.ModelAPI(house.GetPrim()).SetKind(Kind.Tokens.component)
     stage.GetRootLayer().Save()
     stage = None
 
@@ -197,6 +201,12 @@ try:
     for name in ("polygonBudget", "polygonLimit", "loadBudget", "loadLimit", "countWholeScene", "cullDistance",
                  "fractionDistance", "fractionPercent", "budgetBoxes"):
         require(viewer.getParam(name) is not None, "the Viewer has a %s knob" % name)
+    check(viewer.getParam("polygonBudget").getValue() is True and viewer.getParam("polygonBudget").getDefaultValue() is True,
+          "Polygon Budget is on by default")
+    preferences = NatronEngine.natron.getSettings()
+    check(preferences.getParam("viewer3DPolygonBudget").getDefaultValue() is True
+          and preferences.getParam("viewer3DLoadBudget").getDefaultValue() is False,
+          "the preferences start new Viewers with Polygon Budget on and Load Budget off")
     check(viewer.getParam("loadBudget").getValue() is False and viewer.getParam("loadBudget").getDefaultValue() is False,
           "Load Budget is off by default")
     check(viewer.getParam("loadLimit").getValue() == DEFAULT_LOAD_LIMIT
@@ -602,9 +612,33 @@ try:
         check(whole == TOTAL_FACES, "Count Whole Scene counts all %d faces (%d)" % (TOTAL_FACES, whole))
         check(in_view < whole, "without it only the faces in view count (%d < %d)" % (in_view, whole))
         yield from resolve("Count Whole Scene off again", set_knob("countWholeScene", False))
+        check(int(budget().get("demoted", 0)) == 0,
+              "with faces to spare, nothing out of view is boxed (%r demoted)" % budget().get("demoted"))
+
+        section("out of view")
+        # The limit is what the view holds, so whatever lies out of it has no faces left over.
+        yield from resolve("Polygon Limit %d, the faces in view" % in_view, set_knob("polygonLimit", in_view))
+        out_of_view = paths("demotedPaths")
+        check(len(out_of_view) > 0 and int(budget().get("drawn", 0)) <= in_view,
+              "the units out of view are budget boxes (%d demoted, %r drawn of %d)" %
+              (len(out_of_view), budget().get("drawn"), in_view))
+        check(int(budget().get("counted", 0)) <= in_view,
+              "only the faces in view count against the limit (%r)" % budget().get("counted"))
+        held = int(budget().get("serial", 0))
         frame_all()
-        ok = yield ("until", lambda: solved() and not budget().get("idlePending", True), POLL_TIMEOUT_S)
+        yield ("sleep", 50)
+        check(int(budget().get("serial", 0)) == held and paths("demotedPaths") == out_of_view,
+              "framing keeps the out-of-view units boxed until the camera rests (%r -> %r)" %
+              (held, budget().get("serial")))
+        ok = yield ("until", lambda: int(budget().get("serial", 0)) > held and solved(), POLL_TIMEOUT_S)
         check(ok, "the framed camera's budget is solved")
+        yield settle()
+        framed_demoted = paths("demotedPaths")
+        check(len(set(out_of_view) - set(framed_demoted)) > 0,
+              "units that came into view are drawn once the camera rests (%d of %d still boxed)" %
+              (len(set(out_of_view) & set(framed_demoted)), len(out_of_view)))
+        check_farthest_first("Polygon Limit %d, framed" % in_view)
+        yield from resolve("Polygon Limit back to the default", set_knob("polygonLimit", DEFAULT_LIMIT))
 
         section("cull distance")
         e = eye()
@@ -824,8 +858,12 @@ try:
         viewer.getParam("polygonLimit").setValue(HOUSE_FACES)
         viewer.getParam("loadBudget").setValue(False)
         yield from show_town()
+        skipped_before = int(view().property("natronSceneLoadFramesSkipped") or 0)
         load_town()
         ok = yield ("until", lambda: not loads_pending() and loaded_faces() == all_faces, POLL_TIMEOUT_S)
+        yield ("sleep", 2 * SETTLE_MS)
+        check(int(view().property("natronSceneLoadFramesSkipped") or 0) > skipped_before,
+              "frames that took in a load chunk are left out of the stand-in cost")
         check(ok and loads_held() == "", "with Load Budget off, Load All loads the whole town past the Polygon "
               "Limit (%d of %d faces, %r)" % (loaded_faces(), all_faces, loads_held()))
         QMetaObject.invokeMethod(view(), "clearDrawState", Q_ARG("QString", "/World/Town"))
@@ -875,6 +913,31 @@ try:
                     and loaded_faces() == all_faces, POLL_TIMEOUT_S)
         check(ok, "a higher Load Limit loads the rest (%d faces, %r)" % (loaded_faces(), loads_held()))
 
+        # Load To Component is chunked and held as Load All is, and loading again overrides it too.
+        def load_town_to_component():
+            QMetaObject.invokeMethod(view(), "loadRows", Q_ARG("QStringList", ["/World/Town"]), Q_ARG("QString", "component"))
+
+        QMetaObject.invokeMethod(view(), "clearDrawState", Q_ARG("QString", "/World/Town"))
+        QMetaObject.invokeMethod(view(), "requestUnload", Q_ARG("QStringList", ["/World/Town"]))
+        ok = yield ("until", lambda: not loads_pending() and loaded_faces() == 0, POLL_TIMEOUT_S)
+        check(ok, "unloading the town gives back its faces (%d)" % loaded_faces())
+        viewer.getParam("loadLimit").setValue(HOUSE_FACES)
+        yield settle()
+        load_town_to_component()
+        ok = yield ("until", lambda: loads_held() == "budget" and not loads_pending(), POLL_TIMEOUT_S)
+        faces = loaded_faces()
+        check(ok and HOUSE_FACES <= faces < all_faces,
+              "Load To Component past the Load Limit stops (%d of %d faces, %r)" % (faces, all_faces, loads_held()))
+        yield ("sleep", 2 * SETTLE_MS)
+        check(loaded_faces() == faces and loads_held() == "budget",
+              "a held Load To Component stays held (%d faces)" % loaded_faces())
+        load_town_to_component()
+        ok = yield ("until", lambda: loads_held() == "" and not loads_pending()
+                    and loaded_faces() == all_faces, POLL_TIMEOUT_S)
+        check(ok, "Load To Component again loads the rest past the Load Limit (%d of %d faces, %r)" %
+              (loaded_faces(), all_faces, loads_held()))
+        viewer.getParam("loadLimit").setValue(DEFAULT_LOAD_LIMIT)
+
         viewer.getParam("loadBudget").setValue(False)
 
         section("a long load and a draw-state change settle")
@@ -918,9 +981,38 @@ try:
         yield settle()
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
         require(ok, "the scene view shows %s" % city_scene_path)
+        def blank_paints():
+            v = view()
+            return int(v.property("natronSceneBlankPaints") or 0) if v is not None else 0
+
         before = churn()
+        blank_before = blank_paints()
         QMetaObject.invokeMethod(view(), "setDrawState", Q_ARG("QString", "/World/City"), Q_ARG("QString", "loadAll"))
+        # Sampled between load chunks: a paint that clears the view to the background while the loads
+        # run is the grey flash, however soon the next frame covers it.
+        flashes = []
+        sampled = 0
+        # What the budget holds back of each chunk is drawn as budget boxes until a budget has it.
+        held_boxed = 0
+        held_bare = 0
+        while loads_pending() and sampled < 200:
+            yield ("sleep", 25)
+            sampled += 1
+            if blank_paints() != blank_before:
+                flashes.append(sampled)
+            b = budget()
+            if int(b.get("held", 0)) > 0:
+                if int(b.get("heldBoxCount", 0)) > 0:
+                    held_boxed += 1
+                else:
+                    held_bare += 1
+        check(held_boxed > 0, "houses the budget holds back while the city loads are drawn as budget boxes "
+              "(%d samples with boxes, %d without)" % (held_boxed, held_bare))
+        report("NOTE samples with houses held: %d with their boxes up, %d before them" % (held_boxed, held_bare))
         after = yield from settles("Load All on the city", before)
+        check(not flashes and blank_paints() == blank_before,
+              "the view keeps its last frame while the city loads (%d blank paints, first at sample %r of %d)" %
+              (blank_paints() - blank_before, flashes[0] if flashes else None, sampled))
         check(loaded_faces() == CITY_HOUSES * HOUSE_FACES,
               "Load All loads the whole city (%d of %d faces)" % (loaded_faces(), CITY_HOUSES * HOUSE_FACES))
         check(int(budget().get("demoted", 0)) > 0 and int(budget().get("drawn", 0)) <= CITY_LIMIT,

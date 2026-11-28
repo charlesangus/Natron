@@ -50,13 +50,17 @@ NATRON_NAMESPACE_ENTER
 namespace {
 const double kBand = 0.05;
 const std::size_t kBuckets = 1 << 16;
+// How far past the view's sides a unit still counts as in view, as a share of the view's width.
+const double kFrustumMargin = 0.1;
 
 enum FlagEnum : std::uint8_t {
     eFlagDrawn = 1,
     eFlagCounted = 2,
     eFlagCulled = 4,
     eFlagFractioned = 8,
-    eFlagDemoted = 16
+    eFlagDemoted = 16,
+    // Drawn but out of view, with Count Whole Scene off: it gets what the counted units leave.
+    eFlagOutside = 32
 };
 
 struct Sphere {
@@ -76,8 +80,10 @@ struct Frustum {
             columns[c] = GfVec4d(viewProjection[0][c], viewProjection[1][c], viewProjection[2][c], viewProjection[3][c]);
         }
         for (int axis = 0; axis < 3; ++axis) {
-            planes[2 * axis] = columns[3] + columns[axis];
-            planes[2 * axis + 1] = columns[3] - columns[axis];
+            // Only the sides widen: the near and far planes stay where the view has them.
+            const double widen = (axis < 2) ? (1. + kFrustumMargin) : 1.;
+            planes[2 * axis] = columns[3] * widen + columns[axis];
+            planes[2 * axis + 1] = columns[3] * widen - columns[axis];
         }
         for (GfVec4d& plane : planes) {
             const double length = GfVec3d(plane[0], plane[1], plane[2]).GetLength();
@@ -209,31 +215,33 @@ withFlag(std::uint8_t flags,
     return on ? std::uint8_t(flags | flag) : std::uint8_t(flags & ~std::uint8_t(flag));
 }
 
-// The distance and faces of every counted gprim and instance.
+// The distance and faces of every gprim and instance with the flag.
 template <typename Visit>
 void
-forCounted(const Work& work,
+forFlagged(const Work& work,
+           FlagEnum flag,
            Visit&& visit)
 {
     for (const Entry& entry : work.gprims) {
-        if (entry.flags & eFlagCounted) {
+        if (entry.flags & flag) {
             visit(entry.distance, entry.faces);
         }
     }
     for (const std::pair<std::size_t, InstancerWork>& instancer : work.instancers) {
         const InstancerWork& at = instancer.second;
         for (std::size_t index = 0; index < at.flags.size(); ++index) {
-            if (at.flags[index] & eFlagCounted) {
+            if (at.flags[index] & flag) {
                 visit(at.distance[index], at.instances->prototypes[at.instances->protoIndices[index]].faces);
             }
         }
     }
 }
 
-// The distance from which units must go, farthest first, for the faces of the nearer ones to fit
-// limit; infinite when all fit.
+// The distance from which the units with the flag must go, farthest first, for the faces of the
+// nearer ones to fit limit; infinite when all fit.
 double
 demoteDistance(const Work& work,
+               FlagEnum flag,
                U64 counted,
                U64 limit,
                double farthest)
@@ -247,7 +255,7 @@ demoteDistance(const Work& work,
     const auto bucketOf = [&](float distance) {
         return (std::min)(std::size_t(double(distance) * scale), kBuckets - 1);
     };
-    forCounted(work, [&](float distance, U64 faces) { buckets[bucketOf(distance)] += faces; });
+    forFlagged(work, flag, [&](float distance, U64 faces) { buckets[bucketOf(distance)] += faces; });
     U64 nearer = 0;
     std::size_t crossing = 0;
     for (; crossing < kBuckets; ++crossing) {
@@ -257,7 +265,7 @@ demoteDistance(const Work& work,
         nearer += buckets[crossing];
     }
     std::vector<std::pair<float, U64>> inside;
-    forCounted(work, [&](float distance, U64 faces) {
+    forFlagged(work, flag, [&](float distance, U64 faces) {
         if (bucketOf(distance) == crossing) {
             inside.emplace_back(distance, faces);
         }
@@ -273,11 +281,12 @@ demoteDistance(const Work& work,
     return std::numeric_limits<double>::infinity();
 }
 
-// Marks the counted gprims and instances the distance demotes, a previous decision holding within
-// the band of it when banded, and returns the faces left.
+// Marks the gprims and instances with the flag that the distance demotes, a previous decision
+// holding within the band of it when banded, and returns the faces left.
 template <typename Previous>
 U64
 demote(Work& work,
+       FlagEnum flag,
        double distance,
        bool banded,
        Previous&& previous)
@@ -294,7 +303,7 @@ demote(Work& work,
 
     for (std::size_t unit = 0; unit < work.gprims.size(); ++unit) {
         Entry& entry = work.gprims[unit];
-        if (!(entry.flags & eFlagCounted)) {
+        if (!(entry.flags & flag)) {
             continue;
         }
         const bool demoted = decide(entry.distance, unit, std::size_t(-1));
@@ -304,7 +313,7 @@ demote(Work& work,
     for (std::pair<std::size_t, InstancerWork>& instancer : work.instancers) {
         InstancerWork& at = instancer.second;
         for (std::size_t index = 0; index < at.flags.size(); ++index) {
-            if (!(at.flags[index] & eFlagCounted)) {
+            if (!(at.flags[index] & flag)) {
                 continue;
             }
             const bool demoted = decide(at.distance[index], instancer.first, index);
@@ -505,9 +514,14 @@ SceneViewBudget::solve(const std::vector<Unit>& units,
     // The faces the previous demotion distance would leave drawn.
     U64 underPrevious = 0;
     double aloneDistance = std::numeric_limits<double>::infinity();
-    // Whether the unit counts; it then joins the count.
+    U64 outside = 0;
+    double outsideFarthest = 0.;
+    // Whether the unit counts; it then joins the count, and otherwise those out of view.
     const auto count = [&](double distance, U64 faces, bool inFrustum) {
         if (!inFrustum && !settings.countWholeScene) {
+            outside += faces;
+            outsideFarthest = (std::max)(outsideFarthest, distance);
+
             return false;
         }
         counted += faces;
@@ -548,6 +562,8 @@ SceneViewBudget::solve(const std::vector<Unit>& units,
                     result.aloneOverLimit = unit.path;
                     result.aloneOverLimitIsInstance = false;
                 }
+            } else {
+                entry.flags = withFlag(entry.flags, eFlagOutside, true);
             }
             continue;
         }
@@ -595,6 +611,8 @@ SceneViewBudget::solve(const std::vector<Unit>& units,
                     result.aloneOverLimitInstance = index;
                     result.aloneOverLimitIsInstance = true;
                 }
+            } else {
+                at.flags[index] = withFlag(at.flags[index], eFlagOutside, true);
             }
         }
         result.culledCount += record.culledCount;
@@ -606,7 +624,7 @@ SceneViewBudget::solve(const std::vector<Unit>& units,
 
     // The previous demotion distance holds while what it leaves is within the band of the limit.
     const double band = kBand * double(settings.limit);
-    double distance = demoteDistance(work, counted, settings.limit, farthest);
+    double distance = demoteDistance(work, eFlagCounted, counted, settings.limit, farthest);
     // A unit over the limit alone always goes, however near the boundary, and nothing does when
     // everything fits.
     bool banded = hadPrevious && result.aloneOverLimit.IsEmpty() && (counted > settings.limit);
@@ -623,11 +641,18 @@ SceneViewBudget::solve(const std::vector<Unit>& units,
 
         return previous.isInstanceDemoted(units[unit].path, index);
     };
-    U64 drawn = demote(work, distance, banded, wasDemoted);
+    U64 drawn = demote(work, eFlagCounted, distance, banded, wasDemoted);
     if (double(drawn) > double(settings.limit) + band) {
-        distance = demoteDistance(work, counted, settings.limit, farthest);
+        distance = demoteDistance(work, eFlagCounted, counted, settings.limit, farthest);
         banded = false;
-        drawn = demote(work, distance, banded, wasDemoted);
+        drawn = demote(work, eFlagCounted, distance, banded, wasDemoted);
+    }
+    // What is out of view draws as budget boxes, so a pan onto it never shows more than the limit
+    // before the next budget, except the nearest of it that fits in the faces the view leaves.
+    if (outside != 0) {
+        const U64 left = (drawn < settings.limit) ? (settings.limit - drawn) : 0;
+        const double outsideDistance = demoteDistance(work, eFlagOutside, outside, left, outsideFarthest);
+        drawn += demote(work, eFlagOutside, outsideDistance, false, wasDemoted);
     }
     result.drawn = drawn;
     result.demoteDistance = distance;

@@ -373,6 +373,7 @@ public:
         long long lastInputAddedEpochMs = 0;
         unsigned long long stageEdits = 0;
         unsigned long long stageLoadEdits = 0;
+        unsigned long long absorbedLoadEdits = 0;
         unsigned long long stageNotices = 0;
         unsigned long long resyncedPaths = 0;
         unsigned long long infoOnlyPaths = 0;
@@ -1125,6 +1126,8 @@ public:
         unsigned long long budgetBoxCount = 0;
         unsigned long long budgetBoxInstances = 0;
         unsigned long long budgetBoxMarkers = 0;
+        // What the last frame drew for prims a load brought in while they are held.
+        unsigned long long heldBoxCount = 0;
         // The budgets applied, the frames that drew budget boxes, and those that drew none right
         // after one that drew some.
         unsigned long long applies = 0;
@@ -1952,6 +1955,7 @@ private:
 
     // Draws the composing status over what the framebuffer has, or the background if it has no scene.
     void paintComposingStatus();
+    void noteBlankPaint();
 
     void paintStaleCue(QPainter& painter);
 

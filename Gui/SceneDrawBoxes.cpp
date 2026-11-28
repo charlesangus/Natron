@@ -327,7 +327,7 @@ unitStep(const SceneDrawFilter::Rules& rules,
         }
     } else {
         const SceneDrawFilter::Rules::const_iterator parent = rules.find(path.GetParentPath());
-        if ((parent != rules.end()) && (parent->second == SceneDrawFilter::eRuleExpand)) {
+        if ((parent != rules.end()) && (parent->second == SceneDrawFilter::eRulePassThrough)) {
             return eUnitStepPrune;
         }
     }
@@ -1031,6 +1031,32 @@ pushBoxRows(std::vector<float>* rows,
 {
     rows->insert(rows->end(), { size[0], 0.f, 0.f, 0.f, size[1], 0.f, 0.f, 0.f, size[2], min[0], min[1], min[2] });
 }
+
+// The rows of the boxes, then of the markers, each a range when there are any.
+void
+pushGprimRanges(const std::vector<SceneDrawBoxes::Box>& boxes,
+                std::vector<float>* rows,
+                std::vector<SceneDrawBoxes::BudgetBoxRange>* ranges)
+{
+    for (int pass = 0; pass < 2; ++pass) {
+        SceneDrawBoxes::BudgetBoxRange range;
+        range.kind = SceneDrawBoxes::eBudgetBoxRangeGprims;
+        range.bounded = (pass == 0);
+        range.min = GfVec3f(0.f);
+        range.max = range.bounded ? GfVec3f(1.f) : GfVec3f(0.f);
+        range.first = rows->size() / kBudgetBoxRowFloats;
+        for (const SceneDrawBoxes::Box& box : boxes) {
+            if ((box.kind != SceneDrawBoxes::eKindMarker) != range.bounded) {
+                continue;
+            }
+            pushBoxRows(rows, box.min, range.bounded ? GfVec3f(box.max - box.min) : GfVec3f(0.f));
+        }
+        range.count = rows->size() / kBudgetBoxRowFloats - range.first;
+        if (range.count > 0) {
+            ranges->push_back(range);
+        }
+    }
+}
 } // anon namespace
 
 // About five pixels of a 1080-pixel-tall view.
@@ -1185,30 +1211,22 @@ SceneDrawBoxes::buildBudgetBoxes(const SceneViewBudget::Result& result,
         total += group.indices.size();
     }
     rows.reserve(total * kBudgetBoxRowFloats);
-    for (int pass = 0; pass < 4; ++pass) {
+    pushGprimRanges(budgetBoxSet->boxes, &rows, &ranges);
+    for (int pass = 0; pass < 2; ++pass) {
         BudgetBoxRange range;
-        range.kind = (pass < 2) ? eBudgetBoxRangeGprims : eBudgetBoxRangeClusters;
-        range.bounded = ((pass % 2) == 0);
+        range.kind = eBudgetBoxRangeClusters;
+        range.bounded = (pass == 0);
         range.min = GfVec3f(0.f);
         range.max = range.bounded ? GfVec3f(1.f) : GfVec3f(0.f);
         range.first = rows.size() / kBudgetBoxRowFloats;
-        if (pass < 2) {
-            for (const Box& box : budgetBoxSet->boxes) {
-                if ((box.kind != eKindMarker) != range.bounded) {
-                    continue;
-                }
-                pushBoxRows(&rows, box.min, range.bounded ? GfVec3f(box.max - box.min) : GfVec3f(0.f));
+        for (std::size_t at = 0; at < budgetBoxSet->clusters.size(); ++at) {
+            const GfVec3f low(clusterMin[at]);
+            const GfVec3f size(clusterMax[at] - clusterMin[at]);
+            if ((size != GfVec3f(0.f)) != range.bounded) {
+                continue;
             }
-        } else {
-            for (std::size_t at = 0; at < budgetBoxSet->clusters.size(); ++at) {
-                const GfVec3f low(clusterMin[at]);
-                const GfVec3f size(clusterMax[at] - clusterMin[at]);
-                if ((size != GfVec3f(0.f)) != range.bounded) {
-                    continue;
-                }
-                budgetBoxSet->clusters[at].row = rows.size() / kBudgetBoxRowFloats;
-                pushBoxRows(&rows, low, size);
-            }
+            budgetBoxSet->clusters[at].row = rows.size() / kBudgetBoxRowFloats;
+            pushBoxRows(&rows, low, size);
         }
         range.count = rows.size() / kBudgetBoxRowFloats - range.first;
         if (range.count > 0) {
@@ -1226,6 +1244,81 @@ SceneDrawBoxes::buildBudgetBoxes(const SceneViewBudget::Result& result,
 
     return true;
 } // SceneDrawBoxes::buildBudgetBoxes
+
+SceneDrawBoxes::BudgetBoxSet
+SceneDrawBoxes::gprimBudgetBoxes(std::vector<Box>&& boxes)
+{
+    BudgetBoxSet budgetBoxSet;
+
+    budgetBoxSet.boxes = std::move(boxes);
+    budgetBoxSet.rows.reserve(budgetBoxSet.boxes.size() * kBudgetBoxRowFloats);
+    pushGprimRanges(budgetBoxSet.boxes, &budgetBoxSet.rows, &budgetBoxSet.ranges);
+
+    return budgetBoxSet;
+}
+
+std::vector<SceneDrawBoxes::Box>
+SceneDrawBoxes::loadedBoxes(const UsdPrim& root,
+                            const SceneDrawFilter::Rules& rules,
+                            double time,
+                            const std::function<bool()>& cancelled)
+{
+    std::vector<Box> boxes;
+
+    if (!root || !root.IsLoaded()) {
+        return boxes;
+    }
+    // The units pass reaches root only through the prims it walks into.
+    const Usd_PrimFlagsPredicate predicate = rowPredicate();
+    for (UsdPrim at = root; at && !at.IsPseudoRoot(); at = at.GetParent()) {
+        if (!predicate(at) || ((at != root) && (unitStep(rules, at, time) != eUnitStepWalk))) {
+            return boxes;
+        }
+    }
+    const UsdTimeCode at(time);
+    UsdGeomBBoxCache bounds(at, { UsdGeomTokens->default_, UsdGeomTokens->proxy }, true);
+    UsdGeomXformCache xforms(at);
+    UsdPrimRange range(root, predicate);
+    for (UsdPrimRange::iterator next = range.begin(); next != range.end(); ++next) {
+        if (cancelled && cancelled()) {
+            boxes.clear();
+
+            return boxes;
+        }
+        const UsdPrim prim = *next;
+        const UnitStepEnum step = unitStep(rules, prim, time);
+        if ((step == eUnitStepPrune) || (step == eUnitStepUnitPrune)) {
+            next.PruneChildren();
+        }
+        if ((step != eUnitStepUnit) && (step != eUnitStepUnitPrune)) {
+            continue;
+        }
+        Box box;
+        box.path = prim.GetPath();
+        GfRange3d world;
+        if (prim.IsA<UsdGeomPointInstancer>()) {
+            // Its world bound visits every instance, too long a read under the lock; an authored
+            // extent bounds them all.
+            VtVec3fArray extent;
+            if (UsdGeomBoundable(prim).GetExtentAttr().Get(&extent, at) && (extent.size() == 2)) {
+                world = GfBBox3d(GfRange3d(GfVec3d(extent[0]), GfVec3d(extent[1])), xforms.GetLocalToWorldTransform(prim)).ComputeAlignedRange();
+            }
+        } else {
+            world = bounds.ComputeWorldBound(prim).ComputeAlignedRange();
+        }
+        if (world.IsEmpty()) {
+            box.min = box.max = GfVec3f(xforms.GetLocalToWorldTransform(prim).ExtractTranslation());
+            box.kind = eKindMarker;
+        } else {
+            box.min = GfVec3f(world.GetMin());
+            box.max = GfVec3f(world.GetMax());
+            box.kind = prim.IsLoaded() ? eKindBox : eKindUnloaded;
+        }
+        boxes.push_back(box);
+    }
+
+    return boxes;
+} // SceneDrawBoxes::loadedBoxes
 
 bool
 SceneDrawBoxes::pickBudgetBox(const BudgetBoxSet& budgetBoxSet,

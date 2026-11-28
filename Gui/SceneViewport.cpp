@@ -1238,6 +1238,27 @@ struct SceneViewportRenderer::Implementation {
     SceneDrawBoxes::BudgetPtr uploadingBudgetBoxes;
     std::size_t uploadingBytes = 0;
     std::atomic<bool> budgetBoxesUploading { false };
+    // What loads brought in while the budget holds it back, boxed on the load thread by the path
+    // each loaded, an empty list for one unloaded since. Under arrivalsMutex.
+    std::mutex arrivalsMutex;
+    std::vector<std::pair<SdfPath, std::vector<SceneDrawBoxes::Box>>> arrivals;
+    struct HeldArrival {
+        // A boxes request made after the stage it came in with, once stamped.
+        U64 epoch = 0;
+        bool stamped = false;
+        std::vector<SceneDrawBoxes::Box> boxes;
+    };
+    // By the path each loaded. On the thread holding the engine.
+    std::map<SdfPath, HeldArrival> heldArrivals;
+    // Drawn as the budget's boxes are, until a budget solved with them in is applied. Under
+    // budgetMutex.
+    std::shared_ptr<const SceneDrawBoxes::BudgetBoxSet> heldBoxSet;
+    // As budgetBoxRows and the rest, for heldBoxSet.
+    GLuint heldBoxRows[2] = { 0, 0 };
+    int drawnHeldRows = 0;
+    std::shared_ptr<const SceneDrawBoxes::BudgetBoxSet> uploadedHeldBoxes;
+    std::shared_ptr<const SceneDrawBoxes::BudgetBoxSet> uploadingHeldBoxes;
+    std::size_t uploadingHeldBytes = 0;
     // Whether feedBoxes() feeds the stand-in's worker. Main thread.
     bool standInEnabled = false;
     // Which rows the stand-in's worker lists, read there.
@@ -3971,7 +3992,7 @@ struct SceneViewportRenderer::Implementation {
     {
         const SceneDrawBoxes::ListPtr list = boxes ? boxes->getList() : SceneDrawBoxes::ListPtr();
 
-        return (list && !list->boxes.empty()) || hasBudgetBoxes();
+        return (list && !list->boxes.empty()) || hasBudgetBoxes() || hasHeldBoxes();
     }
 
     bool hasBudgetBoxes() const
@@ -4063,6 +4084,7 @@ struct SceneViewportRenderer::Implementation {
             filter->setBudgetHolding(false);
             filter->releaseBudgetHolds((std::numeric_limits<unsigned long long>::max)());
             budgetCoveredLoadEdits = stageLoadEditCount.load();
+            serviceHeldArrivals(false, 0);
 
             return filter->getBudgetHeldCount() != heldBefore;
         }
@@ -4074,10 +4096,87 @@ struct SceneViewportRenderer::Implementation {
         if (filter->getBudgetHeldCount() == 0) {
             budgetCoveredLoadEdits = absorbedLoadEditCount.load();
         }
+        // With nothing held and every load in Hydra, what came in is drawn or demoted already.
+        serviceHeldArrivals((filter->getBudgetHeldCount() != 0) || (stageLoadEditCount != absorbedLoadEditCount), appliedBudget->units->contentGeneration);
         // An edit's prims come at once, as before; a load's alone wait.
         filter->setBudgetHolding((stageLoadEditCount != absorbedLoadEditCount) && (stageEditCount == absorbedEditCount));
 
         return filter->getBudgetHeldCount() != heldBefore;
+    }
+
+    /**
+     * After the boxes are fed, on the thread holding the engine. Takes in what the load thread boxed,
+     * and drops what the budget solved against applied's content generation, or a later one, takes
+     * in, as the filter releases its holds; without held, everything.
+     */
+    void serviceHeldArrivals(bool held,
+                             U64 applied)
+    {
+        std::vector<std::pair<SdfPath, std::vector<SceneDrawBoxes::Box>>> taken;
+        {
+            std::lock_guard<std::mutex> lock(arrivalsMutex);
+            taken.swap(arrivals);
+        }
+        bool changed = false;
+        if (!held) {
+            changed = !heldArrivals.empty();
+            heldArrivals.clear();
+        } else {
+            for (std::pair<SdfPath, std::vector<SceneDrawBoxes::Box>>& arrival : taken) {
+                for (std::map<SdfPath, HeldArrival>::iterator it = heldArrivals.lower_bound(arrival.first); (it != heldArrivals.end()) && it->first.HasPrefix(arrival.first);) {
+                    it = heldArrivals.erase(it);
+                    changed = true;
+                }
+                if (!arrival.second.empty()) {
+                    HeldArrival& entry = heldArrivals[arrival.first];
+                    entry.boxes = std::move(arrival.second);
+                    changed = true;
+                }
+            }
+            const U64 epoch = boxes->getContentGeneration();
+            for (std::map<SdfPath, HeldArrival>::iterator it = heldArrivals.begin(); it != heldArrivals.end();) {
+                if (!it->second.stamped) {
+                    it->second.epoch = epoch;
+                    it->second.stamped = true;
+                }
+                if (it->second.epoch <= applied) {
+                    it = heldArrivals.erase(it);
+                    changed = true;
+                } else {
+                    ++it;
+                }
+            }
+        }
+        if (!changed) {
+            return;
+        }
+        std::shared_ptr<const SceneDrawBoxes::BudgetBoxSet> set;
+        if (!heldArrivals.empty()) {
+            std::vector<SceneDrawBoxes::Box> all;
+            for (const std::pair<const SdfPath, HeldArrival>& entry : heldArrivals) {
+                all.insert(all.end(), entry.second.boxes.begin(), entry.second.boxes.end());
+            }
+            set = std::make_shared<const SceneDrawBoxes::BudgetBoxSet>(SceneDrawBoxes::gprimBudgetBoxes(std::move(all)));
+        }
+        std::lock_guard<std::mutex> lock(budgetMutex);
+        heldBoxSet = set;
+    }
+
+    std::shared_ptr<const SceneDrawBoxes::BudgetBoxSet> currentHeldBoxes() const
+    {
+        std::lock_guard<std::mutex> lock(budgetMutex);
+
+        return heldBoxSet;
+    }
+
+    bool hasHeldBoxes() const
+    {
+        if (budgetBoxes == SceneViewportRenderer::eBudgetBoxesOff) {
+            return false;
+        }
+        const std::shared_ptr<const SceneDrawBoxes::BudgetBoxSet> set = currentHeldBoxes();
+
+        return set && !set->empty();
     }
 
     // Needs stageMutex, on the thread holding the engine. Storm's filter alone takes the budget.
@@ -4420,6 +4519,7 @@ struct SceneViewportRenderer::Implementation {
         glGenVertexArrays(3, budgetBoxVaos);
         glGenBuffers(3, budgetBoxShapes);
         glGenBuffers(2, budgetBoxRows);
+        glGenBuffers(2, heldBoxRows);
         for (int shape = 0; shape < 3; ++shape) {
             glBindVertexArray(budgetBoxVaos[shape]);
             glBindBuffer(GL_ARRAY_BUFFER, budgetBoxShapes[shape]);
@@ -4436,37 +4536,64 @@ struct SceneViewportRenderer::Implementation {
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         uploadedBudgetBoxes.reset();
         uploadingBudgetBoxes.reset();
+        uploadedHeldBoxes.reset();
+        uploadingHeldBoxes.reset();
         budgetBoxesUploading = false;
 
         return true;
     } // ensureBudgetBoxesProgram
 
     // Main thread. The worker built the rows ready to upload; a frame copies at most
-    // kBudgetBoxUploadBytes of them into the buffer not drawn from, and the frames meanwhile draw
-    // the last budget whose rows are all in. True once budget's are.
-    bool uploadBudgetBoxes(const SceneDrawBoxes::BudgetPtr& budget)
+    // kBudgetBoxUploadBytes of them into the one of buffers not drawn from, and the frames
+    // meanwhile draw the last rows all in. True once rows are, drawn then flipping to them.
+    bool uploadBoxRows(const std::vector<float>& rows,
+                       bool restart,
+                       const GLuint buffers[2],
+                       int* drawn,
+                       std::size_t* uploaded)
     {
-        const std::vector<float>& rows = budget->budgetBoxSet.rows;
         const std::size_t bytes = rows.size() * sizeof(GLfloat);
-        const GLuint into = budgetBoxRows[1 - drawnRows];
-        glBindBuffer(GL_ARRAY_BUFFER, into);
-        if (uploadingBudgetBoxes != budget) {
-            uploadingBudgetBoxes = budget;
-            uploadingBytes = 0;
+        glBindBuffer(GL_ARRAY_BUFFER, buffers[1 - *drawn]);
+        if (restart) {
+            *uploaded = 0;
             glBufferData(GL_ARRAY_BUFFER, GLsizeiptr(bytes), nullptr, GL_STATIC_DRAW);
         }
-        const std::size_t slice = (std::min)(bytes - uploadingBytes, kBudgetBoxUploadBytes);
+        const std::size_t slice = (std::min)(bytes - *uploaded, kBudgetBoxUploadBytes);
         if (slice > 0) {
-            glBufferSubData(GL_ARRAY_BUFFER, GLintptr(uploadingBytes), GLsizeiptr(slice), reinterpret_cast<const char*>(rows.data()) + uploadingBytes);
-            uploadingBytes += slice;
+            glBufferSubData(GL_ARRAY_BUFFER, GLintptr(*uploaded), GLsizeiptr(slice), reinterpret_cast<const char*>(rows.data()) + *uploaded);
+            *uploaded += slice;
         }
         glBindBuffer(GL_ARRAY_BUFFER, 0);
-        if (uploadingBytes < bytes) {
+        if (*uploaded < bytes) {
             return false;
         }
-        drawnRows = 1 - drawnRows;
+        *drawn = 1 - *drawn;
+
+        return true;
+    }
+
+    bool uploadBudgetBoxes(const SceneDrawBoxes::BudgetPtr& budget)
+    {
+        const bool restart = (uploadingBudgetBoxes != budget);
+        uploadingBudgetBoxes = budget;
+        if (!uploadBoxRows(budget->budgetBoxSet.rows, restart, budgetBoxRows, &drawnRows, &uploadingBytes)) {
+            return false;
+        }
         uploadedBudgetBoxes = budget;
         uploadingBudgetBoxes.reset();
+
+        return true;
+    }
+
+    bool uploadHeldBoxes(const std::shared_ptr<const SceneDrawBoxes::BudgetBoxSet>& set)
+    {
+        const bool restart = (uploadingHeldBoxes != set);
+        uploadingHeldBoxes = set;
+        if (!uploadBoxRows(set->rows, restart, heldBoxRows, &drawnHeldRows, &uploadingHeldBytes)) {
+            return false;
+        }
+        uploadedHeldBoxes = set;
+        uploadingHeldBoxes.reset();
 
         return true;
     }
@@ -4563,11 +4690,26 @@ struct SceneViewportRenderer::Implementation {
         } else {
             uploadingBudgetBoxes.reset();
         }
-        budgetBoxesUploading = bool(uploadingBudgetBoxes);
-        if (budget && !budget->budgetBoxSet.empty()) {
-            drawnBudgetBoxes = budget;
-            if (recordDrawnBoxes) {
-                recordDrawnBudgetBoxes(frustum, width, height, mode == SceneViewportRenderer::eBudgetBoxesMarker);
+        // What a load brought in that the budget holds back, until a budget solved with it in is
+        // applied: Hydra draws none of it meanwhile.
+        const std::shared_ptr<const SceneDrawBoxes::BudgetBoxSet> latestHeld = hasHeldBoxes() ? currentHeldBoxes() : std::shared_ptr<const SceneDrawBoxes::BudgetBoxSet>();
+        std::shared_ptr<const SceneDrawBoxes::BudgetBoxSet> held;
+        if (latestHeld && ensureBudgetBoxesProgram()) {
+            // Rows not all in yet leave the last ones up: those boxes are of loads still held, or
+            // the budget has their prims and the next frame drops them.
+            held = ((uploadedHeldBoxes == latestHeld) || uploadHeldBoxes(latestHeld)) ? latestHeld : uploadedHeldBoxes;
+        } else {
+            uploadingHeldBoxes.reset();
+            uploadedHeldBoxes.reset();
+        }
+        budgetBoxesUploading = bool(uploadingBudgetBoxes) || bool(uploadingHeldBoxes);
+        unsigned long long heldShown = 0;
+        if ((budget && !budget->budgetBoxSet.empty()) || (held && !held->empty())) {
+            if (budget && !budget->budgetBoxSet.empty()) {
+                drawnBudgetBoxes = budget;
+                if (recordDrawnBoxes) {
+                    recordDrawnBudgetBoxes(frustum, width, height, mode == SceneViewportRenderer::eBudgetBoxesMarker);
+                }
             }
             const GfMatrix4f viewProjection(frustum.ComputeViewMatrix() * frustum.ComputeProjectionMatrix());
             glUseProgram(budgetBoxProgram);
@@ -4583,26 +4725,34 @@ struct SceneViewportRenderer::Implementation {
             glDisable(GL_BLEND);
             glDisable(GL_CULL_FACE);
             glLineWidth(1.f);
-            for (const SceneDrawBoxes::BudgetBoxRange& range : budget->budgetBoxSet.ranges) {
-                const bool marker = (mode == SceneViewportRenderer::eBudgetBoxesMarker) || !range.bounded;
-                const bool shaded = !marker && (mode == SceneViewportRenderer::eBudgetBoxesBoxShaded);
-                const int shape = marker ? 2 : (shaded ? 1 : 0);
-                glDepthMask(shaded ? GL_TRUE : GL_FALSE);
-                glUniform3f(boxMinAt, range.min[0], range.min[1], range.min[2]);
-                glUniform3f(boxMaxAt, range.max[0], range.max[1], range.max[2]);
-                glUniform1i(markersAt, marker ? 1 : 0);
-                glUniform1i(shadedAt, shaded ? 1 : 0);
-                glBindVertexArray(budgetBoxVaos[shape]);
-                glBindBuffer(GL_ARRAY_BUFFER, budgetBoxRows[drawnRows]);
-                for (GLuint attribute = 1; attribute <= 4; ++attribute) {
-                    const std::size_t offset = (std::size_t(range.first) * kBudgetBoxRowFloats + (attribute - 1) * 3) * sizeof(GLfloat);
-                    glVertexAttribPointer(attribute, 3, GL_FLOAT, GL_FALSE, kBudgetBoxRowFloats * sizeof(GLfloat), reinterpret_cast<const void*>(offset));
+            const auto drawRanges = [&](const SceneDrawBoxes::BudgetBoxSet& set, GLuint buffer, unsigned long long* gprimsShown) {
+                for (const SceneDrawBoxes::BudgetBoxRange& range : set.ranges) {
+                    const bool marker = (mode == SceneViewportRenderer::eBudgetBoxesMarker) || !range.bounded;
+                    const bool shaded = !marker && (mode == SceneViewportRenderer::eBudgetBoxesBoxShaded);
+                    const int shape = marker ? 2 : (shaded ? 1 : 0);
+                    glDepthMask(shaded ? GL_TRUE : GL_FALSE);
+                    glUniform3f(boxMinAt, range.min[0], range.min[1], range.min[2]);
+                    glUniform3f(boxMaxAt, range.max[0], range.max[1], range.max[2]);
+                    glUniform1i(markersAt, marker ? 1 : 0);
+                    glUniform1i(shadedAt, shaded ? 1 : 0);
+                    glBindVertexArray(budgetBoxVaos[shape]);
+                    glBindBuffer(GL_ARRAY_BUFFER, buffer);
+                    for (GLuint attribute = 1; attribute <= 4; ++attribute) {
+                        const std::size_t offset = (std::size_t(range.first) * kBudgetBoxRowFloats + (attribute - 1) * 3) * sizeof(GLfloat);
+                        glVertexAttribPointer(attribute, 3, GL_FLOAT, GL_FALSE, kBudgetBoxRowFloats * sizeof(GLfloat), reinterpret_cast<const void*>(offset));
+                    }
+                    glDrawArraysInstanced(shaded ? GL_TRIANGLES : GL_LINES, 0, marker ? 4 : (shaded ? 36 : 24), GLsizei(range.count));
+                    (range.kind == SceneDrawBoxes::eBudgetBoxRangeGprims ? *gprimsShown : instancesShown) += range.count;
+                    if (marker) {
+                        markersShown += range.count;
+                    }
                 }
-                glDrawArraysInstanced(shaded ? GL_TRIANGLES : GL_LINES, 0, marker ? 4 : (shaded ? 36 : 24), GLsizei(range.count));
-                (range.kind == SceneDrawBoxes::eBudgetBoxRangeGprims ? boxesShown : instancesShown) += range.count;
-                if (marker) {
-                    markersShown += range.count;
-                }
+            };
+            if (budget && !budget->budgetBoxSet.empty()) {
+                drawRanges(budget->budgetBoxSet, budgetBoxRows[drawnRows], &boxesShown);
+            }
+            if (held && !held->empty()) {
+                drawRanges(*held, heldBoxRows[drawnHeldRows], &heldShown);
             }
             glBindVertexArray(0);
             glBindBuffer(GL_ARRAY_BUFFER, 0);
@@ -4612,14 +4762,15 @@ struct SceneViewportRenderer::Implementation {
             glDisable(GL_DEPTH_TEST);
         }
         std::lock_guard<std::mutex> lock(budgetMutex);
-        const bool shown = (boxesShown + instancesShown) != 0;
+        const bool shown = (boxesShown + instancesShown + heldShown) != 0;
         if (shown) {
             ++budgetStats.budgetBoxFrames;
-        } else if ((budgetStats.budgetBoxCount + budgetStats.budgetBoxInstances) != 0) {
+        } else if ((budgetStats.budgetBoxCount + budgetStats.budgetBoxInstances + budgetStats.heldBoxCount) != 0) {
             ++budgetStats.budgetBoxDrops;
         }
         budgetStats.budgetBoxCount = boxesShown;
         budgetStats.budgetBoxInstances = instancesShown;
+        budgetStats.heldBoxCount = heldShown;
         budgetStats.budgetBoxMarkers = markersShown;
     } // drawBudgetBoxes
 
@@ -4699,8 +4850,10 @@ struct SceneViewportRenderer::Implementation {
             glDeleteVertexArrays(3, budgetBoxVaos);
             glDeleteBuffers(3, budgetBoxShapes);
             glDeleteBuffers(2, budgetBoxRows);
+            glDeleteBuffers(2, heldBoxRows);
             budgetBoxProgram = 0;
             budgetBoxRows[0] = budgetBoxRows[1] = 0;
+            heldBoxRows[0] = heldBoxRows[1] = 0;
             for (int shape = 0; shape < 3; ++shape) {
                 budgetBoxVaos[shape] = 0;
                 budgetBoxShapes[shape] = 0;
@@ -4708,6 +4861,8 @@ struct SceneViewportRenderer::Implementation {
         }
         uploadedBudgetBoxes.reset();
         uploadingBudgetBoxes.reset();
+        uploadedHeldBoxes.reset();
+        uploadingHeldBoxes.reset();
         budgetBoxesUploading = false;
         drawnBudgetBoxes.reset();
         if (boxProgram) {
@@ -5469,6 +5624,7 @@ SceneViewportRenderer::getDrawFilterStats() const
     stats.absorbed = _imp->drawAbsorbed;
     stats.stageEdits = _imp->stageEditCount;
     stats.stageLoadEdits = _imp->stageLoadEditCount;
+    stats.absorbedLoadEdits = _imp->absorbedLoadEditCount;
     stats.stageNotices = _imp->stageNotices.count;
     stats.resyncedPaths = _imp->stageNotices.resyncedPaths;
     stats.infoOnlyPaths = _imp->stageNotices.infoOnlyPaths;
@@ -5911,20 +6067,45 @@ SceneViewportRenderer::countCommittedStageLoads(const std::function<bool()>& can
             it = faces.erase(it);
         }
     }
+    if (!unloaded.empty()) {
+        std::lock_guard<std::mutex> lock(_imp->arrivalsMutex);
+        for (const SdfPath& path : unloaded) {
+            _imp->arrivals.emplace_back(path, std::vector<SceneDrawBoxes::Box>());
+        }
+    }
+    // What the budget holds back would otherwise show as nothing until a budget covers it.
+    const bool boxArrivals = _imp->budgetHolding && (_imp->budgetBoxes != eBudgetBoxesOff) && !loaded.empty();
+    SceneDrawFilter::Rules rules;
+    if (boxArrivals) {
+        std::lock_guard<std::mutex> lock(_imp->rulesMutex);
+        rules = _imp->drawRules;
+    }
+    const double time = _imp->timeCode();
     std::map<SdfPath, U64> prototypes;
     for (const SdfPath& path : loaded) {
         if (cancelled && cancelled()) {
             break;
         }
-        // One path at a time, so that a commit waiting for the lock waits for one walk at most.
-        SceneWriteBarrier::ReadScope read;
-        std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
-        const UsdStageRefPtr usdStage = stage->getStage();
-        const UsdPrim prim = usdStage ? usdStage->GetPrimAtPath(path) : UsdPrim();
-        if (prim && prim.IsLoaded()) {
-            faces[path] = sceneFacesUnder(prim, &prototypes, cancelled);
-        } else {
-            faces.erase(path);
+        std::vector<SceneDrawBoxes::Box> boxed;
+        {
+            // One path at a time, so that a commit waiting for the lock waits for one walk at most.
+            SceneWriteBarrier::ReadScope read;
+            std::shared_lock<std::shared_mutex> lock = _imp->lockShared();
+            const UsdStageRefPtr usdStage = stage->getStage();
+            const UsdPrim prim = usdStage ? usdStage->GetPrimAtPath(path) : UsdPrim();
+            if (prim && prim.IsLoaded()) {
+                faces[path] = sceneFacesUnder(prim, &prototypes, cancelled);
+                if (boxArrivals) {
+                    boxed = SceneDrawBoxes::loadedBoxes(prim, rules, time, cancelled);
+                }
+            } else {
+                faces.erase(path);
+            }
+        }
+        if (boxArrivals) {
+            // Path by path, so the first boxes show before the rest of the chunk is walked.
+            std::lock_guard<std::mutex> lock(_imp->arrivalsMutex);
+            _imp->arrivals.emplace_back(path, std::move(boxed));
         }
     }
     U64 total = 0;
@@ -10007,6 +10188,8 @@ struct SceneViewport::Implementation {
         unsigned long long absorbed = 0;
         QVariantList view;
         std::chrono::steady_clock::time_point startedAt;
+        // Took a payload load into Hydra: its sync time is the load's, not the view's.
+        bool tookInLoad = false;
         // Prepared to render no pass, only to grade the last render again and tint it.
         bool tintOnly = false;
     };
@@ -10054,6 +10237,8 @@ struct SceneViewport::Implementation {
     int standInRefillDelayMs = 250;
     // From its start to the GPU finishing it, the last full frame's cost, negative before any.
     double lastFullFrameMs = -1.;
+    // Frames left out of the cost because they took in a load.
+    unsigned long long loadFramesSkipped = 0;
     bool overBudget = false;
     // The view the last paint or frame start saw, and since when.
     QVariantList lastView;
@@ -11197,6 +11382,7 @@ SceneViewport::startBackgroundFrame()
     _imp->postToRenderThread([this, imp, loop, target, w, h, generation, frame]() {
         const double startMs = epochMs();
         const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+        const unsigned long long loadEditsBefore = imp->renderer.getDrawFilterStats().absorbedLoadEdits;
         bool converged = false;
         bool rendered = false;
         runLogged("rendering a frame", [imp, target, w, h, &converged, &rendered]() { rendered = imp->renderer.renderBackgroundFrame(imp->ensureRenderTarget(target, w, h), &converged); });
@@ -11215,7 +11401,9 @@ SceneViewport::startBackgroundFrame()
         finished.status = converged ? SceneViewportRenderer::eRenderStatusDone : SceneViewportRenderer::eRenderStatusRefining;
         // Read here: draw changes posted after the frame are taken in by the render thread before
         // the main thread hears of the frame.
-        finished.absorbed = imp->renderer.getDrawFilterStats().absorbed;
+        const SceneViewportRenderer::DrawFilterStats finishedStats = imp->renderer.getDrawFilterStats();
+        finished.absorbed = finishedStats.absorbed;
+        finished.tookInLoad = (finishedStats.absorbedLoadEdits != loadEditsBefore);
         const auto done = [this, rendered, converged, fence, generation, finished, startMs, costMs, passes, fillCompleteAtStart]() {
             if (rendered) {
                 publishStormFrame(this, startMs, costMs, passes, fillCompleteAtStart);
@@ -11597,9 +11785,19 @@ SceneViewport::isComposing() const
 }
 
 void
+SceneViewport::noteBlankPaint()
+{
+    // Counted for scripts: a paint that leaves a scene's view the background colour alone.
+    if (_imp->renderer.hasScene() && _imp->renderer.getRendererError().empty()) {
+        setProperty("natronSceneBlankPaints", QVariant::fromValue<qulonglong>(property("natronSceneBlankPaints").toULongLong() + 1));
+    }
+}
+
+void
 SceneViewport::paintComposingStatus()
 {
     if (!_imp->presentedScene) {
+        noteBlankPaint();
         float background[3];
         _imp->renderer.getBackgroundColor(background);
         glClearColor(background[0], background[1], background[2], 1.f);
@@ -14114,6 +14312,7 @@ SceneViewport::publishBudget()
     published[QString::fromUtf8("budgetBoxCount")] = QVariant::fromValue<qulonglong>(stats.budgetBoxCount);
     published[QString::fromUtf8("budgetBoxInstances")] = QVariant::fromValue<qulonglong>(stats.budgetBoxInstances);
     published[QString::fromUtf8("budgetBoxMarkers")] = QVariant::fromValue<qulonglong>(stats.budgetBoxMarkers);
+    published[QString::fromUtf8("heldBoxCount")] = QVariant::fromValue<qulonglong>(stats.heldBoxCount);
     published[QString::fromUtf8("cameraSerial")] = QVariant::fromValue<qulonglong>(cameraSerial);
     published[QString::fromUtf8("idlePending")] = _imp->cameraIdleTimer->isActive();
     published[QString::fromUtf8("hud")] = hud;
@@ -14746,7 +14945,11 @@ SceneViewport::paintGL()
     if (_imp->usesRenderThread && ((_imp->renderContextRebuilds > 0) || _imp->engineReleaseRunning)) {
         // A paint outside the hold, as a framebuffer grab: the render thread is making its context or
         // releasing GL objects the overlays and the refinement share, and the next paint after it
-        // shows the scene.
+        // shows the scene. The framebuffer keeps the frame it shows meanwhile.
+        if (_imp->presentedScene) {
+            return;
+        }
+        noteBlankPaint();
         float background[3];
         _imp->renderer.getBackgroundColor(background);
         glClearColor(background[0], background[1], background[2], 1.f);
@@ -14767,8 +14970,9 @@ SceneViewport::paintGL()
     std::optional<Implementation::PresentFrame> fresh;
     // Boxes over a cleared view stand for the scene, in place of any frame.
     bool standInShown = false;
-    // Nothing of a frame to show: no scene, a renderer that failed, or a stage held out of frames.
-    const bool blank = (w <= 0) || (h <= 0) || !imp->renderer.hasScene() || imp->renderer.isStageHeld() || !imp->renderer.getRendererError().empty();
+    // Nothing of a frame to show: no scene, a renderer that failed, or a stage held out of frames
+    // with no frame from before the hold to keep up.
+    const bool blank = (w <= 0) || (h <= 0) || !imp->renderer.hasScene() || (imp->renderer.isStageHeld() && !(stormOnRenderThread && imp->frontFrame)) || !imp->renderer.getRendererError().empty();
     if (!stormOnRenderThread) {
         imp->presentPacer.clear();
         imp->frontFrame.reset();
@@ -14779,15 +14983,21 @@ SceneViewport::paintGL()
         fresh = imp->presentPacer.takeReady();
         if (fresh) {
             imp->frontFrame = fresh;
-            imp->noteFullFrame(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - fresh->startedAt).count());
-            setProperty("natronSceneLastFullFrameMs", imp->lastFullFrameMs);
+            if (fresh->tookInLoad) {
+                // Its cost is the load's sync, which would clear the view to boxes at every load chunk.
+                ++imp->loadFramesSkipped;
+                setProperty("natronSceneLoadFramesSkipped", qulonglong(imp->loadFramesSkipped));
+            } else {
+                imp->noteFullFrame(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - fresh->startedAt).count());
+                setProperty("natronSceneLastFullFrameMs", imp->lastFullFrameMs);
+            }
         }
         const QVariantList view = imp->paintedView(w, h);
         imp->noteView(view);
         imp->updateStandInLatch(view);
         imp->renderer.setStandIn(imp->standInWanted(), imp->standInByModel);
         imp->renderer.setFill(imp->standInMode != Settings::eSceneStandInModeOff, imp->standInBudgetMs);
-        standInShown = !blank && ((imp->standInMode == Settings::eSceneStandInModeAlways) || imp->standInLatched);
+        standInShown = !blank && !imp->renderer.isStageHeld() && ((imp->standInMode == Settings::eSceneStandInModeAlways) || imp->standInLatched);
         // The paint never renders: a frame for this camera and size starts on the render thread
         // once the window has composed this paint, and the poll that finds it finished asks for
         // the paint that shows it. Until then the last frame stays up, whatever camera or size it
@@ -14854,6 +15064,9 @@ SceneViewport::paintGL()
             status = imp->frontFrame->status;
             newStormFrame = bool(fresh);
         } else {
+            if (!standInShown) {
+                noteBlankPaint();
+            }
             float background[3];
             imp->renderer.getBackgroundColor(background);
             glBindFramebuffer(GL_FRAMEBUFFER, fbo);
@@ -14891,7 +15104,7 @@ SceneViewport::paintGL()
 
         return;
     }
-    _imp->presentedScene = _imp->renderer.hasScene() && !_imp->renderer.isStageHeld();
+    _imp->presentedScene = _imp->renderer.hasScene() && (!_imp->renderer.isStageHeld() || (stormOnRenderThread && imp->frontFrame && !standInShown));
     // Only a paint showing a frame newer than the last one shows more of a reveal.
     if ((_imp->renderer.isDrawRevealing() || _imp->renderer.isDrawFilling()) && (!stormOnRenderThread || fresh)) {
         _imp->renderer.noteDrawRevealPresented();

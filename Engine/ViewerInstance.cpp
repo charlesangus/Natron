@@ -501,8 +501,9 @@ ViewerInstance::getPolygonBudgetHint(const std::string& name)
         hint = tr("The faces the loaded payloads reach at most while Load Budget is on: mesh faces, curve segments "
                   "and points of everything loaded, drawn or not.");
     } else if (name == kViewerParamCountWholeScene) {
-        hint = tr("Counts every prim against Polygon Limit; off counts only those in the camera's view, so turning "
-                  "the camera brings in what was out of view.");
+        hint = tr("Counts every prim against Polygon Limit, nearest first wherever the camera looks. Off spends "
+                  "the limit on the prims in the camera's view first; those out of view draw as budget boxes, "
+                  "unless faces are left over, until the camera rests on them.");
     } else if (name == kViewerParamCullDistance) {
         hint = tr("Prims and instances farther from the camera than this, in scene units, draw nothing, not even a "
                   "budget box. 0 culls nothing.");

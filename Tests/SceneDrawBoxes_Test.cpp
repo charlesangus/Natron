@@ -729,7 +729,7 @@ TEST(SceneDrawBoxes, OnlyWhatTheRulesDrawIsAUnit)
     EXPECT_EQ(unitOf(units, "/World/Lines"), nullptr);
     EXPECT_NE(unitOf(units, "/World/Bezier"), nullptr);
 
-    boxes->setRules(rules({ { "/World", SceneDrawFilter::eRuleExpand }, { "/World/Cube", SceneDrawFilter::eRuleShow } }));
+    boxes->setRules(rules({ { "/World", SceneDrawFilter::eRulePassThrough }, { "/World/Cube", SceneDrawFilter::eRuleShow } }));
     units = latestUnits(*boxes);
     ASSERT_NE(units, nullptr);
     ASSERT_EQ(units->units.size(), 1u);

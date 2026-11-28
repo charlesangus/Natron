@@ -343,3 +343,88 @@ TEST(SceneStageLoadToKind, LaterRequestAtARootReplacesTheEarlier)
 
     EXPECT_EQ(std::vector<std::string>({ "/World/Island" }), loaded(stage));
 }
+
+TEST(SceneStageLoadToKind, AChunkedWalkLoadsAChunkAtATimeAndItsFollowUpsWaitForTheAdmission)
+{
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(worldPayload()));
+    stage.setLoadChunk(1);
+    bool admit = false;
+    std::vector<bool> asked;
+    stage.setLoadAdmission([&admit, &asked](bool overridden) {
+        asked.push_back(overridden);
+
+        return admit;
+    });
+
+    stage.requestLoadToKind(kRoot, PXR_NS::KindTokens->component);
+    // The request's first walk is its own, serviced without asking.
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+    EXPECT_TRUE(asked.empty());
+    EXPECT_EQ(std::size_t(1), loaded(stage).size());
+
+    EXPECT_FALSE(stage.serviceLoads(kNoLock, kNoLock));
+    EXPECT_EQ(std::vector<bool>({ false }), asked);
+    EXPECT_TRUE(stage.hasHeldLoads());
+    EXPECT_FALSE(stage.hasPendingLoads());
+    EXPECT_FALSE(stage.hasOutstandingLoads());
+    EXPECT_EQ(std::size_t(1), loaded(stage).size());
+
+    admit = true;
+    stage.releaseHeldLoads();
+    EXPECT_FALSE(stage.hasHeldLoads());
+    EXPECT_TRUE(stage.hasPendingLoads());
+    // One payload a batch, then a walk that finds nothing more.
+    EXPECT_EQ(6, serviceAll(stage));
+    EXPECT_FALSE(stage.hasPendingLoads());
+    EXPECT_EQ(std::vector<std::string>({ "/World/Island", "/World/Island/Bush", "/World/Island/Grove/TreeA", "/World/Island/Grove/TreeB",
+                                         "/World/Island/Rock", "/World/Props/Crate" }),
+              loaded(stage));
+    EXPECT_EQ(std::size_t(0), std::size_t(std::count(asked.begin(), asked.end(), true)));
+}
+
+TEST(SceneStageLoadToKind, RequestingAHeldWalkAgainAdmitsItsFollowUpsAsOverridden)
+{
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(worldPayload()));
+    stage.setLoadChunk(1);
+    std::vector<bool> asked;
+    stage.setLoadAdmission([&asked](bool overridden) {
+        asked.push_back(overridden);
+
+        return overridden;
+    });
+
+    stage.requestLoadToKind(kRoot, PXR_NS::KindTokens->component);
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+    EXPECT_FALSE(stage.serviceLoads(kNoLock, kNoLock));
+    ASSERT_TRUE(stage.hasHeldLoads());
+
+    stage.requestLoadToKind(kRoot, PXR_NS::KindTokens->component);
+    EXPECT_FALSE(stage.hasHeldLoads());
+    EXPECT_LT(serviceAll(stage), 32);
+    EXPECT_FALSE(stage.hasHeldLoads());
+    EXPECT_EQ(std::size_t(6), loaded(stage).size());
+    ASSERT_FALSE(asked.size() < 2);
+    EXPECT_FALSE(asked[0]);
+    EXPECT_TRUE(asked[1]);
+}
+
+TEST(SceneStageLoadToKind, CancellingAHeldWalkDropsIt)
+{
+    SceneStage stage(PXR_NS::UsdStage::LoadNone);
+    ASSERT_TRUE(stage.sync(worldPayload()));
+    stage.setLoadChunk(1);
+    stage.setLoadAdmission([](bool /*overridden*/) { return false; });
+
+    stage.requestLoadToKind(kRoot, PXR_NS::KindTokens->component);
+    EXPECT_TRUE(stage.serviceLoads(kNoLock, kNoLock));
+    EXPECT_FALSE(stage.serviceLoads(kNoLock, kNoLock));
+    ASSERT_TRUE(stage.hasHeldLoads());
+
+    stage.cancelPendingLoads(kRoot);
+    EXPECT_FALSE(stage.hasHeldLoads());
+    stage.releaseHeldLoads();
+    EXPECT_FALSE(stage.hasPendingLoads());
+    EXPECT_EQ(std::size_t(1), loaded(stage).size());
+}

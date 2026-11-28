@@ -160,6 +160,9 @@ public:
      * payload's kinds are known only once it composes; the request ends after a walk that finds
      * nothing it has not already asked for, so a payload that fails to load is not asked for twice.
      * A later kind request at a root replaces an earlier one, and cancelPendingLoads() ends it.
+     * With a load chunk a walk asks for at most that many payloads, the rest waiting for the next
+     * walk, and every walk after the first that loaded something is a follow-up the admission may
+     * hold, as a chunked load's are.
      **/
     void requestLoadToKind(const PXR_NS::SdfPathVector& roots, const PXR_NS::TfToken& kind);
 
@@ -332,6 +335,10 @@ private:
         bool unload = false;
         // The payloads the request has asked for already.
         PXR_NS::SdfPathSet asked;
+        // Whether a walk of it has loaded something, which makes the next walk a follow-up.
+        bool followUp = false;
+        // Made again while held: its follow-ups ask to go past what held them.
+        bool overridden = false;
     };
 
     struct PreviewPrim {
@@ -367,6 +374,8 @@ private:
     PXR_NS::SdfPathSet _cancelledWhileServicing;
     bool _allCancelledWhileServicing = false;
     std::map<PXR_NS::SdfPath, KindRequest> _kindRequests;
+    // The load kind requests the admission refused a follow-up walk, by root.
+    std::map<PXR_NS::SdfPath, KindRequest> _heldKindRequests;
     std::map<PXR_NS::SdfPath, std::string> _loadFailures;
     bool _servicingLoads = false;
     // The loads put off for a stale layer, until SceneTeardown is idle.

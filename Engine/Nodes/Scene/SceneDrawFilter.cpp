@@ -308,7 +308,7 @@ ruleStrength(SceneDrawFilter::RuleEnum rule)
     switch (rule) {
     case SceneDrawFilter::eRuleShow:
         return 0;
-    case SceneDrawFilter::eRuleExpand:
+    case SceneDrawFilter::eRulePassThrough:
         return 1;
     case SceneDrawFilter::eRuleHide:
         return 2;
@@ -320,7 +320,7 @@ ruleStrength(SceneDrawFilter::RuleEnum rule)
 }
 
 const SceneDrawFilter::RuleEnum kRulesByStrength[] = {
-    SceneDrawFilter::eRuleShow, SceneDrawFilter::eRuleExpand, SceneDrawFilter::eRuleHide, SceneDrawFilter::eRuleHidden
+    SceneDrawFilter::eRuleShow, SceneDrawFilter::eRulePassThrough, SceneDrawFilter::eRuleHide, SceneDrawFilter::eRuleHidden
 };
 
 // Paths whose rule differs between a and b, either way.
@@ -816,7 +816,7 @@ SceneDrawFilter::instanceOffBy(const Rules& rules,
 {
     const SdfPath& location = record.locations[index];
     const RulePtr rule = governing(rules, location);
-    if (rule && (rule->second == eRuleExpand) && (rule->first == location) && hasOnePrototype(record)) {
+    if (rule && (rule->second == eRulePassThrough) && (rule->first == location) && hasOnePrototype(record)) {
         return false;
     }
 
@@ -856,7 +856,7 @@ SceneDrawFilter::effectiveRules(const Rules& stageRules) const
             // Any other row on the instance itself turns it off in the mask.
             if (path == location) {
                 const Rules::const_iterator own = effective.find(path);
-                if ((own == effective.end()) || (own->second != eRuleExpand)) {
+                if ((own == effective.end()) || (own->second != eRulePassThrough)) {
                     continue;
                 }
             }
@@ -882,7 +882,7 @@ SceneDrawFilter::effectiveRules(const Rules& stageRules) const
                         continue;
                     }
                     RuleEnum value = rule->second;
-                    if ((value == eRuleExpand) && (rule->first != at)) {
+                    if ((value == eRulePassThrough) && (rule->first != at)) {
                         value = eRuleHide;
                     }
                     strongest = (std::max)(strongest, ruleStrength(value));

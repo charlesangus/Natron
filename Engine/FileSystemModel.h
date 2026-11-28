@@ -239,9 +239,16 @@ public:
     static void initDriveLettersToNetworkShareNamesMapping();
 #endif
 
+    /**
+     * @brief Makes a model. Its last reference released off the model's thread hands the deletion to that
+     * thread, so the model is never destroyed on its gatherer, which the destructor joins.
+     **/
+    static FileSystemModelPtr create();
 
+private:
     FileSystemModel();
 
+public:
     void initialize(SortableViewI* view);
 
     ////////////////////////////////////// Overridden from QAbstractItemModel ///////////////////////////////

@@ -24,6 +24,7 @@
 #include <atomic>
 #include <chrono>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -35,6 +36,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QTemporaryDir>
+#include <QThread>
 
 #include <SequenceParsing.h>
 
@@ -66,7 +68,7 @@ class MockSortableView : public SortableViewI {
 
 TEST(FileSystemModelTest, DriveName) {
   MockSortableView sortableView;
-  auto model = std::make_shared<FileSystemModel>();
+  auto model = FileSystemModel::create();
   model->initialize(&sortableView);
 
   struct DriveNameTestCase {
@@ -122,7 +124,7 @@ TEST(FileSystemModelTest, DriveName) {
 
 TEST(FileSystemModelTest, GetSplitPath) {
   MockSortableView sortableView;
-  auto model = std::make_shared<FileSystemModel>();
+  auto model = FileSystemModel::create();
   model->initialize(&sortableView);
 
   struct SplitPathTestCase {
@@ -193,7 +195,7 @@ TEST(FileSystemModelTest, GetSplitPath) {
 
 TEST(FileSystemModelTest, CleanPath) {
   MockSortableView sortableView;
-  auto model = std::make_shared<FileSystemModel>();
+  auto model = FileSystemModel::create();
   model->initialize(&sortableView);
 
   struct CleanPathTestCase {
@@ -273,7 +275,7 @@ TEST(FileSystemModelTest, CleanPath) {
 TEST(FileSystemModelTest, RegexpFilters)
 {
     MockSortableView sortableView;
-    auto model = std::make_shared<FileSystemModel>();
+    auto model = FileSystemModel::create();
     model->initialize(&sortableView);
 
     const QString usda = QString::fromUtf8("scene.usda");
@@ -357,7 +359,7 @@ protected:
     {
         ASSERT_TRUE(_tmp.isValid());
         _dir = QDir::cleanPath(_tmp.path());
-        _model = std::make_shared<FileSystemModel>();
+        _model = FileSystemModel::create();
         _model->initialize(&_view);
         _model->setSequenceModeEnabled(true);
     }
@@ -486,94 +488,78 @@ waitProcessingEvents(const std::atomic<bool>& flag)
     return flag;
 }
 
-void
-pumpEvents(int milliseconds)
-{
-    QElapsedTimer timer;
-    timer.start();
-    while (timer.elapsed() < milliseconds) {
-        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
-    }
-}
-
-// Hands the model's last reference to its gatherer thread, which drops it once it has listed the directory.
-bool
-releaseModelOnItsGatherer(FileSystemModelPtr& model, const QString& dir)
-{
-    std::mutex handedMutex;
-    FileSystemModelPtr handed = model;
-    std::atomic<bool> mainDropped(false);
-    std::atomic<bool> released(false);
-    GatheredHook hook([&]() {
-        waitWithoutEvents(mainDropped);
-        FileSystemModelPtr last;
-        {
-            std::lock_guard<std::mutex> k(handedMutex);
-            last.swap(handed);
-        }
-        if (last) {
-            last.reset();
-            released = true;
-        }
-    });
-    if (!model->setRootPath(dir)) {
-        return false;
-    }
-    FileSystemModelWPtr weakModel = model;
-    model.reset();
-    mainDropped = true;
-    const bool ok = waitProcessingEvents(released);
-    return ok && weakModel.expired();
-}
-
 } // namespace
 
 TEST_F(SplitOnGapsTest, TheGathererHoldsNoReferenceToItsModel)
 {
     writeFrames(_dir, 10, 12);
-    FileSystemModelWPtr weakModel = _model;
-    std::atomic<long> countSeenByGatherer(-1);
-    std::atomic<bool> seen(false);
-    std::atomic<bool> resume(false);
-    std::atomic<bool> done(false);
-    GatheredHook hook([&]() {
-        if (seen) {
+    struct State {
+        FileSystemModelWPtr weakModel;
+        std::atomic<long> countSeenByGatherer { -1 };
+        std::atomic<bool> seen { false };
+        std::atomic<bool> resume { false };
+        std::atomic<bool> done { false };
+    };
+    // Shared with the hook, which may still run on the gatherer after a timed-out wait returns.
+    const std::shared_ptr<State> state = std::make_shared<State>();
+    state->weakModel = _model;
+    GatheredHook hook([state]() {
+        if (state->seen) {
             return;
         }
-        countSeenByGatherer = weakModel.use_count();
-        seen = true;
-        waitWithoutEvents(resume);
-        done = true;
+        state->countSeenByGatherer = state->weakModel.use_count();
+        state->seen = true;
+        waitWithoutEvents(state->resume);
+        state->done = true;
     });
     ASSERT_TRUE(_model->setRootPath(_dir));
 
     // The main thread stays out of the model so the count is the fixture's reference plus any the gatherer holds.
-    ASSERT_TRUE(waitWithoutEvents(seen));
-    EXPECT_EQ(1, countSeenByGatherer.load());
-    resume = true;
-    ASSERT_TRUE(waitWithoutEvents(done));
+    ASSERT_TRUE(waitWithoutEvents(state->seen));
+    EXPECT_EQ(1, state->countSeenByGatherer.load());
+    state->resume = true;
+    ASSERT_TRUE(waitWithoutEvents(state->done));
     EXPECT_EQ(1u, waitForItems(_model, _dir, 1).size());
 }
 
-TEST_F(SplitOnGapsTest, AModelReleasedOnItsGathererThreadTearsDown)
+TEST_F(SplitOnGapsTest, AModelReleasedOnItsGathererIsDestroyedOnItsOwnThread)
 {
     writeFrames(_dir, 10, 12);
-    ASSERT_TRUE(releaseModelOnItsGatherer(_model, _dir));
-    pumpEvents(200);
-}
-
-TEST_F(SplitOnGapsTest, AWatcherEventAfterTeardownDoesNotBlock)
-{
-    writeFrames(_dir, 10, 12);
-    ASSERT_TRUE(releaseModelOnItsGatherer(_model, _dir));
-
-    writeFrames(_dir, 20, 22);
-    QFile::remove(_dir + QString::fromUtf8("/plate.0010.exr"));
-    pumpEvents(200);
-
-    _model = std::make_shared<FileSystemModel>();
-    _model->initialize(&_view);
-    _model->setSequenceModeEnabled(true);
+    struct State {
+        std::mutex lock;
+        FileSystemModelPtr handed;
+        std::atomic<bool> mainDropped { false };
+        std::atomic<bool> released { false };
+        std::atomic<bool> expiredOnRelease { false };
+        std::atomic<bool> destroyed { false };
+        std::atomic<QThread*> destroyedOn { nullptr };
+    };
+    const std::shared_ptr<State> state = std::make_shared<State>();
+    state->handed = _model;
+    QObject::connect(_model.get(), &QObject::destroyed, [state]() {
+        state->destroyedOn = QThread::currentThread();
+        state->destroyed = true;
+    });
+    const FileSystemModelWPtr weakModel = _model;
+    GatheredHook hook([state, weakModel]() {
+        waitWithoutEvents(state->mainDropped);
+        FileSystemModelPtr last;
+        {
+            std::lock_guard<std::mutex> k(state->lock);
+            last.swap(state->handed);
+        }
+        if (last) {
+            last.reset();
+            state->expiredOnRelease = weakModel.expired();
+            state->released = true;
+        }
+    });
     ASSERT_TRUE(_model->setRootPath(_dir));
-    EXPECT_EQ(1u, waitForItems(_model, _dir, 1).size());
+    _model.reset();
+    state->mainDropped = true;
+
+    ASSERT_TRUE(waitWithoutEvents(state->released));
+    EXPECT_TRUE(state->expiredOnRelease.load());
+    ASSERT_TRUE(waitProcessingEvents(state->destroyed));
+    EXPECT_EQ(QThread::currentThread(), state->destroyedOn.load());
 }

@@ -637,6 +637,27 @@ FileSystemModel::FileSystemModel()
 {
 }
 
+FileSystemModelPtr
+FileSystemModel::create()
+{
+    return FileSystemModelPtr(new FileSystemModel(), [](FileSystemModel* model) {
+        QCoreApplication* app = QCoreApplication::instance();
+        if (!app || (QThread::currentThread() == model->thread())) {
+            delete model;
+
+            return;
+        }
+        // Until then shared_from_this() throws, so no watcher or gatherer signal may reach the model.
+        if (model->_imp->watcher) {
+            QObject::disconnect(model->_imp->watcher.get(), 0, model, 0);
+        }
+        if (model->_imp->gatherer) {
+            QObject::disconnect(model->_imp->gatherer.get(), 0, model, 0);
+        }
+        QMetaObject::invokeMethod(app, [model]() { delete model; }, Qt::QueuedConnection);
+    });
+}
+
 void
 FileSystemModel::initialize(SortableViewI* view)
 {
@@ -722,26 +743,9 @@ FileSystemModel::mapPathWithDriveLetterToPathWithNetworkShareName(const QString&
 
 FileSystemModel::~FileSystemModel()
 {
-    // A watcher event delivered during teardown would refetch through the gatherer being shut down.
-    if (_imp->watcher) {
-        QObject::disconnect(_imp->watcher.get(), 0, this, 0);
-    }
-    if (!_imp->gatherer) {
-        return;
-    }
-    if (QThread::currentThread() != _imp->gatherer.get()) {
+    assert(QThread::currentThread() != _imp->gatherer.get());
+    if (_imp->gatherer) {
         _imp->gatherer->quitGatherer();
-
-        return;
-    }
-
-    // The gatherer cannot join itself, so it is told to quit and is deleted on its owning thread once run()
-    // returns. The watcher lives on that thread too and must not be destroyed from here.
-    FileGathererThread* gatherer = _imp->gatherer.release();
-    gatherer->quitGatherer();
-    QObject::connect(gatherer, &QThread::finished, qApp, [gatherer]() { delete gatherer; }, Qt::QueuedConnection);
-    if (_imp->watcher) {
-        _imp->watcher.release()->deleteLater();
     }
 }
 
@@ -1637,8 +1641,8 @@ struct FileGathererThreadPrivate
     FileSystemModel* model;
     bool mustQuit;
     mutable QMutex mustQuitMutex;
+    // Under abortRequestsMutex, so an abort request on a gatherer that is not working is never left to wait.
     bool working;
-    mutable QMutex workingMutex;
     int abortRequests;
     mutable QMutex abortRequestsMutex;
     QWaitCondition abortRequestsCond;
@@ -1653,7 +1657,6 @@ struct FileGathererThreadPrivate
         , mustQuit(false)
         , mustQuitMutex()
         , working(false)
-        , workingMutex()
         , abortRequests(0)
         , abortRequestsMutex()
         , abortRequestsCond()
@@ -1685,7 +1688,7 @@ struct FileGathererThreadPrivate
 
         if (abortRequests > 0) {
             abortRequests = 0;
-            abortRequestsCond.wakeOne();
+            abortRequestsCond.wakeAll();
 
             return true;
         }
@@ -1716,7 +1719,7 @@ FileGathererThread::~FileGathererThread()
 bool
 FileGathererThread::isWorking() const
 {
-    QMutexLocker k(&_imp->workingMutex);
+    QMutexLocker k(&_imp->abortRequestsMutex);
 
     return _imp->working;
 }
@@ -1724,16 +1727,15 @@ FileGathererThread::isWorking() const
 void
 FileGathererThread::abortGathering()
 {
-    if ( !isRunning() || !isWorking() ) {
+    if (!isRunning()) {
         return;
     }
 
     QMutexLocker k(&_imp->abortRequestsMutex);
-    ++_imp->abortRequests;
-    // On the gatherer's own thread only the running kernel could acknowledge, so waiting would never end.
-    if (QThread::currentThread() == this) {
+    if (!_imp->working) {
         return;
     }
+    ++_imp->abortRequests;
     while (_imp->abortRequests > 0) {
         _imp->abortRequestsCond.wait(k.mutex());
     }
@@ -1755,9 +1757,7 @@ FileGathererThread::quitGatherer()
         ++_imp->startCount;
         _imp->startCountCond.wakeOne();
     }
-    if (QThread::currentThread() != this) {
-        wait();
-    }
+    wait();
 }
 
 struct WorkingSetter
@@ -1767,16 +1767,19 @@ struct WorkingSetter
     WorkingSetter(FileGathererThreadPrivate* imp)
         : _imp(imp)
     {
-        QMutexLocker k(&imp->workingMutex);
+        QMutexLocker k(&imp->abortRequestsMutex);
 
         imp->working = true;
     }
 
+    // A request that came in after the kernel's last check is acknowledged here.
     ~WorkingSetter()
     {
-        QMutexLocker k(&_imp->workingMutex);
+        QMutexLocker k(&_imp->abortRequestsMutex);
 
         _imp->working = false;
+        _imp->abortRequests = 0;
+        _imp->abortRequestsCond.wakeAll();
     }
 };
 

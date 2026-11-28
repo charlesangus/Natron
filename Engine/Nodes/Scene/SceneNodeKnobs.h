@@ -167,6 +167,8 @@ bool isSceneUnsearchedOption(const std::string& id);
  * then dropped. stop() drops the waiting job and lets the thread end once the running one
  * returns, without waiting for it: the owner cancels that one first, and its jobs reach the owner
  * through weak references only. joinAll() waits for every such thread at application shutdown.
+ * Each job belongs to an app and holds it while it runs, so it never sees that app destroyed: a
+ * job whose app is gone or retired (retireApp()) is dropped instead of run.
  **/
 class SceneWorker {
 public:
@@ -183,9 +185,10 @@ public:
     /**
      * @brief Queues run. dropped is called instead when run is replaced before it starts or the
      * worker stops first, so whoever waits on the job is released. After stop(), dropped is
-     * called at once.
+     * called at once, and so it is when app is null.
      **/
-    void post(const Task& run,
+    void post(const AppInstancePtr& app,
+              const Task& run,
               const Task& dropped);
 
     // Never blocks. Idempotent.
@@ -199,12 +202,14 @@ public:
     static bool joinAll(int timeoutMs);
 
     /**
-     * @brief Waits, with the Python GIL released, up to timeoutMs for every job posted to any
-     * worker before the call to have run or been dropped, without stopping the workers. Jobs
-     * posted meanwhile are not waited for. An app calls it before it is released, as its nodes'
-     * running jobs may still read it. False if one of those jobs still runs.
+     * @brief Drops app's waiting jobs and every job of app posted from now on, then waits, with the
+     * Python GIL released, up to timeoutMs for its running ones, without stopping the workers.
+     * Jobs of other apps are not waited for. An app calls it before it is released. When one of
+     * its jobs still runs past timeoutMs, app is kept for the rest of the process so that job
+     * still finds it, and this returns false.
      **/
-    static bool waitForPosted(int timeoutMs);
+    static bool retireApp(const AppInstancePtr& app,
+                          int timeoutMs);
 
     struct Implementation;
 

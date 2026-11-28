@@ -2607,9 +2607,10 @@ AppInstance::aboutToQuit()
     ///deleting nodes might reference the project.
     _imp->_currentProject->reset(true /*aboutToQuit*/, /*blocking*/true);
 
-    // A scene job that already started still holds its node and reads this app through it, so it
-    // finishes before the app is released. Bounded: a job stuck past it finds the app gone.
-    SceneWorker::waitForPosted(5000);
+    // A scene job that already started still holds its node and reads this app through it.
+    if (!SceneWorker::retireApp(shared_from_this(), 5000)) {
+        std::cerr << "A scene job of a closed project still runs after 5 s; the project stays in memory until Natron exits." << std::endl;
+    }
 
     // Queued renders never start now, no task can restart, and a running render process dies
     // with this app, possibly before loading its file.

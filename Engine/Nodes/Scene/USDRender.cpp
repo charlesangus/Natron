@@ -630,7 +630,7 @@ USDRender::getSettingsSummary(double time,
     // Never more than one posted job: one that replaced another would drop it, and the drop
     // would be taken for the node's end.
     const std::weak_ptr<const EffectInstance> weakThis = weak_from_this();
-    _settingsWorker.post([weakThis]() {
+    _settingsWorker.post(getApp(), [weakThis]() {
         std::shared_ptr<const EffectInstance> effect = weakThis.lock();
         if (const USDRender* render = dynamic_cast<const USDRender*>(effect.get())) {
             render->readGivenSettingsSummaries();
@@ -678,9 +678,8 @@ USDRender::readGivenSettingsSummaries() const
         bool hasNode = false;
         {
             const NodePtr node = getNode();
-            // A node whose app is gone has nothing left to summarize, and its hash reads that app.
-            hasNode = node && node->getApp();
-            hash = hasNode ? node->getHashValue() : 0;
+            hasNode = bool(node);
+            hash = node ? node->getHashValue() : 0;
         }
         bool found = false;
         std::pair<double, int> key;

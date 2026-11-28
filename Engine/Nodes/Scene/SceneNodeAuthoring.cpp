@@ -386,9 +386,9 @@ struct SceneWorker::Implementation {
     bool pending = false;
     Task pendingRun;
     Task pendingDropped;
-    // Jobs accepted by post(), and those of them that have run or been dropped, for waitForPosted().
-    std::uint64_t posted = 0;
-    std::uint64_t settled = 0;
+    AppInstanceWPtr pendingApp;
+    // Set while a job runs, for retireApp().
+    AppInstanceWPtr runningApp;
 
     void loop();
 };
@@ -412,11 +412,44 @@ sceneWorkerThreads()
     return *threads;
 }
 
-// Signalled whenever a worker settles a job. Never destroyed, like SceneWorkerThreads.
+// Signalled whenever a worker's running job ends. Never destroyed, like SceneWorkerThreads.
 struct SceneJobsSettled {
     std::mutex lock;
     std::condition_variable settled;
 };
+
+// Apart from SceneWorkerThreads: a worker reads it under its own lock, which retireApp() takes
+// under the threads' lock.
+struct RetiredApps {
+    std::mutex lock;
+    std::vector<AppInstanceWPtr> retired;
+    // Kept for the rest of the process: a job of theirs outlived retireApp().
+    std::vector<AppInstancePtr> abandoned;
+};
+
+RetiredApps&
+retiredApps()
+{
+    static RetiredApps* apps = new RetiredApps;
+
+    return *apps;
+}
+
+bool
+isSameApp(const AppInstanceWPtr& a,
+          const AppInstanceWPtr& b)
+{
+    return !a.owner_before(b) && !b.owner_before(a);
+}
+
+bool
+isRetired(const AppInstanceWPtr& app)
+{
+    RetiredApps& apps = retiredApps();
+    std::lock_guard<std::mutex> l(apps.lock);
+
+    return std::any_of(apps.retired.begin(), apps.retired.end(), [&app](const AppInstanceWPtr& retired) { return isSameApp(retired, app); });
+}
 
 SceneJobsSettled&
 sceneJobsSettled()
@@ -426,7 +459,7 @@ sceneJobsSettled()
     return *settled;
 }
 
-// Called with imp->lock not held: waitForPosted() takes it under the settled lock.
+// Called with imp->lock not held: retireApp() takes it under the settled lock.
 void
 notifySettled()
 {
@@ -486,12 +519,11 @@ stopWorker(SceneWorker::Implementation* imp)
         if (imp->pending) {
             dropped.swap(imp->pendingDropped);
             imp->pendingRun = SceneWorker::Task();
+            imp->pendingApp.reset();
             imp->pending = false;
-            ++imp->settled;
         }
     }
     imp->wake.notify_one();
-    notifySettled();
 
     return dropped;
 }
@@ -502,6 +534,8 @@ SceneWorker::Implementation::loop()
 {
     for (;;) {
         Task run;
+        Task refused;
+        AppInstancePtr app;
         {
             std::unique_lock<std::mutex> l(lock);
             wake.wait(l, [this]() { return stopping || pending; });
@@ -509,18 +543,35 @@ SceneWorker::Implementation::loop()
                 break;
             }
             run.swap(pendingRun);
-            pendingDropped = Task();
+            refused.swap(pendingDropped);
             pending = false;
+            // Decided under lock, so retireApp() either finds this job running or has retired its app first.
+            if (!isRetired(pendingApp)) {
+                app = pendingApp.lock();
+            }
+            if (app) {
+                runningApp = pendingApp;
+                refused = Task();
+            } else {
+                run = Task();
+            }
+            pendingApp.reset();
+        }
+        if (!app) {
+            callDropped(refused);
+            continue;
         }
         try {
             run();
         } catch (...) {
         }
-        // Released before the job counts as settled: a waiter takes a settled job to hold nothing it captured.
+        // Released before retireApp() sees the job end, while its caller still holds the app: this
+        // is never the app's last reference.
         run = Task();
+        app.reset();
         {
             std::lock_guard<std::mutex> l(lock);
-            ++settled;
+            runningApp.reset();
         }
         notifySettled();
     }
@@ -543,24 +594,24 @@ SceneWorker::~SceneWorker()
 }
 
 void
-SceneWorker::post(const Task& run,
+SceneWorker::post(const AppInstancePtr& app,
+                  const Task& run,
                   const Task& dropped)
 {
     Task replaced;
     bool start = false;
     {
         std::lock_guard<std::mutex> l(_imp->lock);
-        if (_imp->stopping) {
+        if (_imp->stopping || !app) {
             replaced = dropped;
         } else {
             if (_imp->pending) {
                 replaced.swap(_imp->pendingDropped);
-                ++_imp->settled;
             }
             _imp->pendingRun = run;
             _imp->pendingDropped = dropped;
+            _imp->pendingApp = app;
             _imp->pending = true;
-            ++_imp->posted;
             start = !_imp->started;
             _imp->started = true;
         }
@@ -585,7 +636,6 @@ SceneWorker::post(const Task& run,
         }
     }
     _imp->wake.notify_one();
-    notifySettled();
     callDropped(replaced);
 }
 
@@ -621,39 +671,69 @@ SceneWorker::joinAll(int timeoutMs)
 }
 
 bool
-SceneWorker::waitForPosted(int timeoutMs)
+SceneWorker::retireApp(const AppInstancePtr& app,
+                       int timeoutMs)
 {
-    std::vector<std::pair<std::shared_ptr<Implementation>, std::uint64_t>> targets;
+    if (!app) {
+        return true;
+    }
+    const AppInstanceWPtr weakApp = app;
+    RetiredApps& apps = retiredApps();
+    {
+        std::lock_guard<std::mutex> l(apps.lock);
+        apps.retired.erase(std::remove_if(apps.retired.begin(), apps.retired.end(), [](const AppInstanceWPtr& retired) { return retired.expired(); }), apps.retired.end());
+        apps.retired.push_back(weakApp);
+    }
+    std::vector<std::shared_ptr<Implementation>> running;
+    std::vector<Task> dropped;
     {
         SceneWorkerThreads& threads = sceneWorkerThreads();
         std::lock_guard<std::mutex> l(threads.lock);
         for (const std::weak_ptr<Implementation>& weak : threads.workers) {
             if (const std::shared_ptr<Implementation> worker = weak.lock()) {
                 std::lock_guard<std::mutex> w(worker->lock);
-                if (worker->settled < worker->posted) {
-                    targets.push_back(std::make_pair(worker, worker->posted));
+                if (worker->pending && isSameApp(worker->pendingApp, weakApp)) {
+                    dropped.push_back(Task());
+                    dropped.back().swap(worker->pendingDropped);
+                    worker->pendingRun = Task();
+                    worker->pendingApp.reset();
+                    worker->pending = false;
+                }
+                if (isSameApp(worker->runningApp, weakApp)) {
+                    running.push_back(worker);
                 }
             }
         }
     }
-    if (targets.empty()) {
+    for (const Task& task : dropped) {
+        callDropped(task);
+    }
+    if (running.empty()) {
         return true;
     }
-    const auto allSettled = [&targets]() {
-        for (const std::pair<std::shared_ptr<Implementation>, std::uint64_t>& target : targets) {
-            std::lock_guard<std::mutex> w(target.first->lock);
-            if (target.first->settled < target.second) {
+    const auto ended = [&running, &weakApp]() {
+        for (const std::shared_ptr<Implementation>& worker : running) {
+            std::lock_guard<std::mutex> w(worker->lock);
+            if (isSameApp(worker->runningApp, weakApp)) {
                 return false;
             }
         }
 
         return true;
     };
-    PythonUnlockedWhileJoining unlocked;
-    SceneJobsSettled& settled = sceneJobsSettled();
-    std::unique_lock<std::mutex> l(settled.lock);
+    bool allEnded = false;
+    {
+        PythonUnlockedWhileJoining unlocked;
+        SceneJobsSettled& settled = sceneJobsSettled();
+        std::unique_lock<std::mutex> l(settled.lock);
+        allEnded = settled.settled.wait_for(l, std::chrono::milliseconds(timeoutMs), ended);
+    }
+    if (!allEnded) {
+        std::lock_guard<std::mutex> l(apps.lock);
+        apps.abandoned.push_back(app);
+    }
 
-    return settled.settled.wait_for(l, std::chrono::milliseconds(timeoutMs), allSettled);
+    return allEnded;
 }
 
 struct SceneMenuRefresh::State {
@@ -786,7 +866,7 @@ SceneMenuRefresh::start(EffectInstance* effect,
     }
     std::weak_ptr<State> weakState = _state;
     std::weak_ptr<EffectInstance> weakEffect = effect ? effect->weak_from_this() : std::weak_ptr<EffectInstance>();
-    _state->worker.post([job, work, apply, weakState, weakEffect]() {
+    _state->worker.post(effect ? effect->getApp() : AppInstancePtr(), [job, work, apply, weakState, weakEffect]() {
         SceneMenuJob::Result result;
         if (!job->isCancelled()) {
             try {

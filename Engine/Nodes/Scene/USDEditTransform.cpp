@@ -623,7 +623,7 @@ USDEditTransform::startCentrePivot(const SceneEvaluationContext* context)
 
     const bool noViewer = !context;
     NodeWPtr weakNode = getNode();
-    _imp->pivotWorker.post([job, snapshot, noViewer, weakNode]() {
+    _imp->pivotWorker.post(getApp(), [job, snapshot, noViewer, weakNode]() {
         try {
             computeCentre(*snapshot, job.get(), noViewer);
         } catch (...) {

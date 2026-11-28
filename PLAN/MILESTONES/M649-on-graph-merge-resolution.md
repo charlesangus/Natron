@@ -162,7 +162,7 @@ Code facts (scout of 2026-11-27, on the F33 branch tip 488b376fef):
   - verify: compiled at P1.T8. A gtest saves and reloads one conflict of each structural kind and compares the sides field by field.
   - size: M
 
-- [ ] M649.P1.T8 — Phase 649.1 build and ctest checkpoint
+- [x] M649.P1.T8 — Phase 649.1 build and ctest checkpoint
   - files: none
   - approach: syntax-check the touched TUs, then a remote gate build with ctest.
   - verify: green. The build is required.
@@ -268,3 +268,4 @@ Code facts (scout of 2026-11-27, on the F33 branch tip 488b376fef):
 - 2026-11-27 — **Per-knob Take in both the popover and the diff panel (user):** one pattern for everything on the graph.
 - 2026-11-27 — Pending splice choices are a conflict kind, so badge, panel, popover and save handle them with no new path (planner). Conflicts reloaded from a file keep structural previews, so P1.T7 makes sure side state persists (planner).
 - 2026-11-28 — Phase 1 in f00d619581; m649-gate1 (P1.T8) running. Audit table in the commit's report: a choice is hidden only when impossible or equal to an earlier one; same-frame Keep Both is gone; Base stays on a same-frame key conflict when it means "remove the key" (a distinct outcome — PM reading of P1.T2's verify). PendingSplice carries sourceId. Open: nodes restored from a template version get no template origin/key back — fold into Phase 2 once M646 lands.
+- 2026-11-28 — P1.T8: m649-gate1 (full ctest + merge GUI) green except the YAML round trip; fixed b482067c6a (plug-in knob defaults and choice entries persisted); m649-gate2 (ConflictResolution, MergeConflictYaml, ProjectMerge*, NodeMatcher*) green. Phase 2 in progress.

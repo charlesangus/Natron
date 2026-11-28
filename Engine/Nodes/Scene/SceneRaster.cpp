@@ -110,12 +110,72 @@ namespace {
     }
 
     /**
-     * Calls shade(tri, index, weights) for every pixel whose centre lies inside each triangle, with
-     * the pixel's perspective-correct weights of the triangle's three corners. An edge two triangles
-     * share is drawn once: of the two, only the triangle it runs upward (or leftward, when
-     * horizontal) in, once wound counter-clockwise, owns the centres on it. Within a row triangles
-     * are shaded in order; rows run in parallel, a chunk of them per task. False when cancelled
-     * returned true, polled per triangle, which leaves the buffers partly shaded.
+     * Calls emit(x, y, weights) for every pixel of [firstX, lastX] x [firstY, lastY] whose centre
+     * lies inside the triangle, row after row, with the pixel's perspective-correct weights of the
+     * triangle's three corners. An edge two triangles share is drawn once: of the two, only the
+     * triangle it runs upward (or leftward, when horizontal) in, once wound counter-clockwise, owns
+     * the centres on it.
+     **/
+    template <typename Emit>
+    void
+    drawTriangle(const double* tx,
+                 const double* ty,
+                 const float* invW,
+                 int firstX,
+                 int lastX,
+                 int firstY,
+                 int lastY,
+                 const Emit& emit)
+    {
+        const double area = (tx[1] - tx[0]) * (ty[2] - ty[0]) - (ty[1] - ty[0]) * (tx[2] - tx[0]);
+        if ((area == 0.) || !std::isfinite(area)) {
+            return;
+        }
+        const double sign = (area > 0.) ? 1. : -1.;
+        // Edge i runs between the corners other than i, from corner i + 1 to corner i + 2.
+        bool owns[3];
+        for (int i = 0; i < 3; ++i) {
+            const int a = (i + 1) % 3;
+            const int b = (i + 2) % 3;
+            const double dx = sign * (tx[b] - tx[a]);
+            const double dy = sign * (ty[b] - ty[a]);
+            owns[i] = (dy > 0.) || ((dy == 0.) && (dx < 0.));
+        }
+        for (int y = firstY; y <= lastY; ++y) {
+            const double py = y + 0.5;
+            for (int x = firstX; x <= lastX; ++x) {
+                const double px = x + 0.5;
+                double e[3];
+                bool inside = true;
+                for (int i = 0; (i < 3) && inside; ++i) {
+                    const int a = (i + 1) % 3;
+                    const int b = (i + 2) % 3;
+                    e[i] = sign * ((tx[b] - tx[a]) * (py - ty[a]) - (ty[b] - ty[a]) * (px - tx[a]));
+                    inside = (e[i] > 0.) || ((e[i] == 0.) && owns[i]);
+                }
+                if (!inside) {
+                    continue;
+                }
+                double w[3];
+                double sum = 0.;
+                for (int i = 0; i < 3; ++i) {
+                    w[i] = e[i] * invW[i];
+                    sum += w[i];
+                }
+                if (sum <= 0.) {
+                    continue;
+                }
+                const float weights[3] = { (float)(w[0] / sum), (float)(w[1] / sum), (float)(w[2] / sum) };
+                emit(x, y, weights);
+            }
+        }
+    }
+
+    /**
+     * Calls shade(tri, index, weights) for every pixel whose centre lies inside each triangle, by
+     * drawTriangle()'s rule. Within a row triangles are shaded in order; rows run in parallel, a
+     * chunk of them per task. False when cancelled returned true, polled per triangle, which
+     * leaves the buffers partly shaded.
      **/
     template <typename Shade>
     bool
@@ -158,54 +218,15 @@ namespace {
                     return;
                 }
                 const RasterTriangle& tri = tris[t];
-                const double area = (tri.x[1] - tri.x[0]) * (tri.y[2] - tri.y[0]) - (tri.y[1] - tri.y[0]) * (tri.x[2] - tri.x[0]);
-                if ((area == 0.) || !std::isfinite(area)) {
-                    continue;
-                }
-                const double sign = (area > 0.) ? 1. : -1.;
-                // Edge i runs between the corners other than i, from corner i + 1 to corner i + 2.
-                bool owns[3];
-                for (int i = 0; i < 3; ++i) {
-                    const int a = (i + 1) % 3;
-                    const int b = (i + 2) % 3;
-                    const double dx = sign * (tri.x[b] - tri.x[a]);
-                    const double dy = sign * (tri.y[b] - tri.y[a]);
-                    owns[i] = (dy > 0.) || ((dy == 0.) && (dx < 0.));
-                }
                 const double minX = std::min({ tri.x[0], tri.x[1], tri.x[2] });
                 const double maxX = std::max({ tri.x[0], tri.x[1], tri.x[2] });
                 const int firstX = (int)std::max(0., std::ceil(minX - 0.5));
                 const int lastX = (int)std::min((double)width - 1., std::floor(maxX - 0.5));
                 const int firstY = std::max(chunk.y1, tri.firstRow);
                 const int lastY = std::min(chunk.y2 - 1, tri.lastRow);
-                for (int y = firstY; y <= lastY; ++y) {
-                    const double py = y + 0.5;
-                    for (int x = firstX; x <= lastX; ++x) {
-                        const double px = x + 0.5;
-                        double e[3];
-                        bool inside = true;
-                        for (int i = 0; (i < 3) && inside; ++i) {
-                            const int a = (i + 1) % 3;
-                            const int b = (i + 2) % 3;
-                            e[i] = sign * ((tri.x[b] - tri.x[a]) * (py - tri.y[a]) - (tri.y[b] - tri.y[a]) * (px - tri.x[a]));
-                            inside = (e[i] > 0.) || ((e[i] == 0.) && owns[i]);
-                        }
-                        if (!inside) {
-                            continue;
-                        }
-                        double w[3];
-                        double sum = 0.;
-                        for (int i = 0; i < 3; ++i) {
-                            w[i] = e[i] * tri.invW[i];
-                            sum += w[i];
-                        }
-                        if (sum <= 0.) {
-                            continue;
-                        }
-                        const float weights[3] = { (float)(w[0] / sum), (float)(w[1] / sum), (float)(w[2] / sum) };
-                        shade(tri, (std::size_t)x + (std::size_t)y * (std::size_t)width, weights);
-                    }
-                }
+                drawTriangle(tri.x, tri.y, tri.invW, firstX, lastX, firstY, lastY, [&](int x, int y, const float weights[3]) {
+                    shade(tri, (std::size_t)x + (std::size_t)y * (std::size_t)width, weights);
+                });
             }
         });
 
@@ -887,6 +908,47 @@ UVLayout::bakeRows(int firstRow,
 
     return true;
 } // UVLayout::bakeRows
+
+void
+rasterizeTexels(const GfVec2f* st,
+                int udimTile,
+                int size,
+                int x1,
+                int y1,
+                int x2,
+                int y2,
+                const std::function<void(int x, int y, const float* weights)>& texel)
+{
+    if ((size <= 0) || (udimTile < 1001)) {
+        return;
+    }
+    const float tileU = (float)((udimTile - 1001) % 10);
+    const float tileV = (float)((udimTile - 1001) / 10);
+    double tx[3];
+    double ty[3];
+    const float invW[3] = { 1.f, 1.f, 1.f };
+    for (int k = 0; k < 3; ++k) {
+        tx[k] = (st[k][0] - tileU) * (double)size;
+        ty[k] = (st[k][1] - tileV) * (double)size;
+    }
+    const double minX = std::min({ tx[0], tx[1], tx[2] });
+    const double maxX = std::max({ tx[0], tx[1], tx[2] });
+    const double minY = std::min({ ty[0], ty[1], ty[2] });
+    const double maxY = std::max({ ty[0], ty[1], ty[2] });
+    if (!std::isfinite(minX) || !std::isfinite(maxX) || !std::isfinite(minY) || !std::isfinite(maxY)) {
+        return;
+    }
+    const int firstX = (int)std::max((double)std::max(0, x1), std::ceil(minX - 0.5));
+    const int lastX = (int)std::min((double)std::min(size, x2) - 1., std::floor(maxX - 0.5));
+    const int firstY = (int)std::max((double)std::max(0, y1), std::ceil(minY - 0.5));
+    const int lastY = (int)std::min((double)std::min(size, y2) - 1., std::floor(maxY - 0.5));
+    if ((firstX > lastX) || (firstY > lastY)) {
+        return;
+    }
+    drawTriangle(tx, ty, invW, firstX, lastX, firstY, lastY, [&](int x, int y, const float weights[3]) {
+        texel(x, y, weights);
+    });
+}
 
 bool
 bakeUV(const UsdStageRefPtr& stage,

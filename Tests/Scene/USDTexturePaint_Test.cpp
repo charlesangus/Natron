@@ -87,6 +87,7 @@
 #include "Engine/Nodes/Scene/MaterialBake.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/TexelPages.h"
 #include "Engine/Nodes/Scene/USDCamera.h"
 #include "Engine/Nodes/Scene/USDCard.h"
 #include "Engine/Nodes/Scene/USDProject3D.h"
@@ -492,10 +493,13 @@ TEST_F(USDTexturePaintTest, SessionsStrokesAndKnobsSurviveSaveAndLoad)
     getKnob<KnobOutputFile>(node, kUSDTexturePaintParamBakeInputsPath)->setValue(std::string("[Project]/in.<UDIM>.exr"));
     getKnob<KnobOutputFile>(node, kUSDTexturePaintParamBakeOutputPath)->setValue(std::string("[Project]/out.<UDIM>.exr"));
     getKnob<KnobInt>(node, kUSDTexturePaintParamOutputTile)->setValue(1012);
+    getKnob<KnobChoice>(node, kUSDTexturePaintParamFootprint)->setValueFromID("view", 0);
 
     const SceneRaster::ExplicitCamera camera = paintedCamera();
     RotoLayerPtr painted = effect->addSession(camera);
     ASSERT_TRUE(bool(painted));
+    EXPECT_EQ(USDTexturePaint::eFootprintView, USDTexturePaint::getSessionFootprint(painted));
+    getKnob<KnobChoice>(node, kUSDTexturePaintParamFootprint)->setValueFromID("surface", 0);
     USDTexturePaint::setSessionFrozen(painted, true);
     addStroke(context, painted, "firstStroke", 0.);
     addStroke(context, painted, "secondStroke", 0.05);
@@ -537,6 +541,7 @@ TEST_F(USDTexturePaintTest, SessionsStrokesAndKnobsSurviveSaveAndLoad)
     EXPECT_EQ(std::string("[Project]/in.<UDIM>.exr"), getKnob<KnobOutputFile>(loaded, kUSDTexturePaintParamBakeInputsPath)->getValue());
     EXPECT_EQ(std::string("[Project]/out.<UDIM>.exr"), getKnob<KnobOutputFile>(loaded, kUSDTexturePaintParamBakeOutputPath)->getValue());
     EXPECT_EQ(1012, getKnob<KnobInt>(loaded, kUSDTexturePaintParamOutputTile)->getValue());
+    EXPECT_EQ(USDTexturePaint::eFootprintSurface, loadedEffect->getFootprint());
 
     const std::list<RotoLayerPtr> sessions = loadedEffect->getSessions();
     ASSERT_EQ(2u, sessions.size());
@@ -563,6 +568,7 @@ TEST_F(USDTexturePaintTest, SessionsStrokesAndKnobsSurviveSaveAndLoad)
     EXPECT_DOUBLE_EQ(camera.nearClip, loadedCamera.nearClip);
     EXPECT_DOUBLE_EQ(camera.farClip, loadedCamera.farClip);
     EXPECT_TRUE(USDTexturePaint::isSessionFrozen(loadedPainted));
+    EXPECT_EQ(USDTexturePaint::eFootprintView, USDTexturePaint::getSessionFootprint(loadedPainted));
     expectSameStrokes(expectedStrokes, strokeKeys(loadedPainted));
 
     const SceneRaster::ExplicitCamera defaults;
@@ -573,6 +579,7 @@ TEST_F(USDTexturePaintTest, SessionsStrokesAndKnobsSurviveSaveAndLoad)
     }
     EXPECT_EQ(defaults.orthographic, loadedDefaults.orthographic);
     EXPECT_FALSE(USDTexturePaint::isSessionFrozen(loadedUnfrozen));
+    EXPECT_EQ(USDTexturePaint::eFootprintSurface, USDTexturePaint::getSessionFootprint(loadedUnfrozen));
     EXPECT_TRUE(strokeKeys(loadedUnfrozen).empty());
 
     SceneRaster::ExplicitCamera unused;
@@ -930,6 +937,86 @@ TEST_F(USDTexturePaintTest, TileTakesPaintOnlyWhereTheSessionCameraSeesTheMesh)
     ASSERT_TRUE(bool(back));
     for (double s : { 0.25, 0.5, 0.75 }) {
         expectColor(texelAt(back, s, 0.5), 0.f, 0.f, 1.f, 1.f, "back face under the stroke");
+    }
+}
+
+namespace {
+// A red quad filling the height of viewCamera(), its st an island in the middle of tile 1001.
+const char* const kInsetIsland = R"usda(#usda 1.0
+(
+    upAxis = "Y"
+)
+
+def Xform "World"
+{
+    def Mesh "Island" (
+        prepend apiSchemas = ["MaterialBindingAPI"]
+    )
+    {
+        int[] faceVertexCounts = [4]
+        int[] faceVertexIndices = [0, 1, 2, 3]
+        point3f[] points = [(-2, -2, 0), (2, -2, 0), (2, 2, 0), (-2, 2, 0)]
+        texCoord2f[] primvars:st = [(0.25, 0.25), (0.75, 0.25), (0.75, 0.75), (0.25, 0.75)] (
+            interpolation = "vertex"
+        )
+        rel material:binding = </World/Looks/Red>
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Red"
+        {
+            token outputs:surface.connect = </World/Looks/Red/Surface.outputs:surface>
+
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (1, 0, 0)
+                token outputs:surface
+            }
+        }
+    }
+}
+)usda";
+
+// The texel of tile at (x, y).
+BufferPixel
+texelAtIndex(const ImagePtr& tile,
+             int x,
+             int y)
+{
+    return texelAt(tile, (x + 0.5) / kSmallTile, (y + 0.5) / kSmallTile);
+}
+} // anonymous namespace
+
+TEST_F(USDTexturePaintTest, BufferStrokeGrowsTheSeamGutterAndNoFurther)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedScene(dir, kInsetIsland, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+
+    ImagePtr before = renderTile(paint);
+    ASSERT_TRUE(bool(before));
+
+    // Over the island's right edge, s = 0.75, at the middle of the view, and on past the mesh.
+    RotoStrokeItemPtr stroke = addSpanStroke(paint, session, "edge", 0.7, 0.95, 0.5);
+    setColor(stroke, 0., 1., 0.);
+    ImagePtr after = renderTile(paint);
+    ASSERT_TRUE(bool(after));
+
+    // Texel 767 is the island's last column; its centre is the last below s = 0.75.
+    const int edge = 767;
+    const int row = kSmallTile / 2;
+    expectColor(texelAtIndex(after, edge, row), 0.f, 1.f, 0.f, 1.f, "the island's edge texel");
+    for (int g = 1; g <= TexelPages::kSeamGutter; ++g) {
+        expectColor(texelAtIndex(after, edge + g, row), 0.f, 1.f, 0.f, 1.f, "gutter texel");
+    }
+    for (int x = edge + TexelPages::kSeamGutter + 1; x <= edge + TexelPages::kSeamGutter + 4; ++x) {
+        const BufferPixel was = texelAtIndex(before, x, row);
+        expectColor(texelAtIndex(after, x, row), was.rgba[0], was.rgba[1], was.rgba[2], was.rgba[3], "texel past the gutter");
     }
 }
 

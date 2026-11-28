@@ -208,6 +208,24 @@ resolutionOptions()
     return options;
 }
 
+std::vector<ChoiceOption>
+footprintOptions()
+{
+    std::vector<ChoiceOption> options;
+
+    options.push_back(ChoiceOption("surface", QObject::tr("Surface").toStdString(),
+                                   QObject::tr("A dab paints the surface within its radius of the point under its "
+                                               "centre, measured on the mesh, so it keeps its size on a surface seen "
+                                               "at a grazing angle.")
+                                       .toStdString()));
+    options.push_back(ChoiceOption("view", QObject::tr("View").toStdString(),
+                                   QObject::tr("A dab paints exactly what its disc covers on screen, stretching over a "
+                                               "surface seen at a grazing angle.")
+                                       .toStdString()));
+
+    return options;
+}
+
 int
 resolutionFromChoice(const KnobChoicePtr& knob,
                      int fallbackIndex)
@@ -507,6 +525,17 @@ USDTexturePaint::initializeKnobs()
     page->addKnob(textureMode);
     _textureMode = textureMode;
 
+    KnobChoicePtr footprint = createKnob<KnobChoice>(tr("Footprint"));
+    footprint->setName(kUSDTexturePaintParamFootprint);
+    footprint->setHintToolTip(tr("Where a dab painted straight into the texture lands. A session keeps the "
+                                 "footprint it was started under.")
+                                  .toStdString());
+    footprint->populateChoices(footprintOptions());
+    footprint->setDefaultValue((int)eFootprintSurface);
+    footprint->setAnimationEnabled(false);
+    page->addKnob(footprint);
+    _footprint = footprint;
+
     KnobChoicePtr outputMode = createKnob<KnobChoice>(tr("Output Mode"));
     outputMode->setName(kUSDTexturePaintParamOutputMode);
     outputMode->setHintToolTip(tr("What the strokes are laid over. Locked while a Bake Output is in effect: undo the bake to "
@@ -703,6 +732,11 @@ USDTexturePaint::onCurveLayerCreated(const RotoLayerPtr& layer)
                                                    tr("Whether the session's strokes are baked into the Bake Output "
                                                       "files and so no longer projected."));
     frozen->setDefaultValue(false);
+
+    KnobChoicePtr footprint = makeSessionKnob<KnobChoice>(layer, kUSDTexturePaintSessionParamFootprint, tr("Footprint"), 1,
+                                                          tr("Where the session's dabs land in the texture."));
+    footprint->populateChoices(footprintOptions());
+    footprint->setDefaultValue((int)eFootprintSurface);
 } // USDTexturePaint::onCurveLayerCreated
 
 void
@@ -3442,6 +3476,14 @@ USDTexturePaint::paintOnlyPattern(const std::string& pattern)
     return result;
 }
 
+USDTexturePaint::FootprintEnum
+USDTexturePaint::getFootprint() const
+{
+    KnobChoicePtr knob = _footprint.lock();
+
+    return (knob && (knob->getValue() == (int)eFootprintView)) ? eFootprintView : eFootprintSurface;
+}
+
 USDTexturePaint::TextureModeEnum
 USDTexturePaint::getTextureMode() const
 {
@@ -3462,6 +3504,7 @@ USDTexturePaint::addSession(const SceneRaster::ExplicitCamera& camera)
     context->clearSelection(RotoItem::eSelectionReasonOther);
     RotoLayerPtr layer = context->addLayer();
     setSessionCamera(layer, camera);
+    setSessionFootprint(layer, getFootprint());
     (void)getSessionView(layer);
 
     return layer;
@@ -4425,6 +4468,25 @@ USDTexturePaint::setSessionFrozen(const RotoLayerPtr& layer,
 
     if (knob) {
         knob->setValue(frozen);
+    }
+}
+
+USDTexturePaint::FootprintEnum
+USDTexturePaint::getSessionFootprint(const RotoLayerPtr& layer)
+{
+    KnobChoicePtr knob = sessionKnob<KnobChoice>(layer, kUSDTexturePaintSessionParamFootprint);
+
+    return (knob && (knob->getValue() == (int)eFootprintView)) ? eFootprintView : eFootprintSurface;
+}
+
+void
+USDTexturePaint::setSessionFootprint(const RotoLayerPtr& layer,
+                                     FootprintEnum footprint)
+{
+    KnobChoicePtr knob = sessionKnob<KnobChoice>(layer, kUSDTexturePaintSessionParamFootprint);
+
+    if (knob) {
+        knob->setValue((int)footprint);
     }
 }
 

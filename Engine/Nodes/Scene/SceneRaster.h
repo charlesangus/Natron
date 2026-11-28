@@ -171,6 +171,20 @@ struct BakeBuffers {
 };
 
 /**
+ * @brief Calls texel(x, y, weights) for each texel of [x1, x2) x [y1, y2) of a size x size UDIM
+ * tile whose centre the triangle with texture coordinates st[0..2] covers, by the rule bakeUV()
+ * draws with, row after row; weights are those of the triangle's three corners.
+ **/
+void rasterizeTexels(const PXR_NS::GfVec2f* st,
+                     int udimTile,
+                     int size,
+                     int x1,
+                     int y1,
+                     int x2,
+                     int y2,
+                     const std::function<void(int x, int y, const float* weights)>& texel);
+
+/**
  * @brief Rasterizes the mesh at args.primPath in its texture space: for each texel of the UDIM
  * tile, the world position and normal of the point the texel maps to. The primvar may be
  * vertex, varying, faceVarying or uniform, indexed or not. Where UV faces overlap, the later face

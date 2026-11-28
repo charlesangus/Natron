@@ -366,9 +366,17 @@ PaintMeshIndex::buildFromStage(const UsdStageRefPtr& stage,
             occluderPaths.push_back(path);
         }
     }
+    // An occluder only hides paint, so one that cannot be triangulated costs some occlusion rather than the stroke.
     std::vector<SceneRaster::TriangulatedMesh> occluders;
-    if (!SceneRaster::triangulateMeshes(stage, occluderPaths, TfToken(), key.time, &occluders, errorMessage)) {
-        return false;
+    occluders.reserve(occluderPaths.size());
+    for (const SdfPath& path : occluderPaths) {
+        SceneRaster::TriangulatedMesh mesh;
+        std::string error;
+        if (SceneRaster::triangulateMesh(stage, path, TfToken(), key.time, &mesh, &error)) {
+            occluders.push_back(std::move(mesh));
+        } else {
+            TF_WARN("Painting ignores %s as an occluder: %s", path.GetText(), error.c_str());
+        }
     }
     if (!build(std::move(targets), std::move(occluders), threads, errorMessage)) {
         return false;

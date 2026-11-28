@@ -29,6 +29,11 @@ Controls:
   finer strokes when zoomed in close.
 - Texture Mode: Static paints one texture set for every frame; Animated keeps a
   texture set per frame.
+- Footprint: where a dab painted straight into the texture lands. Surface (the
+  default) paints the surface within the dab's radius of the point under its
+  centre, measured on the mesh, so a dab keeps its size on a surface seen at a
+  grazing angle. View paints exactly what the dab's disc covers on screen. Each
+  session keeps the footprint it was started under.
 - Output Mode: Over Base (the default) paints over the look of the meshes and
   outputs the painted texture. Paint Only paints over transparent black: every
   session's view is transparent, so the output's alpha is the strokes' coverage

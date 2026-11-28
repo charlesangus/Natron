@@ -59,6 +59,7 @@
 #define kUSDTexturePaintParamTileResolution "tileResolution"
 #define kUSDTexturePaintParamBufferResolution "bufferResolution"
 #define kUSDTexturePaintParamTextureMode "textureMode"
+#define kUSDTexturePaintParamFootprint "footprint"
 #define kUSDTexturePaintParamBakeInputsPath "bakeInputsPath"
 #define kUSDTexturePaintParamBakeInputs "bakeInputs"
 #define kUSDTexturePaintParamBakedInputs "bakedInputs"
@@ -85,6 +86,7 @@
 #define kUSDTexturePaintSessionParamNearClip "nearClip"
 #define kUSDTexturePaintSessionParamFarClip "farClip"
 #define kUSDTexturePaintSessionParamFrozen "frozen"
+#define kUSDTexturePaintSessionParamFootprint "footprint"
 
 NATRON_NAMESPACE_ENTER
 
@@ -137,6 +139,13 @@ public:
     enum OutputModeEnum {
         eOutputModeOverBase = 0,
         eOutputModePaintOnly
+    };
+
+    // Where a dab painted straight into the texels lands: within its radius of the surface point under
+    // its centre, or on what the screen disc covers.
+    enum FootprintEnum {
+        eFootprintSurface = 0,
+        eFootprintView
     };
 
     static constexpr InputSpec kInputs[] = {
@@ -274,6 +283,8 @@ public:
 
     OutputModeEnum getOutputMode() const WARN_UNUSED_RETURN;
 
+    FootprintEnum getFootprint() const WARN_UNUSED_RETURN;
+
     /**
      * @brief The pattern of the paint-only files beside the Bake Output files of pattern: "paint"
      * before the separator that precedes its <UDIM> token, as in tex.paint.<UDIM>.exr, or ".paint."
@@ -302,6 +313,10 @@ public:
 
     static bool isSessionFrozen(const RotoLayerPtr& layer) WARN_UNUSED_RETURN;
     static void setSessionFrozen(const RotoLayerPtr& layer, bool frozen);
+
+    // The Footprint the session was started under; Surface when layer is not a session.
+    static FootprintEnum getSessionFootprint(const RotoLayerPtr& layer) WARN_UNUSED_RETURN;
+    static void setSessionFootprint(const RotoLayerPtr& layer, FootprintEnum footprint);
 
     // The session item is painted in: the layer under the base layer it is in. Null outside one.
     static RotoLayerPtr getSessionOf(const RotoItem& item) WARN_UNUSED_RETURN;
@@ -892,6 +907,7 @@ private:
     KnobChoiceWPtr _tileResolution;
     KnobChoiceWPtr _bufferResolution;
     KnobChoiceWPtr _textureMode;
+    KnobChoiceWPtr _footprint;
     KnobOutputFileWPtr _bakeInputsPath;
     KnobButtonWPtr _bakeInputs;
     // What the last Bake Inputs wrote, saved with the project, so the tiles keep painting over

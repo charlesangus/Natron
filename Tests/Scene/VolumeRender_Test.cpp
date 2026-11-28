@@ -186,16 +186,17 @@ const char* const kDilatedVelocityOpenShutter = "over \"World\"\n"
 const char* const kDensityPath = "/World/Smoke/density.filePath";
 const char* const kFrame1Grid = NATRON_TESTS_FIXTURES_DIR "/volume-sphere.0001.vdb";
 const char* const kFrame2Grid = NATRON_TESTS_FIXTURES_DIR "/volume-sphere.0002.vdb";
-const char* const kDensityOnFrame1 = "over \"World\"\n"
-                                     "{\n"
-                                     "    over \"Smoke\"\n"
-                                     "    {\n"
-                                     "        over \"density\"\n"
-                                     "        {\n"
-                                     "            asset filePath.timeSamples = { 1: @" NATRON_TESTS_FIXTURES_DIR "/volume-sphere.0001.vdb@ }\n"
-                                     "        }\n"
-                                     "    }\n"
-                                     "}\n";
+const std::string kDensityOnFrame1 = std::string("over \"World\"\n"
+                                                 "{\n"
+                                                 "    over \"Smoke\"\n"
+                                                 "    {\n"
+                                                 "        over \"density\"\n"
+                                                 "        {\n"
+                                                 "            asset filePath.timeSamples = { 1: @")
+    + kFrame1Grid + "@ }\n"
+                    "        }\n"
+                    "    }\n"
+                    "}\n";
 
 // kDilatedVelocity on a stage of timeCodesPerSecond, the shutter open halfShutter frames either
 // side of the frame.
@@ -795,7 +796,7 @@ TEST(VolumeRenderMoonRay, TheVolumeDarkensItsSide)
     expectTheVolumeDarkensItsSide(kMoonRayRendererId);
 }
 
-// hdMoonray's field sync uses emulation-only dirtying; see M651 - MoonRay Live Volume Refresh.
+// hdMoonray's field sync dirties through the emulation-only change tracker, so field changes never reach the volume under the scene-index pipeline.
 TEST(VolumeRenderMoonRay, DISABLED_ALiveFieldEditMovesTheVolume)
 {
     if (!moonRayOrSkip()) {

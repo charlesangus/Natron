@@ -192,16 +192,25 @@ importTemplate(Gui* gui,
 ProjectMerge::UpdateResult
 updateFromTemplate(Gui* gui,
                    const std::string& templateKey,
-                   const QString& path)
+                   const QString& path,
+                   bool allowMismatch)
 {
     const ProjectPtr project = gui->getApp()->getProject();
+    QString file = path;
+    if (file.isEmpty()) {
+        for (const Serialization::TemplateImportSerialization& entry : project->getTemplateImports()) {
+            if (entry.key == templateKey) {
+                file = QString::fromStdString(entry.path);
+            }
+        }
+    }
     NodeGraph* graph = graphOf(gui);
     MergeStateCommand* command = new MergeStateCommand(project, QCoreApplication::translate("MergeConflictResolve", "Update from Template"));
     const QString text = command->text();
     const ProjectMerge::OpApplier applier = [graph, project, text, command](const std::vector<Serialization::GraphOp>& ops) {
         return ApplyGraphOpsCommand::applyAndRecord(graph, project, ops, text, command);
     };
-    ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project, templateKey, path, applier);
+    ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project, templateKey, file, applier, allowMismatch);
     push(gui, command);
     if (!result.conflicts.empty()) {
         gui->ensureMergeConflictPanelVisible();

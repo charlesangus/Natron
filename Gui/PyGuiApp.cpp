@@ -964,7 +964,7 @@ int
 GuiApp::updateFromTemplate(const QString& templateKey,
                            const QString& filePath)
 {
-    const ProjectMerge::UpdateResult result = MergeConflictResolve::updateFromTemplate(getInternalGuiApp()->getGui(), templateKey.toStdString(), filePath);
+    const ProjectMerge::UpdateResult result = MergeConflictResolve::updateFromTemplate(getInternalGuiApp()->getGui(), templateKey.toStdString(), filePath, true);
     if (!result.ok) {
         getInternalGuiApp()->appendToScriptEditor(result.error.toStdString());
 

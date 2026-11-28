@@ -25,12 +25,14 @@
 
 #include "Global/Macros.h"
 
+#include <list>
 #include <memory>
 #include <optional>
 #include <string>
 
 #include <gtest/gtest.h>
 
+#include <QFileInfo>
 #include <QString>
 #include <QTemporaryDir>
 
@@ -38,12 +40,14 @@
 
 #include "Engine/AppInstance.h"
 #include "Engine/CreateNodeArgs.h"
+#include "Engine/EffectInstance.h"
 #include "Engine/Knob.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Project.h"
+#include "Engine/ProjectTemplate.h"
 
 #include "Serialization/Bundle/ProjectBundle.h"
 #include "Serialization/NodeSerialization.h"
@@ -94,6 +98,7 @@ TEST(TemplateProvenanceYaml, OriginsAndTemplateEntriesRoundTripWithTheBaseAsAMem
     shot.nodes.nodes.push_back(node);
     Serialization::TemplateImportSerialization entry;
     entry.key = "grade_tpl";
+    entry.templateId = "00112233445566778899aabbccddeeff";
     entry.path = "/shows/templates/grade_tpl.ntpz";
     entry.contentHash = Serialization::sha256Hex(std::string_view("abc"));
     entry.importedAt = "2026-11-20T10:00:00Z";
@@ -376,4 +381,67 @@ TEST_F(TemplateImportTest, SwappingIdentitiesMovesTheIdAndTheOrigin)
     Node::swapIdentity(a, b);
     EXPECT_EQ(project()->findNodeById(aId), a);
     EXPECT_EQ(project()->findActiveNodeWithOrigin("grade_tpl", "0123456789abcdef0123456789abcdef"), a);
+}
+
+TEST_F(TemplateImportTest, EachImportGetsATemplateNodeAndAPlainScriptIsVersionOne)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    std::string templateYaml;
+    std::string templateGradeId;
+    const QString templatePath = saveTemplate(dir, &templateYaml, &templateGradeId);
+    ASSERT_FALSE(templatePath.isEmpty());
+
+    QString error;
+    ASSERT_EQ(project()->importTemplate(templatePath, NodeCollectionPtr(), &error).size(), 3u) << error.toStdString();
+    ASSERT_EQ(project()->importTemplate(templatePath, NodeCollectionPtr(), &error).size(), 3u) << error.toStdString();
+    const std::list<Serialization::TemplateImportSerialization> imports = project()->getTemplateImports();
+    ASSERT_EQ(imports.size(), 2u);
+    EXPECT_NE(imports.front().key, imports.back().key);
+    EXPECT_FALSE(imports.front().templateId.empty());
+    EXPECT_EQ(imports.front().version, 1);
+    EXPECT_EQ(imports.front().name, "grade_tpl");
+    EXPECT_EQ(imports.front().publishDir, QFileInfo(templatePath).absolutePath().toStdString());
+
+    int templateNodes = 0;
+    for (const NodePtr& node : project()->getNodes()) {
+        if (node->getPluginID() == PLUGINID_NATRON_TEMPLATE) {
+            ++templateNodes;
+            EXPECT_TRUE(node->getOriginTemplate().empty());
+        }
+    }
+    EXPECT_EQ(templateNodes, 2);
+    EXPECT_NE(project()->findTemplateNode(imports.front().key), nullptr);
+    EXPECT_NE(project()->findTemplateNode(imports.back().key), nullptr);
+    EXPECT_NE(project()->findTemplateNode(imports.front().key), project()->findTemplateNode(imports.back().key));
+}
+
+TEST_F(TemplateImportTest, ImportingAPublishedVersionTwiceSharesItsTemplateId)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    NodePtr grade = create(PLUGINID_NATRON_GRADE, "Grade1");
+    ASSERT_TRUE(grade != nullptr);
+    TemplateEdit edit;
+    ASSERT_TRUE(project()->defineTemplate({ grade }, "grade", NodeCollectionPtr(), &edit)) << edit.error.toStdString();
+    Serialization::TemplateImportSerialization defined = project()->getTemplateImports().front();
+    defined.publishDir = dir.path().toStdString();
+    project()->setTemplateImport(defined);
+    QString error;
+    ASSERT_TRUE(project()->publishTemplate(edit.key, &error, &edit)) << error.toStdString();
+    project()->reset(false, true);
+
+    ASSERT_EQ(project()->importTemplate(edit.path, NodeCollectionPtr(), &error).size(), 1u) << error.toStdString();
+    ASSERT_EQ(project()->importTemplate(edit.path, NodeCollectionPtr(), &error).size(), 1u) << error.toStdString();
+    const std::list<Serialization::TemplateImportSerialization> imports = project()->getTemplateImports();
+    ASSERT_EQ(imports.size(), 2u);
+    EXPECT_NE(imports.front().key, imports.back().key);
+    EXPECT_EQ(imports.front().templateId, defined.templateId);
+    EXPECT_EQ(imports.back().templateId, defined.templateId);
+    EXPECT_EQ(imports.front().version, 1);
+    EXPECT_EQ(imports.front().name, "grade");
+    for (const Serialization::TemplateImportSerialization& entry : imports) {
+        ASSERT_TRUE(entry.base != nullptr);
+        EXPECT_EQ(entry.base->nodes.nodes.size(), 1u);
+    }
 }

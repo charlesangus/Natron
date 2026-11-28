@@ -22,6 +22,7 @@
 
 #include "Global/Macros.h"
 
+#include <cstddef>
 #include <functional>
 #include <set>
 #include <string>
@@ -45,7 +46,17 @@ struct MergePlan {
     NodeCorrespondence baseToMine;
     NodeCorrespondence baseToTheirs;
     std::set<std::string> scope;
+    // The base nodes that have an ID, which baseToTheirs is measured against.
+    std::size_t baseNodeCount = 0;
 };
+
+/**
+ * @brief Whether a template plan's theirs stands for too few of base's nodes to be a version of
+ * it: base has nodes and fewer than a quarter of them match theirs. A file rebuilt with no shared
+ * identity would otherwise merge as the deletion of every base node and the addition of all of its
+ * own. Never true for a whole-project plan.
+ **/
+bool sharesTooFewNodes(const MergePlan& plan);
 
 MergePlan planMerge(const ProjectSerialization& base,
                     const ProjectSerialization& mine,
@@ -78,6 +89,8 @@ struct MergeOptions {
 struct MergeResult {
     ProjectSerialization merged;
     std::vector<MergeConflict> conflicts;
+    // Set, with merged and conflicts left empty, when the plan sharesTooFewNodes().
+    std::string error;
 };
 
 /**
@@ -99,6 +112,8 @@ struct MergeResult {
  * a node taken from theirs unless mine uses it, merges the project knobs per knob, with conflicts
  * that name no node, and each template import as a whole: theirs' entry when mine left it as base
  * had it, else mine's. Formats and layers keep mine's.
+ *
+ * A template plan that sharesTooFewNodes() merges nothing and returns an error instead.
  **/
 MergeResult threeWayMerge(const ProjectSerialization& base,
                           const ProjectSerialization& mine,

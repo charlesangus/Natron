@@ -111,6 +111,7 @@
 #include "Engine/RotoStrokeItem.h"
 #include "Engine/Settings.h"
 #include "Engine/TLSHolder.h"
+#include "Engine/TemplateNode.h"
 #include "Engine/TimeLine.h"
 #include "Engine/Timer.h"
 #include "Engine/TrackMarker.h"
@@ -9870,11 +9871,11 @@ Node::updateEffectLabelKnob(const QString & name)
 bool
 Node::canOthersConnectToThisNode() const
 {
-    if ( dynamic_cast<Backdrop*>( _imp->effect.get() ) ) {
+    if (dynamic_cast<Backdrop*>(_imp->effect.get()) || dynamic_cast<TemplateNode*>(_imp->effect.get())) {
         return false;
-    } else if ( dynamic_cast<GroupOutput*>( _imp->effect.get() ) ) {
+    } else if (dynamic_cast<GroupOutput*>(_imp->effect.get())) {
         return false;
-    } else if ( _imp->effect->isWriter() && (_imp->effect->getSequentialPreference() == eSequentialPreferenceOnlySequential) ) {
+    } else if (_imp->effect->isWriter() && (_imp->effect->getSequentialPreference() == eSequentialPreferenceOnlySequential)) {
         return false;
     }
     ///In debug mode only allow connections to Writer nodes

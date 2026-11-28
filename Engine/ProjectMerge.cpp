@@ -32,11 +32,13 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <variant>
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QDateTime>
+#include <QtCore/QDir>
 #include <QtCore/QFileInfo>
 #include <QtCore/QStringList>
 #include <QtCore/QThread>
@@ -53,6 +55,7 @@
 #include "Serialization/NodeSerialization.h"
 #include "Serialization/Ops/SnapshotDiff.h"
 #include "Serialization/Sha256.h"
+#include "Serialization/TemplateNodeSerialization.h"
 #include "Serialization/Yaml/KnobYaml.h"
 
 NATRON_NAMESPACE_ENTER
@@ -568,7 +571,8 @@ UpdateResult
 updateFromTemplate(const ProjectPtr& project,
                    const std::string& templateKey,
                    const QString& newPath,
-                   const OpApplier& applier)
+                   const OpApplier& applier,
+                   bool allowMismatch)
 {
     assert(QThread::currentThread() == qApp->thread());
     UpdateResult result;
@@ -592,9 +596,9 @@ updateFromTemplate(const ProjectPtr& project,
         return result;
     }
     const Serialization::TemplateImportSerialization entry = *found;
-    const std::string path = newPath.isEmpty() ? entry.path : newPath.toStdString();
+    const std::string path = newPath.toStdString();
     if (path.empty()) {
-        result.error = QCoreApplication::translate("ProjectMerge", "The template import %1 has no file to update from").arg(QString::fromStdString(templateKey));
+        result.error = QCoreApplication::translate("ProjectMerge", "No file was given to update the template import %1 from").arg(QString::fromStdString(templateKey));
 
         return result;
     }
@@ -613,6 +617,23 @@ updateFromTemplate(const ProjectPtr& project,
     }
     theirs.templates.clear();
     theirs.mergeConflicts.clear();
+    std::optional<Serialization::TemplateNodeState> theirsState;
+    if (const Serialization::NodeSerialization* templateNode = Serialization::findTemplateNode(theirs.nodes.nodes)) {
+        theirsState = Serialization::readTemplateNode(*templateNode);
+    }
+    const bool sameTemplate = theirsState && !entry.templateId.empty() && (theirsState->templateId == entry.templateId);
+    if (!sameTemplate) {
+        result.status = UpdateStatus::eTemplateMismatch;
+        result.error = theirsState
+            ? QCoreApplication::translate("ProjectMerge", "%1 is a version of the template %2, not of %3").arg(QString::fromStdString(path)).arg(QString::fromStdString(theirsState->name)).arg(QString::fromStdString(entry.name))
+            : QCoreApplication::translate("ProjectMerge", "%1 is not a published template").arg(QString::fromStdString(path));
+        if (!allowMismatch) {
+            return result;
+        }
+        result.status = UpdateStatus::eError;
+        result.error.clear();
+    }
+    Serialization::eraseTemplateNodes(&theirs.nodes.nodes);
     options.templatePath = QFileInfo(QString::fromStdString(path)).absoluteFilePath().toStdString();
     options.templateImportedAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODate).toStdString();
 
@@ -621,12 +642,18 @@ updateFromTemplate(const ProjectPtr& project,
     const Serialization::ProjectSerialization& base = *entry.base;
     const Serialization::MergePlan plan = Serialization::planMerge(base, mine, theirs, templateKey);
     Serialization::MergeResult merged = Serialization::threeWayMerge(base, mine, theirs, plan, options);
+    if (!merged.error.empty()) {
+        result.status = UpdateStatus::eLowMatch;
+        result.error = QString::fromStdString(merged.error);
+
+        return result;
+    }
     const std::vector<Serialization::MergeConflict> toSave = Serialization::conflictsToSave(base, mine, theirs, plan, merged);
 
-    const Serialization::TemplateImportSerialization* updated = nullptr;
+    std::optional<Serialization::TemplateImportSerialization> updated;
     for (const Serialization::TemplateImportSerialization& candidate : merged.merged.templates) {
         if (candidate.key == templateKey) {
-            updated = &candidate;
+            updated = candidate;
             break;
         }
     }
@@ -666,12 +693,52 @@ updateFromTemplate(const ProjectPtr& project,
         return result;
     }
 
-    project->setTemplateImport(*updated);
+    const bool upToDate = result.ops.empty() && merged.conflicts.empty();
+    if (sameTemplate) {
+        updated->name = theirsState->name;
+        updated->version = theirsState->version;
+    }
+    if (!upToDate || (updated->contentHash != entry.contentHash) || (updated->path != entry.path)) {
+        project->setTemplateImport(*updated);
+    }
     project->setMergeConflicts(toSave);
     result.conflicts = std::move(merged.conflicts);
     result.ok = true;
+    result.status = upToDate ? UpdateStatus::eUpToDate : UpdateStatus::eUpdated;
 
     return result;
+}
+
+std::optional<TemplateVersion>
+findLatestVersion(const QString& dir,
+                  const std::string& templateId)
+{
+    std::optional<TemplateVersion> latest;
+    if (templateId.empty()) {
+        return latest;
+    }
+    const QDir folder(dir);
+    const QStringList names = folder.entryList(QStringList() << QString::fromUtf8("*.ntpz"), QDir::Files, QDir::Name);
+    for (const QString& name : names) {
+        const QString path = folder.absoluteFilePath(name);
+        try {
+            Serialization::ProjectBundleReader bundle(path.toStdString());
+            Serialization::YamlWarnings warnings;
+            const Serialization::ProjectSerialization project = bundle.readProject(&warnings);
+            const Serialization::NodeSerialization* templateNode = Serialization::findTemplateNode(project.nodes.nodes);
+            if (!templateNode) {
+                continue;
+            }
+            const Serialization::TemplateNodeState state = Serialization::readTemplateNode(*templateNode);
+            if ((state.templateId == templateId) && (!latest || (state.version > latest->version))) {
+                latest = TemplateVersion { path, state.version };
+            }
+        } catch (const std::exception&) {
+            continue;
+        }
+    }
+
+    return latest;
 }
 
 ChangeSummary

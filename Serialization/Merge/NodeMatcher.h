@@ -107,6 +107,30 @@ NodeCorrespondence matchNodes(const MergeGraph& base,
                               const MergeGraph& other,
                               const std::string& templateKey);
 
+struct MatchOptions {
+    // With templateKey empty: an other-side node whose own ID is not in base and that matched
+    // nothing claims the base node its origin names, whatever import the origin names, before
+    // adoption, as a version saved from an import of base carries base's IDs only there.
+    bool followOrigins = false;
+    // Template nodes on either side never match, as in a merge of one template.
+    bool skipTemplateNodes = false;
+    // Other-side nodes that never match.
+    std::set<std::string> ignored;
+};
+
+/**
+ * @brief matchNodes() with options.
+ **/
+NodeCorrespondence matchNodesWithOptions(const MergeGraph& base,
+                                         const MergeGraph& other,
+                                         const std::string& templateKey,
+                                         const MatchOptions& options);
+
+/**
+ * @brief Whether node is a template node, which stands for a template and is never one's member.
+ **/
+bool isTemplateNode(const NodeSerialization& node);
+
 /**
  * @brief The node with the given ID anywhere in the tree, or null.
  **/

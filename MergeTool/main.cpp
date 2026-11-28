@@ -258,6 +258,9 @@ runMerge(const std::string& basePath,
         }
     }
     MergeResult result = threeWayMerge(base.project, mine.project, theirs.project, plan, options);
+    if (!result.error.empty()) {
+        throw std::runtime_error(theirsPath + ": " + result.error);
+    }
     result.merged.mergeConflicts = conflictsToSave(base.project, mine.project, theirs.project, plan, result);
     save(result.merged, root.empty() ? mine.root : root, mine.manifest, outPath);
     for (const MergeConflict& conflict : result.conflicts) {

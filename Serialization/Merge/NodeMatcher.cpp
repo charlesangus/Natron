@@ -59,13 +59,25 @@ namespace {
         }
     }
 
+    bool
+    neverMatches(const MergeGraph::Node& node,
+                 const std::string& id,
+                 const MatchOptions& options)
+    {
+        return (options.skipTemplateNodes && isTemplateNode(*node.node)) || options.ignored.count(id);
+    }
+
     std::map<std::string, std::vector<std::string>>
     collectClaims(const MergeGraph& base,
                   const MergeGraph& other,
-                  const std::string& templateKey)
+                  const std::string& templateKey,
+                  const MatchOptions& options)
     {
         std::map<std::string, std::vector<std::string>> claims;
         for (const std::pair<const std::string, MergeGraph::Node>& entry : other.nodes()) {
+            if (neverMatches(entry.second, entry.first, options)) {
+                continue;
+            }
             const NodeOriginSerialization& origin = entry.second.node->origin;
             const std::string& claimed = (origin.isSet() && (origin.templateKey == templateKey)) ? origin.nodeId : entry.first;
             if (base.find(claimed)) {
@@ -348,8 +360,33 @@ namespace {
     }
 
     void
+    claimThroughOrigins(const MergeGraph& base,
+                        const MergeGraph& other,
+                        const MatchOptions& options,
+                        NodeCorrespondence* correspondence)
+    {
+        const std::set<std::string> matchedOther = correspondence->matchedOther();
+        std::map<std::string, std::vector<std::string>> claims;
+        for (const std::pair<const std::string, MergeGraph::Node>& entry : other.nodes()) {
+            const NodeOriginSerialization& origin = entry.second.node->origin;
+            if (neverMatches(entry.second, entry.first, options) || matchedOther.count(entry.first) || base.find(entry.first) || !origin.isSet() || origin.nodeId.empty()) {
+                continue;
+            }
+            if (base.find(origin.nodeId) && !correspondence->baseToOther.count(origin.nodeId)) {
+                claims[origin.nodeId].push_back(entry.first);
+            }
+        }
+        for (const std::pair<const std::string, std::vector<std::string>>& claim : claims) {
+            if (claim.second.size() == 1) {
+                correspondence->baseToOther[claim.first] = claim.second.front();
+            }
+        }
+    }
+
+    void
     adoptByStructure(const MergeGraph& base,
                      const MergeGraph& other,
+                     const MatchOptions& options,
                      NodeCorrespondence* correspondence)
     {
         bool progress = true;
@@ -359,7 +396,7 @@ namespace {
             // (plug-in, parent) to the unmatched nodes without an origin, in ID order.
             std::map<std::pair<std::string, std::string>, std::vector<std::string>> unmatched;
             for (const std::pair<const std::string, MergeGraph::Node>& otherEntry : other.nodes()) {
-                if (!matchedOther.count(otherEntry.first) && !otherEntry.second.node->origin.isSet()) {
+                if (!matchedOther.count(otherEntry.first) && !otherEntry.second.node->origin.isSet() && !neverMatches(otherEntry.second, otherEntry.first, options)) {
                     unmatched[std::make_pair(otherEntry.second.node->pluginID, otherEntry.second.parentId)].push_back(otherEntry.first);
                 }
             }
@@ -461,15 +498,33 @@ NodeCorrespondence::matchedOther() const
     return result;
 }
 
+bool
+isTemplateNode(const NodeSerialization& node)
+{
+    return node.pluginID == kTemplateNodePluginId;
+}
+
 NodeCorrespondence
 matchNodes(const MergeGraph& base,
            const MergeGraph& other,
            const std::string& templateKey)
 {
-    const std::map<std::string, std::vector<std::string>> claims = collectClaims(base, other, templateKey);
+    return matchNodesWithOptions(base, other, templateKey, MatchOptions());
+}
+
+NodeCorrespondence
+matchNodesWithOptions(const MergeGraph& base,
+                      const MergeGraph& other,
+                      const std::string& templateKey,
+                      const MatchOptions& options)
+{
+    const std::map<std::string, std::vector<std::string>> claims = collectClaims(base, other, templateKey, options);
     NodeCorrespondence result = matchUniqueClaims(claims);
     resolveAmbiguousClaims(base, other, claims, &result);
-    adoptByStructure(base, other, &result);
+    if (options.followOrigins && templateKey.empty()) {
+        claimThroughOrigins(base, other, options, &result);
+    }
+    adoptByStructure(base, other, options, &result);
 
     return result;
 }

@@ -90,12 +90,14 @@ std::string importTemplate(Gui* gui,
 
 /**
  * @brief ProjectMerge::updateFromTemplate() on the open project as one undo step, which also puts
- * the import's base and the saved conflicts back. A partly applied update is still recorded so it
- * can be undone. The Merge Conflicts panel is shown when the update raised conflicts.
+ * the import's base and the saved conflicts back. An empty path is the file the import records.
+ * A partly applied update is still recorded so it can be undone. The Merge Conflicts panel is
+ * shown when the update raised conflicts.
  **/
 ProjectMerge::UpdateResult updateFromTemplate(Gui* gui,
                                               const std::string& templateKey,
-                                              const QString& path);
+                                              const QString& path,
+                                              bool allowMismatch = false);
 
 /**
  * @brief Gives each conflict at indices, in the project's list, the state side had, and removes

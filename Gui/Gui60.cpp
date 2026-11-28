@@ -107,7 +107,7 @@ Gui::updateFromTemplate(const std::string& templateKey)
         }
         path = QString::fromStdString(chosen);
     }
-    const ProjectMerge::UpdateResult result = MergeConflictResolve::updateFromTemplate(this, templateKey, path);
+    const ProjectMerge::UpdateResult result = MergeConflictResolve::updateFromTemplate(this, templateKey, path, true);
     if (!result.ok) {
         errorDialog(tr("Update from Template").toStdString(), result.error.toStdString(), false);
 

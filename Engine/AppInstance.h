@@ -499,6 +499,22 @@ public:
      **/
     virtual void setNodeGraphSelection(const NodesList& /*nodes*/) { }
 
+    enum TemplateNodeActionEnum {
+        eTemplateNodeActionPublish,
+        eTemplateNodeActionUpdateToLatest,
+        eTemplateNodeActionUpdateFromFile,
+        eTemplateNodeActionCompareWithBase,
+        eTemplateNodeActionDetach,
+    };
+
+    /**
+     * @brief Runs the action of a button of the template node, for the template import templateKey,
+     * as one undo step with the GUI's messages. Nothing to do without a GUI.
+     **/
+    virtual void runTemplateNodeAction(const NodePtr& /*templateNode*/,
+                                       const std::string& /*templateKey*/,
+                                       TemplateNodeActionEnum /*action*/) { }
+
     bool isCreatingPythonGroup() const;
 
     bool isCreatingNodeTree() const;

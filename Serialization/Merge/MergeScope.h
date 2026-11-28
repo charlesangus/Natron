@@ -33,10 +33,13 @@ namespace Serialization {
 /**
  * @brief The IDs of the shot nodes a merge of one template import may touch: the nodes that stand
  * for a base node, the nodes that lie on a path from one of those to another, and every node inside
- * an in-scope group. baseToMine comes from matchNodes for that import.
+ * an in-scope group. baseToMine comes from matchNodes for that import. Template nodes and the
+ * excluded nodes, which Remove from Template took out, are never in scope, even when they lie
+ * between members; a path through one still puts the nodes on it in scope.
  **/
 std::set<std::string> mergeScope(const MergeGraph& mine,
-                                 const NodeCorrespondence& baseToMine);
+                                 const NodeCorrespondence& baseToMine,
+                                 const std::set<std::string>& excluded = std::set<std::string>());
 
 } // namespace Serialization
 NATRON_NAMESPACE_EXIT

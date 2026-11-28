@@ -237,6 +237,7 @@ TEST(NatronMerge, EveryScenarioMergesAsThroughTheApi)
         for (const ExpectedMerge& merge : readExpected(expectedDir + scenario.first + ".yaml")) {
             Serialization::TemplateImportSerialization entry;
             entry.key = merge.templateKey;
+            entry.templateId = "00112233445566778899aabbccddeeff";
             entry.base = std::make_shared<Serialization::ProjectSerialization>(base);
             mine.templates.push_back(entry);
         }
@@ -411,6 +412,7 @@ TEST(NatronMerge, ATemplateMergeRecordsWhereTheTemplateCameFrom)
     Serialization::ProjectSerialization mine = plainProject();
     Serialization::TemplateImportSerialization entry;
     entry.key = "grade_tpl";
+    entry.templateId = "00112233445566778899aabbccddeeff";
     entry.path = "/elsewhere/grade.ntpz";
     entry.base = std::make_shared<Serialization::ProjectSerialization>(base);
     mine.templates.push_back(entry);
@@ -442,6 +444,7 @@ TEST(NatronMerge, ATemplateMergeIgnoresTheTemplatesOwnImportsAndConflicts)
     Serialization::ProjectSerialization mine = plainProject();
     Serialization::TemplateImportSerialization entry;
     entry.key = "grade_tpl";
+    entry.templateId = "00112233445566778899aabbccddeeff";
     entry.path = "/elsewhere/grade.ntpz";
     entry.base = std::make_shared<Serialization::ProjectSerialization>(base);
     mine.templates.push_back(entry);
@@ -449,6 +452,7 @@ TEST(NatronMerge, ATemplateMergeIgnoresTheTemplatesOwnImportsAndConflicts)
     Serialization::ProjectSerialization theirs = plainProject([](SimGraph* g) { g->set("Blur1", "size", { 4., 4. }); });
     Serialization::TemplateImportSerialization inner;
     inner.key = "inner_tpl";
+    inner.templateId = "ffeeddccbbaa99887766554433221100";
     inner.path = "/elsewhere/inner.ntpz";
     inner.base = std::make_shared<Serialization::ProjectSerialization>(base);
     theirs.templates.push_back(inner);

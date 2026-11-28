@@ -1005,9 +1005,10 @@ TEST_F(USDRenderSettingsTest, TheAovChecklistAuthorsRenderVars)
         ASSERT_TRUE(bool(product));
         PXR_NS::SdfPathVector ordered;
         product.GetOrderedVarsRel().GetTargets(&ordered);
-        EXPECT_EQ(PXR_NS::SdfPathVector({ PXR_NS::SdfPath("/Render/Products/Vars/cycles_normal"), PXR_NS::SdfPath("/Render/Products/Vars/st") }), ordered);
+        EXPECT_EQ(PXR_NS::SdfPathVector({ PXR_NS::SdfPath("/Render/Products/Vars/rendersettings/cycles_normal"), PXR_NS::SdfPath("/Render/Products/Vars/rendersettings/st") }), ordered);
         EXPECT_TRUE(authored->GetPrimAtPath(PXR_NS::SdfPath("/Render/Products")).IsA<PXR_NS::UsdGeomScope>());
         EXPECT_TRUE(authored->GetPrimAtPath(PXR_NS::SdfPath("/Render/Products/Vars")).IsA<PXR_NS::UsdGeomScope>());
+        EXPECT_TRUE(authored->GetPrimAtPath(PXR_NS::SdfPath("/Render/Products/Vars/rendersettings")).IsA<PXR_NS::UsdGeomScope>());
     }
     lease = SceneQueryPool::Lease();
     std::vector<AuthoredVar> vars = productVars(stageOf(node, &lease));
@@ -1105,8 +1106,13 @@ TEST_F(USDRenderSettingsTest, TheAovChecklistAuthorsRenderVars)
         return;
     }
     QCoreApplication::processEvents();
-    std::list<ImageLayerDesc> present;
-    render->getEffectInstance()->getPresentLayers(1., ViewIdx(0), -1, &present);
+    // Off the main thread, which is given a provisional answer while a worker reads the scene.
+    const EffectInstancePtr renderEffect = render->getEffectInstance();
+    const std::list<ImageLayerDesc> present = std::async(std::launch::async, [renderEffect]() {
+        std::list<ImageLayerDesc> layers;
+        renderEffect->getPresentLayers(1., ViewIdx(0), -1, &layers);
+
+        return layers; }).get();
     bool haveNormal = false;
     bool haveSt = false;
     for (const ImageLayerDesc& layer : present) {
@@ -1234,8 +1240,8 @@ TEST_F(USDRenderSettingsTest, AovEditsRefreshTheLayerMenuOfAViewerDownstream)
     QObject::disconnect(counter);
 }
 
-// The input scene's product stays listed beside the node's, and a var of the input scene's that
-// shares a name with one of the node's takes none of its data type or layer.
+// The input scene's product stays listed beside the node's, and the node's vars, in a scope of the
+// prim's own, leave a var of the input scene's that shares a name with one of them as it is.
 TEST_F(USDRenderSettingsTest, TheAovChecklistKeepsTheInputScenesProducts)
 {
     NodePtr reader = createNode(QString::fromUtf8(PLUGINID_NATRON_USDREAD));
@@ -1256,9 +1262,14 @@ TEST_F(USDRenderSettingsTest, TheAovChecklistKeepsTheInputScenesProducts)
     PXR_NS::SdfPathVector products;
     prim.GetProductsRel().GetTargets(&products);
     EXPECT_EQ(PXR_NS::SdfPathVector({ PXR_NS::SdfPath("/Render/Products/rendersettings"), PXR_NS::SdfPath("/Render/Products/beauty") }), products);
-    const PXR_NS::UsdRenderVar normal(stage->GetPrimAtPath(PXR_NS::SdfPath("/Render/Products/Vars/normal")));
+    const PXR_NS::UsdRenderVar normal(stage->GetPrimAtPath(PXR_NS::SdfPath("/Render/Products/Vars/rendersettings/normal")));
     ASSERT_TRUE(bool(normal));
     EXPECT_FALSE(normal.GetDataTypeAttr().HasAuthoredValue());
+    const PXR_NS::UsdRenderVar inputNormal(stage->GetPrimAtPath(PXR_NS::SdfPath("/Render/Products/Vars/normal")));
+    ASSERT_TRUE(bool(inputNormal));
+    PXR_NS::TfToken inputDataType;
+    EXPECT_TRUE(inputNormal.GetDataTypeAttr().Get(&inputDataType));
+    EXPECT_EQ(PXR_NS::TfToken("normal3f"), inputDataType);
     const std::vector<AuthoredVar> vars = productVars(stage);
     EXPECT_TRUE(findVar(vars, "depth") != nullptr);
     EXPECT_TRUE(findVar(vars, "instanceId") != nullptr);

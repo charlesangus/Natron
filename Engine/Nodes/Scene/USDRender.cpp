@@ -614,9 +614,16 @@ USDRender::getSettingsSummary(double time,
         return summary;
     }
     const_cast<USDRender*>(this)->markOutputMetadataProvisional();
-    if (!post) {
-        return provisional;
+    if (post) {
+        postSettingsRead(hash);
     }
+
+    return provisional;
+} // USDRender::getSettingsSummary
+
+void
+USDRender::postSettingsRead(U64 hash) const
+{
     // Never more than one posted job: one that replaced another would drop it, and the drop
     // would be taken for the node's end.
     const std::weak_ptr<const EffectInstance> weakThis = weak_from_this();
@@ -624,6 +631,7 @@ USDRender::getSettingsSummary(double time,
         std::shared_ptr<const EffectInstance> effect = weakThis.lock();
         if (const USDRender* render = dynamic_cast<const USDRender*>(effect.get())) {
             render->readGivenSettingsSummaries();
+            render->readWantedSpecAovs();
         }
         SceneNodeAuthoring::releaseOnMainThread(&effect); }, [weakThis, hash]() {
         std::shared_ptr<const EffectInstance> effect = weakThis.lock();
@@ -641,6 +649,10 @@ USDRender::getSettingsSummary(double time,
                     }
                 }
             }
+            {
+                std::lock_guard<std::mutex> l(render->_specMutex);
+                render->_specAovsWanted.clear();
+            }
             // The readers given a provisional summary ask again rather than keep it.
             if (dropped && QCoreApplication::instance()) {
                 const std::weak_ptr<const EffectInstance> weak = weakThis;
@@ -652,9 +664,7 @@ USDRender::getSettingsSummary(double time,
             }
         }
         SceneNodeAuthoring::releaseOnMainThread(&effect); });
-
-    return provisional;
-} // USDRender::getSettingsSummary
+}
 
 void
 USDRender::readGivenSettingsSummaries() const
@@ -767,6 +777,8 @@ struct USDRender::SpecAovs {
         PXR_NS::SdfPath path;
         PXR_NS::TfToken dataType;
         ImageLayerDesc layer;
+        // The channels of the renderer's format the layer was declared with, 0 when unknown then.
+        int formatChannels = 0;
         // False while the renderer gives no buffer for it: it is asked for, and has no layer.
         bool declared = true;
     };
@@ -775,7 +787,7 @@ struct USDRender::SpecAovs {
     std::vector<Entry> aovs;
     // The layer of each RenderVar that names an AOV every render has, by AOV.
     std::map<PXR_NS::TfToken, std::string> builtInLayers;
-    // The settings those RenderVars author for the delegate.
+    // Those AOVs, with the settings their RenderVars author for the delegate, if any.
     std::vector<HydraRender::Aov> builtInAovs;
     std::vector<RenderSettingsPrim::RejectedVar> rejected;
     std::string warning;
@@ -855,15 +867,51 @@ setMetadataValue(ImageMetadata* metadata,
 std::shared_ptr<const USDRender::SpecAovs>
 USDRender::specAovs(double time,
                     ViewIdx view,
-                    const ActiveSettings* active) const
+                    const ActiveSettings* active,
+                    bool* provisionalOut) const
 {
-    const FrameKey key(time, (int)view);
+    const FrameKey frame(time, (int)view);
+    const U64 hash = getRenderHash();
+    const HashedFrameKey key(hash, frame);
+    // A render on the main thread, as a background render's, reads it: nothing would refresh it.
+    const bool provisional = !active && onMainThread() && !getFrameArgs();
+    if (provisionalOut) {
+        *provisionalOut = false;
+    }
+    U64 generation = 0;
+    std::set<std::pair<std::string, std::string>> refused;
+    std::shared_ptr<const SpecAovs> given;
     {
         std::lock_guard<std::mutex> l(_specMutex);
         const std::shared_ptr<const SpecAovs>* found = _specAovs.find(key);
         if (found) {
             return *found;
         }
+        if (provisional) {
+            given = _lastSpecAovs;
+            WantedSpecAovs& wanted = _specAovsWanted[frame];
+            wanted.hash = getHash();
+            wanted.given = given;
+        } else {
+            generation = _specGeneration;
+            refused = _refusedAovs;
+        }
+    }
+    if (provisional) {
+        bool post = false;
+        {
+            std::lock_guard<std::mutex> locker(_settingsSummariesMutex);
+            post = !_settingsSummariesPosted;
+            _settingsSummariesPosted = true;
+        }
+        if (post) {
+            postSettingsRead(getHash());
+        }
+        if (provisionalOut) {
+            *provisionalOut = true;
+        }
+
+        return given;
     }
     ActiveSettings read;
     if (!active) {
@@ -887,11 +935,11 @@ USDRender::specAovs(double time,
     auto addWarning = [&spec](const std::string& warning) {
         spec->warning = spec->warning.empty() ? warning : spec->warning + "\n" + warning;
     };
-    std::set<std::pair<std::string, std::string>> refused;
-    {
-        std::lock_guard<std::mutex> l(_specMutex);
-        refused = _refusedAovs;
+    if (!requests.warning.empty()) {
+        addWarning(requests.warning);
     }
+    // Two vars can name one AOV only once mapped to the delegate's names ("cycles:normal" and "normal").
+    std::set<PXR_NS::TfToken> asked;
     for (const RenderSettingsPrim::AovRequest& request : requests.requests) {
         PXR_NS::TfToken aovName(RenderSettingsPrim::delegateAovName(request.name.GetString(), active->renderer));
         std::string builtIn = builtInLayer(aovName, active->renderer);
@@ -903,6 +951,10 @@ USDRender::specAovs(double time,
                 aovName = bare;
             }
         }
+        if (!asked.insert(aovName).second) {
+            spec->rejected.push_back({ request.path, "another RenderVar already asks for the AOV " + aovName.GetString() });
+            continue;
+        }
         if (!builtIn.empty()) {
             spec->builtInLayers[aovName] = builtIn;
             if (!request.layer.empty() && (request.layer != builtIn)) {
@@ -913,12 +965,12 @@ USDRender::specAovs(double time,
                                .arg(QString::fromStdString(request.layer))
                                .toStdString());
             }
+            HydraRender::Aov aov;
+            aov.name = aovName;
             if (authorsAovSettings(request)) {
-                HydraRender::Aov aov;
-                aov.name = aovName;
                 aov.settings = RenderSettingsPrim::outputSettings(request);
-                spec->builtInAovs.push_back(aov);
             }
+            spec->builtInAovs.push_back(aov);
             continue;
         }
         std::string formatWarning;
@@ -927,7 +979,8 @@ USDRender::specAovs(double time,
         entry.aov.settings = RenderSettingsPrim::outputSettings(request);
         entry.path = request.path;
         entry.dataType = request.dataType;
-        entry.layer = AovLayers::layer(active->renderer, aovName.GetString(), request.dataType.GetString(), request.layer, AovLayers::formatChannels(active->renderer, aovName.GetString()), &formatWarning);
+        entry.formatChannels = AovLayers::formatChannels(active->renderer, aovName.GetString());
+        entry.layer = AovLayers::layer(active->renderer, aovName.GetString(), request.dataType.GetString(), request.layer, entry.formatChannels, &formatWarning);
         if (!formatWarning.empty()) {
             addWarning(tr("The RenderVar %1: %2").arg(QString::fromStdString(request.path.GetString())).arg(QString::fromStdString(formatWarning)).toStdString());
         }
@@ -941,8 +994,14 @@ USDRender::specAovs(double time,
         entry.declared = !refused.count(std::make_pair(active->renderer, aovName.GetString()));
         spec->aovs.push_back(entry);
     }
+    // A spec of a scene that moved, or of refused AOVs that changed, while it was read must not be
+    // served under the newer state.
+    const bool current = (getRenderHash() == hash);
     std::lock_guard<std::mutex> l(_specMutex);
-    _specAovs.get(key) = spec;
+    if (current && (generation == _specGeneration)) {
+        _specAovs.get(key) = spec;
+        _lastSpecAovs = spec;
+    }
 
     return spec;
 } // USDRender::specAovs
@@ -953,7 +1012,66 @@ USDRender::clearSpecAovs()
     std::lock_guard<std::mutex> l(_specMutex);
 
     _specAovs.clear();
+    ++_specGeneration;
 }
+
+void
+USDRender::readWantedSpecAovs() const
+{
+    // What getComponentsNeededAndProduced() takes from a spec: its renderer and declared layers.
+    const auto declaredLayers = [](const std::shared_ptr<const SpecAovs>& spec) {
+        std::vector<std::string> layers;
+        if (!spec) {
+            return layers;
+        }
+        layers.push_back(spec->renderer);
+        for (std::size_t i = 0; spec->error.empty() && (i < spec->aovs.size()); ++i) {
+            if (spec->aovs[i].declared) {
+                layers.push_back(spec->aovs[i].layer.getLayerID());
+                const std::vector<std::string>& channels = spec->aovs[i].layer.getChannels();
+                layers.insert(layers.end(), channels.begin(), channels.end());
+            }
+        }
+
+        return layers;
+    };
+    for (;;) {
+        const U64 hash = getHash();
+        FrameKey frame;
+        std::shared_ptr<const SpecAovs> given;
+        bool found = false;
+        {
+            std::lock_guard<std::mutex> l(_specMutex);
+            for (std::map<FrameKey, WantedSpecAovs>::iterator it = _specAovsWanted.begin(); it != _specAovsWanted.end();) {
+                // Given under a hash the node left: its readers ask again under the new one.
+                if (!found && (it->second.hash == hash)) {
+                    frame = it->first;
+                    given = it->second.given;
+                    found = true;
+                }
+                it = _specAovsWanted.erase(it);
+                if (found) {
+                    break;
+                }
+            }
+        }
+        if (!found || !getNode()) {
+            return;
+        }
+        const std::shared_ptr<const SpecAovs> spec = specAovs(frame.first, ViewIdx(frame.second), nullptr);
+        if (spec && (getHash() == hash) && (declaredLayers(spec) != declaredLayers(given)) && QCoreApplication::instance()) {
+            const std::weak_ptr<const EffectInstance> weakThis = weak_from_this();
+            QMetaObject::invokeMethod(QCoreApplication::instance(), [weakThis]() {
+                const std::shared_ptr<const EffectInstance> self = weakThis.lock();
+                if (const USDRender* render = dynamic_cast<const USDRender*>(self.get())) {
+                    USDRender* r = const_cast<USDRender*>(render);
+                    r->invalidateOutputMetadata();
+                    // The layers moved under an unchanged hash, so nothing else re-lists the layer menus downstream.
+                    r->refreshMetadataSideEffects();
+                } }, Qt::QueuedConnection);
+        }
+    }
+} // USDRender::readWantedSpecAovs
 
 void
 USDRender::appendNodeContentHash(ContentHasher& h) const
@@ -1084,7 +1202,11 @@ USDRender::getComponentsNeededAndProduced(double time,
     produced.push_back(depthLayer());
     produced.push_back(primIdLayer());
     // Storm and Natron Utility render no normal AOV.
-    const std::shared_ptr<const SpecAovs> spec = specAovs(time, view, nullptr);
+    bool provisional = false;
+    const std::shared_ptr<const SpecAovs> spec = specAovs(time, view, nullptr, &provisional);
+    if (provisional) {
+        markComponentsProvisional();
+    }
     std::string renderer;
     std::string error;
     if (spec) {
@@ -1595,10 +1717,16 @@ USDRender::render(const RenderActionArgs& args)
             ePlaneOther
         };
         const std::string& layerID = it->first.getLayerID();
-        const PlaneEnum plane = it->first.isColorLayer() ? ePlaneColor : (layerID == "depth") ? ePlaneDepth
-            : (layerID == "primId")                                                           ? ePlanePrimId
-            : (layerID == "normal")                                                           ? ePlaneNormal
-                                                                                              : ePlaneOther;
+        // A RenderVar can render to a layer named like a fixed plane its renderer does not give (Storm's normal).
+        bool specLayer = false;
+        for (std::size_t i = 0; setup.spec && !specLayer && (i < setup.spec->aovs.size()); ++i) {
+            specLayer = (setup.spec->aovs[i].layer.getLayerID() == layerID);
+        }
+        const PlaneEnum plane = it->first.isColorLayer() ? ePlaneColor : specLayer ? ePlaneOther
+            : (layerID == "depth")                                                 ? ePlaneDepth
+            : (layerID == "primId")                                                ? ePlanePrimId
+            : (layerID == "normal")                                                ? ePlaneNormal
+                                                                                   : ePlaneOther;
         const HydraRender::AovPlane* aov = nullptr;
         for (std::size_t i = 0; setup.spec && (plane == ePlaneOther) && !aov && (i < setup.spec->aovs.size()); ++i) {
             if (setup.spec->aovs[i].layer.getLayerID() != layerID) {
@@ -1678,6 +1806,7 @@ USDRender::followRenderedAovs(U64 hash,
     for (const RenderSettingsPrim::RejectedVar& var : spec->rejected) {
         rejected.push_back(tr("%1 (%2)").arg(QString::fromStdString(var.path.GetString())).arg(QString::fromStdString(var.reason)));
     }
+    QStringList formatWarnings;
     bool layersChanged = false;
     std::map<PXR_NS::TfToken, std::string> layers = spec->builtInLayers;
     {
@@ -1697,7 +1826,12 @@ USDRender::followRenderedAovs(U64 hash,
                     continue;
                 }
                 // The layer was declared before the renderer's format was known; the format can leave it as it is (texCoord2f's two channels of Cycles' three).
-                const AovLayers::Layout rendered = AovLayers::layout(spec->renderer, entry.aov.name.GetString(), entry.dataType.GetString(), plane.channels, nullptr);
+                // A spec declared with this format already warns of a dataType it overrides.
+                std::string formatWarning;
+                const AovLayers::Layout rendered = AovLayers::layout(spec->renderer, entry.aov.name.GetString(), entry.dataType.GetString(), plane.channels, (plane.channels != entry.formatChannels) ? &formatWarning : nullptr);
+                if (!formatWarning.empty()) {
+                    formatWarnings.push_back(tr("The RenderVar %1: %2").arg(QString::fromStdString(entry.path.GetString())).arg(QString::fromStdString(formatWarning)));
+                }
                 if (AovLayers::channelNames(entry.aov.name.GetString(), rendered) != entry.layer.getChannels()) {
                     layersChanged = true;
                 }
@@ -1735,11 +1869,11 @@ USDRender::followRenderedAovs(U64 hash,
                 refreshMetadataSideEffects();
             } }, Qt::QueuedConnection);
     }
-    if (rejected.isEmpty()) {
-        return std::string();
+    if (!rejected.isEmpty()) {
+        formatWarnings.push_back(tr("No layer renders for the RenderVars %1.").arg(rejected.join(QString::fromUtf8(", "))));
     }
 
-    return tr("No layer renders for the RenderVars %1.").arg(rejected.join(QString::fromUtf8(", "))).toStdString();
+    return formatWarnings.join(QString::fromUtf8("\n")).toStdString();
 } // USDRender::followRenderedAovs
 
 void

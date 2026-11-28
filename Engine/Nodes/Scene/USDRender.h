@@ -276,13 +276,23 @@ private:
     typedef std::pair<U64, FrameKey> HashedFrameKey;
 
     /**
-     * The AOVs the active prim's RenderVars ask the active renderer for, of the frame, cached for
-     * the kRecentFrames last frames until the node's hash moves. Read from active when it is not null and the frame is not cached; null
-     * when the scene cannot be read.
+     * The AOVs the active prim's RenderVars ask the active renderer for, of the frame, cached under
+     * the render hash for the kRecentFrames last frames. Read from active when it is not null and the frame is not cached; null
+     * when the scene cannot be read. The main thread outside a render never evaluates the input
+     * for it: without active it is given, with *provisional set, the last one stored for any hash
+     * and frame, or null, while the settings worker reads the frame's (readWantedSpecAovs()).
      **/
-    std::shared_ptr<const SpecAovs> specAovs(double time, ViewIdx view, const ActiveSettings* active) const;
+    std::shared_ptr<const SpecAovs> specAovs(double time, ViewIdx view, const ActiveSettings* active, bool* provisional = nullptr) const;
 
     void clearSpecAovs();
+
+    // On the settings worker: reads every spec the main thread was given a provisional one for
+    // under the node's hash, and refreshes the layer menus when its layers differ from those.
+    void readWantedSpecAovs() const;
+
+    // Posts the settings worker's read of the summaries and specs the main thread was given
+    // provisional ones for under hash, unless one is posted and not yet started.
+    void postSettingsRead(U64 hash) const;
 
     // Keeps the layers and metadata to what the render gave, and returns the warning naming the RenderVars that render nothing.
     std::string followRenderedAovs(U64 hash,
@@ -385,7 +395,17 @@ private:
     KnobChoiceWPtr _renderer;
     std::atomic<bool> _settingsPrimMenuRefreshPending;
     mutable std::mutex _specMutex;
-    mutable RecentFrames<FrameKey, std::shared_ptr<const SpecAovs>> _specAovs;
+    // Under _specMutex: the specs by render hash and frame, the last one stored, the frames the main
+    // thread was given a provisional one for, and a count that clearSpecAovs() moves, so that a
+    // read begun before it is not stored after it.
+    mutable RecentFrames<HashedFrameKey, std::shared_ptr<const SpecAovs>> _specAovs;
+    mutable std::shared_ptr<const SpecAovs> _lastSpecAovs;
+    struct WantedSpecAovs {
+        U64 hash = 0;
+        std::shared_ptr<const SpecAovs> given;
+    };
+    mutable std::map<FrameKey, WantedSpecAovs> _specAovsWanted;
+    mutable U64 _specGeneration = 0;
     // The AOVs each renderer gave no buffer for in its last render, whose layers are left out.
     std::set<std::pair<std::string, std::string>> _refusedAovs;
     // The layer metadata of the last render of each frame under each hash, from the delegate's render stats.

@@ -39,6 +39,7 @@
 #include <cstring>
 #include <fstream>
 #include <functional>
+#include <future>
 #include <list>
 #include <map>
 #include <memory>
@@ -1351,8 +1352,13 @@ TEST_F(USDRenderMoonRayTest, RenderVarSettingsReachTheDelegateAndItsStatsTheLaye
     // hdMoonray applies the setting: a math_filter other than average combines each pixel's two
     // samples into other P values.
     auto renderP = [](const NodePtr& render, std::vector<float>* pixels) {
-        std::list<ImageLayerDesc> present;
-        render->getEffectInstance()->getPresentLayers(1., ViewIdx(0), -1, &present);
+        // Off the main thread, which is given a provisional answer while a worker reads the scene.
+        const EffectInstancePtr renderEffect = render->getEffectInstance();
+        const std::list<ImageLayerDesc> present = std::async(std::launch::async, [renderEffect]() {
+            std::list<ImageLayerDesc> layers;
+            renderEffect->getPresentLayers(1., ViewIdx(0), -1, &layers);
+
+            return layers; }).get();
         std::list<ImageLayerDesc> layers;
         for (const ImageLayerDesc& layer : present) {
             if (layer.getLayerID() == "P") {

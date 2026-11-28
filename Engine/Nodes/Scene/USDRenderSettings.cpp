@@ -453,16 +453,19 @@ authorRenderVars(const PXR_NS::UsdStageRefPtr& stage,
         return true;
     }
     const PXR_NS::SdfPath productsPath(kUSDRenderSettingsProductsPath);
-    const PXR_NS::SdfPath varsPath(kUSDRenderSettingsVarsPath);
-    if (!PXR_NS::UsdGeomScope::Define(stage, productsPath) || !PXR_NS::UsdGeomScope::Define(stage, varsPath)) {
+    const PXR_NS::SdfPath allVarsPath(kUSDRenderSettingsVarsPath);
+    // Named after the settings prim so that two settings prims in one scene keep their own products.
+    std::string productName = settings.GetPath().GetName();
+    if (productName == allVarsPath.GetName()) {
+        productName += "_product";
+    }
+    // Vars of their own too: a var another node authors for another prim would change this prim's
+    // render without changing the hash of the renders of it, which folds this node's knobs only.
+    const PXR_NS::SdfPath varsPath = allVarsPath.AppendChild(PXR_NS::TfToken(productName));
+    if (!PXR_NS::UsdGeomScope::Define(stage, productsPath) || !PXR_NS::UsdGeomScope::Define(stage, allVarsPath) || !PXR_NS::UsdGeomScope::Define(stage, varsPath)) {
         *errorMessage = "USD could not define the scopes " + productsPath.GetString() + " and " + varsPath.GetString() + ".";
 
         return false;
-    }
-    // Named after the settings prim so that two settings prims in one scene keep their own products.
-    std::string productName = settings.GetPath().GetName();
-    if (productName == varsPath.GetName()) {
-        productName += "_product";
     }
     const PXR_NS::SdfPath productPath = productsPath.AppendChild(PXR_NS::TfToken(productName));
     const PXR_NS::UsdRenderProduct product = PXR_NS::UsdRenderProduct::Define(stage, productPath);
@@ -482,8 +485,7 @@ authorRenderVars(const PXR_NS::UsdStageRefPtr& stage,
         const PXR_NS::SdfPath varPath = varsPath.AppendChild(PXR_NS::TfToken(name));
         const PXR_NS::UsdRenderVar var = PXR_NS::UsdRenderVar::Define(stage, varPath);
         bool ok = var && var.CreateSourceNameAttr().Set(pick.sourceName) && var.CreateSourceTypeAttr().Set(pick.sourceType);
-        // Vars share one scope with every other setup's, so a var at this path upstream must not
-        // lend this one a data type or layer the pick leaves unset.
+        // A var at this path upstream must not lend this one a data type or layer the pick leaves unset.
         if (ok) {
             const PXR_NS::UsdAttribute dataType = var.CreateDataTypeAttr();
             ok = dataType && (pick.dataType.IsEmpty() ? dataType.Set(PXR_NS::SdfValueBlock()) : dataType.Set(pick.dataType));
@@ -611,8 +613,8 @@ USDRenderSettings::authorLayer(const SceneLayerEdit& edit,
             }
             const std::string sourceType = trimmed(row[KnobRenderVars::eColumnSourceType]);
             pick.sourceType = sourceType.empty() ? PXR_NS::UsdRenderTokens->raw : PXR_NS::TfToken(sourceType);
-            if ((pick.sourceType != PXR_NS::UsdRenderTokens->raw) && (pick.sourceType != PXR_NS::UsdRenderTokens->primvar) && (pick.sourceType != PXR_NS::UsdRenderTokens->lpe) && (pick.sourceType != PXR_NS::UsdRenderTokens->intrinsic)) {
-                *errorMessage = tr("Row %1 of Custom AOVs has the source type %2, which is not raw, primvar, lpe or intrinsic.")
+            if ((pick.sourceType != PXR_NS::UsdRenderTokens->raw) && (pick.sourceType != PXR_NS::UsdRenderTokens->primvar) && (pick.sourceType != PXR_NS::UsdRenderTokens->lpe)) {
+                *errorMessage = tr("Row %1 of Custom AOVs has the source type %2, which is not raw, primvar or lpe.")
                                     .arg(rowNumber)
                                     .arg(QString::fromStdString(sourceType))
                                     .toStdString();

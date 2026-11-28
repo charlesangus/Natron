@@ -52,14 +52,14 @@ the scene, USDWrite writes them out with it and other USD tools can read them.
 ## AOVs tab
 
 The AOVs tab picks the AOVs a render makes besides the colour, depth and ID
-layers it always has. Each pick is authored as a RenderVar under
-`/Render/Products/Vars`, named after its source (`cycles:normal` is
-`/Render/Products/Vars/cycles_normal`), and listed in the `orderedVars` of a
-RenderProduct under `/Render/Products` named after the prim
-(`/Render/Products/rendersettings` by default). The prim lists the product in
-its `products` after any products the input scene gave it, and a render makes
-the vars of all of them. With nothing picked, the node authors no product.
-The vars scope is shared with the input scene's: a var of the same name there
+layers it always has. Each pick is authored as a RenderVar in a scope under
+`/Render/Products/Vars` named after the prim, named after its source
+(`cycles:normal` is `/Render/Products/Vars/rendersettings/cycles_normal` by
+default), and listed in the `orderedVars` of a RenderProduct under
+`/Render/Products` named after the prim (`/Render/Products/rendersettings` by
+default). The prim lists the product in its `products` after any products the
+input scene gave it, and a render makes the vars of all of them. With nothing
+picked, the node authors no product. A var of the same path in the input scene
 takes this node's source, data type and layer.
 
 - One group per installed renderer that Natron knows the AOVs of (Cycles AOVs,

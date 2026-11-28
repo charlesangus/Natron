@@ -1800,7 +1800,7 @@ readAovs(const EngineEntry& entry,
         }
         result->aovs.push_back(std::move(plane));
     }
-    if (entry.aovs.empty()) {
+    if (entry.aovs.empty() && entry.builtInAovs.empty()) {
         return true;
     }
     VtDictionary stats = entry.engine->GetRenderStats();
@@ -1952,14 +1952,13 @@ RenderThread::makeEngine(EngineEntry& entry,
 
         return false;
     }
-    for (const HydraRender::Aov& aov : request.aovs) {
-        if (!aov.settings.empty() && (std::find(extras.begin(), extras.end(), aov.name) != extras.end())) {
-            (void)EngineAovSettings::set(entry.engine.get(), aov.name, aov.settings);
-        }
-    }
-    for (const HydraRender::Aov& aov : request.builtInAovs) {
-        if (!aov.settings.empty() && (std::find(aovs.begin(), aovs.end(), aov.name) != aovs.end())) {
-            (void)EngineAovSettings::set(entry.engine.get(), aov.name, aov.settings);
+    // A request's AOV can be one the engine renders anyway (instanceId), whose settings it takes too.
+    const TfTokenVector& rendered = extras.empty() ? aovs : all;
+    for (const std::vector<HydraRender::Aov>* list : { &request.aovs, &request.builtInAovs }) {
+        for (const HydraRender::Aov& aov : *list) {
+            if (!aov.settings.empty() && (std::find(rendered.begin(), rendered.end(), aov.name) != rendered.end())) {
+                (void)EngineAovSettings::set(entry.engine.get(), aov.name, aov.settings);
+            }
         }
     }
     entry.headlight = request.headlight;

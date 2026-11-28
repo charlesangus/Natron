@@ -2159,14 +2159,18 @@ protected:
         return filePath.toStdString();
     }
 
-    // The layers node gives at frame 1, after the main thread has followed its last render.
+    // The layers node gives at frame 1, after the main thread has followed its last render, asked
+    // off the main thread, which is given a provisional answer while a worker reads the scene.
     static std::list<ImageLayerDesc> presentLayers(const NodePtr& node)
     {
         QCoreApplication::processEvents();
-        std::list<ImageLayerDesc> layers;
-        node->getEffectInstance()->getPresentLayers(1., ViewIdx(0), -1, &layers);
+        const EffectInstancePtr effect = node->getEffectInstance();
 
-        return layers;
+        return std::async(std::launch::async, [effect]() {
+            std::list<ImageLayerDesc> layers;
+            effect->getPresentLayers(1., ViewIdx(0), -1, &layers);
+
+            return layers; }).get();
     }
 
     static const ImageLayerDesc* findLayer(const std::list<ImageLayerDesc>& layers,

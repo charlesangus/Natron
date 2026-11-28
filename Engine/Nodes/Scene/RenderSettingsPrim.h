@@ -147,6 +147,8 @@ struct RejectedVar {
 struct AovRequests {
     std::vector<AovRequest> requests;
     std::vector<RejectedVar> rejected;
+    // Names the products that differ from the first one with vars in what the render takes from that one only.
+    std::string warning;
 };
 
 /**
@@ -155,7 +157,9 @@ struct AovRequests {
  * intrinsic sourceType, or no sourceName, is rejected. A var whose sourceName is in the namespace
  * of a delegate other than rendererId ("moonray:..." for Cycles) is left out without a word: the
  * checklist authors vars for every delegate. False with *error set when two products differ in
- * camera or resolution, which one render cannot give both.
+ * camera or resolution, which one render cannot give both. Products that differ in pixel aspect
+ * ratio, aspect ratio conform policy, data window, motion blur or depth of field render with the
+ * first one's, and out->warning says so.
  **/
 bool aovRequests(const PXR_NS::UsdRenderSettings& prim,
                  const std::string& rendererId,

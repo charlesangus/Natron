@@ -410,6 +410,7 @@ aovRequests(const UsdRenderSettings& prim,
 {
     out->requests.clear();
     out->rejected.clear();
+    out->warning.clear();
     if (!prim) {
         return true;
     }
@@ -432,6 +433,33 @@ aovRequests(const UsdRenderSettings& prim,
             *error = "The render products " + first->renderProductPath.GetString() + " and " + product.renderProductPath.GetString() + " of " + prim.GetPath().GetString() + " differ in camera or resolution, which one render cannot give both. Give them the same camera and resolution, or split them across settings prims.";
 
             return false;
+        } else {
+            std::vector<std::string> differ;
+            if (product.pixelAspectRatio != first->pixelAspectRatio) {
+                differ.push_back("pixel aspect ratio");
+            }
+            if (product.aspectRatioConformPolicy != first->aspectRatioConformPolicy) {
+                differ.push_back("aspect ratio conform policy");
+            }
+            if (product.dataWindowNDC != first->dataWindowNDC) {
+                differ.push_back("data window");
+            }
+            if (product.disableMotionBlur != first->disableMotionBlur) {
+                differ.push_back("motion blur");
+            }
+            if (product.disableDepthOfField != first->disableDepthOfField) {
+                differ.push_back("depth of field");
+            }
+            if (!differ.empty()) {
+                std::string what;
+                for (std::size_t i = 0; i < differ.size(); ++i) {
+                    what += (i == 0) ? "" : (i + 1 == differ.size()) ? " and "
+                                                                     : ", ";
+                    what += differ[i];
+                }
+                const std::string warning = "The render product " + product.renderProductPath.GetString() + " differs from " + first->renderProductPath.GetString() + " in " + what + ": the render takes " + first->renderProductPath.GetString() + "'s.";
+                out->warning = out->warning.empty() ? warning : out->warning + "\n" + warning;
+            }
         }
     }
     std::set<SdfPath> seen;

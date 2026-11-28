@@ -197,8 +197,8 @@ struct Request {
     // The AOVs to render besides color, depth, primId, instanceId and the normal. A change of them
     // makes the owner's engine again.
     std::vector<Aov> aovs;
-    // The settings RenderVars give the AOVs every render has, by the delegate's name of each. A
-    // change of them makes the owner's engine again.
+    // The AOVs every render has that RenderVars name, by the delegate's name of each, with the
+    // settings those give them, if any. A change of them makes the owner's engine again.
     std::vector<Aov> builtInAovs;
     // The aovs whose pixels the result carries, every one's when unset. The others come back with
     // their channel count and no pixels: converting each pass of a large frame costs time and memory

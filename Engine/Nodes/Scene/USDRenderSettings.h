@@ -54,8 +54,8 @@
 #define kUSDRenderSettingsParamMakeActive "makeActive"
 #define kUSDRenderSettingsParamDefaultRenderer "defaultRenderer"
 #define kUSDRenderSettingsParamCustomAovs "customAovs"
-// The AOV checklist authors its RenderProduct under the first, named after the settings prim, and
-// its RenderVars under the second, where other render setups look for them.
+// The AOV checklist authors its RenderProduct under the first and its RenderVars in a scope under
+// the second, both named after the settings prim.
 #define kUSDRenderSettingsProductsPath "/Render/Products"
 #define kUSDRenderSettingsVarsPath "/Render/Products/Vars"
 

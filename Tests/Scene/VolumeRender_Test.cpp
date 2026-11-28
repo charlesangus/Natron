@@ -34,7 +34,6 @@
 #include <cstring>
 #include <functional>
 #include <map>
-#include <mutex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -44,7 +43,6 @@
 #include <gtest/gtest.h>
 
 #include <pxr/base/plug/registry.h>
-#include <pxr/base/tf/diagnosticMgr.h>
 
 #include "CyclesTestUtils.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
@@ -181,18 +179,24 @@ const char* const kDilatedVelocityOpenShutter = "over \"World\"\n"
                                                 "    }\n"
                                                 "}\n";
 
-// The density field's frame 1 grid, authored in a layer of its own so that a test can edit it in
-// place.
+// The fields' frame 1 grids, authored in a layer of its own so that a test can edit them in place.
+// The fields move to another file together: MoonRay reads all of a volume's fields from one file.
 const char* const kDensityPath = "/World/Smoke/density.filePath";
+const char* const kVelocityPath = "/World/Smoke/velocity.filePath";
 const char* const kFrame1Grid = NATRON_TESTS_FIXTURES_DIR "/volume-sphere.0001.vdb";
 const char* const kFrame2Grid = NATRON_TESTS_FIXTURES_DIR "/volume-sphere.0002.vdb";
-const std::string kDensityOnFrame1 = std::string("over \"World\"\n"
-                                                 "{\n"
-                                                 "    over \"Smoke\"\n"
-                                                 "    {\n"
-                                                 "        over \"density\"\n"
-                                                 "        {\n"
-                                                 "            asset filePath.timeSamples = { 1: @")
+const std::string kFieldsOnFrame1 = std::string("over \"World\"\n"
+                                                "{\n"
+                                                "    over \"Smoke\"\n"
+                                                "    {\n"
+                                                "        over \"density\"\n"
+                                                "        {\n"
+                                                "            asset filePath.timeSamples = { 1: @")
+    + kFrame1Grid + "@ }\n"
+                    "        }\n"
+                    "        over \"velocity\"\n"
+                    "        {\n"
+                    "            asset filePath.timeSamples = { 1: @"
     + kFrame1Grid + "@ }\n"
                     "        }\n"
                     "    }\n"
@@ -318,51 +322,7 @@ struct Render {
     HydraRender::RenderTrace trace;
 };
 
-// The delegate's Hydra sync runs on threads with no TfErrorMark, so its coding errors reach only
-// the diagnostic manager's delegates.
-class CodingErrors
-    : public PXR_NS::TfDiagnosticMgr::Delegate {
-public:
-    CodingErrors()
-    {
-        PXR_NS::TfDiagnosticMgr::GetInstance().AddDelegate(this);
-    }
-
-    ~CodingErrors() override
-    {
-        PXR_NS::TfDiagnosticMgr::GetInstance().RemoveDelegate(this);
-    }
-
-    CodingErrors(const CodingErrors&) = delete;
-    CodingErrors& operator=(const CodingErrors&) = delete;
-
-    void IssueError(const PXR_NS::TfError& err) override
-    {
-        const std::lock_guard<std::mutex> lock(_mutex);
-        _text += err.GetSourceFunction() + ": " + err.GetCommentary() + "\n";
-    }
-
-    void IssueFatalError(const PXR_NS::TfCallContext&,
-                         const std::string&) override
-    {
-        _UnhandledAbort();
-    }
-
-    void IssueStatus(const PXR_NS::TfStatus&) override { }
-
-    void IssueWarning(const PXR_NS::TfWarning&) override { }
-
-    std::string text() const
-    {
-        const std::lock_guard<std::mutex> lock(_mutex);
-
-        return _text;
-    }
-
-private:
-    mutable std::mutex _mutex;
-    std::string _text;
-};
+using CyclesTestUtils::CodingErrors;
 
 // For a failure that may be a render the delegate cut short.
 std::string
@@ -375,12 +335,15 @@ traceOf(const Render& render)
 
 // Renders of kScene with overrides layered on top by one owner, whose engine and stage last from
 // one render to the next until the session ends: a change of time alone then reaches the delegate
-// as an edit of the scene it already holds, not as a new scene.
+// as an edit of the scene it already holds, not as a new scene. A CPU delegate's engine renders on
+// threads threads, any count when 0.
 class Session {
 public:
     Session(const std::string& renderer,
-            const std::string& overrides)
+            const std::string& overrides,
+            int threads = 0)
         : _renderer(renderer)
+        , _threads(threads)
     {
         _stage = PXR_NS::UsdStage::Open(kScene);
         if (!_stage) {
@@ -424,6 +387,7 @@ public:
         request.width = kSize;
         request.height = kSize;
         request.renderer = _renderer;
+        request.threads = _threads;
         std::string error;
         if (!HydraRender::cameraFrustum(_stage, PXR_NS::SdfPath(kCamera), request.time, 1., HydraRender::eFitModeExpand, &request.frustum, &error)) {
             ADD_FAILURE() << error;
@@ -483,6 +447,7 @@ public:
 
 private:
     std::string _renderer;
+    int _threads;
     PXR_NS::UsdStageRefPtr _stage;
     PXR_NS::SdfLayerRefPtr _overrides;
     ScenePayload _scene;
@@ -593,10 +558,11 @@ expectTheVolumeDarkensItsSide(const std::string& renderer)
 }
 
 /**
- * Pointing the density field at the frame 2 grid on the live stage moves the sphere from the left
- * to the right without a change of frame, on frame 1's engine: only the edited field reaching the
- * volume it binds can move it. Under a scene index the renderer has to declare and forward that
- * dependency; Hydra rejects a field marking the volume dirty itself with a coding error.
+ * Pointing the fields at the frame 2 grids on the live stage moves the sphere from the left to the
+ * right without a change of frame, on frame 1's engine: only the edited fields reaching the volume
+ * they bind can move it. Under a scene index the renderer has to declare and forward that
+ * dependency; Hydra rejects a field marking the volume dirty itself with a coding error. The
+ * renders keep one thread count, since a count other than its engine's makes the engine again.
  **/
 void
 expectALiveFieldEditMovesTheVolume(const std::string& renderer)
@@ -605,10 +571,11 @@ expectALiveFieldEditMovesTheVolume(const std::string& renderer)
     Render before;
     Render after;
     {
-        Session live(renderer, kDensityOnFrame1);
+        Session live(renderer, kFieldsOnFrame1, 2);
         ASSERT_TRUE(live.render(1., &before));
         ASSERT_TRUE(live.editOverrides([](const PXR_NS::SdfLayerRefPtr& layer) {
             layer->SetTimeSample(PXR_NS::SdfPath(kDensityPath), 1., PXR_NS::VtValue(PXR_NS::SdfAssetPath(kFrame2Grid)));
+            layer->SetTimeSample(PXR_NS::SdfPath(kVelocityPath), 1., PXR_NS::VtValue(PXR_NS::SdfAssetPath(kFrame2Grid)));
         }));
         ASSERT_TRUE(live.render(1., &after));
     }
@@ -616,8 +583,8 @@ expectALiveFieldEditMovesTheVolume(const std::string& renderer)
     EXPECT_FALSE(hasVolumeWarning(after)) << after.warning;
     expectNoFailedGet(renderer, before);
     expectNoFailedGet(renderer, after);
-    EXPECT_EQ(std::string::npos, before.codingErrors.find("emulation")) << renderer << ": before the edit: " << before.codingErrors;
-    EXPECT_EQ(std::string::npos, after.codingErrors.find("emulation")) << renderer << ": after the edit: " << after.codingErrors;
+    EXPECT_FALSE(CyclesTestUtils::hasHydraDirtyingError(before.codingErrors)) << renderer << ": before the edit: " << before.codingErrors;
+    EXPECT_FALSE(CyclesTestUtils::hasHydraDirtyingError(after.codingErrors)) << renderer << ": after the edit: " << after.codingErrors;
     EXPECT_FALSE(after.trace.freshEngine) << renderer << ": after the edit" << traceOf(after);
     EXPECT_EQ(0, after.trace.remakes) << renderer << ": after the edit" << traceOf(after);
     Render card;
@@ -796,8 +763,7 @@ TEST(VolumeRenderMoonRay, TheVolumeDarkensItsSide)
     expectTheVolumeDarkensItsSide(kMoonRayRendererId);
 }
 
-// hdMoonray's field sync dirties through the emulation-only change tracker, so field changes never reach the volume under the scene-index pipeline.
-TEST(VolumeRenderMoonRay, DISABLED_ALiveFieldEditMovesTheVolume)
+TEST(VolumeRenderMoonRay, ALiveFieldEditMovesTheVolume)
 {
     if (!moonRayOrSkip()) {
         return;

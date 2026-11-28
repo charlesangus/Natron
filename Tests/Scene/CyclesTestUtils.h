@@ -26,11 +26,13 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <string>
 
 #include <gtest/gtest.h>
 
 #include <pxr/base/plug/registry.h>
+#include <pxr/base/tf/diagnosticMgr.h>
 #include <pxr/base/vt/value.h>
 
 namespace CyclesTestUtils {
@@ -66,6 +68,61 @@ fixedSampling(int samples)
     settings["cycles:integrator:use_adaptive_sampling"] = PXR_NS::VtValue(false);
 
     return settings;
+}
+
+// Every TfError posted while it is attached, on any thread, function first. The delegate's Hydra
+// sync runs on threads with no TfErrorMark, so its coding errors reach only the diagnostic
+// manager's delegates.
+class CodingErrors
+    : public PXR_NS::TfDiagnosticMgr::Delegate {
+public:
+    CodingErrors()
+    {
+        PXR_NS::TfDiagnosticMgr::GetInstance().AddDelegate(this);
+    }
+
+    ~CodingErrors() override
+    {
+        PXR_NS::TfDiagnosticMgr::GetInstance().RemoveDelegate(this);
+    }
+
+    CodingErrors(const CodingErrors&) = delete;
+    CodingErrors& operator=(const CodingErrors&) = delete;
+
+    void IssueError(const PXR_NS::TfError& err) override
+    {
+        const std::lock_guard<std::mutex> lock(_mutex);
+        _text += err.GetSourceFunction() + ": " + err.GetCommentary() + "\n";
+    }
+
+    void IssueFatalError(const PXR_NS::TfCallContext&,
+                         const std::string&) override
+    {
+        _UnhandledAbort();
+    }
+
+    void IssueStatus(const PXR_NS::TfStatus&) override { }
+
+    void IssueWarning(const PXR_NS::TfWarning&) override { }
+
+    std::string text() const
+    {
+        const std::lock_guard<std::mutex> lock(_mutex);
+
+        return _text;
+    }
+
+private:
+    mutable std::mutex _mutex;
+    std::string _text;
+};
+
+// The coding errors Hydra posts when a delegate dirties prims the way only its emulation of scene
+// delegates allows, or when a scene index notice interrupts its sync.
+inline bool
+hasHydraDirtyingError(const std::string& codingErrors)
+{
+    return (codingErrors.find("emulation") != std::string::npos) || (codingErrors.find("during SyncAll") != std::string::npos);
 }
 } // namespace CyclesTestUtils
 

@@ -96,13 +96,13 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
 
 ## Phase 646.1: Engine identity, publish and update
 
-- [ ] M646.P1.T1 — Template identity in the template entry
+- [x] M646.P1.T1 — Template identity in the template entry
   - files: `Serialization/ProjectSerialization.h`, the YAML encoder and decoder for `TemplateImportSerialization` (grep the type under `Serialization/Yaml/`), `Serialization/Bundle/ProjectBundle.cpp`, `Tests/Serialization/ProjectBundleRoundTrip_Test.cpp`
   - approach: add `templateId` (a UUID string), `name`, `version` (int; 0 means defined but not yet published), `publishDir` and `excluded` (node IDs removed from the template by hand) to `TemplateImportSerialization`. Encode them in the project YAML next to the existing fields. No compatibility path: an entry without `templateId` fails to load as a template entry (the fork makes no backward-compatibility promise).
   - verify: compiled at P1.T9. A round-trip gtest saves and reloads an entry with every new field set, and the fields compare equal.
   - size: M
 
-- [ ] M646.P1.T2 — Template node
+- [x] M646.P1.T2 — Template node
   - files: new `Engine/TemplateNode.h`, new `Engine/TemplateNode.cpp`, `Engine/AppManager.cpp` (register it beside `Backdrop`), `Engine/CMakeLists.txt`
   - approach: a built-in node with no inputs and no output that never renders, modelled on `Engine/Backdrop.cpp`. Its knobs, with labels matching the script names:
     - `templateKey`: hidden, names the template entry.
@@ -118,7 +118,7 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
   - verify: compiled at P1.T9. A gtest creates the node, sets `templateKey` to an entry, and reads the entry's name and version back through the knobs.
   - size: M
 
-- [ ] M646.P1.T3 — Define Template and explicit membership
+- [x] M646.P1.T3 — Define Template and explicit membership
   - files: new `Engine/ProjectTemplateDefine.cpp`, `Engine/Project.h`, `Serialization/Merge/MergeScope.cpp`, new `Tests/Serialization/TemplateDefine_Test.cpp`
   - approach:
     - `Project::defineTemplate(nodes, name, group)` (all of the group's nodes when `nodes` is empty) mints a template ID and a key, then creates an entry at version 0 whose base is a snapshot of the members. It sets each member's `origin` to `{key, node: own ID}` and creates a template node above the members' bounding box.
@@ -134,7 +134,7 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
     - an added node is in scope.
   - size: M
 
-- [ ] M646.P1.T4 — Import reads or mints the template node
+- [x] M646.P1.T4 — Import reads or mints the template node
   - files: `Engine/ProjectTemplateImport.cpp`, `Tests/Serialization/TemplateImport_Test.cpp`
   - approach: when the imported file holds a template node, take its `templateId`, `templateName` and `version`. Do not import it as a member: create a fresh template node in the target group, offset like the members, with `importedVersion = version` and `publishDir` = the file's directory. A file with no template node gets a new ID, name = the file stem, and version 1. Store the base without the template node.
   - verify: compiled at P1.T9. gtests:
@@ -143,7 +143,7 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
     - importing the same file twice gives two keys, two template nodes and the same template ID.
   - size: M
 
-- [ ] M646.P1.T5 — Base↔theirs origin fallback and low-match guard
+- [x] M646.P1.T5 — Base↔theirs origin fallback and low-match guard
   - files: `Serialization/Merge/NodeMatcher.cpp`, `Serialization/Merge/ThreeWayMerge.cpp`, `Serialization/Merge/ThreeWayMerge.h`, `Tests/Serialization/NodeMatcher_Test.cpp`, `Tests/Serialization/ThreeWayMerge_Test.cpp`
   - approach:
     - When matching base to theirs, an unclaimed theirs node whose `origin.nodeId` exists in base and is still unclaimed claims that base node. Do this before structural adoption, so adoption has seeds.
@@ -155,7 +155,7 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
     - the NodeMatcher corpus still scores 310/310.
   - size: M
 
-- [ ] M646.P1.T6 — Publish Template
+- [x] M646.P1.T6 — Publish Template
   - files: new `Engine/ProjectTemplatePublish.cpp`, `Engine/Project.h`, new `Tests/Serialization/TemplatePublish_Test.cpp`
   - approach: `Project::publishTemplate(key, error)` scans `publishDir` for `<name>_v<NNN>.ntpz` and writes the next number. It refuses if that file exists or the directory is not writable. The written bundle holds:
     - the members, each node's ID replaced by its `origin.nodeId` when that origin names this key, else the node's own ID (that ID is also written back as the live node's `origin.nodeId`);
@@ -169,7 +169,7 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
     - the written file opens as a project.
   - size: L
 
-- [ ] M646.P1.T7 — Update to Latest, Update from File and status
+- [x] M646.P1.T7 — Update to Latest, Update from File and status
   - files: `Engine/ProjectMerge.h`, `Engine/ProjectMerge.cpp`, `Tests/ProjectMerge_Test.cpp`
   - approach:
     - Add `findLatestVersion(dir, templateId)`. It reads only the template node out of each candidate bundle's `project.yaml`, and is callable off the UI thread.
@@ -181,13 +181,13 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
     - a different template's file returns `templateMismatch`, and with `allowMismatch` it merges or hits `lowMatch`.
   - size: M
 
-- [ ] M646.P1.T8 — Detach Template
+- [x] M646.P1.T8 — Detach Template
   - files: `Engine/ProjectTemplateDefine.cpp`, `Engine/Project.h`, `Tests/Serialization/TemplateDefine_Test.cpp`
   - approach: `Project::detachTemplate(key)` returns the ops that clear every member's origin, remove the entry with its `templates/<key>/base.yaml` member and its `merge/conflicts.yaml` entries for that key, and delete the template node. Their inverse restores everything. Deleting a template node by any route goes through this, so the GUI undo is one step.
   - verify: compiled at P1.T9. A gtest detaches, checks that no member has an origin and that the entry and base member are gone after save, then applies the inverse ops and checks that the project equals the pre-detach snapshot.
   - size: M
 
-- [ ] M646.P1.T9 — Phase 646.1 build and test checkpoint
+- [x] M646.P1.T9 — Phase 646.1 build and test checkpoint (df1184c1ea; m646-gate1 green)
   - files: none
   - approach: syntax-check the touched TUs first (`tools/ci/local/syntax-check.py`), then run the remote gate build and ctest per the project's build tooling.
   - verify: green. The build is required.

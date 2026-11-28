@@ -234,7 +234,9 @@ try:
         yield from wait_returned(flag, label)
 
     def click_hull(label):
-        """Left-clicks just right of Blur1, inside the template's hull but on no node."""
+        """Left-clicks just left of Blur1, inside the template's hull but on no node or edge. Blur's
+        unconnected mask stub sticks out of its right side: a click there grabs that arrow and
+        picks it up, and the picked-up arrow swallows the next click in the graph."""
         view = graph_view()
         require(view is not None, label + ": the node graph is up")
         blur1 = app.getNode("Blur1")
@@ -242,7 +244,7 @@ try:
         w, h = blur1.getSize()
         app.clearSelection()
         QApplication.processEvents()
-        scene_click(view, QPointF(x + w + 9.0, y + h / 2.0), Qt.LeftButton)
+        scene_click(view, QPointF(x - 9.0, y + h / 2.0), Qt.LeftButton)
         QApplication.processEvents()
 
     def hull_selection(label):

@@ -433,9 +433,6 @@ public:
     // The laid-out body size that resize() takes: no outline pen.
     virtual QRectF bodyRect() const;
 
-    /*Returns an edge if the node has an edge close to the
-       point pt. pt is in scene coord.*/
-    Edge* hasEdgeNearbyPoint(const QPointF& pt);
     Edge* hasBendPointNearbyPoint(const QPointF & pt);
 
     void refreshPosition( double x, double y, bool skipMagnet = false, const QPointF & mouseScenePos = QPointF() );
@@ -630,6 +627,10 @@ public:
      * recomputes it even when the kind itself is unchanged, e.g. after its colour preference changed.
      **/
     void refreshEdgesDataKindPen(bool force);
+
+    // Re-reads the pipe preferences (width, disconnected arrow and output stub lengths, output
+    // style) into this node's input and output edges.
+    void refreshEdgesPipeStyle();
 
     // Runs the refreshes, NodeGraph::DeferredRefreshEnum flags, this node left to a node refresh
     // batch.

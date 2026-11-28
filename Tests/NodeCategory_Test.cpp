@@ -217,8 +217,8 @@ TEST(NodeCategoryHeuristic, MajorGroupTableTakesPrecedenceOverKeywords)
     EXPECT_EQ(eNodeCategoryViews, Node::categoryFromGroupingAndLabel(PLUGIN_GROUP_MULTIVIEW, "Anything"));
 }
 
-// getPluginGrouping() splits "3D/USD" into {"3D", "USD"}, so the USD category must be
-// recognised from the first two components rather than from the unsplit literal.
+// getPluginGrouping() splits "USD/Lights" into {"USD", "Lights"}, so the USD category is
+// recognised from the first component at any depth.
 TEST(NodeCategoryDomain, SplitGroupingResolvesDomainCategories)
 {
     NodeCategoryEnum category = eNodeCategoryOther;
@@ -228,6 +228,11 @@ TEST(NodeCategoryDomain, SplitGroupingResolvesDomainCategories)
     ASSERT_TRUE(Node::domainCategoryFromGrouping(grouping, &category));
     EXPECT_EQ(eNodeCategoryNative3D, category);
 
+    grouping.push_back("USD");
+    ASSERT_TRUE(Node::domainCategoryFromGrouping(grouping, &category));
+    EXPECT_EQ(eNodeCategoryNative3D, category);
+
+    grouping.clear();
     grouping.push_back("USD");
     ASSERT_TRUE(Node::domainCategoryFromGrouping(grouping, &category));
     EXPECT_EQ(eNodeCategoryUsd3D, category);
@@ -259,10 +264,6 @@ TEST(NodeCategoryDomain, NonDomainGroupingIsNotADomainCategory)
 
     EXPECT_FALSE(Node::domainCategoryFromGrouping(grouping, &category));
 
-    grouping.push_back("USD");
-    EXPECT_FALSE(Node::domainCategoryFromGrouping(grouping, &category));
-
-    grouping.clear();
     grouping.push_back(PLUGIN_GROUP_FILTER);
     EXPECT_FALSE(Node::domainCategoryFromGrouping(grouping, &category));
 }

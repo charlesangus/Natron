@@ -77,7 +77,7 @@ public:
                        "a file; Emissive Color multiplies it, or is the emission alone when neither is set. Connect "
                        "the node to the Material input of a geometry node, which places the material under its own "
                        "prim and binds itself to it.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_MATERIALS,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDEmissiveMaterial.png",

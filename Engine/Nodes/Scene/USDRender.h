@@ -86,7 +86,7 @@ public:
                        "adds one at the camera. Render Purpose, Proxy Purpose and Guide Purpose choose which prims of "
                        "those purposes are drawn. Without a render settings prim, the scene's first camera renders the "
                        "project's format.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_RENDER,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDRender.png",

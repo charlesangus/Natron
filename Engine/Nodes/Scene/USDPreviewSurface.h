@@ -120,7 +120,7 @@ public:
                        "it instead, live and animated with no file on disk; the Normal input takes a tangent-space "
                        "normal map encoded in 0..1. For an unlit image on a card or a projection, use "
                        "USDEmissiveMaterial.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_MATERIALS,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDPreviewSurface.png",

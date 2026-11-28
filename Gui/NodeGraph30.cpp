@@ -343,6 +343,7 @@ void
 NodeGraph::leaveEvent(QEvent* e)
 {
     leaveEventBase();
+    setHoverEdge(0);
     QGraphicsView::leaveEvent(e);
     // setFocus();
 }

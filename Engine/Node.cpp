@@ -6968,15 +6968,18 @@ Node::domainCategoryFromGrouping(const std::list<std::string>& grouping,
 
         return true;
     }
+    if (major == PLUGIN_GROUP_USD) {
+        *category = eNodeCategoryUsd3D;
+
+        return true;
+    }
     if (major == PLUGIN_GROUP_GEOMETRY) {
         *category = eNodeCategoryNative3D;
 
         return true;
     }
     if (major == PLUGIN_GROUP_3D) {
-        std::list<std::string>::const_iterator minor = grouping.begin();
-        ++minor;
-        *category = (minor != grouping.end() && PLUGIN_GROUP_3D + std::string("/") + *minor == PLUGIN_GROUP_3D_USD) ? eNodeCategoryUsd3D : eNodeCategoryNative3D;
+        *category = eNodeCategoryNative3D;
 
         return true;
     }

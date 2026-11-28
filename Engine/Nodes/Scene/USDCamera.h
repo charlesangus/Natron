@@ -88,7 +88,7 @@ public:
         .description = "Create a scene holding one camera prim (UsdGeomCamera). "
                        "Focal length and aperture are in millimetres, written in USD's camera units (tenths of a scene unit); "
                        "clipping and focus distance are in scene units. Animated knobs are written as time samples.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_CAMERAS,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDCamera.png",

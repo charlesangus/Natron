@@ -1940,6 +1940,22 @@ NodeGui::refreshEdgesDataKindPenNow(bool force)
 }
 
 void
+NodeGui::refreshEdgesPipeStyle()
+{
+    for (InputEdges::const_iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
+        if (*it) {
+            (*it)->refreshPipeWidth();
+            (*it)->initLine();
+        }
+    }
+    if (_outputEdge) {
+        _outputEdge->refreshPipeWidth();
+        _outputEdge->initLine();
+    }
+    refreshOutputEdgeVisibility();
+}
+
+void
 NodeGui::refreshKnobLinks()
 {
     for (LinkLines::iterator it = _linkLines.begin(); it != _linkLines.end(); ++it) {
@@ -2717,21 +2733,6 @@ NodeGui::connectEdge(int edgeNumber)
     }
 
     return true;
-}
-
-Edge*
-NodeGui::hasEdgeNearbyPoint(const QPointF & pt)
-{
-    for (InputEdges::const_iterator it = _inputEdges.begin(); it != _inputEdges.end(); ++it) {
-        if ( (*it) && (*it)->contains( (*it)->mapFromScene(pt) ) ) {
-            return (*it);
-        }
-    }
-    if ( _outputEdge && _outputEdge->contains( _outputEdge->mapFromScene(pt) ) ) {
-        return _outputEdge;
-    }
-
-    return NULL;
 }
 
 Edge*
@@ -3711,7 +3712,9 @@ NodeGui::refreshOutputEdgeVisibility()
 {
     if (_outputEdge) {
         NodePtr node = getNode();
-        if (node && node->getGuiOutputs().empty() && isVisibleTo(parentItem())) {
+        // The nub stays on a connected output too, as the handle for pulling another pipe from it.
+        const bool showStub = node && (node->getGuiOutputs().empty() || (appPTR->getCurrentSettings()->getOutputStyle() == Settings::eOutputStyleNub));
+        if (showStub && isVisibleTo(parentItem())) {
             if ( !_outputEdge->isVisible() ) {
                 _outputEdge->setActive(true);
                 _outputEdge->show();

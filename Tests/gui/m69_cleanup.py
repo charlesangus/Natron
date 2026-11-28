@@ -49,7 +49,6 @@ WATCHDOG_S = 870
 SETTLE_MS = 400
 RENDER_MS = 1500
 DRAG_STEPS = 4
-DISCONNECTED_ARROW_LENGTH = 30.0
 TOL = 1e-3
 
 try:
@@ -348,6 +347,13 @@ try:
 
     # ---- unconnected input stub geometry ---------------------------------------------------
 
+    def pipe_pref(name):
+        return float(NatronEngine.natron.getSettings().getParam(name).getValue())
+
+    def dangling_grab_radius():
+        """Edge::grabRadiusPixels(true), in viewport pixels."""
+        return max(18.0, 8.0 * pipe_pref("pipeWidth"))
+
     def stub_direction(node, input_nb):
         """The stub's direction in scene coordinates (y down), from NodeGui::initializeInputs,
         for the main inputs and the first mask."""
@@ -368,13 +374,13 @@ try:
         d = stub_direction(node, input_nb)
         to_edge = min((w / 2.0) / abs(d[0]) if abs(d[0]) > 1e-9 else 1e18,
                       (h / 2.0) / abs(d[1]) if abs(d[1]) > 1e-9 else 1e18)
-        length = to_edge + DISCONNECTED_ARROW_LENGTH
+        length = to_edge + pipe_pref("disconnectedArrowLength")
         return (c[0] + d[0] * length, c[1] + d[1] * length), d, to_edge
 
     def on_stub(node, input_nb):
         """A scene point on the stub, half way along the part outside the node."""
         tip, d, to_edge = stub_tip(node, input_nb)
-        back = DISCONNECTED_ARROW_LENGTH / 2.0
+        back = pipe_pref("disconnectedArrowLength") / 2.0
         return (tip[0] - d[0] * back, tip[1] - d[1] * back)
 
     # ---- viewer ---------------------------------------------------------------------------
@@ -614,8 +620,10 @@ try:
         target_input = input_index(merge, "B")
         if target_input is None:
             target_input = 0
+        radius = dangling_grab_radius()
+        report("NOTE Pipe Width %g: an unconnected input grabs from %g px" % (pipe_pref("pipeWidth"), radius))
         for zoom in (1.0, 0.5):
-            for px, want in ((12, True), (16, True), (30, False)):
+            for px, want in ((12, True), (16, True), (radius - 4, True), (radius + 8, False)):
                 view_at(graph, centre(merge), zoom)
                 yield ("sleep", 100)
                 tip, d, _edge = stub_tip(merge, target_input)
@@ -628,7 +636,7 @@ try:
                 drag(graph.viewport(), start, end)
                 yield ("sleep", 150)
                 got = input_connected_from(merge, src)
-                label = "%dpx past the B stub at %d%% zoom" % (px, int(zoom * 100))
+                label = "%gpx past the B stub at %d%% zoom" % (px, int(zoom * 100))
                 if want:
                     check(got == target_input, "%s starts an arrow drag that connects B (got input %r)" % (label, got))
                     if got is not None:

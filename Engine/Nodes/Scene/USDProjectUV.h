@@ -109,7 +109,7 @@ public:
                        "faceVarying primvar (st by default) that any renderer reads; texture them with a USDPreviewSurface. "
                        "They are per vertex, so a projection onto coarse geometry warps between vertices. A moving "
                        "mesh or camera writes time samples over the project range.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_CAMERAS,
         .majorVersion = 1,
         .minorVersion = 0,
         .isWriter = false,

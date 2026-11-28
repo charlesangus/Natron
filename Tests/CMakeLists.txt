@@ -409,6 +409,7 @@ set(GuiTests_SOURCES
     NodeGraphConnect_Test.cpp
     NodeGraphDeleteLinks_Test.cpp
     NodeGraphItemGrid_Test.cpp
+    QtEnumConvertMnemonics_Test.cpp
     NodeGraphKiss_Test.cpp
     NodeGraphPickUp_Test.cpp
     NodeGraphShake_Test.cpp

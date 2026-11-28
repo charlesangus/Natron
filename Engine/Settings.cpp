@@ -1548,12 +1548,44 @@ Settings::initializeKnobsNodeGraph()
                                      "allowing to re-use the RAM for other purposes."));
     _nodegraphTab->addKnob(_maxUndoSteps);
 
-    _disconnectedArrowLength = AppManager::createKnob<KnobInt>( this, tr("Disconnected arrow length") );
-    _disconnectedArrowLength->setName("disconnectedArrowLength");
-    _disconnectedArrowLength->setHintToolTip( tr("The size of a disconnected node input arrow in pixels.") );
-    _disconnectedArrowLength->disableSlider();
+    _pipeWidth = AppManager::createKnob<KnobInt>(this, tr("Pipe Width"));
+    _pipeWidth->setName("pipeWidth");
+    _pipeWidth->setHintToolTip(tr("The width in pixels of the pipes between nodes, connected or not. Arrow heads are three "
+                                  "times as wide, and the distance from which a pipe can be grabbed grows with it."));
+    _pipeWidth->disableSlider();
+    _pipeWidth->setMinimum(1);
+    _nodegraphTab->addKnob(_pipeWidth);
 
+    _disconnectedArrowLength = AppManager::createKnob<KnobInt>(this, tr("Disconnected Arrow Length"));
+    _disconnectedArrowLength->setName("disconnectedArrowLength");
+    _disconnectedArrowLength->setHintToolTip(tr("The length in pixels of a disconnected node input arrow."));
+    _disconnectedArrowLength->disableSlider();
+    _disconnectedArrowLength->setMinimum(0);
     _nodegraphTab->addKnob(_disconnectedArrowLength);
+
+    _outputStubLength = AppManager::createKnob<KnobInt>(this, tr("Output Stub Length"));
+    _outputStubLength->setName("outputStubLength");
+    _outputStubLength->setHintToolTip(tr("How far in pixels the output stub of the Arrow output style reaches below the node. The "
+                                         "nub of the Nub style is sized from it too."));
+    _outputStubLength->disableSlider();
+    _outputStubLength->setMinimum(1);
+    _nodegraphTab->addKnob(_outputStubLength);
+
+    _outputStyle = AppManager::createKnob<KnobChoice>(this, tr("Output Style"));
+    _outputStyle->setName("outputStyle");
+    {
+        std::vector<ChoiceOption> entries;
+        entries.push_back(ChoiceOption("arrow", "Arrow", tr("A short pipe with an arrow head, Output Stub Length long, shown "
+                                                            "while the node feeds nothing.")
+                                                             .toStdString()));
+        entries.push_back(ChoiceOption("nub", "Nub", tr("A filled half circle under the node's bottom edge, sized from the "
+                                                        "Output Stub Length, shown whether or not the node feeds anything.")
+                                                         .toStdString()));
+        _outputStyle->populateChoices(entries);
+    }
+    _outputStyle->setHintToolTip(tr("How the output of a node is drawn. Either one is grabbed to drag a new connection from the "
+                                    "node; the nub also adds a connection to a node that already feeds others."));
+    _nodegraphTab->addKnob(_outputStyle);
 
     _useInputAForMergeAutoConnect = AppManager::createKnob<KnobBool>( this, tr("Merge node connect to A input") );
     _useInputAForMergeAutoConnect->setName("mergeConnectToA");
@@ -2016,7 +2048,10 @@ Settings::setDefaultValues()
     _autoTurbo->setDefaultValue(false);
     _snapNodesToConnections->setDefaultValue(true);
     _maxUndoSteps->setDefaultValue(200, 0);
-    _disconnectedArrowLength->setDefaultValue(30);
+    _pipeWidth->setDefaultValue(3);
+    _disconnectedArrowLength->setDefaultValue(40);
+    _outputStubLength->setDefaultValue(20);
+    _outputStyle->setDefaultValue((int)eOutputStyleNub);
     _useInputAForMergeAutoConnect->setDefaultValue(true);
     _showLinkLines->setDefaultValue(true);
     _showExpressionLines->setDefaultValue(true);
@@ -3795,6 +3830,24 @@ int
 Settings::getDisconnectedArrowLength() const
 {
     return _disconnectedArrowLength->getValue();
+}
+
+int
+Settings::getPipeWidth() const
+{
+    return _pipeWidth->getValue();
+}
+
+int
+Settings::getOutputStubLength() const
+{
+    return _outputStubLength->getValue();
+}
+
+Settings::OutputStyleEnum
+Settings::getOutputStyle() const
+{
+    return (OutputStyleEnum)_outputStyle->getValue();
 }
 
 std::string

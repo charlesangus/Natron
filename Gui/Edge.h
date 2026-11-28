@@ -65,13 +65,28 @@ public:
 
     QPainterPath shape() const OVERRIDE WARN_UNUSED_RETURN;
 
-    bool contains(const QPointF &point) const OVERRIDE WARN_UNUSED_RETURN;
-
     /**
      * @brief Squared distance from point to the closest point on the segment (clamped to its
      * endpoints, not the infinite line through it). Both must be in the same coordinate space.
      **/
     static double dist2ToSegment(const QLineF& line, const QPointF& point);
+
+    /**
+     * @brief The distance in viewport pixels from which an edge can be grabbed, grown with the
+     * Pipe Width preference. A dangling edge (an unconnected input or an output stub) has no pipe
+     * to click along, only its short stub, so it gets the larger radius.
+     **/
+    static double grabRadiusPixels(bool dangling);
+
+    // An input with no source, or an output stub.
+    bool isDangling() const;
+
+    // Whether scenePoint is on the drawn output nub; false for every edge not drawn as one.
+    bool isScenePointOnNub(const QPointF& scenePoint) const;
+
+    // Re-reads the Pipe Width preference into the pen. The caller re-lays the line, whose arrow
+    // head scales with the width.
+    void refreshPipeWidth();
 
     void setSource(const NodeGuiPtr & src);
 
@@ -104,6 +119,14 @@ public:
     void setUseHighlight(bool highlight);
 
     void setUseSelected(bool val);
+
+    // Drawn in the highlight colour while a click at the cursor would pick this edge up. Scripts
+    // read the state back through QGraphicsItem::data(kHoverHighlightDataKey).
+    void setHoverHighlight(bool hover);
+
+    bool isHoverHighlighted() const;
+
+    static const int kHoverHighlightDataKey = 0;
 
     bool isOutputEdge() const;
 
@@ -166,18 +189,22 @@ private:
 // the coordinate space scenePos is in (scene space, for NodeGraph::hasItemNearbyMouse).
 struct EdgeNearbyCandidate {
     QLineF line;
-    bool isUnconnectedInput; // an input edge with no source: grabbed with unconnectedInputGrabRadius, not grabRadius
+    bool isDangling; // grabbed with danglingGrabRadius, not grabRadius
+    // scenePos is on the candidate's drawn output nub. The pipes a connected output feeds leave from
+    // under its nub, so a press there must pull a new pipe rather than pick one of them up.
+    bool onNub = false;
 };
 
 /**
  * @brief Returns the index into candidates of the one whose line is closest to scenePos, among
- * those within their own grab radius (unconnectedInputGrabRadius for an unconnected input stub,
- * grabRadius for everything else), or -1 if none qualify.
+ * those within their own grab radius (danglingGrabRadius for an unconnected input or output stub,
+ * grabRadius for everything else), or -1 if none qualify. A candidate with onNub set wins over
+ * every one without it.
  **/
 int pickNearestEdgeCandidate(const QPointF& scenePos,
                              const std::vector<EdgeNearbyCandidate>& candidates,
                              double grabRadius,
-                             double unconnectedInputGrabRadius);
+                             double danglingGrabRadius);
 
 /**
  * @brief An arrow in the graph representing an expression between 2 nodes or that one node is a clone of another.

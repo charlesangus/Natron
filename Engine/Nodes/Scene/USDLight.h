@@ -84,7 +84,7 @@ public:
                        "Colour, intensity and exposure are written to the light's inputs unchanged; the colour is in the project "
                        "working space. A dome takes a texture file, authored even when it does not resolve, with a warning. "
                        "Animated knobs are written as time samples.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_LIGHTS,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDLight.png",

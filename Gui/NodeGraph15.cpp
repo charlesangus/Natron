@@ -213,6 +213,34 @@ NodeGraph::connectOutputArrowToNode(Edge* arrow,
     return true;
 }
 
+void
+NodeGraph::setHoverEdge(Edge* edge)
+{
+    NodeGuiPtr previousNode = _imp->_hoverEdgeNode.lock();
+    Edge* previous = previousNode ? previousNode->getInputArrow(_imp->_hoverEdgeInput) : 0;
+
+    if (previous == edge) {
+        return;
+    }
+    if (previous) {
+        previous->setHoverHighlight(false);
+    }
+    _imp->_hoverEdgeNode.reset();
+    _imp->_hoverEdgeInput = -1;
+    if (!edge) {
+        return;
+    }
+    NodeGuiPtr owner = edge->isOutputEdge() ? edge->getSource() : edge->getDest();
+    const int input = edge->isOutputEdge() ? -1 : edge->getInputNumber();
+    // The graph's own hint and preview edges belong to no node, so they could not be cleared later.
+    if (!owner || (owner->getInputArrow(input) != edge)) {
+        return;
+    }
+    _imp->_hoverEdgeNode = owner;
+    _imp->_hoverEdgeInput = input;
+    edge->setHoverHighlight(true);
+}
+
 bool
 NodeGraph::hasPickedUpArrow() const
 {

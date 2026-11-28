@@ -272,12 +272,21 @@ NodeGraph::onSettingsSaved()
     for (NodesGuiList::const_iterator it = _imp->_nodes.begin(); it != _imp->_nodes.end(); ++it) {
         (*it)->refreshCategoryColor();
         (*it)->refreshEdgesDataKindPen(true);
+        (*it)->refreshEdgesPipeStyle();
         (*it)->refreshLinkLinesAppearance();
     }
     for (NodesGuiList::const_iterator it = _imp->_nodesTrash.begin(); it != _imp->_nodesTrash.end(); ++it) {
         (*it)->refreshCategoryColor();
         (*it)->refreshEdgesDataKindPen(true);
+        (*it)->refreshEdgesPipeStyle();
         (*it)->refreshLinkLinesAppearance();
+    }
+    Edge* const graphEdges[] = { _imp->_hintInputEdge, _imp->_hintOutputEdge, _imp->_kissPreviewEdge };
+    for (std::size_t i = 0; i < sizeof(graphEdges) / sizeof(graphEdges[0]); ++i) {
+        if (graphEdges[i]) {
+            graphEdges[i]->refreshPipeWidth();
+            graphEdges[i]->initLine();
+        }
     }
     // scene()->update() below repaints everything.
     _imp->invalidateLowDetailLayers(false);

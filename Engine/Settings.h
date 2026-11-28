@@ -113,6 +113,11 @@ public:
         eViewer3DLightingHeadlight
     };
 
+    enum OutputStyleEnum {
+        eOutputStyleArrow = 0,
+        eOutputStyleNub
+    };
+
     // When the 3D viewer draws boxes in place of the scene.
     enum SceneStandInModeEnum {
         eSceneStandInModeOff = 0,
@@ -275,6 +280,12 @@ public:
     void getDefaultBackdropColor(float *r, float *g, float *b) const;
 
     int getDisconnectedArrowLength() const;
+
+    int getPipeWidth() const;
+
+    int getOutputStubLength() const;
+
+    OutputStyleEnum getOutputStyle() const;
 
     void getGeneratorColor(float *r, float *g, float *b) const;
     void getReaderColor(float *r, float *g, float *b) const;
@@ -757,7 +768,10 @@ private:
     KnobBoolPtr _autoTurbo;
     KnobBoolPtr _snapNodesToConnections;
     KnobIntPtr _maxUndoSteps;
+    KnobIntPtr _pipeWidth;
     KnobIntPtr _disconnectedArrowLength;
+    KnobIntPtr _outputStubLength;
+    KnobChoicePtr _outputStyle;
     KnobBoolPtr _useInputAForMergeAutoConnect;
     KnobBoolPtr _showLinkLines;
     KnobBoolPtr _showExpressionLines;

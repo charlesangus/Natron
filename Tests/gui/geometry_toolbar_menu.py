@@ -3,7 +3,7 @@
 Usage, from the repository root: Tests/gui/run-gui-test.sh Tests/gui/geometry_toolbar_menu.py
 
 Asserts:
-  - the main window's toolbox has a Geometry button, placed right after 3D;
+  - the main window's toolbox has a Geometry button, placed right after USD (after 3D without USD);
   - its menu lists every geometry node in GEOMETRY_IDS and nothing else, none of them also under 3D;
   - the button draws its grouping's toolbox icon, which getIconForGrouping() maps to the box glyph
     (lucide/box.svg, shared with 3D); the shot shows it;
@@ -109,7 +109,9 @@ try:
         geo_button = button_for(buttons, "Geometry")
         three_d_button = button_for(buttons, "3D")
         require(geo_button is not None, "the toolbox has a Geometry button")
-        if three_d_button is not None:
+        if "USD" in groupings:
+            check(groupings.index("Geometry") == groupings.index("USD") + 1, "the Geometry button follows USD")
+        elif three_d_button is not None:
             check(groupings.index("Geometry") == groupings.index("3D") + 1, "the Geometry button follows 3D")
         check(not geo_button.icon().isNull(), "the Geometry button has an icon")
         check(geo_button.icon().cacheKey() ==

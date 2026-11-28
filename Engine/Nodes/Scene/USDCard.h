@@ -58,7 +58,7 @@ public:
                        "(+Z when Y is up, -Y when Z is up), with texture coordinates spanning it. Scale X of a new "
                        "card is the project format's aspect. Texture it through a USDPreviewSurface on its Material input. Animated knobs "
                        "are written as time samples.",
-        .grouping = PLUGIN_GROUP_3D_USD,
+        .grouping = PLUGIN_GROUP_USD_PRIMS,
         .majorVersion = 1,
         .minorVersion = 0,
         .icon = NATRON_IMAGES_PATH "NativeNodes/USDCard.png",

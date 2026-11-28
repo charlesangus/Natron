@@ -150,3 +150,4 @@ Known suspects, unmeasured as to their split (M399's samples are gone):
   | open_panel | 0 | 532.9 ms (p95 1067) | 334.2 ms (p95 415) | −37.3% |
   | open_panel | 300 | 546.3 ms (p95 1091) | 332.1 ms (p95 434) | −39.2% |
 - 2026-11-28 — **UAT approved (user).** Main merged (4c6534dba1; conflicts in GuiApplicationManager.cpp — kept main's makeNodesMenuCreateNodeArgs plus the immediate panel build — and TimeLineGui.cpp includes). PR #315 ready; merge on green CI.
+- 2026-11-28 — Merged to main (PR #315, squash).

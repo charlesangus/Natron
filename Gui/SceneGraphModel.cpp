@@ -48,6 +48,7 @@
 #include <QtGui/QFont>
 #include <QtGui/QIcon>
 
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/Nodes/Scene/SceneKindWalk.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -1951,6 +1952,7 @@ SceneGraphModel::getSource() const
 void
 SceneGraphModel::refresh()
 {
+    NodeCreationStageLog::Scope creationStage("sceneGraphRefresh");
     if (_imp->deferred) {
         _imp->stale = true;
 

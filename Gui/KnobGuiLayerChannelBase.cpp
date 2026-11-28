@@ -322,7 +322,7 @@ void
 KnobGuiLayerChannelBase::_show()
 {
     if (_imp->container) {
-        _imp->container->show();
+        KnobGui::showWidget(_imp->container);
     }
 }
 

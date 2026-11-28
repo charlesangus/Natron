@@ -66,6 +66,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/Nodes/Color/ColorCorrect.h"
 #include "Engine/Nodes/Color/Grade.h"
 #include "Engine/Nodes/Filter/Blur.h"
+#include "Engine/Nodes/Loop/LoopPair.h"
 #include "Engine/Nodes/Merge/Merge.h" // PLUGINID_NATRON_NATIVE_MERGE
 #include "Engine/Nodes/Scene/SceneTeardown.h"
 #include "Engine/Nodes/Transform/Transform.h"
@@ -82,6 +83,9 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/KnobGuiFactory.h"
 #include "Gui/LensBrowser.h"
 #include "Gui/Menu.h"
+#include "Gui/NodeCreationTrace.h"
+#include "Gui/NodeGraph.h"
+#include "Gui/NodeGui.h"
 #include "Gui/PreviewThread.h"
 #include "Gui/QtEnumConvert.h"
 #include "Gui/SplashScreen.h"
@@ -489,6 +493,9 @@ pixmapEnumToPath(PixmapEnum e)
         break;
     case NATRON_PIXMAP_TIME_GROUPING:
         path = NATRON_ICONS_PATH "lucide/clock.svg";
+        break;
+    case NATRON_PIXMAP_LOOP_GROUP:
+        path = NATRON_ICONS_PATH "natron/loop.svg";
         break;
     case NATRON_PIXMAP_PAINT_GROUPING:
         path = NATRON_ICONS_PATH "lucide/brush.svg";
@@ -1206,6 +1213,7 @@ GuiApplicationManager::initGui(const CLArgs& args)
     // Never stopped: render threads may still hold it at exit, and each line is flushed as written.
     RotoLatencyProbe::startFromEnvironment();
     NodeCreationStageLog::startFromEnvironment();
+    NodeCreationTrace::startFromEnvironment();
 
     Optics::LensKnobs::setBrowseHandler([](const KnobStringPtr& lens, const Optics::LensPreviewContext& context) { LensBrowser::open(lens, context); });
 
@@ -1378,6 +1386,8 @@ getIconForGrouping(QIcon* icon,
         e = NATRON_PIXMAP_DEEP_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_METADATA)) {
         e = NATRON_PIXMAP_METADATA_GROUPING;
+    } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_LOOP)) {
+        e = NATRON_PIXMAP_LOOP_GROUP;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_RFV)) {
         e = NATRON_PIXMAP_RFV_GROUPING;
     } else if (grouping == QString::fromUtf8(PLUGIN_GROUP_MULTIVIEW)) {
@@ -1466,6 +1476,19 @@ findPlugin(const QString& pluginID,
     return 0;
 }
 
+const Plugin*
+findHighestPlugin(const QString& pluginID)
+{
+    const PluginsMap& plugins = appPTR->getPluginsList();
+    PluginsMap::const_iterator found = plugins.find(pluginID.toStdString());
+
+    if ((found == plugins.end()) || found->second.empty()) {
+        return 0;
+    }
+
+    return *found->second.rbegin();
+}
+
 int
 highestOfferedMajor(const QString& pluginID)
 {
@@ -1521,6 +1544,15 @@ refreshPluginActionProperties(QAction* action,
     action->setProperty(kNodesMenuPropShortcut, plugin ? shortcutText(*plugin) : QString());
 }
 
+// A pair takes its begin node's colour. The begin's shortcut creates the begin alone, so the pair shows none.
+void
+refreshLoopPairActionProperties(QAction* action,
+                                const Plugin* begin)
+{
+    action->setProperty(kNodesMenuPropCategoryColor, begin ? categoryColorName(*begin) : QString());
+    action->setProperty(kNodesMenuPropShortcut, QString());
+}
+
 void
 refreshPluginActionsProperties(QMenu* menu,
                                const QString& pluginID)
@@ -1533,6 +1565,14 @@ refreshPluginActionsProperties(QMenu* menu,
         }
         if (actions[i]->menu()) {
             refreshPluginActionsProperties(actions[i]->menu(), pluginID);
+            continue;
+        }
+        const LoopPairKind* pair = findLoopPairKind(actions[i]->property(kNodesMenuPropLoopPair).toString().toStdString());
+        if (pair) {
+            const QString beginID = QString::fromUtf8(pair->beginPluginID);
+            if (pluginID.isEmpty() || (beginID == pluginID)) {
+                refreshLoopPairActionProperties(actions[i], findHighestPlugin(beginID));
+            }
             continue;
         }
         const QString id = actions[i]->property(kNodesMenuPropPluginID).toString();
@@ -1773,50 +1813,89 @@ GuiApplicationManager::swapNodesMenuArgsDecorator(const NodesMenuArgsDecorator& 
     return previous;
 }
 
+bool
+GuiApplicationManagerPrivate::getNodesMenuCreationTarget(GuiAppInstancePtr* app,
+                                                         NodeCollectionPtr* group)
+{
+    app->reset();
+    group->reset();
+    // A window with a node creation context set, such as the tab menu's, decides where the node goes.
+    const AppInstanceVec& instances = _publicInterface->getAppInstances();
+    for (AppInstanceVec::const_iterator it = instances.begin(); it != instances.end(); ++it) {
+        if ((*it)->getNodeCreationContextCollection()) {
+            *app = std::dynamic_pointer_cast<GuiAppInstance>(*it);
+            break;
+        }
+    }
+    if (*app) {
+        *group = (*app)->getNodeCreationContextCollection();
+    } else {
+        // A popup destroyed while open never emits aboutToHide(), so its target is dropped with it.
+        if (nodesMenuTarget && nodesMenuPopup) {
+            *app = nodesMenuTarget->getApp();
+        }
+        if (!*app) {
+            *app = activeWindowApp();
+        }
+        if (!*app) {
+            *app = std::dynamic_pointer_cast<GuiAppInstance>(_publicInterface->getTopLevelInstance());
+        }
+        if (!*app || !(*app)->getGui()) {
+            return false;
+        }
+        *group = (*app)->getGui()->getLastSelectedNodeCollection();
+    }
+
+    return *app && *group;
+}
+
+void
+GuiApplicationManagerPrivate::makeNodesMenuCreateNodeArgs(CreateNodeArgs& args,
+                                                          const NodeCollectionPtr& group) const
+{
+    args.setProperty<NodeCollectionPtr>(kCreateNodeArgsPropGroupContainer, group);
+    args.setProperty<bool>(kCreateNodeArgsPropDeferSettingsPanel, true);
+    if (nodesMenuArgsDecorator) {
+        nodesMenuArgsDecorator(args);
+    }
+}
+
 void
 GuiApplicationManagerPrivate::createNodeFromNodesMenu(const QString& pluginID,
                                                       int major,
                                                       int minor)
 {
     GuiAppInstancePtr app;
-    // A window with a node creation context set, such as the tab menu's, decides where the node goes.
-    const AppInstanceVec& instances = _publicInterface->getAppInstances();
-    for (AppInstanceVec::const_iterator it = instances.begin(); it != instances.end(); ++it) {
-        if ((*it)->getNodeCreationContextCollection()) {
-            app = std::dynamic_pointer_cast<GuiAppInstance>(*it);
-            break;
-        }
-    }
     NodeCollectionPtr group;
-    if (app) {
-        group = app->getNodeCreationContextCollection();
-    } else {
-        // A popup destroyed while open never emits aboutToHide(), so its target is dropped with it.
-        if (nodesMenuTarget && nodesMenuPopup) {
-            app = nodesMenuTarget->getApp();
-        }
-        if (!app) {
-            app = activeWindowApp();
-        }
-        if (!app) {
-            app = std::dynamic_pointer_cast<GuiAppInstance>(_publicInterface->getTopLevelInstance());
-        }
-        if (!app || !app->getGui()) {
-            return;
-        }
-        group = app->getGui()->getLastSelectedNodeCollection();
-    }
-    if (!app || !group) {
+    if (!getNodesMenuCreationTarget(&app, &group)) {
         return;
     }
+    NodeCreationTrace::begin(app->getNodeCreationContextCollection() ? "the Tab menu" : "a nodes menu or the toolbar", pluginID);
     CreateNodeArgs args(pluginID.toStdString(), group);
     args.setProperty<int>(kCreateNodeArgsPropPluginVersion, major, 0);
     args.setProperty<int>(kCreateNodeArgsPropPluginVersion, minor, 1);
-    args.setProperty<bool>(kCreateNodeArgsPropDeferSettingsPanel, true);
-    if (nodesMenuArgsDecorator) {
-        nodesMenuArgsDecorator(args);
+    makeNodesMenuCreateNodeArgs(args, group);
+    NodePtr node = app->createNode(args);
+    // The panel is built before any event runs, so the node and its panel are shown in one frame.
+    NodeGuiPtr nodeGui = node ? std::dynamic_pointer_cast<NodeGui>(node->getNodeGui()) : NodeGuiPtr();
+    NodeGraph* graph = nodeGui ? nodeGui->getDagGui() : 0;
+    if (graph) {
+        graph->buildScheduledPanels();
     }
-    app->createNode(args);
+}
+
+void
+GuiApplicationManagerPrivate::createLoopPairFromNodesMenu(const QString& kindName)
+{
+    const LoopPairKind* kind = findLoopPairKind(kindName.toStdString());
+    GuiAppInstancePtr app;
+    NodeCollectionPtr group;
+    if (!kind || !getNodesMenuCreationTarget(&app, &group)) {
+        return;
+    }
+    createLoopPair(app, *kind, [this, &group](CreateNodeArgs& args) {
+        makeNodesMenuCreateNodeArgs(args, group);
+    });
 }
 
 void
@@ -1845,6 +1924,55 @@ GuiApplicationManagerPrivate::populateNodesMenuGroup(QMenu* parent,
         } else {
             populateNodesMenuGroup(menu, **it, (*it)->getChildren());
         }
+    }
+    if (group.getLabel() == QString::fromUtf8(PLUGIN_GROUP_LOOP)) {
+        addNodesMenuLoopPairActions(menu);
+    }
+}
+
+void
+GuiApplicationManagerPrivate::addNodesMenuLoopPairActions(QMenu* menu)
+{
+    for (const LoopPairKind& kind : loopPairKinds()) {
+        const QString beginID = QString::fromUtf8(kind.beginPluginID);
+        const Plugin* begin = findHighestPlugin(beginID);
+        const Plugin* end = findHighestPlugin(QString::fromUtf8(kind.endPluginID));
+        if (!begin || !end || !begin->getIsUserCreatable() || !end->getIsUserCreatable()) {
+            continue;
+        }
+        const QString name = QString::fromUtf8(kind.name);
+        // Several groupings can share the loop grouping's label; the pair is added once.
+        bool exists = false;
+        QIcon icon;
+        for (QAction* other : menu->actions()) {
+            exists = exists || (other->property(kNodesMenuPropLoopPair).toString() == name);
+            if (other->property(kNodesMenuPropPluginID).toString() == beginID) {
+                icon = other->icon();
+            }
+        }
+        if (exists) {
+            continue;
+        }
+
+        QAction* action = new QAction(menu);
+        action->setText(escapedMenuText(name));
+        action->setIcon(icon);
+        action->setProperty(kNodesMenuPropPluginOwned, true);
+        action->setProperty(kNodesMenuPropLoopPair, name);
+        DataKindEnum kindOfInput = eDataKindImage;
+        const bool hasInput = begin->getFirstInputDataKind(&kindOfInput);
+        action->setProperty(kNodesMenuPropInputKind, hasInput ? TabMenuBridge::dataKindKey(kindOfInput) : QString());
+        action->setProperty(kNodesMenuPropPrimPathKnob, QString());
+        QStringList inputKinds;
+        for (DataKindEnum inputKind : begin->getInputDataKinds()) {
+            inputKinds.push_back(TabMenuBridge::dataKindKey(inputKind));
+        }
+        action->setProperty(kNodesMenuPropInputKinds, inputKinds.join(QLatin1Char(',')));
+        refreshLoopPairActionProperties(action, begin);
+        QObject::connect(action, &QAction::triggered, _publicInterface, [this, name]() {
+            createLoopPairFromNodesMenu(name);
+        });
+        menu->addAction(action);
     }
 }
 

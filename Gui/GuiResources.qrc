@@ -218,6 +218,7 @@
         <file>Resources/Icons/natron/layout-anchor.svg</file>
         <file>Resources/Icons/natron/link-cursor.svg</file>
         <file>Resources/Icons/natron/link-mult-cursor.svg</file>
+        <file>Resources/Icons/natron/loop.svg</file>
         <file>Resources/Icons/natron/marker-break.svg</file>
         <file>Resources/Icons/natron/marker-c.svg</file>
         <file>Resources/Icons/natron/marker-constant.svg</file>

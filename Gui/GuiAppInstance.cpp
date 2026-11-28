@@ -683,20 +683,19 @@ GuiAppInstance::createNodeGui(const NodePtr &node,
 
     bool isViewer = node->isEffectViewer() != 0;
     if (isViewer) {
+        NodeCreationStageLog::Scope stage("viewerGui");
         _imp->_gui->createViewerGui(node);
     }
 
-    // Must be done after the viewer gui has been created
-    _imp->_gui->createNodeViewerInterface(nodegui);
-
-
     NodeGroup* isGroup = node->isEffectGroup();
     if ( isGroup && isGroup->isSubGraphUserVisible() ) {
+        NodeCreationStageLog::Scope stage("groupGui");
         _imp->_gui->createGroupGui(node, args);
     }
 
     ///Don't initialize inputs if it is a multi-instance child since it is not part of  the graph
     if (!parentMultiInstance) {
+        NodeCreationStageLog::Scope stage("inputsAndEdges");
         nodegui->initializeInputs();
 
         // This node's own GUI may have appeared after an existing output's edge already tried
@@ -1532,6 +1531,28 @@ GuiAppInstance::clearOverlayRedrawRequests()
 {
     assert( QThread::currentThread() == qApp->thread() );
     _imp->overlayRedrawRequests = 0;
+}
+
+void
+GuiAppInstance::setNodeGraphSelection(const NodesList& nodes)
+{
+    NodeGraph* graph = 0;
+    NodesGuiList guis;
+    for (const NodePtr& node : nodes) {
+        NodeGuiPtr gui = node ? std::dynamic_pointer_cast<NodeGui>(node->getNodeGui()) : NodeGuiPtr();
+        if (!gui) {
+            continue;
+        }
+        if (!graph) {
+            graph = gui->getDagGui();
+        }
+        if (gui->getDagGui() == graph) {
+            guis.push_back(gui);
+        }
+    }
+    if (graph) {
+        graph->setSelection(guis);
+    }
 }
 
 void

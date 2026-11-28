@@ -44,6 +44,7 @@
 #include "Engine/Format.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeMetadata.h"
 #include "Engine/OutputSchedulerThread.h"
 #include "Engine/Project.h"
@@ -592,6 +593,7 @@ ViewerTab::createNodeViewerInterface(const NodeGuiPtr& n)
         return;
     }
 
+    NodeCreationStageLog::Scope stage("viewerInterfaceCreate");
     NodeViewerContextPtr nodeContext = NodeViewerContext::create(n, this);
     nodeContext->createGui();
     _imp->nodesContext.insert( std::make_pair(n, nodeContext) );

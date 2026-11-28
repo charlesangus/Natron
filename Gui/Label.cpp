@@ -59,8 +59,12 @@ Label::getAltered() const
 void
 Label::refreshStyle()
 {
-    style()->unpolish(this);
-    style()->polish(this);
+    // An unpolished label gets the new state from its first polish; polishing it here too
+    // would only be paid twice.
+    if (testAttribute(Qt::WA_WState_Polished)) {
+        style()->unpolish(this);
+        style()->polish(this);
+    }
     update();
 }
 

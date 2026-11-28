@@ -309,7 +309,7 @@ protected:
         GoldenPlaneAcceptance acceptance;
 
         acceptance["depth"] = sameDepth;
-        acceptance["uk.co.thefoundry.OfxImagePlaneColour"] = sameColour;
+        acceptance["rgba"] = sameColour;
         EXPECT_TRUE(checkGolden(render, kGroup, caseName, 0, 1., acceptance));
         HydraRender::releaseAll();
     }

@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -42,6 +43,7 @@
 
 #include "Engine/EngineFwd.h"
 #include "Engine/Nodes/Filter/MapInput.h"
+#include "Engine/Nodes/Loop/LoopBlock.h"
 #include "Engine/Nodes/Loop/LoopFold.h"
 #include "Engine/Nodes/Loop/LoopFrameCache.h"
 #include "Engine/Nodes/Loop/LoopMapBlend.h"
@@ -83,7 +85,7 @@
 #define kLoopEndParamOperationUnder "under"
 #define kLoopEndParamReverseOrder "reverseOrder"
 #define kLoopEndParamMaxIterations "maxIterations"
-#define kLoopEndParamDrivenKnobs "drivenKnobs"
+#define kLoopEndParamDrivenKnobs kLoopBlockParamDrivenKnobs
 #define kLoopEndParamCrossFrame "crossFrame"
 #define kLoopEndParamStartFrame "startFrame"
 #define kLoopEndParamSubframes "subframes"
@@ -121,7 +123,8 @@ inline constexpr InputSpec kLoopEndInputs[] = {
  * not yet folded stay resident. The output under no fold step is the last step.
  **/
 class LoopEnd
-    : public NativeEffectBase {
+    : public NativeEffectBase,
+      public LoopBlockEnd {
 public:
     static EffectInstance* BuildEffect(NodePtr node)
     {
@@ -482,6 +485,16 @@ public:
     static RenderContextPtr previewContextOf(const NodePtr& node,
                                              double time) WARN_UNUSED_RETURN;
 
+    /** @brief The loop.* variables each iteration sets, and loops.<name>.* the same. */
+    static const std::vector<std::string>& loopVariables() WARN_UNUSED_RETURN;
+
+    virtual std::string getBlockLoopName() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual std::vector<NodePtr> getBlockBegins() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual KnobStringPtr getBlockNameKnob() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual const std::vector<std::string>& getBlockVariables() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+    virtual RenderContextPtr getBlockPreviewContext(const RenderContextPtr& base,
+                                                    double time) const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
 private:
     struct Resolved {
         std::vector<NodePtr> begins;
@@ -623,6 +636,8 @@ private:
                                  const CreateNodeArgs& args) OVERRIDE FINAL;
 
     virtual void appendExtraHashDependents(std::vector<NodePtr>* dependents) const OVERRIDE FINAL;
+
+    virtual void abortCooksStaleAfterEdit() OVERRIDE FINAL;
 
     virtual void addSupportedBitDepth(std::list<ImageBitDepthEnum>* depths) const OVERRIDE FINAL;
 
@@ -932,8 +947,13 @@ private:
                           float* acc);
 
     // Aborts the viewer render this thread runs when the loop's hash moved since its frame was set
-    // up, and says whether it did.
+    // up, or when an edit of the loop or its body was held back by that render, and says whether
+    // it did.
     bool abortIfEditedSinceFrameStart() const WARN_UNUSED_RETURN;
+
+    // Lists the viewer render this thread runs among those abortCooksStaleAfterEdit() aborts, for
+    // its lifetime.
+    class RunningRenderScope;
 
     // The LoopBegins the walk up from input 0 pairs with, by script name, or why there are none.
     // Walked once per graph generation.
@@ -993,6 +1013,12 @@ private:
 
     // A refreshKnobVisibility() queued by refreshLoopsOf() and not run yet.
     std::atomic<bool> _visibilityRefreshQueued;
+
+    // The viewer renders in render() now, one entry per call.
+    QMutex _runningRendersMutex;
+    std::list<AbortableRenderInfoPtr> _runningRenders;
+    // See noteEditAtLatestRenderSequence().
+    std::atomic<U64> _editedAtRenderSequence { 0 };
 
     mutable QMutex _stopMutex;
     mutable std::vector<StopResult> _stopResults;

@@ -97,6 +97,20 @@ public:
     }
 
     /**
+     * @brief Makes the file dialog the one Read uses, which lists a numbered sequence as one entry
+     * and, when one is picked, limits the node's time domain knobs to its frames.
+     **/
+    void setOpensSequences()
+    {
+        _opensSequences = true;
+    }
+
+    bool opensSequences() const
+    {
+        return _isInputImage || _opensSequences;
+    }
+
+    /**
      * @brief Whether the knob shows its own reload icon: every file knob does until a Reload button
      * takes over, so a panel never has both. The icon runs reloadFile(), which only suits a node
      * that needs nothing more. A node whose reload does more, such as rereading USD layers, gets
@@ -206,6 +220,7 @@ private:
     virtual const std::string & typeName() const OVERRIDE FINAL;
     static const std::string _typeNameStr;
     int _isInputImage;
+    bool _opensSequences;
     KnobButtonWPtr _reloadButton;
     std::vector<std::string> _fileExtensions;
 };
@@ -238,6 +253,20 @@ public:
     void setAsOutputImageFile(bool isOutputImage = true)
     {
         _isOutputImage = isOutputImage;
+    }
+
+    /**
+     * @brief The extensions the save dialog offers, the first selected, such as "ngeo". An empty
+     * list offers every file. Output-image knobs offer the writers' formats instead.
+     **/
+    void setFileExtensions(const std::vector<std::string>& extensions)
+    {
+        _fileExtensions = extensions;
+    }
+
+    const std::vector<std::string>& getFileExtensions() const
+    {
+        return _fileExtensions;
     }
 
     bool isOutputImageFile() const
@@ -299,6 +328,7 @@ private:
     bool _isOutputImage;
     bool _sequenceDialog;
     bool _showsRewriteButton;
+    std::vector<std::string> _fileExtensions;
 };
 
 

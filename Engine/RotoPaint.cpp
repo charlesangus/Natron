@@ -927,7 +927,7 @@ namespace {
 
 std::atomic<bool> gDirectCompositeEnabled(true);
 std::atomic<unsigned long long> gDirectCompositeRenders(0);
-std::atomic<bool> gParallelMaskFetchEnabled(true);
+std::atomic<int> gMaskFetchThreads(0);
 std::function<void()> gDirectMaskFetchHook;
 
 // Rows between abort checks of a direct composite band.
@@ -1087,7 +1087,7 @@ struct DirectMaskJob {
  * Fetches every job's mask from the cache or rasterises it, and hands each to its fold input.
  * The masks do not depend on one another, so they may be fetched in any order and on any thread,
  * as long as each fetch sees the render thread's frame and context: those are what its cache key
- * is made of.
+ * is made of. The first failure or exception stops the fetches not yet started.
  */
 DirectTreeResult
 fetchItemMasks(RotoPaint& self,
@@ -1098,59 +1098,92 @@ fetchItemMasks(RotoPaint& self,
                std::vector<DirectMerge>* merges)
 {
     std::vector<ImagePtr> masks(jobs.size());
+    std::atomic<bool> failed(false);
     const auto fetch = [&](std::size_t i) {
         const DirectMaskJob& job = jobs[i];
         if (gDirectMaskFetchHook) {
             gDirectMaskFetchHook();
         }
         masks[i] = job.item->renderMaskFromStroke(job.components, time, view, job.depth, mipmapLevel, job.rotoSrcRod);
+        if (!masks[i]) {
+            failed = true;
+        }
     };
 
-    const int nThreads = appPTR->getNCPUsAvailableForEffect();
-    if (!gParallelMaskFetchEnabled || (jobs.size() < 2) || (nThreads < 2)) {
-        for (std::size_t i = 0; i < jobs.size(); ++i) {
+    const int forcedThreads = gMaskFetchThreads;
+    const int nThreads = std::max(1, (forcedThreads > 0) ? forcedThreads : appPTR->getNCPUsAvailableForEffect());
+    const int nWorkers = (int)std::min(jobs.size(), (std::size_t)nThreads);
+    {
+        // Each mask's raster is timed as a render nested in this one and left out of its cost;
+        // timing the fetches as one block leaves out the lookups and the wait for helpers as well,
+        // whichever way they are fetched.
+        CacheRecomputeStopwatch masksAreNotThisRender;
+        if (nWorkers < 2) {
+            for (std::size_t i = 0; i < jobs.size(); ++i) {
+                if (self.aborted()) {
+                    return DirectTreeResult::Aborted;
+                }
+                fetch(i);
+                if (failed) {
+                    break;
+                }
+            }
+        } else {
             if (self.aborted()) {
                 return DirectTreeResult::Aborted;
             }
-            fetch(i);
-            if (!masks[i]) {
-                break;
+            QThread* const callingThread = QThread::currentThread();
+            const FrameRenderContext* const frameContext = AppTLS::currentFrameContext();
+            const FrameArgsOverlayPtr frameArgsHead = FrameArgsOverlay::currentHead();
+            const IsolatedJob* const isolatedJob = IsolatedJob::current();
+            const bool scheduledTask = AppTLS::isRunningScheduledTask();
+            RenderContextPtr actingContext;
+            const bool acting = ActionContextScope::current(&actingContext);
+            bool userInteraction = false;
+            AbortableRenderInfoPtr abortInfo;
+            EffectInstancePtr treeRoot;
+            const bool lendsAbort = self.getAbortState(&userInteraction, &abortInfo, &treeRoot);
+            RenderCancellation cancel(&self);
+            std::atomic<std::size_t> nextJob(0);
+            const std::function<void(int)> worker = [&](int) {
+                const bool helper = (QThread::currentThread() != callingThread);
+                // A mask fetch reads the effects' frame args and abort state as an action of the
+                // render would, so a helper inherits all of the render thread's data.
+                AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, frameContext, frameArgsHead, isolatedJob, AppTLS::eSpawnKindMultiThreadSuite, scheduledTask);
+                // The lent abort and the acting context are plain thread_locals that no spawn
+                // copies; the mask key folds in the context the Merge answers under.
+                std::optional<EffectInstance::InheritedAbortScope> abortScope;
+                if (helper && lendsAbort) {
+                    abortScope.emplace(userInteraction, abortInfo, treeRoot);
+                }
+                ActionContextScope actionContext(acting && helper, actingContext);
+                // A large stroke or feather splits its rows only as far as its thread's budget.
+                // With the whole budget on every worker, a raster that outlasts the others spreads
+                // over the threads they free, as it would fetched alone; its bands queue on the
+                // same pool, so this starts no more threads than the pool has.
+                AppTLS::ThreadBudgetScope rasterBudget(nThreads);
+                for (;;) {
+                    // Only the render thread publishes the abort to cancel, and it may be
+                    // rasterising a large mask itself, so a worker asks too between masks.
+                    if (failed || cancel.check() || self.aborted()) {
+                        return;
+                    }
+                    const std::size_t i = nextJob.fetch_add(1);
+                    if (i >= jobs.size()) {
+                        return;
+                    }
+                    try {
+                        fetch(i);
+                    } catch (...) {
+                        failed = true;
+                        throw;
+                    }
+                }
+            };
+            parallelForCancellable(nWorkers, nWorkers, cancel, worker);
+            if (cancel.check()) {
+                return DirectTreeResult::Aborted;
             }
-        }
-    } else {
-        if (self.aborted()) {
-            return DirectTreeResult::Aborted;
-        }
-        QThread* const callingThread = QThread::currentThread();
-        const FrameRenderContext* const frameContext = AppTLS::currentFrameContext();
-        const FrameArgsOverlayPtr frameArgsHead = FrameArgsOverlay::currentHead();
-        const IsolatedJob* const isolatedJob = IsolatedJob::current();
-        const bool scheduledTask = AppTLS::isRunningScheduledTask();
-        RenderContextPtr actingContext;
-        const bool acting = ActionContextScope::current(&actingContext);
-        RenderCancellation cancel(&self);
-        const std::function<void(int)> fetchOnPool = [&](int i) {
-            // A mask fetch reads the effects' frame args and abort state as an action of the
-            // render would, so a helper inherits all of the render thread's data.
-            AppTLS::SpawnedThreadScope spawnedThreadTLS(callingThread, frameContext, frameArgsHead, isolatedJob, AppTLS::eSpawnKindMultiThreadSuite, scheduledTask);
-            // The acting context is a plain thread_local that no spawn copies, and the mask key
-            // folds in the context the Merge answers under.
-            ActionContextScope actionContext(acting && (QThread::currentThread() != callingThread), actingContext);
-            // Only the render thread publishes the abort to cancel, and it may be rasterising a
-            // large mask itself, so a helper asks too before it starts another.
-            if (cancel.check() || self.aborted()) {
-                return;
-            }
-            fetch((std::size_t)i);
-        };
-        {
-            // Run serially, each mask's raster would be timed as a render nested in this one and
-            // left out of its cost; timed as one block, the wait for the helpers is too.
-            CacheRecomputeStopwatch masksAreNotThisRender;
-            parallelForCancellable((int)jobs.size(), nThreads, cancel, fetchOnPool);
-        }
-        if (cancel.check()) {
-            return DirectTreeResult::Aborted;
         }
     }
 
@@ -1444,15 +1477,9 @@ RotoPaint::getDirectCompositeRenderCount()
 }
 
 void
-RotoPaint::setParallelMaskFetchEnabled(bool enabled)
+RotoPaint::setMaskFetchThreadCount(int threads)
 {
-    gParallelMaskFetchEnabled = enabled;
-}
-
-bool
-RotoPaint::isParallelMaskFetchEnabled()
-{
-    return gParallelMaskFetchEnabled;
+    gMaskFetchThreads = std::max(0, threads);
 }
 
 void

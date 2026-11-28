@@ -1054,9 +1054,6 @@ public:
 #endif
     std::list<KnobIPtr> knobs; //< list for easy access to all knobs
 
-    //Used to prevent 2 threads from writing the same image in the rotocontext
-    mutable QReadWriteLock cacheAccessMutex;
-
     // The knob part of the item's content hash, one entry per knob in list order, memoized against
     // knobsGeneration, which every content change of the knobs moves. A knob reading another knob
     // through a master link or an expression changes with it, so it is kept live and rehashed on
@@ -1133,7 +1130,6 @@ public:
         , timeOffset()
         , timeOffsetMode()
         , knobs()
-        , cacheAccessMutex()
     {
         opacity = std::make_shared<KnobDouble>((KnobHolder*)NULL, tr(kRotoOpacityParamLabel), 1, true);
         opacity->setHintToolTip( tr(kRotoOpacityHint) );

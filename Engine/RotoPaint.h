@@ -73,12 +73,12 @@ public:
     static unsigned long long getDirectCompositeRenderCount();
 
     /**
-     * @brief Whether a direct composite fetches or rasterises its items' masks concurrently on
-     * the global pool rather than one after another; on by default. Process-wide, for tests
-     * comparing the two.
+     * @brief How many threads a direct composite fetches or rasterises its items' masks on: 0,
+     * the default, for as many as the effect may use; 1 fetches them one after another; more
+     * splits the fetch that many ways whatever the load. Process-wide, for tests comparing the
+     * two ways.
      **/
-    static void setParallelMaskFetchEnabled(bool enabled);
-    static bool isParallelMaskFetchEnabled();
+    static void setMaskFetchThreadCount(int threads);
 
     /**
      * @brief Called on whichever thread fetches an item's mask for a direct composite, just

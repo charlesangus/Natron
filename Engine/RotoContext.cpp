@@ -41,6 +41,7 @@
 
 #include <QDebug>
 #include <QLineF>
+#include <QReadWriteLock>
 #include <QTimer>
 
 //#define ROTO_RENDER_TRIANGLES_ONLY
@@ -1246,6 +1247,24 @@ RotoStrokeItem::renderSingleStroke(const RectD& pointsBbox,
     return distToNext;
 } // RotoStrokeItem::renderSingleStroke
 
+namespace {
+const std::size_t kMaskKeyLockCount = 64;
+
+// Items with the same content share a mask key, so what keeps a mask from being read while it is
+// drawn is a lock per key rather than per item. Keys that land on the same lock only wait on one
+// another.
+QReadWriteLock&
+maskKeyLock(U64 rotoHash)
+{
+    static QReadWriteLock locks[kMaskKeyLockCount];
+
+    return locks[rotoHash % kMaskKeyLockCount];
+}
+
+// Masks fetched concurrently can fail together; one dialog says it, the others would stack.
+std::atomic<bool> gReportingMaskAllocationFailure(false);
+} // anonymous namespace
+
 ImagePtr
 RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
                                        const double time,
@@ -1304,7 +1323,7 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
 
     {
         RotoRenderProfile::StageTimer lookup(RotoRenderProfile::eStageCacheLookup);
-        QReadLocker k(&_imp->cacheAccessMutex);
+        QReadLocker k(&maskKeyLock(rotoHash));
         node->getEffectInstance()->getImageFromCacheAndConvertIfNeeded(true, eStorageModeRAM, eStorageModeRAM, *key, mipmapLevel, NULL, NULL, RectI(), depth, components, EffectInstance::InputImagesMap(), RenderStatsPtr(), OSGLContextAttacherPtr(), &image);
     }
 
@@ -1381,25 +1400,39 @@ RotoDrawableItem::renderMaskFromStroke(const ImageLayerDesc& components,
                                               depth,
                                               node->getEffectInstance()->getRenderMetadata(time, view)->getOutputFielding());
     /*
-       At this point we take the cacheAccessMutex so that no other thread can retrieve this image from the cache while it has not been
+       At this point we take the key's lock so that no other thread can retrieve this image from the cache while it has not been
        finished rendering. You might wonder why we do this differently here than in EffectInstance::renderRoI, this is because we do not use
        the trimap and notification system here in the rotocontext, which would be to much just for this small object, rather we just lock
        it once, which is fine.
      */
-    QWriteLocker k(&_imp->cacheAccessMutex);
+    QWriteLocker k(&maskKeyLock(rotoHash));
+    bool drawnMeanwhile = false;
     {
         RotoRenderProfile::StageTimer allocate(RotoRenderProfile::eStageAllocate);
-        appPTR->getImageOrCreate(*key, params, &image);
-        if (image) {
+        drawnMeanwhile = appPTR->getImageOrCreate(*key, params, &image);
+        if (image && !drawnMeanwhile) {
             image->allocateMemory();
         }
+    }
+    if (image && drawnMeanwhile) {
+        // Entries under this key are only made under its lock and are removed there unless whole,
+        // so one found here is finished; drawing it again would expose its readers to the redraw.
+        profile.setHit(true);
+        profile.setPixels((long long)image->getBounds().area());
+
+        return image;
     }
     if (!image) {
         std::stringstream ss;
         ss << "Failed to allocate an image of ";
         std::size_t size = params->getStorageInfo().bounds.area() * params->getStorageInfo().numComponents * params->getStorageInfo().dataTypeSize;
         ss << printAsRAM( size ).toStdString();
-        Dialogs::errorDialog( tr("Out of memory").toStdString(), ss.str() );
+        if (!gReportingMaskAllocationFailure.exchange(true)) {
+            Dialogs::errorDialog(tr("Out of memory").toStdString(), ss.str());
+            gReportingMaskAllocationFailure = false;
+        } else {
+            qDebug() << "Out of memory:" << ss.str().c_str();
+        }
 
         return image;
     }

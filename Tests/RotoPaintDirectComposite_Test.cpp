@@ -35,18 +35,23 @@
 #include <map>
 #include <memory>
 #include <ostream>
+#include <set>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <QByteArray>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QString>
 #include <QTemporaryDir>
 #include <QThread>
 #include <QThreadPool>
+#include <QWaitCondition>
 
 #include <gtest/gtest.h>
 
@@ -148,6 +153,87 @@ printDiffExtent(const RenderedPlane& a,
     std::cout << "DIAG " << where << " differing pixels=" << count << " inside source bounds=" << insideSource << " bbox=" << minX << ',' << minY << ' ' << maxX << ',' << maxY << std::endl;
 }
 
+// Threads a test splits a mask fetch across, whatever the machine or its load.
+const int kParallelFetchThreads = 4;
+
+// Gives the global pool room for a forced split for the scope's lifetime, so a helper always has a
+// free thread to start on.
+class PoolRoomScope {
+public:
+    explicit PoolRoomScope(int threads)
+        : _previous(QThreadPool::globalInstance()->maxThreadCount())
+    {
+        QThreadPool::globalInstance()->setMaxThreadCount(std::max(_previous, threads + 1));
+    }
+
+    ~PoolRoomScope()
+    {
+        QThreadPool::globalInstance()->setMaxThreadCount(_previous);
+    }
+
+    PoolRoomScope(const PoolRoomScope&) = delete;
+    PoolRoomScope& operator=(const PoolRoomScope&) = delete;
+
+private:
+    int _previous;
+};
+
+// Installed as the mask fetch hook: holds the first fetches until `parties` threads are fetching at
+// once, then lets every fetch through, and records the threads it saw. A fetch that stays serial
+// gives up waiting after a while, leaving fewer threads seen than parties.
+class FetchRendezvous {
+public:
+    FetchRendezvous() = default;
+
+    void arrive()
+    {
+        QMutexLocker locker(&_mutex);
+        _threads.insert(std::this_thread::get_id());
+        if (_met) {
+            return;
+        }
+        if (++_waiting >= _parties) {
+            _met = true;
+            _allHere.wakeAll();
+
+            return;
+        }
+        while (!_met) {
+            if (!_allHere.wait(&_mutex, 5000)) {
+                break;
+            }
+        }
+        if (!_met) {
+            _met = true;
+            _allHere.wakeAll();
+        }
+    }
+
+    std::size_t threadsSeen()
+    {
+        QMutexLocker locker(&_mutex);
+
+        return _threads.size();
+    }
+
+    void reset(std::size_t parties)
+    {
+        QMutexLocker locker(&_mutex);
+        _parties = parties;
+        _threads.clear();
+        _waiting = 0;
+        _met = false;
+    }
+
+private:
+    std::size_t _parties = 1;
+    QMutex _mutex;
+    QWaitCondition _allHere;
+    std::set<std::thread::id> _threads;
+    std::size_t _waiting = 0;
+    bool _met = false;
+};
+
 class RotoPaintDirectCompositeTest
     : public BaseTest,
       public ::testing::WithParamInterface<DirectCase> {
@@ -159,7 +245,7 @@ protected:
         getApp()->getProject()->reset(false, true);
         appPTR->clearAllCaches();
         RotoPaint::setDirectCompositeEnabled(true);
-        RotoPaint::setParallelMaskFetchEnabled(true);
+        RotoPaint::setMaskFetchThreadCount(0);
         RotoPaint::setDirectMaskFetchHook(std::function<void()>());
     }
 
@@ -167,7 +253,7 @@ protected:
     {
         RotoRenderProfile::stop();
         RotoPaint::setDirectCompositeEnabled(true);
-        RotoPaint::setParallelMaskFetchEnabled(true);
+        RotoPaint::setMaskFetchThreadCount(0);
         RotoPaint::setDirectMaskFetchHook(std::function<void()>());
         appPTR->clearAllCaches();
         BaseTest::TearDown();
@@ -509,19 +595,26 @@ TEST_F(RotoPaintDirectCompositeTest, ParallelMaskFetchMatchesSerialFetch)
     if (HasFatalFailure()) {
         return;
     }
+    PoolRoomScope poolRoom(kParallelFetchThreads);
+    FetchRendezvous rendezvous;
+    RotoPaint::setDirectMaskFetchHook([&rendezvous]() { rendezvous.arrive(); });
     const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
     const RectI windows[] = { kWindow, RectI(20, 10, 100, 120) };
     for (const RectI& roi : windows) {
         SCOPED_TRACE(std::to_string(roi.x1) + "," + std::to_string(roi.y1) + " " + std::to_string(roi.x2) + "," + std::to_string(roi.y2));
         std::string error;
         std::vector<RenderedPlane> serial;
-        RotoPaint::setParallelMaskFetchEnabled(false);
+        RotoPaint::setMaskFetchThreadCount(1);
+        rendezvous.reset(1);
         EXPECT_TRUE(render(true, 0, roi, rgba, &serial, &error)) << error;
-        RotoPaint::setParallelMaskFetchEnabled(true);
+        EXPECT_EQ(1u, rendezvous.threadsSeen());
+        RotoPaint::setMaskFetchThreadCount(kParallelFetchThreads);
+        rendezvous.reset(2);
         const unsigned long long before = RotoPaint::getDirectCompositeRenderCount();
         std::vector<RenderedPlane> parallel;
         EXPECT_TRUE(render(true, 0, roi, rgba, &parallel, &error)) << error;
         EXPECT_GT(RotoPaint::getDirectCompositeRenderCount(), before);
+        EXPECT_GE(rendezvous.threadsSeen(), 2u);
         ASSERT_EQ(serial.size(), parallel.size());
         for (std::size_t i = 0; i < serial.size(); ++i) {
             EXPECT_EQ(std::string(), compareExact(serial[i], parallel[i])) << "plane " << i;
@@ -531,16 +624,89 @@ TEST_F(RotoPaintDirectCompositeTest, ParallelMaskFetchMatchesSerialFetch)
     // An upstream edit re-renders the tree but keeps every mask.
     clearEverything(getApp());
     std::vector<RenderedPlane> out;
-    RotoPaint::setParallelMaskFetchEnabled(false);
+    RotoPaint::setMaskFetchThreadCount(1);
+    rendezvous.reset(1);
     EXPECT_GT(maskMisses([&]() { renderThroughCache(kWindow, &out); }), 0);
     ASSERT_TRUE(setKnobValues(_source, kConstantParamColor, { 0.3, 0.4, 0.5, 0.7 }));
-    RotoPaint::setParallelMaskFetchEnabled(true);
+    RotoPaint::setMaskFetchThreadCount(kParallelFetchThreads);
+    rendezvous.reset(2);
     EXPECT_EQ(0, maskMisses([&]() { renderThroughCache(kWindow, &out); }));
+    EXPECT_GE(rendezvous.threadsSeen(), 2u);
     clearEverything(getApp());
+    rendezvous.reset(2);
     EXPECT_GT(maskMisses([&]() { renderThroughCache(kWindow, &out); }), 0);
+    EXPECT_GE(rendezvous.threadsSeen(), 2u);
     ASSERT_TRUE(setKnobValues(_source, kConstantParamColor, { 0.1, 0.2, 0.3, 0.9 }));
-    RotoPaint::setParallelMaskFetchEnabled(false);
+    RotoPaint::setMaskFetchThreadCount(1);
+    rendezvous.reset(1);
     EXPECT_EQ(0, maskMisses([&]() { renderThroughCache(kWindow, &out); }));
+    RotoPaint::setDirectMaskFetchHook(std::function<void()>());
+}
+
+// Items of the same content share one cached mask. Fetched at once on different threads, none may
+// be served it before it is whole: every parallel render matches the serial one bit for bit.
+TEST_F(RotoPaintDirectCompositeTest, IdenticalItemsFetchedInParallelMatchSerialFetch)
+{
+    const AppInstancePtr app = getApp();
+    _roto = createNode(QString::fromUtf8(PLUGINID_NATRON_ROTO));
+    ASSERT_NE(_roto, nullptr);
+    _context = _roto->getRotoContext();
+    ASSERT_NE(_context, nullptr);
+    _context->setAutoKeyingEnabled(false);
+    _source = createConstantIn(app, app->getProject(), kWindow, { 0.2, 0.45, 0.7, 0.6 });
+    ASSERT_NE(_source, nullptr);
+    ASSERT_TRUE(_roto->connectInput(_source, 0));
+
+    // Four contents of very different raster cost, each three times over, plus one leading
+    // duplicate: workers that finish a cheap mask claim a copy of one still being drawn.
+    const int contents = 4;
+    const int copies = 3;
+    std::vector<int> order(1, 0);
+    for (int c = 0; c < copies; ++c) {
+        for (int k = 0; k < contents; ++k) {
+            order.push_back(k);
+        }
+    }
+    for (int k : order) {
+        const double size = 220. - k * 60.;
+        const BezierPtr shape = _context->makeSquare(10. + k * 7., 12. + k * 5., size, 1.);
+        ASSERT_NE(shape, nullptr);
+        shape->setFeatherDistance(40. - k * 10., 1.);
+        shape->setColor(1., 0.2 + k * 0.2, 0.9 - k * 0.15, 0.4 + k * 0.1);
+        shape->setOpacity(0.5 + k * 0.1, 1.);
+        shape->setCompositingOperator((int)eMergeOver);
+    }
+    _context->refreshRotoPaintTree();
+
+    std::vector<RenderedPlane> out;
+    clearEverything(app);
+    RotoPaint::setMaskFetchThreadCount(1);
+    const int coldMisses = maskMisses([&]() { renderThroughCache(kWindow, &out); });
+    EXPECT_GT(coldMisses, 0);
+    EXPECT_LT(coldMisses, (int)order.size());
+
+    const std::list<ImageLayerDesc> rgba(1, ImageLayerDesc::getRGBAComponents());
+    std::string error;
+    std::vector<RenderedPlane> serial;
+    ASSERT_TRUE(render(true, 0, kWindow, rgba, &serial, &error)) << error;
+
+    PoolRoomScope poolRoom(kParallelFetchThreads);
+    FetchRendezvous rendezvous;
+    RotoPaint::setDirectMaskFetchHook([&rendezvous]() { rendezvous.arrive(); });
+    RotoPaint::setMaskFetchThreadCount(kParallelFetchThreads);
+    const int repeats = 40;
+    for (int r = 0; r < repeats; ++r) {
+        SCOPED_TRACE("repeat " + std::to_string(r));
+        rendezvous.reset(kParallelFetchThreads);
+        std::vector<RenderedPlane> parallel;
+        EXPECT_TRUE(render(true, 0, kWindow, rgba, &parallel, &error)) << error;
+        EXPECT_GE(rendezvous.threadsSeen(), (std::size_t)kParallelFetchThreads);
+        ASSERT_EQ(serial.size(), parallel.size());
+        for (std::size_t i = 0; i < serial.size(); ++i) {
+            ASSERT_EQ(std::string(), compareExact(serial[i], parallel[i])) << "plane " << i;
+        }
+    }
+    RotoPaint::setDirectMaskFetchHook(std::function<void()>());
 }
 
 // An abort while the masks are fetched starts no further fetch beyond those already running on
@@ -551,11 +717,16 @@ TEST_F(RotoPaintDirectCompositeTest, AbortWhileFetchingMasksReturnsPromptly)
     if (HasFatalFailure()) {
         return;
     }
+    PoolRoomScope poolRoom(kParallelFetchThreads);
+    RotoPaint::setMaskFetchThreadCount(kParallelFetchThreads);
     const int activeItems = 160;
     const int abortAt = 4;
     const AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
     std::atomic<int> fetches(0);
+    FetchRendezvous rendezvous;
+    rendezvous.reset(2);
     RotoPaint::setDirectMaskFetchHook([&]() {
+        rendezvous.arrive();
         if (++fetches == abortAt) {
             abortInfo->setAborted();
         }
@@ -569,9 +740,10 @@ TEST_F(RotoPaintDirectCompositeTest, AbortWhileFetchingMasksReturnsPromptly)
     RotoPaint::setDirectMaskFetchHook(std::function<void()>());
 
     EXPECT_NE(EffectInstance::eRenderRoIRetCodeFailed, code);
+    EXPECT_GE(rendezvous.threadsSeen(), 2u);
     EXPECT_EQ(before, RotoPaint::getDirectCompositeRenderCount());
     EXPECT_GE(atReturn, abortAt);
-    EXPECT_LE(atReturn, abortAt + std::max(1, QThreadPool::globalInstance()->maxThreadCount()));
+    EXPECT_LE(atReturn, abortAt + kParallelFetchThreads);
     EXPECT_LT(atReturn, activeItems);
     EXPECT_EQ(atReturn, afterWait);
 

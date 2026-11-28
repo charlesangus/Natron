@@ -202,10 +202,14 @@ public:
     // Of those reuses, how many read the camera again because only its opinions moved.
     static std::uint64_t renderSetupCameraReadCount();
 
-    // Of every settings summary read off the main thread, how many composed the settings prim and
-    // how many reused one read before from the same opinions on it.
+    // Of every settings summary not already held under the node's hash, how many composed the
+    // settings prim and how many reused one read before, from the same render settings scope
+    // (HashNamespaces::settingsScope) or the same opinions on the prim.
     static std::uint64_t settingsSummaryReadCount();
     static std::uint64_t settingsSummaryReuseCount();
+    // How many settings summaries evaluated the input scene: none is evaluated for a summary the
+    // render settings scope finds.
+    static std::uint64_t settingsSummaryEvaluationCount();
     // How many summaries were taken from a read of the same one running on another thread.
     static std::uint64_t settingsSummaryJoinCount();
 
@@ -371,6 +375,10 @@ private:
     };
 
     SettingsSummary summarizeSettings(double time, ViewIdx view, SettingsLoadEnum load) const;
+    // The key of the summary at time and view in the input's render settings scope. False when the
+    // scope is uncertain or upstream reads context variables: the summary must evaluate the scene.
+    bool settingsScopeKey(double time, ViewIdx view, U64* key) const;
+    bool findScopedSettingsSummary(U64 key, SettingsSummary* summary) const;
 
     /**
      * @brief The summary at time and view under the node's hash, read with the settings prim's
@@ -508,6 +516,8 @@ private:
     mutable std::map<std::pair<double, int>, GivenSettingsSummary> _settingsSummariesGiven;
     // The summaries read, by time, view and settingsPrimDigest(), whatever the node's hash.
     mutable std::map<std::tuple<double, int, U64>, SettingsSummary> _settingsSummariesByContent;
+    // The summaries read, by settingsScopeKey(), whatever the node's hash.
+    mutable std::map<U64, SettingsSummary> _settingsSummariesByScope;
     mutable bool _hasLastSettingsSummary;
     mutable SettingsSummary _lastSettingsSummary;
     mutable bool _settingsSummariesPosted;

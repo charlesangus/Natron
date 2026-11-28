@@ -490,6 +490,7 @@ public:
     mutable bool knobsDigestHasLiveEntries = false;
     mutable U64 knobsDigest = 0; //< valid when there are no live entries
     mutable bool knobsDigestHasExpression = false;
+    mutable bool knobsDigestHasAnimation = false;
     mutable QMutex metadataReadersMutex; //< protects metadataReaders
     std::list<std::pair<KnobIWPtr, int>> metadataReaders;
     // One queued refresh serves every change made before it runs, so a burst of hash changes on a

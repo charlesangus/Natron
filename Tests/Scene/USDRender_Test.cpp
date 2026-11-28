@@ -86,6 +86,8 @@
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
+#include "Engine/Nodes/Scene/USDSetAttribute.h"
+#include "Engine/Nodes/Scene/USDSphere.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
 #include "Engine/Nodes/Scene/Utility/UtilitySubdiv.h"
 #include "Engine/Project.h"
@@ -676,19 +678,51 @@ protected:
     // as activeRendererOf() is.
     static RectD rodOf(const NodePtr& node)
     {
+        return rodAt(node, 1.);
+    }
+
+    static RectD rodAt(const NodePtr& node,
+                       double time)
+    {
         RectD rod;
         USDRender* render = renderOf(node);
         EXPECT_TRUE(render != nullptr);
         if (render) {
             const U64 hash = node->getHashValue();
-            rod = std::async(std::launch::async, [render, hash]() {
+            rod = std::async(std::launch::async, [render, hash, time]() {
                 RectD r;
-                EXPECT_EQ(eStatusOK, render->getRegionOfDefinition(hash, 1., RenderScale::identity, ViewIdx(0), &r));
+                EXPECT_EQ(eStatusOK, render->getRegionOfDefinition(hash, time, RenderScale::identity, ViewIdx(0), &r));
 
                 return r; }).get();
         }
 
         return rod;
+    }
+
+    // USDRead, USDRenderSettings framing /World/Cam, a USDEditTransform of /World/Cam, USDRender.
+    NodePtr createTransformedRender(NodePtr* settings,
+                                    NodePtr* transform)
+    {
+        NodePtr reader = createReader(kFixture);
+        *settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+        *transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
+        NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+        if (!reader || !*settings || !*transform || !node) {
+            ADD_FAILURE() << "a node of the transformed render could not be created";
+
+            return NodePtr();
+        }
+        EXPECT_TRUE(RenderSettingsTestUtils::configure(*settings, "/World/Cam", kWidth, kHeight));
+        KnobString* pattern = dynamic_cast<KnobString*>((*transform)->getKnobByName(kUSDEditTransformParamPrimPattern).get());
+        EXPECT_TRUE(pattern != nullptr);
+        if (pattern) {
+            pattern->setValue(std::string("/World/Cam"));
+        }
+        connectNodes(reader, *settings, 0, true);
+        connectNodes(*settings, *transform, 0, true);
+        connectNodes(*transform, node, 0, true);
+
+        return node;
     }
 
     static std::list<ImageLayerDesc> allPlanes()
@@ -956,6 +990,93 @@ TEST_F(USDRenderNodeTest, ACameraEditReusesTheSettingsWhileASettingsEditReadsThe
     EXPECT_EQ(cameraReads, USDRender::renderSetupCameraReadCount());
 }
 
+// No node between the settings and the render authors the settings scope, so the summary is
+// found without evaluating the scene.
+TEST_F(USDRenderNodeTest, ACameraOnlyEditFindsTheSettingsSummaryWithoutEvaluatingTheScene)
+{
+    NodePtr settings, transform;
+    NodePtr node = createTransformedRender(&settings, &transform);
+    ASSERT_TRUE(node != nullptr);
+    KnobDouble* translate = dynamic_cast<KnobDouble*>(transform->getKnobByName(kSceneParamTranslate).get());
+    ASSERT_TRUE(translate != nullptr);
+    RectD rod = rodOf(node);
+    EXPECT_EQ((double)kWidth, rod.x2);
+    EXPECT_EQ((double)kHeight, rod.y2);
+
+    const std::uint64_t evaluations = USDRender::settingsSummaryEvaluationCount();
+    const std::uint64_t reads = USDRender::settingsSummaryReadCount();
+    const std::uint64_t reuses = USDRender::settingsSummaryReuseCount();
+    translate->setValue(0.5, ViewSpec::all(), 0);
+    rod = rodOf(node);
+    translate->setValue(-2., ViewSpec::all(), 1);
+    rod = rodOf(node);
+    EXPECT_EQ(evaluations, USDRender::settingsSummaryEvaluationCount());
+    EXPECT_EQ(reads, USDRender::settingsSummaryReadCount());
+    EXPECT_LT(reuses, USDRender::settingsSummaryReuseCount());
+    EXPECT_EQ((double)kWidth, rod.x2);
+    EXPECT_EQ((double)kHeight, rod.y2);
+}
+
+TEST_F(USDRenderNodeTest, ASettingsKnobEditEvaluatesTheSettingsSummaryAgain)
+{
+    NodePtr settings, transform;
+    NodePtr node = createTransformedRender(&settings, &transform);
+    ASSERT_TRUE(node != nullptr);
+    KnobBool* disableMotionBlur = dynamic_cast<KnobBool*>(settings->getKnobByName(kUSDRenderSettingsParamDisableMotionBlur).get());
+    ASSERT_TRUE(disableMotionBlur != nullptr);
+    (void)rodOf(node);
+
+    std::uint64_t evaluations = USDRender::settingsSummaryEvaluationCount();
+    disableMotionBlur->setValue(!disableMotionBlur->getValue());
+    (void)rodOf(node);
+    EXPECT_LT(evaluations, USDRender::settingsSummaryEvaluationCount());
+
+    evaluations = USDRender::settingsSummaryEvaluationCount();
+    ASSERT_TRUE(RenderSettingsTestUtils::configure(settings, "/World/Cam", kWidth, kHeight + 2));
+    EXPECT_EQ((double)(kHeight + 2), rodOf(node).y2);
+    EXPECT_LT(evaluations, USDRender::settingsSummaryEvaluationCount());
+}
+
+// The reader's file may hold time samples on the settings prim, so each frame is evaluated once:
+// a camera edit then finds both frames without evaluating.
+TEST_F(USDRenderNodeTest, ASettingsScopeWithAFileIsEvaluatedOncePerFrame)
+{
+    NodePtr settings, transform;
+    NodePtr node = createTransformedRender(&settings, &transform);
+    ASSERT_TRUE(node != nullptr);
+    KnobDouble* translate = dynamic_cast<KnobDouble*>(transform->getKnobByName(kSceneParamTranslate).get());
+    ASSERT_TRUE(translate != nullptr);
+    (void)rodAt(node, 1.);
+
+    std::uint64_t evaluations = USDRender::settingsSummaryEvaluationCount();
+    EXPECT_EQ((double)kHeight, rodAt(node, 2.).y2);
+    EXPECT_LT(evaluations, USDRender::settingsSummaryEvaluationCount());
+
+    evaluations = USDRender::settingsSummaryEvaluationCount();
+    translate->setValue(1., ViewSpec::all(), 0);
+    EXPECT_EQ((double)kHeight, rodAt(node, 1.).y2);
+    EXPECT_EQ((double)kHeight, rodAt(node, 2.).y2);
+    EXPECT_EQ(evaluations, USDRender::settingsSummaryEvaluationCount());
+}
+
+// Nothing in the scope is animated or reads a file, so one evaluation serves every frame.
+TEST_F(USDRenderNodeTest, AStaticSettingsScopeIsEvaluatedOnceForEveryFrame)
+{
+    NodePtr sphere = createNode(QString::fromUtf8(PLUGINID_NATRON_USDSPHERE));
+    NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(sphere && settings && node);
+    ASSERT_TRUE(RenderSettingsTestUtils::configure(settings, std::string(), kWidth, kHeight));
+    connectNodes(sphere, settings, 0, true);
+    connectNodes(settings, node, 0, true);
+    EXPECT_EQ((double)kHeight, rodAt(node, 1.).y2);
+
+    const std::uint64_t evaluations = USDRender::settingsSummaryEvaluationCount();
+    EXPECT_EQ((double)kHeight, rodAt(node, 2.).y2);
+    EXPECT_EQ((double)kHeight, rodAt(node, 7.).y2);
+    EXPECT_EQ(evaluations, USDRender::settingsSummaryEvaluationCount());
+}
+
 TEST_F(USDRenderNodeTest, APrimCameraTheSceneLacksIsANodeErrorNamingIt)
 {
     if (skipWithoutGL()) {
@@ -1146,6 +1267,45 @@ TEST_F(USDRenderRendererTest, UtilityOverscanGrowsTheOutputOnEverySide)
     rod = rodOf(node);
     EXPECT_EQ(0., rod.x1);
     EXPECT_EQ((double)kWidth, rod.x2);
+}
+
+// A USDSetAttribute keys the settings scope with its content wherever its pattern points: an edit
+// of one on the settings prim and of one on a camera both evaluate the summary again.
+TEST_F(USDRenderRendererTest, ASetAttributeEditEvaluatesTheSettingsSummaryAgainWhateverItsPrim)
+{
+    NodePtr settings;
+    NodePtr node = createRender(kFixture, &settings);
+    ASSERT_TRUE(node != nullptr);
+    NodePtr onSettings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDSETATTRIBUTE));
+    NodePtr onCamera = createNode(QString::fromUtf8(PLUGINID_NATRON_USDSETATTRIBUTE));
+    ASSERT_TRUE(onSettings && onCamera);
+    dynamic_cast<KnobString*>(onSettings->getKnobByName(kUSDSetAttributeParamPrimPattern).get())->setValue(std::string(kUSDRenderSettingsDefaultPrimPath));
+    dynamic_cast<KnobString*>(onSettings->getKnobByName(kUSDSetAttributeParamAttributeName).get())->setValue(RenderSettingsPrim::attributeName(kRenderDelegateUtilityId, kUtilitySettingOverscan));
+    (void)dynamic_cast<KnobChoice*>(onSettings->getKnobByName(kUSDSetAttributeParamValueType).get())->setValueFromID("int", 0);
+    dynamic_cast<KnobString*>(onCamera->getKnobByName(kUSDSetAttributeParamPrimPattern).get())->setValue(std::string("/World/Cam"));
+    dynamic_cast<KnobString*>(onCamera->getKnobByName(kUSDSetAttributeParamAttributeName).get())->setValue(std::string("userWeight"));
+    (void)dynamic_cast<KnobChoice*>(onCamera->getKnobByName(kUSDSetAttributeParamValueType).get())->setValueFromID("float", 0);
+    KnobInt* overscan = dynamic_cast<KnobInt*>(onSettings->getKnobByName(kUSDSetAttributeParamValue).get());
+    KnobDouble* weight = dynamic_cast<KnobDouble*>(onCamera->getKnobByName(kUSDSetAttributeParamValue).get());
+    ASSERT_TRUE(overscan != nullptr);
+    ASSERT_TRUE(weight != nullptr);
+    overscan->setValue(8);
+    disconnectNodes(settings, node, true);
+    connectNodes(settings, onSettings, 0, true);
+    connectNodes(onSettings, onCamera, 0, true);
+    connectNodes(onCamera, node, 0, true);
+    ASSERT_TRUE(selectRenderer(rendererKnob(node), kRenderDelegateUtilityId));
+    EXPECT_EQ(-8., rodOf(node).x1);
+
+    std::uint64_t evaluations = USDRender::settingsSummaryEvaluationCount();
+    overscan->setValue(12);
+    EXPECT_EQ(-12., rodOf(node).x1);
+    EXPECT_LT(evaluations, USDRender::settingsSummaryEvaluationCount());
+
+    evaluations = USDRender::settingsSummaryEvaluationCount();
+    weight->setValue(2.);
+    EXPECT_EQ(-12., rodOf(node).x1);
+    EXPECT_LT(evaluations, USDRender::settingsSummaryEvaluationCount());
 }
 
 namespace {

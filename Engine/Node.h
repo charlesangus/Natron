@@ -114,6 +114,17 @@ struct HashNamespaces {
     bool uncertain = false;
     bool activeSettled = false; //< when uncertain, whether a node over all of it made active the active prim
 
+    // Whatever its path or authoring node, a render settings prim's opinions come from the nodes
+    // that may author them (EffectInstance::mayAuthorRenderSettingsScope()): a digest of those
+    // nodes' content, including their namespaced knobs, and of how they are connected, from
+    // upstream down. Equal digests mean equal opinions, at every time when not time varying,
+    // so a summary of the settings is keyed on it without evaluating the stage. Left out of
+    // appendAll(): it only folds content the base hashes already hold.
+    U64 settingsScope = 0;
+    bool settingsScopeTimeVarying = false; //< a node in it is animated, has a lifetime or reads files
+    // A node in it has expressions, which may read anything, so the digest does not settle it.
+    bool settingsScopeUncertain = false;
+
     // Every scope, namespace and renderer.
     void appendAll(ContentHasher& h) const;
     // Marks the table uncertain and nothing in it settled.
@@ -355,9 +366,11 @@ public:
      * @brief Digest of the render-hashed knobs by name, memoized until the effect's knobs content
      * generation moves. hasExpression is set if any knob, hashed or not, has an expression.
      * Scene nodes key their memoized layer on it (SceneLayerMemo): unlike the content hash, it
-     * does not move when an input changes.
+     * does not move when an input changes. hasLiveOrAnimated, when given, is set if a hashed knob
+     * is animated or reads another knob or a file.
      **/
-    U64 getKnobsContentDigest(bool* hasExpression) const;
+    U64 getKnobsContentDigest(bool* hasExpression,
+                              bool* hasLiveOrAnimated = nullptr) const;
 
     /**
      * @brief Digest of the knobs with a hash namespace, which getKnobsContentDigest() leaves out,
@@ -367,8 +380,8 @@ public:
 
     /**
      * @brief The node's and its inputs' namespaced knobs as of the last content hash computation
-     * (see HashNamespaces). Null before the first, when neither has any, or when the effect
-     * consumes them (EffectInstance::consumesHashNamespaces()).
+     * (see HashNamespaces). Null before the first, when the node outputs no scene and no input
+     * has a table, or when the effect consumes them (EffectInstance::consumesHashNamespaces()).
      **/
     HashNamespacesConstPtr getHashNamespaces() const;
 
@@ -2650,6 +2663,9 @@ private:
 
     // The inputs' HashNamespaces with the node's own on top.
     HashNamespacesConstPtr mergeHashNamespaces(const HashInputs& inputs) const;
+    // HashNamespaces::settingsScope, settingsScopeTimeVarying and settingsScopeUncertain of the
+    // node. False when the node outputs no scene and no input has a table.
+    bool computeSettingsScope(const HashInputs& inputs, U64* digest, bool* timeVarying, bool* uncertain) const;
 
     void refreshCreatedViews(KnobI* knob, bool silent);
 

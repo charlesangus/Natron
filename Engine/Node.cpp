@@ -1123,13 +1123,17 @@ digestKnobsDigestEntries(const Entries& entries,
 } // anon namespace
 
 U64
-Node::getKnobsContentDigest(bool* hasExpression) const
+Node::getKnobsContentDigest(bool* hasExpression,
+                            bool* hasLiveOrAnimated) const
 {
     // Read before any knob: an edit made meanwhile invalidates after it lands, so it moves the
     // generation past the one stored here and the next call rebuilds.
     const EffectInstancePtr effect = _imp->effectForWorker();
     if (!effect) {
         *hasExpression = false;
+        if (hasLiveOrAnimated) {
+            *hasLiveOrAnimated = false;
+        }
 
         return 0;
     }
@@ -1142,6 +1146,7 @@ Node::getKnobsContentDigest(bool* hasExpression) const
         entries.clear();
         bool anyExpression = false;
         bool anyLive = false;
+        bool anyAnimated = false;
         // Hashes are recomputed on render threads too, while the main thread may add or remove knobs.
         const KnobsVec knobs = effect->getKnobs_mt_safe();
         for (KnobsVec::const_iterator it = knobs.begin(); it != knobs.end(); ++it) {
@@ -1153,6 +1158,7 @@ Node::getKnobsContentDigest(bool* hasExpression) const
             bool readsOutsideKnob = false;
             knob->getContentHashDependencies(&knobHasExpression, &readsOutsideKnob);
             anyExpression = anyExpression || knobHasExpression;
+            anyAnimated = anyAnimated || knob->hasAnimation();
             Implementation::KnobsDigestEntry entry;
             entry.name = knob->getName();
             entry.hash = 0;
@@ -1173,6 +1179,7 @@ Node::getKnobsContentDigest(bool* hasExpression) const
                   });
         _imp->knobsDigestHasExpression = anyExpression;
         _imp->knobsDigestHasLiveEntries = anyLive;
+        _imp->knobsDigestHasAnimation = anyAnimated;
         _imp->knobsDigestGeneration = generation;
         _imp->knobsDigestValid = true;
         if (!anyLive) {
@@ -1181,6 +1188,9 @@ Node::getKnobsContentDigest(bool* hasExpression) const
     }
 
     *hasExpression = _imp->knobsDigestHasExpression;
+    if (hasLiveOrAnimated) {
+        *hasLiveOrAnimated = _imp->knobsDigestHasLiveEntries || _imp->knobsDigestHasAnimation;
+    }
     if (!_imp->knobsDigestHasLiveEntries) {
         return _imp->knobsDigest;
     }
@@ -1466,7 +1476,10 @@ Node::mergeHashNamespaces(const HashInputs& inputs) const
     std::string path, defaultRenderer;
     bool active = false;
     const bool authors = effect && effect->getHashNamespaceScope(&path, &defaultRenderer, &active);
-    if (!authors && !unsettled) {
+    U64 settingsScope = 0;
+    bool timeVarying = false, scopeUncertain = false;
+    const bool hasScope = computeSettingsScope(inputs, &settingsScope, &timeVarying, &scopeUncertain);
+    if (!authors && !unsettled && !hasScope) {
         return merged ? HashNamespacesConstPtr(merged) : only;
     }
     if (!merged) {
@@ -1475,6 +1488,9 @@ Node::mergeHashNamespaces(const HashInputs& inputs) const
     if (unsettled) {
         merged->unsettle();
     }
+    merged->settingsScope = settingsScope;
+    merged->settingsScopeTimeVarying = timeVarying;
+    merged->settingsScopeUncertain = !hasScope || scopeUncertain;
     if (!authors) {
         return merged;
     }
@@ -1497,6 +1513,128 @@ Node::mergeHashNamespaces(const HashInputs& inputs) const
 
     return merged;
 } // Node::mergeHashNamespaces
+
+bool
+Node::computeSettingsScope(const HashInputs& inputs,
+                           U64* digest,
+                           bool* timeVarying,
+                           bool* uncertain) const
+{
+    *digest = 0;
+    *timeVarying = false;
+    *uncertain = false;
+    const EffectInstancePtr effect = _imp->effectForWorker();
+    if (!effect) {
+        return false;
+    }
+    std::vector<std::pair<int, NodePtr>> sources;
+    for (std::size_t i = 0; i < inputs.bySlot.size(); ++i) {
+        if (inputs.bySlot[i].second) {
+            sources.push_back(inputs.bySlot[i]);
+        }
+    }
+    for (std::size_t i = 0; i < inputs.extraSources.size(); ++i) {
+        if (inputs.extraSources[i]) {
+            sources.push_back(std::make_pair(-1 - (int)i, inputs.extraSources[i]));
+        }
+    }
+    int tables = 0;
+    HashNamespacesConstPtr onlyTable;
+    for (std::size_t i = 0; i < sources.size(); ++i) {
+        if (HashNamespacesConstPtr table = sources[i].second->getHashNamespaces()) {
+            ++tables;
+            onlyTable = table;
+        }
+    }
+    if ((tables == 0) && (effect->getOutputDataKind() != eDataKindScene)) {
+        return false;
+    }
+
+    const bool authors = effect->mayAuthorRenderSettingsScope();
+    if (!authors && (tables == 1) && (sources.size() == 1)) {
+        *digest = onlyTable->settingsScope;
+        *timeVarying = onlyTable->settingsScopeTimeVarying;
+        *uncertain = onlyTable->settingsScopeUncertain;
+
+        return true;
+    }
+
+    ContentHasher h;
+    h.appendString(getPluginID());
+    h.appendBool(authors);
+    for (std::size_t i = 0; i < sources.size(); ++i) {
+        const NodePtr& source = sources[i].second;
+        h.appendI64(sources[i].first);
+        if (HashNamespacesConstPtr table = source->getHashNamespaces()) {
+            h.appendBool(true);
+            h.appendU64(table->settingsScope);
+            *timeVarying = *timeVarying || table->settingsScopeTimeVarying;
+            *uncertain = *uncertain || table->settingsScopeUncertain;
+            continue;
+        }
+        h.appendBool(false);
+        // Pixels never become stage opinions; any other kind without a table (raw data,
+        // geometry, a pass-through fed by one) is keyed whole.
+        const EffectInstancePtr sourceEffect = source->getEffectInstance();
+        if (!authors || (sourceEffect && (sourceEffect->getOutputDataKind() == eDataKindImage))) {
+            continue;
+        }
+        h.appendU64(source->getStoredBaseContentHash());
+        *timeVarying = true;
+    }
+    h.appendU64(sources.size());
+    if (!authors) {
+        *digest = h.finalize();
+
+        return true;
+    }
+
+    if (_imp->plugin) {
+        h.appendI64(_imp->plugin->getMajorVersion());
+        h.appendI64(_imp->plugin->getMinorVersion());
+        h.appendU64(_imp->plugin->getBinaryContentStamp());
+    }
+    bool hasExpression = false, liveOrAnimated = false;
+    h.appendU64(getKnobsContentDigest(&hasExpression, &liveOrAnimated));
+    const std::map<std::string, U64> namespaceDigests = getKnobsNamespaceDigests();
+    for (std::map<std::string, U64>::const_iterator it = namespaceDigests.begin(); it != namespaceDigests.end(); ++it) {
+        h.appendString(it->first);
+        h.appendU64(it->second);
+    }
+    effect->appendNodeContentHash(h);
+    *timeVarying = *timeVarying || liveOrAnimated;
+    *uncertain = *uncertain || hasExpression || !inputs.metadataSources.empty();
+
+    int first = 0, last = 0;
+    if (isLifetimeActivated(&first, &last)) {
+        h.appendI64(first);
+        h.appendI64(last);
+        *timeVarying = true;
+    }
+    if (effect->dependsOnProjectFrameRange()) {
+        double rangeFirst = 0., rangeLast = 0.;
+        getApp()->getProject()->getFrameRange(&rangeFirst, &rangeLast);
+        h.appendDouble(rangeFirst);
+        h.appendDouble(rangeLast);
+    }
+    // An enclosing group's disabled state and lifetime apply to the node.
+    NodeCollectionPtr collection = getGroup();
+    while (NodeGroup* enclosingGroup = dynamic_cast<NodeGroup*>(collection.get())) {
+        NodePtr groupNode = enclosingGroup->getNode();
+        if (!groupNode) {
+            break;
+        }
+        bool groupExpression = false, groupLiveOrAnimated = false;
+        h.appendU64(groupNode->getKnobsContentDigest(&groupExpression, &groupLiveOrAnimated));
+        int groupFirst = 0, groupLast = 0;
+        *timeVarying = *timeVarying || groupLiveOrAnimated || groupNode->isLifetimeActivated(&groupFirst, &groupLast);
+        *uncertain = *uncertain || groupExpression;
+        collection = groupNode->getGroup();
+    }
+    *digest = h.finalize();
+
+    return true;
+} // Node::computeSettingsScope
 
 void
 Node::walkLoopBody(const std::vector<NodePtr>& begins,

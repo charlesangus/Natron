@@ -268,6 +268,7 @@ enum class Counter : std::size_t {
     SettingsSummaryRead,
     SettingsSummaryReuse,
     SettingsSummaryJoin,
+    SettingsSummaryEvaluation,
     RenderSetupRead,
     RenderSetupReuse,
     RenderSetupCameraRead,

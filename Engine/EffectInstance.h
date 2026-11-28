@@ -438,6 +438,19 @@ public:
     }
 
     /**
+     * @brief False for an effect whose output, wherever its knobs point it, authors nothing a
+     * render settings summary reads: no opinion on a render settings prim's resolution, pixel
+     * aspect ratio, renderer or renderer settings, no stage metadata, no prim definition and no
+     * composition arc. The render settings scope (HashNamespaces::settingsScope) then passes
+     * through it without its knobs. True by default: when unsure, an effect keys the scope with
+     * its content. Any thread.
+     **/
+    virtual bool mayAuthorRenderSettingsScope() const
+    {
+        return true;
+    }
+
+    /**
      * @brief True for an effect that folds what it reads of its inputs' HashNamespaces into its
      * hash itself (appendNodeContentHash()) and outputs no stage: the node then neither folds the
      * table nor passes it on. Otherwise the node folds every entry. Any thread.

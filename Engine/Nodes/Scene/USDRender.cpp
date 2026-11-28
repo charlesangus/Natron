@@ -80,6 +80,7 @@
 #include "Engine/Nodes/Scene/Utility/WavefrontGpu.h"
 #include "Engine/ParallelRenderArgs.h"
 #include "Engine/PoolParallelFor.h"
+#include "Engine/RenderContext.h"
 #include "Engine/SceneLoadSet.h"
 
 #include <pxr/imaging/hd/tokens.h>
@@ -207,6 +208,7 @@ USDRender::purgeCaches()
     {
         std::lock_guard<std::mutex> locker(_settingsSummariesMutex);
         _settingsSummariesByContent.clear();
+        _settingsSummariesByScope.clear();
     }
     HydraRender::release(this);
     clearSpecAovs();
@@ -481,6 +483,7 @@ struct USDRender::ActiveSettings {
 
 namespace {
 std::atomic<std::uint64_t> gSettingsSummaryReads { 0 };
+std::atomic<std::uint64_t> gSettingsSummaryEvaluations { 0 };
 std::atomic<std::uint64_t> gSettingsSummaryReuses { 0 };
 std::atomic<std::uint64_t> gSettingsSummaryJoins { 0 };
 
@@ -571,6 +574,62 @@ std::uint64_t
 USDRender::settingsSummaryReadCount()
 {
     return gSettingsSummaryReads.load();
+}
+
+std::uint64_t
+USDRender::settingsSummaryEvaluationCount()
+{
+    return gSettingsSummaryEvaluations.load();
+}
+
+bool
+USDRender::settingsScopeKey(double time,
+                            ViewIdx view,
+                            U64* key) const
+{
+    const NodePtr node = getNode();
+    const NodePtr input = node ? node->getInput(0) : NodePtr();
+    const HashNamespacesConstPtr table = input ? input->getHashNamespaces() : HashNamespacesConstPtr();
+    if (!table || table->settingsScopeUncertain) {
+        return false;
+    }
+    // A context variable may switch what upstream authors, and the digest does not hold its value.
+    const RenderContextReadSetConstPtr reads = input->getUpstreamContextReadSet();
+    if (reads && !reads->empty()) {
+        return false;
+    }
+    ContentHasher h;
+    h.appendU64(table->settingsScope);
+    h.appendBool(table->settingsScopeTimeVarying);
+    if (table->settingsScopeTimeVarying) {
+        h.appendDouble(time);
+    }
+    h.appendI64(view.value());
+    h.appendString(settingsPrimOverride());
+    h.appendString(rendererOverride());
+    AppInstancePtr app = getApp();
+    const ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    h.appendDouble(project ? project->getProjectFrameRate() : 24.);
+    h.appendU64(project ? project->getContentDigest() : 0);
+    *key = h.finalize();
+
+    return true;
+}
+
+bool
+USDRender::findScopedSettingsSummary(U64 key,
+                                     SettingsSummary* summary) const
+{
+    std::lock_guard<std::mutex> locker(_settingsSummariesMutex);
+    std::map<U64, SettingsSummary>::const_iterator found = _settingsSummariesByScope.find(key);
+    if (found == _settingsSummariesByScope.end()) {
+        return false;
+    }
+    ++gSettingsSummaryReuses;
+    utilityProfile::count(utilityProfile::Counter::SettingsSummaryReuse);
+    *summary = found->second;
+
+    return true;
 }
 
 std::uint64_t
@@ -761,11 +820,24 @@ USDRender::summarizeSettings(double time,
     ActiveSettings active;
 
     U64 digest = 0;
+    U64 scopeKey = 0;
+    bool scoped = false;
+    U64 hash = 0;
+    if (load == eSettingsLoadSettingsPrim) {
+        const NodePtr node = getNode();
+        hash = node ? node->getHashValue() : 0;
+        scoped = settingsScopeKey(time, view, &scopeKey);
+        if (scoped && findScopedSettingsSummary(scopeKey, &summary)) {
+            return summary;
+        }
+    }
+    ++gSettingsSummaryEvaluations;
+    utilityProfile::count(utilityProfile::Counter::SettingsSummaryEvaluation);
     if (load == eSettingsLoadSettingsPrim) {
         if (!evaluateSettingsPrimScene(time, view, &active, &summary.error)) {
             return summary;
         }
-        digest = settingsPrimDigest(active);
+        digest = scoped ? 0 : settingsPrimDigest(active);
         if (digest) {
             std::lock_guard<std::mutex> locker(_settingsSummariesMutex);
             std::map<std::tuple<double, int, U64>, SettingsSummary>::const_iterator found = _settingsSummariesByContent.find(std::make_tuple(time, view.value(), digest));
@@ -805,6 +877,19 @@ USDRender::summarizeSettings(double time,
         }
         _settingsSummariesByContent[std::make_tuple(time, view.value(), digest)] = summary;
     }
+    if (scoped && summary.read) {
+        // The graph may have moved while the scene was evaluated: the summary is of the scope
+        // only if neither the scope nor the node did.
+        U64 keyAfter = 0;
+        const NodePtr node = getNode();
+        if (node && (node->getHashValue() == hash) && settingsScopeKey(time, view, &keyAfter) && (keyAfter == scopeKey)) {
+            std::lock_guard<std::mutex> locker(_settingsSummariesMutex);
+            if (_settingsSummariesByScope.size() >= kMaxSettingsSummaries) {
+                _settingsSummariesByScope.clear();
+            }
+            _settingsSummariesByScope[scopeKey] = summary;
+        }
+    }
 
     return summary;
 }
@@ -817,6 +902,8 @@ USDRender::getSettingsSummary(double time,
     const NodePtr node = getNode();
     const U64 hash = node ? node->getHashValue() : 0;
     const bool mainThread = onMainThread();
+    U64 scopeKey = 0;
+    const bool scoped = settingsScopeKey(time, view, &scopeKey);
     SettingsSummary provisional;
     bool post = false;
     {
@@ -829,6 +916,22 @@ USDRender::getSettingsSummary(double time,
         std::map<std::pair<double, int>, SettingsSummary>::const_iterator found = _settingsSummaries.find(key);
         if (found != _settingsSummaries.end()) {
             return found->second;
+        }
+    }
+    // Known without evaluating the scene, so the main thread needs no provisional summary.
+    SettingsSummary scopedSummary;
+    if (scoped && findScopedSettingsSummary(scopeKey, &scopedSummary)) {
+        storeSettingsSummary(hash, time, view, scopedSummary);
+
+        return scopedSummary;
+    }
+    {
+        std::lock_guard<std::mutex> locker(_settingsSummariesMutex);
+        if (hash == _settingsSummariesHash) {
+            std::map<std::pair<double, int>, SettingsSummary>::const_iterator found = _settingsSummaries.find(key);
+            if (found != _settingsSummaries.end()) {
+                return found->second;
+            }
         }
         if (mainThread) {
             std::map<std::pair<double, int>, GivenSettingsSummary>::const_iterator given = _settingsSummariesGiven.find(key);

@@ -169,6 +169,8 @@ counterName(Counter counter)
         return "settings_summary_reuse";
     case Counter::SettingsSummaryJoin:
         return "settings_summary_join";
+    case Counter::SettingsSummaryEvaluation:
+        return "settings_summary_evaluation";
     case Counter::RenderSetupRead:
         return "render_setup_read";
     case Counter::RenderSetupReuse:

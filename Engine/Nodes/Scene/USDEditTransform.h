@@ -222,6 +222,12 @@ private:
                              double time,
                              bool originatedFromMainThread) OVERRIDE FINAL;
     virtual void appendNodeContentHash(ContentHasher& h) const OVERRIDE FINAL;
+    // Its layer holds xform ops on prims that already exist and nothing else.
+    virtual bool mayAuthorRenderSettingsScope() const OVERRIDE FINAL
+    {
+        return false;
+    }
+
     virtual StatusEnum renderScene(const SceneRenderActionArgs& args,
                                    ScenePayload* outputScene,
                                    std::string* errorMessage) OVERRIDE FINAL WARN_UNUSED_RETURN;

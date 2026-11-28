@@ -198,6 +198,14 @@ public:
      **/
     static bool joinAll(int timeoutMs);
 
+    /**
+     * @brief Waits, with the Python GIL released, up to timeoutMs for every job posted to any
+     * worker before the call to have run or been dropped, without stopping the workers. Jobs
+     * posted meanwhile are not waited for. An app calls it before it is released, as its nodes'
+     * running jobs may still read it. False if one of those jobs still runs.
+     **/
+    static bool waitForPosted(int timeoutMs);
+
     struct Implementation;
 
 private:

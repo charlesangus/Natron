@@ -1346,19 +1346,23 @@ Node::computeContentHash(U64 projectDigest,
     }
     h.appendU64(enclosingGroups);
 
-    ProjectPtr project = getApp()->getProject();
+    // A scene worker's job can still hash a node whose app has been torn down.
+    const AppInstancePtr app = getApp();
+    const ProjectPtr project = app ? app->getProject() : ProjectPtr();
     // The project digest leaves the frame range out, so only the nodes that can read it re-key
     // when it changes. An expression may read it through the project's parameters.
     const bool usesProjectFrameRange = hasExpression || (effect && effect->dependsOnProjectFrameRange());
     h.appendBool(usesProjectFrameRange);
     if (usesProjectFrameRange) {
         double first = 0., last = 0.;
-        project->getFrameRange(&first, &last);
+        if (project) {
+            project->getFrameRange(&first, &last);
+        }
         h.appendDouble(first);
         h.appendDouble(last);
     }
 
-    const U64 digest = projectDigest ? projectDigest : project->getContentDigest();
+    const U64 digest = projectDigest ? projectDigest : (project ? project->getContentDigest() : 0);
     if (ContentHasher::isSalted(digest)) {
         ContentHasher::noteSalted();
     }
@@ -1562,7 +1566,8 @@ Node::walkLoopBody(const std::vector<NodePtr>& begins,
 
         return enclosing ? (*enclosing)(node) : node.getStoredContentHash();
     };
-    const U64 projectDigest = digest ? tail->getApp()->getProject()->getContentDigest() : 0;
+    const AppInstancePtr tailApp = digest ? tail->getApp() : AppInstancePtr();
+    const U64 projectDigest = tailApp ? tailApp->getProject()->getContentDigest() : 0;
     std::unordered_set<const Node*> sourcesSeen;
     std::unordered_set<const Node*> entered;
     // Post-order, so every body node is hashed after the body nodes it reads.

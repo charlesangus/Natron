@@ -28,7 +28,11 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <map>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -61,6 +65,7 @@
 #include "Engine/Nodes/Filter/Blur.h"
 #include "Engine/Nodes/Generator/Constant.h"
 #include "Engine/Nodes/Merge/Merge.h"
+#include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Plugin.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
@@ -960,4 +965,88 @@ TEST_F(HashInvariantsTest, ViewerCachedFramesFollowTheLastLookup)
     held.clear();
     appPTR->removeAllCacheEntriesForHolder(holder.get(), true);
     project()->reset(false, true);
+}
+
+// ---------------------------------------------------------------------------------------------
+// A scene job that holds a node across its app's teardown.
+// ---------------------------------------------------------------------------------------------
+
+TEST_F(HashInvariantsTest, QuittingAnAppWaitsForTheSceneJobsAlreadyRunning)
+{
+    const AppInstancePtr original = getApp();
+    CLArgs args;
+    AppInstancePtr app = appPTR->newBackgroundInstance(args, true);
+    ASSERT_TRUE(bool(app));
+    appPTR->setAsTopLevelInstance(original->getAppID());
+
+    std::atomic<bool> started(false);
+    std::atomic<bool> finished(false);
+    SceneWorker worker;
+    worker.post([&started, &finished]() {
+        started = true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        finished = true;
+    },
+                SceneWorker::Task());
+    for (int i = 0; i < 10000 && !started; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    ASSERT_TRUE(started.load());
+
+    appPTR->quitNow(app);
+    EXPECT_TRUE(finished.load());
+    app.reset();
+    appPTR->setAsTopLevelInstance(original->getAppID());
+}
+
+TEST_F(HashInvariantsTest, ASceneJobReleasedAfterItsAppIsGoneHashesWithoutIt)
+{
+    const AppInstancePtr original = getApp();
+    CLArgs args;
+    AppInstancePtr app = appPTR->newBackgroundInstance(args, true);
+    ASSERT_TRUE(bool(app));
+    appPTR->setAsTopLevelInstance(original->getAppID());
+    NodePtr blur = buildChain(app, 3.).blur;
+    ASSERT_TRUE(bool(blur));
+    const AppInstanceWPtr weakApp = app;
+
+    std::mutex lock;
+    std::condition_variable changed;
+    bool released = false;
+    bool done = false;
+    bool appGoneWhenRun = false;
+    SceneWorker worker;
+    worker.post([&]() {
+        {
+            std::unique_lock<std::mutex> l(lock);
+            changed.wait_for(l, std::chrono::seconds(60), [&released]() { return released; });
+        }
+        const bool gone = weakApp.expired();
+        blur->markHashDirty();
+        (void)blur->getHashValue();
+        {
+            std::lock_guard<std::mutex> l(lock);
+            appGoneWhenRun = gone;
+            done = true;
+        }
+        changed.notify_all();
+    },
+                SceneWorker::Task());
+
+    // The quit waits out its bound on the held job, then releases the app with the job still holding the node.
+    appPTR->quitNow(app);
+    app.reset();
+    EXPECT_TRUE(weakApp.expired());
+    {
+        std::lock_guard<std::mutex> l(lock);
+        released = true;
+    }
+    changed.notify_all();
+    {
+        std::unique_lock<std::mutex> l(lock);
+        EXPECT_TRUE(changed.wait_for(l, std::chrono::seconds(60), [&done]() { return done; }));
+        EXPECT_TRUE(appGoneWhenRun);
+    }
+    blur.reset();
+    appPTR->setAsTopLevelInstance(original->getAppID());
 }

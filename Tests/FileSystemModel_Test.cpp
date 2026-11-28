@@ -21,6 +21,11 @@
 
 #include "Engine/FileSystemModel.h"
 
+#include <atomic>
+#include <chrono>
+#include <functional>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -449,4 +454,126 @@ TEST_F(SplitOnGapsTest, OneSequenceSplitWithTheToggleOff)
     joined = waitForItems(_model, _dir, 1);
     ASSERT_EQ(1u, joined.size());
     EXPECT_FALSE(joined[0].isChunk);
+}
+
+namespace {
+
+class GatheredHook {
+public:
+    explicit GatheredHook(const std::function<void()>& hook) { FileGathererThread::setGatheredHookForTests(hook); }
+    ~GatheredHook() { FileGathererThread::setGatheredHookForTests(std::function<void()>()); }
+};
+
+bool
+waitWithoutEvents(const std::atomic<bool>& flag)
+{
+    QElapsedTimer timer;
+    timer.start();
+    while (!flag && timer.elapsed() < 10000) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return flag;
+}
+
+bool
+waitProcessingEvents(const std::atomic<bool>& flag)
+{
+    QElapsedTimer timer;
+    timer.start();
+    while (!flag && timer.elapsed() < 10000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    }
+    return flag;
+}
+
+void
+pumpEvents(int milliseconds)
+{
+    QElapsedTimer timer;
+    timer.start();
+    while (timer.elapsed() < milliseconds) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    }
+}
+
+// Hands the model's last reference to its gatherer thread, which drops it once it has listed the directory.
+bool
+releaseModelOnItsGatherer(FileSystemModelPtr& model, const QString& dir)
+{
+    std::mutex handedMutex;
+    FileSystemModelPtr handed = model;
+    std::atomic<bool> mainDropped(false);
+    std::atomic<bool> released(false);
+    GatheredHook hook([&]() {
+        waitWithoutEvents(mainDropped);
+        FileSystemModelPtr last;
+        {
+            std::lock_guard<std::mutex> k(handedMutex);
+            last.swap(handed);
+        }
+        if (last) {
+            last.reset();
+            released = true;
+        }
+    });
+    if (!model->setRootPath(dir)) {
+        return false;
+    }
+    FileSystemModelWPtr weakModel = model;
+    model.reset();
+    mainDropped = true;
+    const bool ok = waitProcessingEvents(released);
+    return ok && weakModel.expired();
+}
+
+} // namespace
+
+TEST_F(SplitOnGapsTest, TheGathererHoldsNoReferenceToItsModel)
+{
+    writeFrames(_dir, 10, 12);
+    FileSystemModelWPtr weakModel = _model;
+    std::atomic<long> countSeenByGatherer(-1);
+    std::atomic<bool> seen(false);
+    std::atomic<bool> resume(false);
+    std::atomic<bool> done(false);
+    GatheredHook hook([&]() {
+        if (seen) {
+            return;
+        }
+        countSeenByGatherer = weakModel.use_count();
+        seen = true;
+        waitWithoutEvents(resume);
+        done = true;
+    });
+    ASSERT_TRUE(_model->setRootPath(_dir));
+
+    // The main thread stays out of the model so the count is the fixture's reference plus any the gatherer holds.
+    ASSERT_TRUE(waitWithoutEvents(seen));
+    EXPECT_EQ(1, countSeenByGatherer.load());
+    resume = true;
+    ASSERT_TRUE(waitWithoutEvents(done));
+    EXPECT_EQ(1u, waitForItems(_model, _dir, 1).size());
+}
+
+TEST_F(SplitOnGapsTest, AModelReleasedOnItsGathererThreadTearsDown)
+{
+    writeFrames(_dir, 10, 12);
+    ASSERT_TRUE(releaseModelOnItsGatherer(_model, _dir));
+    pumpEvents(200);
+}
+
+TEST_F(SplitOnGapsTest, AWatcherEventAfterTeardownDoesNotBlock)
+{
+    writeFrames(_dir, 10, 12);
+    ASSERT_TRUE(releaseModelOnItsGatherer(_model, _dir));
+
+    writeFrames(_dir, 20, 22);
+    QFile::remove(_dir + QString::fromUtf8("/plate.0010.exr"));
+    pumpEvents(200);
+
+    _model = std::make_shared<FileSystemModel>();
+    _model->initialize(&_view);
+    _model->setSequenceModeEnabled(true);
+    ASSERT_TRUE(_model->setRootPath(_dir));
+    EXPECT_EQ(1u, waitForItems(_model, _dir, 1).size());
 }

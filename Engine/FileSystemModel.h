@@ -28,6 +28,7 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <map>
 #include <utility>
 #include <vector>
@@ -49,14 +50,16 @@ class FileSystemItem
     struct MakeSharedEnabler;
 
     // constructors should be privatized in any class that derives from std::enable_shared_from_this<>
-    FileSystemItem( const FileSystemModelPtr& model,
-                    bool isDir,
-                    const QString& filename,
-                    const QString& userFriendlySequenceName,
-                    const SequenceParsing::SequenceFromFilesPtr& sequence,
-                    const QDateTime& dateModified,
-                    quint64 size,
-                    const FileSystemItemPtr& parent = FileSystemItemPtr() );
+    FileSystemItem(const FileSystemModelWPtr& model,
+                   FileSystemModel* owner,
+                   bool isDir,
+                   const QString& filename,
+                   const QString& userFriendlySequenceName,
+                   const SequenceParsing::SequenceFromFilesPtr& sequence,
+                   const QDateTime& dateModified,
+                   quint64 size,
+                   const FileSystemItemPtr& parent = FileSystemItemPtr());
+
 public:
     // public constructors
 
@@ -148,10 +151,15 @@ GCC_DIAG_SUGGEST_OVERRIDE_OFF
 GCC_DIAG_SUGGEST_OVERRIDE_ON
 
 public:
-
-    FileGathererThread(const FileSystemModelPtr& model);
+    explicit FileGathererThread(FileSystemModel* model);
 
     virtual ~FileGathererThread();
+
+    /**
+     * @brief Sets a callback run on the gatherer thread after a directory's items are added and before the
+     * directory is announced, so tests can act at that point. Pass an empty function to clear it.
+     **/
+    static void setGatheredHookForTests(const std::function<void()>& hook);
 
     void abortGathering();
 

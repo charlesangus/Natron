@@ -261,6 +261,10 @@ generateChildAbsoluteName(FileSystemItem* parent,
 struct FileSystemItemPrivate
 {
     FileSystemModelWPtr model;
+    // Used instead of locking `model` on paths the gatherer thread runs, where a lock could make the gatherer
+    // the model's last owner. The model joins its gatherer before its members go, so it is valid whenever
+    // `model` has not expired.
+    FileSystemModel* owner;
     FileSystemItemWPtr parent;
     std::vector<FileSystemItemPtr> children; ///vector for random access
     QMutex childrenMutex;
@@ -278,7 +282,8 @@ struct FileSystemItemPrivate
     int chunkFirstFrame;
     int chunkLastFrame;
 
-    FileSystemItemPrivate(const FileSystemModelPtr& model,
+    FileSystemItemPrivate(const FileSystemModelWPtr& model,
+                          FileSystemModel* owner,
                           bool isDir,
                           const QString& filename,
                           const QString& userFriendlySequenceName,
@@ -287,6 +292,7 @@ struct FileSystemItemPrivate
                           quint64 size,
                           const FileSystemItemPtr& parent)
         : model(model)
+        , owner(owner)
         , parent(parent)
         , children()
         , childrenMutex()
@@ -320,14 +326,10 @@ struct FileSystemItemPrivate
             }
         }
     }
-
-    FileSystemModelPtr getModel() const
-    {
-        return model.lock();
-    }
 };
 
-FileSystemItem::FileSystemItem(const FileSystemModelPtr& model,
+FileSystemItem::FileSystemItem(const FileSystemModelWPtr& model,
+                               FileSystemModel* owner,
                                bool isDir,
                                const QString& filename,
                                const QString& userFriendlySequenceName,
@@ -335,7 +337,7 @@ FileSystemItem::FileSystemItem(const FileSystemModelPtr& model,
                                const QDateTime& dateModified,
                                quint64 size,
                                const FileSystemItemPtr& parent)
-    : _imp( new FileSystemItemPrivate(model, isDir, filename, userFriendlySequenceName, sequence, dateModified, size, parent) )
+    : _imp(new FileSystemItemPrivate(model, owner, isDir, filename, userFriendlySequenceName, sequence, dateModified, size, parent))
 {
 }
 
@@ -344,14 +346,17 @@ FileSystemItem::FileSystemItem(const FileSystemModelPtr& model,
 // see https://stackoverflow.com/a/20961251/2607517
 struct FileSystemItem::MakeSharedEnabler: public FileSystemItem
 {
-    MakeSharedEnabler(const FileSystemModelPtr& model,
+    MakeSharedEnabler(const FileSystemModelWPtr& model,
+                      FileSystemModel* owner,
                       bool isDir,
                       const QString& filename,
                       const QString& userFriendlySequenceName,
                       const SequenceParsing::SequenceFromFilesPtr& sequence,
                       const QDateTime& dateModified,
                       quint64 size,
-                      const FileSystemItemPtr& parent) : FileSystemItem(model, isDir, filename, userFriendlySequenceName, sequence, dateModified, size, parent) {
+                      const FileSystemItemPtr& parent)
+        : FileSystemItem(model, owner, isDir, filename, userFriendlySequenceName, sequence, dateModified, size, parent)
+    {
     }
 };
 
@@ -366,14 +371,12 @@ FileSystemItem::create( const FileSystemModelPtr& model,
                                          quint64 size,
                                          const FileSystemItemPtr& parent)
 {
-    return std::make_shared<FileSystemItem::MakeSharedEnabler>(model, isDir, filename, userFriendlySequenceName, sequence, dateModified, size, parent);
+    return std::make_shared<FileSystemItem::MakeSharedEnabler>(model, model.get(), isDir, filename, userFriendlySequenceName, sequence, dateModified, size, parent);
 }
 FileSystemItem::~FileSystemItem()
 {
-    FileSystemModelPtr model = _imp->model.lock();
-
-    if (model) {
-        model->_imp->unregisterItem(this);
+    if (_imp->owner && !_imp->model.expired()) {
+        _imp->owner->_imp->unregisterItem(this);
     }
 }
 
@@ -381,6 +384,7 @@ void
 FileSystemItem::resetModelPointer()
 {
     _imp->model.reset();
+    _imp->owner = 0;
 }
 
 FileSystemItemPtr
@@ -503,9 +507,9 @@ void
 FileSystemItem::addChild(const SequenceParsing::SequenceFromFilesPtr& sequence,
                          const QFileInfo& info)
 {
-    FileSystemModelPtr model = _imp->getModel();
+    FileSystemModel* model = _imp->owner;
 
-    if (!model) {
+    if (!model || _imp->model.expired()) {
         return;
     }
     QMutexLocker l(&_imp->childrenMutex);
@@ -553,7 +557,8 @@ FileSystemItem::addChild(const SequenceParsing::SequenceFromFilesPtr& sequence,
     }
 
     if (!isChunk) {
-        FileSystemItemPtr child = std::make_shared<FileSystemItem::MakeSharedEnabler>(model,
+        FileSystemItemPtr child = std::make_shared<FileSystemItem::MakeSharedEnabler>(_imp->model,
+                                                                                      model,
                                                                                       isDir,
                                                                                       filename,
                                                                                       userFriendlyFilename,
@@ -574,7 +579,8 @@ FileSystemItem::addChild(const SequenceParsing::SequenceFromFilesPtr& sequence,
             name += QLatin1Char('-') + QString::number(run->second);
         }
         const qint64 runSize = (qint64)((double)size * (run->second - run->first + 1) / fileCount);
-        FileSystemItemPtr child = std::make_shared<FileSystemItem::MakeSharedEnabler>(model,
+        FileSystemItemPtr child = std::make_shared<FileSystemItem::MakeSharedEnabler>(_imp->model,
+                                                                                      model,
                                                                                       false,
                                                                                       filename,
                                                                                       name,
@@ -716,8 +722,26 @@ FileSystemModel::mapPathWithDriveLetterToPathWithNetworkShareName(const QString&
 
 FileSystemModel::~FileSystemModel()
 {
-    if (_imp->gatherer) {
+    // A watcher event delivered during teardown would refetch through the gatherer being shut down.
+    if (_imp->watcher) {
+        QObject::disconnect(_imp->watcher.get(), 0, this, 0);
+    }
+    if (!_imp->gatherer) {
+        return;
+    }
+    if (QThread::currentThread() != _imp->gatherer.get()) {
         _imp->gatherer->quitGatherer();
+
+        return;
+    }
+
+    // The gatherer cannot join itself, so it is told to quit and is deleted on its owning thread once run()
+    // returns. The watcher lives on that thread too and must not be destroyed from here.
+    FileGathererThread* gatherer = _imp->gatherer.release();
+    gatherer->quitGatherer();
+    QObject::connect(gatherer, &QThread::finished, qApp, [gatherer]() { delete gatherer; }, Qt::QueuedConnection);
+    if (_imp->watcher) {
+        _imp->watcher.release()->deleteLater();
     }
 }
 
@@ -1483,7 +1507,7 @@ void
 FileSystemModel::initGatherer()
 {
     if (!_imp->gatherer) {
-        _imp->gatherer.reset( new FileGathererThread( shared_from_this() ) );
+        _imp->gatherer.reset(new FileGathererThread(this));
         assert(_imp->gatherer);
         QObject::connect( _imp->gatherer.get(), SIGNAL(directoryLoaded(QString)), this, SLOT(onDirectoryLoadedByGatherer(QString)) );
     }
@@ -1600,12 +1624,19 @@ FileSystemModel::getItem(const QModelIndex &index) const
 
 ///////////////////////// FileGathererThread
 
+namespace {
+QMutex gatheredHookMutex;
+std::function<void()> gatheredHook;
+}
+
 struct FileGathererThreadPrivate
 {
-    FileSystemModelWPtr model;
+    // Not a shared pointer: if the gatherer held a reference it could become the model's last owner and run
+    // the model's destructor, which joins this thread, on this thread. The model owns this thread and joins it
+    // before its members go away, so the pointer is valid for as long as run() executes.
+    FileSystemModel* model;
     bool mustQuit;
     mutable QMutex mustQuitMutex;
-    QWaitCondition mustQuitCond;
     bool working;
     mutable QMutex workingMutex;
     int abortRequests;
@@ -1617,11 +1648,10 @@ struct FileGathererThreadPrivate
     FileSystemItemPtr requestedItem, itemBeingFetched;
     QMutex requestedDirMutex;
 
-    FileGathererThreadPrivate(const FileSystemModelPtr& model)
+    explicit FileGathererThreadPrivate(FileSystemModel* model)
         : model(model)
         , mustQuit(false)
         , mustQuitMutex()
-        , mustQuitCond()
         , working(false)
         , workingMutex()
         , abortRequests(0)
@@ -1642,7 +1672,6 @@ struct FileGathererThreadPrivate
 
         if (mustQuit) {
             mustQuit = false;
-            mustQuitCond.wakeOne();
 
             return true;
         }
@@ -1663,17 +1692,20 @@ struct FileGathererThreadPrivate
 
         return false;
     }
-
-    FileSystemModelPtr getModel() const
-    {
-        return model.lock();
-    }
 };
 
-FileGathererThread::FileGathererThread(const FileSystemModelPtr& model)
+FileGathererThread::FileGathererThread(FileSystemModel* model)
     : QThread()
-    , _imp( new FileGathererThreadPrivate(model) )
+    , _imp(new FileGathererThreadPrivate(model))
 {
+}
+
+void
+FileGathererThread::setGatheredHookForTests(const std::function<void()>& hook)
+{
+    QMutexLocker k(&gatheredHookMutex);
+
+    gatheredHook = hook;
 }
 
 FileGathererThread::~FileGathererThread()
@@ -1698,6 +1730,10 @@ FileGathererThread::abortGathering()
 
     QMutexLocker k(&_imp->abortRequestsMutex);
     ++_imp->abortRequests;
+    // On the gatherer's own thread only the running kernel could acknowledge, so waiting would never end.
+    if (QThread::currentThread() == this) {
+        return;
+    }
     while (_imp->abortRequests > 0) {
         _imp->abortRequestsCond.wait(k.mutex());
     }
@@ -1712,7 +1748,6 @@ FileGathererThread::quitGatherer()
     abortGathering();
     {
         QMutexLocker k(&_imp->mustQuitMutex);
-        assert(!_imp->mustQuit);
         _imp->mustQuit = true;
     }
     {
@@ -1720,11 +1755,8 @@ FileGathererThread::quitGatherer()
         ++_imp->startCount;
         _imp->startCountCond.wakeOne();
     }
-    {
-        QMutexLocker k(&_imp->mustQuitMutex);
-        while (_imp->mustQuit) {
-            _imp->mustQuitCond.wait(k.mutex());
-        }
+    if (QThread::currentThread() != this) {
+        wait();
     }
 }
 
@@ -1830,7 +1862,7 @@ FileGathererThread::gatheringKernel(const FileSystemItemPtr& item)
         return;
     }
     QDir dir( item->absoluteFilePath() );
-    FileSystemModelPtr model = _imp->getModel();
+    FileSystemModel* model = _imp->model;
     if (!model) {
         return;
     }
@@ -1928,6 +1960,18 @@ FileGathererThread::gatheringKernel(const FileSystemItemPtr& item)
     ///Now iterate through the sequences and create the children as necessary
     for (FileSequences::iterator it = sequences.begin(); it != sequences.end(); ++it) {
         item->addChild(it->first, it->second);
+    }
+
+    std::function<void()> hook;
+    {
+        QMutexLocker k(&gatheredHookMutex);
+        hook = gatheredHook;
+    }
+    if (hook) {
+        hook();
+    }
+    if (_imp->checkForAbort()) {
+        return;
     }
 
     Q_EMIT directoryLoaded( item->absoluteFilePath() );

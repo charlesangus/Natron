@@ -678,8 +678,9 @@ USDRender::readGivenSettingsSummaries() const
         bool hasNode = false;
         {
             const NodePtr node = getNode();
-            hasNode = bool(node);
-            hash = node ? node->getHashValue() : 0;
+            // A node whose app is gone has nothing left to summarize, and its hash reads that app.
+            hasNode = node && node->getApp();
+            hash = hasNode ? node->getHashValue() : 0;
         }
         bool found = false;
         std::pair<double, int> key;

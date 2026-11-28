@@ -386,6 +386,9 @@ struct SceneWorker::Implementation {
     bool pending = false;
     Task pendingRun;
     Task pendingDropped;
+    // Jobs accepted by post(), and those of them that have run or been dropped, for waitForPosted().
+    std::uint64_t posted = 0;
+    std::uint64_t settled = 0;
 
     void loop();
 };
@@ -407,6 +410,31 @@ sceneWorkerThreads()
     static SceneWorkerThreads* threads = new SceneWorkerThreads;
 
     return *threads;
+}
+
+// Signalled whenever a worker settles a job. Never destroyed, like SceneWorkerThreads.
+struct SceneJobsSettled {
+    std::mutex lock;
+    std::condition_variable settled;
+};
+
+SceneJobsSettled&
+sceneJobsSettled()
+{
+    static SceneJobsSettled* settled = new SceneJobsSettled;
+
+    return *settled;
+}
+
+// Called with imp->lock not held: waitForPosted() takes it under the settled lock.
+void
+notifySettled()
+{
+    SceneJobsSettled& settled = sceneJobsSettled();
+    {
+        std::lock_guard<std::mutex> l(settled.lock);
+    }
+    settled.settled.notify_all();
 }
 
 // Releases the Python GIL while the calling thread waits, if it holds it: a job may need the GIL
@@ -459,9 +487,11 @@ stopWorker(SceneWorker::Implementation* imp)
             dropped.swap(imp->pendingDropped);
             imp->pendingRun = SceneWorker::Task();
             imp->pending = false;
+            ++imp->settled;
         }
     }
     imp->wake.notify_one();
+    notifySettled();
 
     return dropped;
 }
@@ -486,6 +516,13 @@ SceneWorker::Implementation::loop()
             run();
         } catch (...) {
         }
+        // Released before the job counts as settled: a waiter takes a settled job to hold nothing it captured.
+        run = Task();
+        {
+            std::lock_guard<std::mutex> l(lock);
+            ++settled;
+        }
+        notifySettled();
     }
     SceneWorkerThreads& threads = sceneWorkerThreads();
     {
@@ -518,10 +555,12 @@ SceneWorker::post(const Task& run,
         } else {
             if (_imp->pending) {
                 replaced.swap(_imp->pendingDropped);
+                ++_imp->settled;
             }
             _imp->pendingRun = run;
             _imp->pendingDropped = dropped;
             _imp->pending = true;
+            ++_imp->posted;
             start = !_imp->started;
             _imp->started = true;
         }
@@ -546,6 +585,7 @@ SceneWorker::post(const Task& run,
         }
     }
     _imp->wake.notify_one();
+    notifySettled();
     callDropped(replaced);
 }
 
@@ -578,6 +618,42 @@ SceneWorker::joinAll(int timeoutMs)
     std::unique_lock<std::mutex> l(threads.lock);
 
     return threads.ended.wait_for(l, std::chrono::milliseconds(timeoutMs), [&threads]() { return threads.running == 0; });
+}
+
+bool
+SceneWorker::waitForPosted(int timeoutMs)
+{
+    std::vector<std::pair<std::shared_ptr<Implementation>, std::uint64_t>> targets;
+    {
+        SceneWorkerThreads& threads = sceneWorkerThreads();
+        std::lock_guard<std::mutex> l(threads.lock);
+        for (const std::weak_ptr<Implementation>& weak : threads.workers) {
+            if (const std::shared_ptr<Implementation> worker = weak.lock()) {
+                std::lock_guard<std::mutex> w(worker->lock);
+                if (worker->settled < worker->posted) {
+                    targets.push_back(std::make_pair(worker, worker->posted));
+                }
+            }
+        }
+    }
+    if (targets.empty()) {
+        return true;
+    }
+    const auto allSettled = [&targets]() {
+        for (const std::pair<std::shared_ptr<Implementation>, std::uint64_t>& target : targets) {
+            std::lock_guard<std::mutex> w(target.first->lock);
+            if (target.first->settled < target.second) {
+                return false;
+            }
+        }
+
+        return true;
+    };
+    PythonUnlockedWhileJoining unlocked;
+    SceneJobsSettled& settled = sceneJobsSettled();
+    std::unique_lock<std::mutex> l(settled.lock);
+
+    return settled.settled.wait_for(l, std::chrono::milliseconds(timeoutMs), allSettled);
 }
 
 struct SceneMenuRefresh::State {

@@ -195,13 +195,13 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
 
 ## Phase 646.2: GUI, Python and docs
 
-- [ ] M646.P2.T1 — Template hull
+- [x] M646.P2.T1 — Template hull
   - files: `Gui/LoopBlockOverlay.h`, `Gui/LoopBlockOverlay.cpp`, `Gui/NodeGraph.cpp`
   - approach: extend the overlay to paint one block per template node, reusing `LoopBlockItem`'s hull and pan/zoom handling: a hull around the template node and its members (MatchedEnclosed plus explicit membership, minus `excluded`), in the template node's colour. Leave out the wedges and rings. Clicking the hull selects the members and the template node. The hull refreshes when membership or positions change.
   - verify: compiled at P2.T6. Exercised by P2.T5: the hull encloses the members after an import, and the enclosed set updates after Remove from Template.
   - size: M
 
-- [ ] M646.P2.T2 — Template actions in menus, buttons and the node graph
+- [x] M646.P2.T2 — Template actions in menus, buttons and the node graph
   - files: `Gui/Gui20.cpp`, `Gui/Gui60.cpp`, `Gui/NodeGraph35.cpp`, `Gui/MergeConflictResolve.cpp`, `Gui/GuiAppInstance.cpp`, `Gui/GuiAppInstance.h`
   - approach:
     - Add File > Define Template….
@@ -213,7 +213,7 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
   - verify: compiled at P2.T6. Exercised by P2.T5.
   - size: L
 
-- [ ] M646.P2.T3 — Python bindings for define, publish and update-to-latest
+- [x] M646.P2.T3 — Python bindings for define, publish and update-to-latest
   - files: `Engine/PyAppInstance.h`, `Engine/PyAppInstance.cpp`, `Engine/typesystem_engine.xml`, `Gui/PyGuiApp.h`, `Gui/PyGuiApp.cpp`, the Gui typesystem, new `Tests/Serialization/PyTemplatePublish_Test.cpp`
   - approach:
     - `app.defineTemplate(nodes, name, group=None)` returns the template node.
@@ -224,7 +224,7 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
   - verify: compiled at P2.T6. The gtest defines, publishes twice, and checks both files exist; a publish onto an existing version raises `RuntimeError`.
   - size: M
 
-- [ ] M646.P2.T4 — Docs for the template workflow
+- [x] M646.P2.T4 — Docs for the template workflow
   - files: `docs/graph-merge.md`
   - approach: rewrite the template section around the new workflow:
     1. the supervisor defines and publishes v001;
@@ -236,7 +236,7 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
   - verify: the doc describes every action named in P2.T2 and passes the comment/docs policy check.
   - size: M
 
-- [ ] M646.P2.T5 — GUI test of the versioned workflow
+- [x] M646.P2.T5 — GUI test of the versioned workflow
   - files: new `Tests/gui/m646_template_versions.py`, `Tests/gui/m97_template_merge.py`
   - approach: on the `Tests/gui/guitest.py` harness:
     1. define a template from a selection and publish v001;
@@ -280,3 +280,4 @@ Code facts (diagnosis of 2026-11-27, on the F33 branch tip e073795254):
 - 2026-11-27 — "Update does nothing" on a second template: no content-hash early return exists, and an unchanged file correctly applies nothing. The likely real cause is the context menu's single-selected-node rule. P2.T2 replaces that rule and adds the up-to-date message (code finding).
 - 2026-11-27 — **Claimed despite a shared file with M351 - Shader Graph Presentation (user):** `Gui/NodeGraph.cpp` overlaps; claim now, resolve conflicts when merging.
 - 2026-11-27 (PM) — Phase 646.1 T1-T8 in df1184c1ea; gate m646-gate1 (fast ctest + m97/m104 GUI). Implementer's open points (PM defaults, revisit in Phase 2/UAT): Gui60/PyGuiApp pass allowMismatch=true until Phase 2's mismatch UI; version and importedVersion hold the same number (spec doesn't distinguish); addToTemplate gives an added node its own ID as origin; republishing from an imported copy keeps member IDs but the Template node gets the shot's ID.
+- 2026-11-28 — Phase 2 T1–T5 in d6872562d0; m646-gate2 running. Open: node.destroy() from Python bypasses Detach; undoing a Publish leaves the file (next publish numbers past it); Define Template names the node "template" and opens its panel rather than prompting.

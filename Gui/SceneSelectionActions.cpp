@@ -1270,7 +1270,7 @@ namespace {
     /**
      * Runs run once the viewer has no load outstanding and no graph policy match pending, unless a
      * newer search starts first. The search copies the viewer's load rules, and a policy still to
-     * match or a Full + Load rule matching again after each batch may yet add loads to them.
+     * match or a Load + Draw rule matching again after each batch may yet add loads to them.
      **/
     void
     whenPolicySettled(SceneViewport* viewport,

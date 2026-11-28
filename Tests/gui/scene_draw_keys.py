@@ -5,15 +5,15 @@ into Viewer1, seen from the front (Z, then A to frame). /World holds /World/Grou
 holding /World/Group/Inner holding the Cube /World/Group/Inner/Leaf, and /World/B, an Xform at
 x = 3 holding a Cube. States are read from the Scene Graph panel's Draw State column, docked
 beside the viewer. Keys are real key events sent to the focused SceneViewport. The script checks:
-  - with /World/Group boxed, a click on its box picks it and Down sets Children on it;
+  - with /World/Group boxed, a click on its box picks it and Down sets Pass Through on it;
   - with the leaf selected in the tree, Down opens the box drawn for it, /World/Group/Inner;
-  - Shift+Down sets Full on the leaf, now boxed itself;
+  - Shift+Down sets Geometry on the leaf, now boxed itself;
   - Up boxes the leaf's parent, and Up again boxes the row above the new box;
-  - Ctrl+Shift+Down sets Load All on the picked /World/Group;
-  - with Draw Children rebound to J in Preferences, Down does nothing and J sets Children.
+  - Ctrl+Shift+Down sets Load + Draw on the picked /World/Group;
+  - with Draw Pass Through rebound to J in Preferences, Down does nothing and J sets Pass Through.
 
-Screenshots for sign-off: scene-keys-boxed, scene-keys-children, scene-keys-inner-children,
-scene-keys-leaf-full, scene-keys-up, scene-keys-up-again, scene-keys-load-all,
+Screenshots for sign-off: scene-keys-boxed, scene-keys-expand, scene-keys-inner-expand,
+scene-keys-leaf-geometry, scene-keys-up, scene-keys-up-again, scene-keys-load-and-draw,
 scene-keys-shortcut-editor, scene-keys-rebound.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
@@ -289,8 +289,8 @@ try:
                         return panels[0] if len(panels) == 1 else None
         return None
 
-    def rebind_draw_children():
-        """Binds Draw Children to J in the Shortcut Editor; False when a step of it is missing."""
+    def rebind_draw_pass_through():
+        """Binds Draw Pass Through to J in the Shortcut Editor; False when a step of it is missing."""
         prefs = open_preferences()
         require(prefs is not None, "the Preferences panel opens")
         page_trees = [w for w in prefs.findChildren(QTreeWidget) if w.columnCount() == 1]
@@ -305,27 +305,27 @@ try:
         group = find_item(keys, "3DViewer")
         require(group is not None, "the shortcuts tree has a 3DViewer group")
         keys.expand(group)
-        for label in ("Draw Children", "Draw Full", "Load All", "Box Parent"):
+        for label in ("Draw Pass Through", "Draw Geometry", "Load + Draw", "BBox Parent"):
             check(find_item(keys, label, "3DViewer") is not None, "the 3DViewer group lists %s" % label)
-        row = find_item(keys, "Draw Children", "3DViewer")
-        require(row is not None, "the 3DViewer group has a Draw Children row")
+        row = find_item(keys, "Draw Pass Through", "3DViewer")
+        require(row is not None, "the 3DViewer group has a Draw Pass Through row")
         keys.setCurrentIndex(row)
         keys.scrollTo(row)
         QApplication.processEvents()
-        report("NOTE Draw Children is bound to %r" % (row.siblingAtColumn(1).data(),))
-        check("Down" in str(row.siblingAtColumn(1).data()), "Draw Children is on Down by default")
+        report("NOTE Draw Pass Through is bound to %r" % (row.siblingAtColumn(1).data(),))
+        check("Down" in str(row.siblingAtColumn(1).data()), "Draw Pass Through is on Down by default")
         shot("scene-keys-shortcut-editor.png")
         editors = [w for w in prefs.findChildren(QLineEdit) if w.placeholderText() == "Type to set shortcut" and w.isVisible()]
         validate = [w for w in prefs.findChildren(QPushButton) if w.text() == "Validate" and w.isVisible()]
-        require(len(editors) == 1 and len(validate) == 1, "found the Draw Children field and its Validate button")
+        require(len(editors) == 1 and len(validate) == 1, "found the Draw Pass Through field and its Validate button")
         editors[0].clear()
         QTest.keyClick(editors[0], Qt.Key_J)
         QApplication.processEvents()
         check("J" in editors[0].text(), "the field records J (%r)" % editors[0].text())
         validate[0].click()
         QApplication.processEvents()
-        row = find_item(keys, "Draw Children", "3DViewer")
-        check(row is not None and "J" in str(row.siblingAtColumn(1).data()), "the Draw Children row shows J (%r)"
+        row = find_item(keys, "Draw Pass Through", "3DViewer")
+        check(row is not None and "J" in str(row.siblingAtColumn(1).data()), "the Draw Pass Through row shows J (%r)"
               % (row.siblingAtColumn(1).data() if row is not None else None,))
         prefs.close()
         QApplication.processEvents()
@@ -356,22 +356,22 @@ try:
         shot("scene-keys-boxed.png")
         yield from pick(GROUP)
         yield from key(Qt.Key_Down)
-        yield from expect("Down", GROUP, "Children")
+        yield from expect("Down", GROUP, "Pass Through")
         ok = yield ("until", lambda: INNER in drawn_boxes(), POLL_TIMEOUT_S)
         check(ok, "the viewer boxes /World/Group/Inner (%r)" % sorted(drawn_boxes()))
-        shot("scene-keys-children.png")
+        shot("scene-keys-expand.png")
 
         section("down on the box drawn for the selection")
         yield from select_in_tree(LEAF)
         ok = yield ("until", lambda: selection() == [LEAF], POLL_TIMEOUT_S)
         check(ok, "selecting the leaf in the tree selects it in the viewer (%r)" % selection())
         yield from key(Qt.Key_Down)
-        yield from expect("Down with the leaf selected", INNER, "Children")
+        yield from expect("Down with the leaf selected", INNER, "Pass Through")
         check(state(LEAF) == ("BBox", False), "the leaf inherits BBox (%r)" % (state(LEAF),))
-        shot("scene-keys-inner-children.png")
+        shot("scene-keys-inner-expand.png")
         yield from key(Qt.Key_Down, Qt.ShiftModifier)
-        yield from expect("Shift+Down", LEAF, "Full")
-        shot("scene-keys-leaf-full.png")
+        yield from expect("Shift+Down", LEAF, "Geometry")
+        shot("scene-keys-leaf-geometry.png")
 
         section("up")
         yield from key(Qt.Key_Up)
@@ -382,16 +382,16 @@ try:
         check(selection() == [LEAF], "the keys keep the selection (%r)" % selection())
         shot("scene-keys-up-again.png")
 
-        section("load all")
+        section("load + draw")
         yield from pick(GROUP)
         yield from key(Qt.Key_Down, Qt.ControlModifier | Qt.ShiftModifier)
-        yield from expect("Ctrl+Shift+Down", GROUP, "Load All")
-        shot("scene-keys-load-all.png")
+        yield from expect("Ctrl+Shift+Down", GROUP, "Load + Draw")
+        shot("scene-keys-load-and-draw.png")
 
         section("rebound")
         set_state(GROUP, "bbox")
         yield from expect("the script", GROUP, "BBox")
-        rebind_draw_children()
+        rebind_draw_pass_through()
         yield ("sleep", SETTLE_MS)
         yield from pick(GROUP)
         before = posted()
@@ -399,7 +399,7 @@ try:
         check(state(GROUP) == ("BBox", True) and posted() == before, "after the rebind Down leaves /World/Group boxed (%r)"
               % (state(GROUP),))
         yield from key(Qt.Key_J)
-        yield from expect("J", GROUP, "Children")
+        yield from expect("J", GROUP, "Pass Through")
         shot("scene-keys-rebound.png")
 
     run(steps())

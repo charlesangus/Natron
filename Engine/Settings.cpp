@@ -1497,7 +1497,7 @@ Settings::initializeKnobsViewers()
         entries.push_back(ChoiceOption("models", "Per Model", tr("One box per model prim, whose kind is component, assembly or group. Models nest, and so "
                                                                  "do their boxes. A stage without models gets one per draw state row instead.")
                                                                   .toStdString()));
-        entries.push_back(ChoiceOption("rows", "Per Draw State Row", tr("One box per row that has a draw state, and per row a Children row boxes; with no draw "
+        entries.push_back(ChoiceOption("rows", "Per Draw State Row", tr("One box per row that has a draw state, and per row a Pass Through row boxes; with no draw "
                                                                         "state set, one per top-level prim.")
                                                                          .toStdString()));
         _sceneStandInBoxes->populateChoices(entries);

@@ -38,7 +38,7 @@ using PolicyMap = SceneDrawStates::PolicyStates;
 
 enum FrameKindEnum {
     eFrameDrawn,
-    eFrameExpanded,
+    eFramePassThrough,
     eFrameBlocked
 };
 
@@ -47,8 +47,8 @@ const int kNoRequest = -1;
 struct Frame {
     std::string path;
     FrameKindEnum kind;
-    // A Load All above wants what is drawn here. Only a drawn frame is covered by a load with
-    // descendants; a Children row has left that load, so what its rows draw must be asked for anew.
+    // A Load + Draw above wants what is drawn here. Only a drawn frame is covered by a load with
+    // descendants; a Pass Through row has left that load, so what its rows draw must be asked for anew.
     bool loading;
     // The row in this walk whose load covers this frame, or kNoRequest if that row is above the root.
     int request;
@@ -155,7 +155,7 @@ descend(const Frame& parent,
     }
     Frame frame { path, parent.kind, parent.loading, parent.request };
     if (!found) {
-        if (parent.kind == eFrameExpanded) {
+        if (parent.kind == eFramePassThrough) {
             frame.kind = eFrameBlocked;
         }
 
@@ -166,8 +166,8 @@ descend(const Frame& parent,
     case eSceneDrawStateHidden:
         frame.kind = eFrameBlocked;
         break;
-    case eSceneDrawStateChildren:
-        frame.kind = eFrameExpanded;
+    case eSceneDrawStatePassThrough:
+        frame.kind = eFramePassThrough;
         break;
     case eSceneDrawStateFull:
         frame.kind = eFrameDrawn;
@@ -192,8 +192,8 @@ appendRule(SceneDrawDelta* delta,
     case SceneDrawStates::eRuleDrawn:
         delta->drawn.push_back(effect.path);
         break;
-    case SceneDrawStates::eRuleExpanded:
-        delta->expanded.push_back(effect.path);
+    case SceneDrawStates::eRulePassThrough:
+        delta->passThrough.push_back(effect.path);
         break;
     case SceneDrawStates::eRuleBoxed:
         delta->boxed.push_back(effect.path);
@@ -220,14 +220,14 @@ sceneDrawStateName(SceneDrawStateEnum state)
     switch (state) {
     case eSceneDrawStateBBox:
         return "bbox";
-    case eSceneDrawStateChildren:
-        return "children";
+    case eSceneDrawStatePassThrough:
+        return "passThrough";
     case eSceneDrawStateFull:
-        return "full";
+        return "geometry";
     case eSceneDrawStateLoadAll:
-        return "loadAll";
+        return "loadAndDraw";
     case eSceneDrawStateHidden:
-        return "hidden";
+        return "hide";
     }
 
     return "";
@@ -237,7 +237,7 @@ bool
 sceneDrawStateFromName(const std::string& name,
                        SceneDrawStateEnum* state)
 {
-    for (SceneDrawStateEnum candidate : { eSceneDrawStateBBox, eSceneDrawStateChildren, eSceneDrawStateFull, eSceneDrawStateLoadAll, eSceneDrawStateHidden }) {
+    for (SceneDrawStateEnum candidate : { eSceneDrawStateBBox, eSceneDrawStatePassThrough, eSceneDrawStateFull, eSceneDrawStateLoadAll, eSceneDrawStateHidden }) {
         if (name == sceneDrawStateName(candidate)) {
             *state = candidate;
 
@@ -308,22 +308,22 @@ SceneDrawStates::effectsUnder(const std::string& root,
         }
         const Frame parent = stack.back();
         std::string skip;
-        if ((parent.kind == eFrameExpanded) && (parentOf(path) != parent.path)) {
-            // An unset child of a Children row is a box, which stops this row and its neighbours.
+        if ((parent.kind == eFramePassThrough) && (parentOf(path) != parent.path)) {
+            // An unset child of a Pass Through row is a box, which stops this row and its neighbours.
             skip = pastSubtree(childTowards(parent.path, path));
         } else {
             const bool covered = coveredByLoad(parent);
             Effect effect { path, eRuleNone, eLoadNone, std::vector<std::string>() };
             switch (state) {
             case eSceneDrawStateBBox:
-                // A box is what a Children row's child is already.
-                effect.rule = (parent.kind == eFrameExpanded) ? eRuleNone : eRuleBoxed;
+                // A box is what a Pass Through row's child is already.
+                effect.rule = (parent.kind == eFramePassThrough) ? eRuleNone : eRuleBoxed;
                 break;
             case eSceneDrawStateHidden:
                 effect.rule = eRuleHidden;
                 break;
-            case eSceneDrawStateChildren:
-                effect.rule = eRuleExpanded;
+            case eSceneDrawStatePassThrough:
+                effect.rule = eRulePassThrough;
                 effect.load = (direct || parent.loading) ? eLoadOwn : eLoadNone;
                 break;
             case eSceneDrawStateFull:
@@ -335,7 +335,7 @@ SceneDrawStates::effectsUnder(const std::string& root,
                 effect.load = covered ? eLoadNone : eLoadWithDescendants;
                 break;
             }
-            if (covered && (stops(state) || (state == eSceneDrawStateChildren))) {
+            if (covered && (stops(state) || (state == eSceneDrawStatePassThrough))) {
                 std::vector<std::string>& excluded = (parent.request == kNoRequest) ? effects.excludedBelowRoot : effects.rows[parent.request].excluded;
                 excluded.push_back(path);
             }
@@ -431,17 +431,18 @@ SceneDrawStates::applyEdit(const std::string& root,
 }
 
 std::string
-SceneDrawStates::rootOf(const SceneDrawRowEdit& edit) const
+SceneDrawStates::rootOf(const SceneDrawRowEdit& edit,
+                        bool switchAncestors) const
 {
-    if ((edit.kind != SceneDrawRowEdit::eKindSet) || ((edit.state != eSceneDrawStateFull) && (edit.state != eSceneDrawStateLoadAll))) {
+    if ((edit.kind != SceneDrawRowEdit::eKindSet) || !switchAncestors) {
         return edit.path;
     }
-    // Drawing the row switches the ancestors that block it to Children: the topmost one is the root.
+    // Setting the row switches the ancestors that block it to Pass Through: the topmost one is the root.
     Frame frame { std::string(), eFrameDrawn, false, kNoRequest };
     for (const std::string& ancestor : ancestorsOf(edit.path)) {
         SceneDrawStateEnum ancestorState = eSceneDrawStateFull;
         const bool found = lookUp(_states, _policy, ancestor, &ancestorState);
-        if (found ? stops(ancestorState) : (frame.kind == eFrameExpanded)) {
+        if (found ? stops(ancestorState) : (frame.kind == eFramePassThrough)) {
             return ancestor;
         }
         frame = descend(frame, ancestor, found, ancestorState);
@@ -451,18 +452,19 @@ SceneDrawStates::rootOf(const SceneDrawRowEdit& edit) const
 }
 
 void
-SceneDrawStates::applyRowEdit(const SceneDrawRowEdit& edit)
+SceneDrawStates::applyRowEdit(const SceneDrawRowEdit& edit,
+                              bool switchAncestors)
 {
     switch (edit.kind) {
-    case SceneDrawRowEdit::eKindSet:
-        if ((edit.state == eSceneDrawStateFull) || (edit.state == eSceneDrawStateLoadAll)) {
+    case SceneDrawRowEdit::eKindSet: {
+        if (switchAncestors) {
             Frame frame { std::string(), eFrameDrawn, false, kNoRequest };
             for (const std::string& ancestor : ancestorsOf(edit.path)) {
                 SceneDrawStateEnum ancestorState = eSceneDrawStateFull;
                 const bool found = lookUp(_states, _policy, ancestor, &ancestorState);
-                if (found ? stops(ancestorState) : (frame.kind == eFrameExpanded)) {
-                    _states[ancestor] = Stored { eSceneDrawStateChildren, false };
-                    ancestorState = eSceneDrawStateChildren;
+                if (found ? stops(ancestorState) : (frame.kind == eFramePassThrough)) {
+                    _states[ancestor] = Stored { eSceneDrawStatePassThrough, false };
+                    ancestorState = eSceneDrawStatePassThrough;
                     frame = descend(frame, ancestor, true, ancestorState);
                 } else {
                     frame = descend(frame, ancestor, found, ancestorState);
@@ -471,6 +473,7 @@ SceneDrawStates::applyRowEdit(const SceneDrawRowEdit& edit)
         }
         _states[edit.path] = Stored { edit.state, true };
         break;
+    }
     case SceneDrawRowEdit::eKindClear:
         _states.erase(edit.path);
         break;
@@ -491,10 +494,30 @@ SceneDrawStates::editRows(const std::vector<SceneDrawRowEdit>& edits)
 {
     // States change only inside each edit's root, so an edit's root as the states stand before the
     // first is the same as, or holds, its root once the edits before it are made.
+    std::set<std::string, PathLess> stopping;
+    for (const SceneDrawRowEdit& edit : edits) {
+        if ((edit.kind == SceneDrawRowEdit::eKindSet) && stops(edit.state)) {
+            stopping.insert(edit.path);
+        }
+    }
+    std::vector<char> switches;
+    switches.reserve(edits.size());
+    for (const SceneDrawRowEdit& edit : edits) {
+        bool switchAncestors = true;
+        if ((edit.kind == SceneDrawRowEdit::eKindSet) && stops(edit.state) && !stopping.empty()) {
+            for (const std::string& ancestor : ancestorsOf(edit.path)) {
+                if (stopping.count(ancestor) != 0) {
+                    switchAncestors = false;
+                    break;
+                }
+            }
+        }
+        switches.push_back(switchAncestors);
+    }
     std::vector<std::string> roots;
     roots.reserve(edits.size());
-    for (const SceneDrawRowEdit& edit : edits) {
-        roots.push_back(rootOf(edit));
+    for (std::size_t i = 0; i < edits.size(); ++i) {
+        roots.push_back(rootOf(edits[i], switches[i] != 0));
     }
     std::vector<std::string> retryLoads;
     for (const SceneDrawRowEdit& edit : edits) {
@@ -503,9 +526,9 @@ SceneDrawStates::editRows(const std::vector<SceneDrawRowEdit>& edits)
         }
     }
 
-    return editUnder(roots, retryLoads, [this, &edits]() {
-        for (const SceneDrawRowEdit& edit : edits) {
-            applyRowEdit(edit);
+    return editUnder(roots, retryLoads, [this, &edits, &switches]() {
+        for (std::size_t i = 0; i < edits.size(); ++i) {
+            applyRowEdit(edits[i], switches[i] != 0);
         }
     });
 }
@@ -534,7 +557,7 @@ SceneDrawStates::editUnder(std::vector<std::string> roots,
     for (std::size_t i = 0; i < covering.size(); ++i) {
         SceneDrawDelta part = applyEdit(covering[i], retryLoads, before[i], 0);
         delta.drawn.insert(delta.drawn.end(), part.drawn.begin(), part.drawn.end());
-        delta.expanded.insert(delta.expanded.end(), part.expanded.begin(), part.expanded.end());
+        delta.passThrough.insert(delta.passThrough.end(), part.passThrough.begin(), part.passThrough.end());
         delta.boxed.insert(delta.boxed.end(), part.boxed.begin(), part.boxed.end());
         delta.hidden.insert(delta.hidden.end(), part.hidden.begin(), part.hidden.end());
         delta.cleared.insert(delta.cleared.end(), part.cleared.begin(), part.cleared.end());
@@ -650,16 +673,16 @@ sceneAddDrawRuleMatch(const std::string& path,
                       SceneDrawStates::PolicyStates* policy)
 {
     if ((state == eSceneDrawStateFull) || (state == eSceneDrawStateLoadAll)) {
-        // Whether the row above is a Children row, whose unset children are boxes.
-        bool expanded = false;
+        // Whether the row above is a Pass Through row, whose unset children are boxes.
+        bool passingThrough = false;
         for (const std::string& ancestor : ancestorsOf(path)) {
             const SceneDrawStates::PolicyStates::iterator found = policy->find(ancestor);
             const bool isSet = (found != policy->end());
-            if (isSet ? stops(found->second.state) : expanded) {
-                (*policy)[ancestor] = SceneDrawStates::Policy { eSceneDrawStateChildren, origin };
-                expanded = true;
+            if (isSet ? stops(found->second.state) : passingThrough) {
+                (*policy)[ancestor] = SceneDrawStates::Policy { eSceneDrawStatePassThrough, origin };
+                passingThrough = true;
             } else if (isSet) {
-                expanded = (found->second.state == eSceneDrawStateChildren);
+                passingThrough = (found->second.state == eSceneDrawStatePassThrough);
             }
         }
     }
@@ -699,7 +722,7 @@ SceneDrawStates::resolve(const std::string& path) const
         if (found) {
             resolved.state = (set != _states.end()) ? set->second.state : policed->second.state;
             resolved.origin = (set != _states.end()) ? eSceneDrawOriginViewer : eSceneDrawOriginGraphPolicy;
-        } else if (frame.kind == eFrameExpanded) {
+        } else if (frame.kind == eFramePassThrough) {
             resolved.state = eSceneDrawStateBBox;
             resolved.origin = eSceneDrawOriginInherited;
         } else if (resolved.origin != eSceneDrawOriginDefault) {
@@ -859,7 +882,7 @@ sceneViewToSerialization(const std::vector<std::pair<std::string, SceneDrawState
     for (const std::pair<std::string, SceneDrawStates::Stored>& state : states) {
         serialization->drawStates[state.first] = sceneDrawStateName(state.second.state);
         if (!state.second.direct) {
-            serialization->impliedChildren.push_back(state.first);
+            serialization->impliedPassThrough.push_back(state.first);
         }
     }
     for (const std::pair<const std::string, SceneLoadRuleEnum>& rule : rules) {
@@ -874,14 +897,14 @@ sceneViewFromSerialization(const Serialization::SceneViewSerialization& serializ
 {
     states->clear();
     rules->clear();
-    const std::set<std::string> implied(serialization.impliedChildren.begin(), serialization.impliedChildren.end());
+    const std::set<std::string> implied(serialization.impliedPassThrough.begin(), serialization.impliedPassThrough.end());
     SceneDrawStates::PathLess less;
     for (const std::pair<const std::string, std::string>& saved : serialization.drawStates) {
         SceneDrawStateEnum state = eSceneDrawStateFull;
         if (!isAbsolutePath(saved.first) || !sceneDrawStateFromName(saved.second, &state)) {
             continue;
         }
-        const bool direct = !((state == eSceneDrawStateChildren) && implied.count(saved.first));
+        const bool direct = !((state == eSceneDrawStatePassThrough) && implied.count(saved.first));
         states->push_back(std::make_pair(saved.first, SceneDrawStates::Stored { state, direct }));
     }
     std::sort(states->begin(), states->end(), [&less](const std::pair<std::string, SceneDrawStates::Stored>& a, const std::pair<std::string, SceneDrawStates::Stored>& b) {

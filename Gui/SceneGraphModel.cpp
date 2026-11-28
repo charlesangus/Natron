@@ -50,6 +50,7 @@
 
 #include "Engine/NodeCreationStageLog.h"
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
+#include "Engine/Nodes/Scene/SceneKindWalk.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneTeardown.h"
@@ -59,9 +60,9 @@
 #define NATRON_SCENEGRAPHMODEL_RESTORE_EMIT
 #undef emit
 #endif
-#include <pxr/usd/sdf/pathExpressionEval.h>
-#include <pxr/usd/usd/collectionPredicateLibrary.h>
 #include <pxr/usd/usdGeom/modelAPI.h>
+
+#include "Engine/Nodes/Scene/ScenePredicates.h"
 #ifdef NATRON_SCENEGRAPHMODEL_RESTORE_EMIT
 #undef NATRON_SCENEGRAPHMODEL_RESTORE_EMIT
 #define emit
@@ -107,6 +108,11 @@ struct PrimData {
     QString name;
     QString type;
     QString kind;
+    bool imageable = false;
+    // The purpose the prim authors, or the fallback when it authors none: its purpose without a
+    // parent, which is all a read of the prim alone can know.
+    TfToken ownPurpose;
+    bool purposeAuthored = false;
     bool hasChildren = false;
     // None, Unloaded or Loaded: the other states belong to the model's requests, not the prim.
     SceneGraphModel::PayloadStateEnum payload = SceneGraphModel::ePayloadStateNone;
@@ -114,9 +120,48 @@ struct PrimData {
 
     bool operator==(const PrimData& other) const
     {
-        return (name == other.name) && (type == other.type) && (kind == other.kind) && (hasChildren == other.hasChildren) && (payload == other.payload) && (unknownBounds == other.unknownBounds);
+        return (name == other.name) && (type == other.type) && (kind == other.kind) && (imageable == other.imageable) && (ownPurpose == other.ownPurpose) && (purposeAuthored == other.purposeAuthored) && (hasChildren == other.hasChildren) && (payload == other.payload) && (unknownBounds == other.unknownBounds);
     }
 };
+
+// A row's computed purpose, and the prim it is authored on, empty for the fallback.
+struct PurposeCell {
+    TfToken purpose;
+    // Whether rows below that author none take it.
+    bool inheritable = false;
+    SdfPath origin;
+
+    bool operator==(const PurposeCell& other) const
+    {
+        return (purpose == other.purpose) && (inheritable == other.inheritable) && (origin == other.origin);
+    }
+};
+
+/**
+ * @brief UsdGeomImageable::ComputePurposeInfo(parentInfo) for the prim at path from what was read of
+ * it and its parent's cell, without the stage: so a row's purpose costs one step down from its
+ * parent's, and an edit of an ancestor's purpose is carried down the rows read without reading them
+ * again. Null parent for a top-level prim.
+ **/
+PurposeCell
+derivePurpose(const PrimData& data,
+              const SdfPath& path,
+              const PurposeCell* parent)
+{
+    PurposeCell cell;
+
+    if (data.purposeAuthored) {
+        cell.purpose = data.ownPurpose;
+        cell.inheritable = true;
+        cell.origin = path;
+    } else if (parent && parent->inheritable) {
+        cell = *parent;
+    } else {
+        cell.purpose = data.ownPurpose;
+    }
+
+    return cell;
+}
 
 PrimData
 readPrimData(const UsdPrim& prim)
@@ -131,6 +176,13 @@ readPrimData(const UsdPrim& prim)
     TfToken kind;
     if (prim.GetKind(&kind)) {
         data.kind = QString::fromStdString(kind.GetString());
+    }
+    if (!prim.IsPseudoRoot()) {
+        // USD reads purpose from imageable prims only; any other passes its parent's through.
+        data.imageable = prim.IsA<UsdGeomImageable>();
+        const UsdGeomImageable::PurposeInfo own = UsdGeomImageable(prim).ComputePurposeInfo(UsdGeomImageable::PurposeInfo());
+        data.ownPurpose = own.purpose;
+        data.purposeAuthored = own.isInheritable;
     }
     if (prim.HasAuthoredPayloads()) {
         data.payload = prim.IsLoaded() ? SceneGraphModel::ePayloadStateLoaded : SceneGraphModel::ePayloadStateUnloaded;
@@ -160,6 +212,8 @@ columnHeader(int section,
         return SceneGraphModel::tr("Type");
     case SceneGraphModel::eColumnKind:
         return SceneGraphModel::tr("Kind");
+    case SceneGraphModel::eColumnPurpose:
+        return SceneGraphModel::tr("Purpose");
     case SceneGraphModel::eColumnDrawState:
         return SceneGraphModel::tr("Draw State");
     default:
@@ -182,13 +236,23 @@ public:
         std::lock_guard<std::mutex> lock(mutex);
 
         for (const SdfPath& path : notice.GetResyncedPaths()) {
-            if (path.IsAbsoluteRootOrPrimPath() && !overflow) {
+            if (overflow) {
+                break;
+            }
+            if (path.IsAbsoluteRootOrPrimPath()) {
                 resynced.push_back(path);
+            } else if (isPurposePath(path)) {
+                infoOnly.push_back(path.GetPrimPath());
             }
         }
         for (const SdfPath& path : notice.GetChangedInfoOnlyPaths()) {
-            if (path.IsPrimPath() && !overflow) {
+            if (overflow) {
+                break;
+            }
+            if (path.IsPrimPath()) {
                 infoOnly.push_back(path);
+            } else if (isPurposePath(path)) {
+                infoOnly.push_back(path.GetPrimPath());
             }
         }
         if ((resynced.size() + infoOnly.size()) > kMaxPendingPaths) {
@@ -196,6 +260,12 @@ public:
             resynced.clear();
             infoOnly.clear();
         }
+    }
+
+    // Purpose is an attribute, whose edits name its property path rather than the prim's.
+    static bool isPurposePath(const SdfPath& path)
+    {
+        return path.IsPrimPropertyPath() && (path.GetNameToken() == UsdGeomTokens->purpose);
     }
 
     bool hasPending()
@@ -231,6 +301,8 @@ struct SceneGraphModelItem {
     TfToken nameToken;
     QString pathString;
     PrimData data;
+    // From data and the parent's, kept up to date by derivePurposes().
+    PurposeCell purpose;
     // Whether childNames holds the prim's children; children are the first of them.
     bool namesRead = false;
     NamesPtr childNames = noNames();
@@ -929,28 +1001,20 @@ struct SceneGraphModel::Implementation {
         SceneTeardown::release(std::move(done));
     }
 
-    void emitChangedHere(Item* item)
+    /**
+     * @brief Announces columns first to last of every row as changed, through the top-level rows
+     * alone: each dataChanged() makes a view lay its header out again, so one per parent would
+     * cost a layout per open parent. A view must repaint the rows below itself on this signal, as
+     * refreshDrawStates() requires.
+     **/
+    void emitColumnsChanged(int first,
+                            int last)
     {
-        if (item->children.empty()) {
+        if (root.children.empty()) {
             return;
         }
-        Q_EMIT model->dataChanged(model->createIndex(0, 0, item->children.front().get()),
-                                  model->createIndex((int)item->children.size() - 1, eColumnCount - 1, item->children.back().get()));
-        for (const std::unique_ptr<Item>& child : item->children) {
-            emitChangedHere(child.get());
-        }
-    }
-
-    void emitDrawStates(Item* item)
-    {
-        if (item->children.empty()) {
-            return;
-        }
-        Q_EMIT model->dataChanged(model->createIndex(0, eColumnDrawState, item->children.front().get()),
-                                  model->createIndex((int)item->children.size() - 1, eColumnDrawState, item->children.back().get()));
-        for (const std::unique_ptr<Item>& child : item->children) {
-            emitDrawStates(child.get());
-        }
+        Q_EMIT model->dataChanged(model->createIndex(0, first, root.children.front().get()),
+                                  model->createIndex((int)root.children.size() - 1, last, root.children.back().get()));
     }
 
     // False without a viewer to read, and while an edit holds its draw states: the change that
@@ -1077,6 +1141,31 @@ struct SceneGraphModel::Implementation {
         return (sdfPath.IsAbsolutePath() && sdfPath.IsAbsoluteRootOrPrimPath()) ? findItem(sdfPath) : nullptr;
     }
 
+    /**
+     * @brief Derives item's purpose from its parent's, then its children's: all of them with
+     * attached, for rows being inserted, or else only below a row whose purpose changed, whose
+     * purpose cell is announced.
+     **/
+    void derivePurposes(Item* item,
+                        bool attached)
+    {
+        if (item->path.IsEmpty() || (item == &root)) {
+            return;
+        }
+        const PurposeCell before = item->purpose;
+        item->purpose = derivePurpose(item->data, item->path, item->parent ? &item->parent->purpose : nullptr);
+        if (!attached) {
+            if (item->purpose == before) {
+                return;
+            }
+            const QModelIndex cell = model->createIndex(item->row, eColumnPurpose, item);
+            Q_EMIT model->dataChanged(cell, cell);
+        }
+        for (const std::unique_ptr<Item>& child : item->children) {
+            derivePurposes(child.get(), attached);
+        }
+    }
+
     void emitRowChanged(Item* item)
     {
         Q_EMIT model->dataChanged(indexOf(item), model->createIndex(item->row, eColumnCount - 1, item));
@@ -1152,6 +1241,7 @@ struct SceneGraphModel::Implementation {
             std::unique_ptr<Item>& child = rows[i];
             child->parent = item;
             child->row = (int)item->children.size();
+            derivePurposes(child.get(), true);
             item->children.push_back(std::move(child));
         }
         item->placeLoadingRow();
@@ -1191,6 +1281,7 @@ struct SceneGraphModel::Implementation {
             if (item != &root) {
                 item->data = update.data;
                 Q_EMIT model->dataChanged(index, model->createIndex(item->row, eColumnCount - 1, item));
+                derivePurposes(item, false);
             } else {
                 item->data.hasChildren = update.data.hasChildren;
             }
@@ -1248,6 +1339,7 @@ struct SceneGraphModel::Implementation {
             for (std::size_t n = i; n < end; ++n) {
                 std::unique_ptr<Item>& child = update.newChildren[next++];
                 child->parent = item;
+                derivePurposes(child.get(), true);
                 inserted.push_back(std::move(child));
             }
             itemCount += (int)inserted.size();
@@ -2144,6 +2236,7 @@ SceneGraphModel::addPathRows(const SceneGraphPathRowsPtr& rows)
             std::unique_ptr<Item>& child = parent.rows[i];
             child->parent = item;
             child->row = (int)i;
+            _imp->derivePurposes(child.get(), true);
             item->children.push_back(std::move(child));
         }
         item->placeLoadingRow();
@@ -2333,7 +2426,7 @@ SceneGraphModel::setChangedHere(const QSet<QString>& paths)
         return;
     }
     _imp->changedHere = paths;
-    _imp->emitChangedHere(&_imp->root);
+    _imp->emitColumnsChanged(0, eColumnCount - 1);
 }
 
 QString
@@ -2342,17 +2435,75 @@ SceneGraphModel::drawStateLabel(int state)
     switch (state) {
     case eSceneDrawStateBBox:
         return tr("BBox");
-    case eSceneDrawStateChildren:
-        return tr("Children");
+    case eSceneDrawStatePassThrough:
+        return tr("Pass Through");
     case eSceneDrawStateFull:
-        return tr("Full");
+        return tr("Geometry");
     case eSceneDrawStateLoadAll:
-        return tr("Load All");
+        return tr("Load + Draw");
     case eSceneDrawStateHidden:
-        return tr("Hidden");
+        return tr("Hide");
     default:
         return QString();
     }
+}
+
+QString
+SceneGraphModel::rowsText(int count)
+{
+    return (count == 1) ? tr("1 row") : tr("%1 rows").arg(count);
+}
+
+QString
+SceneGraphModel::kindPluralText(const QString& kind)
+{
+    if (kind == QString::fromUtf8("assembly")) {
+        return tr("assemblies");
+    }
+    if (kind == QString::fromUtf8("component")) {
+        return tr("components");
+    }
+    if (kind == QString::fromUtf8("subcomponent")) {
+        return tr("subcomponents");
+    }
+
+    return tr("%1 prims").arg(kind);
+}
+
+QString
+SceneGraphModel::kindCountText(const QString& kind,
+                               int count)
+{
+    if (count != 1) {
+        return tr("%1 %2").arg(count).arg(kindPluralText(kind));
+    }
+
+    return isBuiltInKindScope(PXR_NS::TfToken(kind.toStdString())) ? tr("1 %1").arg(kind) : tr("1 %1 prim").arg(kind);
+}
+
+QString
+SceneGraphModel::loadingText(int rows,
+                             const QString& scope)
+{
+    if (scope == QString::fromUtf8("selected")) {
+        return tr("Loading %1").arg(rowsText(rows));
+    }
+    if (scope == QString::fromUtf8("below")) {
+        return tr("Loading %1 and every payload below them").arg(rowsText(rows));
+    }
+
+    return tr("Loading down to %1 under %2").arg(kindPluralText(scope), rowsText(rows));
+}
+
+QString
+SceneGraphModel::unloadingText(int rows,
+                               const QString& scope)
+{
+    if (scope == QString::fromUtf8("selected")) {
+        return tr("Unloading %1").arg(rowsText(rows));
+    }
+
+    return tr("Unloading below %1 under %2").arg(kindPluralText(scope), rowsText(rows));
 }
 
 QString
@@ -2369,6 +2520,21 @@ SceneGraphModel::drawOriginTip(int origin,
     default:
         return tr("Default: nothing sets this row or a row above it");
     }
+}
+
+QString
+SceneGraphModel::purposeTip(const QString& purpose,
+                            bool inherited,
+                            const QString& origin)
+{
+    if (!inherited) {
+        return tr("Purpose: %1 (authored here)").arg(purpose);
+    }
+    if (origin.isEmpty()) {
+        return tr("Purpose: %1 (the fallback: nothing above authors one)").arg(purpose);
+    }
+
+    return tr("Purpose: %1 (from %2)").arg(purpose, origin);
 }
 
 void
@@ -2389,7 +2555,7 @@ SceneGraphModel::refreshDrawStates()
 
         return;
     }
-    _imp->emitDrawStates(&_imp->root);
+    _imp->emitColumnsChanged(eColumnDrawState, eColumnDrawState);
 }
 
 bool
@@ -2494,6 +2660,8 @@ SceneGraphModel::data(const QModelIndex& index,
             return item->data.type;
         case eColumnKind:
             return item->data.kind;
+        case eColumnPurpose:
+            return item->data.imageable ? QVariant(QString::fromStdString(item->purpose.purpose.GetString())) : QVariant();
         case eColumnDrawState: {
             Implementation::DrawCell cell;
 
@@ -2530,9 +2698,16 @@ SceneGraphModel::data(const QModelIndex& index,
 
         return _imp->drawCellOf(item, &cell) ? QVariant(cell.originNode) : QVariant();
     }
+    case ePurposeInheritedRole:
+        return item->data.imageable ? QVariant(!item->data.purposeAuthored) : QVariant();
+    case ePurposeOriginRole:
+        return item->data.imageable ? QVariant(QString::fromStdString(item->purpose.origin.GetString())) : QVariant();
     case Qt::ToolTipRole: {
         if (item->path.IsEmpty()) {
             return QVariant();
+        }
+        if ((index.column() == eColumnPurpose) && item->data.imageable) {
+            return purposeTip(QString::fromStdString(item->purpose.purpose.GetString()), !item->data.purposeAuthored, QString::fromStdString(item->purpose.origin.GetString()));
         }
         Implementation::DrawCell cell;
         if ((index.column() == eColumnDrawState) && _imp->drawCellOf(item, &cell)) {
@@ -2590,6 +2765,12 @@ SceneGraphModel::data(const QModelIndex& index,
 
                 return font;
             }
+        }
+        if ((index.column() == eColumnPurpose) && item->data.imageable && !item->data.purposeAuthored) {
+            QFont font;
+            font.setItalic(true);
+
+            return font;
         }
 
         return QVariant();
@@ -2649,6 +2830,23 @@ SceneGraphModel::canFetchMore(const QModelIndex& parent) const
     }
 
     return !item->namesRead || (item->children.size() < item->childNames->size());
+}
+
+bool
+SceneGraphModel::hasFetchedAll(const QModelIndex& parent) const
+{
+    if (parent.isValid() && (parent.column() != 0)) {
+        return true;
+    }
+    const Item* item = _imp->itemOf(parent);
+    if (!item->data.hasChildren) {
+        return true;
+    }
+    if (_imp->owedFetches.count(item->path) || _imp->fetchingUnder.count(item->path)) {
+        return false;
+    }
+
+    return item->namesRead && (item->children.size() >= item->childNames->size());
 }
 
 void
@@ -2748,6 +2946,20 @@ SceneChangedHereRowsBuilder::readBatch(const SceneStage* stage)
         added.name = data.name;
         added.type = data.type;
         added.kind = data.kind;
+        // The marked paths come with their ancestors, so a parent row is the prim's parent.
+        PurposeCell parentPurpose;
+        if (parent >= 0) {
+            const SceneChangedHereRow& above = _rows->rows[parent];
+            parentPurpose.purpose = TfToken(above.purpose.toStdString());
+            parentPurpose.inheritable = above.purposeInheritable;
+            parentPurpose.origin = above.purposeOrigin.isEmpty() ? SdfPath() : SdfPath(above.purposeOrigin.toStdString());
+        }
+        const PurposeCell purpose = derivePurpose(data, prim.GetPath(), (parent >= 0) ? &parentPurpose : nullptr);
+        added.imageable = data.imageable;
+        added.purpose = QString::fromStdString(purpose.purpose.GetString());
+        added.purposeInherited = !data.purposeAuthored;
+        added.purposeInheritable = purpose.inheritable;
+        added.purposeOrigin = QString::fromStdString(purpose.origin.GetString());
         added.parent = parent;
         std::vector<int>& siblings = (parent >= 0) ? _rows->rows[parent].children : _rows->topLevel;
         added.rowInParent = (int)siblings.size();
@@ -2873,10 +3085,20 @@ SceneChangedHereModel::data(const QModelIndex& index,
             return row.type;
         case SceneGraphModel::eColumnKind:
             return row.kind;
+        case SceneGraphModel::eColumnPurpose:
+            return row.imageable ? QVariant(row.purpose) : QVariant();
         default:
             return QVariant();
         }
+    case SceneGraphModel::ePurposeInheritedRole:
+        return row.imageable ? QVariant(row.purposeInherited) : QVariant();
+    case SceneGraphModel::ePurposeOriginRole:
+        return row.imageable ? QVariant(row.purposeOrigin) : QVariant();
     case Qt::ToolTipRole:
+        if ((index.column() == SceneGraphModel::eColumnPurpose) && row.imageable) {
+            return SceneGraphModel::purposeTip(row.purpose, row.purposeInherited, row.purposeOrigin);
+        }
+
         return SceneGraphModel::tr("%1\nChanged here").arg(row.path);
     case Qt::DecorationRole:
         if (index.column() == SceneGraphModel::eColumnName) {
@@ -2895,6 +3117,12 @@ SceneChangedHereModel::data(const QModelIndex& index,
         if (index.column() == SceneGraphModel::eColumnName) {
             QFont font;
             font.setBold(true);
+
+            return font;
+        }
+        if ((index.column() == SceneGraphModel::eColumnPurpose) && row.imageable && row.purposeInherited) {
+            QFont font;
+            font.setItalic(true);
 
             return font;
         }
@@ -2954,25 +3182,13 @@ SceneChangedHereModel::supportedDragActions() const
 namespace {
 
 // What the filter's expression is evaluated on. The walk visits prims only, so every path is a prim's.
-struct WalkPrimOfPath {
-    UsdStageWeakPtr stage;
-
-    UsdObject operator()(const SdfPath& path) const
-    {
-        return stage ? UsdObject(stage->GetPrimAtPath(path)) : UsdObject();
-    }
-};
-
-typedef UsdObjectCollectionExpressionEvaluator::PathExprEval WalkExpressionEval;
-typedef WalkExpressionEval::IncrementalSearcher<WalkPrimOfPath> WalkSearcher;
-
-// USD's collection predicates, which UsdObjectCollectionExpressionEvaluator links with, and the
-// load and active states the scene graph shows, which they lack.
+// The predicates of node patterns, and the load and active states the scene graph shows: kept out
+// of nodes, whose output must not depend on what a viewer has loaded.
 const UsdObjectPredicateLibrary&
 filterPredicateLibrary()
 {
     static const UsdObjectPredicateLibrary library = []() {
-        UsdObjectPredicateLibrary result = UsdGetCollectionPredicateLibrary();
+        UsdObjectPredicateLibrary result = ScenePredicates::library();
         // USD reports an inactive prim as not loaded, but it has no payload to load; only an
         // active prim's own unloaded payload makes it unloaded.
         auto isLoaded = [](const UsdObject& object, bool loaded) {
@@ -2982,7 +3198,7 @@ filterPredicateLibrary()
                 return false;
             }
 
-            return loaded ? prim.IsLoaded() : (prim.HasAuthoredPayloads() && !prim.IsLoaded());
+            return loaded ? prim.IsLoaded() : isUnloadedPayload(prim);
         };
         auto isActive = [](const UsdObject& object, bool active) {
             const UsdPrim prim = object.GetPrim();
@@ -3008,9 +3224,9 @@ struct SceneGraphPrimWalk::Implementation {
     int unloadedBranches = 0;
     QStringList unloadedPaths;
     bool hasExpression = false;
-    WalkExpressionEval eval;
+    ScenePredicates::PathEval eval;
     // Valid from the walk's start on stage; it holds where the depth-first search is.
-    WalkSearcher searcher;
+    ScenePredicates::Searcher searcher;
 };
 
 SceneGraphPrimWalk::SceneGraphPrimWalk(int primsPerClockRead)
@@ -3050,8 +3266,8 @@ SceneGraphPrimWalk::setExpression(const QString& text,
                                   QString* errorMessage)
 {
     _imp->stage = nullptr;
-    _imp->searcher = WalkSearcher();
-    _imp->eval = WalkExpressionEval();
+    _imp->searcher = ScenePredicates::Searcher();
+    _imp->eval = ScenePredicates::PathEval();
     _imp->hasExpression = !text.trimmed().isEmpty();
     if (!_imp->hasExpression) {
         return true;
@@ -3063,20 +3279,8 @@ SceneGraphPrimWalk::setExpression(const QString& text,
 
         return false;
     }
-    {
-        TfErrorMark mark;
-        _imp->eval = SdfMakePathExpressionEval(parsed, filterPredicateLibrary());
-        for (TfErrorMark::Iterator it = mark.GetBegin(); it != mark.GetEnd(); ++it) {
-            if (!error.empty()) {
-                error += "; ";
-            }
-            error += it->GetCommentary();
-        }
-        mark.Clear();
-    }
-    if (!error.empty() || _imp->eval.IsEmpty()) {
-        _imp->eval = WalkExpressionEval();
-        *errorMessage = QString::fromUtf8("\"%1\" can't be evaluated: %2").arg(text, error.empty() ? QString::fromUtf8("a predicate is unknown or takes other arguments") : QString::fromStdString(error));
+    if (!ScenePredicates::link(parsed, filterPredicateLibrary(), &_imp->eval, &error)) {
+        *errorMessage = QString::fromUtf8("\"%1\" can't be evaluated: %2").arg(text, QString::fromStdString(error));
 
         return false;
     }
@@ -3130,7 +3334,7 @@ SceneGraphPrimWalk::step(const SceneStage* stage,
         _imp->unloadedBranches = 0;
         _imp->unloadedPaths.clear();
         if (_imp->hasExpression) {
-            _imp->searcher = _imp->eval.MakeIncrementalSearcher(WalkPrimOfPath { UsdStageWeakPtr(usdStage) });
+            _imp->searcher = _imp->eval.MakeIncrementalSearcher(ScenePredicates::PrimOfPath { UsdStageWeakPtr(usdStage) });
         }
     }
 
@@ -3164,7 +3368,7 @@ SceneGraphPrimWalk::step(const SceneStage* stage,
             } else if (matches(QString::fromStdString(prim.GetName().GetString()))) {
                 *found << QString::fromStdString(prim.GetPath().GetString());
             }
-            if (descend && prim.HasAuthoredPayloads() && !prim.IsLoaded()) {
+            if (descend && isUnloadedPayload(prim)) {
                 ++_imp->unloadedBranches;
                 _imp->unloadedPaths << QString::fromStdString(prim.GetPath().GetString());
             }

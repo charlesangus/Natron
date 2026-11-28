@@ -126,15 +126,15 @@ USDExpandHierarchy::createRow(int index)
         std::vector<ChoiceOption> options;
         options.push_back(ChoiceOption(sceneDrawStateName(eSceneDrawStateBBox), tr("BBox").toStdString(),
                                        tr("One box around everything below the prim. Payloads below stay unloaded.").toStdString()));
-        options.push_back(ChoiceOption(sceneDrawStateName(eSceneDrawStateChildren), tr("Children").toStdString(),
+        options.push_back(ChoiceOption(sceneDrawStateName(eSceneDrawStatePassThrough), tr("Pass Through").toStdString(),
                                        tr("Each child by its own draw; children nothing sets draw as boxes.").toStdString()));
-        options.push_back(ChoiceOption(sceneDrawStateName(eSceneDrawStateFull), tr("Full").toStdString(),
+        options.push_back(ChoiceOption(sceneDrawStateName(eSceneDrawStateFull), tr("Geometry").toStdString(),
                                        tr("Everything below the prim, as far as its payloads are loaded. Nothing is "
                                           "loaded.")
                                            .toStdString()));
-        options.push_back(ChoiceOption(sceneDrawStateName(eSceneDrawStateLoadAll), tr("Full + Load").toStdString(),
+        options.push_back(ChoiceOption(sceneDrawStateName(eSceneDrawStateLoadAll), tr("Load + Draw").toStdString(),
                                        tr("Everything below the prim, and viewers load every payload below it.").toStdString()));
-        options.push_back(ChoiceOption(sceneDrawStateName(eSceneDrawStateHidden), tr("Hidden").toStdString(),
+        options.push_back(ChoiceOption(sceneDrawStateName(eSceneDrawStateHidden), tr("Hide").toStdString(),
                                        tr("Nothing, not even a box. Payloads below stay unloaded.").toStdString()));
         draw->populateChoices(options);
     }

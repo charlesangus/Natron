@@ -58,6 +58,7 @@
 #include "Engine/Nodes/NonTrappingMath.h"
 #include "Engine/Nodes/Scene/LiveTextureStore.h"
 #include "Engine/Nodes/Scene/PrimSelector.h"
+#include "Engine/Nodes/Scene/SceneKindWalk.h"
 #include "Engine/Nodes/Scene/SceneProjectionCameras.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneTeardown.h"
@@ -1051,11 +1052,6 @@ borrowFor(const ScenePayload& upstream,
     return true;
 }
 
-bool
-isUnloadedPayload(const PXR_NS::UsdPrim& prim)
-{
-    return prim.HasAuthoredPayloads() && !prim.IsLoaded();
-}
 } // anonymous namespace
 
 namespace SceneNodeAuthoring {

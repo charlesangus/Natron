@@ -1,0 +1,39 @@
+#usda 1.0
+(
+    defaultPrim = "Island"
+)
+
+def Xform "Island" (
+    kind = "assembly"
+)
+{
+    def Xform "Grove" (
+        kind = "group"
+    )
+    {
+        def Xform "TreeA" (
+            prepend payload = @./tree.usda@
+        )
+        {
+        }
+
+        def Xform "TreeB" (
+            prepend payload = @./tree.usda@
+        )
+        {
+        }
+    }
+
+    def Xform "Rock" (
+        kind = "component"
+        prepend payload = @./rock.usda@
+    )
+    {
+    }
+
+    def Xform "Bush" (
+        prepend payload = @./bush.usda@
+    )
+    {
+    }
+}

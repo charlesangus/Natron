@@ -1040,6 +1040,12 @@ GuiApplicationManager::populateShortcuts()
                 registerKeybind(kShortcutGroupViewer3D, b.actionID, b.description, b.modifiers, b.key);
             }
         }
+        for (const SceneGraphBulkKeyBinding& b : getSceneGraphBulkKeyBindings()) {
+            registerKeybind(kShortcutGroupViewer3D, b.actionID, b.description, Qt::NoModifier, Qt::Key(0));
+        }
+        for (const SceneGraphBulkKeyBinding& b : getSceneGraphFoldKeyBindings()) {
+            registerKeybind(kShortcutGroupViewer3D, b.actionID, b.description, Qt::NoModifier, Qt::Key(0));
+        }
     }
 
     ///Player

@@ -1,10 +1,10 @@
 """The Scene Graph panel's Bake to Node writes the viewer's draw states into a USDExpandHierarchy.
 
 Graph: USDRead of a small stage this script writes to $NATRON_GUI_TEST_OUT/scene_bake_to_node.usda,
-with Initial Draw at Full, into Viewer1. Rows: /World holding /World/A and /World/B, each an Xform
-holding a Cube. The USDRead's Initial Draw sets /World. The viewer sets Full on /World/A/Cube,
-then BBox on /World/A, which keeps the cube's Full without drawing it, and Hidden on /World/B. A
-row under a BBox or Hidden row reads as inherited whatever is set on it, so the cubes always do.
+with Initial Draw at Geometry, into Viewer1. Rows: /World holding /World/A and /World/B, each an Xform
+holding a Cube. The USDRead's Initial Draw sets /World. The viewer sets Geometry on /World/A/Cube,
+then BBox on /World/A, which keeps the cube's Geometry without drawing it, and Hide on /World/B. A
+row under a BBox or Hide row reads as inherited whatever is set on it, so the cubes always do.
 The script checks:
   - Bake to Node is disabled while the viewer sets nothing, and enabled once it does;
   - baking creates one USDExpandHierarchy reading the USDRead, which the Viewer then views, with
@@ -41,13 +41,13 @@ A_CUBE = "/World/A/Cube"
 B_CUBE = "/World/B/Cube"
 ROWS = [WORLD, A, A_CUBE, B, B_CUBE]
 # The viewer's states, in the order the script sets them.
-VIEWER_STATES = [(A_CUBE, "full"), (A, "bbox"), (B, "hidden")]
+VIEWER_STATES = [(A_CUBE, "geometry"), (A, "bbox"), (B, "hide")]
 # SceneDrawStateEnum, which the panel's draw state role holds, and the USDExpandHierarchy's Draw menu.
-STATES = ["bbox", "children", "full", "loadAll", "hidden"]
+STATES = ["bbox", "passThrough", "geometry", "loadAndDraw", "hide"]
 # SceneDrawOriginEnum, which the panel's origin role holds.
 ORIGINS = ["viewer", "graph", "inherited", "default"]
 # USDRead's Initial Draw menu, in order.
-INITIAL_DRAW = ["bbox", "levels", "toKind", "full", "fullLoad"]
+INITIAL_DRAW = ["bbox", "levels", "toKind", "geometry", "loadAndDraw"]
 EXPAND = "USDExpandHierarchy"
 
 SCENE = """#usda 1.0
@@ -100,7 +100,7 @@ try:
     usd = app.createNode("USDRead")
     require(usd is not None, "create USDRead", plugin_problem("USDRead"))
     usd.setPosition(0, 0)
-    usd.getParam("initialDraw").setValue(INITIAL_DRAW.index("full"))
+    usd.getParam("initialDraw").setValue(INITIAL_DRAW.index("geometry"))
     usd.getParam("filename").setValue(scene_path)
     viewer = app.getNode("Viewer1")
     if viewer is None:
@@ -354,7 +354,7 @@ try:
         viewer_cells = cells()
         viewer_origins = origins()
         viewer_drawn = frame_drawn()
-        check(viewer_cells[A] == ("bbox", False) and viewer_cells[B] == ("hidden", False),
+        check(viewer_cells[A] == ("bbox", False) and viewer_cells[B] == ("hide", False),
               "the viewer's states show (%r)" % (viewer_cells,))
         check(viewer_drawn != (0, 0), "the viewer draws the set states (got %r)" % (viewer_drawn,))
         shot("scene-bake-before.png")
@@ -368,7 +368,7 @@ try:
         name = expand.getScriptName()
         check(input_name(expand) == USD_NAME, "%s reads the USDRead (got %r)" % (name, input_name(expand)))
         check(input_name(viewer) == name, "the Viewer views %s (got %r)" % (name, input_name(viewer)))
-        check(rules_of(expand) == [(B, "hidden"), (A_CUBE, "full"), (A, "bbox")],
+        check(rules_of(expand) == [(B, "hide"), (A_CUBE, "geometry"), (A, "bbox")],
               "%s holds a rule per set path, below before above (got %r)" % (name, rules_of(expand)))
         baked_origins = dict(viewer_origins)
         for path in set_rows:
@@ -404,7 +404,7 @@ try:
         yield from expect("redone drawing", frame_drawn, viewer_drawn)
 
         section("bake into the viewed node")
-        set_state(WORLD, "children")
+        set_state(WORLD, "passThrough")
         ok = yield ("until", lambda: origin(WORLD) == ("viewer", ""), POLL_TIMEOUT_S)
         require(ok, "the viewer sets %s (got %r)" % (WORLD, origin(WORLD)))
         ok = yield ("until", lambda: bake_button() is not None and bake_button().isEnabled(), POLL_TIMEOUT_S)
@@ -416,7 +416,7 @@ try:
         ok = yield ("until", lambda: origin(WORLD) == ("graph", name), POLL_TIMEOUT_S)
         check(ok, "%s is set by %s (got %r)" % (WORLD, name, origin(WORLD)))
         check(len(expand_nodes()) == before_nodes + 1, "no node is created (got %r)" % [n.getScriptName() for n in expand_nodes()])
-        check(rules_of(expand)[-1] == (WORLD, "children") and len(rules_of(expand)) == 4,
+        check(rules_of(expand)[-1] == (WORLD, "passThrough") and len(rules_of(expand)) == 4,
               "%s gains one rule (got %r)" % (name, rules_of(expand)))
         yield from expect("baked again", cells, again_cells)
         yield from expect("baked again drawing", frame_drawn, again_drawn)
@@ -425,7 +425,7 @@ try:
         yield from expect("baked again origins", origins, final_origins)
         # What the node's rules decide, rather than what the live viewer showed before saving.
         final_cells = dict(viewer_cells)
-        final_cells[WORLD] = ("children", False)
+        final_cells[WORLD] = ("passThrough", False)
 
         section("save and reopen")
         require(app.saveProjectAs(project_path), "save the project to " + project_path)

@@ -491,6 +491,14 @@ public:
 
     void requestStageUnload(const std::vector<std::string>& paths);
 
+    /**
+     * @brief SceneStage::requestLoadToKind() or requestUnloadBelowKind() on the stage. False, asking
+     * nothing, before the first sync has made the stage: a walk to a kind needs one to walk.
+     **/
+    bool requestStageLoadToKind(const std::vector<std::string>& roots, const std::string& kind);
+
+    bool requestStageUnloadBelowKind(const std::vector<std::string>& roots, const std::string& kind);
+
     void cancelStageLoads();
 
     // Drops the load requests at paths that no batch has taken yet.
@@ -1489,6 +1497,9 @@ public:
      **/
     bool isDrawPolicyPending() const;
 
+    // unloadRows(), with *queued set to whether it asked for an unload.
+    QString unloadRows(const QStringList& paths, const QString& scope, bool* queued);
+
 public Q_SLOTS:
     // Replaces the selection. A slot, so that scripts reach it through the meta object.
     void selectPaths(const QStringList& paths);
@@ -1502,8 +1513,8 @@ public Q_SLOTS:
     void cancelPendingLoads();
 
     /**
-     * @brief This viewer's draw state on a prim path, by script name: bbox, children, full, loadAll
-     * or hidden. False if the path or the name is not one. Never edits a stage or waits on Hydra.
+     * @brief This viewer's draw state on a prim path, by script name: bbox, expand, geometry, loadAndDraw
+     * or hide. False if the path or the name is not one. Never edits a stage or waits on Hydra.
      **/
     bool setDrawState(const QString& path, const QString& state);
     void clearDrawState(const QString& path);
@@ -1519,6 +1530,38 @@ public Q_SLOTS:
     bool setDrawStateOnRows(const QStringList& paths, const QString& state);
     void clearDrawStatesBelowRows(const QStringList& paths);
     void resetDrawStatesToGraphOnRows(const QStringList& paths);
+    /**
+     * @brief Scoped load, unload and draw state edits on rows, for the scene graph's bulk commands.
+     * scope is "selected", the rows themselves; "below", the rows and everything below them; or a
+     * kind token (assembly, component, subcomponent or a registered custom kind), the prims of that
+     * kind under the rows as walkToKind() finds them: a row of that kind stands for the nearest
+     * prims of the kind strictly below it, except for unloadRows(). Each returns what it did as one line for a
+     * status line, or an empty string, having done nothing, if a path, the scope or the state is
+     * not one, or the scope does not apply.
+     *
+     * loadRows() with a kind loads down to and including that kind, level by level, and unloadRows()
+     * with one unloads the payloads below each prim of that kind; "below" does not apply to
+     * unloadRows(), which unloads everything below already. setDrawStateOnRowsScoped() takes a
+     * draw state's script name, or "clearBelow" to clear the states below; "below" sets the state on
+     * the rows and clears every state below them, in one edit, and does not apply to clearBelow. A
+     * kind scope edits the loaded prims of that kind only, and the line counts the unloaded
+     * payloads the walk could not look inside.
+     *
+     * With a kind scope, setDrawStateOnRowsScoped() walks the stage a slice at a time on the main
+     * thread, each slice bounded by a time budget and letting go of the stage after it, and makes
+     * its edits, as one, once the walk is done. The first slice runs at once: a walk it finishes
+     * returns what it did, a longer one what it has found so far, and scopedDrawProgress() reports
+     * it from then on. A new call, cancelScopedDraw(), another stage or an edit to the stage stops the
+     * walk, which then has changed nothing. Loads between slices do not stop it.
+     **/
+    QString loadRows(const QStringList& paths, const QString& scope);
+    QString unloadRows(const QStringList& paths, const QString& scope);
+    QString setDrawStateOnRowsScoped(const QStringList& paths, const QString& state, const QString& scope);
+    // Stops the walk of a kind-scoped draw state edit under way, if any; nothing is changed.
+    void cancelScopedDraw();
+    bool isScopedDrawRunning() const;
+    // How long one slice of that walk may run for, in milliseconds; 0 walks one prim per slice.
+    void setScopedDrawSliceMs(int ms);
     void clearDrawStates();
     // The state a path resolves to, effective or inherited. Waits for an edit under way.
     QString resolvedDrawState(const QString& path) const;
@@ -1574,6 +1617,10 @@ Q_SIGNALS:
     // isOutOfDate() changed (main thread).
     void outOfDateChanged(bool outOfDate);
 
+    // What a kind-scoped draw state edit's walk has done, after each slice and when it ends or
+    // stops (main thread).
+    void scopedDrawProgress(const QString& text, bool running);
+
 protected:
     void initializeGL() override;
     void resizeGL(int w, int h) override;
@@ -1591,6 +1638,9 @@ protected:
     void contextMenuEvent(QContextMenuEvent* e) override;
 
 private:
+    // Walks on with the kind-scoped draw state edit under way; returns its status line.
+    QString stepScopedDraw();
+
     // Mirrors the error, whether a scene is shown, whether every request is synced, how many
     // engines the renderer made, whether it holds one, its delegate and that delegate's error into
     // the natronSceneError, natronSceneShown, natronSceneSynced, natronSceneEngineCount,
@@ -1603,6 +1653,9 @@ private:
     // SceneViewportRenderer::getMainThreadWaitMs()) into natronSceneMainWaitMs and
     // natronSceneMainWaitMaxMs.
     void publishState();
+
+    // Each gate that keeps a new frame from starting now, into natronSceneFrameHolds.
+    void publishFrameHolds();
 
     void publishRefineState();
 
@@ -1740,6 +1793,13 @@ private:
 
     // Main thread: the render thread took in draw changes posted to it.
     void onDrawChangesTakenIn();
+
+    /**
+     * @brief Main thread: something that kept a frame from starting has let go. Every such end comes
+     * here, so that once the last one goes a frame starts, or the paint asked for owes one: nothing
+     * else asks again, and the view would keep what it last showed, the background included.
+     **/
+    void onFrameHoldCleared();
 
     // Main thread: asks for the paint that shows the frame on the GPU once the render thread has
     // found it finished. Makes no context current.

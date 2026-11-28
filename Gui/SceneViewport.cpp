@@ -99,6 +99,7 @@
 #include "Engine/Nodes/Scene/RenderDelegates.h"
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
+#include "Engine/Nodes/Scene/SceneKindWalk.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneNodeKnobs.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -222,6 +223,11 @@ const int kMaxRenderPasses = 8;
 // A stage change usually reaches the screen sooner than this, and a status flashing over the old
 // image on every edit would be worse than the short wait.
 const int kComposingStatusDelayMs = 250;
+// A kind-scoped draw state edit's walk: how long a slice may run, how many prims it walks
+// between looks at the clock, and how long it waits when a load holds the stage.
+const int kScopedDrawSliceMs = 12;
+const std::size_t kScopedDrawPollPrims = 64;
+const int kScopedDrawBusyMs = 15;
 // How often the render thread, idle, asks whether the frame it sent the GPU is done.
 const std::chrono::milliseconds kFenceWatchInterval(1);
 // The longest a frame waits after the paint that asked for it for the window's composition, which
@@ -4621,7 +4627,7 @@ SceneViewportRenderer::postDrawChange(const SceneDrawChange& change,
 {
     const SceneDrawDelta& delta = change.delta;
     // Loads alone go to the filter too when revealed, for it to know where what they bring in goes.
-    const bool posted = !delta.drawn.empty() || !delta.expanded.empty() || !delta.boxed.empty() || !delta.hidden.empty() || !delta.cleared.empty()
+    const bool posted = !delta.drawn.empty() || !delta.passThrough.empty() || !delta.boxed.empty() || !delta.hidden.empty() || !delta.cleared.empty()
         || ((revealBatch != 0) && !delta.loads.empty());
 
     if (posted) {
@@ -5044,6 +5050,34 @@ SceneViewportRenderer::requestStageUnload(const std::vector<std::string>& paths)
     if (stage) {
         stage->requestUnload(toSdfPaths(paths));
     }
+}
+
+bool
+SceneViewportRenderer::requestStageLoadToKind(const std::vector<std::string>& roots,
+                                              const std::string& kind)
+{
+    SceneStage* stage = _imp->loadStage;
+
+    if (!stage) {
+        return false;
+    }
+    stage->requestLoadToKind(toSdfPaths(roots), TfToken(kind));
+
+    return true;
+}
+
+bool
+SceneViewportRenderer::requestStageUnloadBelowKind(const std::vector<std::string>& roots,
+                                                   const std::string& kind)
+{
+    SceneStage* stage = _imp->loadStage;
+
+    if (!stage) {
+        return false;
+    }
+    stage->requestUnloadBelowKind(toSdfPaths(roots), TfToken(kind));
+
+    return true;
 }
 
 void
@@ -8192,6 +8226,25 @@ pickedPackedUsdPrimitives(const GeoDisplay& display,
     return packedUsdPrimitivesIn(*convert->detail(), viewProjection, width, height, region, nearest);
 }
 
+/**
+ * @brief Runs fn, logging what it throws as what failed. A render thread job that set a flag on the
+ * main thread runs its work through this, so that the reply clearing the flag is posted however the
+ * work ends: a flag left set keeps every later frame from starting.
+ **/
+template <typename Fn>
+void
+runLogged(const char* what,
+          Fn&& fn)
+{
+    try {
+        fn();
+    } catch (const std::exception& e) {
+        qWarning() << "SceneViewport:" << what << "failed:" << e.what();
+    } catch (...) {
+        qWarning() << "SceneViewport:" << what << "failed with an unknown exception";
+    }
+}
+
 } // anonymous namespace
 
 // How far from the pointer, in logical pixels, a click finds a point or an edge.
@@ -8848,6 +8901,23 @@ struct SceneViewport::Implementation {
     // Also read by the load batch, which gives up on its files when it turns true.
     std::atomic<bool> loadQuit { false };
 
+    // A kind-scoped draw state edit whose walk is under way.
+    struct ScopedDraw {
+        std::unique_ptr<SceneKindWalker> walker;
+        // The stage the walk started on and its edit count, once a slice has read it; another
+        // stage, or an edit to it, stops the walk.
+        PXR_NS::UsdStagePtr stage;
+        U64 editCount = 0;
+        bool stageRead = false;
+        bool clearBelow = false;
+        SceneDrawStateEnum state = eSceneDrawStateFull;
+        QString scope;
+        std::size_t rows = 0;
+    };
+    std::unique_ptr<ScopedDraw> scopedDraw;
+    QTimer* scopedDrawTimer = nullptr;
+    int scopedDrawSliceMs = kScopedDrawSliceMs;
+
     // The thread the engine lives on, running jobs in order. Owned apart from the view, as a
     // closed view leaves it to finish destroying the engine on its own.
     struct RenderLoop {
@@ -8890,7 +8960,15 @@ struct SceneViewport::Implementation {
                     std::function<void()> job = std::move(jobs.front());
                     jobs.pop_front();
                     lock.unlock();
-                    job();
+                    // An exception leaving the thread would end the process; one caught here still
+                    // counts the job over, or the paints it holds would stay held.
+                    try {
+                        job();
+                    } catch (const std::exception& e) {
+                        qWarning() << "SceneViewport: a render thread job failed:" << e.what();
+                    } catch (...) {
+                        qWarning() << "SceneViewport: a render thread job failed with an unknown exception";
+                    }
                     job = nullptr;
                     lock.lock();
                     if ((--outstanding == 0) && idle) {
@@ -9734,6 +9812,9 @@ SceneViewport::SceneViewport(QWidget* parent)
         });
     }
 
+    _imp->scopedDrawTimer = new QTimer(this);
+    _imp->scopedDrawTimer->setSingleShot(true);
+    QObject::connect(_imp->scopedDrawTimer, &QTimer::timeout, this, [this]() { (void)stepScopedDraw(); });
     _imp->composingTimer = new QTimer(this);
     _imp->composingTimer->setSingleShot(true);
     _imp->composingTimer->setInterval(kComposingStatusDelayMs);
@@ -10100,9 +10181,7 @@ SceneViewport::onSynced(U64 serial,
     }
     // With natronSceneLastPaintMs, lets a benchmark time an edit to the frame that shows it.
     setProperty("natronSceneSyncedAtMs", QVariant::fromValue<qlonglong>(QDateTime::currentMSecsSinceEpoch()));
-    startBackgroundFrame();
-    publishState();
-    update();
+    onFrameHoldCleared();
     Q_EMIT sceneSynced();
     noteDrawPolicySettled();
 }
@@ -10125,7 +10204,8 @@ SceneViewport::followSceneRenderer()
         Implementation* imp = _imp.get();
         _imp->postToRenderThread([this, imp]() {
             bool jobBusy = false;
-            const bool jobChanged = imp->renderer.followSceneRenderer(&jobBusy);
+            bool jobChanged = false;
+            runLogged("following the scene's renderer", [imp, &jobBusy, &jobChanged]() { jobChanged = imp->renderer.followSceneRenderer(&jobBusy); });
             // Dropped by Qt if the widget is gone by then.
             imp->postToView([this, jobChanged, jobBusy]() { onSceneRendererFollowed(jobChanged, jobBusy); });
         });
@@ -10171,11 +10251,7 @@ SceneViewport::onSceneRendererFollowed(bool changed,
     if (askedMeanwhile) {
         followSceneRenderer();
     }
-    startBackgroundFrame();
-    serviceDeferredInput();
-    publishState();
-    refreshPaintHold();
-    update();
+    onFrameHoldCleared();
 }
 
 bool
@@ -10278,7 +10354,8 @@ SceneViewport::startBackgroundFrame()
         const double startMs = epochMs();
         const std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
         bool converged = false;
-        const bool rendered = imp->renderer.renderBackgroundFrame(imp->ensureRenderTarget(target, w, h), &converged);
+        bool rendered = false;
+        runLogged("rendering a frame", [imp, target, w, h, &converged, &rendered]() { rendered = imp->renderer.renderBackgroundFrame(imp->ensureRenderTarget(target, w, h), &converged); });
         const int passes = imp->renderer.getLastFramePasses();
         const bool fillCompleteAtStart = imp->renderer.wasFillCompleteAtLastFrameStart();
         GLsync fence = nullptr;
@@ -10299,12 +10376,14 @@ SceneViewport::startBackgroundFrame()
             if (rendered) {
                 publishStormFrame(this, startMs, costMs, passes, fillCompleteAtStart);
             }
-            if (fence && (generation == _imp->renderContextGeneration) && _imp->usesRenderThread) {
+            const bool shown = fence && (generation == _imp->renderContextGeneration) && _imp->usesRenderThread;
+            if (shown) {
                 _imp->presentPacer.submitted(fence, finished);
                 _imp->submittedTintOnly = finished.tintOnly;
                 _imp->presentHoldEnd = std::chrono::steady_clock::now() + kPresentHoldLimit;
             }
-            if (!rendered || !converged) {
+            // A frame never shown leaves the view to render again, or none would start for it.
+            if (!shown || !converged) {
                 _imp->renderer.forgetBackgroundView();
             }
             onBackgroundFrameDone();
@@ -10332,15 +10411,8 @@ SceneViewport::onBackgroundFrameDone()
     if (!_imp->rendererSwitchRunning) {
         _imp->composingTimer->stop();
     }
-    if (_imp->followSceneOwed || _imp->renderer.hasPendingRendererSwitch()) {
-        followSceneRenderer();
-    }
     // The stage may have changed again while the frame ran.
-    startBackgroundFrame();
-    serviceDeferredInput();
-    publishState();
-    refreshPaintHold();
-    update();
+    onFrameHoldCleared();
 }
 
 void
@@ -10408,14 +10480,14 @@ SceneViewport::rebuildRenderContext()
     }
     imp->postToRenderThread([this, imp, shareGeneration]() {
         // The viewer lock is taken here, not on the main thread: a sync may hold it for seconds.
-        imp->releaseRenderContext(false);
         QOpenGLContextGroup* group = nullptr;
-        {
+        runLogged("making the render context", [imp, shareGeneration, &group]() {
+            imp->releaseRenderContext(false);
             std::lock_guard<std::mutex> lock(imp->rebuildShareMutex);
             if (imp->rebuildShare && (imp->rebuildShareGeneration == shareGeneration)) {
                 group = imp->makeRenderContext(imp->rebuildShare);
             }
-        }
+        });
         // Dropped by Qt if the widget is gone by then.
         imp->postToView([this, shareGeneration, group]() { onRenderContextRebuilt(shareGeneration, group); });
     });
@@ -10443,28 +10515,14 @@ SceneViewport::onRenderContextRebuilt(U64 shareGeneration,
             _imp->renderSurface.reset();
         }
     }
-    if (_imp->followSceneOwed || _imp->renderer.hasPendingRendererSwitch()) {
-        followSceneRenderer();
-    }
-    startBackgroundFrame();
-    serviceDeferredInput();
-    publishState();
-    refreshPaintHold();
-    update();
+    onFrameHoldCleared();
 }
 
 void
 SceneViewport::onEngineReleased()
 {
     _imp->engineReleaseRunning = false;
-    if (_imp->followSceneOwed || _imp->renderer.hasPendingRendererSwitch()) {
-        followSceneRenderer();
-    }
-    startBackgroundFrame();
-    serviceDeferredInput();
-    publishState();
-    refreshPaintHold();
-    update();
+    onFrameHoldCleared();
 }
 
 void
@@ -10514,6 +10572,21 @@ SceneViewport::onDrawChangesTakenIn()
         --_imp->drawJobsQueued;
     }
     if (_imp->renderThreadBusy()) {
+        // The job still running hears of its own end, and that clears its hold.
+        publishState();
+
+        return;
+    }
+    onFrameHoldCleared();
+}
+
+void
+SceneViewport::onFrameHoldCleared()
+{
+    if ((_imp->heldMatch != 0) && !_imp->policyHeld()) {
+        // Its release comes back here with the stage no longer held.
+        releasePolicyHold();
+
         return;
     }
     if (_imp->followSceneOwed || _imp->renderer.hasPendingRendererSwitch()) {
@@ -10553,13 +10626,7 @@ SceneViewport::onStageLoadsServiced(const SceneViewportRenderer::FrameBounds& bo
         _imp->renderer.applyFrameBounds(bounds);
         endLockOutsideLookThrough();
     }
-    if (_imp->followSceneOwed) {
-        followSceneRenderer();
-    }
-    startBackgroundFrame();
-    serviceDeferredInput();
-    publishState();
-    update();
+    onFrameHoldCleared();
     Q_EMIT stageLoadsChanged();
     noteDrawPolicySettled();
 }
@@ -10982,9 +11049,7 @@ SceneViewport::releasePolicyHold()
     _imp->policyHoldTimer->stop();
     _imp->heldMatch = 0;
     _imp->renderer.setStageHeld(false);
-    startBackgroundFrame();
-    publishState();
-    update();
+    onFrameHoldCleared();
     noteDrawPolicySettled();
 }
 
@@ -10994,8 +11059,18 @@ SceneViewport::deliverDrawChange(const SceneDrawChange& change)
     if (_imp->renderer.postDrawChange(change, _imp->drawRevealBatch) && _imp->usesRenderThread) {
         Implementation* imp = _imp.get();
         ++_imp->drawJobsQueued;
-        _imp->postToRenderThread([this, imp]() {
-            imp->renderer.applyPendingDrawDeltas();
+        // Set by GUI tests: the job throws before taking the change in, as a failing engine would.
+        const bool fail = property("natronSceneFailNextDrawApply").toBool();
+        if (fail) {
+            setProperty("natronSceneFailNextDrawApply", false);
+        }
+        _imp->postToRenderThread([this, imp, fail]() {
+            runLogged("taking in a draw state change", [imp, fail]() {
+                if (fail) {
+                    throw std::runtime_error("natronSceneFailNextDrawApply");
+                }
+                imp->renderer.applyPendingDrawDeltas();
+            });
             // Dropped by Qt if the widget is gone by then.
             imp->postToView([this]() { onDrawChangesTakenIn(); });
         });
@@ -11032,9 +11107,9 @@ struct DrawKey {
 };
 
 const DrawKey kDrawKeys[] = {
-    { kShortcutIDActionViewer3DDrawChildren, eSceneDrawStateChildren, false },
-    { kShortcutIDActionViewer3DDrawFull, eSceneDrawStateFull, false },
-    { kShortcutIDActionViewer3DDrawLoadAll, eSceneDrawStateLoadAll, false },
+    { kShortcutIDActionViewer3DDrawPassThrough, eSceneDrawStatePassThrough, false },
+    { kShortcutIDActionViewer3DDrawGeometry, eSceneDrawStateFull, false },
+    { kShortcutIDActionViewer3DDrawLoadAndDraw, eSceneDrawStateLoadAll, false },
     { kShortcutIDActionViewer3DDrawParentBBox, eSceneDrawStateBBox, true },
 };
 
@@ -11170,6 +11245,280 @@ SceneViewport::resetDrawStatesToGraphOnRows(const QStringList& paths)
         edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindClear, row, eSceneDrawStateFull });
     }
     editDrawStateRows(edits);
+}
+
+namespace {
+enum RowScopeEnum {
+    eRowScopeNone,
+    eRowScopeSelected,
+    eRowScopeBelow,
+    eRowScopeKind
+};
+
+RowScopeEnum
+parseRowScope(const QString& scope,
+              TfToken* kind)
+{
+    if (scope == QString::fromUtf8("selected")) {
+        return eRowScopeSelected;
+    }
+    if (scope == QString::fromUtf8("below")) {
+        return eRowScopeBelow;
+    }
+    const TfToken token(scope.toStdString());
+    if (isKindScope(token)) {
+        *kind = token;
+
+        return eRowScopeKind;
+    }
+
+    return eRowScopeNone;
+}
+} // anonymous namespace
+
+QString
+SceneViewport::loadRows(const QStringList& paths,
+                        const QString& scope)
+{
+    TfToken kind;
+    const RowScopeEnum parsed = parseRowScope(scope, &kind);
+    const std::vector<std::string> rows = drawStatePaths(paths);
+
+    if ((parsed == eRowScopeNone) || rows.empty() || (rows.size() != std::size_t(paths.size()))) {
+        return QString();
+    }
+    if (parsed != eRowScopeKind) {
+        requestLoad(paths, parsed == eRowScopeBelow);
+
+        return SceneGraphModel::loadingText(rows.size(), scope);
+    }
+    if (!_imp->renderer.requestStageLoadToKind(rows, kind.GetString())) {
+        return tr("No scene to load into yet");
+    }
+    {
+        std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
+    }
+    _imp->loadWake.notify_one();
+    publishState();
+
+    return SceneGraphModel::loadingText(rows.size(), scope);
+}
+
+QString
+SceneViewport::unloadRows(const QStringList& paths,
+                          const QString& scope)
+{
+    return unloadRows(paths, scope, nullptr);
+}
+
+QString
+SceneViewport::unloadRows(const QStringList& paths,
+                          const QString& scope,
+                          bool* queued)
+{
+    if (queued) {
+        *queued = false;
+    }
+    TfToken kind;
+    const RowScopeEnum parsed = parseRowScope(scope, &kind);
+    const std::vector<std::string> rows = drawStatePaths(paths);
+
+    if ((parsed == eRowScopeNone) || (parsed == eRowScopeBelow) || rows.empty() || (rows.size() != std::size_t(paths.size()))) {
+        return QString();
+    }
+    if (parsed == eRowScopeSelected) {
+        requestUnload(paths);
+        if (queued) {
+            *queued = true;
+        }
+
+        return SceneGraphModel::unloadingText(rows.size(), scope);
+    }
+    forgetRestoredLoads();
+    if (!_imp->renderer.requestStageUnloadBelowKind(rows, kind.GetString())) {
+        return tr("No scene to unload from yet");
+    }
+    if (queued) {
+        *queued = true;
+    }
+    {
+        std::lock_guard<std::mutex> lock(_imp->loadWakeMutex);
+    }
+    _imp->loadWake.notify_one();
+    publishState();
+
+    return SceneGraphModel::unloadingText(rows.size(), scope);
+}
+
+namespace {
+std::vector<SceneDrawRowEdit>
+scopedDrawEdits(const std::vector<std::string>& targets,
+                bool clearBelow,
+                SceneDrawStateEnum drawState,
+                bool below)
+{
+    std::vector<SceneDrawRowEdit> edits;
+
+    for (const std::string& target : targets) {
+        if (clearBelow) {
+            edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindClearBelow, target, eSceneDrawStateFull });
+            continue;
+        }
+        edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindSet, target, drawState });
+        if (below) {
+            edits.push_back(SceneDrawRowEdit { SceneDrawRowEdit::eKindClearBelow, target, eSceneDrawStateFull });
+        }
+    }
+
+    return edits;
+}
+} // anonymous namespace
+
+QString
+SceneViewport::setDrawStateOnRowsScoped(const QStringList& paths,
+                                        const QString& state,
+                                        const QString& scope)
+{
+    TfToken kind;
+    const RowScopeEnum parsed = parseRowScope(scope, &kind);
+    const bool clearBelow = (state == QString::fromUtf8("clearBelow"));
+    SceneDrawStateEnum drawState = eSceneDrawStateFull;
+    const std::vector<std::string> rows = drawStatePaths(paths);
+
+    if ((parsed == eRowScopeNone) || (!clearBelow && !sceneDrawStateFromName(state.toStdString(), &drawState)) || (clearBelow && (parsed == eRowScopeBelow))
+        || rows.empty() || (rows.size() != std::size_t(paths.size()))) {
+        return QString();
+    }
+    // Its edits are not made yet: the new command replaces it.
+    _imp->scopedDrawTimer->stop();
+    _imp->scopedDraw.reset();
+    if (parsed == eRowScopeKind) {
+        std::unique_ptr<Implementation::ScopedDraw> run(new Implementation::ScopedDraw);
+        run->walker.reset(new SceneKindWalker(toSdfPaths(rows), kind));
+        run->clearBelow = clearBelow;
+        run->state = drawState;
+        run->scope = scope;
+        run->rows = rows.size();
+        _imp->scopedDraw = std::move(run);
+
+        return stepScopedDraw();
+    }
+    editDrawStateRows(scopedDrawEdits(rows, clearBelow, drawState, parsed == eRowScopeBelow));
+    const QString targetsText = SceneGraphModel::rowsText(rows.size());
+    if (clearBelow) {
+        return tr("States cleared below %1").arg(targetsText);
+    }
+    if (parsed == eRowScopeBelow) {
+        return tr("%1 set on %2, states below cleared").arg(SceneGraphModel::drawStateLabel(drawState), targetsText);
+    }
+
+    return tr("%1 set on %2").arg(SceneGraphModel::drawStateLabel(drawState), targetsText);
+}
+
+QString
+SceneViewport::stepScopedDraw()
+{
+    Implementation::ScopedDraw* run = _imp->scopedDraw.get();
+
+    if (!run) {
+        return QString();
+    }
+    QElapsedTimer clock;
+    clock.start();
+    const int budgetMs = _imp->scopedDrawSliceMs;
+    bool otherStage = false;
+    bool done = false;
+    const bool read = _imp->renderer.tryReadStage([&](const SceneStage* stage) {
+        const UsdStageRefPtr shown = stage ? stage->getStage() : UsdStageRefPtr();
+        const U64 editCount = shown ? stage->getEditCount() : 0;
+        if (!run->stageRead) {
+            run->stageRead = true;
+            run->stage = shown;
+            run->editCount = editCount;
+        } else if (!shown || (get_pointer(shown) != get_pointer(run->stage)) || (editCount != run->editCount)) {
+            otherStage = true;
+
+            return;
+        }
+        if (!shown) {
+            done = true;
+
+            return;
+        }
+        done = run->walker->walk(shown, [&clock, budgetMs]() { return clock.elapsed() >= budgetMs; }, (budgetMs > 0) ? kScopedDrawPollPrims : 1);
+    });
+    const QString kindPlural = SceneGraphModel::kindPluralText(run->scope);
+    const QString rowsText = SceneGraphModel::rowsText(run->rows);
+
+    if (otherStage) {
+        _imp->scopedDraw.reset();
+        const QString text = tr("Stopped: the scene changed, nothing was changed");
+        Q_EMIT scopedDrawProgress(text, false);
+
+        return text;
+    }
+    const SceneKindWalkResult& walk = run->walker->getResult();
+    if (!done) {
+        // A load holding the stage is waited out rather than spun on.
+        _imp->scopedDrawTimer->setInterval(read ? 0 : kScopedDrawBusyMs);
+        _imp->scopedDrawTimer->start();
+        const QString found = SceneGraphModel::kindCountText(run->scope, walk.matches.size());
+        const QString text = run->clearBelow ? tr("Clearing states below the %1 under %2: %3 found so far; Esc stops").arg(kindPlural, rowsText, found)
+                                             : tr("Setting %1 on the %2 under %3: %4 found so far; Esc stops")
+                                                   .arg(SceneGraphModel::drawStateLabel(run->state), kindPlural, rowsText, found);
+        Q_EMIT scopedDrawProgress(text, true);
+
+        return text;
+    }
+    std::vector<std::string> targets;
+    for (const SdfPath& match : walk.matches) {
+        targets.push_back(match.GetString());
+    }
+    QString skippedText;
+    const std::size_t skipped = walk.unloadedPassThrough.size();
+    if (skipped == 1) {
+        skippedText = tr("; 1 unloaded payload skipped");
+    } else if (skipped > 1) {
+        skippedText = tr("; %1 unloaded payloads skipped").arg(skipped);
+    }
+    const bool clearBelow = run->clearBelow;
+    const SceneDrawStateEnum drawState = run->state;
+    const QString targetsText = tr("%1 under %2").arg(SceneGraphModel::kindCountText(run->scope, targets.size()), rowsText);
+    _imp->scopedDraw.reset();
+    QString text;
+    if (targets.empty()) {
+        text = tr("No loaded %1 under %2%3").arg(kindPlural, rowsText, skippedText);
+    } else {
+        editDrawStateRows(scopedDrawEdits(targets, clearBelow, drawState, false));
+        text = clearBelow ? tr("States cleared below %1%2").arg(targetsText, skippedText)
+                          : tr("%1 set on %2%3").arg(SceneGraphModel::drawStateLabel(drawState), targetsText, skippedText);
+    }
+    Q_EMIT scopedDrawProgress(text, false);
+
+    return text;
+} // SceneViewport::stepScopedDraw
+
+void
+SceneViewport::cancelScopedDraw()
+{
+    if (!_imp->scopedDraw) {
+        return;
+    }
+    _imp->scopedDrawTimer->stop();
+    _imp->scopedDraw.reset();
+    Q_EMIT scopedDrawProgress(tr("Stopped: nothing was changed"), false);
+}
+
+bool
+SceneViewport::isScopedDrawRunning() const
+{
+    return bool(_imp->scopedDraw);
+}
+
+void
+SceneViewport::setScopedDrawSliceMs(int ms)
+{
+    _imp->scopedDrawSliceMs = std::max(0, ms);
 }
 
 bool
@@ -11496,6 +11845,47 @@ SceneViewport::clearScene()
 
 // Lets GUI tests and scripts read the state through the widget.
 void
+SceneViewport::publishFrameHolds()
+{
+    // Each gate that keeps a new frame from starting now: a viewer that stays grey shows which
+    // one never cleared.
+    QStringList holds;
+    if (_imp->backgroundFrameRunning) {
+        holds.push_back(QString::fromUtf8("frameRunning"));
+    }
+    if (_imp->widgetContextLost) {
+        holds.push_back(QString::fromUtf8("contextLost"));
+    }
+    if (_imp->drawJobsQueued > 0) {
+        holds.push_back(QString::fromUtf8("drawJobsQueued:%1").arg(_imp->drawJobsQueued));
+    }
+    if (_imp->rendererSwitchRunning || _imp->followSceneRunning || (_imp->renderContextRebuilds > 0) || _imp->engineReleaseRunning) {
+        holds.push_back(QString::fromUtf8("renderThreadBusy"));
+    }
+    if (_imp->presentPacer.pending()) {
+        holds.push_back(QString::fromUtf8("presentPending"));
+    }
+    if (_imp->syncedSerial < _imp->paintHeldUntilSerial) {
+        holds.push_back(QString::fromUtf8("paintHeld"));
+    }
+    if (_imp->stageAwaitsTakeIn()) {
+        holds.push_back(QString::fromUtf8("stageAwaitsTakeIn"));
+    }
+    if (_imp->policyHeld()) {
+        holds.push_back(QString::fromUtf8("policyHeld"));
+    } else if (_imp->renderer.isStageHeld()) {
+        holds.push_back(QString::fromUtf8("stageHeld"));
+    }
+    if (_imp->standInHoldsFrames()) {
+        holds.push_back(QString::fromUtf8("standIn"));
+    }
+    if (!_imp->renderer.isFillComplete()) {
+        holds.push_back(QString::fromUtf8("filling"));
+    }
+    setProperty("natronSceneFrameHolds", holds);
+}
+
+void
 SceneViewport::publishState()
 {
     setProperty("natronSceneError", _imp->error);
@@ -11512,6 +11902,7 @@ SceneViewport::publishState()
     setProperty("natronSceneMainWaitMs", _imp->renderer.getMainThreadWaitMs());
     setProperty("natronSceneMainWaitMaxMs", _imp->renderer.getMainThreadWaitMaxMs());
     publishDrawStats();
+    publishFrameHolds();
     {
         QVariantList failures;
         for (const std::pair<std::string, std::string>& failure : _imp->renderer.getStageLoadFailures()) {
@@ -11687,7 +12078,7 @@ SceneViewport::setRendererId(const QString& id)
         if (imp->rendererSwitchLatest != serial) {
             return;
         }
-        imp->renderer.setRendererId(renderer);
+        runLogged("switching the renderer", [imp, &renderer]() { imp->renderer.setRendererId(renderer); });
         // Dropped by Qt if the widget is gone by then.
         imp->postToView([this, id, serial]() { onRendererSwitched(id, serial); });
     });
@@ -13138,11 +13529,13 @@ SceneViewport::releaseEngine()
         Implementation* imp = _imp.get();
         // The render thread waits for the viewer lock, which a sync may hold for seconds.
         _imp->postToRenderThread([this, imp, storm]() {
-            if (storm) {
-                imp->renderer.releaseEngineGL();
-            } else {
-                imp->renderer.releaseStormEngine();
-            }
+            runLogged("releasing the engine", [imp, storm]() {
+                if (storm) {
+                    imp->renderer.releaseEngineGL();
+                } else {
+                    imp->renderer.releaseStormEngine();
+                }
+            });
             // Dropped by Qt if the widget is gone by then.
             imp->postToView([this]() { onEngineReleased(); });
         });
@@ -13310,6 +13703,11 @@ SceneViewport::paintGL()
             imp->standInRefillTimer->start(std::max<int>(0, int(imp->standInRefillDelayMs - imp->viewStillClock.elapsed())) + 1);
         }
         if (!imp->frontFrame && !blank && !standInShown) {
+            if (!imp->backgroundFrameRunning && !imp->presentPacer.pending()) {
+                // No frame to show and none coming: the one this paint owes must render, whatever
+                // view the renderer last took a frame for.
+                imp->renderer.forgetBackgroundView();
+            }
             if (!imp->presentedScene || (imp->composingShowsStatus() && imp->composingClock.isValid() && (imp->composingClock.elapsed() >= kComposingStatusDelayMs))) {
                 paintComposingStatus();
             }
@@ -13317,6 +13715,8 @@ SceneViewport::paintGL()
             return;
         }
     }
+    // The last state published may have seen the frame this paint took still on its way.
+    publishFrameHolds();
     const bool stormPaint = (_imp->renderer.getActiveRendererId() == kRenderDelegateStormId);
     const double paintStartMs = epochMs();
     const std::chrono::steady_clock::time_point paintStart = std::chrono::steady_clock::now();

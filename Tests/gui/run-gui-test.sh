@@ -230,6 +230,12 @@ SEARCH_DIR="${SCRIPT%.py}.natronpath"
 if [ -d "$SEARCH_DIR" ]; then
     export NATRON_PLUGIN_PATH="$SEARCH_DIR${NATRON_PLUGIN_PATH:+:$NATRON_PLUGIN_PATH}"
 fi
+# USD plugins a script needs (kinds, for one) go in <script>.pxrplugins/: USD reads its plugin
+# path once, when its plugin library loads, so they too must be known before Natron starts.
+PXR_PLUGINS_DIR="${SCRIPT%.py}.pxrplugins"
+if [ -d "$PXR_PLUGINS_DIR" ]; then
+    export PXR_PLUGINPATH_NAME="$PXR_PLUGINS_DIR${PXR_PLUGINPATH_NAME:+:$PXR_PLUGINPATH_NAME}"
+fi
 
 if [ "$APPIMAGE" -eq 0 ] && [ ! -d "$OFX_PLUGIN_PATH" ]; then
     echo "OFX_PLUGIN_PATH $OFX_PLUGIN_PATH does not exist" >&2

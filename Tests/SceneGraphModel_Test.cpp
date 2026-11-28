@@ -43,6 +43,7 @@
 #include <gtest/gtest.h>
 
 #include "Gui/SceneGraphModel.h"
+#include "Gui/SceneGraphUnfolder.h"
 
 #include <QAbstractItemModelTester>
 #include <QCoreApplication>
@@ -52,6 +53,7 @@
 #include <QPersistentModelIndex>
 #include <QSignalSpy>
 #include <QStringList>
+#include <QTreeView>
 
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
@@ -1633,15 +1635,15 @@ TEST(SceneGraphModel, TheDrawStateColumnShowsTheViewersStatesAndEditsThem)
     const QModelIndex box = model.index(0, 0, world);
     const QModelIndex ball = model.index(1, 0, world);
     const QModelIndex cam = model.index(2, 0, world);
-    EXPECT_EQ(QString::fromUtf8("Full"), drawCell(box).data().toString());
+    EXPECT_EQ(QString::fromUtf8("Geometry"), drawCell(box).data().toString());
     EXPECT_EQ((int)eSceneDrawStateFull, box.data(SceneGraphModel::eDrawStateRole).toInt());
     EXPECT_TRUE(box.data(SceneGraphModel::eDrawStateInheritedRole).toBool());
     EXPECT_TRUE(drawCell(box).data(Qt::FontRole).value<QFont>().italic());
 
     // A state set on a row reads as set; the rows below it inherit what it implies.
-    EXPECT_TRUE(model.setData(drawCell(world), (int)eSceneDrawStateChildren));
-    EXPECT_EQ(QStringList(QString::fromUtf8("/World=%1").arg((int)eSceneDrawStateChildren)), viewer.writes);
-    EXPECT_EQ(QString::fromUtf8("Children"), drawCell(world).data().toString());
+    EXPECT_TRUE(model.setData(drawCell(world), (int)eSceneDrawStatePassThrough));
+    EXPECT_EQ(QStringList(QString::fromUtf8("/World=%1").arg((int)eSceneDrawStatePassThrough)), viewer.writes);
+    EXPECT_EQ(QString::fromUtf8("Pass Through"), drawCell(world).data().toString());
     EXPECT_FALSE(world.data(SceneGraphModel::eDrawStateInheritedRole).toBool());
     EXPECT_FALSE(drawCell(world).data(Qt::FontRole).value<QFont>().italic());
     EXPECT_EQ(QString::fromUtf8("BBox"), drawCell(ball).data().toString());
@@ -1651,28 +1653,28 @@ TEST(SceneGraphModel, TheDrawStateColumnShowsTheViewersStatesAndEditsThem)
     EXPECT_TRUE(model.setData(drawCell(world), (int)eSceneDrawStateBBox));
     EXPECT_EQ(QString::fromUtf8("BBox"), drawCell(world).data().toString());
     EXPECT_TRUE(model.setData(drawCell(ball), (int)eSceneDrawStateFull));
-    EXPECT_EQ(QString::fromUtf8("Children"), drawCell(world).data().toString());
-    EXPECT_EQ(QString::fromUtf8("Full"), drawCell(ball).data().toString());
+    EXPECT_EQ(QString::fromUtf8("Pass Through"), drawCell(world).data().toString());
+    EXPECT_EQ(QString::fromUtf8("Geometry"), drawCell(ball).data().toString());
     EXPECT_FALSE(ball.data(SceneGraphModel::eDrawStateInheritedRole).toBool());
     EXPECT_EQ(QString::fromUtf8("BBox"), drawCell(box).data().toString());
     EXPECT_EQ(QString::fromUtf8("BBox"), drawCell(cam).data().toString());
 
     EXPECT_TRUE(model.setData(drawCell(cam), (int)eSceneDrawStateLoadAll));
-    EXPECT_EQ(QString::fromUtf8("Load All"), drawCell(cam).data().toString());
+    EXPECT_EQ(QString::fromUtf8("Load + Draw"), drawCell(cam).data().toString());
     EXPECT_TRUE(model.setData(drawCell(box), (int)eSceneDrawStateHidden));
-    EXPECT_EQ(QString::fromUtf8("Hidden"), drawCell(box).data().toString());
+    EXPECT_EQ(QString::fromUtf8("Hide"), drawCell(box).data().toString());
 
     // Out of range is refused without reaching the viewer.
     const int writes = viewer.writes.size();
     EXPECT_FALSE(model.setData(drawCell(box), 99));
-    EXPECT_FALSE(model.setData(drawCell(box), QString::fromUtf8("full")));
+    EXPECT_FALSE(model.setData(drawCell(box), QString::fromUtf8("geometry")));
     EXPECT_FALSE(model.setData(box, (int)eSceneDrawStateBBox));
     EXPECT_EQ(writes, viewer.writes.size());
 
     // Reset to Graph on a row clears it and everything below.
     EXPECT_TRUE(model.setData(drawCell(world), -1));
     for (const QModelIndex& row : { world, box, ball, cam }) {
-        EXPECT_EQ(QString::fromUtf8("Full"), drawCell(row).data().toString());
+        EXPECT_EQ(QString::fromUtf8("Geometry"), drawCell(row).data().toString());
         EXPECT_TRUE(row.data(SceneGraphModel::eDrawStateInheritedRole).toBool());
     }
 
@@ -1693,4 +1695,496 @@ TEST(SceneGraphModel, TheDrawStateColumnShowsTheViewersStatesAndEditsThem)
     EXPECT_FALSE(drawCell(world).data().isValid());
     EXPECT_FALSE(model.flags(drawCell(world)) & Qt::ItemIsEditable);
     EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
+namespace {
+
+void
+authorPurpose(const PXR_NS::SdfPrimSpecHandle& prim,
+              const std::string& purpose)
+{
+    PXR_NS::SdfAttributeSpecHandle attribute = PXR_NS::SdfAttributeSpec::New(prim, PXR_NS::UsdGeomTokens->purpose, PXR_NS::SdfValueTypeNames->Token, PXR_NS::SdfVariabilityUniform);
+
+    attribute->SetDefaultValue(PXR_NS::VtValue(PXR_NS::TfToken(purpose)));
+}
+
+// /World with an Xform of purpose proxyPurpose holding a Mesh and, under a typeless prim, another;
+// a guide Mesh, a Scope that authors nothing, and a typeless prim whose purpose USD ignores.
+ScenePayload
+purposeScene(const std::string& proxyPurpose,
+             U64 hash)
+{
+    using namespace PXR_NS;
+
+    SdfLayerRefPtr layer = SceneOps::createNodeLayer("SceneGraphModelTest");
+    SdfPrimSpecHandle world = SdfPrimSpec::New(layer->GetPseudoRoot(), "World", SdfSpecifierDef, "Xform");
+    SdfPrimSpecHandle proxy = SdfPrimSpec::New(world, "Proxy", SdfSpecifierDef, "Xform");
+    authorPurpose(proxy, proxyPurpose);
+    SdfPrimSpec::New(proxy, "Mesh", SdfSpecifierDef, "Mesh");
+    SdfPrimSpecHandle group = SdfPrimSpec::New(proxy, "Group", SdfSpecifierDef, "");
+    SdfPrimSpec::New(group, "Geo", SdfSpecifierDef, "Mesh");
+    SdfPrimSpecHandle guide = SdfPrimSpec::New(world, "Guide", SdfSpecifierDef, "Mesh");
+    authorPurpose(guide, "guide");
+    SdfPrimSpec::New(world, "Plain", SdfSpecifierDef, "Scope");
+    SdfPrimSpecHandle typeless = SdfPrimSpec::New(world, "Typeless", SdfSpecifierDef, "");
+    authorPurpose(typeless, "proxy");
+
+    return SceneOps::appendLayer(ScenePayload(), layer, hash);
+}
+
+const char* const kPurposePaths[] = { "/World", "/World/Proxy", "/World/Proxy/Mesh", "/World/Proxy/Group", "/World/Proxy/Group/Geo",
+                                      "/World/Guide", "/World/Plain", "/World/Typeless" };
+
+// Fails the test where a row's purpose cell differs from what USD computes on the stage.
+void
+expectPurposesMatchUsd(SceneGraphModel& model,
+                       const TestStageSource& source)
+{
+    for (const char* path : kPurposePaths) {
+        const QModelIndex cell = model.indexOfPath(QString::fromUtf8(path), true).siblingAtColumn(SceneGraphModel::eColumnPurpose);
+        ASSERT_TRUE(cell.isValid()) << path;
+        source.readStage([&](const SceneStage* stage) {
+            ASSERT_TRUE(stage != nullptr);
+            const PXR_NS::UsdPrim prim = stage->getStage()->GetPrimAtPath(PXR_NS::SdfPath(path));
+            if (!prim.IsA<PXR_NS::UsdGeomImageable>()) {
+                EXPECT_FALSE(cell.data().isValid()) << path;
+
+                return;
+            }
+            const PXR_NS::UsdGeomImageable::PurposeInfo info = PXR_NS::UsdGeomImageable(prim).ComputePurposeInfo();
+            EXPECT_EQ(QString::fromStdString(info.purpose.GetString()), cell.data().toString()) << path;
+        });
+    }
+}
+
+} // anon namespace
+
+TEST(SceneGraphModel, ThePurposeColumnShowsComputedPurposes)
+{
+    ModelTestMessageScope messages;
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(purposeScene("proxy", 1));
+    SceneGraphModel model;
+    QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::Warning);
+    model.setSource(source);
+    EXPECT_EQ(QString::fromUtf8("Purpose"), model.headerData(SceneGraphModel::eColumnPurpose, Qt::Horizontal).toString());
+    EXPECT_EQ(SceneGraphModel::eColumnKind + 1, (int)SceneGraphModel::eColumnPurpose);
+
+    const auto cellOf = [&model](const char* path) {
+        return model.indexOfPath(QString::fromUtf8(path), true).siblingAtColumn(SceneGraphModel::eColumnPurpose);
+    };
+
+    const QModelIndex proxy = cellOf("/World/Proxy");
+    EXPECT_EQ(QString::fromUtf8("proxy"), proxy.data().toString());
+    EXPECT_FALSE(proxy.data(SceneGraphModel::ePurposeInheritedRole).toBool());
+    EXPECT_EQ(QString::fromUtf8("/World/Proxy"), proxy.data(SceneGraphModel::ePurposeOriginRole).toString());
+    EXPECT_FALSE(proxy.data(Qt::FontRole).value<QFont>().italic());
+    EXPECT_EQ(SceneGraphModel::purposeTip(QString::fromUtf8("proxy"), false, QString::fromUtf8("/World/Proxy")), proxy.data(Qt::ToolTipRole).toString());
+
+    // Inherited, also through a prim that is not imageable.
+    for (const char* path : { "/World/Proxy/Mesh", "/World/Proxy/Group/Geo" }) {
+        const QModelIndex cell = cellOf(path);
+        EXPECT_EQ(QString::fromUtf8("proxy"), cell.data().toString()) << path;
+        EXPECT_TRUE(cell.data(SceneGraphModel::ePurposeInheritedRole).toBool()) << path;
+        EXPECT_EQ(QString::fromUtf8("/World/Proxy"), cell.data(SceneGraphModel::ePurposeOriginRole).toString()) << path;
+        EXPECT_TRUE(cell.data(Qt::FontRole).value<QFont>().italic()) << path;
+        EXPECT_EQ(QString::fromUtf8("Purpose: proxy (from /World/Proxy)"), cell.data(Qt::ToolTipRole).toString()) << path;
+    }
+
+    const QModelIndex guide = cellOf("/World/Guide");
+    EXPECT_EQ(QString::fromUtf8("guide"), guide.data().toString());
+    EXPECT_FALSE(guide.data(SceneGraphModel::ePurposeInheritedRole).toBool());
+
+    // The fallback: nothing above authors a purpose.
+    const QModelIndex plain = cellOf("/World/Plain");
+    EXPECT_EQ(QString::fromUtf8("default"), plain.data().toString());
+    EXPECT_TRUE(plain.data(SceneGraphModel::ePurposeInheritedRole).toBool());
+    EXPECT_TRUE(plain.data(SceneGraphModel::ePurposeOriginRole).toString().isEmpty());
+
+    // Not imageable: a blank cell, its authored purpose ignored.
+    for (const char* path : { "/World/Proxy/Group", "/World/Typeless" }) {
+        const QModelIndex cell = cellOf(path);
+        ASSERT_TRUE(cell.isValid()) << path;
+        EXPECT_FALSE(cell.data().isValid()) << path;
+        EXPECT_FALSE(cell.data(SceneGraphModel::ePurposeInheritedRole).isValid()) << path;
+        EXPECT_FALSE(cell.data(SceneGraphModel::ePurposeOriginRole).isValid()) << path;
+    }
+    EXPECT_FALSE(model.flags(proxy) & Qt::ItemIsEditable);
+
+    expectPurposesMatchUsd(model, *source);
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
+TEST(SceneGraphModel, AnEditOfAnAncestorsPurposeReachesTheRowsBelow)
+{
+    ModelTestMessageScope messages;
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(purposeScene("proxy", 1));
+    SceneGraphModel model;
+    QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::Warning);
+    model.setSource(source);
+    expectPurposesMatchUsd(model, *source);
+
+    source->sync(purposeScene("render", 2));
+    model.refresh();
+    expectPurposesMatchUsd(model, *source);
+    const QModelIndex geo = model.indexOfPath(QString::fromUtf8("/World/Proxy/Group/Geo"), false).siblingAtColumn(SceneGraphModel::eColumnPurpose);
+    EXPECT_EQ(QString::fromUtf8("render"), geo.data().toString());
+    EXPECT_EQ(QString::fromUtf8("Purpose: render (from /World/Proxy)"), geo.data(Qt::ToolTipRole).toString());
+
+    EXPECT_TRUE(modelTestMessages.isEmpty()) << modelTestMessages.join(QLatin1Char('\n')).toStdString();
+}
+
+TEST(SceneChangedHereRows, ShowPurposesAsTheTreeDoes)
+{
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(purposeScene("proxy", 1));
+    QSet<QString> paths;
+    for (const char* path : kPurposePaths) {
+        paths.insert(QString::fromUtf8(path));
+    }
+    SceneChangedHereModel changed;
+    QAbstractItemModelTester tester(&changed, QAbstractItemModelTester::FailureReportingMode::Warning);
+    changed.setRows(buildChangedHereRows(*source, paths));
+
+    SceneGraphModel tree;
+    tree.setSource(source);
+    const int roles[] = { Qt::DisplayRole, SceneGraphModel::ePurposeInheritedRole, SceneGraphModel::ePurposeOriginRole };
+    for (const char* path : kPurposePaths) {
+        const QModelIndex mine = changed.indexOfPath(QString::fromUtf8(path)).siblingAtColumn(SceneGraphModel::eColumnPurpose);
+        const QModelIndex theirs = tree.indexOfPath(QString::fromUtf8(path), true).siblingAtColumn(SceneGraphModel::eColumnPurpose);
+        ASSERT_TRUE(mine.isValid()) << path;
+        ASSERT_TRUE(theirs.isValid()) << path;
+        for (int role : roles) {
+            EXPECT_EQ(theirs.data(role), mine.data(role)) << path << " role " << role;
+        }
+        EXPECT_EQ(theirs.data(Qt::FontRole).value<QFont>().italic(), mine.data(Qt::FontRole).value<QFont>().italic()) << path;
+        if (theirs.data().isValid()) {
+            EXPECT_EQ(theirs.data(Qt::ToolTipRole).toString(), mine.data(Qt::ToolTipRole).toString()) << path;
+        }
+    }
+}
+
+TEST(SceneGraphPrimWalk, MatchesPurposeAsANodePatternDoes)
+{
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(purposeScene("proxy", 1));
+
+    SceneGraphPrimWalk walk(1);
+    QString error;
+    ASSERT_TRUE(walk.setExpression(QString::fromUtf8("//{purpose:proxy}"), &error)) << error.toStdString();
+    QStringList found;
+    walk.start();
+    finishWalk(*source, &walk, 0, &found);
+    EXPECT_EQ((QStringList { QString::fromUtf8("/World/Proxy"), QString::fromUtf8("/World/Proxy/Mesh"), QString::fromUtf8("/World/Proxy/Group/Geo") }), found);
+
+    std::vector<PXR_NS::SdfPath> selected;
+    std::string selectError;
+    source->readStage([&](const SceneStage* stage) {
+        ASSERT_TRUE(stage != nullptr);
+        EXPECT_TRUE(SceneOps::selectPrims(stage->getStage(), "//{purpose:proxy}", &selected, &selectError));
+    });
+    QStringList selectedPaths;
+    for (const PXR_NS::SdfPath& path : selected) {
+        selectedPaths << QString::fromStdString(path.GetString());
+    }
+    EXPECT_EQ(selectedPaths, found);
+
+    EXPECT_FALSE(walk.setExpression(QString::fromUtf8("//{purpose}"), &error));
+    EXPECT_FALSE(error.isEmpty());
+}
+
+namespace {
+
+// /R holding count groups, each holding one row, so that every group can be opened.
+ScenePayload
+expandableGroups(int count)
+{
+    PXR_NS::SdfLayerRefPtr layer = SceneOps::createNodeLayer("SceneGraphModelTest");
+    {
+        PXR_NS::SdfChangeBlock block;
+        PXR_NS::SdfPrimSpecHandle root = PXR_NS::SdfPrimSpec::New(layer->GetPseudoRoot(), "R", PXR_NS::SdfSpecifierDef, "Xform");
+        for (int i = 0; i < count; ++i) {
+            PXR_NS::SdfPrimSpecHandle group = PXR_NS::SdfPrimSpec::New(root, "G" + std::to_string(i), PXR_NS::SdfSpecifierDef, "Xform");
+            PXR_NS::SdfPrimSpec::New(group, "C", PXR_NS::SdfSpecifierDef, "Xform");
+        }
+    }
+
+    return SceneOps::appendLayer(ScenePayload(), layer, 0xe7a9dULL);
+}
+
+QString
+groupPath(int i)
+{
+    return QString::fromUtf8("/R/G") + QString::number(i);
+}
+
+} // anon namespace
+
+TEST(SceneGraphExpansionMemory, KeepsOneSetPerOwnerAndForgetsTheLeastRecentlyShown)
+{
+    SceneGraphExpansionMemory memory(2);
+    std::shared_ptr<int> a = std::make_shared<int>(0);
+    std::shared_ptr<int> b = std::make_shared<int>(1);
+    std::shared_ptr<int> c = std::make_shared<int>(2);
+
+    SceneGraphExpandedPaths* aPaths = memory.select(a);
+    aPaths->insert(QString::fromUtf8("/A"));
+    SceneGraphExpandedPaths* bPaths = memory.select(b);
+    EXPECT_TRUE(bPaths->empty());
+    bPaths->insert(QString::fromUtf8("/B"));
+    EXPECT_EQ(memory.size(), 2U);
+
+    // Back to a: its own set, untouched by b's.
+    EXPECT_EQ(memory.select(a), aPaths);
+    EXPECT_EQ(aPaths->size(), 1U);
+    EXPECT_EQ(aPaths->count(QString::fromUtf8("/A")), 1U);
+    EXPECT_EQ(memory.getSelected(), aPaths);
+
+    // c past capacity forgets b, the least recently shown.
+    SceneGraphExpandedPaths* cPaths = memory.select(c);
+    EXPECT_TRUE(cPaths->empty());
+    EXPECT_EQ(memory.size(), 2U);
+    EXPECT_TRUE(memory.remembers(a));
+    EXPECT_FALSE(memory.remembers(b));
+    EXPECT_TRUE(memory.select(b)->empty());
+    EXPECT_FALSE(memory.remembers(a));
+
+    // Forgetting the selected set empties it and keeps it selected.
+    memory.getSelected()->insert(QString::fromUtf8("/B2"));
+    memory.forget(b);
+    EXPECT_TRUE(memory.remembers(b));
+    EXPECT_TRUE(memory.getSelected()->empty());
+    memory.forget(c);
+    EXPECT_FALSE(memory.remembers(c));
+    EXPECT_EQ(memory.size(), 1U);
+}
+
+TEST(SceneGraphExpansionMemory, ForgetsTheSetsOfOwnersThatWent)
+{
+    SceneGraphExpansionMemory memory(4);
+    std::shared_ptr<int> gone = std::make_shared<int>(0);
+    std::shared_ptr<int> kept = std::make_shared<int>(1);
+    std::shared_ptr<int> shown = std::make_shared<int>(2);
+
+    memory.select(std::shared_ptr<const void>())->insert(QString::fromUtf8("/None"));
+    memory.select(gone)->insert(QString::fromUtf8("/Gone"));
+    memory.select(kept)->insert(QString::fromUtf8("/Kept"));
+    SceneGraphExpandedPaths* shownPaths = memory.select(shown);
+    shownPaths->insert(QString::fromUtf8("/Shown"));
+    ASSERT_EQ(memory.size(), 4U);
+
+    gone.reset();
+    memory.forgetGone();
+    EXPECT_EQ(memory.size(), 3U);
+    EXPECT_TRUE(memory.remembers(kept));
+    EXPECT_TRUE(memory.remembers(std::shared_ptr<const void>()));
+    EXPECT_EQ(memory.select(kept)->count(QString::fromUtf8("/Kept")), 1U);
+
+    // The selected set stays while its owner is gone, empty.
+    EXPECT_EQ(memory.select(shown), shownPaths);
+    shown.reset();
+    memory.forgetGone();
+    EXPECT_EQ(memory.getSelected(), shownPaths);
+    EXPECT_TRUE(shownPaths->empty());
+}
+
+TEST(SceneGraphExpansionMemory, ThePathsBelowAPathAreOneRange)
+{
+    SceneGraphExpandedPaths paths;
+
+    for (const char* path : { "/A", "/A/B", "/A/B/C", "/A/Z", "/A-x", "/A0", "/AB", "/B", "/B/A" }) {
+        paths.insert(QString::fromUtf8(path));
+    }
+    std::pair<SceneGraphExpandedPaths::iterator, SceneGraphExpandedPaths::iterator> below = expandedPathsBelow(paths, QString::fromUtf8("/A"));
+    EXPECT_EQ(QStringList(below.first, below.second), QStringList({ QString::fromUtf8("/A/B"), QString::fromUtf8("/A/B/C"), QString::fromUtf8("/A/Z") }));
+    below = expandedPathsBelow(paths, QString::fromUtf8("/A/B/C"));
+    EXPECT_TRUE(below.first == below.second);
+    below = expandedPathsBelow(paths, QString::fromUtf8("/B"));
+    EXPECT_EQ(QStringList(below.first, below.second), QStringList({ QString::fromUtf8("/B/A") }));
+}
+
+TEST(SceneGraphUnfolder, ARestoreReopensTheRememberedRowsInSlices)
+{
+    const int groupCount = 60;
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(expandableGroups(groupCount));
+
+    SceneGraphModel model;
+    model.setSource(source);
+    QTreeView tree;
+    tree.setModel(&model);
+    // Each reopening takes a millisecond, so that a slice's budget holds a few of them only.
+    QObject::connect(&tree, &QTreeView::expanded, &tree, []() { std::this_thread::sleep_for(std::chrono::milliseconds(1)); });
+
+    SceneGraphExpandedPaths remembered;
+    remembered.insert(QString::fromUtf8("/R"));
+    for (int i = 0; i < groupCount; ++i) {
+        remembered.insert(groupPath(i));
+    }
+    SceneGraphExpandedPaths other;
+    other.insert(QString::fromUtf8("/R/G1"));
+    other.insert(QString::fromUtf8("/Elsewhere"));
+    const SceneGraphExpandedPaths otherBefore = other;
+
+    SceneGraphUnfolder unfolder(&tree, &model, &remembered);
+    int restores = 0;
+    bool deferred = true;
+    unfolder.setRestoreCallback([&](bool wasDeferred) {
+        ++restores;
+        deferred = wasDeferred;
+    });
+
+    const int slicesBefore = unfolder.getRestoreSliceCount();
+    unfolder.restore(true, QStringList());
+    // The first slice ran at once; the rest wait for the event loop.
+    EXPECT_TRUE(unfolder.isRestoring());
+    EXPECT_EQ(restores, 0);
+    ASSERT_TRUE(processEventsUntil([&]() { return restores > 0; }));
+    EXPECT_EQ(restores, 1);
+    EXPECT_FALSE(deferred);
+    EXPECT_FALSE(unfolder.isRestoring());
+    EXPECT_GT(unfolder.getRestoreSliceCount() - slicesBefore, 1);
+
+    const QModelIndex root = model.indexOfPath(QString::fromUtf8("/R"), false);
+    ASSERT_TRUE(root.isValid());
+    EXPECT_TRUE(tree.isExpanded(root));
+    int open = 0;
+    for (int i = 0; i < groupCount; ++i) {
+        const QModelIndex group = model.indexOfPath(groupPath(i), false);
+        open += (group.isValid() && tree.isExpanded(group)) ? 1 : 0;
+    }
+    EXPECT_EQ(open, groupCount);
+    EXPECT_EQ(other, otherBefore);
+
+    // A restore under one parent reopens only the remembered rows below it.
+    for (int i = 0; i < groupCount; ++i) {
+        tree.collapse(model.indexOfPath(groupPath(i), false));
+    }
+    unfolder.restore(false, QStringList({ groupPath(7) }));
+    ASSERT_TRUE(processEventsUntil([&]() { return restores > 1; }));
+    open = 0;
+    for (int i = 0; i < groupCount; ++i) {
+        open += tree.isExpanded(model.indexOfPath(groupPath(i), false)) ? 1 : 0;
+    }
+    EXPECT_EQ(open, 0);
+
+    // Another stage's set: the rows it remembers are its own, and none of the first set's reopen.
+    unfolder.setExpandedPaths(&other);
+    unfolder.restore(true, QStringList());
+    ASSERT_TRUE(processEventsUntil([&]() { return restores > 2; }));
+    EXPECT_TRUE(tree.isExpanded(model.indexOfPath(QString::fromUtf8("/R/G1"), false)));
+    EXPECT_FALSE(tree.isExpanded(model.indexOfPath(groupPath(2), false)));
+    EXPECT_EQ(other, otherBefore);
+    EXPECT_EQ(remembered.size(), (std::size_t)groupCount + 1);
+}
+
+TEST(SceneGraphUnfolder, FoldAllBelowClosesTheRememberedRowsBelowTheRoot)
+{
+    const int groupCount = 20;
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(expandableGroups(groupCount));
+
+    SceneGraphModel model;
+    model.setSource(source);
+    QTreeView tree;
+    tree.setModel(&model);
+    SceneGraphExpandedPaths remembered;
+    // The tree records what it opens and closes, as the panel does.
+    QObject::connect(&tree, &QTreeView::expanded, &tree, [&](const QModelIndex& index) { remembered.insert(model.pathOf(index)); });
+    QObject::connect(&tree, &QTreeView::collapsed, &tree, [&](const QModelIndex& index) { remembered.erase(model.pathOf(index)); });
+    std::vector<QString> closed;
+    QObject::connect(&tree, &QTreeView::collapsed, &tree, [&](const QModelIndex& index) { closed.push_back(model.pathOf(index)); });
+
+    // A run starts from rows the tree shows, as a selection's are; the model reads /R on demand.
+    ASSERT_TRUE(processEventsUntil([&]() { return model.indexOfPath(QString::fromUtf8("/R"), true).isValid(); }));
+
+    SceneGraphUnfolder unfolder(&tree, &model, &remembered);
+    unfolder.start(SceneGraphUnfolder::eModeUnfoldBelow, QStringList({ QString::fromUtf8("/R") }));
+    ASSERT_TRUE(processEventsUntil([&]() { return !unfolder.isRunning(); }));
+    EXPECT_EQ(remembered.size(), (std::size_t)groupCount + 1);
+    // Remembered but not shown: closed by the run along with the rest.
+    remembered.insert(QString::fromUtf8("/R/G3/C"));
+
+    unfolder.start(SceneGraphUnfolder::eModeFoldBelow, QStringList({ QString::fromUtf8("/R") }));
+    ASSERT_TRUE(processEventsUntil([&]() { return !unfolder.isRunning(); }));
+    EXPECT_FALSE(unfolder.getProgress().cancelled);
+    EXPECT_TRUE(remembered.empty());
+    ASSERT_EQ(closed.size(), (std::size_t)groupCount + 1);
+    // Every row closes after the rows below it.
+    EXPECT_EQ(closed.back(), QString::fromUtf8("/R"));
+    EXPECT_FALSE(tree.isExpanded(model.indexOfPath(QString::fromUtf8("/R"), false)));
+}
+
+TEST(SceneGraphUnfolder, ALoadingPayloadRowOpensAndIsCountedApartFromUnloadedOnes)
+{
+    PayloadModel fixture;
+    QTreeView tree;
+    tree.setModel(&fixture.model);
+    SceneGraphExpandedPaths remembered;
+    QObject::connect(&tree, &QTreeView::expanded, &tree, [&](const QModelIndex& index) { remembered.insert(fixture.model.pathOf(index)); });
+
+    fixture.source->stage.requestLoad({ PXR_NS::SdfPath(kB0.toStdString()) }, false);
+    fixture.model.markLoading(QStringList(kB0));
+    ASSERT_EQ(SceneGraphModel::ePayloadStateLoading, fixture.model.getPayloadState(kB0));
+
+    SceneGraphUnfolder unfolder(&tree, &fixture.model, &remembered);
+    unfolder.start(SceneGraphUnfolder::eModeUnfoldBelow, QStringList({ QString::fromUtf8("/World") }));
+    ASSERT_TRUE(processEventsUntil([&]() { return !unfolder.isRunning(); }));
+
+    const SceneGraphUnfolder::Progress& progress = unfolder.getProgress();
+    EXPECT_EQ(1, progress.loading);
+    EXPECT_EQ(2, progress.unloaded);
+    // Its load is under way already: opening it asks for nothing, and its rows show once it ends.
+    EXPECT_TRUE(tree.isExpanded(fixture.row(kB0)));
+    EXPECT_FALSE(tree.isExpanded(fixture.row(kB1)));
+    EXPECT_FALSE(tree.isExpanded(fixture.row(kB2)));
+    const QString text = SceneGraphUnfolder::progressText(progress);
+    EXPECT_TRUE(text.contains(QString::fromUtf8("2 unloaded payloads not unfolded"))) << text.toStdString();
+    EXPECT_TRUE(text.contains(QString::fromUtf8("1 payload still loading, not walked below"))) << text.toStdString();
+    EXPECT_EQ(SceneGraphModel::ePayloadStateUnloaded, fixture.model.getPayloadState(kB1));
+    EXPECT_EQ(SceneGraphModel::ePayloadStateUnloaded, fixture.model.getPayloadState(kB2));
+
+    // A restore takes the same rule: the loading row reopens, the unloaded one stays closed.
+    tree.collapse(fixture.row(kB0));
+    remembered.insert(kB0);
+    remembered.insert(kB1);
+    bool restored = false;
+    unfolder.setRestoreCallback([&](bool) { restored = true; });
+    unfolder.restore(true, QStringList());
+    ASSERT_TRUE(processEventsUntil([&]() { return restored; }));
+    EXPECT_TRUE(tree.isExpanded(fixture.row(kB0)));
+    EXPECT_FALSE(tree.isExpanded(fixture.row(kB1)));
+}
+
+TEST(SceneGraphUnfolder, OnlyTheRowsARunFetchedAreItsOwn)
+{
+    const int groupCount = 60;
+    std::shared_ptr<TestStageSource> source = std::make_shared<TestStageSource>();
+    source->sync(expandableGroups(groupCount));
+
+    SceneGraphModel model;
+    model.setSource(source);
+    QTreeView tree;
+    tree.setModel(&model);
+    // Each opening takes a millisecond, so that the run spans slices.
+    QObject::connect(&tree, &QTreeView::expanded, &tree, []() { std::this_thread::sleep_for(std::chrono::milliseconds(1)); });
+    ASSERT_TRUE(processEventsUntil([&]() { return model.indexOfPath(QString::fromUtf8("/R"), true).isValid(); }));
+
+    SceneGraphExpandedPaths remembered;
+    SceneGraphUnfolder unfolder(&tree, &model, &remembered);
+    unfolder.start(SceneGraphUnfolder::eModeUnfoldBelow, QStringList({ QString::fromUtf8("/R") }));
+    ASSERT_TRUE(unfolder.isRunning());
+    bool ownsSome = unfolder.ownsRowsUnder(QString::fromUtf8("/R"));
+    for (int i = 0; i < groupCount; ++i) {
+        ownsSome = ownsSome || unfolder.ownsRowsUnder(groupPath(i));
+    }
+    EXPECT_TRUE(ownsSome);
+    // Rows a load brings in under a row the run did not read are not the run's.
+    EXPECT_FALSE(unfolder.ownsRowsUnder(QString::fromUtf8("/Elsewhere")));
+    EXPECT_FALSE(unfolder.ownsRowsUnder(QString()));
+    ASSERT_TRUE(processEventsUntil([&]() { return !unfolder.isRunning(); }));
+    for (int i = 0; i < groupCount; ++i) {
+        EXPECT_FALSE(unfolder.ownsRowsUnder(groupPath(i)));
+    }
 }

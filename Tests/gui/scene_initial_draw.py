@@ -6,10 +6,10 @@ whose content is a payload. A USDCube at /Cube and the USDRead go into USDMerge,
 The script checks:
   - a new USDRead draws one box per top-level prim, two boxes and no marker, and the Scene Graph
     panel reads BBox on /World and /Annex, set rather than inherited;
-  - the merged /Cube stays Full, inherited from the default;
+  - the merged /Cube stays Geometry, inherited from the default;
   - no payload file is opened;
-  - Full draws the two prims in full, still with no payload file opened;
-  - Full + Load has the viewer load every building's payload.
+  - Geometry draws the two prims in full, still with no payload file opened;
+  - Load + Draw has the viewer load every building's payload.
 
 Screenshots for sign-off: scene-initial-draw-bbox, scene-initial-draw-full,
 scene-initial-draw-full-load.
@@ -33,9 +33,9 @@ BUILDINGS = ["B0", "B1"]
 CUBE = "/Cube"
 PAYLOAD_MARK = "scene_initial_draw_payloads"
 # The Initial Draw menu, in order.
-INITIAL_DRAW = ["bbox", "levels", "toKind", "full", "fullLoad"]
+INITIAL_DRAW = ["bbox", "levels", "toKind", "geometry", "loadAndDraw"]
 # SceneDrawStateEnum, which the panel's draw state role holds.
-STATES = ["bbox", "children", "full", "loadAll", "hidden"]
+STATES = ["bbox", "passThrough", "geometry", "loadAndDraw", "hide"]
 
 BUILDING = """#usda 1.0
 
@@ -257,30 +257,30 @@ try:
         ok = yield ("until", lambda: drawn() == (len(TOP_LEVEL), 0), POLL_TIMEOUT_S)
         check(ok, "one box per top-level prim and no marker (%r)" % (drawn(),))
         expected = dict((p, ("bbox", False)) for p in TOP_LEVEL)
-        expected[CUBE] = ("full", True)
+        expected[CUBE] = ("geometry", True)
         yield from expect_rows("BBox", expected)
         yield ("sleep", SETTLE_MS)
         save("scene-initial-draw-bbox")
         check(opened_payloads() == [], "no payload file is open (%r)" % opened_payloads()[:3])
 
-        section("full")
-        set_initial_draw("full")
+        section("geometry")
+        set_initial_draw("geometry")
         ok = yield ("until", lambda: drawn() == (0, 0), POLL_TIMEOUT_S)
-        check(ok, "Full boxes nothing (%r)" % (drawn(),))
-        expected = dict((p, ("full", False)) for p in TOP_LEVEL)
-        expected[CUBE] = ("full", True)
-        yield from expect_rows("Full", expected)
+        check(ok, "Geometry boxes nothing (%r)" % (drawn(),))
+        expected = dict((p, ("geometry", False)) for p in TOP_LEVEL)
+        expected[CUBE] = ("geometry", True)
+        yield from expect_rows("Geometry", expected)
         yield ("sleep", SETTLE_MS)
         save("scene-initial-draw-full")
-        check(opened_payloads() == [], "Full opens no payload file (%r)" % opened_payloads()[:3])
+        check(opened_payloads() == [], "Geometry opens no payload file (%r)" % opened_payloads()[:3])
 
         section("full + load")
-        set_initial_draw("fullLoad")
+        set_initial_draw("loadAndDraw")
         ok = yield ("until", lambda: len(opened_payloads()) == len(payload_files), LOAD_TIMEOUT_S)
-        check(ok, "Full + Load loads every building's payload (%r)" % opened_payloads())
-        expected = dict((p, ("loadAll", False)) for p in TOP_LEVEL)
-        expected[CUBE] = ("full", True)
-        yield from expect_rows("Full + Load", expected)
+        check(ok, "Load + Draw loads every building's payload (%r)" % opened_payloads())
+        expected = dict((p, ("loadAndDraw", False)) for p in TOP_LEVEL)
+        expected[CUBE] = ("geometry", True)
+        yield from expect_rows("Load + Draw", expected)
         ok = yield ("until", scene_drawn, LOAD_TIMEOUT_S)
         check(ok, "the scene view shows the loaded city")
         yield ("sleep", SETTLE_MS)

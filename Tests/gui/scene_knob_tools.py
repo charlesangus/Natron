@@ -23,7 +23,7 @@ Checks:
   - on a payload scene with nothing loaded, Select Matches selects only the loaded matches and reports the
     unloaded branches not searched while no payload loads; its "Load and select" button loads the payloads and
     selects the matches inside them.
-  - behind a USDExpandHierarchy whose Full + Load rule on //Trigger loads each Trigger's own payload once a load
+  - behind a USDExpandHierarchy whose Load + Draw rule on //Trigger loads each Trigger's own payload once a load
     shows the Trigger: Select Matches started right after a load leaves the Trigger's payload to that follow-up
     batch waits for it and selects the Geo inside it; Load and select, which loads with descendants and so
     brings in the Trigger's payload too, selects the Geo of both and leaves nothing to offer.
@@ -402,7 +402,7 @@ try:
         check(offer_widget("knobPrimSelectMatchesLoad", QPushButton) is None,
               "the search of the input uses the viewer's loads, so nothing is left to offer")
 
-        # A Full + Load rule on //Trigger matches again after each load and loads the payload of each Trigger
+        # A Load + Draw rule on //Trigger matches again after each load and loads the payload of each Trigger
         # a load shows, in a batch of its own after the one that showed it.
         trigger_city = write_trigger_city(os.path.join(OUT, "scene_knob_tools_trigger_city"))
         usd3 = app.createNode("USDRead")

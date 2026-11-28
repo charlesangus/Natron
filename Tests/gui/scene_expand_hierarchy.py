@@ -1,17 +1,17 @@
-"""A USDExpandHierarchy Full + Load rule loads only the payloads below the prims it names.
+"""A USDExpandHierarchy Load + Draw rule loads only the payloads below the prims it names.
 
 Graph: USDRead of a small city this script writes to $NATRON_GUI_TEST_OUT/scene_expand_hierarchy/:
 two top-level prims, /World and /Annex, each a group holding two buildings whose content is a
 payload. The USDRead goes into a USDExpandHierarchy, into Viewer1. The script checks:
   - with no rule, the USDRead's Initial Draw (BBox) applies and no payload file is opened;
-  - a Full + Load rule on /Wor* has the viewer load the two /World buildings and none of /Annex's,
-    and the Scene Graph panel reads Full + Load on /World, set rather than inherited, and BBox
+  - a Load + Draw rule on /Wor* has the viewer load the two /World buildings and none of /Annex's,
+    and the Scene Graph panel reads Load + Draw on /World, set rather than inherited, and BBox
     on /Annex;
   - showing the USDRead instead returns /World to BBox, while its buildings stay loaded;
   - deleting the node changes nothing more;
   - Unload from the row menu unloads the buildings.
 
-Screenshots for sign-off: scene-expand-hierarchy-default, scene-expand-hierarchy-full-load,
+Screenshots for sign-off: scene-expand-hierarchy-default, scene-expand-hierarchy-load-and-draw,
 scene-expand-hierarchy-removed.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
@@ -32,7 +32,7 @@ TOP_LEVEL = ["/World", "/Annex"]
 BUILDINGS = ["B0", "B1"]
 PAYLOAD_MARK = "scene_expand_hierarchy_payloads"
 # SceneDrawStateEnum, which the panel's draw state role holds, and the Draw menu's order.
-STATES = ["bbox", "children", "full", "loadAll", "hidden"]
+STATES = ["bbox", "passThrough", "geometry", "loadAndDraw", "hide"]
 STATE_NONE, STATE_UNLOADED, STATE_LOADING, STATE_LOADED, STATE_FAILED = range(5)
 
 BUILDING = """#usda 1.0
@@ -76,7 +76,7 @@ def Xform "%s" (
 
 try:
     from PySide6.QtCore import QItemSelectionModel, QModelIndex, Qt, QTimer
-    from PySide6.QtGui import QGuiApplication, QImage
+    from PySide6.QtGui import QAction, QGuiApplication, QImage
     from PySide6.QtWidgets import QApplication, QTreeView
     from pxr import Sdf
 
@@ -219,12 +219,14 @@ try:
             menu = QApplication.activePopupWidget()
             if menu is None:
                 return
-            for action in menu.actions():
+            # Unload is a submenu, whose entries are the menu's children.
+            for action in menu.findChildren(QAction):
                 if action.objectName():
                     seen[action.objectName()] = action.isEnabled()
-            for action in menu.actions():
+            for action in menu.findChildren(QAction):
                 if action.objectName() == action_name:
                     action.trigger()
+                    break
             menu.close()
 
         select_rows(paths)
@@ -291,22 +293,22 @@ try:
         save("scene-expand-hierarchy-default")
         check(opened_payloads() == [], "no payload file is open (%r)" % opened_payloads())
 
-        section("full + load on one block")
+        section("load + draw on one block")
         expand.getParam("pattern0").setValue("/Wor*")
-        expand.getParam("draw0").setValue(STATES.index("loadAll"))
+        expand.getParam("draw0").setValue(STATES.index("loadAndDraw"))
         ok = yield ("until", lambda: opened_payloads() == world_payloads(), LOAD_TIMEOUT_S)
         check(ok, "the /World buildings' payloads load (%r)" % opened_payloads())
-        yield from expect_rows("Full + Load", {"/World": ("loadAll", False), "/Annex": ("bbox", False)})
+        yield from expect_rows("Load + Draw", {"/World": ("loadAndDraw", False), "/Annex": ("bbox", False)})
         ok = yield ("until", lambda: all(load_state(p) == STATE_LOADED for p in WORLD_BUILDINGS), POLL_TIMEOUT_S)
         check(ok, "the panel reads the /World buildings loaded (%r)" % [load_state(p) for p in WORLD_BUILDINGS])
         ok = yield ("until", scene_drawn, LOAD_TIMEOUT_S)
         check(ok, "the scene view shows the loaded block")
         yield ("sleep", SETTLE_MS)
         check(opened_payloads() == world_payloads(), "no /Annex payload loads (%r)" % opened_payloads())
-        yield from listed("full + load", ["/Annex/" + b for b in BUILDINGS])
+        yield from listed("load + draw", ["/Annex/" + b for b in BUILDINGS])
         check(all(load_state("/Annex/" + b) == STATE_UNLOADED for b in BUILDINGS),
               "the /Annex buildings stay unloaded (%r)" % [load_state("/Annex/" + b) for b in BUILDINGS])
-        save("scene-expand-hierarchy-full-load")
+        save("scene-expand-hierarchy-load-and-draw")
 
         section("node taken out")
         # connectInput refuses an input that is already connected.
@@ -324,7 +326,7 @@ try:
         # Viewed again, so that deleting it changes what the panel reads.
         viewer.disconnectInput(0)
         require(viewer.connectInput(0, expand), "connect the Viewer to the USDExpandHierarchy again")
-        yield from expect_rows("viewed again", {"/World": ("loadAll", False), "/Annex": ("bbox", False)})
+        yield from expect_rows("viewed again", {"/World": ("loadAndDraw", False), "/Annex": ("bbox", False)})
         expand.destroy()
         expand = None
 

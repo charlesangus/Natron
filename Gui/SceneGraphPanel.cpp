@@ -35,13 +35,16 @@
 #include <mutex>
 #include <shared_mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <QAction>
 #include <QApplication>
 #include <QClipboard>
 #include <QComboBox>
+#include <QFrame>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QHeaderView>
 #include <QHideEvent>
 #include <QIcon>
@@ -53,6 +56,7 @@
 #include <QListView>
 #include <QMenu>
 #include <QMimeData>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
 #include <QPointer>
@@ -75,6 +79,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Geometry/GeoViewerLayer.h"
 #include "Engine/Nodes/Scene/SceneDrawStates.h"
+#include "Engine/Nodes/Scene/SceneKindWalk.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
@@ -85,13 +90,17 @@
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
+#include "Gui/GuiMacros.h"
 #include "Gui/NodeGraph.h"
 #include "Gui/NodeGui.h"
 #include "Gui/NodeSettingsPanel.h"
 #include "Gui/SceneGraphModel.h"
+#include "Gui/SceneGraphUnfolder.h"
 #include "Gui/SceneNodeStageSource.h"
 #include "Gui/ScenePrimInspector.h"
+#include "Gui/ScenePurposeDelegate.h"
 #include "Gui/SceneSelectionActions.h"
+#include "Gui/ThemedIcon.h"
 #include "Gui/UndoHistory.h"
 #include "Gui/ViewerTab.h"
 
@@ -470,8 +479,12 @@ struct SceneGraphPanel::Implementation {
     // selection; see SceneSelectionActions::keepSelectionOrder().
     QStringList selectionOrder;
 
-    // The rows the user expanded, kept across resets.
-    QSet<QString> expanded;
+    // The rows the user expanded, kept across resets, one set per shown node: a stage's reset
+    // reopens only its own rows. The sets go with the stages the panel keeps, the shown one and
+    // those of cachedStages.
+    SceneGraphExpansionMemory expansionMemory { kStageCacheSize + 1 };
+    // The shown node's set.
+    SceneGraphExpandedPaths* expanded = expansionMemory.select(std::shared_ptr<const void>());
     // Set while the panel, not the user, opens or closes rows.
     bool restoringExpansion = false;
     // The row at the top of the tree when it last scrolled other than by rows coming and going.
@@ -512,6 +525,22 @@ struct SceneGraphPanel::Implementation {
     QToolButton* resetDrawStatesButton = nullptr;
     QToolButton* bakeDrawStatesButton = nullptr;
     QToolButton* cancelLoadsButton = nullptr;
+    // The scope the toolbar's commands act in: "selected", "below" or a kind, per panel, not saved.
+    QComboBox* bulkScope = nullptr;
+    std::vector<std::pair<QString, QToolButton*>> bulkButtons;
+    QLabel* bulkStatus = nullptr;
+    QTimer bulkRefresh;
+    // Opens and closes branches of the tree a slice at a time; its rows never load a payload.
+    std::unique_ptr<SceneGraphUnfolder> unfolder;
+    // The node shown when the unfolder last ran or the panel last looked: a run, the status line
+    // it wrote and the rows it owes reopening all belong to that node's stage.
+    NodeWPtr expansionNode;
+    const Node* expansionKey = nullptr;
+    // The model's reset count when leaving a node last stopped a run or cleared its status.
+    int expansionLeftAtReset = -1;
+    bool bulkStatusFromUnfolder = false;
+    QToolButton* unfoldButton = nullptr;
+    QToolButton* foldButton = nullptr;
     QTreeView* changedHereTree = nullptr;
     SceneChangedHereModel* changedHereModel = nullptr;
     SceneGraphStageSourcePtr changedHereSource;
@@ -679,6 +708,14 @@ struct SceneGraphPanel::Implementation {
         panel->setProperty("natronSceneGraphCachedStages", (int)cachedStages.size());
         panel->setProperty("natronSceneGraphTimersActive", pinnedPoll.isActive() || editSettle.isActive() || sourceBar->isSettling() || retiredReap.isActive());
         panel->setProperty("natronSceneGraphTopPath", topPath);
+        panel->setProperty("natronSceneGraphUnfolding", unfolder && unfolder->isRunning());
+        panel->setProperty("natronSceneGraphUnfoldSlices", unfolder ? unfolder->getProgress().slices : 0);
+        panel->setProperty("natronSceneGraphUnfoldedCount", (int)expanded->size());
+        panel->setProperty("natronSceneGraphRememberedStages", (int)expansionMemory.size());
+        panel->setProperty("natronSceneGraphRestoring", unfolder && unfolder->isRestoring());
+        panel->setProperty("natronSceneGraphRestoreSlices", unfolder ? unfolder->getRestoreSliceCount() : 0);
+        panel->setProperty("natronSceneGraphResetCount", model->getResetCount());
+        panel->setProperty("natronSceneGraphExpansionLeftAtReset", expansionLeftAtReset);
     }
 
     void updateStatus()
@@ -710,6 +747,7 @@ struct SceneGraphPanel::Implementation {
         if (!armedPick.isEmpty()) {
             text = SceneGraphPanel::tr("Pick for %1: select prims, Enter writes them, Esc cancels").arg(armedPick);
         }
+        bulkRefresh.start();
         status->setText(text);
         status->setStyleSheet(armedPick.isEmpty() ? QString() : QString::fromUtf8("QLabel { color: #e6a050; font-weight: bold; }"));
         if (!filterPattern.isEmpty()) {
@@ -732,8 +770,47 @@ struct SceneGraphPanel::Implementation {
         return (sourceBar->getFollow() == NodeSourceBar::eFollowViewer) ? viewerSource : SceneGraphStageSourcePtr();
     }
 
+    // Another shown node means another stage, even through the same source: a run walking the
+    // stage left would keep reading it, and the model only takes the new stage in once no read is
+    // in flight, so the run stops here rather than at the model's reset. The remembered rows are
+    // the new node's from here on. What was owed reopening was owed from the set left, which the
+    // unfolder drops with it; the new node's whole set is owed instead, so that its rows reopen
+    // whether the new stage comes in by a reset or by an update, and the reopening's end scrolls
+    // back and lets go of holdTopPath.
+    void leaveExpansionNode()
+    {
+        const NodePtr shown = panel->getShownNode();
+        if ((shown.get() == expansionKey) && (!expansionKey || !expansionNode.expired())) {
+            return;
+        }
+        expansionNode = shown;
+        expansionKey = shown.get();
+        expanded = expansionMemory.select(shown);
+        if (!unfolder) {
+            return;
+        }
+        const bool stopped = unfolder->isRunning();
+        unfolder->setExpandedPaths(expanded);
+        insertedUnder.clear();
+        restoreAll = true;
+        expansionDeferred = false;
+        viewRestore.start();
+        const bool cleared = bulkStatusFromUnfolder;
+        if (cleared) {
+            // It counts rows of the stage left.
+            bulkStatus->clear();
+            bulkStatus->setVisible(false);
+            bulkStatusFromUnfolder = false;
+        }
+        if (stopped || cleared) {
+            expansionLeftAtReset = model->getResetCount();
+        }
+        publishState();
+    }
+
     void applySource()
     {
+        leaveExpansionNode();
         const SceneGraphStageSourcePtr wanted = wantedSource();
         if (model->getSource() == wanted) {
             setSwitching(false);
@@ -792,6 +869,10 @@ struct SceneGraphPanel::Implementation {
         }
         switching = on;
         stack->setEnabled(!on);
+        // The reopening waited for the rows, which may be the ones on show already.
+        if (!on && (holdTopPath || restoreAll || !insertedUnder.isEmpty())) {
+            viewRestore.start();
+        }
         updateStatus();
     }
 
@@ -821,6 +902,11 @@ struct SceneGraphPanel::Implementation {
         cachedStages.push_back(cached);
         pinned.reset();
         while (cachedStages.size() > kStageCacheSize) {
+            // The viewer may show the node whose stage goes; its rows stay remembered.
+            const NodePtr evicted = cachedStages.front().source->getNode();
+            if (evicted != panel->getShownNode()) {
+                expansionMemory.forget(evicted);
+            }
             retireSource(cachedStages.front().source);
             cachedStages.erase(cachedStages.begin());
         }
@@ -848,12 +934,16 @@ struct SceneGraphPanel::Implementation {
         for (std::vector<CachedStage>::iterator it = cachedStages.begin(); it != cachedStages.end();) {
             NodePtr node = it->source->getNode();
             if (!node || !node->isActivated()) {
+                if (node) {
+                    expansionMemory.forget(node);
+                }
                 retireSource(it->source);
                 it = cachedStages.erase(it);
             } else {
                 ++it;
             }
         }
+        expansionMemory.forgetGone();
     }
 
     // A worker's evaluation of source reached its stage.
@@ -886,6 +976,7 @@ struct SceneGraphPanel::Implementation {
             filterDebounce.start();
         }
         updateStatus();
+        updateBakeButton();
         inspectorRefresh.start();
     }
 
@@ -923,6 +1014,7 @@ struct SceneGraphPanel::Implementation {
             // The viewport stays across a change of viewed node, which can move the wanted source
             // between the viewer's stage and the shown node's own.
             if (viewerSource && (model->getSource() == viewerSource) && (wantedSource() == viewerSource)) {
+                leaveExpansionNode();
                 model->refresh();
             } else {
                 applySource();
@@ -931,6 +1023,8 @@ struct SceneGraphPanel::Implementation {
             return;
         }
         if (viewport) {
+            // Unlinked, its walk would go on unseen and out of Esc's reach.
+            viewport->cancelScopedDraw();
             QObject::disconnect(viewport, nullptr, panel, nullptr);
         }
         viewport = newViewport;
@@ -942,6 +1036,9 @@ struct SceneGraphPanel::Implementation {
             QObject::connect(viewport, &SceneViewport::drawStatesChanged, panel, [this]() {
                 model->refreshDrawStates();
                 updateBakeButton();
+            });
+            QObject::connect(viewport, &SceneViewport::scopedDrawProgress, panel, [this](const QString& text, bool running) {
+                showScopedDrawProgress(text, running);
             });
         }
         linkDrawStates();
@@ -955,7 +1052,9 @@ struct SceneGraphPanel::Implementation {
             bakeDrawStatesButton->setEnabled(viewport && SceneSelectionActions::bakeBlocker(viewer.data()).isEmpty());
         }
         if (cancelLoadsButton) {
-            cancelLoadsButton->setEnabled(viewport && viewport->getRenderer().hasPendingStageLoads());
+            const bool pinnedShown = pinned && (model->getSource() == pinned);
+            // A batch under way counts: cancelling it drops the levels a load to a kind asks for after it.
+            cancelLoadsButton->setEnabled(pinnedShown ? pinned->hasPendingLoads() : (viewport && viewport->getRenderer().hasOutstandingStageLoads()));
         }
     }
 
@@ -1056,6 +1155,7 @@ struct SceneGraphPanel::Implementation {
             updateBakeButton();
         } else if (pinned && (model->getSource() == pinned)) {
             pinned->requestLoad(paths, withDescendants);
+            updateBakeButton();
         } else {
             return;
         }
@@ -1065,11 +1165,10 @@ struct SceneGraphPanel::Implementation {
     void requestUnload(const QStringList& paths)
     {
         for (const QString& path : paths) {
-            const QString below = path + QLatin1Char('/');
-            for (const QString& open : expanded.values()) {
-                if (open.startsWith(below)) {
-                    closeRow(open);
-                }
+            const std::pair<SceneGraphExpandedPaths::iterator, SceneGraphExpandedPaths::iterator> below = expandedPathsBelow(*expanded, path);
+            const QStringList open(below.first, below.second);
+            for (const QString& row : open) {
+                closeRow(row);
             }
             // Left open, an unloaded row could not be twirled to load it again.
             if (model->getPayloadState(path) != SceneGraphModel::ePayloadStateNone) {
@@ -1083,6 +1182,416 @@ struct SceneGraphPanel::Implementation {
         }
     }
 
+    /**
+     * @brief Closes, as requestUnload() does, the remembered open rows an Unload Below kind at roots
+     * unloads, and every row below them: the payload rows below a row the walk to kind matches,
+     * which the rows' Kind column tells by walkToKind()'s stop rule, a root of kind walked through.
+     * Rows not read are below an unloaded payload, which this unload leaves alone.
+     **/
+    void closeRowsUnloadedBelowKind(const QStringList& roots,
+                                    const QString& kind)
+    {
+        const PXR_NS::TfToken target(kind.toStdString());
+        // 0 the walk goes on below the row, 1 it stops there, 2 it stops there on a match.
+        QHash<QString, int> stops;
+        const auto stopAt = [&](const QString& path) {
+            QHash<QString, int>::const_iterator found = stops.constFind(path);
+            if (found != stops.constEnd()) {
+                return found.value();
+            }
+            const QModelIndex index = model->indexOfPath(path, false);
+            const QString rowKind = index.isValid() ? index.siblingAtColumn(SceneGraphModel::eColumnKind).data(Qt::DisplayRole).toString() : QString();
+            bool matches = false;
+            const int stop = kindWalkStopsAt(PXR_NS::TfToken(rowKind.toStdString()), target, &matches) ? (matches ? 2 : 1) : 0;
+            stops.insert(path, stop);
+
+            return stop;
+        };
+        QStringList unloaded;
+        for (const QString& root : roots) {
+            const std::pair<SceneGraphExpandedPaths::iterator, SceneGraphExpandedPaths::iterator> below = expandedPathsBelow(*expanded, root);
+            for (SceneGraphExpandedPaths::iterator it = below.first; it != below.second; ++it) {
+                const QString& path = *it;
+                if ((!unloaded.isEmpty() && path.startsWith(unloaded.back() + QLatin1Char('/'))) || (model->getPayloadState(path) == SceneGraphModel::ePayloadStateNone)) {
+                    continue;
+                }
+                QString ancestor = root;
+                int from = (root == QString::fromUtf8("/")) ? 1 : (int)root.size() + 1;
+                for (;;) {
+                    int stop = stopAt(ancestor);
+                    if ((stop == 2) && (ancestor == root)) {
+                        stop = 0;
+                    }
+                    if (stop != 0) {
+                        if (stop == 2) {
+                            unloaded.push_back(path);
+                        }
+                        break;
+                    }
+                    const int slash = path.indexOf(QLatin1Char('/'), from);
+                    if (slash < 0) {
+                        break;
+                    }
+                    ancestor = path.left(slash);
+                    from = slash + 1;
+                }
+            }
+        }
+        for (const QString& path : unloaded) {
+            const std::pair<SceneGraphExpandedPaths::iterator, SceneGraphExpandedPaths::iterator> below = expandedPathsBelow(*expanded, path);
+            const QStringList open(below.first, below.second);
+            for (const QString& row : open) {
+                closeRow(row);
+            }
+            closeRow(path);
+        }
+    }
+
+    static bool isBulkDrawAction(const QString& action)
+    {
+        SceneDrawStateEnum state;
+
+        return sceneDrawStateFromName(action.toStdString(), &state);
+    }
+
+    // "Component", or a custom kind as it is registered.
+    static QString kindLabel(const QString& kind)
+    {
+        if (!isBuiltInKindScope(PXR_NS::TfToken(kind.toStdString())) || kind.isEmpty()) {
+            return kind;
+        }
+
+        return kind.left(1).toUpper() + kind.mid(1);
+    }
+
+    // What action does in scope, for its button's tooltip.
+    static QString bulkToolTip(const QString& action,
+                               const QString& scope)
+    {
+        const bool below = (scope == QString::fromUtf8("below"));
+        const bool selected = (scope == QString::fromUtf8("selected"));
+        const QString kind = SceneGraphModel::kindPluralText(scope);
+
+        if (action == QString::fromUtf8("load")) {
+            if (selected) {
+                return SceneGraphPanel::tr("Load: loads the payloads of the selected rows, without what they hold.");
+            }
+            if (below) {
+                return SceneGraphPanel::tr("Load Below: loads the selected rows and every payload below them.");
+            }
+
+            return SceneGraphPanel::tr("Load To %1: loads level by level from the selected rows down to the %2 below them, "
+                                       "and the %2 themselves; payloads below the %2 stay unloaded.")
+                .arg(kindLabel(scope), kind);
+        }
+        if (action == QString::fromUtf8("unload")) {
+            if (selected) {
+                return SceneGraphPanel::tr("Unload: unloads the selected rows and everything below them.");
+            }
+            if (below) {
+                return SceneGraphPanel::tr("Unload already unloads everything below the rows; pick another scope.");
+            }
+
+            return SceneGraphPanel::tr("Unload Below %1: keeps the %2 below the selected rows loaded and unloads the payloads below them.").arg(kindLabel(scope), kind);
+        }
+        if (action == QString::fromUtf8("clearBelow")) {
+            if (selected) {
+                return SceneGraphPanel::tr("Clear Below: clears the draw states set below the selected rows; each row keeps its own.");
+            }
+            if (below) {
+                return SceneGraphPanel::tr("Every other command in Below scope clears the states below already; pick another scope.");
+            }
+
+            return SceneGraphPanel::tr("Clear Below Each %1: clears the draw states set below the loaded %2 below the selected rows.").arg(kindLabel(scope), kind);
+        }
+        SceneDrawStateEnum state = eSceneDrawStateFull;
+        sceneDrawStateFromName(action.toStdString(), &state);
+        const QString label = SceneGraphModel::drawStateLabel((int)state);
+        if (selected) {
+            return SceneGraphPanel::tr("%1: sets %1 on the selected rows in the linked viewer.").arg(label);
+        }
+        if (below) {
+            return SceneGraphPanel::tr("%1 Below: sets %1 on the selected rows in the linked viewer and clears the states set below them, as one change.").arg(label);
+        }
+
+        return SceneGraphPanel::tr("%1 To %2: sets %1 on the loaded %3 below the selected rows in the linked viewer; "
+                                   "nothing inside an unloaded payload changes.")
+            .arg(label, kindLabel(scope), kind);
+    }
+
+    QString bulkScopeName() const
+    {
+        return bulkScope ? bulkScope->currentData().toString() : QString::fromUtf8("selected");
+    }
+
+    // Whether any of paths is unloaded or not known yet, and whether any is not unloaded.
+    void payloadStatesOf(const QStringList& paths,
+                         bool* anyUnloaded,
+                         bool* anyOther) const
+    {
+        *anyUnloaded = false;
+        *anyOther = false;
+        for (const QString& path : paths) {
+            // A row of the filter's list may not have been read, so nothing is known of its payload.
+            const bool read = model->indexOfPath(path, false).isValid();
+            const SceneGraphModel::PayloadStateEnum state = model->getPayloadState(path);
+            const bool unloaded = (state == SceneGraphModel::ePayloadStateUnloaded) || (state == SceneGraphModel::ePayloadStateFailed);
+            *anyUnloaded = *anyUnloaded || unloaded || !read;
+            *anyOther = *anyOther || !unloaded;
+        }
+    }
+
+    bool bulkActionEnabled(const QString& action,
+                           const QString& scope,
+                           const QStringList& paths) const
+    {
+        const bool below = (scope == QString::fromUtf8("below"));
+        const bool selected = (scope == QString::fromUtf8("selected"));
+
+        if (paths.isEmpty()) {
+            return false;
+        }
+        if ((action == QString::fromUtf8("load")) || (action == QString::fromUtf8("unload"))) {
+            if (!loadsOnShownStage() || ((action == QString::fromUtf8("unload")) && below)) {
+                return false;
+            }
+            if (!selected) {
+                return true;
+            }
+            bool anyUnloaded = false;
+            bool anyOther = false;
+            payloadStatesOf(paths, &anyUnloaded, &anyOther);
+
+            return (action == QString::fromUtf8("load")) ? anyUnloaded : anyOther;
+        }
+        if (action == QString::fromUtf8("clearBelow")) {
+            return viewport && !below;
+        }
+
+        return bool(viewport);
+    }
+
+    void updateBulkButtons()
+    {
+        if (!bulkScope) {
+            return;
+        }
+        const QString scope = bulkScopeName();
+        const QStringList selection = panel->getSelection();
+
+        for (const std::pair<QString, QToolButton*>& entry : bulkButtons) {
+            QToolButton* button = entry.second;
+            button->setEnabled(bulkActionEnabled(entry.first, scope, selection));
+            button->setToolTip(bulkToolTip(entry.first, scope));
+            if (!button->isCheckable()) {
+                continue;
+            }
+            SceneDrawStateEnum state = eSceneDrawStateFull;
+            sceneDrawStateFromName(entry.first.toStdString(), &state);
+            bool all = viewport && !selection.isEmpty();
+            for (const QString& path : selection) {
+                if (!all) {
+                    break;
+                }
+                const QModelIndex index = model->indexOfPath(path, false);
+                const QVariant shown = index.data(SceneGraphModel::eDrawStateRole);
+                all = shown.isValid() && (shown.toInt() == (int)state)
+                    && (index.data(SceneGraphModel::eDrawStateOriginRole).toInt() == (int)eSceneDrawOriginViewer);
+            }
+            button->setChecked(all);
+        }
+        for (QToolButton* button : { unfoldButton, foldButton }) {
+            if (button) {
+                // They act on the tree's rows, not on the filter's results or Changed Here's.
+                button->setEnabled(!selection.isEmpty() && (shownRowsView() == tree));
+                button->setToolTip(unfoldToolTip(button == foldButton, scope));
+            }
+        }
+    }
+
+    // Runs action in scope on paths, on the stage the rows are read from for loads and in the
+    // linked viewer for draw states, and shows what it did. Returns that summary, empty when the
+    // command does not apply.
+    QString runBulk(const QString& action,
+                    const QStringList& paths,
+                    const QString& scope)
+    {
+        QString summary;
+
+        if (viewport && viewport->isScopedDrawRunning()) {
+            viewport->cancelScopedDraw();
+        }
+        if (bulkActionEnabled(action, scope, paths)) {
+            const bool kind = (scope != QString::fromUtf8("selected")) && (scope != QString::fromUtf8("below"));
+            if (action == QString::fromUtf8("load")) {
+                if (!kind) {
+                    requestLoad(paths, scope == QString::fromUtf8("below"));
+                    summary = SceneGraphModel::loadingText(paths.size(), scope);
+                } else if (showsViewerStage()) {
+                    summary = viewport->loadRows(paths, scope);
+                    updateBakeButton();
+                } else if (pinned && (model->getSource() == pinned)) {
+                    pinned->requestLoadToKind(paths, scope.toStdString());
+                    updateBakeButton();
+                    summary = SceneGraphModel::loadingText(paths.size(), scope);
+                }
+            } else if (action == QString::fromUtf8("unload")) {
+                if (!kind) {
+                    requestUnload(paths);
+                    summary = SceneGraphModel::unloadingText(paths.size(), scope);
+                } else if (showsViewerStage()) {
+                    bool queued = false;
+                    summary = viewport->unloadRows(paths, scope, &queued);
+                    if (queued) {
+                        closeRowsUnloadedBelowKind(paths, scope);
+                    }
+                } else if (pinned && (model->getSource() == pinned)) {
+                    closeRowsUnloadedBelowKind(paths, scope);
+                    pinned->requestUnloadBelowKind(paths, scope.toStdString());
+                    updateBakeButton();
+                    summary = SceneGraphModel::unloadingText(paths.size(), scope);
+                }
+            } else if (viewport) {
+                summary = viewport->setDrawStateOnRowsScoped(paths, action, scope);
+            }
+        }
+        bulkStatus->setText(summary);
+        bulkStatus->setVisible(!summary.isEmpty());
+        bulkStatusFromUnfolder = false;
+        bulkRefresh.start();
+
+        return summary;
+    }
+
+    // The command of bindings a key is bound to in the Shortcut Editor, null when none is.
+    static const SceneGraphBulkKeyBinding* commandForKey(const std::vector<SceneGraphBulkKeyBinding>& bindings,
+                                                         Qt::KeyboardModifiers modifiers,
+                                                         int key)
+    {
+        GuiApplicationManager* manager = dynamic_cast<GuiApplicationManager*>(AppManager::instance());
+
+        if (!manager || (key == 0) || (key == Qt::Key_unknown)) {
+            return nullptr;
+        }
+        for (const SceneGraphBulkKeyBinding& binding : bindings) {
+            if (manager->matchesKeybind(kShortcutGroupViewer3D, binding.actionID, modifiers, key)) {
+                return &binding;
+            }
+        }
+
+        return nullptr;
+    }
+
+    static const SceneGraphBulkKeyBinding* bulkCommandForKey(Qt::KeyboardModifiers modifiers,
+                                                             int key)
+    {
+        return commandForKey(getSceneGraphBulkKeyBindings(), modifiers, key);
+    }
+
+    static const SceneGraphBulkKeyBinding* expandCommandForKey(Qt::KeyboardModifiers modifiers,
+                                                               int key)
+    {
+        return commandForKey(getSceneGraphFoldKeyBindings(), modifiers, key);
+    }
+
+    // Unfolds or folds the tree's rows at paths in scope: Selected and Below unfold all below,
+    // a kind unfolds to it; folding is always all below.
+    void runUnfold(bool fold,
+                   const QStringList& paths,
+                   const QString& scope)
+    {
+        if (paths.isEmpty()) {
+            return;
+        }
+        leaveExpansionNode();
+        if (viewport && viewport->isScopedDrawRunning()) {
+            viewport->cancelScopedDraw();
+        }
+        if (fold) {
+            unfolder->start(SceneGraphUnfolder::eModeFoldBelow, paths);
+        } else if ((scope == QString::fromUtf8("selected")) || (scope == QString::fromUtf8("below"))) {
+            unfolder->start(SceneGraphUnfolder::eModeUnfoldBelow, paths);
+        } else {
+            unfolder->start(SceneGraphUnfolder::eModeUnfoldToKind, paths, scope);
+        }
+    }
+
+    void showScopedDrawProgress(const QString& text,
+                                bool running)
+    {
+        bulkStatus->setText(text);
+        bulkStatus->setVisible(!text.isEmpty());
+        bulkStatusFromUnfolder = false;
+        if (!running) {
+            bulkRefresh.start();
+        }
+        publishState();
+    }
+
+    // Whether Esc has a long command to stop: an expansion, or a kind-scoped draw state edit's walk.
+    bool hasStoppable() const
+    {
+        return (unfolder && unfolder->isRunning()) || (viewport && viewport->isScopedDrawRunning());
+    }
+
+    void stopStoppable()
+    {
+        if (unfolder && unfolder->isRunning()) {
+            unfolder->cancel();
+        }
+        if (viewport && viewport->isScopedDrawRunning()) {
+            viewport->cancelScopedDraw();
+        }
+    }
+
+    void showUnfoldProgress(const SceneGraphUnfolder::Progress& progress)
+    {
+        bulkStatus->setText(SceneGraphUnfolder::progressText(progress));
+        bulkStatus->setVisible(true);
+        bulkStatusFromUnfolder = true;
+        if (!progress.running && (holdTopPath || restoreAll || !insertedUnder.isEmpty())) {
+            viewRestore.start();
+        }
+        publishState();
+    }
+
+    static QString unfoldToolTip(bool fold,
+                                 const QString& scope)
+    {
+        if (fold) {
+            return SceneGraphPanel::tr("Fold All Below: closes the selected rows and every row below them, whatever the scope. Esc stops it.");
+        }
+        if ((scope == QString::fromUtf8("selected")) || (scope == QString::fromUtf8("below"))) {
+            return SceneGraphPanel::tr("Unfold All Below: opens every row below the selected rows. Rows of unloaded payloads stay closed "
+                                       "and unloaded. Esc stops it.");
+        }
+
+        return SceneGraphPanel::tr("Unfold To %1: opens the rows from the selected rows down to the %2 below them and leaves the %2 "
+                                   "closed. Rows of unloaded payloads stay closed and unloaded. Esc stops it.")
+            .arg(kindLabel(scope), SceneGraphModel::kindPluralText(scope));
+    }
+
+    // The row whose branch arrow is at pos in the tree's viewport, invalid when pos is on none.
+    QModelIndex branchArrowAt(const QPoint& pos) const
+    {
+        const QModelIndex at = tree->indexAt(pos);
+
+        if (!at.isValid()) {
+            return QModelIndex();
+        }
+        const QModelIndex index = at.siblingAtColumn(0);
+        if (!model->hasChildren(index) || (!index.parent().isValid() && !tree->rootIsDecorated())) {
+            return QModelIndex();
+        }
+        // The name column's rect starts after the row's indentation, whose last step holds the arrow.
+        const QRect rect = tree->visualRect(index);
+        if ((pos.y() < rect.top()) || (pos.y() > rect.bottom())) {
+            return QModelIndex();
+        }
+
+        return ((pos.x() >= rect.left() - tree->indentation()) && (pos.x() < rect.left())) ? index : QModelIndex();
+    }
+
     void closeRow(const QString& path)
     {
         const QModelIndex index = model->indexOfPath(path, false);
@@ -1090,70 +1599,45 @@ struct SceneGraphPanel::Implementation {
         if (index.isValid()) {
             tree->collapse(index);
         }
-        expanded.remove(path);
+        expanded->erase(path);
     }
 
-    // Reopens the remembered rows, or only those below one of under.
-    void restoreExpansion(const QSet<QString>* under = nullptr)
+    // Hands what is owed reopening to the unfolder, which reopens it a slice at a time and then
+    // calls onRestored().
+    void restoreView()
     {
-        QStringList paths;
-
-        for (const QString& path : expanded) {
-            bool wanted = !under;
-            if (under) {
-                for (const QString& parent : *under) {
-                    if ((path.size() > parent.size() + 1) && path.startsWith(parent) && (path.at(parent.size()) == QLatin1Char('/'))) {
-                        wanted = true;
-                        break;
-                    }
-                }
-            }
-            if (wanted) {
-                paths.push_back(path);
-            }
+        // The rows stay the stage left's until the new one is read, whose reset restores; a run's
+        // end restarts viewRestore.
+        if (!unfolder || switching || unfolder->isRunning()) {
+            return;
         }
-        std::sort(paths.begin(), paths.end(), [](const QString& a, const QString& b) { return a.size() < b.size(); });
-        restoringExpansion = true;
+        const bool all = restoreAll;
+        const QStringList under = insertedUnder.values();
+        restoreAll = false;
+        insertedUnder.clear();
         expansionDeferred = false;
-        for (const QString& path : paths) {
-            // Every path asks before any read comes back, so that the reads queue together
-            // rather than one per answer.
-            bool deferred = false;
-            const QModelIndex index = model->indexOfPath(path, true, &deferred);
-            if (deferred) {
-                expansionDeferred = true;
-                continue;
-            }
-            // Opening an unloaded payload row would load it: it stays closed, and remembered,
-            // until the user twirls it.
-            const SceneGraphModel::PayloadStateEnum state = model->getPayloadState(path);
-            if ((state == SceneGraphModel::ePayloadStateUnloaded) || (state == SceneGraphModel::ePayloadStateFailed)) {
-                continue;
-            }
-            if (index.isValid()) {
-                tree->expand(index);
-            }
+        if (model->rowCount(QModelIndex()) == 0) {
+            // Before a stage's top rows are read, every remembered path would ask the worker for
+            // them, holding back the stage's rows and its edits. Their insertion restores.
+            restoreScroll();
+
+            return;
         }
-        restoringExpansion = false;
+        unfolder->restore(all, under);
     }
 
-    // Reopens what viewRestore was started for, and keeps it to reopen again while the model owes
-    // reads.
-    void restorePendingExpansion()
+    // The unfolder's reopening ended; one it could not finish for reads the model owed is redone
+    // once they are done.
+    void onRestored(bool deferred)
     {
-        expansionDeferred = false;
-        if (!expanded.isEmpty() && (restoreAll || !insertedUnder.isEmpty())) {
-            restoreExpansion(restoreAll ? nullptr : &insertedUnder);
-        }
-        if (!expansionDeferred) {
-            restoreAll = false;
-            insertedUnder.clear();
-        }
+        expansionDeferred = deferred;
+        restoreScroll();
+        publishState();
     }
 
     void rememberTopPath()
     {
-        if (holdTopPath || restoringExpansion) {
+        if (holdTopPath || restoringExpansion || (unfolder && unfolder->isRestoring())) {
             return;
         }
         const QModelIndex top = tree->indexAt(QPoint(0, 0));
@@ -1539,9 +2023,11 @@ struct SceneGraphPanel::Implementation {
         return SceneGraphPanel::tr("Text without /, { or % lists the prims whose names hold it; * and ? match any text and any character.\n"
                                    "Text that starts with / or holds a {predicate} is a path expression, as prim pattern knobs take it: "
                                    "/World/* selects the children of /World, //*Light* any prim whose name holds Light, at any depth, "
-                                   "//{kind:component} every component, /World//{isa:Mesh} the meshes below /World. "
+                                   "//{kind:component} every component, /World//{isa:Mesh} the meshes below /World, "
+                                   "//{purpose:proxy} the prims whose purpose, authored or inherited, is proxy "
+                                   "(default, render, proxy or guide). "
                                    "Separate patterns with spaces for their union, and combine them with &, - and ~.\n"
-                                   "Besides USD's predicates, {loaded:false} matches prims whose payload is unloaded and "
+                                   "Here only, not in prim pattern knobs, {loaded:false} matches prims whose payload is unloaded and "
                                    "{active:false} inactive prims. The matches are selected as they are found; "
                                    "Apply To Node writes the expression to the prim pattern of the current node.");
     }
@@ -1759,14 +2245,15 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     filterLayout->setContentsMargins(0, 0, 2, 0);
     filterLayout->setSpacing(4);
     filterLayout->addWidget(_imp->filter, 1);
-    filterLayout->addWidget(_imp->applyButton);
     filterLayout->addWidget(_imp->changedHereButton);
+    layout->addLayout(filterLayout);
+    layout->addWidget(_imp->filterMessage);
+
     _imp->resetDrawStatesButton = new QToolButton(this);
     _imp->resetDrawStatesButton->setObjectName(QString::fromUtf8("sceneGraphResetDrawStates"));
     _imp->resetDrawStatesButton->setText(tr("Reset to Graph"));
     _imp->resetDrawStatesButton->setToolTip(tr("Clears every draw state set in the linked viewer, so that every prim is drawn as the graph says."));
     _imp->resetDrawStatesButton->setEnabled(false);
-    filterLayout->addWidget(_imp->resetDrawStatesButton);
     _imp->bakeDrawStatesButton = new QToolButton(this);
     _imp->bakeDrawStatesButton->setObjectName(QString::fromUtf8("sceneGraphBakeDrawStates"));
     _imp->bakeDrawStatesButton->setText(tr("Bake to Node"));
@@ -1774,20 +2261,159 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
                                               "one rule per prim, and clears them from the viewer, which then views that node. The viewed node "
                                               "takes the rules itself when it is a USDExpandHierarchy, and so does one directly below it."));
     _imp->bakeDrawStatesButton->setEnabled(false);
-    filterLayout->addWidget(_imp->bakeDrawStatesButton);
     _imp->cancelLoadsButton = new QToolButton(this);
     _imp->cancelLoadsButton->setObjectName(QString::fromUtf8("sceneGraphCancelLoads"));
     _imp->cancelLoadsButton->setText(tr("Cancel Loads"));
-    _imp->cancelLoadsButton->setToolTip(tr("Drops the payload loads the linked viewer has queued for prims set to Full or Load and not started yet, "
-                                           "as switching the viewer to another node does. A load under way finishes, and what is loaded stays."));
+    _imp->cancelLoadsButton->setToolTip(tr("Drops the payload loads not started yet on the stage the rows are read from: the linked viewer's, "
+                                           "queued for prims set to Geometry or Load + Draw, as switching the viewer to another node does, or the "
+                                           "pinned node's. A Load To walk stops after the level under way. A load under way finishes, and what is "
+                                           "loaded stays."));
     _imp->cancelLoadsButton->setEnabled(false);
-    filterLayout->addWidget(_imp->cancelLoadsButton);
-    layout->addLayout(filterLayout);
-    layout->addWidget(_imp->filterMessage);
+
+    QHBoxLayout* bulkLayout = new QHBoxLayout();
+    bulkLayout->setContentsMargins(0, 0, 2, 0);
+    bulkLayout->setSpacing(2);
+    _imp->bulkScope = new QComboBox(this);
+    _imp->bulkScope->setObjectName(QString::fromUtf8("sceneGraphBulkScope"));
+    _imp->bulkScope->setToolTip(tr("What the commands beside act on. Selected: the selected rows. Below: the selected rows and "
+                                   "everything below them. To <Kind>: the prims of that kind below the selected rows, down to the "
+                                   "first one on each branch; a custom kind matches itself only. A custom kind derived from none of "
+                                   "assembly, component and subcomponent stops no branch: Load To it loads every payload on a branch "
+                                   "that holds no prim of it."));
+    _imp->bulkScope->addItem(tr("Selected"), QString::fromUtf8("selected"));
+    _imp->bulkScope->addItem(tr("Below"), QString::fromUtf8("below"));
+    _imp->bulkScope->addItem(tr("To Assembly"), QString::fromUtf8("assembly"));
+    _imp->bulkScope->addItem(tr("To Component"), QString::fromUtf8("component"));
+    _imp->bulkScope->addItem(tr("To Subcomponent"), QString::fromUtf8("subcomponent"));
+    const std::vector<PXR_NS::TfToken> customKinds = registeredCustomKinds();
+    if (!customKinds.empty()) {
+        _imp->bulkScope->insertSeparator(_imp->bulkScope->count());
+    }
+    for (const PXR_NS::TfToken& kind : customKinds) {
+        const QString name = QString::fromStdString(kind.GetString());
+        _imp->bulkScope->addItem(tr("To %1").arg(name), name);
+        const QString tip = (sceneKindLevel(kind) == eSceneKindLevelPassThrough)
+            ? tr("The %1 prims below the selected rows. %1 derives from none of assembly, component and subcomponent, so no "
+                 "other kind stops the walk: Load To %1 loads every payload on a branch that holds no %1 prim.")
+                  .arg(name)
+            : tr("The %1 prims below the selected rows, down to the first prim of its level on each branch; prims of that "
+                 "level of another kind are not acted on.")
+                  .arg(name);
+        _imp->bulkScope->setItemData(_imp->bulkScope->count() - 1, tip, Qt::ToolTipRole);
+    }
+    bulkLayout->addWidget(_imp->bulkScope);
+    const int layoutSpacing = bulkLayout->spacing();
+    const int groupGap = 16;
+    const int iconGap = groupGap / 2;
+    const auto addGap = [bulkLayout, layoutSpacing](int gap) {
+        bulkLayout->addSpacing(std::max(0, gap - 2 * layoutSpacing));
+    };
+    const auto addDivider = [this, bulkLayout, &addGap, groupGap](int height) {
+        QFrame* divider = new QFrame(this);
+        divider->setFrameShape(QFrame::VLine);
+        divider->setFrameShadow(QFrame::Sunken);
+        divider->setFixedHeight(height);
+        addGap(groupGap / 2);
+        bulkLayout->addWidget(divider, 0, Qt::AlignVCenter);
+        addGap(groupGap / 2);
+    };
+    const auto addSection = [this, bulkLayout, &addGap, iconGap](const char* objectName, const char* iconPath, const QString& tip) {
+        addGap(iconGap);
+        QLabel* icon = new QLabel(this);
+        icon->setObjectName(QString::fromUtf8(objectName));
+        icon->setFrameStyle(QFrame::NoFrame);
+        icon->setContentsMargins(0, 0, 0, 0);
+        icon->setAutoFillBackground(false);
+        icon->setStyleSheet(QString::fromUtf8("QLabel { background: transparent; border: none; margin: 0; padding: 0; }"));
+        icon->setFixedSize(16, 16);
+        icon->setToolTip(tip);
+        ThemedIcon::setLabelIcon(icon, ThemedIcon::icon(QString::fromUtf8(iconPath), 16), 16);
+        bulkLayout->addWidget(icon, 0, Qt::AlignVCenter);
+        addGap(iconGap);
+    };
+    struct BulkButton {
+        const char* action;
+        const char* label;
+    };
+    const auto addBulkButtons = [this, bulkLayout](const std::vector<BulkButton>& buttons) {
+        for (const BulkButton& entry : buttons) {
+            const QString action = QString::fromUtf8(entry.action);
+            QToolButton* button = new QToolButton(this);
+            button->setObjectName(QString::fromUtf8("sceneGraphBulk_") + action);
+            button->setText(tr(entry.label));
+            button->setCheckable(Implementation::isBulkDrawAction(action));
+            button->setEnabled(false);
+            QObject::connect(button, &QToolButton::clicked, this, [this, action]() {
+                _imp->runBulk(action, getSelection(), _imp->bulkScopeName());
+            });
+            _imp->bulkButtons.push_back(std::make_pair(action, button));
+            bulkLayout->addWidget(button);
+        }
+    };
+    addSection("sceneGraphBulkLoadIcon", NATRON_ICONS_PATH "lucide/package-open.svg", tr("Load"));
+    addBulkButtons({
+        { "load", QT_TR_NOOP("Load") },
+        { "unload", QT_TR_NOOP("Unload") },
+    });
+    addSection("sceneGraphBulkDisplayIcon", NATRON_ICONS_PATH "lucide/eye.svg", tr("Display"));
+    addBulkButtons({
+        { "bbox", QT_TR_NOOP("BBox") },
+        { "passThrough", QT_TR_NOOP("Pass Through") },
+        { "geometry", QT_TR_NOOP("Geometry") },
+        { "loadAndDraw", QT_TR_NOOP("Load + Draw") },
+        { "hide", QT_TR_NOOP("Hide") },
+    });
+    addDivider(12);
+    addBulkButtons({
+        { "clearBelow", QT_TR_NOOP("Clear Below") },
+    });
+    bulkLayout->addWidget(_imp->resetDrawStatesButton);
+    addDivider(12);
+    const auto addUnfoldButton = [this, bulkLayout](const char* objectName, const QString& label, const char* iconPath, bool fold) {
+        QToolButton* button = new QToolButton(this);
+        button->setObjectName(QString::fromUtf8(objectName));
+        button->setText(label);
+        button->setIcon(ThemedIcon::icon(QString::fromUtf8(iconPath), 16));
+        button->setToolButtonStyle(Qt::ToolButtonIconOnly);
+        button->setEnabled(false);
+        QObject::connect(button, &QToolButton::clicked, this, [this, fold]() { _imp->runUnfold(fold, getSelection(), _imp->bulkScopeName()); });
+        bulkLayout->addWidget(button);
+
+        return button;
+    };
+    _imp->unfoldButton = addUnfoldButton("sceneGraphUnfold", tr("Unfold"), NATRON_ICONS_PATH "lucide/chevrons-down.svg", false);
+    _imp->foldButton = addUnfoldButton("sceneGraphFold", tr("Fold"), NATRON_ICONS_PATH "lucide/chevrons-down-up.svg", true);
+    bulkLayout->addStretch(1);
+    layout->addLayout(bulkLayout);
+    _imp->bulkStatus = new QLabel(this);
+    _imp->bulkStatus->setObjectName(QString::fromUtf8("sceneGraphBulkStatus"));
+    _imp->bulkStatus->setContentsMargins(4, 0, 4, 0);
+    _imp->bulkStatus->setWordWrap(true);
+    _imp->bulkStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    _imp->bulkStatus->setVisible(false);
+    layout->addWidget(_imp->bulkStatus);
+    _imp->bulkRefresh.setSingleShot(true);
+    _imp->bulkRefresh.setInterval(0);
+    QObject::connect(&_imp->bulkRefresh, &QTimer::timeout, this, [this]() { _imp->updateBulkButtons(); });
+    QObject::connect(_imp->bulkScope, static_cast<void (QComboBox::*)(int)>(&QComboBox::currentIndexChanged), this, [this]() { _imp->bulkRefresh.start(); });
 
     QSplitter* splitter = new QSplitter(Qt::Vertical, this);
     splitter->setChildrenCollapsible(false);
-    _imp->stack = new QStackedWidget(splitter);
+    QWidget* treePane = new QWidget(splitter);
+    treePane->setObjectName(QString::fromUtf8("sceneGraphTreePane"));
+    QVBoxLayout* treePaneLayout = new QVBoxLayout(treePane);
+    treePaneLayout->setContentsMargins(0, 0, 0, 0);
+    treePaneLayout->setSpacing(2);
+    _imp->stack = new QStackedWidget(treePane);
+    treePaneLayout->addWidget(_imp->stack, 1);
+    QHBoxLayout* nodeLayout = new QHBoxLayout();
+    nodeLayout->setContentsMargins(0, 0, 2, 0);
+    nodeLayout->setSpacing(4);
+    nodeLayout->addWidget(_imp->applyButton);
+    nodeLayout->addWidget(_imp->bakeDrawStatesButton);
+    nodeLayout->addStretch(1);
+    nodeLayout->addWidget(_imp->cancelLoadsButton);
+    treePaneLayout->addLayout(nodeLayout);
 
     _imp->model = new SceneGraphModel(this);
     _imp->model->setReadsOnWorker(true);
@@ -1797,9 +2423,9 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->tree->setObjectName(QString::fromUtf8("sceneGraphTree"));
     _imp->tree->setModel(_imp->model);
     QObject::connect(_imp->model, &SceneGraphModel::deferredReadsDone, this, [this]() {
-        if (_imp->expansionDeferred) {
-            _imp->restorePendingExpansion();
-            _imp->restoreScroll();
+        // As for viewRestore: a run's reads drain many times over, and its end restores once.
+        if (_imp->expansionDeferred && !(_imp->unfolder && _imp->unfolder->isRunning())) {
+            _imp->restoreView();
         }
         // Behind the filter's results too: showSelection() selects the tree's rows there, and a
         // pick the filter hides is selected in the tree alone.
@@ -1812,6 +2438,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->tree->setUniformRowHeights(true);
     _imp->tree->setItemDelegateForColumn(SceneGraphModel::eColumnName, new PayloadBadgeDelegate(_imp->tree));
     _imp->tree->setItemDelegateForColumn(SceneGraphModel::eColumnDrawState, new DrawStateDelegate(_imp->tree));
+    _imp->tree->setItemDelegateForColumn(SceneGraphModel::eColumnPurpose, new ScenePurposeDelegate(_imp->tree));
     _imp->tree->setDragEnabled(true);
     _imp->tree->setDragDropMode(QAbstractItemView::DragOnly);
     _imp->tree->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -1819,6 +2446,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnName, QHeaderView::Stretch);
     _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnType, QHeaderView::ResizeToContents);
     _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnKind, QHeaderView::ResizeToContents);
+    _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnPurpose, QHeaderView::ResizeToContents);
     _imp->tree->header()->setSectionResizeMode(SceneGraphModel::eColumnDrawState, QHeaderView::ResizeToContents);
     _imp->stack->addWidget(_imp->tree);
 
@@ -1834,6 +2462,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     _imp->changedHereTree->setContextMenuPolicy(Qt::CustomContextMenu);
     _imp->changedHereTree->header()->setStretchLastSection(false);
     _imp->changedHereTree->header()->setSectionResizeMode(SceneGraphModel::eColumnName, QHeaderView::Stretch);
+    _imp->changedHereTree->setItemDelegateForColumn(SceneGraphModel::eColumnPurpose, new ScenePurposeDelegate(_imp->changedHereTree));
     // Its rows hold no draw state.
     _imp->changedHereTree->setColumnHidden(SceneGraphModel::eColumnDrawState, true);
     _imp->stack->addWidget(_imp->changedHereTree);
@@ -1861,7 +2490,7 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
             gui->showNodeSettingsPanel(std::dynamic_pointer_cast<NodeGui>(node->getNodeGui()));
         });
     }
-    splitter->addWidget(_imp->stack);
+    splitter->addWidget(treePane);
     splitter->addWidget(_imp->inspector);
     splitter->setStretchFactor(0, 3);
     splitter->setStretchFactor(1, 2);
@@ -1897,7 +2526,11 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
         }
     });
     QObject::connect(_imp->cancelLoadsButton, &QToolButton::clicked, this, [this]() {
-        if (_imp->viewport) {
+        if (_imp->pinned && (_imp->model->getSource() == _imp->pinned)) {
+            _imp->pinned->cancelPendingLoads();
+            _imp->model->settleLoads();
+            _imp->updateBakeButton();
+        } else if (_imp->viewport) {
             _imp->viewport->cancelPendingLoads();
         }
     });
@@ -1921,6 +2554,18 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     });
     QObject::connect(&_imp->retiredReap, &QTimer::timeout, this, [this]() { _imp->reapRetired(); });
     QObject::connect(_imp->tree->selectionModel(), &QItemSelectionModel::selectionChanged, this, &SceneGraphPanel::onTreeSelectionChanged);
+    for (QAbstractItemView* view : { (QAbstractItemView*)_imp->tree, (QAbstractItemView*)_imp->results, (QAbstractItemView*)_imp->changedHereTree }) {
+        QObject::connect(view->selectionModel(), &QItemSelectionModel::selectionChanged, this, [this]() { _imp->bulkRefresh.start(); });
+    }
+    QObject::connect(_imp->model, &QAbstractItemModel::dataChanged, this, [this]() { _imp->bulkRefresh.start(); });
+    // The model announces draw-state and changed-here updates on the top-level rows only, so that
+    // thousands of open rows don't cost a header layout each; the rows below repaint from this.
+    QObject::connect(_imp->model, &QAbstractItemModel::dataChanged, this, [this](const QModelIndex& topLeft) {
+        if (!topLeft.parent().isValid()) {
+            _imp->tree->viewport()->update();
+        }
+    });
+    QObject::connect(_imp->model, &QAbstractItemModel::modelReset, this, [this]() { _imp->bulkRefresh.start(); });
     QObject::connect(_imp->tree->selectionModel(), &QItemSelectionModel::currentChanged, this, &SceneGraphPanel::onCurrentChanged);
     QObject::connect(_imp->results->selectionModel(), &QItemSelectionModel::selectionChanged, this, &SceneGraphPanel::onResultsSelectionChanged);
     QObject::connect(_imp->results->selectionModel(), &QItemSelectionModel::currentChanged, this, &SceneGraphPanel::onCurrentChanged);
@@ -1931,39 +2576,56 @@ SceneGraphPanel::SceneGraphPanel(Gui* gui)
     QObject::connect(_imp->model, &QAbstractItemModel::modelReset, this, &SceneGraphPanel::onModelReset, Qt::QueuedConnection);
     // Keys are claimed in the views' own event filter so a window-level shortcut cannot take them.
     _imp->tree->installEventFilter(this);
+    // Shift-clicks on branch arrows are taken before the view toggles the row.
+    _imp->tree->viewport()->installEventFilter(this);
     _imp->results->installEventFilter(this);
     _imp->changedHereTree->installEventFilter(this);
     _imp->results->setContextMenuPolicy(Qt::CustomContextMenu);
     QObject::connect(_imp->tree, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) { showRowMenu(_imp->tree, pos); });
     QObject::connect(_imp->changedHereTree, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) { showRowMenu(_imp->changedHereTree, pos); });
     QObject::connect(_imp->results, &QWidget::customContextMenuRequested, this, [this](const QPoint& pos) { showRowMenu(_imp->results, pos); });
+    _imp->unfolder.reset(new SceneGraphUnfolder(_imp->tree, _imp->model, _imp->expanded));
+    _imp->unfolder->setProgressCallback([this](const SceneGraphUnfolder::Progress& progress) { _imp->showUnfoldProgress(progress); });
+    _imp->unfolder->setRestoreCallback([this](bool deferred) { _imp->onRestored(deferred); });
     QObject::connect(_imp->tree, &QTreeView::expanded, this, &SceneGraphPanel::onExpanded);
     QObject::connect(_imp->tree, &QTreeView::collapsed, this, &SceneGraphPanel::onCollapsed);
     QObject::connect(_imp->tree->verticalScrollBar(), &QScrollBar::valueChanged, this, [this]() { _imp->rememberTopPath(); });
     // Rows going, then coming back, as when the viewer shows another node and returns: the rows
     // that come back reopen, and the tree scrolls back to the row it had at its top.
-    const auto holdTop = [this]() {
+    // A run's reads each add and take away a loading row, and the reopenings' own reads add rows
+    // below rows they reopen and will reach: neither owes a reopening, which would make a wide run
+    // or reopening quadratic. Rows a load brings in during a run do, once the run ends. The reset
+    // stops a run before it gets here.
+    const auto unfolderOwnsRows = [this]() {
+        return _imp->unfolder && (_imp->unfolder->isRunning() || _imp->unfolder->isApplying());
+    };
+    const auto holdTop = [this, unfolderOwnsRows]() {
         _imp->holdTopPath = true;
-        _imp->restoreAll = true;
+        if (!unfolderOwnsRows()) {
+            _imp->restoreAll = true;
+        }
         _imp->viewRestore.start();
     };
-    QObject::connect(_imp->model, &QAbstractItemModel::modelAboutToBeReset, this, holdTop);
+    QObject::connect(_imp->model, &QAbstractItemModel::modelAboutToBeReset, this, [this]() {
+        _imp->holdTopPath = true;
+        _imp->restoreAll = true;
+        _imp->insertedUnder.clear();
+        _imp->viewRestore.start();
+    });
     QObject::connect(_imp->model, &QAbstractItemModel::rowsAboutToBeRemoved, this, holdTop);
     QObject::connect(_imp->model, &QAbstractItemModel::layoutAboutToBeChanged, this, holdTop);
     QObject::connect(_imp->model, &QAbstractItemModel::rowsInserted, this, [this](const QModelIndex& parent) {
-        if (!_imp->expanded.isEmpty()) {
+        const QString parentPath = parent.isValid() ? _imp->model->pathOf(parent) : QString();
+        if (!_imp->expanded->empty() && !(_imp->unfolder && _imp->unfolder->ownsRowsUnder(parentPath))) {
             if (parent.isValid()) {
-                _imp->insertedUnder.insert(_imp->model->pathOf(parent));
+                _imp->insertedUnder.insert(parentPath);
             } else {
                 _imp->restoreAll = true;
             }
         }
         _imp->viewRestore.start();
     });
-    QObject::connect(&_imp->viewRestore, &QTimer::timeout, this, [this]() {
-        _imp->restorePendingExpansion();
-        _imp->restoreScroll();
-    });
+    QObject::connect(&_imp->viewRestore, &QTimer::timeout, this, [this]() { _imp->restoreView(); });
     if (gui) {
         QObject::connect(gui, &Gui::activeViewerChanged, this, &SceneGraphPanel::onActiveViewerChanged);
         QObject::connect(gui, &Gui::viewersChanged, this, &SceneGraphPanel::onActiveViewerChanged);
@@ -2022,9 +2684,11 @@ SceneGraphPanel::releaseNodeStages()
     _imp->sourceBar->release();
     showNodeScene(NodePtr());
     for (const Implementation::CachedStage& cached : _imp->cachedStages) {
+        _imp->expansionMemory.forget(cached.source->getNode());
         _imp->retireSource(cached.source);
     }
     _imp->cachedStages.clear();
+    _imp->expansionMemory.forgetGone();
     _imp->followViewer();
     _imp->publishState();
 }
@@ -2165,27 +2829,64 @@ SceneGraphPanel::showRowMenu(QAbstractItemView* view, const QPoint& pos)
     menu.addSeparator();
     bool anyUnloaded = false;
     bool anyOther = false;
-    for (const QString& path : selection) {
-        // A row of the filter's list may not have been read, so nothing is known of its payload.
-        const bool read = _imp->model->indexOfPath(path, false).isValid();
-        const SceneGraphModel::PayloadStateEnum state = _imp->model->getPayloadState(path);
-        const bool unloaded = (state == SceneGraphModel::ePayloadStateUnloaded) || (state == SceneGraphModel::ePayloadStateFailed);
-        anyUnloaded = anyUnloaded || unloaded || !read;
-        anyOther = anyOther || !unloaded;
-    }
+    _imp->payloadStatesOf(selection, &anyUnloaded, &anyOther);
     const bool onViewerStage = _imp->loadsOnShownStage();
-    QAction* load = menu.addAction(tr("Load"));
-    load->setObjectName(QString::fromUtf8("sceneGraphLoad"));
-    load->setEnabled(onViewerStage && anyUnloaded);
-    QObject::connect(load, &QAction::triggered, this, [this, selection]() { _imp->requestLoad(selection, false); });
-    QAction* loadWithDescendants = menu.addAction(tr("Load With Descendants"));
-    loadWithDescendants->setObjectName(QString::fromUtf8("sceneGraphLoadWithDescendants"));
-    loadWithDescendants->setEnabled(onViewerStage && !selection.isEmpty());
-    QObject::connect(loadWithDescendants, &QAction::triggered, this, [this, selection]() { _imp->requestLoad(selection, true); });
-    QAction* unload = menu.addAction(tr("Unload"));
-    unload->setObjectName(QString::fromUtf8("sceneGraphUnload"));
-    unload->setEnabled(onViewerStage && anyOther);
-    QObject::connect(unload, &QAction::triggered, this, [this, selection]() { _imp->requestUnload(selection); });
+    std::vector<std::pair<QString, QString>> kindScopes = {
+        { QString::fromUtf8("assembly"), tr("Assembly") },
+        { QString::fromUtf8("component"), tr("Component") },
+        { QString::fromUtf8("subcomponent"), tr("Subcomponent") },
+    };
+    for (const PXR_NS::TfToken& kind : registeredCustomKinds()) {
+        kindScopes.push_back(std::make_pair(QString::fromStdString(kind.GetString()), QString::fromStdString(kind.GetString())));
+    }
+    // Only the tree's rows open and close; the filter's list and Changed Here have no branches to walk.
+    const bool canUnfold = (view == _imp->tree) && !selection.isEmpty();
+    const auto addUnfold = [this, &selection, canUnfold](QMenu* into, const QString& text, const QString& objectName, bool fold, const QString& scope) {
+        QAction* entry = into->addAction(text);
+        entry->setObjectName(objectName);
+        entry->setEnabled(canUnfold);
+        entry->setToolTip(Implementation::unfoldToolTip(fold, scope));
+        entry->setShortcut(Implementation::keySequenceOf(objectName.toUtf8().constData()));
+        QObject::connect(entry, &QAction::triggered, this, [this, selection, fold, scope]() { _imp->runUnfold(fold, selection, scope); });
+    };
+    addUnfold(&menu, tr("Unfold All Below"), QString::fromUtf8("sceneGraphUnfoldBelow"), false, QString::fromUtf8("below"));
+    QMenu* unfoldTo = menu.addMenu(tr("Unfold To"));
+    unfoldTo->setObjectName(QString::fromUtf8("sceneGraphUnfoldToMenu"));
+    unfoldTo->setToolTipsVisible(true);
+    unfoldTo->setEnabled(canUnfold);
+    for (const std::pair<QString, QString>& kind : kindScopes) {
+        addUnfold(unfoldTo, kind.second, QString::fromUtf8("sceneGraphUnfoldTo_") + kind.first, false, kind.first);
+    }
+    addUnfold(&menu, tr("Fold All Below"), QString::fromUtf8("sceneGraphFoldBelow"), true, QString::fromUtf8("below"));
+    menu.addSeparator();
+    const auto addBulk = [this, &selection](QMenu* into, const QString& text, const QString& objectName, const QString& action, const QString& scope, bool enabled) {
+        QAction* entry = into->addAction(text);
+        entry->setObjectName(objectName);
+        entry->setEnabled(enabled);
+        entry->setShortcut(Implementation::keySequenceOf((QString::fromUtf8("sceneGraphBulk_") + action + QLatin1Char('_') + scope).toUtf8().constData()));
+        QObject::connect(entry, &QAction::triggered, this, [this, selection, action, scope]() { _imp->runBulk(action, selection, scope); });
+
+        return entry;
+    };
+    const QString loadAction = QString::fromUtf8("load");
+    const QString unloadAction = QString::fromUtf8("unload");
+    QMenu* loadMenu = menu.addMenu(tr("Load"));
+    loadMenu->setObjectName(QString::fromUtf8("sceneGraphLoadMenu"));
+    loadMenu->setEnabled(onViewerStage && !selection.isEmpty());
+    addBulk(loadMenu, tr("Selected"), QString::fromUtf8("sceneGraphLoad"), loadAction, QString::fromUtf8("selected"), onViewerStage && anyUnloaded);
+    addBulk(loadMenu, tr("Below"), QString::fromUtf8("sceneGraphLoadWithDescendants"), loadAction, QString::fromUtf8("below"), onViewerStage && !selection.isEmpty());
+    loadMenu->addSeparator();
+    for (const std::pair<QString, QString>& kind : kindScopes) {
+        addBulk(loadMenu, tr("To %1").arg(kind.second), QString::fromUtf8("sceneGraphLoadTo_") + kind.first, loadAction, kind.first, onViewerStage && !selection.isEmpty());
+    }
+    QMenu* unloadMenu = menu.addMenu(tr("Unload"));
+    unloadMenu->setObjectName(QString::fromUtf8("sceneGraphUnloadMenu"));
+    unloadMenu->setEnabled(onViewerStage && !selection.isEmpty());
+    addBulk(unloadMenu, tr("Selected"), QString::fromUtf8("sceneGraphUnload"), unloadAction, QString::fromUtf8("selected"), onViewerStage && anyOther);
+    unloadMenu->addSeparator();
+    for (const std::pair<QString, QString>& kind : kindScopes) {
+        addBulk(unloadMenu, tr("Below %1").arg(kind.second), QString::fromUtf8("sceneGraphUnloadBelow_") + kind.first, unloadAction, kind.first, onViewerStage && !selection.isEmpty());
+    }
     menu.addSeparator();
     QAction* setOnNode = menu.addAction(tr(kShortcutDescActionViewer3DSetSelectionOnNode));
     setOnNode->setObjectName(QString::fromUtf8("sceneSetSelectionOnNode"));
@@ -2234,6 +2935,24 @@ SceneGraphPanel::showRowMenu(QAbstractItemView* view, const QPoint& pos)
             drawViewer->resetDrawStatesToGraphOnRows(selection);
         }
     });
+    drawMenu->addSeparator();
+    const bool canDraw = !drawViewer.isNull() && !selection.isEmpty();
+    QMenu* drawBelow = drawMenu->addMenu(tr("Below"));
+    drawBelow->setObjectName(QString::fromUtf8("sceneGraphDrawStateBelowMenu"));
+    for (int state = (int)eSceneDrawStateBBox; state <= (int)eSceneDrawStateHidden; ++state) {
+        const QString name = QString::fromUtf8(sceneDrawStateName((SceneDrawStateEnum)state));
+        addBulk(drawBelow, SceneGraphModel::drawStateLabel(state), QString::fromUtf8("sceneGraphDrawStateBelow_") + name, name, QString::fromUtf8("below"), canDraw);
+    }
+    for (const std::pair<QString, QString>& kind : kindScopes) {
+        QMenu* drawTo = drawMenu->addMenu(tr("To %1").arg(kind.second));
+        drawTo->setObjectName(QString::fromUtf8("sceneGraphDrawStateToMenu_") + kind.first);
+        for (int state = (int)eSceneDrawStateBBox; state <= (int)eSceneDrawStateHidden; ++state) {
+            const QString name = QString::fromUtf8(sceneDrawStateName((SceneDrawStateEnum)state));
+            addBulk(drawTo, SceneGraphModel::drawStateLabel(state), QString::fromUtf8("sceneGraphDrawStateTo_") + kind.first + QLatin1Char('_') + name, name, kind.first, canDraw);
+        }
+        drawTo->addSeparator();
+        addBulk(drawTo, tr("Clear Below Each"), QString::fromUtf8("sceneGraphDrawStateClearBelowEach_") + kind.first, QString::fromUtf8("clearBelow"), kind.first, canDraw);
+    }
     QAction* chosen = menu.exec(view->viewport()->mapToGlobal(pos));
     if (chosen == setOnNode) {
         _imp->runSelectionAction(1, selection);
@@ -2277,6 +2996,7 @@ SceneGraphPanel::onSceneSynced()
         _imp->pinnedPoll.start();
     }
     if (_imp->viewerSource && (_imp->model->getSource() == _imp->viewerSource)) {
+        _imp->leaveExpansionNode();
         _imp->model->refresh();
         if (!_imp->filterPattern.isEmpty()) {
             _imp->filterDebounce.start();
@@ -2488,8 +3208,7 @@ SceneGraphPanel::onModelReset()
 {
     _imp->restoreAll = true;
     if (!_imp->model->isDeferred()) {
-        _imp->restorePendingExpansion();
-        _imp->restoreScroll();
+        _imp->restoreView();
     }
     if (_imp->viewport && _imp->sharesViewerSelection()) {
         showSelection(_imp->viewport->getSelection());
@@ -2504,7 +3223,11 @@ SceneGraphPanel::onExpanded(const QModelIndex& index)
         return;
     }
     const QString path = _imp->model->pathOf(index);
-    _imp->expanded.insert(path);
+    _imp->expanded->insert(path);
+    // The unfolder opens no unloaded payload row, and publishes once a slice rather than per row.
+    if (_imp->unfolder && _imp->unfolder->isApplying()) {
+        return;
+    }
     const SceneGraphModel::PayloadStateEnum state = _imp->model->getPayloadState(path);
     if (((state == SceneGraphModel::ePayloadStateUnloaded) || (state == SceneGraphModel::ePayloadStateFailed)) && _imp->loadsOnShownStage()) {
         _imp->requestLoad(QStringList(path), false);
@@ -2518,7 +3241,10 @@ SceneGraphPanel::onCollapsed(const QModelIndex& index)
     if (_imp->restoringExpansion) {
         return;
     }
-    _imp->expanded.remove(_imp->model->pathOf(index));
+    _imp->expanded->erase(_imp->model->pathOf(index));
+    if (_imp->unfolder && _imp->unfolder->isApplying()) {
+        return;
+    }
     _imp->publishState();
 }
 
@@ -2564,8 +3290,7 @@ SceneGraphPanel::showEvent(QShowEvent* e)
     }
     _imp->model->setDeferred(false);
     if (_imp->restoreAll) {
-        _imp->restorePendingExpansion();
-        _imp->restoreScroll();
+        _imp->restoreView();
     }
     if (_imp->treeSelectionOwed && (_imp->stack->currentWidget() == _imp->tree)) {
         _imp->askForOwedRows();
@@ -2588,7 +3313,54 @@ bool
 SceneGraphPanel::eventFilter(QObject* watched,
                              QEvent* e)
 {
-    // Copy and the 3D viewer's selection keys work on the panel's selection. A key press is taken
+    // Shift-click on a branch arrow expands all below it, or, on an open row, collapses all below.
+    // A plain click is the view's, which loads an unloaded row it opens.
+    if ((watched == _imp->tree->viewport()) && ((e->type() == QEvent::MouseButtonPress) || (e->type() == QEvent::MouseButtonRelease) || (e->type() == QEvent::MouseButtonDblClick))) {
+        QMouseEvent* m = static_cast<QMouseEvent*>(e);
+        const Qt::KeyboardModifiers held = m->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+        if ((m->button() == Qt::LeftButton) && (held == Qt::ShiftModifier)) {
+            const QModelIndex index = _imp->branchArrowAt(m->position().toPoint());
+            if (index.isValid()) {
+                if (e->type() == QEvent::MouseButtonPress) {
+                    _imp->runUnfold(_imp->tree->isExpanded(index), QStringList(_imp->model->pathOf(index)), QString::fromUtf8("below"));
+                }
+                e->accept();
+
+                return true;
+            }
+        }
+    }
+    if ((watched == _imp->tree) && ((e->type() == QEvent::ShortcutOverride) || (e->type() == QEvent::KeyPress))) {
+        QKeyEvent* k = static_cast<QKeyEvent*>(e);
+        if ((k->key() == Qt::Key_Escape) && _imp->hasStoppable()) {
+            if (e->type() == QEvent::KeyPress) {
+                _imp->stopStoppable();
+            }
+            e->accept();
+
+            return true;
+        }
+        if (const SceneGraphBulkKeyBinding* command = Implementation::expandCommandForKey(k->modifiers(), k->key())) {
+            if (e->type() == QEvent::KeyPress) {
+                _imp->runUnfold(command->action == "fold", getSelection(), QString::fromStdString(command->scope));
+            }
+            e->accept();
+
+            return true;
+        }
+        // The view's own * expands recursively, which would load every payload it opened.
+        const Qt::KeyboardModifiers held = k->modifiers() & ~(Qt::KeypadModifier | Qt::ShiftModifier);
+        if ((e->type() == QEvent::KeyPress) && (k->key() == Qt::Key_Asterisk) && (held == Qt::NoModifier)) {
+            const QModelIndex current = _imp->tree->currentIndex();
+            if (current.isValid()) {
+                _imp->runUnfold(false, QStringList(_imp->model->pathOf(current.siblingAtColumn(0))), QString::fromUtf8("below"));
+            }
+            e->accept();
+
+            return true;
+        }
+    }
+    // Copy, the 3D viewer's selection keys and the toolbar commands' keys work on the panel's selection. A key press is taken
     // before the view's own handling, which would spend Tab on moving the focus.
     if (((watched == _imp->tree) || (watched == _imp->results) || (watched == _imp->changedHereTree)) && ((e->type() == QEvent::ShortcutOverride) || (e->type() == QEvent::KeyPress))) {
         QKeyEvent* k = static_cast<QKeyEvent*>(e);
@@ -2610,6 +3382,14 @@ SceneGraphPanel::eventFilter(QObject* watched,
 
             return true;
         }
+        if (const SceneGraphBulkKeyBinding* bulk = Implementation::bulkCommandForKey(k->modifiers(), k->key())) {
+            e->accept();
+            if (e->type() == QEvent::KeyPress) {
+                _imp->runBulk(QString::fromStdString(bulk->action), getSelection(), QString::fromStdString(bulk->scope));
+            }
+
+            return true;
+        }
     }
 
     return QWidget::eventFilter(watched, e);
@@ -2620,6 +3400,12 @@ SceneGraphPanel::keyPressEvent(QKeyEvent* e)
 {
     if ((e->key() == Qt::Key_Escape) && _imp->filter->hasFocus() && !_imp->filter->text().isEmpty()) {
         _imp->filter->clear();
+        e->accept();
+
+        return;
+    }
+    if ((e->key() == Qt::Key_Escape) && _imp->hasStoppable()) {
+        _imp->stopStoppable();
         e->accept();
 
         return;

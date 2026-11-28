@@ -273,7 +273,7 @@ TEST_F(USDExpandHierarchyTest, RulesAppendInOrderAfterTheInputs)
     ASSERT_EQ((std::size_t)1, inputRules.size());
     EXPECT_EQ(reader->getScriptName(), inputRules[0].origin);
 
-    effect->appendRules({ makeRule("/World", eSceneDrawStateLoadAll), makeRule("  ", eSceneDrawStateBBox), makeRule("/Annex", eSceneDrawStateChildren, 1) });
+    effect->appendRules({ makeRule("/World", eSceneDrawStateLoadAll), makeRule("  ", eSceneDrawStateBBox), makeRule("/Annex", eSceneDrawStatePassThrough, 1) });
     const SceneDrawRules rules = evaluate(expand).getDrawRules();
     ASSERT_EQ((std::size_t)3, rules.size());
     EXPECT_EQ(inputRules[0], rules[0]);
@@ -282,7 +282,7 @@ TEST_F(USDExpandHierarchyTest, RulesAppendInOrderAfterTheInputs)
     EXPECT_EQ(0, rules[1].levels);
     EXPECT_EQ(expand->getScriptName(), rules[1].origin);
     EXPECT_EQ(std::string("/Annex"), rules[2].pattern);
-    EXPECT_EQ(eSceneDrawStateChildren, rules[2].state);
+    EXPECT_EQ(eSceneDrawStatePassThrough, rules[2].state);
     EXPECT_EQ(1, rules[2].levels);
     EXPECT_EQ(expand->getScriptName(), rules[2].origin);
 

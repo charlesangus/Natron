@@ -2169,7 +2169,7 @@ TEST_F(USDWriteTest, DrawRulesReachDownstreamInInputOrderAndNeverReachAWrite)
     NodePtr below = createNode(QString::fromUtf8(kTestPluginIDSceneOp));
     ASSERT_TRUE(second && together && below && getTestOp(second) && getTestOp(below));
     const SceneDrawRule secondOwn = makeDrawRule("/Transform1/World", eSceneDrawStateFull, "DrawRuleSecond");
-    const SceneDrawRule belowOwn = makeDrawRule("/Transform2", eSceneDrawStateChildren, "DrawRuleBelow");
+    const SceneDrawRule belowOwn = makeDrawRule("/Transform2", eSceneDrawStatePassThrough, "DrawRuleBelow");
     getTestOp(second)->setDrawRules(SceneDrawRules { shared, secondOwn });
     getTestOp(below)->setDrawRules(SceneDrawRules { belowOwn });
     ASSERT_TRUE(second->connectInput(merge, 0));

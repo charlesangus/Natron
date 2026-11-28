@@ -47,7 +47,7 @@ enum SceneDrawOriginEnum {
     eSceneDrawOriginDefault
 };
 
-/** @brief "bbox", "children", "full", "loadAll" or "hidden". */
+/** @brief "bbox", "passThrough", "geometry", "loadAndDraw" or "hide". */
 const char* sceneDrawStateName(SceneDrawStateEnum state);
 bool sceneDrawStateFromName(const std::string& name, SceneDrawStateEnum* state);
 
@@ -70,12 +70,12 @@ struct SceneDrawLoadRequest {
  * @brief What one edit changed, as rules over subtrees. A path's nearest listed ancestor decides it,
  * and no rule at all means drawn.
  *
- * The model knows set paths and not the hierarchy, so a Children row is its own list: the row's own
+ * The model knows set paths and not the hierarchy, so a Pass Through row is its own list: the row's own
  * prim is drawn and every child not listed is a box, which only the scene can enumerate.
  */
 struct SceneDrawDelta {
     std::vector<std::string> drawn;
-    std::vector<std::string> expanded;
+    std::vector<std::string> passThrough;
     std::vector<std::string> boxed;
     std::vector<std::string> hidden;
     // The rule on these paths is gone; the nearest rule above now decides them.
@@ -89,7 +89,7 @@ struct SceneDrawDelta {
 
     bool isEmpty() const
     {
-        return drawn.empty() && expanded.empty() && boxed.empty() && hidden.empty() && cleared.empty() && loads.empty();
+        return drawn.empty() && passThrough.empty() && boxed.empty() && hidden.empty() && cleared.empty() && loads.empty();
     }
 };
 
@@ -97,12 +97,12 @@ struct SceneDrawDelta {
  * @brief One viewer's draw states by prim path. Paths are absolute USD prim paths and need not exist
  * at the viewed node: a missing path is kept, so returning to a node with it restores the state.
  *
- * Resolution is the viewer's state, then the graph policy, then Full. The nearest set state wins. A
- * Children row's unset children are boxes. BBox and Hidden stop everything below, and what is set
- * below is remembered.
+ * Resolution is the viewer's state, then the graph policy, then Geometry. The nearest set state
+ * wins. A Pass Through row's unset children are boxes. BBox and Hide stop everything below, and what is
+ * set below is remembered.
  *
- * Load All loads what it draws. A BBox or Hidden row below it stays out of the load, and so does a
- * Children row's subtree, whose unset children are boxes the model cannot name: the Children row
+ * Load + Draw loads what it draws. A BBox or Hide row below it stays out of the load, and so does
+ * a Pass Through row's subtree, whose unset children are boxes the model cannot name: the Pass Through row
  * loads on its own and the rows drawn below it load by their own requests.
  */
 // One row's edit in SceneDrawStates::editRows().
@@ -130,6 +130,10 @@ public:
     /**
      * @brief Makes the edits in order, as one edit with one delta: what an edit undoes of an earlier
      * one in the list is never in the delta, nor asked to load.
+     *
+     * A state set on a row switches the ancestors that would stop it (BBox, Hide, or an unset child
+     * of a Pass Through row) to Pass Through, so that it takes effect, except that a BBox or Hide leaves alone
+     * an ancestor the same list sets to BBox or Hide: hiding a prim with its children hides it.
      **/
     SceneDrawDelta editRows(const std::vector<SceneDrawRowEdit>& edits);
 
@@ -186,7 +190,7 @@ public:
 
     struct Stored {
         SceneDrawStateEnum state;
-        // False on an ancestor switched to Children for a row below: nobody asked to load that row.
+        // False on an ancestor switched to Pass Through for a row below: nobody asked to load that row.
         bool direct;
     };
 
@@ -205,7 +209,7 @@ public:
     enum RuleEnum {
         eRuleNone,
         eRuleDrawn,
-        eRuleExpanded,
+        eRulePassThrough,
         eRuleBoxed,
         eRuleHidden
     };
@@ -234,8 +238,9 @@ public:
 private:
     Effects effectsUnder(const std::string& root, std::size_t* visited) const;
     // The subtree a row edit changes, given the states as they stand.
-    std::string rootOf(const SceneDrawRowEdit& edit) const;
-    void applyRowEdit(const SceneDrawRowEdit& edit);
+    // switchAncestors: whether a set switches the ancestors that would stop it to Pass Through.
+    std::string rootOf(const SceneDrawRowEdit& edit, bool switchAncestors) const;
+    void applyRowEdit(const SceneDrawRowEdit& edit, bool switchAncestors);
     SceneDrawDelta applyEdit(const std::string& root, const std::vector<std::string>& retryLoads, const Effects& before, std::size_t visited) const;
     // Makes change, which edits only the subtrees of roots, and returns the delta over them.
     SceneDrawDelta editUnder(std::vector<std::string> roots, const std::vector<std::string>& retryLoads, const std::function<void()>& change);
@@ -246,7 +251,7 @@ private:
 
 /**
  * @brief Adds one prim a draw rule decides to *policy, over what earlier rules put there: a later
- * rule wins on the same path, and a later Full or Full + Load switches to Children the ancestors
+ * rule wins on the same path, and a later Geometry or Load + Draw switches to Pass Through the ancestors
  * that would block it, as setting it in the viewer does.
  **/
 void sceneAddDrawRuleMatch(const std::string& path,

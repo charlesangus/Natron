@@ -62,8 +62,8 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief The world bounds of the rows a draw filter boxes, computed on a thread of its own.
  *
- * A boxed row is one with a BBox rule, or a child without a rule of its own of a Children row. A
- * Hidden row has no box. Bounds come from UsdGeomBBoxCache with extentsHint, so an unloaded
+ * A boxed row is one with a BBox rule, or a child without a rule of its own of a Pass Through row. A
+ * Hide row has no box. Bounds come from UsdGeomBBoxCache with extentsHint, so an unloaded
  * payload whose model authors a hint has a box without its layers opening.
  *
  * The stage is read under the caller's lock in short holds: one ends when shouldYield says a writer
@@ -192,7 +192,7 @@ public:
     /**
      * @brief The rows a stand-in for the whole drawn scene boxes. With byModel, every model prim
      * (kind component, assembly or group, as UsdModelAPI has it) the rules leave drawn, a BBox or
-     * Hidden row ending its branch; models nest, and so do their boxes. Without byModel, or on a
+     * Hide row ending its branch; models nest, and so do their boxes. Without byModel, or on a
      * stage with no model, every drawn row with a rule, and the rows boxedRows() gives; with no rule
      * either, the top-level prims but Hidden ones. Instance proxies are not looked into.
      */

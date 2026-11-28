@@ -552,14 +552,14 @@ TEST_F(SceneDrawFilterTest, SiblingsDoNotHearAboutEachOther)
     EXPECT_TRUE(recorder.shows.empty());
 }
 
-TEST_F(SceneDrawFilterTest, ChildrenRowKeepsItsOwnPrimAndHidesTheRest)
+TEST_F(SceneDrawFilterTest, PassThroughRowKeepsItsOwnPrimAndHidesTheRest)
 {
-    filter->applyDelta(states.setState("/World/inst", eSceneDrawStateChildren));
+    filter->applyDelta(states.setState("/World/inst", eSceneDrawStatePassThrough));
 
     EXPECT_TRUE(recorder.hides.empty());
     EXPECT_TRUE(drawn("/World/inst"));
 
-    filter->applyDelta(states.setState("/World", eSceneDrawStateChildren));
+    filter->applyDelta(states.setState("/World", eSceneDrawStatePassThrough));
 
     EXPECT_EQ((PathSet { "/World/inst" }), drawnGeometry());
 }
@@ -607,7 +607,7 @@ TEST_F(SceneDrawFilterTest, RememberedRowsComeBackWithTheirAncestor)
 
 TEST_F(SceneDrawFilterTest, ClearingARowReturnsItToTheRuleAbove)
 {
-    filter->applyDelta(states.setState("/World", eSceneDrawStateChildren));
+    filter->applyDelta(states.setState("/World", eSceneDrawStatePassThrough));
     filter->applyDelta(states.setState("/World/a", eSceneDrawStateFull));
     recorder.reset();
 
@@ -619,7 +619,7 @@ TEST_F(SceneDrawFilterTest, ClearingARowReturnsItToTheRuleAbove)
 
 TEST_F(SceneDrawFilterTest, ResetRestoresEverything)
 {
-    filter->applyDelta(states.setState("/World", eSceneDrawStateChildren));
+    filter->applyDelta(states.setState("/World", eSceneDrawStatePassThrough));
     filter->applyDelta(states.setState("/World/a", eSceneDrawStateFull));
     filter->applyDelta(states.setState("/World/a/deep", eSceneDrawStateHidden));
 
@@ -822,11 +822,11 @@ TEST_F(SceneDrawFilterTest, LightsComeBackWithTheirTypeWhenAHiddenRowIsBoxedOrDr
     EXPECT_TRUE(drawn("/World/rig/mesh"));
 }
 
-TEST_F(SceneDrawFilterTest, AChildrenRowKeepsEveryLightAndOnlyBoxesItsGeometry)
+TEST_F(SceneDrawFilterTest, APassThroughRowKeepsEveryLightAndOnlyBoxesItsGeometry)
 {
     addLights(scene);
 
-    filter->applyDelta(states.setState("/World/rig", eSceneDrawStateChildren));
+    filter->applyDelta(states.setState("/World/rig", eSceneDrawStatePassThrough));
 
     EXPECT_TRUE(drawn("/World/rig/key"));
     EXPECT_TRUE(drawn("/World/rig/key/fill"));
@@ -1080,7 +1080,7 @@ hiddenByRules(const SceneDrawFilter::Rules& rules,
     case SceneDrawFilter::eRuleHide:
     case SceneDrawFilter::eRuleHidden:
         return true;
-    case SceneDrawFilter::eRuleExpand:
+    case SceneDrawFilter::eRulePassThrough:
         return rule->first != path;
     }
 
@@ -1125,7 +1125,7 @@ TEST_F(SceneDrawFilterTest, TheFilteredSceneFollowsTheRulesThroughBatchedChanges
     const SceneDrawDelta world = states.setState("/World", eSceneDrawStateBBox);
     const SceneDrawDelta a = states.setState("/World/a", eSceneDrawStateFull);
     const SceneDrawDelta deep = states.setState("/World/a/deep", eSceneDrawStateHidden);
-    const SceneDrawDelta b = states.setState("/World/b", eSceneDrawStateChildren);
+    const SceneDrawDelta b = states.setState("/World/b", eSceneDrawStatePassThrough);
     const SceneDrawDelta rig = states.setState("/World/rig/subrig", eSceneDrawStateHidden);
     filter->applyDeltas({ &world, &a, &deep, &b, &rig });
     expectFilteredSceneFollowsTheRules(*scene, *filter);
@@ -1156,9 +1156,10 @@ SceneDrawFilter::Rules
 mixedRules(SceneDrawStates& states)
 {
     SceneDrawFilter::Rules rules;
-    SceneDrawFilter::applyToRules(states.setState("/World/a", eSceneDrawStateBBox), &rules);
+    // Hiding /World/a/deep under a boxed /World/a would switch /World/a, so the ancestor is boxed last.
     SceneDrawFilter::applyToRules(states.setState("/World/a/deep", eSceneDrawStateHidden), &rules);
-    SceneDrawFilter::applyToRules(states.setState("/World/b", eSceneDrawStateChildren), &rules);
+    SceneDrawFilter::applyToRules(states.setState("/World/a", eSceneDrawStateBBox), &rules);
+    SceneDrawFilter::applyToRules(states.setState("/World/b", eSceneDrawStatePassThrough), &rules);
     SceneDrawFilter::applyToRules(states.setState("/World/c", eSceneDrawStateHidden), &rules);
 
     return rules;
@@ -1497,7 +1498,7 @@ TEST_F(SceneDrawFilterTest, AHiddenRowMasksItsInstancesAndARowOnOneInstanceMasks
     EXPECT_EQ((std::vector<bool> { true, true, false }), maskOf(*filter, kNativeInstancer));
     EXPECT_EQ(HdPrimTypeTokens->instancer, filter->GetPrim(SdfPath(kNativeInstancer)).primType);
 
-    filter->applyDelta(states.setState("/World/a/i2", eSceneDrawStateChildren));
+    filter->applyDelta(states.setState("/World/a/i2", eSceneDrawStatePassThrough));
 
     EXPECT_EQ((std::vector<bool> { true, false, false }), maskOf(*filter, kNativeInstancer));
 

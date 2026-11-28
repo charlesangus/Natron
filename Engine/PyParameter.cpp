@@ -3243,6 +3243,120 @@ PathParam::getTable(std::list<std::vector<std::string> >* table) const
     }
 }
 
+////////////////////RenderVarsParam
+
+RenderVarsParam::RenderVarsParam(const KnobRenderVarsPtr& knob)
+    : StringParamBase(std::dynamic_pointer_cast<KnobStringBase>(knob))
+    , _tKnob(knob)
+{
+}
+
+RenderVarsParam::~RenderVarsParam()
+{
+}
+
+static bool
+checkRenderVarsRow(const std::vector<std::string>& row)
+{
+    if (row.size() == (std::size_t)KnobRenderVars::eColumnCount) {
+        return true;
+    }
+    const std::string message = "A RenderVars row needs 4 cells (name, sourceType, dataType, layer), not " + std::to_string(row.size()) + ".";
+    PyErr_SetString(PyExc_ValueError, message.c_str());
+
+    return false;
+}
+
+void
+RenderVarsParam::getTable(std::list<std::vector<std::string>>* table) const
+{
+    KnobRenderVarsPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    try {
+        knob->getTable(table);
+    } catch (const std::exception& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
+}
+
+void
+RenderVarsParam::setTable(const std::list<std::vector<std::string>>& table)
+{
+    for (std::list<std::vector<std::string>>::const_iterator it = table.begin(); it != table.end(); ++it) {
+        if (!checkRenderVarsRow(*it)) {
+            return;
+        }
+    }
+    if (!checkIsEditable()) {
+        return;
+    }
+    if (!recordEdit(getInternalKnob())) {
+        return;
+    }
+    KnobRenderVarsPtr knob = _tKnob.lock();
+    if (!knob) {
+        return;
+    }
+    knob->setTable(table);
+}
+
+void
+RenderVarsParam::appendRow(const std::vector<std::string>& row)
+{
+    if (!checkRenderVarsRow(row)) {
+        return;
+    }
+    if (!checkIsEditable()) {
+        return;
+    }
+    if (!recordEdit(getInternalKnob())) {
+        return;
+    }
+    KnobRenderVarsPtr knob = _tKnob.lock();
+    if (!knob) {
+        return;
+    }
+    try {
+        knob->appendRow(row);
+    } catch (const std::exception& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+    }
+}
+
+void
+RenderVarsParam::removeRow(int index)
+{
+    KnobRenderVarsPtr knob = _tKnob.lock();
+
+    if (!knob) {
+        return;
+    }
+    std::list<std::vector<std::string>> table;
+    try {
+        knob->getTable(&table);
+    } catch (const std::exception& e) {
+        PyErr_SetString(PyExc_ValueError, e.what());
+
+        return;
+    }
+    if ((index < 0) || (index >= (int)table.size())) {
+        const std::string message = "Row " + std::to_string(index) + " is out of range: the table has " + std::to_string(table.size()) + " rows.";
+        PyErr_SetString(PyExc_ValueError, message.c_str());
+
+        return;
+    }
+    if (!checkIsEditable()) {
+        return;
+    }
+    if (!recordEdit(getInternalKnob())) {
+        return;
+    }
+    knob->removeRow(index);
+}
+
 ////////////////////ChannelSetParam
 
 static std::string

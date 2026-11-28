@@ -32,7 +32,9 @@
 #include <functional>
 #include <map>
 #include <string>
+#include <vector>
 
+#include "Engine/Nodes/Scene/AovLayers.h"
 #include "Engine/Nodes/Scene/DelegateSupport.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 
@@ -99,6 +101,16 @@ PXR_NS::HdSceneIndexBaseRefPtr meshShadingSceneIndex(const PXR_NS::HdSceneIndexB
  * hdCycles builds nodes of. Its prim types are empty when Cycles cannot be loaded.
  **/
 const DelegateSupport::Support& support();
+
+// The AOVs hdCycles renders, for a delegate that publishes no aovNames stat.
+const std::vector<std::string>& catalogue();
+
+/**
+ * @brief The layout of a Cycles pass, "cycles:<pass>", or of a light group, "cycles:lightgroup:<group>",
+ * which is the group's lighting in RGB. False for any other name.
+ **/
+bool passLayout(const std::string& aovName,
+                AovLayers::Layout* layout) WARN_UNUSED_RETURN;
 
 /**
  * @brief Sets up a Cycles engine just made, before its first render. Cycles scales the camera and

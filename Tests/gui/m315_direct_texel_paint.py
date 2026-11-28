@@ -60,6 +60,18 @@ try:
     navigation = NatronEngine.natron.getSettings().getParam("viewer3DNavigation")
     require(navigation is not None, "Preferences have a viewer3DNavigation parameter")
     original_navigation = navigation.getValue()
+
+    import guitest
+    end_run = guitest.finish
+
+    def finish_restoring_navigation():
+        navigation.setValue(original_navigation)
+        end_run()
+
+    # Every end of the run, a failed require() included, goes through finish(), which exits the
+    # process at once, so no try/finally in steps() would run on it.
+    guitest.finish = finish_restoring_navigation
+    finish = finish_restoring_navigation
     navigation.setValue(CTRL_TUMBLE_PRESET)
 
     usd = app.createNode("USDRead")
@@ -293,8 +305,6 @@ try:
         check(mixed[1001][1] == mixed[1001][0], "every red texel in tile 1001 lies in the front face's island (%d of %d)"
               % (mixed[1001][1], mixed[1001][0]))
         check(mixed[1002][0] == 0, "tile 1002 stays clean (%d)" % mixed[1002][0])
-
-        navigation.setValue(original_navigation)
 
     run(steps())
 except Exception:

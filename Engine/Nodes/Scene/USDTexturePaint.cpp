@@ -30,6 +30,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -40,6 +41,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -72,6 +74,7 @@
 #include "Engine/KnobFile.h"
 #include "Engine/KnobLayerSelect.h"
 #include "Engine/KnobTypes.h"
+#include "Engine/MemoryInfo.h"
 #include "Engine/Node.h"
 #include "Engine/NodeColorSampler.h"
 #include "Engine/NodeMetadata.h"
@@ -730,6 +733,9 @@ USDTexturePaint::refreshExtraStateAfterTimeChanged(bool isPlayback,
     if (_paintInteract) {
         _paintInteract->refreshAfterTimeChanged(time);
     }
+    if (!isPlayback) {
+        scheduleDirectCatchUp();
+    }
 }
 
 void
@@ -992,22 +998,52 @@ USDTexturePaint::getCoveredTiles(double time,
     const double fps = (app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.;
     KnobStringPtr uvPrimvar = _uvPrimvar.lock();
     const std::string primvar = uvPrimvar ? uvPrimvar->getValue() : std::string();
+
+    // The scene, the meshes the pattern matches in it and their UVs decide the tiles.
+    ContentHasher hasher;
+    const NodePtr input = getNode()->getInput(0);
+    hasher.appendU64(input ? input->getHashValue() : 0);
+    const KnobIPtr pattern = _primPattern.getKnob();
+    hasher.appendU64(pattern ? pattern->getContentHash() : 0);
+    hasher.appendString(primvar);
+    hasher.appendDouble(time);
+    hasher.appendI64(view.value());
+    hasher.appendDouble(fps);
+    const U64 key = hasher.finalize();
+    {
+        std::lock_guard<std::mutex> lock(_coveredTilesMutex);
+        for (const std::pair<U64, std::set<int>>& entry : _coveredTiles) {
+            if (entry.first == key) {
+                *tiles = entry.second;
+
+                return true;
+            }
+        }
+    }
+
     InputScene scene;
     if (!openInputScene(getInput(0), time, view, fps, &scene, error)) {
         return false;
     }
-    if (!scene.stage) {
-        return true;
-    }
-    const PXR_NS::TfToken stName(primvar.empty() ? std::string("st") : primvar);
-    std::vector<PXR_NS::SdfPath> meshes;
-    if (!USDTexturePaintCache::matchedMeshes(scene.stage, _primPattern.getExpression(), stName, &meshes, error)) {
-        return false;
-    }
-    for (const PXR_NS::SdfPath& mesh : meshes) {
-        if (!SceneRaster::udimTiles(scene.stage, mesh, stName, scene.time, tiles, error)) {
+    if (scene.stage) {
+        const PXR_NS::TfToken stName(primvar.empty() ? std::string("st") : primvar);
+        std::vector<PXR_NS::SdfPath> meshes;
+        if (!USDTexturePaintCache::matchedMeshes(scene.stage, _primPattern.getExpression(), stName, &meshes, error)) {
             return false;
         }
+        for (const PXR_NS::SdfPath& mesh : meshes) {
+            if (!SceneRaster::udimTiles(scene.stage, mesh, stName, scene.time, tiles, error)) {
+                return false;
+            }
+        }
+    }
+
+    // A few, so that the frames an animated scene plays through each keep theirs.
+    const std::size_t kept = 8;
+    std::lock_guard<std::mutex> lock(_coveredTilesMutex);
+    _coveredTiles.push_back(std::make_pair(key, *tiles));
+    while (_coveredTiles.size() > kept) {
+        _coveredTiles.pop_front();
     }
 
     return true;
@@ -3552,14 +3588,161 @@ USDTexturePaint::render(const RenderActionArgs& args)
     return eStatusOK;
 } // USDTexturePaint::render
 
+namespace {
+/**
+ * @brief The pages a settled stroke wrote, as they were before it, to take it off again. Every
+ * Direct paint's journals share one budget, past which the oldest go, whatever node holds them:
+ * undoing those strokes paints the session again.
+ **/
+class DirectJournal {
+public:
+    explicit DirectJournal(std::vector<TexelPages::Snapshot>&& pages);
+    ~DirectJournal();
+
+    DirectJournal(const DirectJournal&) = delete;
+    DirectJournal& operator=(const DirectJournal&) = delete;
+
+    // The pages, unless the budget took them; the journal is then empty.
+    bool take(std::vector<TexelPages::Snapshot>* pages);
+
+    // Drops the pages, as the budget does.
+    void drop();
+
+    bool isHeld();
+
+    // Holds journal to the budget, dropping the oldest journals past it.
+    static void account(const std::shared_ptr<DirectJournal>& journal);
+
+private:
+    std::mutex _mutex;
+    std::vector<TexelPages::Snapshot> _pages;
+    std::size_t _bytes = 0;
+    bool _held = true;
+};
+
+class DirectJournals {
+public:
+    static DirectJournals& instance()
+    {
+        static DirectJournals journals;
+
+        return journals;
+    }
+
+    // An eighth of the physical memory: the journals' pages spill as the texel budget decides,
+    // so this bounds their memory and their spill files both.
+    std::size_t budget() const
+    {
+        return std::max<std::size_t>(TexelPages::kPageBytes * 64, (std::size_t)(getSystemTotalRAM() / 8));
+    }
+
+    std::mutex mutex;
+    // Oldest first.
+    std::list<std::weak_ptr<DirectJournal>> order;
+    std::atomic<std::size_t> bytes { 0 };
+};
+
+DirectJournal::DirectJournal(std::vector<TexelPages::Snapshot>&& pages)
+    : _pages(std::move(pages))
+{
+    for (const TexelPages::Snapshot& snapshot : _pages) {
+        _bytes += sizeof(TexelPages::Snapshot) + (snapshot.page ? TexelPages::kPageBytes : 0);
+    }
+    DirectJournals::instance().bytes += _bytes;
+}
+
+DirectJournal::~DirectJournal()
+{
+    drop();
+}
+
+bool
+DirectJournal::take(std::vector<TexelPages::Snapshot>* pages)
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    if (!_held) {
+        return false;
+    }
+    *pages = std::move(_pages);
+    _pages.clear();
+    DirectJournals::instance().bytes -= _bytes;
+    _held = false;
+
+    return true;
+}
+
+bool
+DirectJournal::isHeld()
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    return _held;
+}
+
+void
+DirectJournal::drop()
+{
+    std::vector<TexelPages::Snapshot> dropped;
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        if (!_held) {
+            return;
+        }
+        dropped.swap(_pages);
+        DirectJournals::instance().bytes -= _bytes;
+        _held = false;
+    }
+}
+
+void
+DirectJournal::account(const std::shared_ptr<DirectJournal>& journal)
+{
+    DirectJournals& journals = DirectJournals::instance();
+    const std::size_t budget = journals.budget();
+    std::vector<std::shared_ptr<DirectJournal>> oldest;
+    {
+        std::lock_guard<std::mutex> lock(journals.mutex);
+        journals.order.push_back(journal);
+        // Journals taken back or gone linger behind a long-lived one; past a few, they are swept.
+        if (journals.order.size() > 1024) {
+            journals.order.remove_if([](const std::weak_ptr<DirectJournal>& weak) {
+                const std::shared_ptr<DirectJournal> held = weak.lock();
+
+                return !held || !held->isHeld();
+            });
+        }
+        std::size_t bytes = journals.bytes.load();
+        std::list<std::weak_ptr<DirectJournal>>::iterator it = journals.order.begin();
+        while ((it != journals.order.end()) && (bytes > budget)) {
+            std::shared_ptr<DirectJournal> held = it->lock();
+            if (!held || !held->isHeld()) {
+                it = journals.order.erase(it);
+                continue;
+            }
+            if (held == journal) {
+                break;
+            }
+            bytes -= std::min(bytes, held->_bytes);
+            it = journals.order.erase(it);
+            oldest.push_back(std::move(held));
+        }
+    }
+    // Dropped outside the lock, which every settling stroke of every node takes.
+    for (const std::shared_ptr<DirectJournal>& old : oldest) {
+        old->drop();
+    }
+}
+} // anon namespace
+
 struct USDTexturePaintDirect {
     // A stroke laid into the pages, and the pages as they were before it, to take it off again.
     struct Laid {
         const RotoDrawableItem* item = nullptr;
         std::weak_ptr<RotoDrawableItem> weak;
         U64 hash = 0;
-        bool journalled = true;
-        std::vector<TexelPages::Snapshot> journal;
+        // Null while live, and once taken back; a journal the budget emptied makes undoing replay.
+        std::shared_ptr<DirectJournal> journal;
         // The stroke being painted, which lays only what it gained since; it holds the journal until settled.
         std::unique_ptr<TexelSplat::LiveStroke> live;
     };
@@ -3567,7 +3750,7 @@ struct USDTexturePaintDirect {
     // The painted pages as they were for the strokes whose hash is strokes; what renders read.
     struct Published {
         U64 strokes = 0;
-        std::map<TexelPages::PageKey, TexelPages::SharedHalves> pages;
+        TexelPages::Painted pages;
     };
 
     U64 key = 0;
@@ -3594,9 +3777,9 @@ struct USDTexturePaintDirect {
     std::set<int> missing;
     std::vector<std::shared_ptr<void>> leases;
     std::vector<Laid> laid;
-    std::size_t journalBytes = 0;
 
     std::mutex publishMutex;
+    std::condition_variable publishedChanged;
     std::shared_ptr<const Published> published;
     // Bumped by each publish, so that a render's replay does not replace a newer one.
     U64 publishes = 0;
@@ -3622,6 +3805,27 @@ struct USDTexturePaintDirect {
         }
         published = pages;
         ++publishes;
+        publishedChanged.notify_all();
+    }
+
+    /**
+     * @brief Waits until what is published holds the strokes whose hash is strokes, for at most
+     * wait, polling cancelled; what is published then, matching or not.
+     **/
+    std::shared_ptr<const Published> awaitPublished(U64 strokes,
+                                                    std::chrono::milliseconds wait,
+                                                    const std::function<bool()>& cancelled)
+    {
+        const std::chrono::steady_clock::time_point until = std::chrono::steady_clock::now() + wait;
+        std::unique_lock<std::mutex> lock(publishMutex);
+        while (!published || (published->strokes != strokes)) {
+            if ((cancelled && cancelled()) || (std::chrono::steady_clock::now() >= until)) {
+                break;
+            }
+            publishedChanged.wait_for(lock, std::chrono::milliseconds(20));
+        }
+
+        return published;
     }
 };
 
@@ -3630,56 +3834,58 @@ static bool holdForBake(const std::shared_ptr<USDTexturePaint>& self, USDTexture
 namespace {
 // The Direct sessions whose texels a node keeps, so that a few frames or views each keep theirs.
 const std::size_t kDirectPaintsKept = 4;
-// Past this, the oldest strokes' journals go, and undoing those replays the strokes.
-const std::size_t kDirectJournalBudget = (std::size_t)512 << 20;
 const std::chrono::milliseconds kDirectLandInterval(100);
+// How long a render that must show a session's strokes as they are waits for the baker to catch up
+// before painting them itself.
+const std::chrono::milliseconds kDirectCatchUpWait(2000);
 const char* const kDirectTileNotReady = "The tile under the session is not built yet.";
 
-std::size_t
-journalSize(const std::vector<TexelPages::Snapshot>& journal)
-{
-    std::size_t bytes = 0;
-
-    for (const TexelPages::Snapshot& snapshot : journal) {
-        bytes += sizeof(TexelPages::Snapshot) + snapshot.texels.size() * sizeof(PXR_NS::GfHalf);
-    }
-
-    return bytes;
-}
-
 // Writes the published pages of tile in window over rgba, as layDirectPaint() does.
-void
+bool
 layPublished(const USDTexturePaintDirect::Published& published,
              int size,
              int tile,
              const RectI& window,
-             std::vector<float>* rgba)
+             std::vector<float>* rgba,
+             std::string* error)
 {
+    if (!published.pages) {
+        return true;
+    }
     const std::size_t width = (std::size_t)window.width();
     TexelPages::PageData page;
+    TexelPages::PageKey first;
+    first.tile = tile;
+    first.plane = 0;
+    first.px = 0;
+    first.py = std::max(0, window.y1 / TexelPages::kPageSize);
 
-    for (const std::pair<const TexelPages::PageKey, TexelPages::SharedHalves>& entry : published.pages) {
-        const TexelPages::PageKey& pageKey = entry.first;
-        if ((pageKey.tile != tile) || (pageKey.plane != 0) || !entry.second || (entry.second->size() != TexelPages::kPageHalves)) {
-            continue;
-        }
-        const int x1 = pageKey.px * TexelPages::kPageSize;
-        const int y1 = pageKey.py * TexelPages::kPageSize;
-        const RectI texels(x1, y1, std::min(size, x1 + TexelPages::kPageSize), std::min(size, y1 + TexelPages::kPageSize));
-        const RectI overlap = texels.intersect(window);
-        if (overlap.isNull()) {
-            continue;
-        }
-        TexelPages::unpack(entry.second->data(), &page);
-        // A painted page holds the tile under the session wherever no paint went, so it is laid whole.
-        for (int y = overlap.y1; y < overlap.y2; ++y) {
-            for (int x = overlap.x1; x < overlap.x2; ++x) {
-                const float* from = page.rgba.data() + ((std::size_t)(y - texels.y1) * TexelPages::kPageSize + (std::size_t)(x - texels.x1)) * 4;
-                float* to = rgba->data() + ((std::size_t)(y - window.y1) * width + (std::size_t)(x - window.x1)) * 4;
-                std::copy_n(from, 4, to);
+    for (TexelPages::PaintedRows::const_iterator row = published.pages->lower_bound(first);
+         (row != published.pages->end()) && (row->first.tile == tile) && (row->first.plane == 0) && (row->first.py * TexelPages::kPageSize < window.y2); ++row) {
+        for (const std::pair<const TexelPages::PageKey, TexelPages::PagePtr>& entry : *row->second) {
+            const TexelPages::PageKey& pageKey = entry.first;
+            const int x1 = pageKey.px * TexelPages::kPageSize;
+            const int y1 = pageKey.py * TexelPages::kPageSize;
+            const RectI texels(x1, y1, std::min(size, x1 + TexelPages::kPageSize), std::min(size, y1 + TexelPages::kPageSize));
+            const RectI overlap = texels.intersect(window);
+            if (overlap.isNull()) {
+                continue;
+            }
+            if (!TexelPages::readPage(entry.second, &page, error)) {
+                return false;
+            }
+            // A painted page holds the tile under the session wherever no paint went, so it is laid whole.
+            for (int y = overlap.y1; y < overlap.y2; ++y) {
+                for (int x = overlap.x1; x < overlap.x2; ++x) {
+                    const float* from = page.rgba.data() + ((std::size_t)(y - texels.y1) * TexelPages::kPageSize + (std::size_t)(x - texels.x1)) * 4;
+                    float* to = rgba->data() + ((std::size_t)(y - window.y1) * width + (std::size_t)(x - window.x1)) * 4;
+                    std::copy_n(from, 4, to);
+                }
             }
         }
     }
+
+    return true;
 }
 
 // What item paints at time, as the buffer model's stroke render reads it. False when it draws nothing.
@@ -3806,10 +4012,10 @@ USDTexturePaint::prepareDirectPaint(USDTexturePaintDirect& direct,
 
         return TexelPages::readFileRegion(path, size, texels, rgba, fillError);
     };
-    const std::size_t budget = TexelPages::defaultBudget();
-    direct.base.reset(new TexelPages(size, baseFill, budget / 16));
-    direct.below.reset(new TexelPages(size, belowFill, budget / 16));
-    direct.pages.reset(new TexelPages(size, belowFill, budget / 4));
+    // All three share the process' texel budget with every other node's.
+    direct.base.reset(new TexelPages(size, baseFill));
+    direct.below.reset(new TexelPages(size, belowFill));
+    direct.pages.reset(new TexelPages(size, belowFill));
 
     return true;
 } // USDTexturePaint::prepareDirectPaint
@@ -3838,6 +4044,29 @@ USDTexturePaint::getDirectStrokes(const RotoLayerPtr& session,
     return hasher.finalize();
 }
 
+U64
+USDTexturePaint::getDirectPaintKey(const RotoLayerPtr& session,
+                                   const std::vector<RotoLayerPtr>* only,
+                                   double textureTime,
+                                   ViewIdx view) const
+{
+    const ImageLayerDesc painted = getPaintedPlane(textureTime, view);
+    ContentHasher hasher;
+
+    hasher.appendU64(getTileCacheKey(textureTime, view, only, nullptr, session.get()));
+    // The tiles' key leaves the frame out in Animated mode, where the strokes' lifetimes and the
+    // baked files differ from frame to frame.
+    hasher.appendDouble(textureTime);
+    hasher.appendI64(view.value());
+    hasher.appendString(session->getScriptName());
+    for (const KnobIPtr& knob : session->getKnobs()) {
+        hasher.appendU64(knob ? knob->getContentHash() : 0);
+    }
+    hasher.appendString(painted.isColorLayer() ? std::string(kNatronColorLayerID) : painted.getLayerID());
+
+    return hasher.finalize();
+}
+
 std::shared_ptr<USDTexturePaintDirect>
 USDTexturePaint::findDirectPaint(const RotoLayerPtr& session,
                                  const std::vector<RotoLayerPtr>* only,
@@ -3845,14 +4074,7 @@ USDTexturePaint::findDirectPaint(const RotoLayerPtr& session,
                                  ViewIdx view)
 {
     const ImageLayerDesc painted = getPaintedPlane(time, view);
-    ContentHasher hasher;
-    hasher.appendU64(getTileCacheKey(time, view, only, nullptr, session.get()));
-    hasher.appendString(session->getScriptName());
-    for (const KnobIPtr& knob : session->getKnobs()) {
-        hasher.appendU64(knob ? knob->getContentHash() : 0);
-    }
-    hasher.appendString(painted.isColorLayer() ? std::string(kNatronColorLayerID) : painted.getLayerID());
-    const U64 key = hasher.finalize();
+    const U64 key = getDirectPaintKey(session, only, time, view);
 
     std::shared_ptr<USDTexturePaintDirect> direct;
     std::list<std::shared_ptr<USDTexturePaintDirect>> dropped;
@@ -3909,8 +4131,8 @@ USDTexturePaint::paintDirect(USDTexturePaintDirect& direct,
     }
     std::shared_ptr<USDTexturePaintDirect::Published> published = std::make_shared<USDTexturePaintDirect::Published>();
     published->strokes = strokes;
-    if (direct.pages && !direct.pages->sharePainted(0, &published->pages, error)) {
-        return false;
+    if (direct.pages) {
+        published->pages = direct.pages->sharePainted();
     }
     direct.publish(published, unlessPast);
 
@@ -3930,25 +4152,13 @@ USDTexturePaint::reconcileDirectPaint(USDTexturePaintDirect& direct,
     if (!direct.pages) {
         return true;
     }
-    const auto settle = [&direct](USDTexturePaintDirect::Laid& entry) {
+    const auto settle = [](USDTexturePaintDirect::Laid& entry) {
         if (!entry.live) {
             return;
         }
-        entry.journal = entry.live->takeJournal();
+        entry.journal = std::make_shared<DirectJournal>(entry.live->takeJournal());
         entry.live.reset();
-        entry.journalled = true;
-        direct.journalBytes += journalSize(entry.journal);
-        for (USDTexturePaintDirect::Laid& old : direct.laid) {
-            if (direct.journalBytes <= kDirectJournalBudget) {
-                break;
-            }
-            if (old.journalled && !old.live) {
-                direct.journalBytes -= std::min(direct.journalBytes, journalSize(old.journal));
-                old.journal.clear();
-                old.journal.shrink_to_fit();
-                old.journalled = false;
-            }
-        }
+        DirectJournal::account(entry.journal);
     };
 
     std::size_t prefix = 0;
@@ -3961,18 +4171,17 @@ USDTexturePaint::reconcileDirectPaint(USDTexturePaintDirect& direct,
     while (direct.laid.size() > prefix + (carry ? 1 : 0)) {
         USDTexturePaintDirect::Laid& last = direct.laid.back();
         settle(last);
+        std::vector<TexelPages::Snapshot> journal;
         std::string restoreError;
-        if (!last.journalled || !direct.pages->restore(last.journal, &restoreError)) {
+        if (!last.journal || !last.journal->take(&journal) || !direct.pages->restore(journal, &restoreError)) {
             replay = true;
             break;
         }
-        direct.journalBytes -= std::min(direct.journalBytes, journalSize(last.journal));
         direct.laid.pop_back();
     }
     if (replay) {
         direct.pages->clear();
         direct.laid.clear();
-        direct.journalBytes = 0;
         ++_directReplays;
     }
 
@@ -4083,7 +4292,6 @@ USDTexturePaint::layDirectPaint(const RotoLayerPtr& session,
     if (!session) {
         return true;
     }
-    const double requested = time;
     time = getTextureTime(time);
     const std::shared_ptr<USDTexturePaintDirect> direct = findDirectPaint(session, only, time, view);
     std::shared_ptr<const USDTexturePaintDirect::Published> published;
@@ -4100,87 +4308,111 @@ USDTexturePaint::layDirectPaint(const RotoLayerPtr& session,
         const bool painting = _directPainting.load() == session.get();
         published = direct->getPublished();
         if (!published || (!painting && (published->strokes != strokes))) {
-            // One render paints them for all those waiting, and its texels go to the others unless
-            // the baker published newer ones meanwhile.
-            std::lock_guard<std::mutex> replayLock(direct->replayMutex);
-            U64 generation = 0;
-            published = direct->getPublished(&generation);
-            if (!published || (published->strokes != strokes)) {
-                USDTexturePaintDirect apart;
-                apart.key = direct->key;
-                apart.session = direct->session;
-                apart.time = direct->time;
-                apart.view = direct->view;
-                apart.size = direct->size;
-                apart.plane = direct->plane;
-                if (!paintDirect(apart, session, only, false, cancelled, nullptr, error)) {
-                    return false;
+            // The baker paints only the sessions' own texels, those of no subset, and catches up
+            // only from texels it published; a background app may run no event loop to hand it
+            // the request.
+            const AppInstancePtr app = getApp();
+            const bool bakerCatchesUp = published && !only && app && !app->isBackground() && _directCatchUpEnabled.load();
+            bool apart = true;
+            if (bakerCatchesUp) {
+                scheduleDirectCatchUp();
+                const ParallelRenderArgsPtr frameArgs = getFrameArgs();
+                if (frameArgs && frameArgs->isRenderResponseToUserInteraction) {
+                    // The landing re-renders it, so what was published shows until then.
+                    apart = false;
+                } else if (QCoreApplication::instance() && (QThread::currentThread() != QCoreApplication::instance()->thread())) {
+                    published = direct->awaitPublished(strokes, kDirectCatchUpWait, cancelled);
+                    if (cancelled && cancelled()) {
+                        error->clear();
+
+                        return false;
+                    }
+                    apart = !published || (published->strokes != strokes);
                 }
-                ++_directPrivateReplays;
-                published = apart.getPublished();
-                direct->publish(published, &generation);
-                if (!only) {
-                    requestDirectCatchUp(session, requested, view);
+            }
+            if (apart) {
+                // One render paints them for all those waiting, and its texels go to the others unless
+                // the baker published newer ones meanwhile.
+                std::lock_guard<std::mutex> replayLock(direct->replayMutex);
+                U64 generation = 0;
+                published = direct->getPublished(&generation);
+                if (!published || (published->strokes != strokes)) {
+                    USDTexturePaintDirect alone;
+                    alone.key = direct->key;
+                    alone.session = direct->session;
+                    alone.time = direct->time;
+                    alone.view = direct->view;
+                    alone.size = direct->size;
+                    alone.plane = direct->plane;
+                    if (!paintDirect(alone, session, only, false, cancelled, nullptr, error)) {
+                        return false;
+                    }
+                    ++_directPrivateReplays;
+                    published = alone.getPublished();
+                    direct->publish(published, &generation);
                 }
             }
         }
     }
     if (rgba && published && !window.isNull()) {
-        layPublished(*published, direct->size, tile, window, rgba);
+        return layPublished(*published, direct->size, tile, window, rgba, error);
     }
 
     return true;
 } // USDTexturePaint::layDirectPaint
 
 void
-USDTexturePaint::requestDirectCatchUp(const RotoLayerPtr& session,
-                                      double time,
-                                      ViewIdx view)
+USDTexturePaint::scheduleDirectCatchUp()
 {
-    const AppInstancePtr app = getApp();
     QCoreApplication* qapp = QCoreApplication::instance();
 
-    if (!app || app->isBackground() || !qapp || _directCatchUpPosted.exchange(true)) {
+    if (!qapp || !_directCatchUpEnabled.load() || _directCatchUpPosted.exchange(true)) {
         return;
     }
     const std::weak_ptr<USDTexturePaint> weak = weakSelf();
-    const RotoLayerWPtr weakSession = session;
-    QMetaObject::invokeMethod(qapp, [weak, weakSession, time, view]() {
-        const std::shared_ptr<USDTexturePaint> self = weak.lock();
-        if (!self) {
+    QMetaObject::invokeMethod(qapp, [weak]() {
+        if (const std::shared_ptr<USDTexturePaint> self = weak.lock()) {
+            self->_directCatchUpPosted = false;
+            self->catchUpDirectPaint();
+        } }, Qt::QueuedConnection);
+}
+
+void
+USDTexturePaint::catchUpDirectPaint()
+{
+    const NodePtr node = getNode();
+    if (!_directCatchUpEnabled.load() || _directPenDown.load() || _directPainting.load() || !node || !node->isActivated()) {
+        return;
+    }
+    const AppInstancePtr app = getApp();
+    const double time = (app && app->getTimeLine()) ? (double)app->getTimeLine()->currentFrame() : 1.;
+    const ViewIdx view(0);
+    // As getLaidSessions() skips them.
+    const bool skipFrozen = hasBakedOutput();
+    for (const RotoLayerPtr& session : getSessions()) {
+        if ((getSessionPaintModel(session) == ePaintModelDirect) && !(skipFrozen && isSessionFrozen(session)) && !isDirectSessionPublished(session, time, view)) {
+            requestDirectPaint(session, time, view, true);
+
             return;
         }
-        USDTexturePaintBaker::Bake bake;
-        bake.label = tr("Painting");
-        bake.showsProgress = false;
-        bake.work = [weak, weakSession, time, view](USDTexturePaintBaker::Context& context) -> bool {
-            const std::shared_ptr<USDTexturePaint> painter = weak.lock();
-            if (!holdForBake(painter, context)) {
-                return false;
-            }
-            const RotoLayerPtr layer = weakSession.lock();
-            if (!layer) {
-                return false;
-            }
-            context.keepAlive(layer);
-            const std::function<bool()> cancelled = [&context]() -> bool {
-                return context.cancelled();
-            };
-            const double textureTime = painter->getTextureTime(time);
-            const std::shared_ptr<USDTexturePaintDirect> direct = painter->findDirectPaint(layer, nullptr, textureTime, view);
-            std::string error;
+    }
+}
 
-            return painter->paintDirect(*direct, layer, nullptr, false, cancelled, nullptr, &error);
-        };
-        bake.completion = [weak](bool /*ok*/) {
-            if (const std::shared_ptr<USDTexturePaint> painter = weak.lock()) {
-                painter->_directCatchUpPosted = false;
-            }
-        };
-        if (!self->getBaker()->enqueue(bake)) {
-            self->_directCatchUpPosted = false;
-        } }, Qt::QueuedConnection);
-} // USDTexturePaint::requestDirectCatchUp
+void
+USDTexturePaint::evaluate(bool isSignificant,
+                          bool refreshMetadatas)
+{
+    NativeEffectBase::evaluate(isSignificant, refreshMetadatas);
+    if (isSignificant) {
+        scheduleDirectCatchUp();
+    }
+}
+
+void
+USDTexturePaint::setDirectCatchUpForTesting(bool enabled)
+{
+    _directCatchUpEnabled = enabled;
+}
 
 void
 USDTexturePaint::requestDirectPaint(const RotoLayerPtr& session,
@@ -4191,6 +4423,7 @@ USDTexturePaint::requestDirectPaint(const RotoLayerPtr& session,
     if (!session || (getSessionPaintModel(session) != ePaintModelDirect)) {
         return;
     }
+    _directPenDown = !final;
     _directPainting = session.get();
     _directSession = session;
     _directTime = time;
@@ -4263,6 +4496,9 @@ USDTexturePaint::enqueueDirectPaint()
         }
         if (again) {
             self->enqueueDirectPaint();
+        } else if (ok) {
+            // Edits made while it painted, or other sessions left stale, are caught up next.
+            self->scheduleDirectCatchUp();
         }
     };
     _directQueued = true;
@@ -4313,10 +4549,10 @@ USDTexturePaint::clearDirectJournalsForTesting()
     for (const std::shared_ptr<USDTexturePaintDirect>& direct : paints) {
         std::lock_guard<std::mutex> lock(direct->mutex);
         for (USDTexturePaintDirect::Laid& laid : direct->laid) {
-            laid.journal.clear();
-            laid.journalled = false;
+            if (laid.journal) {
+                laid.journal->drop();
+            }
         }
-        direct->journalBytes = 0;
     }
 }
 
@@ -4327,7 +4563,9 @@ USDTexturePaint::getDirectReplayCount() const
 }
 
 bool
-USDTexturePaint::isDirectSessionPublished(const RotoLayerPtr& session) const
+USDTexturePaint::isDirectSessionPublished(const RotoLayerPtr& session,
+                                          double time,
+                                          ViewIdx view) const
 {
     if (!session) {
         return false;
@@ -4335,9 +4573,10 @@ USDTexturePaint::isDirectSessionPublished(const RotoLayerPtr& session) const
     std::vector<RotoDrawableItemPtr> items;
     std::vector<U64> hashes;
     const U64 strokes = getDirectStrokes(session, &items, &hashes);
+    const U64 key = getDirectPaintKey(session, nullptr, getTextureTime(time), view);
     std::lock_guard<std::mutex> lock(_directMutex);
     for (const std::shared_ptr<USDTexturePaintDirect>& direct : _directPaints) {
-        if (direct->session == session.get()) {
+        if ((direct->key == key) && (direct->session == session.get())) {
             const std::shared_ptr<const USDTexturePaintDirect::Published> published = direct->getPublished();
 
             return published && (published->strokes == strokes);
@@ -4681,6 +4920,7 @@ USDTexturePaint::quitBackgroundWork(bool /*blocking*/)
     }
     paints.clear();
     _directPainting = nullptr;
+    _directPenDown = false;
     _directCatchUpPosted = false;
     if (!_baker) {
         return;

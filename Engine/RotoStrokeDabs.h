@@ -57,10 +57,6 @@ void getRenderDotParams(double alpha,
                         double* spacing,
                         std::vector<std::pair<double, double>>* opacityStops);
 
-/**
- * @brief Places the dabs of a paint stroke along its points, the way RotoPaint's stroke renderer draws them, without
- * drawing anything: each dab goes to a sink, which may rasterise it anywhere.
- **/
 namespace RotoStrokeDabs {
 
 typedef std::list<std::pair<Point, double>> StrokePoints;
@@ -105,7 +101,8 @@ typedef std::function<void(const Dab& dab)> Sink;
 bool readBrushParams(const RotoDrawableItem* item, double time, unsigned int mipmapLevel, BrushParams* params);
 
 /**
- * @brief Hands sink every dab of strokes, in drawing order. Points are (position, pressure) in the pixels of the
+ * @brief Places the dabs of strokes along their points the way RotoPaint's stroke renderer draws them, without
+ * drawing anything: sink gets every dab, in drawing order, and may rasterise it anywhere. Points are (position, pressure) in the pixels of the
  * level the params were read at. distToNext is the distance along the first stroke to its first dab, carried over
  * from a previous walk of the same stroke; the return value is the distance to carry into the next one.
  **/

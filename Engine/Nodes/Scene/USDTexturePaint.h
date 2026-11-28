@@ -297,11 +297,20 @@ public:
     // Drops the page journal of every Direct session, so that what an undo takes off is replayed.
     void clearDirectJournalsForTesting();
 
+    /**
+     * @brief Whether an edit of the strokes has the baker bring the Direct sessions' texels up to
+     * date on its own, as it does by default; off, the renders find them stale until a request.
+     **/
+    void setDirectCatchUpForTesting(bool enabled);
+
     // How many times a Direct session's texels were painted again from its strokes, journal lost.
     quint64 getDirectReplayCount() const WARN_UNUSED_RETURN;
 
-    // Whether the texels the baker last published for the Direct session hold its strokes as they are. Main thread.
-    bool isDirectSessionPublished(const RotoLayerPtr& session) const WARN_UNUSED_RETURN;
+    /**
+     * @brief Whether the texels the baker last published for the Direct session at time and view
+     * hold its strokes as they are. Main thread.
+     **/
+    bool isDirectSessionPublished(const RotoLayerPtr& session, double time, ViewIdx view) const WARN_UNUSED_RETURN;
 
     // How many times a render found a Direct session's published texels stale and painted its own.
     quint64 getDirectPrivateReplayCount() const WARN_UNUSED_RETURN;
@@ -730,6 +739,9 @@ public:
 protected:
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    // Also has the baker catch the Direct sessions up with an edit of their strokes.
+    virtual void evaluate(bool isSignificant, bool refreshMetadatas) OVERRIDE FINAL;
+
 private:
     // What the baker's closures hold instead of this, so that a bake never outlives the node unseen.
     std::weak_ptr<USDTexturePaint> weakSelf();
@@ -924,9 +936,10 @@ private:
      * premultiplied RGBA, row-major and bottom-up with a stride of window.width(). On the baker,
      * the one writer of the session's texels, they are first brought up to date with its strokes
      * and published. Elsewhere the published texels are read: as they are while the session is
-     * painted, else only when they hold its strokes as they are, the strokes being painted again
-     * apart otherwise. Any thread but the main one. False with *error set when they cannot be
-     * painted, false with *error empty once cancelled.
+     * painted or while the baker catches up with an edit in an interactive render; other renders
+     * wait a little for the baker, then paint the strokes apart, one render for all those waiting.
+     * Any thread but the main one. False with *error set when they cannot be painted, false with
+     * *error empty once cancelled.
      **/
     bool layDirectPaint(const RotoLayerPtr& session,
                         const std::vector<RotoLayerPtr>* only,
@@ -943,7 +956,13 @@ private:
                          std::vector<RotoDrawableItemPtr>* items,
                          std::vector<U64>* hashes) const;
 
-    // The texels kept for session at time and view, made when there are none yet.
+    // What the texels of session at the texture time and view are kept under.
+    U64 getDirectPaintKey(const RotoLayerPtr& session,
+                          const std::vector<RotoLayerPtr>* only,
+                          double textureTime,
+                          ViewIdx view) const WARN_UNUSED_RETURN;
+
+    // The texels kept for session at the texture time and view, made when there are none yet.
     std::shared_ptr<USDTexturePaintDirect> findDirectPaint(const RotoLayerPtr& session,
                                                            const std::vector<RotoLayerPtr>* only,
                                                            double time,
@@ -977,8 +996,15 @@ private:
                               const std::function<bool()>& cancelled,
                               std::string* error);
 
-    // Has the baker bring session's own texels up to date, after a render painted its own. Any thread.
-    void requestDirectCatchUp(const RotoLayerPtr& session, double time, ViewIdx view);
+    // Has catchUpDirectPaint() run on the main thread, once for any number of calls before it. Any thread.
+    void scheduleDirectCatchUp();
+
+    /**
+     * @brief Requests a paint, as the pen does, of the first Direct session whose texels at the
+     * current frame are stale, unless the pen or a request is painting; each landing schedules
+     * the next. Main thread.
+     **/
+    void catchUpDirectPaint();
 
     // Queues the request requestDirectPaint() recorded on the baker. Main thread.
     void enqueueDirectPaint();
@@ -1027,6 +1053,9 @@ private:
     mutable bool _stampsValid = false;
     mutable U64 _stampsSignature = 0;
     mutable U64 _stampsDigest = 0;
+    // getCoveredTiles() by what decides them, most recent last.
+    mutable std::mutex _coveredTilesMutex;
+    std::list<std::pair<U64, std::set<int>>> _coveredTiles;
 
     PrimSelector _primPattern;
     KnobStringWPtr _uvPrimvar;
@@ -1074,6 +1103,9 @@ private:
     // The Direct session requestDirectPaint() is painting, whose published texels renders take as they are.
     std::atomic<const RotoLayer*> _directPainting { nullptr };
     std::atomic<bool> _directCatchUpPosted { false };
+    std::atomic<bool> _directCatchUpEnabled { true };
+    // Between the pen's first request of a stroke and its final one.
+    std::atomic<bool> _directPenDown { false };
     // Bumped by quitBackgroundWork(), which drops a queued paint and its completion.
     std::atomic<quint64> _directStops { 0 };
     // What requestDirectPaint() recorded for the baker to take, and the hand-off's state. Main thread.

@@ -26,6 +26,7 @@
 #include "TexelPages.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <cmath>
 #include <cstring>
@@ -111,76 +112,82 @@ expandChannels(const float* raw,
         out[3] = (channels == 2) ? in[1] : ((channels == 4) ? in[3] : 1.f);
     }
 }
-} // anonymous namespace
 
-struct TexelPages::Implementation {
-    struct Entry {
-        // Never written in place: sharePainted() hands it out to readers on other threads.
-        std::shared_ptr<std::vector<GfHalf>> texels;
-        bool painted = false;
-        // The slot of the spill file holding the page, and whether it holds the page as it is now.
-        std::int64_t slot = -1;
-        bool slotCurrent = false;
-        std::list<PageKey>::iterator lru;
-    };
-
-    int size = 0;
-    int pagesPerSide = 0;
-    BaseFill base;
-    std::size_t budgetPages = 1;
-    std::string spillDirectory;
-
-    mutable std::mutex mutex;
-    std::map<PageKey, Entry> entries;
-    // Resident pages, most recently used first.
-    std::list<PageKey> lru;
-    std::size_t spilled = 0;
-    int spillFd = -1;
+// Slots of kPageBytes in an unlinked temporary file. Pages keep their file alive, so the
+// pages a cleared TexelPages handed out stay readable.
+struct SpillFile {
+    std::string directory;
+    std::mutex mutex;
+    int fd = -1;
     std::int64_t nextSlot = 0;
     std::vector<std::int64_t> freeSlots;
 
-    ~Implementation()
+    explicit SpillFile(const std::string& directory_)
+        : directory(directory_)
     {
-        if (spillFd >= 0) {
-            ::close(spillFd);
+    }
+
+    ~SpillFile()
+    {
+        if (fd >= 0) {
+            ::close(fd);
         }
     }
 
-    bool openSpill(std::string* error)
+    SpillFile(const SpillFile&) = delete;
+    SpillFile& operator=(const SpillFile&) = delete;
+
+    bool take(std::int64_t* slot,
+              std::string* error)
     {
-        if (spillFd >= 0) {
-            return true;
-        }
-        std::string directory = spillDirectory;
-        if (directory.empty()) {
-            std::error_code ec;
-            directory = std::filesystem::temp_directory_path(ec).string();
-            if (ec || directory.empty()) {
-                directory = "/tmp";
-            }
-        }
-        std::string pattern = directory + "/NatronTexelPages-XXXXXX";
-        std::vector<char> name(pattern.begin(), pattern.end());
-        name.push_back('\0');
-        const int fd = ::mkstemp(name.data());
+        std::lock_guard<std::mutex> lock(mutex);
+
         if (fd < 0) {
-            return fail(error, "Paint could not be spilled to " + directory + ": " + std::strerror(errno));
+            std::string dir = directory;
+            if (dir.empty()) {
+                std::error_code ec;
+                dir = std::filesystem::temp_directory_path(ec).string();
+                if (ec || dir.empty()) {
+                    dir = "/tmp";
+                }
+            }
+            std::string pattern = dir + "/NatronTexelPages-XXXXXX";
+            std::vector<char> name(pattern.begin(), pattern.end());
+            name.push_back('\0');
+            const int opened = ::mkstemp(name.data());
+            if (opened < 0) {
+                return fail(error, "Paint could not be spilled to " + dir + ": " + std::strerror(errno));
+            }
+            ::unlink(name.data());
+            fd = opened;
         }
-        ::unlink(name.data());
-        spillFd = fd;
+        if (!freeSlots.empty()) {
+            *slot = freeSlots.back();
+            freeSlots.pop_back();
+        } else {
+            *slot = nextSlot++;
+        }
 
         return true;
     }
 
-    bool writeSlot(std::int64_t slot,
-                   const std::vector<GfHalf>& texels,
-                   std::string* error) const
+    void give(std::int64_t slot)
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+
+        freeSlots.push_back(slot);
+    }
+
+    // The descriptor is set once, before the first slot is handed out, and pread/pwrite need no lock.
+    bool write(std::int64_t slot,
+               const std::vector<GfHalf>& texels,
+               std::string* error) const
     {
         const char* data = reinterpret_cast<const char*>(texels.data());
         std::size_t done = 0;
-        const off_t offset = (off_t)slot * (off_t)kPageBytes;
-        while (done < kPageBytes) {
-            const ssize_t n = ::pwrite(spillFd, data + done, kPageBytes - done, offset + (off_t)done);
+        const off_t offset = (off_t)slot * (off_t)TexelPages::kPageBytes;
+        while (done < TexelPages::kPageBytes) {
+            const ssize_t n = ::pwrite(fd, data + done, TexelPages::kPageBytes - done, offset + (off_t)done);
             if (n < 0) {
                 if (errno == EINTR) {
                     continue;
@@ -194,16 +201,16 @@ struct TexelPages::Implementation {
         return true;
     }
 
-    bool readSlot(std::int64_t slot,
-                  std::vector<GfHalf>* texels,
-                  std::string* error) const
+    bool read(std::int64_t slot,
+              std::vector<GfHalf>* texels,
+              std::string* error) const
     {
         texels->resize(kHalvesPerPage);
         char* data = reinterpret_cast<char*>(texels->data());
         std::size_t done = 0;
-        const off_t offset = (off_t)slot * (off_t)kPageBytes;
-        while (done < kPageBytes) {
-            const ssize_t n = ::pread(spillFd, data + done, kPageBytes - done, offset + (off_t)done);
+        const off_t offset = (off_t)slot * (off_t)TexelPages::kPageBytes;
+        while (done < TexelPages::kPageBytes) {
+            const ssize_t n = ::pread(fd, data + done, TexelPages::kPageBytes - done, offset + (off_t)done);
             if (n < 0) {
                 if (errno == EINTR) {
                     continue;
@@ -219,95 +226,285 @@ struct TexelPages::Implementation {
 
         return true;
     }
+};
+} // anonymous namespace
 
-    void freeSlot(Entry* entry)
+/*
+ * Lock order: a TexelPages' mutex, then a page's, then the budget's. A page's destructor takes
+ * the budget's mutex, so no strong reference to a page is dropped while it is held.
+ */
+class TexelPages::Budget {
+public:
+    explicit Budget(std::size_t bytes)
+        : limit(std::max<std::size_t>(1, bytes / kPageBytes))
     {
-        if (entry->slot >= 0) {
-            freeSlots.push_back(entry->slot);
-            entry->slot = -1;
-            entry->slotCurrent = false;
+    }
+
+    std::mutex mutex;
+    // Resident pages, most recently used first.
+    std::list<std::weak_ptr<const Page>> lru;
+    const std::size_t limit;
+
+    // With the page's mutex held.
+    void touch(const PagePtr& page);
+
+    // Spills or drops the pages used least recently until the resident ones fit.
+    bool balance(std::string* error);
+};
+
+struct TexelPages::Page {
+    BudgetPtr budget;
+    std::shared_ptr<SpillFile> spill;
+    // Only a cache of the base, dropped rather than spilled.
+    bool droppable = false;
+
+    mutable std::mutex mutex;
+    // Under mutex: the halves when resident, and the slot holding them once spilled. A page never
+    // changes, so its slot stays good when it comes back into memory.
+    mutable std::shared_ptr<const std::vector<GfHalf>> texels;
+    mutable std::int64_t slot = -1;
+
+    // Under the budget's mutex.
+    mutable bool listed = false;
+    mutable std::list<std::weak_ptr<const Page>>::iterator lru;
+
+    ~Page()
+    {
+        {
+            std::lock_guard<std::mutex> lock(budget->mutex);
+            if (listed) {
+                budget->lru.erase(lru);
+            }
+        }
+        if (slot >= 0) {
+            spill->give(slot);
         }
     }
 
-    void touch(const PageKey& key,
-               Entry* entry)
+    /**
+     * @brief The page's texels; a spilled page comes back into memory when bringBack is set. Sets
+     * *gone instead when the page was a cache of the base that has been dropped.
+     **/
+    bool load(const PagePtr& self,
+              bool bringBack,
+              PageData* data,
+              bool* gone,
+              std::string* error) const
     {
-        if (entry->texels) {
-            lru.erase(entry->lru);
-        }
-        lru.push_front(key);
-        entry->lru = lru.begin();
-    }
+        *gone = false;
+        std::lock_guard<std::mutex> lock(mutex);
+        if (texels) {
+            fromHalves(texels->data(), data);
+            if (bringBack) {
+                budget->touch(self);
+            }
 
-    void erase(std::map<PageKey, Entry>::iterator it)
-    {
-        Entry& entry = it->second;
-        if (entry.texels) {
-            lru.erase(entry.lru);
-        } else {
-            --spilled;
+            return true;
         }
-        freeSlot(&entry);
-        entries.erase(it);
-    }
+        if (slot < 0) {
+            *gone = true;
 
-    bool unspill(const PageKey& key,
-                 Entry* entry,
-                 std::string* error)
-    {
-        std::unique_ptr<std::vector<GfHalf>> texels(new std::vector<GfHalf>());
-        if (!readSlot(entry->slot, texels.get(), error)) {
+            return true;
+        }
+        std::shared_ptr<std::vector<GfHalf>> halves = std::make_shared<std::vector<GfHalf>>();
+        if (!spill->read(slot, halves.get(), error)) {
             return false;
         }
-        touch(key, entry);
-        entry->texels = std::move(texels);
-        --spilled;
+        fromHalves(halves->data(), data);
+        if (bringBack) {
+            texels = std::move(halves);
+            budget->touch(self);
+        }
 
         return true;
     }
 
-    // Drops or spills the least recently used pages other than keep until the budget holds.
-    bool evict(const PageKey& keep,
-               std::string* error)
+    bool resident() const
     {
-        while (lru.size() > budgetPages) {
-            std::list<PageKey>::iterator last = std::prev(lru.end());
-            if (*last == keep) {
-                if (lru.size() == 1) {
-                    break;
-                }
-                last = std::prev(last);
+        std::lock_guard<std::mutex> lock(mutex);
+
+        return bool(texels);
+    }
+
+    bool dropped() const
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+
+        return !texels && (slot < 0);
+    }
+
+    // Leaves memory unless it was used again since the budget chose it.
+    bool evict(const PagePtr& self,
+               std::string* error) const
+    {
+        std::lock_guard<std::mutex> lock(mutex);
+        {
+            std::lock_guard<std::mutex> listLock(budget->mutex);
+            if (listed) {
+                return true;
             }
-            const PageKey key = *last;
-            std::map<PageKey, Entry>::iterator it = entries.find(key);
-            Entry& entry = it->second;
-            if (!entry.painted) {
-                erase(it);
-                continue;
-            }
-            if (!entry.slotCurrent) {
-                if (!openSpill(error)) {
-                    return false;
-                }
-                if (entry.slot < 0) {
-                    if (!freeSlots.empty()) {
-                        entry.slot = freeSlots.back();
-                        freeSlots.pop_back();
-                    } else {
-                        entry.slot = nextSlot++;
-                    }
-                }
-                if (!writeSlot(entry.slot, *entry.texels, error)) {
-                    return false;
-                }
-                entry.slotCurrent = true;
-            }
-            lru.erase(entry.lru);
-            entry.texels.reset();
-            ++spilled;
         }
+        if (!texels) {
+            return true;
+        }
+        if (!droppable && (slot < 0)) {
+            std::int64_t taken = -1;
+            if (!spill->take(&taken, error) || !spill->write(taken, *texels, error)) {
+                if (taken >= 0) {
+                    spill->give(taken);
+                }
+                budget->touch(self);
+
+                return false;
+            }
+            slot = taken;
+        }
+        texels.reset();
 
         return true;
+    }
+};
+
+void
+TexelPages::Budget::touch(const PagePtr& page)
+{
+    std::lock_guard<std::mutex> lock(mutex);
+
+    if (page->listed) {
+        lru.splice(lru.begin(), lru, page->lru);
+    } else {
+        lru.push_front(page);
+        page->lru = lru.begin();
+        page->listed = true;
+    }
+}
+
+bool
+TexelPages::Budget::balance(std::string* error)
+{
+    for (;;) {
+        std::vector<PagePtr> victims;
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (lru.size() <= limit) {
+                return true;
+            }
+            std::size_t excess = lru.size() - limit;
+            std::list<std::weak_ptr<const Page>>::iterator it = lru.end();
+            while ((excess > 0) && (it != lru.begin())) {
+                --it;
+                PagePtr page = it->lock();
+                if (!page) {
+                    // Dying: its destructor takes it off the list.
+                    continue;
+                }
+                page->listed = false;
+                it = lru.erase(it);
+                --excess;
+                victims.push_back(std::move(page));
+            }
+        }
+        if (victims.empty()) {
+            return true;
+        }
+        // Every victim is either evicted or listed again, even past a failure.
+        bool evicted = true;
+        for (const PagePtr& victim : victims) {
+            std::string evictError;
+            if (!victim->evict(victim, &evictError) && evicted) {
+                evicted = false;
+                if (error) {
+                    *error = evictError;
+                }
+            }
+        }
+        if (!evicted) {
+            return false;
+        }
+    }
+}
+
+namespace {
+TexelPages::PagePtr
+makePage(const TexelPages::BudgetPtr& budget,
+         const std::shared_ptr<SpillFile>& spill,
+         bool droppable,
+         std::vector<GfHalf>&& halves)
+{
+    std::shared_ptr<TexelPages::Page> page = std::make_shared<TexelPages::Page>();
+
+    page->budget = budget;
+    page->spill = spill;
+    page->droppable = droppable;
+    page->texels = std::make_shared<const std::vector<GfHalf>>(std::move(halves));
+    TexelPages::PagePtr made = page;
+    std::lock_guard<std::mutex> lock(made->mutex);
+    budget->touch(made);
+
+    return made;
+}
+} // anonymous namespace
+
+struct TexelPages::Implementation {
+    struct Entry {
+        PagePtr page;
+        bool painted = false;
+    };
+
+    int size = 0;
+    int pagesPerSide = 0;
+    BaseFill base;
+    BudgetPtr budget;
+    std::string spillDirectory;
+
+    mutable std::mutex mutex;
+    std::shared_ptr<SpillFile> spill;
+    std::map<PageKey, Entry> entries;
+    // The painted pages again, by row, shared with what sharePainted() handed out until a write
+    // copies the index and the row it changes.
+    std::shared_ptr<const PaintedRows> painted = std::make_shared<PaintedRows>();
+
+    // With mutex held; a null page unpaints the key.
+    void setPainted(const PageKey& key,
+                    const PagePtr& page)
+    {
+        PageKey rowKey = key;
+        rowKey.px = 0;
+        // A count of one means nothing else holds it, and nothing can take it without the mutex.
+        if (painted.use_count() > 1) {
+            painted = std::make_shared<PaintedRows>(*painted);
+        }
+        std::atomic_thread_fence(std::memory_order_acquire);
+        // Made here as non-const objects, and held by nothing else when changed.
+        PaintedRows& rows = const_cast<PaintedRows&>(*painted);
+        PaintedRows::iterator it = rows.find(rowKey);
+        if (it == rows.end()) {
+            if (!page) {
+                return;
+            }
+            it = rows.insert(std::make_pair(rowKey, std::make_shared<PageRow>())).first;
+        } else if (it->second.use_count() > 1) {
+            it->second = std::make_shared<PageRow>(*it->second);
+        }
+        std::atomic_thread_fence(std::memory_order_acquire);
+        PageRow& row = const_cast<PageRow&>(*it->second);
+        if (page) {
+            row[key] = page;
+        } else {
+            row.erase(key);
+            if (row.empty()) {
+                rows.erase(it);
+            }
+        }
+    }
+
+    // With mutex held.
+    void erase(std::map<PageKey, Entry>::iterator it)
+    {
+        if (it->second.painted) {
+            setPainted(it->first, PagePtr());
+        }
+        entries.erase(it);
     }
 
     bool fillBase(const PageKey& key,
@@ -346,25 +543,6 @@ struct TexelPages::Implementation {
 
         return RectI(x1, y1, std::min(size, x1 + kPageSize), std::min(size, y1 + kPageSize));
     }
-
-    // The page's halves, read back from the spill file when it is not in memory, without bringing it back.
-    bool peek(const Entry& entry,
-              std::vector<GfHalf>* scratch,
-              const std::vector<GfHalf>** texels,
-              std::string* error) const
-    {
-        if (entry.texels) {
-            *texels = entry.texels.get();
-
-            return true;
-        }
-        if (!readSlot(entry.slot, scratch, error)) {
-            return false;
-        }
-        *texels = scratch;
-
-        return true;
-    }
 };
 
 TexelPages::TexelPages(int size,
@@ -376,11 +554,9 @@ TexelPages::TexelPages(int size,
     _imp->size = std::max(0, size);
     _imp->pagesPerSide = (_imp->size + kPageSize - 1) / kPageSize;
     _imp->base = std::move(base);
-    if (budgetBytes == 0) {
-        budgetBytes = defaultBudget();
-    }
-    _imp->budgetPages = std::max<std::size_t>(1, budgetBytes / kPageBytes);
+    _imp->budget = (budgetBytes == 0) ? sharedBudget() : std::make_shared<Budget>(budgetBytes);
     _imp->spillDirectory = spillDirectory;
+    _imp->spill = std::make_shared<SpillFile>(spillDirectory);
 }
 
 TexelPages::~TexelPages()
@@ -393,6 +569,33 @@ TexelPages::defaultBudget()
     const U64 ram = getSystemTotalRAM();
 
     return std::max<std::size_t>(kPageBytes * 64, (std::size_t)(ram / 4));
+}
+
+TexelPages::BudgetPtr
+TexelPages::sharedBudget()
+{
+    static const BudgetPtr budget = std::make_shared<Budget>(defaultBudget());
+
+    return budget;
+}
+
+bool
+TexelPages::readPage(const PagePtr& page,
+                     PageData* data,
+                     std::string* error)
+{
+    if (!page) {
+        return fail(error, "A paint page is missing.");
+    }
+    bool gone = false;
+    if (!page->load(page, false, data, &gone, error)) {
+        return false;
+    }
+    if (gone) {
+        return fail(error, "A paint page is missing.");
+    }
+
+    return true;
 }
 
 int
@@ -434,19 +637,26 @@ TexelPages::read(const PageKey& key,
                  PageData* page,
                  std::string* error)
 {
+    PagePtr found;
     {
         std::lock_guard<std::mutex> lock(_imp->mutex);
-        std::map<PageKey, Implementation::Entry>::iterator it = _imp->entries.find(key);
+        const std::map<PageKey, Implementation::Entry>::const_iterator it = _imp->entries.find(key);
         if (it != _imp->entries.end()) {
-            Implementation::Entry& entry = it->second;
-            if (entry.texels) {
-                _imp->touch(key, &entry);
-            } else if (!_imp->unspill(key, &entry, error)) {
-                return false;
-            }
-            fromHalves(entry.texels->data(), page);
-
-            return _imp->evict(key, error);
+            found = it->second.page;
+        }
+    }
+    if (found) {
+        bool gone = false;
+        if (!found->load(found, true, page, &gone, error)) {
+            return false;
+        }
+        if (!gone) {
+            return _imp->budget->balance(error);
+        }
+        std::lock_guard<std::mutex> lock(_imp->mutex);
+        const std::map<PageKey, Implementation::Entry>::iterator it = _imp->entries.find(key);
+        if ((it != _imp->entries.end()) && (it->second.page == found)) {
+            _imp->entries.erase(it);
         }
     }
 
@@ -455,24 +665,30 @@ TexelPages::read(const PageKey& key,
     if (!_imp->fillBase(key, &filled, error)) {
         return false;
     }
-    std::unique_ptr<std::vector<GfHalf>> texels(new std::vector<GfHalf>());
-    toHalves(filled, texels.get());
-
-    std::lock_guard<std::mutex> lock(_imp->mutex);
-    std::map<PageKey, Implementation::Entry>::iterator it = _imp->entries.find(key);
-    if (it == _imp->entries.end()) {
-        it = _imp->entries.insert(std::make_pair(key, Implementation::Entry())).first;
-        Implementation::Entry& entry = it->second;
-        _imp->touch(key, &entry);
-        entry.texels = std::move(texels);
-    } else if (it->second.texels) {
-        _imp->touch(key, &it->second);
-    } else if (!_imp->unspill(key, &it->second, error)) {
+    std::vector<GfHalf> halves;
+    toHalves(filled, &halves);
+    PagePtr winner;
+    {
+        PagePtr made = makePage(_imp->budget, _imp->spill, true, std::move(halves));
+        std::lock_guard<std::mutex> lock(_imp->mutex);
+        const std::map<PageKey, Implementation::Entry>::const_iterator it = _imp->entries.find(key);
+        if (it == _imp->entries.end()) {
+            Implementation::Entry entry;
+            entry.page = std::move(made);
+            _imp->entries.insert(std::make_pair(key, std::move(entry)));
+        } else {
+            winner = it->second.page;
+        }
+    }
+    bool gone = true;
+    if (winner && !winner->load(winner, true, page, &gone, error)) {
         return false;
     }
-    fromHalves(it->second.texels->data(), page);
+    if (gone) {
+        *page = std::move(filled);
+    }
 
-    return _imp->evict(key, error);
+    return _imp->budget->balance(error);
 } // TexelPages::read
 
 bool
@@ -486,43 +702,35 @@ TexelPages::write(const PageKey& key,
     if (_imp->texelsOf(key).isNull()) {
         return fail(error, "A paint page lies outside its tile.");
     }
-    std::unique_ptr<std::vector<GfHalf>> texels(new std::vector<GfHalf>());
-    toHalves(page, texels.get());
-
-    std::lock_guard<std::mutex> lock(_imp->mutex);
-    Implementation::Entry& entry = _imp->entries[key];
-    if (!entry.texels && (entry.slot >= 0)) {
-        --_imp->spilled;
+    std::vector<GfHalf> halves;
+    toHalves(page, &halves);
+    PagePtr made = makePage(_imp->budget, _imp->spill, false, std::move(halves));
+    {
+        std::lock_guard<std::mutex> lock(_imp->mutex);
+        Implementation::Entry& entry = _imp->entries[key];
+        entry.page = made;
+        entry.painted = true;
+        _imp->setPainted(key, made);
     }
-    _imp->touch(key, &entry);
-    entry.texels = std::move(texels);
-    entry.painted = true;
-    entry.slotCurrent = false;
 
-    return _imp->evict(key, error);
+    return _imp->budget->balance(error);
 }
 
 bool
 TexelPages::snapshot(const std::vector<PageKey>& keys,
                      std::vector<Snapshot>* snapshots,
-                     std::string* error)
+                     std::string* /*error*/)
 {
     snapshots->clear();
     snapshots->reserve(keys.size());
 
     std::lock_guard<std::mutex> lock(_imp->mutex);
-    std::vector<GfHalf> scratch;
     for (const PageKey& key : keys) {
         Snapshot snap;
         snap.key = key;
-        std::map<PageKey, Implementation::Entry>::const_iterator it = _imp->entries.find(key);
+        const std::map<PageKey, Implementation::Entry>::const_iterator it = _imp->entries.find(key);
         if ((it != _imp->entries.end()) && it->second.painted) {
-            const std::vector<GfHalf>* texels = nullptr;
-            if (!_imp->peek(it->second, &scratch, &texels, error)) {
-                return false;
-            }
-            snap.painted = true;
-            snap.texels = *texels;
+            snap.page = it->second.page;
         }
         snapshots->push_back(std::move(snap));
     }
@@ -534,33 +742,27 @@ bool
 TexelPages::restore(const std::vector<Snapshot>& snapshots,
                     std::string* error)
 {
-    std::lock_guard<std::mutex> lock(_imp->mutex);
-
-    for (const Snapshot& snap : snapshots) {
-        std::map<PageKey, Implementation::Entry>::iterator it = _imp->entries.find(snap.key);
-        if (!snap.painted) {
-            if (it != _imp->entries.end()) {
-                _imp->erase(it);
+    {
+        std::lock_guard<std::mutex> lock(_imp->mutex);
+        for (const Snapshot& snap : snapshots) {
+            if (!snap.page) {
+                const std::map<PageKey, Implementation::Entry>::iterator it = _imp->entries.find(snap.key);
+                if (it != _imp->entries.end()) {
+                    _imp->erase(it);
+                }
+                continue;
             }
-            continue;
-        }
-        if (snap.texels.size() != kHalvesPerPage) {
-            return fail(error, "A paint page snapshot is malformed.");
-        }
-        Implementation::Entry& entry = _imp->entries[snap.key];
-        if (!entry.texels && (entry.slot >= 0)) {
-            --_imp->spilled;
-        }
-        _imp->touch(snap.key, &entry);
-        entry.texels.reset(new std::vector<GfHalf>(snap.texels));
-        entry.painted = true;
-        entry.slotCurrent = false;
-        if (!_imp->evict(snap.key, error)) {
-            return false;
+            if (snap.page->budget != _imp->budget) {
+                return fail(error, "A paint page snapshot belongs to other pages.");
+            }
+            Implementation::Entry& entry = _imp->entries[snap.key];
+            entry.page = snap.page;
+            entry.painted = true;
+            _imp->setPainted(snap.key, snap.page);
         }
     }
 
-    return true;
+    return _imp->budget->balance(error);
 }
 
 bool
@@ -571,26 +773,28 @@ TexelPages::exportTile(int tile,
                        std::string* error) const
 {
     const std::size_t size = (std::size_t)_imp->size;
-    std::vector<GfHalf> scratch;
-    PageData page;
-
-    std::lock_guard<std::mutex> lock(_imp->mutex);
-    PageKey first;
-    first.tile = tile;
-    first.plane = plane;
-    first.px = std::numeric_limits<std::int32_t>::min();
-    first.py = std::numeric_limits<std::int32_t>::min();
-    for (std::map<PageKey, Implementation::Entry>::const_iterator it = _imp->entries.lower_bound(first);
-         (it != _imp->entries.end()) && (it->first.tile == tile) && (it->first.plane == plane); ++it) {
-        if (!it->second.painted) {
-            continue;
+    std::vector<std::pair<PageKey, PagePtr>> pages;
+    {
+        std::lock_guard<std::mutex> lock(_imp->mutex);
+        PageKey first;
+        first.tile = tile;
+        first.plane = plane;
+        first.px = std::numeric_limits<std::int32_t>::min();
+        first.py = std::numeric_limits<std::int32_t>::min();
+        for (std::map<PageKey, Implementation::Entry>::const_iterator it = _imp->entries.lower_bound(first);
+             (it != _imp->entries.end()) && (it->first.tile == tile) && (it->first.plane == plane); ++it) {
+            if (it->second.painted) {
+                pages.push_back(std::make_pair(it->first, it->second.page));
+            }
         }
-        const std::vector<GfHalf>* texels = nullptr;
-        if (!_imp->peek(it->second, &scratch, &texels, error)) {
+    }
+
+    PageData page;
+    for (const std::pair<PageKey, PagePtr>& entry : pages) {
+        if (!readPage(entry.second, &page, error)) {
             return false;
         }
-        fromHalves(texels->data(), &page);
-        const RectI rect = _imp->texelsOf(it->first);
+        const RectI rect = _imp->texelsOf(entry.first);
         for (int y = rect.y1; y < rect.y2; ++y) {
             const std::size_t from = (std::size_t)(y - rect.y1) * (std::size_t)kPageSize;
             const std::size_t to = (std::size_t)rect.x1 + (std::size_t)y * size;
@@ -619,30 +823,12 @@ TexelPages::unpack(const GfHalf* halves,
     fromHalves(halves, page);
 }
 
-bool
-TexelPages::sharePainted(int plane,
-                         std::map<PageKey, SharedHalves>* pages,
-                         std::string* error) const
+TexelPages::Painted
+TexelPages::sharePainted() const
 {
-    pages->clear();
     std::lock_guard<std::mutex> lock(_imp->mutex);
 
-    for (const std::pair<const PageKey, Implementation::Entry>& entry : _imp->entries) {
-        if (!entry.second.painted || (entry.first.plane != plane)) {
-            continue;
-        }
-        if (entry.second.texels) {
-            (*pages)[entry.first] = entry.second.texels;
-            continue;
-        }
-        std::shared_ptr<std::vector<GfHalf>> read = std::make_shared<std::vector<GfHalf>>();
-        if (!_imp->readSlot(entry.second.slot, read.get(), error)) {
-            return false;
-        }
-        (*pages)[entry.first] = read;
-    }
-
-    return true;
+    return _imp->painted;
 }
 
 std::vector<TexelPages::PageKey>
@@ -663,25 +849,46 @@ TexelPages::paintedPages() const
 std::size_t
 TexelPages::pageCount() const
 {
+    std::size_t count = 0;
     std::lock_guard<std::mutex> lock(_imp->mutex);
 
-    return _imp->entries.size();
+    for (const std::pair<const PageKey, Implementation::Entry>& entry : _imp->entries) {
+        if (entry.second.painted || !entry.second.page->dropped()) {
+            ++count;
+        }
+    }
+
+    return count;
 }
 
 std::size_t
 TexelPages::residentPageCount() const
 {
+    std::size_t count = 0;
     std::lock_guard<std::mutex> lock(_imp->mutex);
 
-    return _imp->lru.size();
+    for (const std::pair<const PageKey, Implementation::Entry>& entry : _imp->entries) {
+        if (entry.second.page->resident()) {
+            ++count;
+        }
+    }
+
+    return count;
 }
 
 std::size_t
 TexelPages::spilledPageCount() const
 {
+    std::size_t count = 0;
     std::lock_guard<std::mutex> lock(_imp->mutex);
 
-    return _imp->spilled;
+    for (const std::pair<const PageKey, Implementation::Entry>& entry : _imp->entries) {
+        if (entry.second.painted && !entry.second.page->resident()) {
+            ++count;
+        }
+    }
+
+    return count;
 }
 
 void
@@ -690,14 +897,8 @@ TexelPages::clear()
     std::lock_guard<std::mutex> lock(_imp->mutex);
 
     _imp->entries.clear();
-    _imp->lru.clear();
-    _imp->spilled = 0;
-    _imp->freeSlots.clear();
-    _imp->nextSlot = 0;
-    if (_imp->spillFd >= 0) {
-        ::close(_imp->spillFd);
-        _imp->spillFd = -1;
-    }
+    _imp->painted = std::make_shared<PaintedRows>();
+    _imp->spill = std::make_shared<SpillFile>(_imp->spillDirectory);
 }
 
 bool

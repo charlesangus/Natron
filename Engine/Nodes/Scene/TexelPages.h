@@ -112,22 +112,48 @@ public:
 
     // A page as halves: the rgba of each texel, then the touched value of each texel.
     static constexpr std::size_t kPageHalves = (std::size_t)kPageTexels * 5;
-    typedef std::shared_ptr<const std::vector<PXR_NS::GfHalf>> SharedHalves;
 
     static void pack(const PageData& page, std::vector<PXR_NS::GfHalf>* halves);
     static void unpack(const PXR_NS::GfHalf* halves, PageData* page);
 
-    // A page as it was, to put it back: a page that was not painted goes back to the base.
+    /**
+     * @brief A painted page, never changed once made, so the working pages, published snapshots
+     * and undo journals all hold the same one. It lives in memory or in a spill file as the
+     * memory budget decides.
+     **/
+    struct Page;
+    typedef std::shared_ptr<const Page> PagePtr;
+
+    // A page's texels. A spilled page is read from its file and stays spilled.
+    static bool readPage(const PagePtr& page, PageData* data, std::string* error) WARN_UNUSED_RETURN;
+
+    // The painted pages of one row of pages of a tile's plane, and those rows keyed by their
+    // first page (px 0).
+    typedef std::map<PageKey, PagePtr> PageRow;
+    typedef std::map<PageKey, std::shared_ptr<const PageRow>> PaintedRows;
+    typedef std::shared_ptr<const PaintedRows> Painted;
+
+    // A page as it was, to put it back: a null page was not painted and goes back to the base.
     struct Snapshot {
         PageKey key;
-        bool painted = false;
-        std::vector<PXR_NS::GfHalf> texels;
+        PagePtr page;
     };
 
     /**
+     * @brief Resident pages held to a byte limit across every TexelPages using it. Past the limit,
+     * the pages used least recently are spilled, or dropped when they only cache the base.
+     **/
+    class Budget;
+    typedef std::shared_ptr<Budget> BudgetPtr;
+
+    // The process' budget: a quarter of the physical memory.
+    static BudgetPtr sharedBudget();
+
+    /**
      * @brief Pages of size x size tiles over base, a null base being transparent black. budgetBytes
-     * of 0 is defaultBudget(); at least one page is always held. Spilled pages go to a file in
-     * spillDirectory, the system's temporary directory when empty.
+     * of 0 shares sharedBudget(), else the pages have a budget of their own; at least one page is
+     * always held. Spilled pages go to a file in spillDirectory, the system's temporary directory
+     * when empty.
      **/
     TexelPages(int size,
                BaseFill base,
@@ -171,13 +197,14 @@ public:
     std::vector<PageKey> paintedPages() const;
 
     /**
-     * @brief The painted pages of plane, without copying those in memory: a page is never changed
-     * in place, so what this hands out stays as it was when the pages are written again.
+     * @brief Every painted page, without copying any: the rows are shared until a write changes
+     * them, so this costs nothing and what it hands out stays as it was.
      **/
-    bool sharePainted(int plane, std::map<PageKey, SharedHalves>* pages, std::string* error) const WARN_UNUSED_RETURN;
+    Painted sharePainted() const;
 
     // Pages that exist, in memory or spilled.
     std::size_t pageCount() const;
+    // Pages this holds that are in memory, and painted pages it holds that are spilled.
     std::size_t residentPageCount() const;
     std::size_t spilledPageCount() const;
 

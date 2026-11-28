@@ -702,10 +702,11 @@ namespace {
         return page;
     }
 
-    // A page the stroke wrote: as the pages held it before, to put it back, and as the stroke found it.
+    // A page the stroke wrote, as the pages held it before; base holds what the stroke found when
+    // the page held only its base.
     struct Written {
         TexelPages::Snapshot journal;
-        std::vector<GfHalf> pre;
+        std::vector<GfHalf> base;
     };
 
     // Pages as they were before the stroke, though it may have written some of them since; zero when null.
@@ -730,7 +731,10 @@ namespace {
             if (_written) {
                 const std::map<PageKey, Written>::const_iterator it = _written->find(key);
                 if (it != _written->end()) {
-                    TexelPages::unpack(it->second.pre.data(), page);
+                    if (it->second.journal.page) {
+                        return TexelPages::readPage(it->second.journal.page, page, error);
+                    }
+                    TexelPages::unpack(it->second.base.data(), page);
 
                     return true;
                 }
@@ -1971,14 +1975,12 @@ LiveStroke::paint(const Context& context,
         for (std::size_t i = 0; i < first.size(); ++i) {
             Written& entry = added[first[i]];
             entry.journal = std::move(snapshots[i]);
-            if (entry.journal.painted) {
-                entry.pre = entry.journal.texels;
-            } else {
+            if (!entry.journal.page) {
                 PageData pre;
                 if (!before.read(first[i], &pre, error)) {
                     return false;
                 }
-                TexelPages::pack(pre, &entry.pre);
+                TexelPages::pack(pre, &entry.base);
             }
         }
     }

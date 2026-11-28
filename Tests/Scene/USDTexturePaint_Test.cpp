@@ -1831,6 +1831,17 @@ catchUpDirect(const NodePtr& paint,
     EXPECT_TRUE(pumpUntil([&]() { return !effect->isBaking(); }, 30000));
 }
 
+// Waits for the baker to bring session's texels up to date on its own, as it does after any edit.
+void
+awaitDirectCatchUp(const NodePtr& paint,
+                   const RotoLayerPtr& session)
+{
+    USDTexturePaint* effect = getUSDTexturePaint(paint);
+    const double time = paint->getRotoContext()->getTimelineCurrentTime();
+
+    EXPECT_TRUE(pumpUntil([&]() { return !effect->isBaking() && effect->isDirectSessionPublished(session, time, ViewIdx(0)); }, 30000));
+}
+
 // Picks the paint brush, as the viewer's toolbar does.
 void
 pickBrush(USDTexturePaint* effect)
@@ -2048,7 +2059,7 @@ TEST_F(USDTexturePaintTest, UndoingADirectStrokeIsExactFromTheJournalAndFromARep
     USDTexturePaint* effect = getUSDTexturePaint(paint);
     USDTexturePaint::setSessionPaintModel(session, USDTexturePaint::ePaintModelDirect);
     setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "first", kRedU, 0.5), 0., 1., 0.);
-    catchUpDirect(paint, session);
+    awaitDirectCatchUp(paint, session);
     const std::vector<float> previous = tileTexels(renderTile(paint));
 
     RotoStrokeItemPtr stroke = addBrushStroke(paint, session, eRotoStrokeTypeSolid, "second", kRedU + 0.02, 0.5);
@@ -2057,31 +2068,31 @@ TEST_F(USDTexturePaintTest, UndoingADirectStrokeIsExactFromTheJournalAndFromARep
     ASSERT_TRUE(bool(interact));
     AddStrokeUndoCommand command(interact, stroke);
     command.redo();
-    catchUpDirect(paint, session);
+    awaitDirectCatchUp(paint, session);
     const std::vector<float> painted = tileTexels(renderTile(paint));
     ASSERT_GT(countDifferences(previous, painted, 0.f), 0u);
     const quint64 replays = effect->getDirectReplayCount();
     const quint64 privateReplays = effect->getDirectPrivateReplayCount();
 
     command.undo();
-    catchUpDirect(paint, session);
+    awaitDirectCatchUp(paint, session);
     appPTR->clearAllCaches();
     EXPECT_EQ(0u, countDifferences(previous, tileTexels(renderTile(paint)), 0.f)) << "from the journal";
     EXPECT_EQ(replays, effect->getDirectReplayCount());
     command.redo();
-    catchUpDirect(paint, session);
+    awaitDirectCatchUp(paint, session);
     appPTR->clearAllCaches();
     EXPECT_EQ(0u, countDifferences(painted, tileTexels(renderTile(paint)), 0.f)) << "redone";
     EXPECT_EQ(privateReplays, effect->getDirectPrivateReplayCount()) << "the renders read what the baker published";
 
     effect->clearDirectJournalsForTesting();
     command.undo();
-    catchUpDirect(paint, session);
+    awaitDirectCatchUp(paint, session);
     appPTR->clearAllCaches();
     EXPECT_EQ(0u, countDifferences(previous, tileTexels(renderTile(paint)), 0.f)) << "replayed";
     EXPECT_GT(effect->getDirectReplayCount(), replays);
     command.redo();
-    catchUpDirect(paint, session);
+    awaitDirectCatchUp(paint, session);
     appPTR->clearAllCaches();
     EXPECT_EQ(0u, countDifferences(painted, tileTexels(renderTile(paint)), 0.f)) << "redone after the replay";
     EXPECT_EQ(privateReplays, effect->getDirectPrivateReplayCount());
@@ -2096,6 +2107,8 @@ TEST_F(USDTexturePaintTest, AStaleDirectRenderPaintsApartAndLeavesTheBakersTexel
     ASSERT_TRUE(bool(paint));
     useSmallTiles(paint);
     USDTexturePaint* effect = getUSDTexturePaint(paint);
+    // The baker takes only the edits this test hands it.
+    effect->setDirectCatchUpForTesting(false);
     USDTexturePaint::setSessionPaintModel(session, USDTexturePaint::ePaintModelDirect);
     setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "first", kRedU, 0.5), 0., 1., 0.);
     const std::vector<float> previous = tileTexels(renderTile(paint));
@@ -2131,6 +2144,7 @@ TEST_F(USDTexturePaintTest, AStaleDirectRenderPaintsApartAndLeavesTheBakersTexel
     EXPECT_EQ(0u, countDifferences(painted, tileTexels(renderTile(paint)), 0.f)) << "redone";
     EXPECT_EQ(replays, effect->getDirectReplayCount());
     EXPECT_EQ(privateReplays, effect->getDirectPrivateReplayCount());
+    effect->setDirectCatchUpForTesting(true);
 }
 
 TEST_F(USDTexturePaintTest, DeletingTheNodeMidDirectStrokeIsSafe)
@@ -2424,6 +2438,72 @@ TEST_F(USDTexturePaintTest, AnimatedStrokeShowsOnlyOnItsLifetimeFrames)
     for (int frame = 1; frame <= 9; ++frame) {
         EXPECT_EQ((frame >= 5) && (frame <= 7), touchesAnything(paint, session, frame)) << "frame " << frame;
     }
+}
+
+TEST_F(USDTexturePaintTest, AnimatedDirectStrokeShowsOnlyOnItsLifetimeFrames)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    setTextureMode(paint, "animated");
+    USDTexturePaint::setSessionPaintModel(session, USDTexturePaint::ePaintModelDirect);
+    RotoStrokeItemPtr stroke = addBrushStroke(paint, session, eRotoStrokeTypeSolid, "short", kRedU, 0.5);
+    setColor(stroke, 0., 1., 0.);
+    limitLifetime(stroke, 5, 7);
+
+    const ImageLayerDesc rgba = ImageLayerDesc::getRGBAComponents();
+    const auto expectFrame = [&](int frame) {
+        appPTR->clearAllCaches();
+        RectI rendered;
+        const ImagePtr tile = renderNodeImage(paint, frame, ViewIdx(0), 0, RectI(0, 0, kSmallTile, kSmallTile), rgba, &rendered);
+        ASSERT_TRUE(bool(tile)) << "frame " << frame;
+        const BufferPixel texel = texelAt(tile, 0.5, 0.5);
+        if ((frame >= 5) && (frame <= 7)) {
+            expectColor(texel, 0.f, 1.f, 0.f, 1.f, "the stroke on its lifetime frame");
+        } else {
+            EXPECT_LT(texel.rgba[1], 0.5f) << "no stroke at frame " << frame;
+        }
+    };
+    for (int frame = 1; frame <= 9; ++frame) {
+        expectFrame(frame);
+    }
+    // Back and forth across the lifetime's edges, each frame keeps its own texels.
+    for (int frame : { 6, 4, 7, 8, 5 }) {
+        expectFrame(frame);
+    }
+}
+
+TEST_F(USDTexturePaintTest, ADisabledDirectStrokeLeavesTheTileAsItWasWithoutIt)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    RotoLayerPtr session;
+    NodePtr paint = createPaintedQuads(dir, &session);
+    ASSERT_TRUE(bool(paint));
+    useSmallTiles(paint);
+    USDTexturePaint::setSessionPaintModel(session, USDTexturePaint::ePaintModelDirect);
+    setColor(addBrushStroke(paint, session, eRotoStrokeTypeSolid, "kept", kRedU, 0.5), 0., 0., 1.);
+    appPTR->clearAllCaches();
+    const std::vector<float> without = tileTexels(renderTile(paint));
+
+    RotoStrokeItemPtr stroke = addBrushStroke(paint, session, eRotoStrokeTypeSolid, "toggled", kRedU + 0.02, 0.5);
+    setColor(stroke, 0., 1., 0.);
+    appPTR->clearAllCaches();
+    const std::vector<float> with = tileTexels(renderTile(paint));
+    ASSERT_GT(countDifferences(without, with, 0.f), 0u);
+
+    stroke->setGloballyActivated(false, true);
+    awaitDirectCatchUp(paint, session);
+    appPTR->clearAllCaches();
+    EXPECT_EQ(0u, countDifferences(without, tileTexels(renderTile(paint)), 0.f)) << "disabled";
+
+    stroke->setGloballyActivated(true, true);
+    awaitDirectCatchUp(paint, session);
+    appPTR->clearAllCaches();
+    EXPECT_EQ(0u, countDifferences(with, tileTexels(renderTile(paint)), 0.f)) << "enabled again";
 }
 
 TEST_F(USDTexturePaintTest, StaticModeIgnoresLifetimes)

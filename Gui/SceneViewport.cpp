@@ -13888,7 +13888,7 @@ SceneViewport::refreshPaintOverlays()
     const RotoLayerPtr current = effect->getViewInteract()->getCurrentSession();
     std::vector<RotoLayerPtr> wanted;
     // A Direct session's strokes are in the texture once their pages are published: only what is not yet is overlaid.
-    const bool directShown = current && (USDTexturePaint::getSessionPaintModel(current) == USDTexturePaint::ePaintModelDirect) && effect->isDirectSessionPublished(current);
+    const bool directShown = current && (USDTexturePaint::getSessionPaintModel(current) == USDTexturePaint::ePaintModelDirect) && effect->isDirectSessionPublished(current, time, view);
     if (current && !USDTexturePaint::isSessionFrozen(current) && !directShown) {
         wanted.push_back(current);
     }

@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <set>
 
 #include <QThreadPool>
@@ -78,6 +79,30 @@ reportEmbreeError(void* /*userData*/,
         return;
     }
     TF_WARN("Embree error %d: %s", static_cast<int>(code), message ? message : "");
+}
+
+// One device for the process: each holds its own memory pools and thread state, and indices are
+// built for every paint session and render. Device calls are thread-safe and their errors per thread.
+// Threads stay unset: on Embree's TBB build a device's thread count applies to the whole process,
+// so each commit runs in an arena of its budget instead.
+RTCDevice
+sharedDevice()
+{
+    static std::mutex mutex;
+    static RTCDevice device = nullptr;
+    std::lock_guard<std::mutex> lock(mutex);
+
+    if (!device) {
+        device = rtcNewDevice(nullptr);
+        if (device) {
+            rtcSetDeviceErrorFunction(device, reportEmbreeError, nullptr);
+        }
+    }
+    if (device) {
+        rtcRetainDevice(device);
+    }
+
+    return device;
 }
 
 int
@@ -288,15 +313,12 @@ PaintMeshIndex::build(std::vector<SceneRaster::TriangulatedMesh> targets,
 
     imp.release();
     if (!imp.device) {
-        // Threads stay unset: on Embree's TBB build a device's thread count applies to the whole
-        // process. The commit below runs in an arena of the budget instead.
-        imp.device = rtcNewDevice(nullptr);
+        imp.device = sharedDevice();
         if (!imp.device) {
             *errorMessage = "The ray tracer could not start.";
 
             return false;
         }
-        rtcSetDeviceErrorFunction(imp.device, reportEmbreeError, nullptr);
     }
     imp.scene = rtcNewScene(imp.device);
     if (!imp.scene) {

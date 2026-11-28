@@ -48,6 +48,7 @@ GCC_DIAG_UNUSED_PRIVATE_FIELD_ON
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeCreationStageLog.h"
+#include "Engine/Nodes/Loop/GeoSolverEnd.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
 #include "Engine/TimeLine.h"
@@ -1521,6 +1522,20 @@ TimeLineGui::refreshCachedFrames()
     const bool filtered = _imp->viewer->getLastFullQualityLookup(&filter);
     std::map<SequenceTime, StorageModeEnum> frames;
     appPTR->getViewerCachedFrames(node->getCacheID(), hash, mipmapLevel, filtered ? &filter : NULL, &frames);
+    // The frames a simulation the viewer shows keeps are as quick to show as cached ones.
+    int inputA = -1;
+    int inputB = -1;
+    _imp->viewer->getActiveInputs(inputA, inputB);
+    for (int input : { inputA, inputB }) {
+        const NodePtr shown = (input >= 0) ? node->getInput(input) : NodePtr();
+        const std::vector<std::shared_ptr<GeoSolverEnd>> solvers = GeoSolverEnd::upstreamOf(shown);
+        for (const std::shared_ptr<GeoSolverEnd>& solver : solvers) {
+            const std::map<int, bool> kept = solver->getKeptFrames();
+            for (std::map<int, bool>::const_iterator it = kept.begin(); it != kept.end(); ++it) {
+                frames.insert(std::make_pair((SequenceTime)it->first, it->second ? eStorageModeRAM : eStorageModeDisk));
+            }
+        }
+    }
 
     CachedFrames rebuilt;
     for (std::map<SequenceTime, StorageModeEnum>::const_iterator it = frames.begin(); it != frames.end(); ++it) {

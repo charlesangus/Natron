@@ -109,6 +109,9 @@ KnobGuiFile::createWidget(QHBoxLayout* layout)
 
 
     _openFileButton = new Button( layout->parentWidget() );
+    if (knob) {
+        _openFileButton->setObjectName(QString::fromUtf8(knob->getName().c_str()) + QString::fromUtf8("OpenFileButton"));
+    }
     _openFileButton->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
     QIcon pix;
     appPTR->getIcon(NATRON_PIXMAP_OPEN_FILE, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pix);
@@ -173,8 +176,8 @@ KnobGuiFile::open_file()
         pathWhereToOpen = QString::fromUtf8( path.c_str() );
     }
 
-    SequenceFileDialog dialog( _lineEdit->parentWidget(), filters, knob->isInputImageFile(),
-                               SequenceFileDialog::eFileDialogModeOpen, pathWhereToOpen.toStdString(), getGui(), true);
+    SequenceFileDialog dialog(_lineEdit->parentWidget(), filters, knob->opensSequences(),
+                              SequenceFileDialog::eFileDialogModeOpen, pathWhereToOpen.toStdString(), getGui(), true);
 
     if ( dialog.exec() ) {
         std::string selectedFile = dialog.selectedFiles();
@@ -440,6 +443,9 @@ KnobGuiOutputFile::createWidget(QHBoxLayout* layout)
 
 
     _openFileButton = new Button( layout->parentWidget() );
+    if (knob) {
+        _openFileButton->setObjectName(QString::fromUtf8(knob->getName().c_str()) + QString::fromUtf8("OpenFileButton"));
+    }
     _openFileButton->setFixedSize(NATRON_MEDIUM_BUTTON_SIZE, NATRON_MEDIUM_BUTTON_SIZE);
     QIcon pix;
     appPTR->getIcon(NATRON_PIXMAP_OPEN_FILE, TO_DPIX(NATRON_MEDIUM_BUTTON_ICON_SIZE), &pix);
@@ -494,10 +500,12 @@ KnobGuiOutputFile::open_file(bool openSequence)
     }
     std::vector<std::string> filters;
 
-    if ( !knob->isOutputImageFile() ) {
-        filters.push_back("*");
-    } else {
+    if (knob->isOutputImageFile()) {
         appPTR->getSupportedWriterFileFormats(&filters);
+    } else if (!knob->getFileExtensions().empty()) {
+        filters = knob->getFileExtensions();
+    } else {
+        filters.push_back("*");
     }
 
     SequenceFileDialog dialog( _lineEdit->parentWidget(), filters, openSequence, SequenceFileDialog::eFileDialogModeSave, _lastOpened.toStdString(), getGui(), true);

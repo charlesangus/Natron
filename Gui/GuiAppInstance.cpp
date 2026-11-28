@@ -1534,6 +1534,28 @@ GuiAppInstance::clearOverlayRedrawRequests()
 }
 
 void
+GuiAppInstance::setNodeGraphSelection(const NodesList& nodes)
+{
+    NodeGraph* graph = 0;
+    NodesGuiList guis;
+    for (const NodePtr& node : nodes) {
+        NodeGuiPtr gui = node ? std::dynamic_pointer_cast<NodeGui>(node->getNodeGui()) : NodeGuiPtr();
+        if (!gui) {
+            continue;
+        }
+        if (!graph) {
+            graph = gui->getDagGui();
+        }
+        if (gui->getDagGui() == graph) {
+            guis.push_back(gui);
+        }
+    }
+    if (graph) {
+        graph->setSelection(guis);
+    }
+}
+
+void
 GuiAppInstance::onGroupCreationFinished(const NodePtr& node,
                                         const Serialization::NodeSerializationPtr& serialization, bool autoConnect)
 {

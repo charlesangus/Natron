@@ -713,7 +713,8 @@ namespace {
     }
 
     // The merge gives a node theirs adds theirs' position, which is left behind wherever the
-    // artist moved the template; it follows its nearest matched neighbour in theirs instead.
+    // artist moved the template; it follows its nearest matched neighbour from theirs to where the
+    // merge puts that neighbour instead.
     void
     placeAddedNodes(const Serialization::ProjectSerialization& theirs,
                     const Serialization::MergePlan& plan,
@@ -732,15 +733,20 @@ namespace {
         FlatNodes theirsNodes;
         std::vector<std::string> theirsOrder;
         flatten(mapped.nodes.nodes, std::string(), &theirsNodes, &theirsOrder);
-        const LayoutShift shift = layoutShift(theirsNodes, mineNodes);
+        FlatNodes mergedNodes;
+        std::vector<std::string> mergedOrder;
+        flatten(merged->nodes.nodes, std::string(), &mergedNodes, &mergedOrder);
+        const LayoutShift shift = layoutShift(theirsNodes, mergedNodes);
         const Wiring wiring = wiringOf(theirsNodes);
 
         placeNodesIn(merged->nodes.nodes, [&](Serialization::NodeSerialization* node) {
             if (node->id.empty() || (mineNodes.find(node->id) != mineNodes.end()) || !node->layout.hasPosition) {
                 return;
             }
-            const bool fromTemplate = node->origin.isSet() && (node->origin.templateKey == plan.templateKey);
-            const std::string theirsId = fromTemplate ? node->origin.nodeId : node->id;
+            if (!node->origin.isSet() || (node->origin.templateKey != plan.templateKey)) {
+                return;
+            }
+            const std::string& theirsId = node->origin.nodeId;
             FlatNodes::const_iterator source = theirsNodes.find(theirsId);
             if ((source == theirsNodes.end()) || !source->second.node->layout.hasPosition) {
                 return;

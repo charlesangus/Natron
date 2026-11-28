@@ -794,10 +794,16 @@ TEST_F(ProjectMergeTest, NodesInAGroupUseTheGroupsOwnOffset)
     NodePtr outside = createBlur("Outside");
     ASSERT_NE(outside, nullptr);
     outside->setPosition(0., 100.);
-    for (int i = 1; i <= 3; ++i) {
+    // Inner1 -> Inner2 -> Inner3, with Inner4 and Inner5 unwired.
+    NodePtr previous;
+    for (int i = 1; i <= 5; ++i) {
         NodePtr inner = createIn(PLUGINID_NATRON_BLUR, collection, "Inner" + std::to_string(i));
         ASSERT_NE(inner, nullptr);
         inner->setPosition(100. * i, 0.);
+        if (previous && (i <= 3)) {
+            ASSERT_TRUE(NodeCollection::connectNodes(0, previous, inner, false));
+        }
+        previous = inner;
     }
     QString path;
     ASSERT_TRUE(project()->saveProject(dir.path() + QLatin1Char('/'), QString::fromUtf8("tpl.ntpz"), &path));
@@ -807,26 +813,123 @@ TEST_F(ProjectMergeTest, NodesInAGroupUseTheGroupsOwnOffset)
 
     moveBy(nodeNamed("Look"), 500., 300.);
     moveBy(nodeNamed("Outside"), 500., 300.);
-    for (int i = 1; i <= 3; ++i) {
+    for (int i = 1; i <= 5; ++i) {
         moveBy(nodeNamed("Look.Inner" + std::to_string(i)), -50., 20.);
     }
-    NodePtr inner3 = nodeNamed("Look.Inner3");
-    ASSERT_NE(inner3, nullptr);
-    const std::string inner3TemplateId = inner3->getOriginNode();
-    ASSERT_FALSE(inner3TemplateId.empty());
-    inner3->destroyNode(true, false);
-    inner3.reset();
+    NodePtr inner2 = nodeNamed("Look.Inner2");
+    ASSERT_NE(inner2, nullptr);
+    moveBy(inner2, -30., 20.);
+    const std::string inner2Id = inner2->getNodeId();
+    std::string removedIds[2];
+    const char* removedNames[2] = { "Look.Inner3", "Look.Inner5" };
+    for (int i = 0; i < 2; ++i) {
+        NodePtr inner = nodeNamed(removedNames[i]);
+        ASSERT_NE(inner, nullptr);
+        removedIds[i] = inner->getOriginNode();
+        ASSERT_FALSE(removedIds[i].empty());
+        inner->destroyNode(true, false);
+    }
 
     const ProjectMerge::ChangeSummary summary = compareWithBase();
     for (const ProjectMerge::NodeChange& change : summary.nodes) {
-        EXPECT_FALSE(change.moved) << change.scriptName;
+        EXPECT_EQ(change.moved, change.nodeId == inner2Id) << change.scriptName;
         EXPECT_FALSE(change.appearance) << change.scriptName;
     }
-    const ProjectMerge::NodeChange* removed = summary.find(inner3TemplateId);
-    ASSERT_NE(removed, nullptr);
-    EXPECT_EQ(removed->kind, ProjectMerge::NodeChange::eRemoved);
-    EXPECT_DOUBLE_EQ(removed->placedX, 300. - 50.);
-    EXPECT_DOUBLE_EQ(removed->placedY, 20.);
+    const ProjectMerge::NodeChange* wired = summary.find(removedIds[0]);
+    ASSERT_NE(wired, nullptr);
+    EXPECT_EQ(wired->kind, ProjectMerge::NodeChange::eRemoved);
+    EXPECT_DOUBLE_EQ(wired->placedX, 300. - 80.);
+    EXPECT_DOUBLE_EQ(wired->placedY, 40.);
+    const ProjectMerge::NodeChange* unwired = summary.find(removedIds[1]);
+    ASSERT_NE(unwired, nullptr);
+    EXPECT_EQ(unwired->kind, ProjectMerge::NodeChange::eRemoved);
+    EXPECT_DOUBLE_EQ(unwired->placedX, 500. - 50.);
+    EXPECT_DOUBLE_EQ(unwired->placedY, 20.);
+}
+
+TEST_F(ProjectMergeTest, ARemovedNodeFollowsTheNearestMatchedNodeThroughRemovedNeighbours)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    for (int i = 1; i <= 2; ++i) {
+        NodePtr other = createBlur("Other" + std::to_string(i));
+        ASSERT_NE(other, nullptr);
+        other->setPosition(300., 100. * i);
+    }
+    QString v1;
+    QString v2;
+    saveChainTemplate(dir, [] { }, &v1, &v2);
+    QString error;
+    ASSERT_EQ(project()->importTemplate(v1, NodeCollectionPtr(), &error).size(), 5u) << error.toStdString();
+    ASSERT_EQ(project()->getTemplateImports().size(), 1u);
+    moveBy(nodeNamed("Blur1"), 650., 300.);
+    moveBy(nodeNamed("Other1"), 500., 300.);
+    moveBy(nodeNamed("Other2"), 500., 300.);
+    std::string removedIds[2];
+    for (int i = 0; i < 2; ++i) {
+        NodePtr blur = nodeNamed("Blur" + std::to_string(i + 2));
+        ASSERT_NE(blur, nullptr);
+        removedIds[i] = blur->getOriginNode();
+        ASSERT_FALSE(removedIds[i].empty());
+        blur->destroyNode(true, false);
+    }
+
+    const ProjectMerge::ChangeSummary summary = compareWithBase();
+    for (int i = 0; i < 2; ++i) {
+        const ProjectMerge::NodeChange* removed = summary.find(removedIds[i]);
+        ASSERT_NE(removed, nullptr);
+        EXPECT_EQ(removed->kind, ProjectMerge::NodeChange::eRemoved);
+        EXPECT_DOUBLE_EQ(removed->placedX, 650.);
+        EXPECT_DOUBLE_EQ(removed->placedY, 100. * (i + 1) + 300.);
+    }
+}
+
+TEST_F(ProjectMergeTest, NodesRemovedFromAGroupWithNoMatchedNodesKeepTheirBasePosition)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    NodePtr group = createIn(PLUGINID_NATRON_GROUP, project(), "Look");
+    ASSERT_NE(group, nullptr);
+    NodeGroupPtr collection = std::dynamic_pointer_cast<NodeGroup>(group->getEffectInstance());
+    ASSERT_NE(collection, nullptr);
+    group->setPosition(0., 0.);
+    NodePtr previous;
+    for (int i = 1; i <= 2; ++i) {
+        NodePtr inner = createIn(PLUGINID_NATRON_BLUR, collection, "Inner" + std::to_string(i));
+        ASSERT_NE(inner, nullptr);
+        inner->setPosition(100. * i, 50.);
+        if (previous) {
+            ASSERT_TRUE(NodeCollection::connectNodes(0, previous, inner, false));
+        }
+        previous = inner;
+    }
+    previous.reset();
+    QString path;
+    ASSERT_TRUE(project()->saveProject(dir.path() + QLatin1Char('/'), QString::fromUtf8("tpl.ntpz"), &path));
+    project()->reset(false, true);
+    QString error;
+    ASSERT_FALSE(project()->importTemplate(path, NodeCollectionPtr(), &error).empty()) << error.toStdString();
+
+    moveBy(nodeNamed("Look"), 500., 300.);
+    std::string removedIds[2];
+    for (int i = 0; i < 2; ++i) {
+        NodePtr inner = nodeNamed("Look.Inner" + std::to_string(i + 1));
+        ASSERT_NE(inner, nullptr);
+        removedIds[i] = inner->getOriginNode();
+        ASSERT_FALSE(removedIds[i].empty());
+        inner->destroyNode(true, false);
+    }
+
+    const ProjectMerge::ChangeSummary summary = compareWithBase();
+    for (int i = 0; i < 2; ++i) {
+        const ProjectMerge::NodeChange* removed = summary.find(removedIds[i]);
+        ASSERT_NE(removed, nullptr);
+        EXPECT_EQ(removed->kind, ProjectMerge::NodeChange::eRemoved);
+        EXPECT_DOUBLE_EQ(removed->x, 100. * (i + 1));
+        EXPECT_DOUBLE_EQ(removed->y, 50.);
+        EXPECT_DOUBLE_EQ(removed->placedX, removed->x);
+        EXPECT_DOUBLE_EQ(removed->placedY, removed->y);
+    }
 }
 
 TEST_F(ProjectMergeTest, ANodeAnUpdateAddsSitsBesideItsNeighboursLivePosition)
@@ -853,4 +956,56 @@ TEST_F(ProjectMergeTest, ANodeAnUpdateAddsSitsBesideItsNeighboursLivePosition)
     ASSERT_NE(added, nullptr);
     expectAt(added, 700., 500.);
     expectAt(nodeNamed("Blur3"), 500., 500.);
+}
+
+TEST_F(ProjectMergeTest, ANodeAnUpdateAddsBesideANodeTheUpdateMovedSitsBesideItsMergedPosition)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    QString v1;
+    QString v2;
+    const std::function<void()> moveBlur3AndAddBesideIt = [this] {
+        moveBy(nodeNamed("Blur3"), 100., 0.);
+        NodePtr added = createBlur("Blur4");
+        ASSERT_NE(added, nullptr);
+        added->setPosition(300., 200.);
+        ASSERT_TRUE(NodeCollection::connectNodes(0, nodeNamed("Blur3"), added, false));
+    };
+    saveChainTemplate(dir, moveBlur3AndAddBesideIt, &v1, &v2);
+    importChain(v1);
+
+    const ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project(), project()->getTemplateImports().front().key, v2);
+    ASSERT_TRUE(result.ok) << result.error.toStdString();
+    expectAt(nodeNamed("Blur3"), 100., 200.);
+    NodePtr added = nodeNamed("Blur4");
+    ASSERT_NE(added, nullptr);
+    expectAt(added, 300., 200.);
+}
+
+TEST_F(ProjectMergeTest, ANodeAnUpdateAddsKeepsTheUpdatesLayoutWhenTheUpdateMovesEveryNode)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    QString v1;
+    QString v2;
+    const std::function<void()> relayOutAndAdd = [this] {
+        for (int i = 1; i <= 3; ++i) {
+            moveBy(nodeNamed("Blur" + std::to_string(i)), 400., 250.);
+        }
+        NodePtr added = createBlur("Blur4");
+        ASSERT_NE(added, nullptr);
+        added->setPosition(400., 550.);
+        ASSERT_TRUE(NodeCollection::connectNodes(0, nodeNamed("Blur3"), added, false));
+    };
+    saveChainTemplate(dir, relayOutAndAdd, &v1, &v2);
+    importChain(v1);
+
+    const ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project(), project()->getTemplateImports().front().key, v2);
+    ASSERT_TRUE(result.ok) << result.error.toStdString();
+    for (int i = 1; i <= 3; ++i) {
+        expectAt(nodeNamed("Blur" + std::to_string(i)), 400., 250. + 100. * (i - 1));
+    }
+    NodePtr added = nodeNamed("Blur4");
+    ASSERT_NE(added, nullptr);
+    expectAt(added, 400., 550.);
 }

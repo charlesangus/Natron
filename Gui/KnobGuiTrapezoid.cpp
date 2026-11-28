@@ -1260,7 +1260,7 @@ KnobGuiTrapezoid::_show()
 {
     KnobGuiValue::_show();
     if (_stripRow) {
-        _stripRow->show();
+        KnobGui::showWidget(_stripRow);
     }
 }
 

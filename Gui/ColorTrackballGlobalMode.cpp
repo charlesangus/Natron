@@ -930,7 +930,7 @@ ColorTrackballGlobalMode::setTarget(const std::shared_ptr<GlobalModeTarget>& tar
 bool
 ColorTrackballGlobalMode::engage(const KnobGuiColorPtr& target)
 {
-    if (!target || !target->getAdjustPanel()) {
+    if (!target || !target->hasAdjustPanel()) {
         return false;
     }
     if (_engaged && (getTarget() == target.get())) {
@@ -1746,12 +1746,13 @@ ColorGlobalModeTarget::attach()
     if (!knob) {
         return;
     }
+    revealKnobInPanel(getPanel(), knob->getKnob());
     knob->setGlobalModeHighlighted(true);
     knob->setAdjustPanelExpanded(true);
     knob->touchColorKnob();
     // The whole column, not just the row: with the panel open and the HUD attached, the column
     // has grown well past the row alone, and every part of it should land in view together.
-    revealKnobInPanel(getPanel(), knob->getKnob(), knob->getGlobalModeColumnWidget());
+    scrollWidgetIntoView(knob->getGlobalModeColumnWidget());
 }
 
 void

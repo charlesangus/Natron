@@ -117,7 +117,7 @@ void
 LoopFeedbackBeginList::_show()
 {
     if (_list) {
-        _list->show();
+        KnobGui::showWidget(_list);
     }
     scheduleRebuild();
 }

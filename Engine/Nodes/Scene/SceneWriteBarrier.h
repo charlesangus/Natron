@@ -168,6 +168,10 @@ public:
     // the point where a lock-order mistake would show. Pass nullptr to clear.
     typedef void (*TestHookFunction)(void* context);
     static void setTestHook(TestHookFunction hook, void* context);
+
+    // Called, if set, on the thread of registerParticipant() once it has released the GIL and
+    // just before it locks writerMutex. Pass nullptr to clear.
+    static void setRegisterWaitTestHook(TestHookFunction hook, void* context);
 };
 
 NATRON_NAMESPACE_EXIT

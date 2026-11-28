@@ -89,6 +89,7 @@
 #include "Engine/GpuContext.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/Nodes/Geometry/GeoEdit.h"
 #include "Engine/Nodes/Geometry/GeoUsdConvert.h"
 #include "Engine/Nodes/Scene/CyclesAovs.h"
@@ -13310,6 +13311,7 @@ SceneViewport::resizeEvent(QResizeEvent* e)
 void
 SceneViewport::paintGL()
 {
+    NodeCreationStageLog::Scope creationStage("sceneViewportPaint");
     if (_imp->overlayGLReleaseOwed) {
         _imp->overlayGLReleaseOwed = false;
         _imp->renderer.releaseOverlayGL();

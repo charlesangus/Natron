@@ -612,10 +612,10 @@ void
 KnobGuiColorWheelGrid::_show()
 {
     if (_line) {
-        _line->show();
+        KnobGui::showWidget(_line);
     }
     if (_grid) {
-        _grid->show();
+        KnobGui::showWidget(_grid);
     }
 }
 

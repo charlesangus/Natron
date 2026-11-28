@@ -991,11 +991,20 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<U64> loadFaceLimit { 0 };
     std::atomic<int> loadHold { SceneViewportRenderer::eLoadHoldNone };
 
-    // The load thread. A chunk waits for the budget to know the one before, so that what it loads
-    // is drawn as the budget has it rather than whole; past kLoadPaceMs it goes on.
+    // The load thread. Some chunks wait for the budget to know those before, so that what a long
+    // load holds back shows while it goes on; past kLoadPaceMs a chunk goes on anyway. Waiting at
+    // every chunk recounted the stage and changed what Storm draws once per chunk.
     void paceToBudget()
     {
         const U64 target = stageLoadEditCount;
+        // A service asks once for the overridden follow-ups and once for the others.
+        if (target == pacedLoadEdits) {
+            return;
+        }
+        pacedLoadEdits = target;
+        if (!SceneViewBudget::loadChunkWaits(++pacedChunks)) {
+            return;
+        }
         const U64 serial = loadPaceSerial;
         const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kLoadPaceMs);
         while (budgetHolding && (budgetCoveredLoadEdits < target) && !loadPaceQuit && (loadPaceSerial == serial)
@@ -1003,6 +1012,11 @@ struct SceneViewportRenderer::Implementation {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
+
+    // Load thread: the follow-up chunks paced since the loads last ran out, and the load edits
+    // the last of them was paced at.
+    U64 pacedChunks = 0;
+    U64 pacedLoadEdits = 0;
 
     bool admitChunk(bool overridden)
     {
@@ -1200,6 +1214,7 @@ struct SceneViewportRenderer::Implementation {
     std::atomic<bool> loadPaceQuit { false };
     // What the stats last recorded, on the render thread.
     bool recordedBudget = false;
+    U64 budgetApplies = 0;
     mutable std::mutex budgetMutex;
     // Under budgetMutex.
     SceneViewBudget::Camera frameCamera;
@@ -3919,7 +3934,7 @@ struct SceneViewportRenderer::Implementation {
     {
         if (boxes) {
             boxes->setTime(timeCode());
-            boxes->setStageVersion(stageEditCount + stageLoadEditCount);
+            boxes->setStageVersion(stageEditCount, stageLoadEditCount);
         }
     }
 
@@ -3957,7 +3972,18 @@ struct SceneViewportRenderer::Implementation {
         const SceneDrawBoxes::BudgetPtr budget = currentBudget();
 
         return budget && (budgetBoxes != SceneViewportRenderer::eBudgetBoxesOff)
-            && !budget->budgetBoxSet.empty() && solvedForCurrentUnits(budget);
+            && !budget->budgetBoxSet.empty() && standsForDrawn(budget);
+    }
+
+    // A budget solved before loads still stands for what Hydra draws while the filter holds back
+    // what they bring, so its boxes stay instead of going out and back in at every load chunk.
+    bool standsForDrawn(const SceneDrawBoxes::BudgetPtr& budget) const
+    {
+        if (solvedForCurrentUnits(budget)) {
+            return true;
+        }
+
+        return budgetHolding && budget && budget->units && boxes && (budget->units->drawnGeneration == boxes->getDrawnGeneration());
     }
 
     // Needs stageMutex. A frame from another camera holds the budget as it is until the next
@@ -4072,6 +4098,7 @@ struct SceneViewportRenderer::Implementation {
             if (budget != appliedBudget) {
                 filter->applyBudget(budget ? budget->filter : SceneDrawFilter::Budget());
                 setAppliedBudget(budget);
+                ++budgetApplies;
                 changed = true;
             }
             changed = serviceBudgetHolds(filter) || changed;
@@ -4098,6 +4125,7 @@ struct SceneViewportRenderer::Implementation {
         stats.masked = filter ? filter->getBudgetMaskedInstanceCount() : 0;
         stats.facedMeshes = filter ? filter->getBudgetFacedMeshCount() : 0;
         stats.held = filter ? filter->getBudgetHeldCount() : 0;
+        stats.applies = budgetApplies;
         for (int axis = 0; axis < 3; ++axis) {
             stats.eye[axis] = appliedBudget ? appliedBudget->camera.eye[axis] : 0.;
         }
@@ -4521,7 +4549,8 @@ struct SceneViewportRenderer::Implementation {
         if (latest && ensureBudgetBoxesProgram()) {
             budget = ((uploadedBudgetBoxes == latest) || uploadBudgetBoxes(latest)) ? latest : uploadedBudgetBoxes;
             // Boxes solved against other draw states may stand for what the user has hidden since.
-            if (budget && (budget->units != latest->units)) {
+            if (budget && (budget->units != latest->units)
+                && !(budget->units && latest->units && (budget->units->drawnGeneration == latest->units->drawnGeneration))) {
                 budget.reset();
             }
         } else {
@@ -4576,6 +4605,12 @@ struct SceneViewportRenderer::Implementation {
             glDisable(GL_DEPTH_TEST);
         }
         std::lock_guard<std::mutex> lock(budgetMutex);
+        const bool shown = (boxesShown + instancesShown) != 0;
+        if (shown) {
+            ++budgetStats.budgetBoxFrames;
+        } else if ((budgetStats.budgetBoxCount + budgetStats.budgetBoxInstances) != 0) {
+            ++budgetStats.budgetBoxDrops;
+        }
         budgetStats.budgetBoxCount = boxesShown;
         budgetStats.budgetBoxInstances = instancesShown;
         budgetStats.budgetBoxMarkers = markersShown;
@@ -5997,6 +6032,9 @@ SceneViewportRenderer::serviceStageLoads(const std::function<bool()>& cancelled)
         if (committed) {
             committed(committedLoadSet, reevaluate);
         } }, cancelled, prepare);
+    if (!stage->hasPendingLoads()) {
+        imp->pacedChunks = 0;
+    }
     if (cancelled && cancelled()) {
         return serviced;
     }
@@ -13678,6 +13716,9 @@ SceneViewport::publishBudget()
     published[QString::fromUtf8("masked")] = QVariant::fromValue<qulonglong>(stats.masked);
     published[QString::fromUtf8("facedMeshes")] = QVariant::fromValue<qulonglong>(stats.facedMeshes);
     published[QString::fromUtf8("held")] = QVariant::fromValue<qulonglong>(stats.held);
+    published[QString::fromUtf8("applies")] = QVariant::fromValue<qulonglong>(stats.applies);
+    published[QString::fromUtf8("budgetBoxFrames")] = QVariant::fromValue<qulonglong>(stats.budgetBoxFrames);
+    published[QString::fromUtf8("budgetBoxDrops")] = QVariant::fromValue<qulonglong>(stats.budgetBoxDrops);
     published[QString::fromUtf8("budgetBoxCount")] = QVariant::fromValue<qulonglong>(stats.budgetBoxCount);
     published[QString::fromUtf8("budgetBoxInstances")] = QVariant::fromValue<qulonglong>(stats.budgetBoxInstances);
     published[QString::fromUtf8("budgetBoxMarkers")] = QVariant::fromValue<qulonglong>(stats.budgetBoxMarkers);

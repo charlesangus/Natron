@@ -378,6 +378,7 @@ SceneDrawBoxes::setRules(const SceneDrawFilter::Rules& rules)
         }
         _rules = rules;
         ++_generation;
+        ++_drawnGeneration;
         ++_contentGeneration;
     }
     _changed.notify_all();
@@ -393,19 +394,27 @@ SceneDrawBoxes::setTime(double time)
         }
         _time = time;
         ++_generation;
+        ++_drawnGeneration;
     }
     _changed.notify_all();
 }
 
 void
-SceneDrawBoxes::setStageVersion(U64 version)
+SceneDrawBoxes::setStageVersion(U64 version,
+                                U64 loadVersion)
 {
     {
         std::lock_guard<std::mutex> lock(_mutex);
-        if (version == _stageVersion) {
+        if ((version == _stageVersion) && (loadVersion == _loadVersion)) {
             return;
         }
+        // Hydra holds back what a load brings while a budget is in place, so a budget solved
+        // before the load still stands for what is drawn.
+        if (version != _stageVersion) {
+            ++_drawnGeneration;
+        }
         _stageVersion = version;
+        _loadVersion = loadVersion;
         ++_generation;
         ++_contentGeneration;
     }
@@ -422,6 +431,7 @@ SceneDrawBoxes::setCounting(bool counting)
         }
         _counting = counting;
         ++_generation;
+        ++_drawnGeneration;
         if (!counting) {
             ++_contentGeneration;
             _units.reset();
@@ -462,6 +472,7 @@ SceneDrawBoxes::requestBudget(const Camera& camera,
         if (!_counting) {
             _counting = true;
             ++_generation;
+            ++_drawnGeneration;
         }
     }
     _changed.notify_all();
@@ -573,6 +584,7 @@ SceneDrawBoxes::relist()
     {
         std::lock_guard<std::mutex> lock(_mutex);
         ++_generation;
+        ++_drawnGeneration;
         ++_contentGeneration;
     }
     _changed.notify_all();
@@ -606,6 +618,14 @@ SceneDrawBoxes::getGeneration() const
     std::lock_guard<std::mutex> lock(_mutex);
 
     return _generation;
+}
+
+U64
+SceneDrawBoxes::getDrawnGeneration() const
+{
+    std::lock_guard<std::mutex> lock(_mutex);
+
+    return _drawnGeneration;
 }
 
 bool
@@ -1446,6 +1466,7 @@ SceneDrawBoxes::run()
                 request.time = _time;
                 request.generation = _generation;
                 request.contentGeneration = _contentGeneration;
+                request.drawnGeneration = _drawnGeneration;
                 request.counting = _counting;
                 _taken = _generation;
                 due = true;
@@ -1951,6 +1972,7 @@ SceneDrawBoxes::publishUnits(const Request& request,
         std::shared_ptr<Units> published = std::make_shared<Units>();
         published->generation = request.generation;
         published->contentGeneration = request.contentGeneration;
+        published->drawnGeneration = request.drawnGeneration;
         published->time = request.time;
         published->units = std::move(units);
         _units = published;

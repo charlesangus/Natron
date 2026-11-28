@@ -138,6 +138,8 @@ public:
         U64 generation = 0;
         // Bumped by a rules, stage or relist change, not by time.
         U64 contentGeneration = 0;
+        // As generation, but for a change of what is loaded alone.
+        U64 drawnGeneration = 0;
         double time = 0.;
         std::vector<Unit> units;
     };
@@ -231,7 +233,8 @@ public:
 
     void setRules(const SceneDrawFilter::Rules& rules);
     void setTime(double time);
-    void setStageVersion(U64 version);
+    // loadVersion changes with every load or unload, version with every other edit.
+    void setStageVersion(U64 version, U64 loadVersion = 0);
     // Off by default. Turning it on starts a pass; turning it off drops the units.
     void setCounting(bool counting);
     // Kept for the passes that read it; a camera change alone starts no pass, as counts never
@@ -267,6 +270,8 @@ public:
     U64 getGeneration() const;
     // As Units::contentGeneration, of the latest request.
     U64 getContentGeneration() const { return _contentGeneration; }
+    // As Units::drawnGeneration, of the latest request.
+    U64 getDrawnGeneration() const;
 
     // Whether a complete list answering generation or a later request was published within timeout.
     bool waitForList(U64 generation,
@@ -378,6 +383,7 @@ private:
         double time = 0.;
         U64 generation = 0;
         U64 contentGeneration = 0;
+        U64 drawnGeneration = 0;
         bool counting = false;
     };
 
@@ -439,9 +445,11 @@ private:
     SceneDrawFilter::Rules _rules;
     double _time = 0.;
     U64 _stageVersion = 0;
+    U64 _loadVersion = 0;
     bool _counting = false;
     Camera _camera;
     U64 _generation = 0;
+    U64 _drawnGeneration = 0;
     U64 _taken = 0;
     bool _hasOrderView = false;
     PXR_NS::GfMatrix4d _orderViewProjection;

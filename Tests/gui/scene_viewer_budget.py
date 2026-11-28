@@ -21,12 +21,15 @@ natronSceneBoxes lists the budget boxes drawn while natronSceneRecordBoxes is se
     instancers, Load All then Hidden on each part of the instance hides that part alone, with no
     instance masked, and clearing the rows gives back the first image exactly;
   - on a third scene of many payloads, Load All under a Polygon Limit the first chunk reaches
-    stops loading, says so on the HUD, and a limit high enough loads the rest.
+    stops loading, says so on the HUD, and a limit high enough loads the rest;
+  - on a fourth scene of twelve load chunks under a low Polygon Limit, Load All, framing the scene
+    and a Hidden row set and cleared each end with nothing held back, budget boxes that went out at
+    most once, and no budget applied nor Storm frame rendered once settled.
 
 Screenshots for sign-off: scene-budget-none, scene-budget-boxes-box-wire,
 scene-budget-boxes-box-shaded, scene-budget-boxes-marker, scene-budget-boxes-off,
 scene-budget-menu, scene-budget-off, scene-budget-instance-shown, scene-budget-instance-xg-hidden,
-scene-budget-loading-stopped.
+scene-budget-loading-stopped, scene-budget-city-loaded.
 
 Run through Tests/gui/run-gui-test.sh. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT
 (default build/gui-test-out/). Exit status 0 only if every check passed.
@@ -160,6 +163,22 @@ try:
     for k in range(TOWN_HOUSES):
         house = UsdGeom.Xform.Define(stage, "/World/Town/H%d" % k)
         house.AddTranslateOp().Set(Gf.Vec3d(3.0 * (k % 8), 0.0, 3.0 * (k // 8)))
+        house.GetPrim().GetPayloads().AddInternalPayload(Sdf.Path("/House"))
+    stage.GetRootLayer().Save()
+    stage = None
+
+    # Twelve load chunks, so that what a long load and the budget do to the frames can be counted.
+    CITY_HOUSES = 192
+    city_scene_path = os.path.join(fixture_dir, "budget_city_scene.usda")
+    stage = Usd.Stage.CreateNew(city_scene_path)
+    UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.y)
+    stage.CreateClassPrim("/House")
+    plane(stage, "/House/Geo", 4)
+    UsdGeom.Xform.Define(stage, "/World")
+    UsdGeom.Xform.Define(stage, "/World/City")
+    for k in range(CITY_HOUSES):
+        house = UsdGeom.Xform.Define(stage, "/World/City/H%d" % k)
+        house.AddTranslateOp().Set(Gf.Vec3d(3.0 * (k % 16), 0.0, 3.0 * (k // 16)))
         house.GetPrim().GetPayloads().AddInternalPayload(Sdf.Path("/House"))
     stage.GetRootLayer().Save()
     stage = None
@@ -830,6 +849,72 @@ try:
         check(ok, "a higher Load Limit loads the rest (%d faces, %r)" % (loaded_faces(), loads_held()))
 
         viewer.getParam("loadBudget").setValue(False)
+
+        section("a long load and a draw-state change settle")
+
+        def churn():
+            v = view()
+            b = budget()
+            return {"applies": int(b.get("applies", 0)), "drops": int(b.get("budgetBoxDrops", 0)),
+                    "boxFrames": int(b.get("budgetBoxFrames", 0)), "held": int(b.get("held", 0)),
+                    "storm": int(v.property("natronSceneStormPaints") or 0) if v is not None else 0,
+                    "paints": int(v.property("natronScenePaintCount") or 0) if v is not None else 0}
+
+        def settles(label, before):
+            """After label's change: the loads end, nothing is held back, and the budget, its boxes and
+            Storm's frames stop changing. A budget that went back and forth would keep them changing."""
+            ok = yield ("until", lambda: not loads_pending() and solved() and churn()["held"] == 0, POLL_TIMEOUT_S)
+            check(ok, "%s: the loads end and the budget holds nothing back (%r)" % (label, churn()))
+            yield ("sleep", 2 * SETTLE_MS)
+            rest = churn()
+            yield ("sleep", 4 * SETTLE_MS)
+            after = churn()
+            check(after["applies"] == rest["applies"],
+                  "%s: no budget is applied once settled (%d -> %d)" % (label, rest["applies"], after["applies"]))
+            check(after["storm"] - rest["storm"] <= 2,
+                  "%s: Storm stops rendering once settled (%d frames in %d ms)" % (label, after["storm"] - rest["storm"],
+                                                                                4 * SETTLE_MS))
+            check(after["drops"] - before["drops"] <= 1,
+                  "%s: the budget boxes go out at most once (%d times)" % (label, after["drops"] - before["drops"]))
+            report("NOTE %s: %d budgets applied, %d Storm frames, %d paints, %d frames with budget boxes, %d without "
+                   "after one with" % (label, after["applies"] - before["applies"], after["storm"] - before["storm"],
+                                       after["paints"] - before["paints"], after["boxFrames"] - before["boxFrames"],
+                                       after["drops"] - before["drops"]))
+            return after
+
+        viewer.getParam("polygonLimit").setValue(HOUSE_FACES * 24)
+        usd.getParam("filename").setValue(city_scene_path)
+        yield settle()
+        ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
+        require(ok, "the scene view shows %s" % city_scene_path)
+        before = churn()
+        QMetaObject.invokeMethod(view(), "setDrawState", Q_ARG("QString", "/World/City"), Q_ARG("QString", "loadAll"))
+        after = yield from settles("Load All on the city", before)
+        check(loaded_faces() == CITY_HOUSES * HOUSE_FACES,
+              "Load All loads the whole city (%d of %d faces)" % (loaded_faces(), CITY_HOUSES * HOUSE_FACES))
+        check(int(budget().get("demoted", 0)) > 0 and int(budget().get("drawn", 0)) <= HOUSE_FACES * 24,
+              "the budget demotes part of the city (%r demoted, %r drawn)" % (budget().get("demoted"), budget().get("drawn")))
+        check(after["boxFrames"] > before["boxFrames"] and budget_boxes() != [],
+              "the demoted houses are drawn as budget boxes (%d boxes)" % len(budget_boxes()))
+        shot("scene-budget-city-loaded.png")
+
+        before = churn()
+        frame_all()
+        yield settle()
+        yield from settles("framing the city", before)
+
+        before = churn()
+        QMetaObject.invokeMethod(view(), "setDrawState", Q_ARG("QString", "/World/City/H0"), Q_ARG("QString", "hidden"))
+        ok = yield ("until", lambda: churn()["applies"] > before["applies"] and solved(), POLL_TIMEOUT_S)
+        check(ok, "Hidden on a house solves the budget again")
+        yield from settles("Hidden on a house", before)
+        before = churn()
+        QMetaObject.invokeMethod(view(), "clearDrawState", Q_ARG("QString", "/World/City/H0"))
+        ok = yield ("until", lambda: churn()["applies"] > before["applies"] and solved(), POLL_TIMEOUT_S)
+        check(ok, "clearing the house solves the budget again")
+        yield from settles("clearing the house", before)
+
+        viewer.getParam("polygonLimit").setValue(DEFAULT_LIMIT)
 
     run(steps())
 except Exception:

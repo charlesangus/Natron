@@ -229,6 +229,13 @@ public:
     // What those two compute, with the path's seed taken once for a loop over its indices.
     static U64 pathSeed(const PXR_NS::SdfPath& path);
     static bool keeps(U64 seed, std::size_t index, double fraction);
+
+    /**
+     * @brief Whether the followUp-th follow-up chunk of a load, from 1, waits for a budget that knows
+     * the chunks before it: the 1st, 2nd, 4th, 8th and so on. Each budget costs a count of the
+     * whole stage and a change of what Storm draws, so n chunks are shown in about log2(n) steps.
+     */
+    static bool loadChunkWaits(U64 followUp);
 };
 
 NATRON_NAMESPACE_EXIT

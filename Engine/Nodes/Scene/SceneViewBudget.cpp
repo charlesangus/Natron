@@ -657,4 +657,10 @@ SceneViewBudget::solve(const std::vector<Unit>& units,
     return result;
 } // SceneViewBudget::solve
 
+bool
+SceneViewBudget::loadChunkWaits(U64 followUp)
+{
+    return (followUp != 0) && ((followUp & (followUp - 1)) == 0);
+}
+
 NATRON_NAMESPACE_EXIT

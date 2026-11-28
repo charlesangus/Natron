@@ -1901,6 +1901,91 @@ TEST_F(SceneDrawFilterTest, HoldingOffKeepsWhatIsHeldAndUnbindingShowsIt)
     EXPECT_FALSE(filter->isBudgetHolding());
 }
 
+// The viewer services the holds every frame. Frames while the budget catches up with a load, or
+// with a draw-state change during it, must change nothing in Hydra; the budget that knows the load
+// shows what it keeps once, and every frame after sends nothing more.
+TEST_F(SceneDrawFilterTest, LoadChunksAndADrawStateChangeUnderABudgetSettleInOnePass)
+{
+    filter->setBudgetBound(true);
+    SceneDrawFilter::Budget first;
+    first.hidden.insert(SdfPath("/World/c"));
+    filter->applyBudget(first);
+    filter->setBudgetHolding(true);
+    const unsigned long long firstEpoch = 1;
+    unsigned long long epoch = firstEpoch;
+    const auto frame = [&](unsigned long long applied) {
+        filter->stampBudgetHolds(epoch);
+        filter->releaseBudgetHolds(applied);
+        filter->endRender();
+    };
+
+    std::vector<std::string> loaded;
+    for (int chunk = 0; chunk < 4; ++chunk) {
+        loaded.push_back("/World/b/load" + std::to_string(chunk));
+        scene->AddPrims({ { SdfPath(loaded.back()), HdPrimTypeTokens->mesh, someData() } });
+        ++epoch;
+        recorder.reset();
+        for (int i = 0; i < 3; ++i) {
+            frame(firstEpoch);
+        }
+        EXPECT_TRUE(recorder.empty());
+        EXPECT_EQ(std::size_t(chunk + 1), filter->getBudgetHeldCount());
+        for (const std::string& path : loaded) {
+            EXPECT_FALSE(drawn(path.c_str()));
+        }
+    }
+    PathSet keptDrawn = kAllGeometry;
+    keptDrawn.erase("/World/c");
+    EXPECT_EQ(keptDrawn, drawnGeometry());
+
+    filter->applyDelta(states.setState("/World/b", eSceneDrawStateHidden));
+    frame(firstEpoch);
+    filter->applyDelta(states.clearState("/World/b"));
+    recorder.reset();
+    for (int i = 0; i < 3; ++i) {
+        frame(firstEpoch);
+    }
+    EXPECT_TRUE(recorder.empty());
+    EXPECT_EQ(loaded.size(), filter->getBudgetHeldCount());
+    EXPECT_TRUE(drawn("/World/b/m3"));
+    for (const std::string& path : loaded) {
+        EXPECT_FALSE(drawn(path.c_str()));
+    }
+
+    SceneDrawFilter::Budget known = first;
+    known.hidden.insert(SdfPath(loaded[1]));
+    filter->applyBudget(known);
+    recorder.reset();
+    frame(epoch);
+
+    EXPECT_EQ(0u, filter->getBudgetHeldCount());
+    EXPECT_EQ((PathSet { loaded[0], loaded[2], loaded[3] }), recorder.shows);
+    EXPECT_FALSE(drawn(loaded[1].c_str()));
+    EXPECT_FALSE(drawn("/World/c"));
+
+    recorder.reset();
+    for (int i = 0; i < 5; ++i) {
+        frame(epoch);
+    }
+    EXPECT_TRUE(recorder.empty());
+    EXPECT_EQ(0u, recorder.addedEntries);
+
+    // A resync of what the load brought, as a later chunk's commit makes, comes back as the budget
+    // has it and is not held again.
+    scene->RemovePrims({ { SdfPath(loaded[0]) }, { SdfPath(loaded[1]) } });
+    scene->AddPrims({ { SdfPath(loaded[0]), HdPrimTypeTokens->mesh, someData() },
+                      { SdfPath(loaded[1]), HdPrimTypeTokens->mesh, someData() } });
+    frame(epoch);
+    EXPECT_EQ(0u, filter->getBudgetHeldCount());
+    EXPECT_TRUE(drawn(loaded[0].c_str()));
+    EXPECT_FALSE(drawn(loaded[1].c_str()));
+    recorder.reset();
+    for (int i = 0; i < 5; ++i) {
+        frame(epoch);
+    }
+    EXPECT_TRUE(recorder.empty());
+}
+
 namespace {
 // The prims announced with their type, in the order they went.
 class ShowOrder

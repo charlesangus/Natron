@@ -1117,6 +1117,11 @@ public:
         unsigned long long budgetBoxCount = 0;
         unsigned long long budgetBoxInstances = 0;
         unsigned long long budgetBoxMarkers = 0;
+        // The budgets applied, the frames that drew budget boxes, and those that drew none right
+        // after one that drew some.
+        unsigned long long applies = 0;
+        unsigned long long budgetBoxFrames = 0;
+        unsigned long long budgetBoxDrops = 0;
         // The camera the budget was solved for, and the distance demotion starts from (infinite
         // for none).
         double eye[3] = { 0., 0., 0. };

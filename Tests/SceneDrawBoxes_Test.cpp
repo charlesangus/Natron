@@ -784,6 +784,63 @@ def Xform "Asset"
     EXPECT_EQ(cube->faces, 6u);
 }
 
+// A budget solved before a load stands for what is drawn while the load is held back, so its boxes
+// stay through every chunk: only a change of anything else makes it another scene's.
+TEST(SceneDrawBoxes, ALoadAloneKeepsTheDrawnGenerationAndAnyOtherChangeMovesIt)
+{
+    const UsdStageRefPtr stage = openCountScene();
+    std::atomic<U64> version { 0 };
+    const std::unique_ptr<SceneDrawBoxes> boxes = boxesOver(stage, &version);
+
+    boxes->setCounting(true);
+    const SceneDrawBoxes::UnitsPtr first = latestUnits(*boxes);
+    ASSERT_NE(first, nullptr);
+    const U64 drawn = boxes->getDrawnGeneration();
+    EXPECT_EQ(first->drawnGeneration, drawn);
+
+    for (U64 load = 1; load <= 4; ++load) {
+        version = load;
+        boxes->setStageVersion(0, load);
+        const SceneDrawBoxes::UnitsPtr units = latestUnits(*boxes);
+        ASSERT_NE(units, nullptr);
+        EXPECT_GT(units->generation, first->generation);
+        EXPECT_GT(units->contentGeneration, first->contentGeneration);
+        EXPECT_EQ(units->drawnGeneration, drawn);
+        EXPECT_EQ(boxes->getDrawnGeneration(), drawn);
+    }
+
+    // The same versions again ask for nothing.
+    const U64 generation = boxes->getGeneration();
+    boxes->setStageVersion(0, 4);
+    EXPECT_EQ(boxes->getGeneration(), generation);
+
+    version = 5;
+    boxes->setStageVersion(1, 4);
+    const U64 edited = boxes->getDrawnGeneration();
+    EXPECT_GT(edited, drawn);
+    EXPECT_EQ(latestUnits(*boxes)->drawnGeneration, edited);
+
+    boxes->setRules(rules({ { "/World/A", SceneDrawFilter::eRuleHide } }));
+    const U64 ruled = boxes->getDrawnGeneration();
+    EXPECT_GT(ruled, edited);
+
+    boxes->setTime(3.);
+    EXPECT_GT(boxes->getDrawnGeneration(), ruled);
+}
+
+// n chunks of a load wait for about log2(n) budgets, the first chunk after the first among them.
+TEST(SceneDrawBoxes, ALoadsChunksWaitForABudgetALogarithmicNumberOfTimes)
+{
+    EXPECT_FALSE(SceneViewBudget::loadChunkWaits(0));
+    std::vector<U64> waits;
+    for (U64 followUp = 1; followUp <= 1000; ++followUp) {
+        if (SceneViewBudget::loadChunkWaits(followUp)) {
+            waits.push_back(followUp);
+        }
+    }
+    EXPECT_EQ(waits, (std::vector<U64> { 1, 2, 4, 8, 16, 32, 64, 128, 256, 512 }));
+}
+
 TEST(SceneDrawBoxes, TheCameraIsKeptWithoutStartingAPass)
 {
     const UsdStageRefPtr stage = openCountScene();

@@ -1,10 +1,10 @@
 """A Natron Utility render reaches the viewer as a device root: no colour download, no CPU fallback.
 
 Graph: USDRead of a generated stage (a camera facing one coloured card) into USDRenderSettings (Default Renderer
-Natron Utility, Device GPU) into USDRender into Viewer1. The script sets NATRON_UTILITY_PROFILE (unless it is set
-already) before the viewer shows a frame, and reads back the profile's viewer_frame records: one a frame the
-viewer shows, with whether it came as a device root, whether that root was drawn from a download instead, the
-hand-off rung and the renderer's running count of colour downloads.
+Natron Utility, Device GPU) into USDRender into Viewer1. It reads back the profile the renderer writes to the
+path in NATRON_UTILITY_PROFILE: viewer_frame records, one per frame the viewer shows, with whether it came as a
+device root, whether that root was drawn from a download instead, the hand-off rung and the renderer's running
+count of colour downloads. The renderer reads that variable once, so it must be set in the launch environment.
 
 Checks, in Ray and then in Raster (where the device cannot rasterize the frame renders as Ray with the node warning
 "Render Mode is Raster, but ..."; that is noted, not failed):
@@ -14,11 +14,13 @@ Checks, in Ray and then in Raster (where the device cannot rasterize the frame r
   4. none of them was drawn from a download of the root (no legacy fallback);
   5. the renderer's colour download count did not move from the first frame to the last.
 
-Needs a GPU build and a viewer with a device hand-off: run with NATRON_GPU=force and, under Xvfb, a rung that
-lavapipe can take, e.g. (natron-dev container, repository root):
-    docker exec -e NATRON_GPU=force -e NATRON_VIEWER_HANDOFF=hostsync -w /home/bosley/git/Natron natron-dev \\
+Meant for a host with a real GPU. Needs a GPU build and a viewer with a device hand-off; launch with
+NATRON_UTILITY_PROFILE=<path>, NATRON_GPU=force and, under Xvfb, NATRON_VIEWER_HANDOFF=hostsync, e.g. (repository
+root, the profile under the output directory):
+    NATRON_UTILITY_PROFILE=build/gui-test-out/m514-profile.jsonl NATRON_GPU=force NATRON_VIEWER_HANDOFF=hostsync \\
         Tests/gui/run-gui-test.sh Tests/gui/m514_utility_device_viewer.py build/release/App/Natron
-Screenshots and results.txt go to $NATRON_GUI_TEST_OUT (default build/gui-test-out/). Exit status 0 only if every
+Where GPU compute is unavailable (natron.log says so; e.g. only llvmpipe), the setup checks run, a NOTE says the
+device path cannot be checked, and the script ends without failing. Screenshots and results.txt go to $NATRON_GUI_TEST_OUT (default build/gui-test-out/). Exit status 0 only if every
 check passed.
 """
 import json
@@ -71,12 +73,7 @@ try:
 
     if not os.path.isdir(OUT):
         os.makedirs(OUT)
-    # The renderer reads the variable once, at the first frame it profiles, which is after this.
-    if not os.environ.get("NATRON_UTILITY_PROFILE"):
-        os.environ["NATRON_UTILITY_PROFILE"] = os.path.join(OUT, "m514-utility-device-viewer-profile.jsonl")
-    PROFILE = os.environ["NATRON_UTILITY_PROFILE"]
-    if os.path.exists(PROFILE):
-        os.remove(PROFILE)
+    PROFILE = os.environ.get("NATRON_UTILITY_PROFILE", "")
     stage_path = os.path.join(OUT, "m514-device-card.usda")
     with open(stage_path, "w") as f:
         f.write(CARD_STAGE)
@@ -112,6 +109,14 @@ try:
             if name.lower().startswith("natronutility") and name.endswith(suffix):
                 return p
         return None
+
+    def gpu_compute_unavailable():
+        """The host log, where the engine reports a failed GPU compute start; no Python API exposes it."""
+        try:
+            with open(os.path.join(OUT, "natron.log"), errors="replace") as f:
+                return "GPU compute is unavailable" in f.read()
+        except (IOError, OSError):
+            return False
 
     def viewer_frames():
         """The profile's viewer_frame records of Viewer1, oldest first."""
@@ -195,6 +200,14 @@ try:
         if pixel_samples is not None:
             pixel_samples.set(1)
         require(choose(mode, "Ray"), "Render Mode is Ray")
+        if gpu_compute_unavailable():
+            report("NOTE GPU compute is unavailable on this host (natron.log); the device viewer path cannot be checked here")
+            return
+        require(bool(PROFILE), "NATRON_UTILITY_PROFILE is set",
+                "launch with NATRON_UTILITY_PROFILE=<path> (and NATRON_GPU=force, NATRON_VIEWER_HANDOFF=hostsync under Xvfb)")
+        if os.path.exists(PROFILE):
+            os.remove(PROFILE)
+
         require(viewer.connectInput(0, render), "connect the Viewer to the USDRender")
 
         yield from session("ray", seed)

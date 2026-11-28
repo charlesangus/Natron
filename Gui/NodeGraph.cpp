@@ -49,6 +49,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Dot.h"
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Project.h"
 #include "Engine/Settings.h"
@@ -487,6 +488,7 @@ NodeGraph::isDrawingLockedVeil() const
 void
 NodeGraph::paintEvent(QPaintEvent* e)
 {
+    NodeCreationStageLog::Scope creationStage("nodeGraphPaint");
     AppInstancePtr app;
 
     if (getGui()) {
@@ -556,10 +558,6 @@ NodeGraph::paintEvent(QPaintEvent* e)
         }
         p.drawPolyline(line);
     }
-
-    if (!_imp->panelBuildsPending.empty()) {
-        postPanelBuildFlush();
-    }
 } // NodeGraph::paintEvent
 
 void
@@ -568,17 +566,14 @@ NodeGraph::schedulePanelBuild(const NodeGuiPtr& node)
     if (!node) {
         return;
     }
-    for (const std::vector<NodeGuiWPtr>* list : { &_imp->panelBuildsPending, &_imp->panelBuildsPosted }) {
-        for (const NodeGuiWPtr& queued : *list) {
-            if (queued.lock() == node) {
-                return;
-            }
+    for (const NodeGuiWPtr& queued : _imp->panelBuildsPending) {
+        if (queued.lock() == node) {
+            return;
         }
     }
     _imp->panelBuildsPending.push_back(node);
-    if (_imp->panelBuildsPending.size() == 1) {
-        armPanelBuildWait();
-    }
+    NodeCreationStageLog::mark("panelScheduled");
+    postPanelBuildFlush();
 }
 
 bool
@@ -588,74 +583,52 @@ NodeGraph::cancelPanelBuild(const NodeGuiPtr& node)
         return false;
     }
     bool found = false;
-    for (std::vector<NodeGuiWPtr>* list : { &_imp->panelBuildsPending, &_imp->panelBuildsPosted }) {
-        for (std::vector<NodeGuiWPtr>::iterator it = list->begin(); it != list->end();) {
-            if (it->lock() == node) {
-                it = list->erase(it);
-                found = true;
-            } else {
-                ++it;
-            }
+    for (std::vector<NodeGuiWPtr>::iterator it = _imp->panelBuildsPending.begin(); it != _imp->panelBuildsPending.end();) {
+        if (it->lock() == node) {
+            it = _imp->panelBuildsPending.erase(it);
+            found = true;
+        } else {
+            ++it;
         }
     }
 
     return found;
 }
 
-static const int kPanelBuildPaintWaitMs = 250;
-
-void
-NodeGraph::armPanelBuildWait()
-{
-    if (!viewport()->isVisible()) {
-        postPanelBuildFlush();
-
-        return;
-    }
-    // A node created off-screen may never cause a paint. The wait starts once the creation has
-    // returned to the event loop, so that a long creation cannot use it up before its own paint.
-    const unsigned generation = ++_imp->panelBuildGeneration;
-    QTimer::singleShot(0, this, [this, generation]() {
-        QTimer::singleShot(kPanelBuildPaintWaitMs, this, [this, generation]() {
-            if (generation == _imp->panelBuildGeneration) {
-                postPanelBuildFlush();
-            }
-        });
-    });
-}
-
 void
 NodeGraph::postPanelBuildFlush()
 {
-    if (_imp->panelBuildFlushPosted || _imp->panelBuildsPending.empty()) {
+    if (_imp->panelBuildFlushPosted) {
         return;
     }
     _imp->panelBuildFlushPosted = true;
-    ++_imp->panelBuildGeneration;
-    _imp->panelBuildsPosted.swap(_imp->panelBuildsPending);
-    // Two hops: a paint delivered outside the posted-event dispatch, from an expose say, would
-    // otherwise see its first hop run in the same event-loop pass, before the frame is shown.
-    QMetaObject::invokeMethod(this, [this]() { QMetaObject::invokeMethod(this, [this]() { flushPanelBuilds(); }, Qt::QueuedConnection); }, Qt::QueuedConnection);
+    // For a queue no creation flushes itself, such as a redone creation. Qt posts a widget's
+    // UpdateRequest at Qt::LowEventPriority, so this normal-priority call still runs before the
+    // frame that shows the node, and a graph that never paints (hidden, or the node off-screen)
+    // needs no fallback wait.
+    QMetaObject::invokeMethod(this, [this]() {
+        _imp->panelBuildFlushPosted = false;
+        buildScheduledPanels(); }, Qt::QueuedConnection);
 }
 
 void
-NodeGraph::flushPanelBuilds()
+NodeGraph::buildScheduledPanels()
 {
-    _imp->panelBuildFlushPosted = false;
-    std::vector<NodeGuiWPtr> posted;
-    posted.swap(_imp->panelBuildsPosted);
-    GuiAppInstancePtr app = getGui() ? getGui()->getApp() : GuiAppInstancePtr();
-    if (app && !app->isClosing()) {
-        for (const NodeGuiWPtr& weak : posted) {
-            NodeGuiPtr node = weak.lock();
-            if (node) {
-                node->buildDeferredPanel();
-            }
-        }
+    if (_imp->panelBuildsPending.empty()) {
+        return;
     }
-    // Created while this flush was queued: those wait for a paint of their own.
-    if (!_imp->panelBuildsPending.empty()) {
-        armPanelBuildWait();
+    NodeCreationStageLog::Scope creationStage("panelFlush");
+    std::vector<NodeGuiWPtr> pending;
+    pending.swap(_imp->panelBuildsPending);
+    GuiAppInstancePtr app = getGui() ? getGui()->getApp() : GuiAppInstancePtr();
+    if (!app || app->isClosing()) {
+        return;
+    }
+    for (const NodeGuiWPtr& weak : pending) {
+        NodeGuiPtr node = weak.lock();
+        if (node) {
+            node->buildDeferredPanel();
+        }
     }
 }
 
@@ -745,6 +718,7 @@ NodeGraph::createNodeGUI(const NodePtr & node,
 
     bool addUndoRedo = args.getProperty<bool>(kCreateNodeArgsPropAddUndoRedoCommand);
     if (addUndoRedo) {
+        NodeCreationStageLog::Scope stage("undoPush");
         AddMultipleNodesCommand* command = new AddMultipleNodesCommand(this, node_ui);
         // GuiAppInstance::createNode() triggers the autosave for such a node once it is set up.
         if (!serialization && !isViewer) {

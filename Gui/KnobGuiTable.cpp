@@ -491,7 +491,7 @@ void
 KnobGuiTable::_show()
 {
     if (_imp->mainContainer) {
-        _imp->mainContainer->show();
+        KnobGui::showWidget(_imp->mainContainer);
     }
 }
 

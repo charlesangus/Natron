@@ -2943,9 +2943,12 @@ NodePtr
 SequenceFileDialog::findOrCreatePreviewReader(const std::string& pluginID)
 {
     NodePtr& slot = _preview->readerNodes[pluginID];
-    if (slot) {
+    // The readers sit in the project's collection, so a script or the graph can remove one that is
+    // cached here; a removed reader is deactivated or has lost its effect and must not be reused.
+    if (slot && slot->isActivated() && slot->getEffectInstance()) {
         return slot;
     }
+    slot.reset();
     CreateNodeArgs args(pluginID, NodeCollectionPtr());
     args.setProperty<bool>(kCreateNodeArgsPropOutOfProject, true);
     args.setProperty<bool>(kCreateNodeArgsPropNoNodeGUI, true);

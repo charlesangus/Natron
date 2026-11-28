@@ -188,7 +188,7 @@ void
 LoopDriverTable::_show()
 {
     if (_table) {
-        _table->show();
+        KnobGui::showWidget(_table);
     }
     // The body may have changed while the panel was closed.
     scheduleRebuild();

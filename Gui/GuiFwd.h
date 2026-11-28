@@ -167,6 +167,7 @@ class KnobGuiChannelSet;
 class KnobGuiContainerI;
 class KnobGuiDouble;
 class KnobGuiFactory;
+class KnobGuiGroup;
 class KnobGuiLayerChannelBase;
 class KnobGuiLayerSelect;
 class KnobGuiInt;

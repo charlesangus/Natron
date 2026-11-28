@@ -28,13 +28,16 @@
 
 #include "Global/Macros.h"
 
+#include <cctype>
 #include <string>
 
 CLANG_DIAG_OFF(deprecated)
 CLANG_DIAG_OFF(uninitialized)
+#include <QChar>
 #include <QColor>
 #include <QGuiApplication>
 #include <QPalette>
+#include <QString>
 CLANG_DIAG_ON(deprecated)
 CLANG_DIAG_ON(uninitialized)
 
@@ -91,6 +94,48 @@ getChannelButtonColor(const QColor& channelColor)
     return QColor::fromRgbF((float)(channelColor.redF() * (1. - t) + raised.redF() * t),
                             (float)(channelColor.greenF() * (1. - t) + raised.greenF() * t),
                             (float)(channelColor.blueF() * (1. - t) + raised.blueF() * t));
+}
+
+/**
+ * @brief The dynamic property a channel toggle button carries, set to the value
+ * getChannelButtonKey() returns, so the application style sheet fills it when checked.
+ **/
+#define kChannelButtonProperty "natronChannel"
+
+/**
+ * @brief "r", "g", "b" or "a" for a channel getChannelColorFromName() colours, empty otherwise.
+ **/
+inline QString
+getChannelButtonKey(const std::string& name)
+{
+    QColor color;
+    if (!getChannelColorFromName(name, &color)) {
+        return QString();
+    }
+
+    return QString(QChar::fromLatin1((char)std::tolower((unsigned char)name[0])));
+}
+
+/**
+ * @brief The application style sheet rules that fill checked channel toggle buttons. They are
+ * built from the current palette, so they must be made after it is set.
+ **/
+inline QString
+getChannelButtonStyleRules()
+{
+    // One shared rule per channel instead of a style sheet per button: a widget's own style
+    // sheet makes Qt build a style for it alone on every polish.
+    const char* names[] = { "r", "g", "b", "a" };
+    QString rules;
+    for (int i = 0; i < 4; ++i) {
+        QColor color;
+        getChannelColorFromName(names[i], &color);
+        rules += QString::fromUtf8("QPushButton[" kChannelButtonProperty "=\"%1\"]:checked { background-color: %2; }\n")
+                     .arg(QString::fromUtf8(names[i]))
+                     .arg(getChannelButtonColor(color).name());
+    }
+
+    return rules;
 }
 
 NATRON_NAMESPACE_EXIT

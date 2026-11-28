@@ -88,14 +88,15 @@ using std::make_pair;
 //=============================GROUP_KNOB_GUI===================================
 
 KnobGuiGroup::KnobGuiGroup(KnobIPtr knob,
-                           KnobGuiContainerI *container)
+                           KnobGuiContainerI* container)
     : KnobGui(knob, container)
     , _checked(false)
     , _button(0)
     , _children()
     , _childrenToEnable()
     , _tabGroup(0)
-    , _knob( std::dynamic_pointer_cast<KnobGroup>(knob) )
+    , _childrenEnableApplied(false)
+    , _knob(std::dynamic_pointer_cast<KnobGroup>(knob))
 {
 }
 
@@ -125,7 +126,9 @@ KnobGuiGroup::removeTabWidget()
 void
 KnobGuiGroup::removeSpecificGui()
 {
-    _button->deleteLater();
+    if (_button) {
+        _button->deleteLater();
+    }
 }
 
 void
@@ -137,7 +140,18 @@ KnobGuiGroup::addKnob(const KnobGuiPtr& child)
 bool
 KnobGuiGroup::isChecked() const
 {
-    return hasWidgetBeenCreated() ? _button->isChecked() : true;
+    // setCheckedInternal() shows the children before the button takes the new state, and a child that is still
+    // unbuilt is built only if its group reads as open.
+    if (_button) {
+        return _checked;
+    }
+    KnobGroupPtr knob = _knob.lock();
+    // A group shown as a tab has no fold button: its children are shown whenever its tab is.
+    if (!knob || knob->isTab()) {
+        return true;
+    }
+
+    return knob->getValue();
 }
 
 void
@@ -253,12 +267,7 @@ KnobGuiGroup::_hide()
 void
 KnobGuiGroup::_show()
 {
-//    if ( _knob->getIsSecret() ) {
-//        return;
-//    }
-    if (_button) {
-        _button->show();
-    }
+    KnobGui::showWidget(_button);
 
     if (_checked) {
         for (std::list<KnobGuiWPtr>::iterator it = _children.begin(); it != _children.end(); ++it) {
@@ -286,7 +295,10 @@ KnobGuiGroup::setEnabled()
     if (_tabGroup) {
         _tabGroup->setEnabled(enabled);
     }
-    if (enabled) {
+    if (!_childrenEnableApplied) {
+        _childrenEnableApplied = true;
+        _childrenToEnable.clear();
+    } else if (enabled) {
         for (U32 i = 0; i < _childrenToEnable.size(); ++i) {
             for (U32 j = 0; j < _childrenToEnable[i].second.size(); ++j) {
                 KnobGuiPtr k = _childrenToEnable[i].first.lock();

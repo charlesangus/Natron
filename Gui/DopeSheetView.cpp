@@ -47,6 +47,7 @@
 #include "Engine/Image.h"
 #include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
+#include "Engine/NodeCreationStageLog.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/Nodes/Time/AppendClip.h"
 #include "Engine/Nodes/Time/FrameHold.h"
@@ -3686,6 +3687,7 @@ DopeSheetView::resizeGL(int w,
 void
 DopeSheetView::paintGL()
 {
+    NodeCreationStageLog::Scope creationStage("dopeSheetPaint");
     running_in_main_thread_and_context(this);
 
     if ( !appPTR->isOpenGLLoaded() ) {

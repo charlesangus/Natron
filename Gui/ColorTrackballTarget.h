@@ -155,10 +155,15 @@ private:
 KnobGuiColor* resolveColorTrackballTarget(Gui* gui);
 
 /**
- * @brief Pages the panel to knob, opens any closed group holding it, and scrolls widget into
- * view.
+ * @brief Pages the panel to knob, opens any closed group holding it, and builds its row if it was
+ * left unbuilt.
  **/
-void revealKnobInPanel(DockablePanel* panel, const KnobIPtr& knob, QWidget* widget);
+void revealKnobInPanel(DockablePanel* panel, const KnobIPtr& knob);
+
+/**
+ * @brief Scrolls the panel's scroll area holding widget so widget is in view.
+ **/
+void scrollWidgetIntoView(QWidget* widget);
 
 /**
  * @brief Whether knobGui can take global mode: a colour knob with an adjustment panel, or a

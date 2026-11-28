@@ -319,7 +319,7 @@ KnobGuiBool::_hide()
 void
 KnobGuiBool::_show()
 {
-    _checkBox->show();
+    KnobGui::showWidget(_checkBox);
 }
 
 void

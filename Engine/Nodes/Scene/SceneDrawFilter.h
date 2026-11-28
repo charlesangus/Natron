@@ -491,6 +491,7 @@ private:
     Node& nodeAt(const PXR_NS::SdfPath& path);
     Node* indexPrim(const PXR_NS::SdfPath& path, const PXR_NS::TfToken& primType);
     void forget(Node* top);
+    bool restoreBudgetFaces(const PXR_NS::HdSceneIndexObserver::AddedPrimEntry& entry);
     void setOutput(Node& node, OutputEnum output);
     void transition(Node& node, OutputEnum after);
     Frame rootFrame(Node* node, bool structural) const;
@@ -567,6 +568,7 @@ private:
     std::size_t _budgetUnstamped = 0;
     // The gprims and instancers the input took away this render, kept to come back as they were.
     std::unordered_set<PXR_NS::SdfPath, PXR_NS::SdfPath::Hash> _budgetForgotten;
+    std::unordered_map<PXR_NS::SdfPath, PXR_NS::VtIntArray, PXR_NS::SdfPath::Hash> _budgetForgottenFaces;
 
     unsigned long long _inputAdded = 0;
     unsigned long long _inputRemoved = 0;

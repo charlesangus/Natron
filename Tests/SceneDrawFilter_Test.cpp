@@ -52,6 +52,8 @@
 #include <pxr/imaging/hd/instancerTopologySchema.h>
 #include <pxr/imaging/hd/materialBindingSchema.h>
 #include <pxr/imaging/hd/materialBindingsSchema.h>
+#include <pxr/imaging/hd/meshSchema.h>
+#include <pxr/imaging/hd/overlayContainerDataSource.h>
 #include <pxr/imaging/hd/renderDelegate.h>
 #include <pxr/imaging/hd/renderIndex.h>
 #include <pxr/imaging/hd/retainedDataSource.h>
@@ -3159,6 +3161,92 @@ TEST_F(SceneDrawFilterTest, TheBudgetHidesAPrimOfAnUnsharedNativeInstanceAndMask
     EXPECT_TRUE(drawn(kOwnMain));
     EXPECT_TRUE(maskOf(*filter, kOwnXg).empty());
     EXPECT_TRUE(maskOf(*filter, kSharedInstancer).empty());
+}
+
+namespace {
+HdContainerDataSourceHandle
+quadsData(int faces)
+{
+    VtIntArray counts(std::size_t(faces), 4);
+    VtIntArray indices(std::size_t(faces) * 4, 0);
+    HdMeshSchema::Builder mesh;
+    mesh.SetTopology(HdMeshTopologySchema::Builder()
+                         .SetFaceVertexCounts(HdRetainedTypedSampledDataSource<VtIntArray>::New(counts))
+                         .SetFaceVertexIndices(HdRetainedTypedSampledDataSource<VtIntArray>::New(indices))
+                         .Build());
+
+    return HdOverlayContainerDataSource::OverlayedContainerDataSources(
+        someData(), HdRetainedContainerDataSource::New(HdMeshSchema::GetSchemaToken(), mesh.Build()));
+}
+
+void
+resyncOwnPrototype(const HdRetainedSceneIndexRefPtr& scene,
+                   int mainFaces)
+{
+    const TfToken xform("xform");
+    const std::string own = std::string(kOwnInstancer) + "/UsdNiPrototype";
+    scene->RemovePrims({ { SdfPath(own) }, { SdfPath(kSharedMesh) } });
+    scene->AddPrims({ { SdfPath(own), xform, someData() },
+                      { SdfPath(own + "/geometry"), xform, someData() },
+                      { SdfPath(kOwnMain), HdPrimTypeTokens->mesh, quadsData(mainFaces) },
+                      { SdfPath(kOwnXg), HdPrimTypeTokens->instancer, someData() },
+                      { SdfPath(std::string(kOwnXg) + "/proto"), xform, someData() },
+                      { SdfPath(kOwnLeaf), HdPrimTypeTokens->mesh, someData() },
+                      { SdfPath(kSharedMesh), HdPrimTypeTokens->mesh, someData() } });
+}
+} // anon namespace
+
+// A prototype the input resyncs, as a draw-state change upstream or a load elsewhere on the stage
+// makes it, is not a load of its own: holding, it comes back as the budget had it, never held.
+TEST_F(SceneDrawFilterTest, APrototypeResyncedWhileHoldingComesBackAsTheBudgetHadIt)
+{
+    addPrototypedInstances(scene);
+    scene->AddPrims({ { SdfPath(kOwnMain), HdPrimTypeTokens->mesh, quadsData(4) } });
+    filter->setBudgetBound(true);
+    SceneDrawFilter::Budget budget;
+    budget.invisibleFaces[SdfPath(kOwnMain)] = VtIntArray { 1, 3 };
+    budget.hidden.insert(SdfPath(kSharedMesh));
+    filter->applyBudget(budget);
+    filter->setBudgetHolding(true);
+    recorder.reset();
+
+    resyncOwnPrototype(scene, 4);
+    filter->endRender();
+
+    const SdfPath child = SdfPath(kOwnMain).AppendChild(SceneDrawFilter::budgetFacesChildName());
+    EXPECT_EQ(0u, filter->getBudgetHeldCount());
+    EXPECT_TRUE(drawn(kOwnMain));
+    EXPECT_TRUE(drawn(kOwnLeaf));
+    EXPECT_FALSE(drawn(kSharedMesh));
+    EXPECT_EQ(1u, filter->getBudgetHiddenCount());
+    EXPECT_EQ((VtIntArray { 1, 3 }), filter->getBudgetInvisibleFaces(SdfPath(kOwnMain)));
+    EXPECT_EQ(1u, recorder.enteredInvisible.count(child.GetString()));
+    const SdfPathVector children = filter->GetChildPrimPaths(SdfPath(kOwnMain));
+    EXPECT_NE(children.end(), std::find(children.begin(), children.end(), child));
+    EXPECT_EQ(HdPrimTypeTokens->geomSubset, filter->GetPrim(child).primType);
+
+    // Back with fewer faces than the budget hid, it comes back whole.
+    resyncOwnPrototype(scene, 2);
+    filter->endRender();
+
+    EXPECT_EQ(0u, filter->getBudgetHeldCount());
+    EXPECT_TRUE(drawn(kOwnMain));
+    EXPECT_EQ(0u, filter->getBudgetFacedMeshCount());
+    const SdfPathVector whole = filter->GetChildPrimPaths(SdfPath(kOwnMain));
+    EXPECT_EQ(whole.end(), std::find(whole.begin(), whole.end(), child));
+
+    filter->clearBudget();
+    EXPECT_TRUE(drawn(kSharedMesh));
+
+    filter->setBudgetHolding(false);
+    filter->setBudgetBound(false);
+    resyncOwnPrototype(scene, 4);
+    filter->endRender();
+
+    EXPECT_EQ(0u, filter->getBudgetHeldCount());
+    EXPECT_TRUE(drawn(kOwnMain));
+    EXPECT_TRUE(drawn(kOwnLeaf));
+    EXPECT_TRUE(drawn(kSharedMesh));
 }
 
 namespace {

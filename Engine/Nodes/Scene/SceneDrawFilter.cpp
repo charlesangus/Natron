@@ -597,15 +597,13 @@ SceneDrawFilter::forget(Node* top)
             --_invisibleCount;
         }
         // What the budget made of it stays until the render ends, for it to come back as it was.
-        // Its face subset went with it, so a mesh drawn in part comes back held, or whole.
+        // Its face subset went with it, so the faces wait apart to be announced again.
         if (_budgetHolding || hasBudgetLayer()) {
             const SdfPath& path = *node->path;
             const auto faced = _budgetFaces.find(path);
             if (faced != _budgetFaces.end()) {
+                _budgetForgottenFaces[path] = faced->second;
                 _budgetFaces.erase(faced);
-                if (_budgetHolding && _budgetHeld.emplace(path, kUnstamped).second) {
-                    ++_budgetUnstamped;
-                }
             }
             if (HdPrimTypeIsGprim(node->type) || (_budgetMasks.count(path) != 0)) {
                 _budgetForgotten.insert(path);
@@ -1608,6 +1606,7 @@ SceneDrawFilter::endRender()
         }
     }
     _budgetForgotten.clear();
+    _budgetForgottenFaces.clear();
 }
 
 void
@@ -1642,6 +1641,7 @@ SceneDrawFilter::_PrimsAdded(const HdSceneIndexBase& /*sender*/,
         refreshRules();
     }
     HdSceneIndexObserver::AddedPrimEntries rewritten;
+    HdSceneIndexObserver::AddedPrimEntries restoredFaces;
     std::vector<Node*> arrived;
     bool deferred = false;
     for (std::size_t i = 0; i < std::size_t(entries.size()); ++i) {
@@ -1657,7 +1657,9 @@ SceneDrawFilter::_PrimsAdded(const HdSceneIndexBase& /*sender*/,
             before = known ? found->second.output : eOutputShown;
         }
         if (!_budgetForgotten.empty() && (_budgetForgotten.erase(entry.primPath) != 0)) {
-            // Back within the render it went in, as it was.
+            if (restoreBudgetFaces(entry)) {
+                restoredFaces.emplace_back(entry.primPath.AppendChild(budgetFacesChildName()), HdPrimTypeTokens->geomSubset);
+            }
         } else if (_budgetHolding && HdPrimTypeIsGprim(entry.primType) && entry.primPath.IsAbsolutePath()) {
             const auto found = _nodes.find(entry.primPath);
             if (((found == _nodes.end()) || found->second.type.IsEmpty()) && _budgetHeld.emplace(entry.primPath, kUnstamped).second) {
@@ -1716,7 +1718,41 @@ SceneDrawFilter::_PrimsAdded(const HdSceneIndexBase& /*sender*/,
     if (deferred) {
         _revealing = true;
     }
-    _SendPrimsAdded(rewritten.empty() ? entries : rewritten);
+    if (restoredFaces.empty()) {
+        _SendPrimsAdded(rewritten.empty() ? entries : rewritten);
+
+        return;
+    }
+    HdSceneIndexObserver::AddedPrimEntries sent = rewritten.empty() ? entries : rewritten;
+    sent.insert(sent.end(), restoredFaces.begin(), restoredFaces.end());
+    _SendPrimsAdded(sent);
+}
+
+// The input may bring the mesh back with other topology, whose faces the old indices would not
+// name; that one comes back whole, for the next budget to fraction.
+bool
+SceneDrawFilter::restoreBudgetFaces(const HdSceneIndexObserver::AddedPrimEntry& entry)
+{
+    if (_budgetForgottenFaces.empty() || (entry.primType != HdPrimTypeTokens->mesh)) {
+        return false;
+    }
+    const auto stashed = _budgetForgottenFaces.find(entry.primPath);
+    if (stashed == _budgetForgottenFaces.end()) {
+        return false;
+    }
+    VtIntArray faces = std::move(stashed->second);
+    _budgetForgottenFaces.erase(stashed);
+    const HdIntArrayDataSourceHandle counts
+        = HdMeshSchema::GetFromParent(_GetInputSceneIndex()->GetPrim(entry.primPath).dataSource).GetTopology().GetFaceVertexCounts();
+    const int faceCount = counts ? int(counts->GetTypedValue(0.0f).size()) : 0;
+    for (const int face : faces) {
+        if ((face < 0) || (face >= faceCount)) {
+            return false;
+        }
+    }
+    _budgetFaces[entry.primPath] = std::move(faces);
+
+    return true;
 }
 
 void

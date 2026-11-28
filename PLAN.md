@@ -702,6 +702,7 @@ future core work has solid ground to build on.
 | M641 | Quiet Info Messages | todo | M418 |  | E14 |  | | [M641-quiet-info-messages.md](PLAN/MILESTONES/M641-quiet-info-messages.md) |
 | M642 | Pause At Loop Wrap | todo | - |  | E10 |  | | [M642-pause-at-loop-wrap.md](PLAN/MILESTONES/M642-pause-at-loop-wrap.md) |
 | M643 | AdjustBBox Zero Pixels Fix | todo | - |  | E3 |  | | [M643-adjustbbox-zero-pixels-fix.md](PLAN/MILESTONES/M643-adjustbbox-zero-pixels-fix.md) |
+| M644 | MoonRay Subdivision Holes | todo | M554 |  | E9 |  | | [M644-moonray-subdivision-holes.md](PLAN/MILESTONES/M644-moonray-subdivision-holes.md) |
 
 # Epics
 

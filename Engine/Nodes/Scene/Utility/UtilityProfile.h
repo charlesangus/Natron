@@ -235,6 +235,18 @@ void writeStamp(const char* name);
 class Span {
 public:
     explicit Span(const char* name);
+
+    // With the "node" field nodeName() gives, called only when enabled().
+    template <typename NodeNameFunc>
+    Span(const char* name,
+         NodeNameFunc&& nodeName)
+        : Span(name)
+    {
+        if (_on) {
+            _node = nodeName();
+        }
+    }
+
     ~Span();
 
     Span(const Span&) = delete;
@@ -243,8 +255,36 @@ public:
 private:
     const char* _name;
     bool _on;
+    std::string _node;
     std::chrono::steady_clock::time_point _start;
 };
+
+/**
+ * @brief Process-wide counts of what the caches around a render did, carried as running totals in the "counters"
+ * object of the utility_profile, hydra_profile and viewer_frame records, so that a reader takes the difference
+ * between two records for what happened between them.
+ **/
+enum class Counter : std::size_t {
+    SettingsSummaryRead,
+    SettingsSummaryReuse,
+    SettingsSummaryJoin,
+    RenderSetupRead,
+    RenderSetupReuse,
+    RenderSetupCameraRead,
+    ShadeTablesUploaded,
+    ShadeTableSetsKept,
+    RenderCall,
+    SceneEvaluation,
+    Count
+};
+
+inline constexpr std::size_t kCounterCount = static_cast<std::size_t>(Counter::Count);
+
+const char* counterName(Counter counter);
+
+// Adds n to counter. Does nothing unless enabled().
+void count(Counter counter,
+           std::uint64_t n = 1);
 } // namespace utilityProfile
 
 class UtilityProfileHydraCall {

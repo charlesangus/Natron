@@ -115,6 +115,14 @@ namespace {
         return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
     }
 
+    std::array<std::atomic<std::uint64_t>, kCounterCount>&
+    counters()
+    {
+        static std::array<std::atomic<std::uint64_t>, kCounterCount>* totals = new std::array<std::atomic<std::uint64_t>, kCounterCount>();
+
+        return *totals;
+    }
+
     std::string
     jsonString(const std::string& text)
     {
@@ -136,7 +144,60 @@ namespace {
 
         return out + "\"";
     }
+
+    std::string
+    countersField()
+    {
+        std::string out = ",\"counters\":{";
+
+        for (std::size_t i = 0; i < kCounterCount; ++i) {
+            out += i ? "," : "";
+            out += jsonString(counterName(static_cast<Counter>(i))) + ":" + std::to_string(counters()[i].load(std::memory_order_relaxed));
+        }
+
+        return out + "}";
+    }
 } // anon namespace
+
+const char*
+counterName(Counter counter)
+{
+    switch (counter) {
+    case Counter::SettingsSummaryRead:
+        return "settings_summary_read";
+    case Counter::SettingsSummaryReuse:
+        return "settings_summary_reuse";
+    case Counter::SettingsSummaryJoin:
+        return "settings_summary_join";
+    case Counter::RenderSetupRead:
+        return "render_setup_read";
+    case Counter::RenderSetupReuse:
+        return "render_setup_reuse";
+    case Counter::RenderSetupCameraRead:
+        return "render_setup_camera_read";
+    case Counter::ShadeTablesUploaded:
+        return "shade_tables_uploaded";
+    case Counter::ShadeTableSetsKept:
+        return "shade_table_sets_kept";
+    case Counter::RenderCall:
+        return "render_call";
+    case Counter::SceneEvaluation:
+        return "scene_evaluation";
+    case Counter::Count:
+        break;
+    }
+
+    return "unknown";
+}
+
+void
+count(Counter counter,
+      std::uint64_t n)
+{
+    if (enabled()) {
+        counters()[static_cast<std::size_t>(counter)].fetch_add(n, std::memory_order_relaxed);
+    }
+}
 
 const char*
 stageName(Stage stage)
@@ -253,6 +314,9 @@ Scope::close()
         _frame->inPassMs[index] += own;
     }
     ++_frame->calls[index];
+    if (_stage == Stage::RenderCall) {
+        count(Counter::RenderCall);
+    }
     _frame->open = _parent;
     if (_parent) {
         _parent->_childMs += elapsed;
@@ -337,6 +401,7 @@ UtilityProfileFrame::write()
     line += ",\"passes\":" + std::to_string(passes.size());
     line += std::string(",\"finished\":") + (_finished ? "true" : "false");
     line += ",\"timing\":\"cpu_wall\"";
+    line += countersField();
     line += ",\"total_ms\":" + number(total);
     line += ",\"outside_passes_ms\":" + number(total - passSum);
     line += ",\"unstaged_ms\":" + number(total - staged);
@@ -436,6 +501,7 @@ UtilityProfileHydraCall::write()
     line += ",\"start_mono_ms\":" + number(std::chrono::duration<double, std::milli>(_start.time_since_epoch()).count());
     line += ",\"mono_ms\":" + number(monotonicMilliseconds());
     line += ",\"total_ms\":" + number(total);
+    line += countersField();
     line += ",\"stages\":{";
 
     bool first = true;
@@ -479,6 +545,7 @@ writeViewerFrame(const std::string& viewer,
     line += std::string(",\"refining\":") + (refining ? "true" : "false");
     line += ",\"device_downloads\":" + std::to_string(UtilityRenderBuffer::deviceDownloadCount());
     line += ",\"pick_readbacks\":" + std::to_string(UtilityRenderBuffer::pickReadbackCount());
+    line += countersField();
     line += "}\n";
     appendLine(line);
 }
@@ -520,6 +587,9 @@ Span::~Span()
         line += ",\"sequence\":" + std::to_string(nextSequence());
         line += ",\"pid\":" + std::to_string(static_cast<long>(::getpid()));
         line += ",\"name\":" + jsonString(_name);
+        if (!_node.empty()) {
+            line += ",\"node\":" + jsonString(_node);
+        }
         line += ",\"start_mono_ms\":" + number(std::chrono::duration<double, std::milli>(_start.time_since_epoch()).count());
         line += ",\"mono_ms\":" + number(monotonicMilliseconds());
         line += "}\n";

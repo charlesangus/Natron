@@ -1046,6 +1046,7 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version,
     if (tables.valid && tables.texels && tables.texelVersion == texelVersion && tables.keys == keys) {
         tables.version = version;
         ++shadeTableSetsKept;
+        utilityProfile::count(utilityProfile::Counter::ShadeTableSetsKept);
 
         return true;
     }
@@ -1139,6 +1140,7 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version,
         }
         kept = gpu::GpuBufferHandle();
         ++shadeTablesUploaded;
+        utilityProfile::count(utilityProfile::Counter::ShadeTablesUploaded);
         if (bytes > kUploadChunkBytes) {
             if (!uploadChunked(data, bytes, what, out, stop)) {
                 stoppedHere = outcome.status == Status::Stopped;

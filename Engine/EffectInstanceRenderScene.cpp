@@ -44,6 +44,7 @@
 #include "Engine/Node.h"
 #include "Engine/Nodes/Scene/SceneLayerMemo.h"
 #include "Engine/Nodes/Scene/SceneWriteBarrier.h"
+#include "Engine/Nodes/Scene/Utility/UtilityProfile.h"
 #include "Engine/ParallelRenderArgs.h"
 
 NATRON_NAMESPACE_ENTER
@@ -195,6 +196,9 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
     if (!node || node->isBeingDestroyed()) {
         return eRenderRoIRetCodeAborted;
     }
+    // Spans nest as the evaluation recurses upstream: a node's own time is its span less its inputs'.
+    const utilityProfile::Span timed(args.context.includesEverything() ? "scene_evaluate" : "scene_evaluate_subset", [&node]() { return node->getScriptName_mt_safe(); });
+    utilityProfile::count(utilityProfile::Counter::SceneEvaluation);
 
     ParallelRenderArgsPtr frameArgs = getFrameArgs();
     // Popped when the call returns, so a later direct call does not find this call's hash on the thread.
@@ -414,6 +418,7 @@ EffectInstance::evaluateScene(const EvaluateSceneArgs& args,
     try {
         // What the node's memoized layer is kept for, without every node passing it on.
         SceneEvaluationContext::Scope contextScope(args.context);
+        const utilityProfile::Span timedAction("scene_render_action", [&node]() { return node->getScriptName_mt_safe(); });
         st = renderScene(actionArgs, &renderedScene, &renderError);
     } catch (const std::exception& e) {
         st = eStatusFailed;

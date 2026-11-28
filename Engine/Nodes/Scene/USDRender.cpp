@@ -26,6 +26,7 @@
 #include "USDRender.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <limits>
@@ -72,6 +73,7 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
+#include "Engine/Nodes/Scene/SceneWriteBarrier.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Nodes/Scene/Utility/UtilityProfile.h"
 #include "Engine/Nodes/Scene/Utility/UtilityRenderDelegate.h"
@@ -480,6 +482,7 @@ struct USDRender::ActiveSettings {
 namespace {
 std::atomic<std::uint64_t> gSettingsSummaryReads { 0 };
 std::atomic<std::uint64_t> gSettingsSummaryReuses { 0 };
+std::atomic<std::uint64_t> gSettingsSummaryJoins { 0 };
 
 // The prim fields through which a prim composes opinions from specs other than those at its own
 // path and its ancestors' in the layer stack.
@@ -574,6 +577,12 @@ std::uint64_t
 USDRender::settingsSummaryReuseCount()
 {
     return gSettingsSummaryReuses.load();
+}
+
+std::uint64_t
+USDRender::settingsSummaryJoinCount()
+{
+    return gSettingsSummaryJoins.load();
 }
 
 bool
@@ -762,12 +771,14 @@ USDRender::summarizeSettings(double time,
             std::map<std::tuple<double, int, U64>, SettingsSummary>::const_iterator found = _settingsSummariesByContent.find(std::make_tuple(time, view.value(), digest));
             if (found != _settingsSummariesByContent.end()) {
                 ++gSettingsSummaryReuses;
+                utilityProfile::count(utilityProfile::Counter::SettingsSummaryReuse);
 
                 return found->second;
             }
         }
     }
     ++gSettingsSummaryReads;
+    utilityProfile::count(utilityProfile::Counter::SettingsSummaryRead);
     summary.read = readActiveSettings(time, view, load, &active, &summary.error, load == eSettingsLoadSettingsPrim);
     if (summary.read) {
         summary.error.clear();
@@ -841,10 +852,7 @@ USDRender::getSettingsSummary(double time,
         }
     }
     if (!mainThread) {
-        const SettingsSummary summary = summarizeSettings(time, view, eSettingsLoadSettingsPrim);
-        storeSettingsSummary(hash, time, view, summary);
-
-        return summary;
+        return readSettingsSummary(hash, time, view);
     }
     const_cast<USDRender*>(this)->markOutputMetadataProvisional();
     if (post) {
@@ -934,8 +942,63 @@ USDRender::readGivenSettingsSummaries() const
         if (!found || !hasNode) {
             return;
         }
-        storeSettingsSummary(hash, key.first, ViewIdx(key.second), summarizeSettings(key.first, ViewIdx(key.second), eSettingsLoadSettingsPrim));
+        (void)readSettingsSummary(hash, key.first, ViewIdx(key.second));
     }
+}
+
+USDRender::SettingsSummary
+USDRender::readSettingsSummary(U64 hash,
+                               double time,
+                               ViewIdx view) const
+{
+    // Past this the other read is taken to be held up behind this thread, and the summary is read here.
+    const std::chrono::milliseconds kJoinLimit(5000);
+    const std::tuple<U64, double, int> reading(hash, time, view.value());
+    const std::pair<double, int> key(time, view.value());
+    // The other read may wait on a layer reload, which waits for the read scope this thread holds.
+    const bool mayWait = !SceneWriteBarrier::isReadingOnThisThread();
+    const std::chrono::steady_clock::time_point giveUp = std::chrono::steady_clock::now() + kJoinLimit;
+    bool owns = false;
+    {
+        std::unique_lock<std::mutex> locker(_settingsSummariesMutex);
+        bool waited = false;
+        while (mayWait && _settingsSummariesReading.count(reading) && (std::chrono::steady_clock::now() < giveUp)) {
+            waited = true;
+            _settingsSummaryReadDone.wait_until(locker, giveUp);
+        }
+        if (waited && (hash == _settingsSummariesHash)) {
+            std::map<std::pair<double, int>, SettingsSummary>::const_iterator found = _settingsSummaries.find(key);
+            if (found != _settingsSummaries.end()) {
+                ++gSettingsSummaryJoins;
+                utilityProfile::count(utilityProfile::Counter::SettingsSummaryJoin);
+
+                return found->second;
+            }
+        }
+        owns = _settingsSummariesReading.insert(reading).second;
+    }
+    struct ReadingGuard {
+        const USDRender* render;
+        std::tuple<U64, double, int> reading;
+        bool owns;
+
+        ~ReadingGuard()
+        {
+            if (!owns) {
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> l(render->_settingsSummariesMutex);
+                render->_settingsSummariesReading.erase(reading);
+            }
+            render->_settingsSummaryReadDone.notify_all();
+        }
+    } guard { this, reading, owns };
+
+    const SettingsSummary summary = summarizeSettings(time, view, eSettingsLoadSettingsPrim);
+    storeSettingsSummary(hash, time, view, summary);
+
+    return summary;
 }
 
 void
@@ -1942,6 +2005,7 @@ USDRender::prepareRender(double time,
         ImageMetadata primIds;
         if (kept && (!primIdPlane || findPrimIdTable(primIdTableHash(), time, view, false, &primIds))) {
             ++gRenderSetupReuses;
+            utilityProfile::count(utilityProfile::Counter::RenderSetupReuse);
             *setup = *kept;
             setup->request.owner = this;
             setup->request.aborted = [this]() { return aborted(); };
@@ -1952,6 +2016,7 @@ USDRender::prepareRender(double time,
             }
             const utilityProfile::Span camera("setup_camera");
             ++gRenderSetupCameraReads;
+            utilityProfile::count(utilityProfile::Counter::RenderSetupCameraRead);
             if (!readActiveSettings(time, view, eSettingsLoadEverything, &active, error, true) || !readSetupCamera(&active, setup, error)) {
                 return false;
             }
@@ -1961,6 +2026,7 @@ USDRender::prepareRender(double time,
         }
     }
     ++gRenderSetupReads;
+    utilityProfile::count(utilityProfile::Counter::RenderSetupRead);
     {
         const utilityProfile::Span read("setup_read");
         if (!readRenderSetup(time, view, level, primIdPlane, &active, setup, error)) {

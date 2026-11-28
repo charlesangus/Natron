@@ -29,6 +29,7 @@
 #include "Global/Macros.h"
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <list>
@@ -205,6 +206,8 @@ public:
     // how many reused one read before from the same opinions on it.
     static std::uint64_t settingsSummaryReadCount();
     static std::uint64_t settingsSummaryReuseCount();
+    // How many summaries were taken from a read of the same one running on another thread.
+    static std::uint64_t settingsSummaryJoinCount();
 
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -384,6 +387,13 @@ private:
     // On the worker: reads every summary the main thread was given a provisional one for under the node's hash.
     void readGivenSettingsSummaries() const;
 
+    /**
+     * @brief Reads and stores the summary at time and view under hash, off the main thread. A read
+     * of the same summary already running on another thread is waited for and its summary taken,
+     * rather than evaluating the input a second time.
+     **/
+    SettingsSummary readSettingsSummary(U64 hash, double time, ViewIdx view) const;
+
     // The render of time, view and level as the node's settings and input scene make it. False with
     // *error set to the message the node shows if it cannot render. primIdPlane: the render draws
     // the primId plane, whose table it then stores for the main thread.
@@ -501,6 +511,10 @@ private:
     mutable bool _hasLastSettingsSummary;
     mutable SettingsSummary _lastSettingsSummary;
     mutable bool _settingsSummariesPosted;
+    // Under _settingsSummariesMutex: the summaries readSettingsSummary() is reading, by hash, time
+    // and view, signalled by _settingsSummaryReadDone as each ends.
+    mutable std::set<std::tuple<U64, double, int>> _settingsSummariesReading;
+    mutable std::condition_variable _settingsSummaryReadDone;
     std::mutex _primIdTablesMutex;
     // Under _primIdTablesMutex: the tables of the node's hash _primIdTablesHash, and the frames
     // whose readers were given none.

@@ -22,9 +22,17 @@ the frame the viewer settles on; the next edit waits for UTILITY_BENCH_QUIET_MS 
 
 With UTILITY_BENCH_DRAG_MS set, each pass count then drags: UTILITY_BENCH_DRAG_EDITS edits, one every
 UTILITY_BENCH_DRAG_MS whatever the viewer shows, as a held mouse would. The edit a viewer frame shows is
-taken as the last one made before the latest task_graph_build span ending before the frame began, and an
-edit's latency runs from it to the first frame showing it or a later edit. The first
-UTILITY_BENCH_DRAG_WARMUPS edits are left out, so the numbers are of the steady state.
+taken as the last one made before the render read the USDEditTransform's knobs: the start of its latest
+scene_render_action span inside the latest prepare_render span ending before the frame, or before that
+prepare_render when the layer came from an earlier evaluation. A profile without node-tagged spans falls
+back to the latest task_graph_build span ending before the frame. An edit's latency runs from it to the
+first frame showing it or a later edit. The first UTILITY_BENCH_DRAG_WARMUPS edits are left out, so the
+numbers are of the steady state.
+
+With UTILITY_BENCH_PLAYBACK=1, each pass count then plays the camera sweeping across the card over
+UTILITY_BENCH_PLAY_FRAMES frames, keyed on the USDEditTransform, in the Viewer's normal playback at
+UTILITY_BENCH_PLAY_FPS. The sweep is new to each pass count, so the first loop renders every frame and
+measures render-limited speed; a second loop over the same frames measures cached speed.
 
 Configured by the environment:
     GUI_BENCH_OUT (default $NATRON_GUI_TEST_OUT/utility_bench.jsonl), GUI_BENCH_MODE,
@@ -40,6 +48,9 @@ Configured by the environment:
     UTILITY_BENCH_TARGET_MS  the per-frame target (default 50) and UTILITY_BENCH_STRETCH_MS (default 33)
     UTILITY_BENCH_DRAG_MS    the ms between a drag's edits (default 0: no drag)
     UTILITY_BENCH_DRAG_EDITS edits per drag (default 90), UTILITY_BENCH_DRAG_WARMUPS (default 15) of them untimed
+    UTILITY_BENCH_PLAYBACK   1 to play the camera sweep after each pass count's edits (default 0)
+    UTILITY_BENCH_PLAY_FRAMES frames in the sweep (default 120)
+    UTILITY_BENCH_PLAY_FPS   the Viewer's Desired Fps while playing (default 240, above what a frame renders at)
     NATRON_UTILITY_PROFILE   required: the renderer's profile, read back for viewer_frame and hydra_profile
     NATRON_RENDER_PROFILE    optional: the scheduler's task log, read back for the USDRender's placement
 
@@ -65,11 +76,22 @@ Output: one host record, then per edit a "frame" record and per pass count one "
                         passed through during the edit and its graphics clock's range; (summary) pstates counts
                         the edits per power state
     raster_fallback     the render warned that Raster fell back to Ray
+    counters            the renderer's work counters (settings summary reads and reuses, render setup reads and
+                        reuses, shade table uploads, render calls, scene evaluations) the edit added, from the
+                        viewer_frame records; (summary) counters_per_edit, their mean
 A drag adds a "drag_edit" record per timed edit (latency_ms, pstate) and a summary whose op ends in _drag:
     median_ms, p95_ms   of latency_ms
     fps                 viewer frames a second that showed a newer edit than the frame before
     frame_rate          viewer frames a second, refining passes included
     unshown_edits       timed edits no frame showed, nor any later edit
+    attribution         knob_read when frames were credited from the knob reads, else task_graph_build
+    counters            the counters the drag added
+Playback adds a summary per loop whose op ends in _play_uncached or _play_cached:
+    fps                 timeline frames the viewer showed a second, from the loop's first frame to its last
+    median_ms, p95_ms   of frame_interval_ms, the time between one shown timeline frame and the next
+    render_median_ms, render_p95_ms  of the usdrender_region spans in the loop: the render's own time per call
+    shown, dropped      timeline frames of the sweep the viewer showed, and those it never showed
+    refining_frames     viewer frames that were passes of a frame still refining
 With nvidia-smi on the PATH, nvidia_smi.csv beside the output holds the GPU's clocks and power state every 100 ms.
 The summary's headline field names what its median_ms and p95_ms are of, the figures compare.py diffs against
 the target: first_ms past one pass, where the first pass is what an interactive edit waits for, else last_ms.
@@ -118,6 +140,10 @@ STRETCH_MS = float(os.environ.get("UTILITY_BENCH_STRETCH_MS", "33"))
 DRAG_MS = float(os.environ.get("UTILITY_BENCH_DRAG_MS", "0"))
 DRAG_EDITS = int(os.environ.get("UTILITY_BENCH_DRAG_EDITS", "90"))
 DRAG_WARMUPS = int(os.environ.get("UTILITY_BENCH_DRAG_WARMUPS", "15"))
+PLAYBACK = os.environ.get("UTILITY_BENCH_PLAYBACK", "0") not in ("", "0")
+PLAY_FRAMES = int(os.environ.get("UTILITY_BENCH_PLAY_FRAMES", "120"))
+PLAY_FPS = float(os.environ.get("UTILITY_BENCH_PLAY_FPS", "240"))
+PLAY_FIRST = 1
 OP_TIMEOUT_S = float(os.environ.get("GUI_BENCH_OP_TIMEOUT_S", "30"))
 WATCHDOG_S = int(os.environ.get("GUI_BENCH_WATCHDOG_S", str(2 * 3600)))
 PROFILE = os.environ.get("NATRON_UTILITY_PROFILE", "")
@@ -213,6 +239,9 @@ try:
             "drag_ms": DRAG_MS,
             "drag_edits": DRAG_EDITS,
             "drag_warmups": DRAG_WARMUPS,
+            "playback": PLAYBACK,
+            "play_frames": PLAY_FRAMES,
+            "play_fps": PLAY_FPS,
             "render_profile": bool(RENDER_PROFILE),
             "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
@@ -255,6 +284,13 @@ try:
 
     def rounded(value):
         return None if value is None else round(value, 3)
+
+    def counters_added(before, after):
+        """What the cumulative counters of a later viewer_frame record add over an earlier one's."""
+        if not after:
+            return {}
+        before = before or {}
+        return dict((k, v - before.get(k, 0)) for k, v in sorted(after.items()))
 
     def main_window():
         for w in QApplication.topLevelWidgets():
@@ -363,6 +399,13 @@ try:
             within["to_" + name] = ("inside " + min(around)[1]) if around else "outside any span"
         return out, within
 
+    def counters_mean(frames):
+        totals = {}
+        for f in frames:
+            for key, n in f.get("counters", {}).items():
+                totals[key] = totals.get(key, 0) + n
+        return dict((k, round(v / float(len(frames)), 3)) for k, v in sorted(totals.items())) if frames else {}
+
     def summary(passes, frames, placement, failures):
         last = [f["last_ms"] for f in frames if f["last_ms"] is not None]
         first = [f["first_ms"] for f in frames if f["first_ms"] is not None]
@@ -405,6 +448,7 @@ try:
             "hydra_mean_ms": dict((k, round(sum(v) / len(frames), 3)) for k, v in sorted(stages.items())),
             "gpu_mean_ms": dict((k, round(sum(v) / len(frames), 3)) for k, v in sorted(gpu_stages.items())),
             "segment_median_ms": dict((k, rounded(median(v))) for k, v in sorted(segments.items())),
+            "counters_per_edit": counters_mean(frames),
             "segment_spans": dict((k, max(v.items(), key=lambda item: (item[1], item[0]))[0]) for k, v in sorted(spans_seen.items())),
             "pstates": pstate_counts(frames),
             "frames_per_edit": rounded(sum(f["frames"] for f in frames) / float(len(frames))) if frames else None,
@@ -586,6 +630,9 @@ try:
             previous = state.get("counters")
             counters = (last.get("device_downloads", 0), last.get("pick_readbacks", 0)) if seen else previous
             state["counters"] = counters
+            work_before = state.get("work")
+            if seen and seen[-1].get("counters"):
+                state["work"] = seen[-1]["counters"]
             segments, segment_spans = segments_of(t0, seen, hydra, marks)
             gpu = gpu_during(t0, last["mono_ms"] if seen else mono_ms())
             return {
@@ -604,6 +651,7 @@ try:
                 "gpu": dict((k, round(v, 3)) for k, v in gpu_stages.items()),
                 "segments": segments,
                 "segment_spans": segment_spans,
+                "counters": counters_added(work_before, state.get("work")) if seen else {},
                 "pstate": gpu.get("pstate"),
                 "pstates": gpu.get("pstates"),
                 "gpu_mhz": gpu.get("gpu_mhz"),
@@ -619,6 +667,9 @@ try:
             made = []
             seen = []
             builds = []
+            prepares = []
+            reads = []
+            rig_name = str(rig.getScriptName())
 
             def drain():
                 for r in utility.read_new():
@@ -628,6 +679,10 @@ try:
                         seen.append(r)
                     elif r.get("record") == "span" and r.get("name") == "task_graph_build":
                         builds.append((r["start_mono_ms"], r["mono_ms"]))
+                    elif r.get("record") == "span" and r.get("name") == "prepare_render":
+                        prepares.append((r["start_mono_ms"], r["mono_ms"]))
+                    elif r.get("record") == "span" and r.get("name") == "scene_render_action" and r.get("node") == rig_name:
+                        reads.append(r["start_mono_ms"])
 
             for i in range(DRAG_EDITS):
                 wait = start + i * DRAG_MS - mono_ms()
@@ -649,13 +704,30 @@ try:
                 refining = bool(seen and seen[-1].get("refining"))
                 if len(seen) == count and (not refining or mono_ms() - made[-1] >= OP_TIMEOUT_S * 1000.0):
                     break
+            by_knob_read = bool(reads) and bool(prepares)
+
+            def knob_read_before(at):
+                """When the render behind the frame at `at` read the edit node's knobs: in the latest prepare_render
+                ending before the frame, or, when that evaluation reused a layer, the latest read before it."""
+                ended = [p for p in prepares if p[1] <= at]
+                if not ended:
+                    return None
+                begin, end = max(ended, key=lambda p: p[1])
+                inside = [t for t in reads if begin <= t <= end]
+                if inside:
+                    return max(inside)
+                earlier = [t for t in reads if t < begin]
+                return max(earlier) if earlier else None
+
             ends = sorted(end for _, end in builds)
             starts_by_end = [s for s, _ in sorted(builds, key=lambda b: b[1])]
             shown = []
             for f in seen:
                 at = f["mono_ms"]
-                ended = bisect_right(ends, at)
-                began = max(starts_by_end[:ended]) if ended else at
+                began = knob_read_before(at) if by_knob_read else None
+                if began is None:
+                    ended = bisect_right(ends, at)
+                    began = max(starts_by_end[:ended]) if ended else at
                 source = bisect_right(made, began) - 1
                 if source >= 0:
                     shown.append((at, source, bool(f.get("refining"))))
@@ -690,6 +762,9 @@ try:
                 failures.append("no viewer frame came during the drag's timed edits")
             if seen and seen[-1].get("refining"):
                 failures.append("the drag's last frame did not converge within %g s" % OP_TIMEOUT_S)
+            work_before = state.get("work")
+            if seen and seen[-1].get("counters"):
+                state["work"] = seen[-1]["counters"]
             return {
                 "type": "summary",
                 "op": "utility_raster_%dp_drag" % passes,
@@ -706,6 +781,8 @@ try:
                 "fps": rounded(newer / seconds),
                 "frame_rate": rounded(len(steady) / seconds),
                 "unshown_edits": unshown,
+                "attribution": "knob_read" if by_knob_read else "task_graph_build",
+                "counters": counters_added(work_before, state.get("work")) if seen else {},
                 "pstates": pstate_counts(records),
                 "target_ms": TARGET_MS,
                 "stretch_ms": STRETCH_MS,
@@ -714,8 +791,106 @@ try:
                 "failures": failures,
             }
 
+        def play(passes, round_index):
+            """Steps of the playback of a camera sweep keyed for this pass count: an uncached loop, then a cached
+            one. Returns their summaries."""
+            translate = rig.getParam("translate")
+            last = PLAY_FIRST + PLAY_FRAMES - 1
+            # Each pass count's sweep starts elsewhere, so no frame of it is in a cache yet.
+            offset = NUDGE_STEP * (round_index + 1)
+            for t in range(PLAY_FIRST, last + 1):
+                translate.setValueAtTime(offset + 2.0 * (t - PLAY_FIRST) / max(1, PLAY_FRAMES - 1) - 1.0, t, 0)
+            player = app.getViewer(viewer.getScriptName())
+            require(player is not None, "the Viewer has a Python viewer")
+            player.setFrameRange(PLAY_FIRST, last)
+            player.setPlaybackMode(NatronEngine.Natron.PlaybackModeEnum.ePlaybackModeOnce)
+            records = []
+            for loop in ("uncached", "cached"):
+                player.seek(PLAY_FIRST)
+                yield ("sleep", SETTLE_MS)
+                utility.read_new()
+                start = mono_ms()
+                seen = []
+                spans = []
+
+                def drain():
+                    for r in utility.read_new():
+                        if r.get("mono_ms", 0.0) < start:
+                            continue
+                        if r.get("record") == "viewer_frame":
+                            seen.append(r)
+                        elif r.get("record") == "span" and r.get("name") == "usdrender_region":
+                            spans.append(r["mono_ms"] - r["start_mono_ms"])
+
+                def at_end():
+                    drain()
+                    if any(int(round(r.get("time", 0))) >= last and not r.get("refining") for r in seen):
+                        return True
+                    newest = seen[-1]["mono_ms"] if seen else start
+                    return app.timelineGetTime() >= last and mono_ms() - newest >= QUIET_MS
+
+                player.startForward()
+                ended = yield ("until", at_end, max(60.0, PLAY_FRAMES * 2.0))
+                player.pause()
+                yield ("sleep", SETTLE_MS)
+                drain()
+                first_shown = []
+                times = set()
+                for r in seen:
+                    t = int(round(r.get("time", 0)))
+                    if PLAY_FIRST <= t <= last and t not in times:
+                        times.add(t)
+                        first_shown.append(r["mono_ms"])
+                intervals = [b - a for a, b in zip(first_shown, first_shown[1:])]
+                seconds = (first_shown[-1] - first_shown[0]) / 1000.0 if len(first_shown) > 1 else 0.0
+                work_before = state.get("work")
+                if seen and seen[-1].get("counters"):
+                    state["work"] = seen[-1]["counters"]
+                failures = []
+                if not ended:
+                    failures.append("the %s loop did not reach frame %d" % (loop, last))
+                record = {
+                    "type": "summary",
+                    "op": "utility_raster_%dp_play_%s" % (passes, loop),
+                    "topology": "utility-%dx%d" % SIZE,
+                    "n": passes,
+                    "passes": passes,
+                    "frames": PLAY_FRAMES,
+                    "play_fps": PLAY_FPS,
+                    "headline": "frame_interval_ms",
+                    "fps": rounded((len(first_shown) - 1) / seconds) if seconds > 0 else None,
+                    "median_ms": rounded(median(intervals)),
+                    "p95_ms": rounded(p95(intervals)),
+                    "max_ms": rounded(max(intervals)) if intervals else None,
+                    "render_median_ms": rounded(median(spans)),
+                    "render_p95_ms": rounded(p95(spans)),
+                    "renders": len(spans),
+                    "shown": len(times),
+                    "dropped": PLAY_FRAMES - len(times),
+                    "viewer_frames": len(seen),
+                    "refining_frames": sum(1 for r in seen if r.get("refining")),
+                    "counters": counters_added(work_before, state.get("work")) if seen else {},
+                    "target_ms": TARGET_MS,
+                    "stretch_ms": STRETCH_MS,
+                    "failures": failures,
+                }
+                emit(record)
+                records.append(record)
+            translate.removeAnimation(0)
+            return records
+
         require(viewer.connectInput(0, render), "connect the Viewer to the USDRender")
-        for passes in PASSES:
+        if PLAYBACK:
+            try:
+                app.getProjectParam("frameRange").set(PLAY_FIRST, PLAY_FIRST + PLAY_FRAMES - 1)
+            except Exception:
+                report("NOTE could not set the project frame range: " + traceback.format_exc().splitlines()[-1])
+            enable_fps = viewer.getParam("enableFps")
+            desired_fps = viewer.getParam("desiredFps")
+            require(enable_fps is not None and desired_fps is not None, "the Viewer has Enable Fps and Desired Fps parameters")
+            enable_fps.set(True)
+            desired_fps.set(PLAY_FPS)
+        for round_index, passes in enumerate(PASSES):
             gt.section("raster-%dp" % passes)
             knobs["RasterSamples"].set(passes)
             yield ("sleep", SETTLE_MS)
@@ -765,6 +940,16 @@ try:
                            STRETCH_MS, record["fps"], record["frame_rate"], record["unshown_edits"], record["edits"],
                            record["pstates"] or "-"))
                 check(not record["failures"], "the drag at %d passes showed its edits (%s)" % (passes, "; ".join(record["failures"][:3])))
+            if PLAYBACK and PLAY_FRAMES > 1:
+                yield ("sleep", SETTLE_MS)
+                loops = yield from play(passes, round_index)
+                for record in loops:
+                    report("NOTE utility raster %d passes at %dx%d played %d frames %s: %s fps, frame interval median %s ms, "
+                           "p95 %s ms, render median %s ms, p95 %s ms, %d dropped, %d refining frames" % (
+                               passes, SIZE[0], SIZE[1], PLAY_FRAMES, record["op"].rsplit("_", 1)[-1], record["fps"],
+                               record["median_ms"], record["p95_ms"], record["render_median_ms"], record["render_p95_ms"],
+                               record["dropped"], record["refining_frames"]))
+                    check(not record["failures"], "%s played its frames (%s)" % (record["op"], "; ".join(record["failures"])))
         viewer.disconnectInput(0)
         if stop_sampling:
             stop_sampling()

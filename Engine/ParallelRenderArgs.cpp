@@ -50,6 +50,7 @@
 #include "Engine/Image.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
+#include "Engine/Nodes/Scene/Utility/UtilityProfile.h"
 #include "Engine/OSGLContext.h"
 #include "Engine/RenderContext.h"
 #include "Engine/RotoContext.h"
@@ -696,6 +697,7 @@ warmRoDItem(const RequestPassItem& item,
             std::vector<RequestPassItem>* stack)
 {
     const EffectInstancePtr effect = item.node->getEffectInstance();
+    const utilityProfile::Span timed("request_pass_warm_rod", [&item]() { return item.node->getScriptName_mt_safe(); });
     // The effect answers under the context of the consumer that needs its RoD.
     ActionContextScope acting(item.contextKey != 0, item.context);
     const U64 hash = effect->getRenderHash();
@@ -934,6 +936,8 @@ visitRequestPassItem(bool useTransforms,
     const RectD& canonicalRenderWindow = item.roi;
     NodeFrameRequestPtr nodeRequest;
     EffectInstancePtr effect = node->getEffectInstance();
+    const auto nodeName = [&node]() { return node->getScriptName_mt_safe(); };
+    const utilityProfile::Span timedVisit("request_pass_visit", nodeName);
 
     assert(effect);
 
@@ -994,7 +998,11 @@ visitRequestPassItem(bool useTransforms,
 
     FrameViewRequest* fvRequest = 0;
     NodeFrameViewRequestData::iterator foundFrameView = nodeRequest->frames.find(frameView);
-    double par = effect->getRenderMetadata(time, view)->getPixelAspectRatio(-1);
+    double par;
+    {
+        const utilityProfile::Span timed("request_pass_metadata", nodeName);
+        par = effect->getRenderMetadata(time, view)->getPixelAspectRatio(-1);
+    }
     EffectInstance::ViewInvarianceLevel viewInvariance = effect->isViewInvariant();
 
     if ( foundFrameView != nodeRequest->frames.end() ) {
@@ -1022,6 +1030,7 @@ visitRequestPassItem(bool useTransforms,
         if (item.contextKey != 0) {
             // The snapshot the frame args of this entry carry, as the node's own args carry the
             // empty context's.
+            const utilityProfile::Span timed("request_pass_metadata", nodeName);
             U64 metadataHash = 0;
             NodeMetadataConstPtr metadata = effect->getMetadata(time, view, &metadataHash);
             if (metadataHash == nodeRequest->nodeHash) {
@@ -1043,6 +1052,7 @@ visitRequestPassItem(bool useTransforms,
             fvRequest->globalData.inputIdentityTime = time;
         } else {
             try {
+                const utilityProfile::Span timed("request_pass_identity", nodeName);
                 fvRequest->globalData.isIdentity = effect->isIdentity_public(true, nodeRequest->nodeHash, time, nodeRequest->mappedScale, identityRegionPixel, view, &fvRequest->globalData.inputIdentityTime, &fvRequest->globalData.identityView, &fvRequest->globalData.identityInputNb);
             } catch (...) {
                 return eStatusFailed;
@@ -1057,7 +1067,11 @@ visitRequestPassItem(bool useTransforms,
         ViewIdx rodView = view; //fvRequest->globalData.isIdentity ? fvRequest->globalData.identityView : view;
 
         ///Get the RoD
-        StatusEnum stat = effect->getRegionOfDefinition_public(nodeRequest->nodeHash, rodTime, nodeRequest->mappedScale, rodView, &fvRequest->globalData.rod, &fvRequest->globalData.isProjectFormat);
+        StatusEnum stat;
+        {
+            const utilityProfile::Span timed("request_pass_rod", nodeName);
+            stat = effect->getRegionOfDefinition_public(nodeRequest->nodeHash, rodTime, nodeRequest->mappedScale, rodView, &fvRequest->globalData.rod, &fvRequest->globalData.isProjectFormat);
+        }
         //If failed it should have failed earlier
         if ( (stat == eStatusFailed) && !fvRequest->globalData.rod.isNull() ) {
             return stat;
@@ -1072,6 +1086,7 @@ visitRequestPassItem(bool useTransforms,
         }
 
         ///Get the frame/views needed for this frame/view
+        const utilityProfile::Span timedFrames("request_pass_frames_needed", nodeName);
         fvRequest->globalData.frameViewsNeeded = effect->getFramesNeeded_public(nodeRequest->nodeHash, time, view, mappedLevel);
     } // if (foundFrameView != nodeRequest->frames.end()) {
 
@@ -1158,8 +1173,11 @@ visitRequestPassItem(bool useTransforms,
         roiTransforms = fvRequest->globalData.transforms;
         fvRequest->globalData.reroutesMap.reset(new std::map<int, EffectInstancePtr>());
     }
-    effect->getRegionsOfInterest_public(time, nodeRequest->mappedScale, fvRequest->globalData.rod, canonicalRenderWindow, view, &fvPerRequestData.inputsRoi,
-                                        roiTransforms, par, roiTransforms ? fvRequest->globalData.reroutesMap.get() : nullptr);
+    {
+        const utilityProfile::Span timed("request_pass_roi", nodeName);
+        effect->getRegionsOfInterest_public(time, nodeRequest->mappedScale, fvRequest->globalData.rod, canonicalRenderWindow, view, &fvPerRequestData.inputsRoi,
+                                            roiTransforms, par, roiTransforms ? fvRequest->globalData.reroutesMap.get() : nullptr);
+    }
 
     EffectInstance::ComponentsNeededMap neededComps;
     {
@@ -1169,6 +1187,7 @@ visitRequestPassItem(bool useTransforms,
         std::bitset<4> processChannels;
         EffectInstance::ProcessChannelsPerPlaneMap processChannelsPerPlane;
         int passThroughInput;
+        const utilityProfile::Span timed("request_pass_components", nodeName);
         effect->getComponentsNeededAndProduced_public(nodeRequest->nodeHash, time, view, &neededComps, &passThroughLayers, &passThroughTime, &passThroughView, &processChannels, &processChannelsPerPlane, &passThroughInput);
     }
 
@@ -1574,7 +1593,10 @@ EffectInstance::computeRequestPass(double time,
     if (stat == eStatusFailed) {
         return stat;
     }
-    reportContextCount(treeRoot, request);
+    {
+        const utilityProfile::Span timed("request_pass_context_count");
+        reportContextCount(treeRoot, request);
+    }
 
     //For all frame/view pair and for each node, compute the final roi as being the bounding box of all successive requests
     /*for (FrameRequestMap::iterator it = request.begin(); it != request.end(); ++it) {

@@ -129,6 +129,8 @@ private:
     bool _penDown;
     // The aspect of the camera the open stroke is painted through.
     double _strokeAspect;
+    // The frame the open stroke began at.
+    double _strokeTime;
 };
 
 NATRON_NAMESPACE_EXIT

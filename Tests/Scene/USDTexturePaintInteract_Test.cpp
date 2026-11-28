@@ -309,6 +309,53 @@ TEST_F(USDTexturePaintInteractTest, AToolSwitchEndsTheSession)
     EXPECT_EQ(3u, _effect->getSessions().size());
 }
 
+TEST_F(USDTexturePaintInteractTest, APaintModelChangeEndsTheSession)
+{
+    ASSERT_TRUE(_effect != nullptr);
+    USDTexturePaintInteract* view = _effect->getViewInteract();
+    const SceneRaster::ExplicitCamera camera = cameraAt(5.);
+    const KnobChoicePtr paintModel = std::dynamic_pointer_cast<KnobChoice>(_node->getKnobByName(kUSDTexturePaintParamPaintModel));
+    ASSERT_TRUE(bool(paintModel));
+
+    stroke(camera, 0.5, 0.5);
+    const RotoLayerPtr buffer = view->getCurrentSession();
+    ASSERT_TRUE(bool(buffer));
+    EXPECT_EQ(USDTexturePaint::ePaintModelBuffer, USDTexturePaint::getSessionPaintModel(buffer));
+
+    paintModel->setValueFromID("direct", 0);
+    EXPECT_FALSE(bool(view->getCurrentSession())) << "the knob change closes the open session";
+    EXPECT_TRUE(_effect->isSessionBakePending(buffer)) << "a buffer session still projects when it closes";
+
+    stroke(camera, 0.5, 0.5);
+    const RotoLayerPtr direct = view->getCurrentSession();
+    ASSERT_TRUE(bool(direct));
+    EXPECT_NE(buffer, direct);
+    EXPECT_EQ(USDTexturePaint::ePaintModelDirect, USDTexturePaint::getSessionPaintModel(direct));
+    EXPECT_EQ(2u, _effect->getSessions().size());
+}
+
+TEST_F(USDTexturePaintInteractTest, ClosingADirectSessionQueuesNoBake)
+{
+    ASSERT_TRUE(_effect != nullptr);
+    USDTexturePaintInteract* view = _effect->getViewInteract();
+    const KnobChoicePtr paintModel = std::dynamic_pointer_cast<KnobChoice>(_node->getKnobByName(kUSDTexturePaintParamPaintModel));
+    ASSERT_TRUE(bool(paintModel));
+    paintModel->setValueFromID("direct", 0);
+
+    stroke(cameraAt(5.), 0.5, 0.5);
+    const RotoLayerPtr direct = view->getCurrentSession();
+    ASSERT_TRUE(bool(direct));
+    EXPECT_EQ(USDTexturePaint::ePaintModelDirect, USDTexturePaint::getSessionPaintModel(direct));
+
+    // Checked before the event loop runs, which is where a bake would land.
+    ASSERT_TRUE(view->penDown(cameraAt(7.), kViewWidth, kViewHeight, 0.5, 0.5, 1., 1., time()));
+    EXPECT_FALSE(_effect->isSessionBakePending(direct)) << "a direct session has nothing to project";
+    EXPECT_TRUE(view->penUp());
+    EXPECT_FALSE(view->closeSession(time()));
+    EXPECT_FALSE(_effect->isSessionBakePending(direct));
+    EXPECT_EQ(2u, _effect->getSessions().size());
+}
+
 TEST_F(USDTexturePaintInteractTest, BrushSizeAndPositionMapIntoPaintSpace)
 {
     ASSERT_TRUE(_effect != nullptr);

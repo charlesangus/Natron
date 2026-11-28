@@ -58,6 +58,7 @@
 #include "Engine/Nodes/Scene/MaterialBake.h"
 #include "Engine/Nodes/Scene/PrimSelector.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/TexelPages.h"
 #include "Engine/Nodes/Scene/TextureProjection.h"
 
 NATRON_NAMESPACE_ENTER
@@ -294,6 +295,12 @@ composeTile(const TileArgs& args,
     }
 
     for (const PaintSession& session : sessions) {
+        if (session.layDirect) {
+            if (isCancelled(args, error) || !session.layDirect(rgba, error)) {
+                return false;
+            }
+            continue;
+        }
         if (!session.renderBuffer) {
             continue;
         }
@@ -341,7 +348,7 @@ composeTile(const TileArgs& args,
         project.height = args.size;
         project.occlusion = true;
         project.projectBackFaces = false;
-        project.edgeDilation = 0;
+        project.edgeDilation = TexelPages::kSeamGutter;
         project.cancelled = args.cancelled;
         if (!TextureProjection::projectOver(args.stage, source, mask.data(), project, args.meshes, rgba->data(), error)) {
             return false;

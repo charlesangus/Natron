@@ -96,10 +96,14 @@ struct TileArgs {
     std::function<bool()> cancelled;
 };
 
-// A session to lay over the tile: its camera, and how to get its buffer of the plane baked.
+/**
+ * A session to lay over the tile: its camera, and how to get its buffer of the plane baked, or for
+ * a Direct session, how to write the texels it painted over the tile's rgba.
+ **/
 struct PaintSession {
     SceneRaster::ExplicitCamera camera;
     std::function<bool(USDTexturePaint::SessionBuffer* buffer, std::string* error)> renderBuffer;
+    std::function<bool(std::vector<float>* rgba, std::string* error)> layDirect;
 };
 
 typedef std::pair<PXR_NS::SdfPath, PXR_NS::SdfPath> MeshPair;

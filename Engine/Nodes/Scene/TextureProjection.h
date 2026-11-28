@@ -119,7 +119,9 @@ bool project(const PXR_NS::UsdStageRefPtr& stage,
  * ignored): where a mesh's texel sees the image, it becomes rgba * (1 - m) + p, m and p being
  * mask and paint sampled there. mask is one float per image pixel. The camera's depth is drawn
  * once for every mesh, and each mesh is laid out a band of rows at a time, so the only buffer as
- * large as the tile is the caller's. No edge dilation. project()'s errors, plus a null rgba.
+ * large as the tile is the caller's. args.edgeDilation passes then grow what was laid into the
+ * texels no mesh's layout covers, each taking the mean of its laid neighbours; texels a mesh
+ * covers are never dilated into. project()'s errors, plus a null rgba.
  **/
 bool projectOver(const PXR_NS::UsdStageRefPtr& stage,
                  const SourceImage& paint,

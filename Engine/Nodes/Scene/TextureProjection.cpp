@@ -26,6 +26,7 @@
 #include "TextureProjection.h"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 
@@ -100,6 +101,76 @@ namespace {
             }
             filled->swap(nextFilled);
             rgba->swap(next);
+            if (!grew) {
+                break;
+            }
+        }
+    }
+
+    enum GutterState : std::uint8_t {
+        eGutterFree = 0,
+        eGutterCovered = 1,
+        eGutterLaid = 2,
+    };
+
+    /**
+     * Grows what was laid by one texel per pass into the texels no mesh covers, each taking the
+     * mean of its laid neighbours, so that filtering across a UV island's edge reads the paint
+     * rather than what lies outside the island. Covered texels the paint missed are left alone.
+     **/
+    void
+    growGutter(int width,
+               int height,
+               int passes,
+               std::vector<std::uint8_t>* state,
+               float* rgba)
+    {
+        std::vector<std::vector<std::pair<std::size_t, std::array<float, 4>>>> grown((std::size_t)height);
+
+        for (int pass = 0; pass < passes; ++pass) {
+            parallelForOnGlobalPool(height, maxThreads(), [&](int y) {
+                std::vector<std::pair<std::size_t, std::array<float, 4>>>& out = grown[(std::size_t)y];
+                out.clear();
+                for (int x = 0; x < width; ++x) {
+                    const std::size_t i = (std::size_t)x + (std::size_t)y * (std::size_t)width;
+                    if ((*state)[i] != eGutterFree) {
+                        continue;
+                    }
+                    std::array<float, 4> sum = { 0.f, 0.f, 0.f, 0.f };
+                    int count = 0;
+                    for (int dy = -1; dy <= 1; ++dy) {
+                        for (int dx = -1; dx <= 1; ++dx) {
+                            const int nx = x + dx;
+                            const int ny = y + dy;
+                            if (((dx == 0) && (dy == 0)) || (nx < 0) || (ny < 0) || (nx >= width) || (ny >= height)) {
+                                continue;
+                            }
+                            const std::size_t n = (std::size_t)nx + (std::size_t)ny * (std::size_t)width;
+                            if ((*state)[n] != eGutterLaid) {
+                                continue;
+                            }
+                            for (int c = 0; c < 4; ++c) {
+                                sum[(std::size_t)c] += rgba[n * 4 + (std::size_t)c];
+                            }
+                            ++count;
+                        }
+                    }
+                    if (count > 0) {
+                        for (float& v : sum) {
+                            v /= (float)count;
+                        }
+                        out.push_back(std::make_pair(i, sum));
+                    }
+                }
+            });
+            bool grew = false;
+            for (const std::vector<std::pair<std::size_t, std::array<float, 4>>>& row : grown) {
+                for (const std::pair<std::size_t, std::array<float, 4>>& texel : row) {
+                    std::copy(texel.second.begin(), texel.second.end(), rgba + texel.first * 4);
+                    (*state)[texel.first] = eGutterLaid;
+                    grew = true;
+                }
+            }
             if (!grew) {
                 break;
             }
@@ -313,6 +384,10 @@ projectOver(const PXR_NS::UsdStageRefPtr& stage,
     const Resampler::SourceImage paintSource(paint.rgba, bounds, 4);
     const Resampler::SourceImage maskSource(mask, bounds, 1);
     const int width = args.width;
+    std::vector<std::uint8_t> gutter;
+    if (args.edgeDilation > 0) {
+        gutter.assign((std::size_t)args.width * (std::size_t)args.height, eGutterFree);
+    }
     for (const PXR_NS::SdfPath& mesh : meshes) {
         SceneRaster::BakeArgs bakeArgs;
         bakeArgs.primPath = mesh;
@@ -343,8 +418,12 @@ projectOver(const PXR_NS::UsdStageRefPtr& stage,
                     return;
                 }
                 float* row = rgba + (std::size_t)(firstRow + y) * (std::size_t)width * 4;
+                std::uint8_t* gutterRow = gutter.empty() ? nullptr : gutter.data() + (std::size_t)(firstRow + y) * (std::size_t)width;
                 for (int x = 0; x < width; ++x) {
                     const std::size_t i = (std::size_t)x + (std::size_t)y * (std::size_t)width;
+                    if (gutterRow && bake.coverage[i] && (gutterRow[x] == eGutterFree)) {
+                        gutterRow[x] = eGutterCovered;
+                    }
                     double fx, fy;
                     if (!bake.coverage[i] || !viewer.sees(bake.worldPosition[i], bake.worldNormal[i], &fx, &fy)) {
                         continue;
@@ -354,6 +433,9 @@ projectOver(const PXR_NS::UsdStageRefPtr& stage,
                     Resampler::interpolate(Resampler::eFilterBilinear, false, fx, fy, maskSource, EdgeMode::Stretch, &m);
                     if (m <= 0.f) {
                         continue;
+                    }
+                    if (gutterRow) {
+                        gutterRow[x] = eGutterLaid;
                     }
                     Resampler::interpolate(Resampler::eFilterBilinear, false, fx, fy, paintSource, EdgeMode::Stretch, p);
                     const float keep = std::max(0.f, 1.f - m);
@@ -369,6 +451,14 @@ projectOver(const PXR_NS::UsdStageRefPtr& stage,
                 return false;
             }
         }
+    }
+    if (!gutter.empty()) {
+        if (args.cancelled && args.cancelled()) {
+            errorMessage->clear();
+
+            return false;
+        }
+        growGutter(args.width, args.height, args.edgeDilation, &gutter, rgba);
     }
 
     return true;

@@ -55,6 +55,20 @@ PXR_NAMESPACE_USING_DIRECTIVE
 NATRON_NAMESPACE_ENTER
 
 namespace SceneRaster {
+std::int32_t
+udimTileOf(float u,
+           float v)
+{
+    const float tu = std::floor(u);
+    const float tv = std::floor(v);
+
+    if (!(tu >= 0.f) || !(tu < 10.f) || !(tv >= 0.f) || !(tv < 1000.f)) {
+        return 0;
+    }
+
+    return 1001 + (std::int32_t)tu + 10 * (std::int32_t)tv;
+}
+
 namespace {
     // A triangle in raster space, x and y in pixels, with what its pixels interpolate.
     struct RasterTriangle {
@@ -96,12 +110,72 @@ namespace {
     }
 
     /**
-     * Calls shade(tri, index, weights) for every pixel whose centre lies inside each triangle, with
-     * the pixel's perspective-correct weights of the triangle's three corners. An edge two triangles
-     * share is drawn once: of the two, only the triangle it runs upward (or leftward, when
-     * horizontal) in, once wound counter-clockwise, owns the centres on it. Within a row triangles
-     * are shaded in order; rows run in parallel, a chunk of them per task. False when cancelled
-     * returned true, polled per triangle, which leaves the buffers partly shaded.
+     * Calls emit(x, y, weights) for every pixel of [firstX, lastX] x [firstY, lastY] whose centre
+     * lies inside the triangle, row after row, with the pixel's perspective-correct weights of the
+     * triangle's three corners. An edge two triangles share is drawn once: of the two, only the
+     * triangle it runs upward (or leftward, when horizontal) in, once wound counter-clockwise, owns
+     * the centres on it.
+     **/
+    template <typename Emit>
+    void
+    drawTriangle(const double* tx,
+                 const double* ty,
+                 const float* invW,
+                 int firstX,
+                 int lastX,
+                 int firstY,
+                 int lastY,
+                 const Emit& emit)
+    {
+        const double area = (tx[1] - tx[0]) * (ty[2] - ty[0]) - (ty[1] - ty[0]) * (tx[2] - tx[0]);
+        if ((area == 0.) || !std::isfinite(area)) {
+            return;
+        }
+        const double sign = (area > 0.) ? 1. : -1.;
+        // Edge i runs between the corners other than i, from corner i + 1 to corner i + 2.
+        bool owns[3];
+        for (int i = 0; i < 3; ++i) {
+            const int a = (i + 1) % 3;
+            const int b = (i + 2) % 3;
+            const double dx = sign * (tx[b] - tx[a]);
+            const double dy = sign * (ty[b] - ty[a]);
+            owns[i] = (dy > 0.) || ((dy == 0.) && (dx < 0.));
+        }
+        for (int y = firstY; y <= lastY; ++y) {
+            const double py = y + 0.5;
+            for (int x = firstX; x <= lastX; ++x) {
+                const double px = x + 0.5;
+                double e[3];
+                bool inside = true;
+                for (int i = 0; (i < 3) && inside; ++i) {
+                    const int a = (i + 1) % 3;
+                    const int b = (i + 2) % 3;
+                    e[i] = sign * ((tx[b] - tx[a]) * (py - ty[a]) - (ty[b] - ty[a]) * (px - tx[a]));
+                    inside = (e[i] > 0.) || ((e[i] == 0.) && owns[i]);
+                }
+                if (!inside) {
+                    continue;
+                }
+                double w[3];
+                double sum = 0.;
+                for (int i = 0; i < 3; ++i) {
+                    w[i] = e[i] * invW[i];
+                    sum += w[i];
+                }
+                if (sum <= 0.) {
+                    continue;
+                }
+                const float weights[3] = { (float)(w[0] / sum), (float)(w[1] / sum), (float)(w[2] / sum) };
+                emit(x, y, weights);
+            }
+        }
+    }
+
+    /**
+     * Calls shade(tri, index, weights) for every pixel whose centre lies inside each triangle, by
+     * drawTriangle()'s rule. Within a row triangles are shaded in order; rows run in parallel, a
+     * chunk of them per task. False when cancelled returned true, polled per triangle, which
+     * leaves the buffers partly shaded.
      **/
     template <typename Shade>
     bool
@@ -144,54 +218,15 @@ namespace {
                     return;
                 }
                 const RasterTriangle& tri = tris[t];
-                const double area = (tri.x[1] - tri.x[0]) * (tri.y[2] - tri.y[0]) - (tri.y[1] - tri.y[0]) * (tri.x[2] - tri.x[0]);
-                if ((area == 0.) || !std::isfinite(area)) {
-                    continue;
-                }
-                const double sign = (area > 0.) ? 1. : -1.;
-                // Edge i runs between the corners other than i, from corner i + 1 to corner i + 2.
-                bool owns[3];
-                for (int i = 0; i < 3; ++i) {
-                    const int a = (i + 1) % 3;
-                    const int b = (i + 2) % 3;
-                    const double dx = sign * (tri.x[b] - tri.x[a]);
-                    const double dy = sign * (tri.y[b] - tri.y[a]);
-                    owns[i] = (dy > 0.) || ((dy == 0.) && (dx < 0.));
-                }
                 const double minX = std::min({ tri.x[0], tri.x[1], tri.x[2] });
                 const double maxX = std::max({ tri.x[0], tri.x[1], tri.x[2] });
                 const int firstX = (int)std::max(0., std::ceil(minX - 0.5));
                 const int lastX = (int)std::min((double)width - 1., std::floor(maxX - 0.5));
                 const int firstY = std::max(chunk.y1, tri.firstRow);
                 const int lastY = std::min(chunk.y2 - 1, tri.lastRow);
-                for (int y = firstY; y <= lastY; ++y) {
-                    const double py = y + 0.5;
-                    for (int x = firstX; x <= lastX; ++x) {
-                        const double px = x + 0.5;
-                        double e[3];
-                        bool inside = true;
-                        for (int i = 0; (i < 3) && inside; ++i) {
-                            const int a = (i + 1) % 3;
-                            const int b = (i + 2) % 3;
-                            e[i] = sign * ((tri.x[b] - tri.x[a]) * (py - tri.y[a]) - (tri.y[b] - tri.y[a]) * (px - tri.x[a]));
-                            inside = (e[i] > 0.) || ((e[i] == 0.) && owns[i]);
-                        }
-                        if (!inside) {
-                            continue;
-                        }
-                        double w[3];
-                        double sum = 0.;
-                        for (int i = 0; i < 3; ++i) {
-                            w[i] = e[i] * tri.invW[i];
-                            sum += w[i];
-                        }
-                        if (sum <= 0.) {
-                            continue;
-                        }
-                        const float weights[3] = { (float)(w[0] / sum), (float)(w[1] / sum), (float)(w[2] / sum) };
-                        shade(tri, (std::size_t)x + (std::size_t)y * (std::size_t)width, weights);
-                    }
-                }
+                drawTriangle(tri.x, tri.y, tri.invW, firstX, lastX, firstY, lastY, [&](int x, int y, const float weights[3]) {
+                    shade(tri, (std::size_t)x + (std::size_t)y * (std::size_t)width, weights);
+                });
             }
         });
 
@@ -472,19 +507,60 @@ namespace {
         return true;
     }
 
-    // The UDIM tile holding (u, v), 0 outside the 10-wide tile grid.
-    std::int32_t
-    udimTileOf(float u,
-               float v)
+    /**
+     * Fills *out from the mesh, keeping its MeshData in *data for further primvar reads; (*sources)[t]
+     * is the HdMeshUtil triangle out->triangles[t] comes from. With stName empty no st is read;
+     * otherwise readTriangleTexCoords' errors.
+     **/
+    bool
+    triangulate(const UsdGeomMesh& mesh,
+                const TfToken& stName,
+                UsdTimeCode time,
+                UsdGeomXformCache* xformCache,
+                MeshData* data,
+                TriangulatedMesh* out,
+                std::vector<std::size_t>* sources,
+                std::string* error)
     {
-        const float tu = std::floor(u);
-        const float tv = std::floor(v);
+        readMesh(mesh, time, xformCache, data);
 
-        if (!(tu >= 0.f) || !(tu < 10.f) || !(tv >= 0.f) || !(tv < 1000.f)) {
-            return 0;
+        std::vector<GfVec2f> stCorners;
+        std::vector<std::uint8_t> covered;
+        const bool wantSt = !stName.IsEmpty();
+        if (wantSt && !readTriangleTexCoords(mesh, stName, time, data, &stCorners, &covered, error)) {
+            return false;
         }
 
-        return 1001 + (std::int32_t)tu + 10 * (std::int32_t)tv;
+        out->path = mesh.GetPath();
+        out->worldPoints = data->worldPoints;
+        out->triangles.clear();
+        out->faceIndices.clear();
+        out->normals.clear();
+        out->st.clear();
+        out->hasSt.clear();
+        sources->clear();
+        out->triangles.reserve(data->triangles.size());
+        for (std::size_t t = 0; t < data->triangles.size(); ++t) {
+            const GfVec3i& corners = data->triangles[t];
+            if (!validTriangle(corners, data->worldPoints.size())) {
+                continue;
+            }
+            const GfVec3f world[3] = { data->worldPoints[corners[0]], data->worldPoints[corners[1]], data->worldPoints[corners[2]] };
+            const GfVec3f normal = GfCross(world[1] - world[0], world[2] - world[0]);
+            const float length = normal.GetLength();
+            out->triangles.push_back(corners);
+            out->faceIndices.push_back(HdMeshUtil::DecodeFaceIndexFromCoarseFaceParam(data->primitiveParams[t]));
+            out->normals.push_back((length > 0.f) ? normal / (data->mirrored ? -length : length) : GfVec3f(0.f));
+            if (wantSt) {
+                for (int k = 0; k < 3; ++k) {
+                    out->st.push_back(stCorners[t * 3 + k]);
+                }
+                out->hasSt.push_back(covered[t]);
+            }
+            sources->push_back(t);
+        }
+
+        return true;
     }
 } // anonymous namespace
 
@@ -524,6 +600,89 @@ cameraFrustum(const UsdStageRefPtr& stage,
     return HydraRender::cameraFrustum(stage, args.cameraPath, args.time, aspect, args.fit, frustum, errorMessage);
 } // cameraFrustum
 
+std::vector<SdfPath>
+drawnMeshes(const UsdStageRefPtr& stage,
+            const std::vector<SdfPath>& prims,
+            UsdTimeCode time)
+{
+    std::vector<SdfPath> meshes;
+    if (!stage) {
+        return meshes;
+    }
+    std::vector<SdfPath> roots = prims;
+    if (roots.empty()) {
+        roots.push_back(SdfPath::AbsoluteRootPath());
+    }
+    std::set<SdfPath> seen;
+    for (const SdfPath& root : roots) {
+        const UsdPrim start = stage->GetPrimAtPath(root);
+        if (!start) {
+            continue;
+        }
+        for (const UsdPrim& prim : UsdPrimRange(start, UsdTraverseInstanceProxies(UsdPrimDefaultPredicate))) {
+            const UsdGeomMesh mesh(prim);
+            if (!mesh || !seen.insert(prim.GetPath()).second || !isDrawn(mesh, time)) {
+                continue;
+            }
+            meshes.push_back(prim.GetPath());
+        }
+    }
+
+    return meshes;
+} // drawnMeshes
+
+bool
+triangulateMesh(const UsdStageRefPtr& stage,
+                const SdfPath& meshPath,
+                const TfToken& stName,
+                UsdTimeCode time,
+                TriangulatedMesh* mesh,
+                std::string* errorMessage)
+{
+    const UsdGeomMesh usdMesh(stage ? stage->GetPrimAtPath(meshPath) : UsdPrim());
+    if (!usdMesh) {
+        *errorMessage = meshPath.GetString() + " is not a mesh on the input scene.";
+
+        return false;
+    }
+    UsdGeomXformCache xformCache(time);
+    MeshData data;
+    std::vector<std::size_t> sources;
+
+    return triangulate(usdMesh, stName, time, &xformCache, &data, mesh, &sources, errorMessage);
+}
+
+bool
+triangulateMeshes(const UsdStageRefPtr& stage,
+                  const std::vector<SdfPath>& meshPaths,
+                  const TfToken& stName,
+                  UsdTimeCode time,
+                  std::vector<TriangulatedMesh>* meshes,
+                  std::string* errorMessage)
+{
+    meshes->clear();
+    meshes->reserve(meshPaths.size());
+    UsdGeomXformCache xformCache(time);
+    for (const SdfPath& path : meshPaths) {
+        const UsdGeomMesh usdMesh(stage ? stage->GetPrimAtPath(path) : UsdPrim());
+        if (!usdMesh) {
+            *errorMessage = path.GetString() + " is not a mesh on the input scene.";
+
+            return false;
+        }
+        MeshData data;
+        std::vector<std::size_t> sources;
+        meshes->emplace_back();
+        if (!triangulate(usdMesh, stName, time, &xformCache, &data, &meshes->back(), &sources, errorMessage)) {
+            meshes->clear();
+
+            return false;
+        }
+    }
+
+    return true;
+}
+
 bool
 renderCamera(const UsdStageRefPtr& stage,
              const CameraArgs& args,
@@ -536,42 +695,28 @@ renderCamera(const UsdStageRefPtr& stage,
     const GfMatrix4d view = buffers->frustum.ComputeViewMatrix();
     const GfMatrix4d viewProjection = view * buffers->frustum.ComputeProjectionMatrix();
 
-    std::vector<SdfPath> roots = args.prims;
-    if (roots.empty()) {
-        roots.push_back(SdfPath::AbsoluteRootPath());
-    }
     buffers->meshPaths.clear();
-    std::set<SdfPath> seen;
     std::vector<RasterTriangle> tris;
     const bool wantSt = !args.stName.IsEmpty();
     UsdGeomXformCache xformCache(args.time);
-    for (const SdfPath& root : roots) {
-        const UsdPrim start = stage->GetPrimAtPath(root);
-        if (!start) {
-            continue;
-        }
-        for (const UsdPrim& prim : UsdPrimRange(start, UsdTraverseInstanceProxies(UsdPrimDefaultPredicate))) {
-            const UsdGeomMesh mesh(prim);
-            if (!mesh || !seen.insert(prim.GetPath()).second || !isDrawn(mesh, args.time)) {
+    for (const SdfPath& path : drawnMeshes(stage, args.prims, args.time)) {
+        const UsdGeomMesh mesh(stage->GetPrimAtPath(path));
+        MeshData data;
+        readMesh(mesh, args.time, &xformCache, &data);
+        const std::int32_t index = (std::int32_t)buffers->meshPaths.size();
+        buffers->meshPaths.push_back(path);
+        std::vector<GfVec2f> corners;
+        std::vector<std::uint8_t> covered;
+        std::string ignored;
+        const bool hasSt = wantSt && readTriangleTexCoords(mesh, args.stName, args.time, &data, &corners, &covered, &ignored);
+        for (std::size_t ti = 0; ti < data.triangles.size(); ++ti) {
+            const GfVec3i& t = data.triangles[ti];
+            if (!validTriangle(t, data.worldPoints.size())) {
                 continue;
             }
-            MeshData data;
-            readMesh(mesh, args.time, &xformCache, &data);
-            const std::int32_t index = (std::int32_t)buffers->meshPaths.size();
-            buffers->meshPaths.push_back(prim.GetPath());
-            std::vector<GfVec2f> corners;
-            std::vector<std::uint8_t> covered;
-            std::string ignored;
-            const bool hasSt = wantSt && readTriangleTexCoords(mesh, args.stName, args.time, &data, &corners, &covered, &ignored);
-            for (std::size_t ti = 0; ti < data.triangles.size(); ++ti) {
-                const GfVec3i& t = data.triangles[ti];
-                if (!validTriangle(t, data.worldPoints.size())) {
-                    continue;
-                }
-                const GfVec3f world[3] = { data.worldPoints[t[0]], data.worldPoints[t[1]], data.worldPoints[t[2]] };
-                const bool triangleHasSt = hasSt && covered[ti];
-                addCameraTriangle(world, view, viewProjection, args.width, args.height, index, triangleHasSt ? &corners[ti * 3] : nullptr, &tris);
-            }
+            const GfVec3f world[3] = { data.worldPoints[t[0]], data.worldPoints[t[1]], data.worldPoints[t[2]] };
+            const bool triangleHasSt = hasSt && covered[ti];
+            addCameraTriangle(world, view, viewProjection, args.width, args.height, index, triangleHasSt ? &corners[ti * 3] : nullptr, &tris);
         }
     }
 
@@ -657,11 +802,9 @@ UVLayout::prepare(const UsdStageRefPtr& stage,
     }
     UsdGeomXformCache xformCache(args.time);
     MeshData data;
-    readMesh(mesh, args.time, &xformCache, &data);
-
-    std::vector<GfVec2f> stCorners;
-    std::vector<std::uint8_t> covered;
-    if (!readTriangleTexCoords(mesh, args.stName, args.time, &data, &stCorners, &covered, errorMessage)) {
+    TriangulatedMesh triangulated;
+    std::vector<std::size_t> sources;
+    if (!triangulate(mesh, args.stName, args.time, &xformCache, &data, &triangulated, &sources, errorMessage)) {
         return false;
     }
     const bool wantReader = !args.readerStName.IsEmpty();
@@ -674,34 +817,33 @@ UVLayout::prepare(const UsdStageRefPtr& stage,
     const float tileU = (float)((args.udimTile - 1001) % 10);
     const float tileV = (float)((args.udimTile - 1001) / 10);
     std::vector<RasterTriangle>& tris = _data->tris;
-    tris.reserve(data.triangles.size());
-    for (std::size_t t = 0; t < data.triangles.size(); ++t) {
-        const GfVec3i& corners = data.triangles[t];
-        if (!covered[t]) {
+    tris.reserve(triangulated.triangles.size());
+    for (std::size_t t = 0; t < triangulated.triangles.size(); ++t) {
+        const GfVec3i& corners = triangulated.triangles[t];
+        if (!triangulated.hasSt[t]) {
             continue;
         }
-        const GfVec2f* uv = &stCorners[t * 3];
+        const GfVec2f* uv = &triangulated.st[t * 3];
         RasterTriangle tri;
         for (int k = 0; k < 3; ++k) {
             tri.x[k] = (uv[k][0] - tileU) * (double)args.width;
             tri.y[k] = (uv[k][1] - tileV) * (double)args.height;
             tri.invW[k] = 1.f;
-            tri.world[k] = data.worldPoints[corners[k]];
+            tri.world[k] = triangulated.worldPoints[corners[k]];
             tri.depth[k] = 0.f;
             tri.st[k] = GfVec2f(0.f);
         }
-        if (wantReader && readerCovered[t]) {
+        const std::size_t source = sources[t];
+        if (wantReader && readerCovered[source]) {
             tri.hasSt = true;
             for (int k = 0; k < 3; ++k) {
-                tri.st[k] = readerCorners[t * 3 + k];
+                tri.st[k] = readerCorners[source * 3 + k];
             }
         }
         if (!setRows(&tri, args.height)) {
             continue;
         }
-        const GfVec3f normal = GfCross(tri.world[1] - tri.world[0], tri.world[2] - tri.world[0]);
-        const float length = normal.GetLength();
-        tri.normal = (length > 0.f) ? normal / (data.mirrored ? -length : length) : GfVec3f(0.f);
+        tri.normal = triangulated.normals[t];
         tri.prim = 0;
         tris.push_back(tri);
     }
@@ -766,6 +908,47 @@ UVLayout::bakeRows(int firstRow,
 
     return true;
 } // UVLayout::bakeRows
+
+void
+rasterizeTexels(const GfVec2f* st,
+                int udimTile,
+                int size,
+                int x1,
+                int y1,
+                int x2,
+                int y2,
+                const std::function<void(int x, int y, const float* weights)>& texel)
+{
+    if ((size <= 0) || (udimTile < 1001)) {
+        return;
+    }
+    const float tileU = (float)((udimTile - 1001) % 10);
+    const float tileV = (float)((udimTile - 1001) / 10);
+    double tx[3];
+    double ty[3];
+    const float invW[3] = { 1.f, 1.f, 1.f };
+    for (int k = 0; k < 3; ++k) {
+        tx[k] = (st[k][0] - tileU) * (double)size;
+        ty[k] = (st[k][1] - tileV) * (double)size;
+    }
+    const double minX = std::min({ tx[0], tx[1], tx[2] });
+    const double maxX = std::max({ tx[0], tx[1], tx[2] });
+    const double minY = std::min({ ty[0], ty[1], ty[2] });
+    const double maxY = std::max({ ty[0], ty[1], ty[2] });
+    if (!std::isfinite(minX) || !std::isfinite(maxX) || !std::isfinite(minY) || !std::isfinite(maxY)) {
+        return;
+    }
+    const int firstX = (int)std::max((double)std::max(0, x1), std::ceil(minX - 0.5));
+    const int lastX = (int)std::min((double)std::min(size, x2) - 1., std::floor(maxX - 0.5));
+    const int firstY = (int)std::max((double)std::max(0, y1), std::ceil(minY - 0.5));
+    const int lastY = (int)std::min((double)std::min(size, y2) - 1., std::floor(maxY - 0.5));
+    if ((firstX > lastX) || (firstY > lastY)) {
+        return;
+    }
+    drawTriangle(tx, ty, invW, firstX, lastX, firstY, lastY, [&](int x, int y, const float weights[3]) {
+        texel(x, y, weights);
+    });
+}
 
 bool
 bakeUV(const UsdStageRefPtr& stage,

@@ -59,6 +59,8 @@
 #define kUSDTexturePaintParamTileResolution "tileResolution"
 #define kUSDTexturePaintParamBufferResolution "bufferResolution"
 #define kUSDTexturePaintParamTextureMode "textureMode"
+#define kUSDTexturePaintParamFootprint "footprint"
+#define kUSDTexturePaintParamPaintModel "paintModel"
 #define kUSDTexturePaintParamBakeInputsPath "bakeInputsPath"
 #define kUSDTexturePaintParamBakeInputs "bakeInputs"
 #define kUSDTexturePaintParamBakedInputs "bakedInputs"
@@ -85,6 +87,8 @@
 #define kUSDTexturePaintSessionParamNearClip "nearClip"
 #define kUSDTexturePaintSessionParamFarClip "farClip"
 #define kUSDTexturePaintSessionParamFrozen "frozen"
+#define kUSDTexturePaintSessionParamFootprint "footprint"
+#define kUSDTexturePaintSessionParamPaintModel "paintModel"
 
 NATRON_NAMESPACE_ENTER
 
@@ -95,6 +99,7 @@ class TileDirectoryClaim;
 class USDTexturePaintBaker;
 struct USDTexturePaintFileStep;
 class USDTexturePaintInteract;
+struct USDTexturePaintDirect;
 
 namespace SceneRaster {
 struct ExplicitCamera;
@@ -137,6 +142,20 @@ public:
     enum OutputModeEnum {
         eOutputModeOverBase = 0,
         eOutputModePaintOnly
+    };
+
+    // Where a dab painted straight into the texels lands: within its radius of the surface point under
+    // its centre, or on what the screen disc covers.
+    enum FootprintEnum {
+        eFootprintSurface = 0,
+        eFootprintView
+    };
+
+    // Whether a session's strokes land in a paint buffer projected onto the meshes, or straight into
+    // the texels of the meshes under them.
+    enum PaintModelEnum {
+        ePaintModelBuffer = 0,
+        ePaintModelDirect
     };
 
     static constexpr InputSpec kInputs[] = {
@@ -255,6 +274,47 @@ public:
 
     virtual StatusEnum render(const RenderActionArgs& args) OVERRIDE FINAL WARN_UNUSED_RETURN;
 
+    // render() outputs the tile udim.tile names, so a material can read every tile of one node.
+    virtual RenderContextReadSet getExtraContextReads() const OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // The UDIM tile render() outputs: udim.tile under the current render context, else Output Tile.
+    int getRenderTile() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief The UDIM tiles the matched meshes cover at time, none when there is no input scene.
+     * False, with the reason in error, when the scene cannot be read.
+     **/
+    bool getCoveredTiles(double time, ViewIdx view, std::set<int>* tiles, std::string* error) WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Has the baker lay the strokes of session, a Direct session being painted, into its
+     * texels, without waiting. The output refreshes when that lands, at most every 100 ms, and at
+     * once with final. A request made while one is queued or running is taken by the next one.
+     * Main thread.
+     **/
+    void requestDirectPaint(const RotoLayerPtr& session, double time, ViewIdx view, bool final);
+
+    // Drops the page journal of every Direct session, so that what an undo takes off is replayed.
+    void clearDirectJournalsForTesting();
+
+    /**
+     * @brief Whether an edit of the strokes has the baker bring the Direct sessions' texels up to
+     * date on its own, as it does by default; off, the renders find them stale until a request.
+     **/
+    void setDirectCatchUpForTesting(bool enabled);
+
+    // How many times a Direct session's texels were painted again from its strokes, journal lost.
+    quint64 getDirectReplayCount() const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether the texels the baker last published for the Direct session at time and view
+     * hold its strokes as they are. Main thread.
+     **/
+    bool isDirectSessionPublished(const RotoLayerPtr& session, double time, ViewIdx view) const WARN_UNUSED_RETURN;
+
+    // How many times a render found a Direct session's published texels stale and painted its own.
+    quint64 getDirectPrivateReplayCount() const WARN_UNUSED_RETURN;
+
     // The scene input is read by the node itself, not pulled as an image.
     virtual FramesNeededMap getFramesNeeded(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
     virtual void getRegionsOfInterest(double time,
@@ -273,6 +333,10 @@ public:
     TextureModeEnum getTextureMode() const WARN_UNUSED_RETURN;
 
     OutputModeEnum getOutputMode() const WARN_UNUSED_RETURN;
+
+    FootprintEnum getFootprint() const WARN_UNUSED_RETURN;
+
+    PaintModelEnum getPaintModel() const WARN_UNUSED_RETURN;
 
     /**
      * @brief The pattern of the paint-only files beside the Bake Output files of pattern: "paint"
@@ -302,6 +366,14 @@ public:
 
     static bool isSessionFrozen(const RotoLayerPtr& layer) WARN_UNUSED_RETURN;
     static void setSessionFrozen(const RotoLayerPtr& layer, bool frozen);
+
+    // The Footprint the session was started under; Surface when layer is not a session.
+    static FootprintEnum getSessionFootprint(const RotoLayerPtr& layer) WARN_UNUSED_RETURN;
+    static void setSessionFootprint(const RotoLayerPtr& layer, FootprintEnum footprint);
+
+    // The Paint Model the session was started under; Buffer when layer is not a session.
+    static PaintModelEnum getSessionPaintModel(const RotoLayerPtr& layer) WARN_UNUSED_RETURN;
+    static void setSessionPaintModel(const RotoLayerPtr& layer, PaintModelEnum model);
 
     // The session item is painted in: the layer under the base layer it is in. Null outside one.
     static RotoLayerPtr getSessionOf(const RotoItem& item) WARN_UNUSED_RETURN;
@@ -652,6 +724,9 @@ public:
     // Whether a bake is queued, running, or landing.
     bool isBaking() const WARN_UNUSED_RETURN;
 
+    // isBaking() for the bakes a view shows the progress of: live Direct painting is not one.
+    bool isShowingBakeProgress() const WARN_UNUSED_RETURN;
+
     // Whether a session bake queued for session has not landed yet. Main thread.
     bool isSessionBakePending(const RotoLayerPtr& session) const WARN_UNUSED_RETURN;
 
@@ -663,6 +738,9 @@ public:
 
 protected:
     virtual ImageMetadata deriveOutputMetadata(double time, ViewIdx view) OVERRIDE FINAL WARN_UNUSED_RETURN;
+
+    // Also has the baker catch the Direct sessions up with an edit of their strokes.
+    virtual void evaluate(bool isSignificant, bool refreshMetadatas) OVERRIDE FINAL;
 
 private:
     // What the baker's closures hold instead of this, so that a bake never outlives the node unseen.
@@ -791,19 +869,25 @@ private:
 
     /**
      * @brief The sessions a tile lays over its base, in order. With only, the sessions that are
-     * not frozen are those of only alone; *narrowed tells whether that left any out.
+     * not frozen are those of only alone. With stopAt, only the sessions before it in order, so
+     * that a Direct session is painted over what lies under it. *narrowed tells whether that left
+     * any out.
      **/
-    std::vector<RotoLayerPtr> getLaidSessions(const std::vector<RotoLayerPtr>* only, bool* narrowed) const WARN_UNUSED_RETURN;
+    std::vector<RotoLayerPtr> getLaidSessions(const std::vector<RotoLayerPtr>* only,
+                                              bool* narrowed,
+                                              const RotoLayer* stopAt = nullptr) const WARN_UNUSED_RETURN;
 
     /**
      * @brief What the tiles of view are cached under; changes with anything they depend on. In
      * Animated mode the frame is in the tile's file name instead, so the key is that of every frame.
-     * With only, the key of tiles laying getLaidSessions(only) alone, *narrowed as it tells.
+     * With only or stopAt, the key of tiles laying getLaidSessions(only, stopAt) alone, *narrowed
+     * as it tells.
      **/
     U64 getTileCacheKey(double time,
                         ViewIdx view,
                         const std::vector<RotoLayerPtr>* only = nullptr,
-                        bool* narrowed = nullptr) const WARN_UNUSED_RETURN;
+                        bool* narrowed = nullptr,
+                        const RotoLayer* stopAt = nullptr) const WARN_UNUSED_RETURN;
 
     // Hashes the baked files' paths and modification stamps, read once per bake record and epoch.
     U64 getBakedFilesDigest() const WARN_UNUSED_RETURN;
@@ -817,7 +901,8 @@ private:
                     std::string* note,
                     std::string* error,
                     const std::function<bool()>& cancelled,
-                    const std::vector<RotoLayerPtr>* only);
+                    const std::vector<RotoLayerPtr>* only,
+                    const RotoLayer* stopAt);
 
     // Deletes the cached tiles no view, reader or build still uses. Without _tilesMutex held.
     void removeUnusedTiles(const std::string& directory);
@@ -831,7 +916,7 @@ private:
      * One tile is built once however many threads ask for it, the others waiting for it, while
      * different tiles build at once. When lease is set it receives what keeps *paths from being
      * deleted as stale; the files may be read until it is released. With only, the tiles lay
-     * getLaidSessions(only).
+     * getLaidSessions(only, stopAt).
      **/
     bool ensureTiles(double time,
                      ViewIdx view,
@@ -842,7 +927,89 @@ private:
                      std::string* error,
                      const std::function<bool()>& cancel = std::function<bool()>(),
                      std::shared_ptr<void>* lease = nullptr,
-                     const std::vector<RotoLayerPtr>* only = nullptr);
+                     const std::vector<RotoLayerPtr>* only = nullptr,
+                     const RotoLayer* stopAt = nullptr);
+
+    /**
+     * @brief Writes the texels the Direct session paints over the tiles under it
+     * (getLaidSessions(only, nullptr, session)) in window of tile over rgba, unless rgba is null:
+     * premultiplied RGBA, row-major and bottom-up with a stride of window.width(). On the baker,
+     * the one writer of the session's texels, they are first brought up to date with its strokes
+     * and published. Elsewhere the published texels are read: as they are while the session is
+     * painted or while the baker catches up with an edit in an interactive render; other renders
+     * wait a little for the baker, then paint the strokes apart, one render for all those waiting.
+     * Any thread but the main one. False with *error set when they cannot be painted, false with
+     * *error empty once cancelled.
+     **/
+    bool layDirectPaint(const RotoLayerPtr& session,
+                        const std::vector<RotoLayerPtr>* only,
+                        double time,
+                        ViewIdx view,
+                        int tile,
+                        const RectI& window,
+                        std::vector<float>* rgba,
+                        const std::function<bool()>& cancelled,
+                        std::string* error) WARN_UNUSED_RETURN;
+
+    // The session's strokes in render order with their content hashes, and the hash of them all.
+    U64 getDirectStrokes(const RotoLayerPtr& session,
+                         std::vector<RotoDrawableItemPtr>* items,
+                         std::vector<U64>* hashes) const;
+
+    // What the texels of session at the texture time and view are kept under.
+    U64 getDirectPaintKey(const RotoLayerPtr& session,
+                          const std::vector<RotoLayerPtr>* only,
+                          double textureTime,
+                          ViewIdx view) const WARN_UNUSED_RETURN;
+
+    // The texels kept for session at the texture time and view, made when there are none yet.
+    std::shared_ptr<USDTexturePaintDirect> findDirectPaint(const RotoLayerPtr& session,
+                                                           const std::vector<RotoLayerPtr>* only,
+                                                           double time,
+                                                           ViewIdx view);
+
+    /**
+     * @brief Brings direct up to date with the session's strokes and publishes its painted pages,
+     * under direct's mutex, unless direct was published past unlessPast. With keepLive the last
+     * stroke stays open, to be carried on from what it laid.
+     **/
+    bool paintDirect(USDTexturePaintDirect& direct,
+                     const RotoLayerPtr& session,
+                     const std::vector<RotoLayerPtr>* only,
+                     bool keepLive,
+                     const std::function<bool()>& cancelled,
+                     const U64* unlessPast,
+                     std::string* error);
+
+    // Opens what direct paints with: the meshes' index, the bases, the pages.
+    bool prepareDirectPaint(USDTexturePaintDirect& direct,
+                            const RotoLayerPtr& session,
+                            std::string* error);
+
+    // Lays the strokes of direct's session not laid yet, under direct's mutex.
+    bool reconcileDirectPaint(USDTexturePaintDirect& direct,
+                              const RotoLayerPtr& session,
+                              const std::vector<RotoLayerPtr>* only,
+                              const std::vector<RotoDrawableItemPtr>& items,
+                              const std::vector<U64>& hashes,
+                              bool keepLive,
+                              const std::function<bool()>& cancelled,
+                              std::string* error);
+
+    // Has catchUpDirectPaint() run on the main thread, once for any number of calls before it. Any thread.
+    void scheduleDirectCatchUp();
+
+    /**
+     * @brief Requests a paint, as the pen does, of the first Direct session whose texels at the
+     * current frame are stale, unless the pen or a request is painting; each landing schedules
+     * the next. Main thread.
+     **/
+    void catchUpDirectPaint();
+
+    // Queues the request requestDirectPaint() recorded on the baker. Main thread.
+    void enqueueDirectPaint();
+    // Lands the paint now when final, else once 100 ms passed since the last landing. Main thread.
+    void landDirectPaint(bool final);
 
     // Views are looked up from render threads while the main thread creates them.
     mutable std::mutex _viewsMutex;
@@ -886,12 +1053,17 @@ private:
     mutable bool _stampsValid = false;
     mutable U64 _stampsSignature = 0;
     mutable U64 _stampsDigest = 0;
+    // getCoveredTiles() by what decides them, most recent last.
+    mutable std::mutex _coveredTilesMutex;
+    std::list<std::pair<U64, std::set<int>>> _coveredTiles;
 
     PrimSelector _primPattern;
     KnobStringWPtr _uvPrimvar;
     KnobChoiceWPtr _tileResolution;
     KnobChoiceWPtr _bufferResolution;
     KnobChoiceWPtr _textureMode;
+    KnobChoiceWPtr _footprint;
+    KnobChoiceWPtr _paintModel;
     KnobOutputFileWPtr _bakeInputsPath;
     KnobButtonWPtr _bakeInputs;
     // What the last Bake Inputs wrote, saved with the project, so the tiles keep painting over
@@ -920,6 +1092,32 @@ private:
     mutable std::mutex _pendingSessionBakesMutex;
     // Session bakes queued and not landed, by session.
     std::map<const RotoLayer*, int> _pendingSessionBakes;
+    // Last, so that the tile leases the Direct paints hold are released before the maps above go.
+    mutable std::mutex _directMutex;
+    // The Direct sessions' painted texels, most recently used first.
+    std::list<std::shared_ptr<USDTexturePaintDirect>> _directPaints;
+    std::atomic<quint64> _directReplays { 0 };
+    std::atomic<quint64> _directPrivateReplays { 0 };
+    // The baker's thread, the one writer of the Direct sessions' texels; set before its first bake.
+    std::atomic<const QThread*> _bakerThread { nullptr };
+    // The Direct session requestDirectPaint() is painting, whose published texels renders take as they are.
+    std::atomic<const RotoLayer*> _directPainting { nullptr };
+    std::atomic<bool> _directCatchUpPosted { false };
+    std::atomic<bool> _directCatchUpEnabled { true };
+    // Between the pen's first request of a stroke and its final one.
+    std::atomic<bool> _directPenDown { false };
+    // Bumped by quitBackgroundWork(), which drops a queued paint and its completion.
+    std::atomic<quint64> _directStops { 0 };
+    // What requestDirectPaint() recorded for the baker to take, and the hand-off's state. Main thread.
+    quint64 _directQueuedStops = 0;
+    RotoLayerWPtr _directSession;
+    double _directTime = 0.;
+    int _directView = 0;
+    bool _directDirty = false;
+    bool _directFinal = false;
+    bool _directQueued = false;
+    bool _directLandQueued = false;
+    std::chrono::steady_clock::time_point _directLanded;
 };
 
 NATRON_NAMESPACE_EXIT

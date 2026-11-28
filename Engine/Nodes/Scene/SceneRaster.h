@@ -54,6 +54,12 @@ NATRON_NAMESPACE_ENTER
  * pixel whose centre is (x + 0.5, y + 0.5), y = 0 at the bottom.
  **/
 namespace SceneRaster {
+/**
+ * @brief The UDIM tile holding (u, v), 1001 + floor(u) + 10 * floor(v), so that u = 1 lies in the
+ * tile to the right; 0 outside the 10-wide tile grid.
+ **/
+std::int32_t udimTileOf(float u, float v);
+
 // A camera given by its pose and lens rather than by a prim, as the Viewer's own camera is.
 struct ExplicitCamera {
     // Camera to world, row-major as a GfMatrix4d (translation in the last row); the camera looks
@@ -165,6 +171,20 @@ struct BakeBuffers {
 };
 
 /**
+ * @brief Calls texel(x, y, weights) for each texel of [x1, x2) x [y1, y2) of a size x size UDIM
+ * tile whose centre the triangle with texture coordinates st[0..2] covers, by the rule bakeUV()
+ * draws with, row after row; weights are those of the triangle's three corners.
+ **/
+void rasterizeTexels(const PXR_NS::GfVec2f* st,
+                     int udimTile,
+                     int size,
+                     int x1,
+                     int y1,
+                     int x2,
+                     int y2,
+                     const std::function<void(int x, int y, const float* weights)>& texel);
+
+/**
  * @brief Rasterizes the mesh at args.primPath in its texture space: for each texel of the UDIM
  * tile, the world position and normal of the point the texel maps to. The primvar may be
  * vertex, varying, faceVarying or uniform, indexed or not. Where UV faces overlap, the later face
@@ -176,6 +196,59 @@ bool bakeUV(const PXR_NS::UsdStageRefPtr& stage,
             const BakeArgs& args,
             BakeBuffers* buffers,
             std::string* errorMessage) WARN_UNUSED_RETURN;
+
+/**
+ * @brief A mesh's triangles in world space with the texture coordinates at their corners, as the
+ * rasterizer reads them: triangulated by HdMeshUtil and the st primvar flattened through its
+ * indices and interpolation. Plain data, so that a mesh from any source can fill it.
+ **/
+struct TriangulatedMesh {
+    PXR_NS::SdfPath path;
+    std::vector<PXR_NS::GfVec3f> worldPoints;
+    // Indices into worldPoints, one triangle each; triangles naming a point the mesh lacks are left out.
+    std::vector<PXR_NS::GfVec3i> triangles;
+    // Per triangle, the index of the authored face it comes from.
+    std::vector<int> faceIndices;
+    // Per triangle, its unit normal out of the mesh's front side (its orientation, through the
+    // world transform); (0, 0, 0) for a triangle of no area.
+    std::vector<PXR_NS::GfVec3f> normals;
+    // st[3 * t + k] is the st at corner k of triangle t, (0, 0) where hasSt[t] is 0. Both are empty
+    // when no st was read.
+    std::vector<PXR_NS::GfVec2f> st;
+    std::vector<std::uint8_t> hasSt;
+};
+
+/**
+ * @brief The meshes renderCamera draws for prims, in its order: every mesh at or under one of
+ * prims (every mesh of the stage when prims is empty), once each, invisible and guide meshes left
+ * out.
+ **/
+std::vector<PXR_NS::SdfPath> drawnMeshes(const PXR_NS::UsdStageRefPtr& stage,
+                                         const std::vector<PXR_NS::SdfPath>& prims,
+                                         PXR_NS::UsdTimeCode time);
+
+/**
+ * @brief Reads the mesh at meshPath into *mesh at time, with the st primvar stName (with or
+ * without its "primvars:" namespace) unless stName is empty. False, with *errorMessage naming the
+ * prim, when the prim is not a mesh, or on bakeUV's errors about the primvar.
+ **/
+bool triangulateMesh(const PXR_NS::UsdStageRefPtr& stage,
+                     const PXR_NS::SdfPath& meshPath,
+                     const PXR_NS::TfToken& stName,
+                     PXR_NS::UsdTimeCode time,
+                     TriangulatedMesh* mesh,
+                     std::string* errorMessage) WARN_UNUSED_RETURN;
+
+/**
+ * @brief triangulateMesh() over meshPaths, in their order. On the first error *meshes is left
+ * empty.
+ **/
+bool triangulateMeshes(const PXR_NS::UsdStageRefPtr& stage,
+                       const std::vector<PXR_NS::SdfPath>& meshPaths,
+                       const PXR_NS::TfToken& stName,
+                       PXR_NS::UsdTimeCode time,
+                       std::vector<TriangulatedMesh>* meshes,
+                       std::string* errorMessage) WARN_UNUSED_RETURN;
 
 /**
  * @brief A mesh laid out in its texture space as bakeUV() lays it out, read from the stage once,

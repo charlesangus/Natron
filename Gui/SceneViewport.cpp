@@ -13887,7 +13887,9 @@ SceneViewport::refreshPaintOverlays()
     const std::list<ImageLayerDesc> planes = effect->getOutputPlanes(time, view);
     const RotoLayerPtr current = effect->getViewInteract()->getCurrentSession();
     std::vector<RotoLayerPtr> wanted;
-    if (current && !USDTexturePaint::isSessionFrozen(current)) {
+    // A Direct session's strokes are in the texture once their pages are published: only what is not yet is overlaid.
+    const bool directShown = current && (USDTexturePaint::getSessionPaintModel(current) == USDTexturePaint::ePaintModelDirect) && effect->isDirectSessionPublished(current, time, view);
+    if (current && !USDTexturePaint::isSessionFrozen(current) && !directShown) {
         wanted.push_back(current);
     }
     for (const RotoLayerPtr& session : effect->getSessions()) {
@@ -14002,7 +14004,7 @@ SceneViewport::drawPaintOverlays(QPainter& painter,
     }
     setProperty("natronScenePaintBrushRing", ring);
 
-    const bool baking = effect && effect->isBaking();
+    const bool baking = effect && effect->isShowingBakeProgress();
     setProperty("natronScenePaintBakeFraction", baking ? _imp->bakeFraction : -1.);
     if (baking) {
         const int barHeight = 3;

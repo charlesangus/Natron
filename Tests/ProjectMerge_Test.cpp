@@ -1487,13 +1487,15 @@ TEST_F(ProjectMergeTest, RestoringATemplateNodeInTwoImportsGivesEachAFreshIdAndI
         EXPECT_NE(restoredId, deletedIds[1]);
     }
     EXPECT_NE(fromImport(keys[0]).front()->getNodeId(), fromImport(keys[1]).front()->getNodeId());
+    // Each import's two members and its template node.
+    ASSERT_EQ(project()->getNodes().size(), 6u);
 
     const ProjectMerge::UpdateResult result = ProjectMerge::updateFromTemplate(project(), keys[0], v2);
     ASSERT_TRUE(result.ok) << result.error.toStdString();
     const NodesList updated = fromImport(keys[0]);
     ASSERT_EQ(updated.size(), 1u);
     EXPECT_DOUBLE_EQ(blurSize(updated.front())->getValue(0), 4.);
-    EXPECT_EQ(project()->getNodes().size(), 4u);
+    EXPECT_EQ(project()->getNodes().size(), 6u);
 }
 
 TEST_F(ProjectMergeTest, RecomparingATemplateComparisonAfterAPickAndItsUndoKeepsTheCounts)
@@ -1525,7 +1527,7 @@ TEST_F(ProjectMergeTest, RecomparingATemplateComparisonAfterAPickAndItsUndoKeeps
     const ProjectMerge::ChangeSummary summary = compareWithBase();
     ASSERT_FALSE(summary.templateKey.empty());
     ASSERT_FALSE(summary.nodes.empty());
-    const ProjectMerge::NodeChange* changed = summary.find(blur1->getOriginNode());
+    const ProjectMerge::NodeChange* changed = summary.find(blur1->getNodeId());
     ASSERT_NE(changed, nullptr);
     EXPECT_EQ(changed->kind, ProjectMerge::NodeChange::eChanged);
     EXPECT_EQ(kinds(ProjectMerge::recompare(project(), summary)), kinds(summary));
@@ -1581,7 +1583,9 @@ TEST_F(ProjectMergeTest, RemovingAnAddedMergeBridgesItsReaderAsDeletingItDoes)
         NodePtr restored = project()->findNodeById(id);
         ASSERT_NE(restored, nullptr);
         ASSERT_EQ(reader->getInput(0), restored);
-        restored->destroyNode(true, true);
+        // As the graph's Delete does; destroyNode() drops autoReconnect when it can tear down at once.
+        restored->deactivate(NodesList(), true, true, true, false);
+        restored->destroyNode(true, false);
         restored.reset();
         EXPECT_EQ(reader->getInput(0), expected);
     }

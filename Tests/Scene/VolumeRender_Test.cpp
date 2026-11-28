@@ -594,8 +594,8 @@ expectTheVolumeDarkensItsSide(const std::string& renderer)
 /**
  * Pointing the density field at the frame 2 grid on the live stage moves the sphere from the left
  * to the right without a change of frame, on frame 1's engine: only the edited field reaching the
- * volume it binds can move it. The field must dirty that volume in a way Hydra accepts while it
- * syncs from a scene index, which rejects marking a single rprim dirty with a coding error.
+ * volume it binds can move it. Under a scene index the renderer has to declare and forward that
+ * dependency; Hydra rejects a field marking the volume dirty itself with a coding error.
  **/
 void
 expectALiveFieldEditMovesTheVolume(const std::string& renderer)

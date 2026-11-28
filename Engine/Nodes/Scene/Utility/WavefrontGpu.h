@@ -154,6 +154,11 @@ public:
     // What the executor's tracer has built and refit since it was made.
     Tracer::Stats tracerStats() const;
 
+    // The shading tables, the texels and their addresses aside, uploaded since the executor was made.
+    std::size_t shadeTablesUploaded() const;
+    // The scenes since the executor was made whose shading tables were all as before, so that none went up.
+    std::size_t shadeTableSetsKept() const;
+
 private:
     struct Implementation;
     std::unique_ptr<Implementation> _imp;

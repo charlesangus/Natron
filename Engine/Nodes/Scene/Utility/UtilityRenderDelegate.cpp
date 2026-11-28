@@ -463,6 +463,8 @@ UtilityRenderParam::startFrame(const std::function<void()>& body)
         _thread = std::thread([this, body]() {
             body();
             _frameRunning.store(false);
+            // A frame that ended without converging leaves a caller waiting for it to start the next one.
+            UtilityRenderBuffer::wakeConvergedWaiters();
         });
     } catch (...) {
         _frameRunning.store(false);
@@ -841,6 +843,7 @@ UtilityRenderDelegate::GetRenderStats() const
     _renderParam->frameProgress(&frame, &progressive);
     dictionary[kUtilityStatFrame] = VtValue(frame);
     dictionary[kUtilityStatProgressive] = VtValue(progressive);
+    dictionary[kUtilityStatFrameRunning] = VtValue(_renderParam->frameRunning());
 
     std::string motionWarning;
 

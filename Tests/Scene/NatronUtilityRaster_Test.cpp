@@ -1445,6 +1445,62 @@ GPU_TEST_F(NatronUtilityRaster, OnlyAGeometryEditRedoesTheFramesSetup)
     }
 }
 
+GPU_TEST_F(NatronUtilityRaster, AnEditThatLeavesTheShadingTablesAsTheyWereUploadsNone)
+{
+    UtilityScene scene;
+    const UtilityScene::GeometryId id = scene.addGeometry(SdfPath("/panel"), 1);
+
+    scene.setTopology(id, VtVec3fArray { GfVec3f(-10.f, -10.f, 0.f), GfVec3f(10.f, -10.f, 0.f), GfVec3f(10.f, 10.f, 0.f), GfVec3f(-10.f, 10.f, 0.f) }, quadTriangles());
+    scene.setColors(id, UtilityScene::eColorBindingConstant, VtVec4fArray { GfVec4f(1.f, 1.f, 1.f, 1.f) });
+    emitDisplayColor(scene, id);
+    moveInstance(scene, id, translation(0., 0., 0.), translation(4., 0., 0.));
+
+    WavefrontGpu executor(*_registry, *_pool, std::make_shared<int>(0));
+    const WavefrontMotion motion = openShutter();
+    const WavefrontFrame frame = pixelFrame();
+    const auto draw = [&]() {
+        AovFilm film;
+        const std::atomic<bool> stop(false);
+        const bool ok = wavefrontDrawSamples(executor, scene.snapshot(), frame, motion, film, stop, 2, std::function<void(std::size_t)>());
+
+        EXPECT_TRUE(ok) << executor.status().message;
+
+        return ok;
+    };
+
+    ASSERT_TRUE(draw());
+
+    const std::size_t all = executor.shadeTablesUploaded();
+
+    EXPECT_GT(all, 0u);
+    EXPECT_EQ(0u, executor.shadeTableSetsKept());
+
+    // The same motion again is a new scene version holding the same tables.
+    const std::uint64_t before = scene.snapshot().version;
+
+    moveInstance(scene, id, translation(0., 0., 0.), translation(4., 0., 0.));
+    ASSERT_NE(before, scene.snapshot().version);
+    ASSERT_TRUE(draw());
+    EXPECT_EQ(all, executor.shadeTablesUploaded());
+    EXPECT_EQ(1u, executor.shadeTableSetsKept());
+
+    // A move changes the instance tables alone.
+    moveInstance(scene, id, translation(1., 0., 0.), translation(5., 0., 0.));
+    ASSERT_TRUE(draw());
+
+    const std::size_t moved = executor.shadeTablesUploaded() - all;
+
+    EXPECT_GT(moved, 0u);
+    EXPECT_LT(moved, all);
+    EXPECT_EQ(1u, executor.shadeTableSetsKept());
+
+    // Points that move go up again, with the tables laid out from them.
+    scene.setPoints(id, VtVec3fArray { GfVec3f(-10.f, -12.f, 0.f), GfVec3f(10.f, -12.f, 0.f), GfVec3f(10.f, 8.f, 0.f), GfVec3f(-10.f, 8.f, 0.f) });
+    ASSERT_TRUE(draw());
+    EXPECT_GT(executor.shadeTablesUploaded(), all + moved);
+    EXPECT_EQ(1u, executor.shadeTableSetsKept());
+}
+
 namespace {
 // Writes a checkerboard of 32-texel squares, so that a smeared plate shows in the shading cost as it would in a shot.
 bool

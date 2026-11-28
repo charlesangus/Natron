@@ -67,6 +67,7 @@
 #include "Engine/Nodes/Scene/RenderSettingsPrim.h"
 #include "Engine/Nodes/Scene/SceneNodeAuthoring.h"
 #include "Engine/Nodes/Scene/SceneOps.h"
+#include "Engine/Nodes/Scene/ScenePayloadImpl.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/UsdIncludes.h"
 #include "Engine/Nodes/Scene/Utility/UtilityProfile.h"
@@ -212,6 +213,10 @@ USDRender::purgeCaches()
     {
         const std::lock_guard<std::mutex> l(_renderSetupsMutex);
         _renderSetups.clear();
+    }
+    {
+        std::lock_guard<std::mutex> locker(_settingsSummariesMutex);
+        _settingsSummariesByContent.clear();
     }
     HydraRender::release(this);
 }
@@ -476,7 +481,171 @@ struct USDRender::ActiveSettings {
     PXR_NS::UsdRenderSettings prim;
     RenderSettingsPrim::StandardAttributes standard;
     std::string renderer;
+    // Set by evaluateSettingsPrimScene(): what scene is evaluated on, and the settings prim's path
+    // when it names one.
+    SceneLoadSetPtr loadSet;
+    PXR_NS::SdfPath settingsPrimPath;
 };
+
+namespace {
+std::atomic<std::uint64_t> gSettingsSummaryReads { 0 };
+std::atomic<std::uint64_t> gSettingsSummaryReuses { 0 };
+
+// The prim fields through which a prim composes opinions from specs other than those at its own
+// path and its ancestors' in the layer stack.
+const std::vector<PXR_NS::TfToken>&
+arcFields()
+{
+    static const std::vector<PXR_NS::TfToken> fields = {
+        PXR_NS::TfToken("references"),
+        PXR_NS::TfToken("payload"),
+        PXR_NS::TfToken("inheritPaths"),
+        PXR_NS::TfToken("specializes"),
+        PXR_NS::TfToken("variantSetNames"),
+        PXR_NS::TfToken("variantSelection"),
+        PXR_NS::TfToken("variantSetChildren"),
+        PXR_NS::TfToken("clips"),
+        PXR_NS::TfToken("clipSets"),
+        PXR_NS::TfToken("relocates"),
+        PXR_NS::TfToken("layerRelocates"),
+    };
+
+    return fields;
+}
+
+bool
+hasArcField(const PXR_NS::SdfLayerHandle& layer,
+            const PXR_NS::SdfPath& path)
+{
+    for (const PXR_NS::TfToken& field : arcFields()) {
+        if (layer->HasField(path, field)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+enum PrimSpecsEnum {
+    ePrimSpecsNone = 0,
+    ePrimSpecsSome,
+    // An arc, or a sublayer not open, may bring opinions from elsewhere.
+    ePrimSpecsUnknown
+};
+
+// Whether layer, or what it sublayers, has a spec at path or one of its ancestors.
+PrimSpecsEnum
+primSpecsIn(const PXR_NS::SdfLayerHandle& layer,
+            const PXR_NS::SdfPath& path,
+            std::set<const PXR_NS::SdfLayer*>* visited)
+{
+    // Handles are compared through their pointers: TfWeakPtr's operator== recurses under C++20.
+    if (!visited->insert(PXR_NS::get_pointer(layer)).second) {
+        return ePrimSpecsNone;
+    }
+    if (hasArcField(layer, PXR_NS::SdfPath::AbsoluteRootPath())) {
+        return ePrimSpecsUnknown;
+    }
+    PrimSpecsEnum found = ePrimSpecsNone;
+    for (PXR_NS::SdfPath at = path; !at.IsEmpty() && (at != PXR_NS::SdfPath::AbsoluteRootPath()); at = at.GetParentPath()) {
+        if (!layer->HasSpec(at)) {
+            continue;
+        }
+        if (hasArcField(layer, at)) {
+            return ePrimSpecsUnknown;
+        }
+        found = ePrimSpecsSome;
+    }
+    for (const std::string& subLayerPath : layer->GetSubLayerPaths()) {
+        const PXR_NS::SdfLayerHandle subLayer = PXR_NS::SdfLayer::FindRelativeToLayer(layer, subLayerPath);
+        if (!subLayer) {
+            return ePrimSpecsUnknown;
+        }
+        const PrimSpecsEnum below = primSpecsIn(subLayer, path, visited);
+        if (below == ePrimSpecsUnknown) {
+            return ePrimSpecsUnknown;
+        }
+        if (below == ePrimSpecsSome) {
+            found = ePrimSpecsSome;
+        }
+    }
+
+    return found;
+}
+} // anon namespace
+
+std::uint64_t
+USDRender::settingsSummaryReadCount()
+{
+    return gSettingsSummaryReads.load();
+}
+
+std::uint64_t
+USDRender::settingsSummaryReuseCount()
+{
+    return gSettingsSummaryReuses.load();
+}
+
+bool
+USDRender::evaluateSettingsPrimScene(double time,
+                                     ViewIdx view,
+                                     ActiveSettings* active,
+                                     std::string* error) const
+{
+    // Only the settings prim is read, as the stage metadata naming the active prim needs no payload.
+    const SceneLoadSetPtr nothing = std::make_shared<const SceneLoadSet>(SceneLoadSet::none());
+    active->loadSet = nothing;
+    active->settingsPrimPath = PXR_NS::SdfPath();
+    if (!evaluateInput(time, view, _settingsNothingContextId, nothing, active, error)) {
+        return false;
+    }
+    std::string primPath = settingsPrimOverride();
+    if (primPath.empty()) {
+        primPath = active->scene.getMetadata().renderSettingsPrimPath;
+    }
+    // The summary reads the prim's own attributes; the camera it targets is for the render to open.
+    if (primPath.empty() || !PXR_NS::SdfPath::IsValidPathString(primPath)) {
+        return true;
+    }
+    const SceneLoadSetPtr primOnly = SceneLoadSet::withPaths(nothing, { primPath });
+    if (!evaluateInput(time, view, _settingsPrimContextId, primOnly, active, error)) {
+        return false;
+    }
+    active->loadSet = primOnly;
+    active->settingsPrimPath = PXR_NS::SdfPath(primPath);
+
+    return true;
+}
+
+U64
+USDRender::settingsPrimDigest(const ActiveSettings& active) const
+{
+    ContentHasher h;
+    for (const ScenePayloadImpl* link = active.scene.getImpl().get(); link; link = link->base.get()) {
+        const SceneLayerEntry& entry = link->top;
+        if (!entry.layer) {
+            continue;
+        }
+        std::set<const PXR_NS::SdfLayer*> visited;
+        const PrimSpecsEnum specs = active.settingsPrimPath.IsEmpty() ? ePrimSpecsNone : primSpecsIn(entry.layer, active.settingsPrimPath, &visited);
+        if (specs == ePrimSpecsUnknown) {
+            return 0;
+        }
+        if (specs == ePrimSpecsSome) {
+            h.appendU64(entry.hash);
+        }
+    }
+    const SceneMetadata& metadata = active.scene.getMetadata();
+    h.appendString(metadata.renderSettingsPrimPath);
+    h.appendDouble(metadata.timeCodesPerSecond);
+    h.appendString(active.settingsPrimPath.GetString());
+    h.appendString(settingsPrimOverride());
+    h.appendString(rendererOverride());
+    AppInstancePtr app = getApp();
+    h.appendDouble((app && app->getProject()) ? app->getProject()->getProjectFrameRate() : 24.);
+
+    return h.finalize();
+}
 
 bool
 USDRender::evaluateInput(double time,
@@ -545,22 +714,14 @@ USDRender::readActiveSettings(double time,
         if ((!sceneEvaluated && !evaluate(0, SceneLoadSetPtr())) || !borrowStage(SceneLoadSet::everything())) {
             return false;
         }
-    } else {
-        // Only the settings prim is read, as the stage metadata naming the active prim needs no payload.
-        const SceneLoadSetPtr nothing = std::make_shared<const SceneLoadSet>(SceneLoadSet::none());
-        std::string primPath = chosenPrim;
-        if (!evaluate(_settingsNothingContextId, nothing) || !borrowStage(nothing)) {
+    } else if (load == eSettingsLoadSettingsPrim) {
+        if ((!sceneEvaluated && !evaluateSettingsPrimScene(time, view, active, error)) || !borrowStage(active->loadSet)) {
             return false;
         }
-        if (primPath.empty() && active->stage->HasAuthoredMetadata(PXR_NS::UsdRenderTokens->renderSettingsPrimPath)) {
-            active->stage->GetMetadata(PXR_NS::UsdRenderTokens->renderSettingsPrimPath, &primPath);
-        }
-        // The summary reads the prim's own attributes; the camera it targets is for the render to open.
-        if ((load == eSettingsLoadSettingsPrim) && !primPath.empty() && PXR_NS::SdfPath::IsValidPathString(primPath)) {
-            const SceneLoadSetPtr primOnly = SceneLoadSet::withPaths(nothing, { primPath });
-            if (!evaluate(_settingsPrimContextId, primOnly) || !borrowStage(primOnly)) {
-                return false;
-            }
+    } else {
+        const SceneLoadSetPtr nothing = std::make_shared<const SceneLoadSet>(SceneLoadSet::none());
+        if (!evaluate(_settingsNothingContextId, nothing) || !borrowStage(nothing)) {
+            return false;
         }
     }
     AppInstancePtr app = getApp();
@@ -596,10 +757,28 @@ USDRender::summarizeSettings(double time,
                              ViewIdx view,
                              SettingsLoadEnum load) const
 {
+    const utilityProfile::Span timed("settings_summary");
     SettingsSummary summary;
     ActiveSettings active;
 
-    summary.read = readActiveSettings(time, view, load, &active, &summary.error);
+    U64 digest = 0;
+    if (load == eSettingsLoadSettingsPrim) {
+        if (!evaluateSettingsPrimScene(time, view, &active, &summary.error)) {
+            return summary;
+        }
+        digest = settingsPrimDigest(active);
+        if (digest) {
+            std::lock_guard<std::mutex> locker(_settingsSummariesMutex);
+            std::map<std::tuple<double, int, U64>, SettingsSummary>::const_iterator found = _settingsSummariesByContent.find(std::make_tuple(time, view.value(), digest));
+            if (found != _settingsSummariesByContent.end()) {
+                ++gSettingsSummaryReuses;
+
+                return found->second;
+            }
+        }
+    }
+    ++gSettingsSummaryReads;
+    summary.read = readActiveSettings(time, view, load, &active, &summary.error, load == eSettingsLoadSettingsPrim);
     if (summary.read) {
         summary.error.clear();
         summary.renderer = active.renderer;
@@ -615,6 +794,15 @@ USDRender::summarizeSettings(double time,
                 summary.utilityDevice = device->second.UncheckedGet<PXR_NS::TfToken>().GetString();
             }
         }
+    }
+    // A failed read is tried again: what failed it, such as a layer that does not compose, may lie
+    // outside the settings prim.
+    if (digest && summary.read) {
+        std::lock_guard<std::mutex> locker(_settingsSummariesMutex);
+        if (_settingsSummariesByContent.size() >= kMaxSettingsSummaries) {
+            _settingsSummariesByContent.clear();
+        }
+        _settingsSummariesByContent[std::make_tuple(time, view.value(), digest)] = summary;
     }
 
     return summary;
@@ -1147,6 +1335,13 @@ struct USDRender::RenderSetup {
     std::string warning;
     // The URIs of the live textures the render reads, at its time.
     std::vector<std::string> liveTextureUris;
+    // What the camera is read again from: its path, empty without one, the aspect ratio and fit of
+    // its frustum, and what else the setup read that a camera-only change must not touch.
+    PXR_NS::SdfPath cameraPath;
+    double cameraAspect = 1.;
+    HydraRender::FitModeEnum fit = HydraRender::eFitModeExpand;
+    PXR_NS::SdfPathVector domes;
+    PXR_NS::SdfPath settingsPrimPath;
 };
 
 namespace {
@@ -1185,6 +1380,81 @@ fitModeForPolicy(const PXR_NS::TfToken& policy,
 namespace {
 std::atomic<std::uint64_t> gRenderSetupReads { 0 };
 std::atomic<std::uint64_t> gRenderSetupReuses { 0 };
+std::atomic<std::uint64_t> gRenderSetupCameraReads { 0 };
+
+// Whether layer authors nothing but prim specs on camera and its ancestors, none of them in avoid,
+// with no arc or sublayer: *h then gets every field of those specs, their properties' left out.
+bool
+authorsOnlyOnCamera(const PXR_NS::SdfLayerHandle& layer,
+                    const PXR_NS::SdfPath& camera,
+                    const PXR_NS::SdfPathVector& avoid,
+                    ContentHasher* h)
+{
+    static const PXR_NS::TfToken primChildren("primChildren");
+    if (!layer->GetSubLayerPaths().empty()) {
+        return false;
+    }
+    for (PXR_NS::SdfPath at = PXR_NS::SdfPath::AbsoluteRootPath();;) {
+        if (hasArcField(layer, at) || (std::find(avoid.begin(), avoid.end(), at) != avoid.end())) {
+            return false;
+        }
+        h->appendString(at.GetString());
+        for (const PXR_NS::TfToken& field : layer->ListFields(at)) {
+            h->appendString(field.GetString());
+            h->appendU64(layer->GetField(at, field).GetHash());
+        }
+        const PXR_NS::TfTokenVector children = layer->GetFieldAs<PXR_NS::TfTokenVector>(at, primChildren);
+        if (children.empty()) {
+            return true;
+        }
+        if (children.size() != 1) {
+            return false;
+        }
+        const PXR_NS::SdfPath child = at.AppendChild(children.front());
+        if (!camera.HasPrefix(child)) {
+            return false;
+        }
+        at = child;
+    }
+}
+
+// The scene's stack hash with each layer that authors only on setup's camera and its ancestors
+// standing for its prim specs alone: equal for two scenes that differ only in properties of those
+// prims, which the setup reads nothing from but the camera. 0 when the setup has no camera.
+U64
+cameraStructureDigest(const ScenePayload& scene,
+                      const PXR_NS::SdfPath& camera,
+                      const PXR_NS::SdfPathVector& domes,
+                      const PXR_NS::SdfPath& settingsPrim)
+{
+    if (camera.IsEmpty()) {
+        return 0;
+    }
+    PXR_NS::SdfPathVector avoid = domes;
+    if (!settingsPrim.IsEmpty()) {
+        avoid.push_back(settingsPrim);
+    }
+    ContentHasher h;
+    for (const ScenePayloadImpl* link = scene.getImpl().get(); link; link = link->base.get()) {
+        const SceneLayerEntry& entry = link->top;
+        if (!entry.layer) {
+            continue;
+        }
+        ContentHasher fields;
+        const bool cameraOnly = !entry.deferredProjections && !entry.liveTextures && authorsOnlyOnCamera(entry.layer, camera, avoid, &fields);
+        h.appendBool(cameraOnly);
+        h.appendU64(cameraOnly ? fields.finalize() : entry.hash);
+    }
+    const SceneMetadata& metadata = scene.getMetadata();
+    h.appendI64((std::int64_t)metadata.upAxis);
+    h.appendDouble(metadata.metersPerUnit);
+    h.appendString(metadata.defaultPrim);
+    h.appendDouble(metadata.timeCodesPerSecond);
+    h.appendString(metadata.renderSettingsPrimPath);
+    h.appendString(camera.GetString());
+
+    return h.finalize();
+}
 
 // Past this many, the setup least recently used is dropped: a viewer, its other planes and a Write
 // rendering another frame at once each keep theirs.
@@ -1203,10 +1473,22 @@ USDRender::renderSetupReuseCount()
     return gRenderSetupReuses.load();
 }
 
+std::uint64_t
+USDRender::renderSetupCameraReadCount()
+{
+    return gRenderSetupCameraReads.load();
+}
+
 bool
 USDRender::RenderSetupKey::operator==(const RenderSetupKey& other) const
 {
-    return (sceneHash == other.sceneHash) && (time == other.time) && (view == other.view) && (level == other.level) && (renderer == other.renderer) && (knobs == other.knobs) && (project == other.project);
+    return (sceneHash == other.sceneHash) && sameSettings(other);
+}
+
+bool
+USDRender::RenderSetupKey::sameSettings(const RenderSetupKey& other) const
+{
+    return (time == other.time) && (view == other.view) && (level == other.level) && (renderer == other.renderer) && (knobs == other.knobs) && (project == other.project);
 }
 
 bool
@@ -1286,8 +1568,27 @@ USDRender::prepareRender(double time,
     }
     RenderSetupKey key;
     const bool keyed = renderSetupKey(time, view, level, active, &key);
+    // Stored only when nothing the key covers moved during the read, so that it is never kept under
+    // a key it was not read for.
+    auto keep = [&]() {
+        RenderSetupKey after;
+        if (!keyed || !renderSetupKey(time, view, level, active, &after) || !(after == key)) {
+            return;
+        }
+        after.structure = cameraStructureDigest(active.scene, setup->cameraPath, setup->domes, setup->settingsPrimPath);
+        std::shared_ptr<RenderSetup> kept = std::make_shared<RenderSetup>(*setup);
+        kept->request.aborted = std::function<bool()>();
+        kept->request.scene = ScenePayload();
+        const std::lock_guard<std::mutex> l(_renderSetupsMutex);
+        _renderSetups.remove_if([&after](const KeptRenderSetup& entry) { return entry.first == after; });
+        _renderSetups.emplace_front(after, std::move(kept));
+        while (_renderSetups.size() > kRenderSetupsKept) {
+            _renderSetups.pop_back();
+        }
+    };
     if (keyed) {
         std::shared_ptr<const RenderSetup> kept;
+        std::vector<KeptRenderSetup> others;
         {
             const std::lock_guard<std::mutex> l(_renderSetupsMutex);
             for (std::list<KeptRenderSetup>::iterator it = _renderSetups.begin(); it != _renderSetups.end(); ++it) {
@@ -1296,6 +1597,16 @@ USDRender::prepareRender(double time,
                     _renderSetups.splice(_renderSetups.begin(), _renderSetups, it);
                     break;
                 }
+                if (it->first.structure && it->first.sameSettings(key)) {
+                    others.push_back(*it);
+                }
+            }
+        }
+        const bool sameScene = bool(kept);
+        for (std::size_t i = 0; !kept && (i < others.size()); ++i) {
+            const RenderSetup& other = *others[i].second;
+            if (cameraStructureDigest(active.scene, other.cameraPath, other.domes, other.settingsPrimPath) == others[i].first.structure) {
+                kept = others[i].second;
             }
         }
         // The primId table is stored by a render that reads the stage, which a reused setup does not.
@@ -1307,26 +1618,78 @@ USDRender::prepareRender(double time,
             setup->request.aborted = [this]() { return aborted(); };
             setup->request.scene = active.scene;
             prepareLiveTextures(active, time, setup);
+            if (sameScene) {
+                return true;
+            }
+            const utilityProfile::Span camera("setup_camera");
+            ++gRenderSetupCameraReads;
+            if (!readActiveSettings(time, view, eSettingsLoadEverything, &active, error, true) || !readSetupCamera(&active, setup, error)) {
+                return false;
+            }
+            keep();
 
             return true;
         }
     }
     ++gRenderSetupReads;
-    if (!readRenderSetup(time, view, level, primIdPlane, &active, setup, error)) {
+    {
+        const utilityProfile::Span read("setup_read");
+        if (!readRenderSetup(time, view, level, primIdPlane, &active, setup, error)) {
+            return false;
+        }
+    }
+    keep();
+
+    return true;
+}
+
+bool
+USDRender::readSetupCamera(ActiveSettings* active,
+                           RenderSetup* setup,
+                           std::string* error) const
+{
+    const PXR_NS::UsdStageRefPtr& stage = active->stage;
+    const PXR_NS::SdfPath& cameraPath = setup->cameraPath;
+    setup->request.time = active->time;
+    setup->request.frustum = PXR_NS::GfFrustum();
+    setup->request.shutterOpen = 0.;
+    setup->request.shutterClose = 0.;
+    setup->request.cameraMotion.clear();
+    if (cameraPath.IsEmpty()) {
+        return true;
+    }
+    const double aspect = setup->cameraAspect;
+    const HydraRender::FitModeEnum fit = setup->fit;
+    if (!HydraRender::cameraFrustum(stage, cameraPath, active->time, aspect, fit, &setup->request.frustum, error)) {
         return false;
     }
-    // Stored only when nothing the key covers moved during the read, so that it is never kept under
-    // a key it was not read for.
-    RenderSetupKey after;
-    if (keyed && renderSetupKey(time, view, level, active, &after) && (after == key)) {
-        std::shared_ptr<RenderSetup> keep = std::make_shared<RenderSetup>(*setup);
-        keep->request.aborted = std::function<bool()>();
-        keep->request.scene = ScenePayload();
-        const std::lock_guard<std::mutex> l(_renderSetupsMutex);
-        _renderSetups.remove_if([&key](const KeptRenderSetup& kept) { return kept.first == key; });
-        _renderSetups.emplace_front(key, std::move(keep));
-        while (_renderSetups.size() > kRenderSetupsKept) {
-            _renderSetups.pop_back();
+    const PXR_NS::UsdGeomCamera camera(stage->GetPrimAtPath(cameraPath));
+    double shutterOpen = 0.;
+    double shutterClose = 0.;
+    (void)camera.GetShutterOpenAttr().Get(&shutterOpen, active->time);
+    (void)camera.GetShutterCloseAttr().Get(&shutterClose, active->time);
+    setup->request.shutterOpen = shutterOpen;
+    setup->request.shutterClose = shutterClose;
+    if (!active->time.IsDefault() && HydraRender::cameraMotionBlur(setup->request)) {
+        // Between these the delegate interpolates the camera, so a few follow a curved move closely.
+        const int kCameraMotionSamples = 9;
+        const PXR_NS::GfVec2d shutter = HydraRender::shutterInterval(setup->request);
+        for (int i = 0; i < kCameraMotionSamples; ++i) {
+            const double t = shutter[0] + (shutter[1] - shutter[0]) * i / (kCameraMotionSamples - 1);
+            PXR_NS::GfFrustum frustum;
+            if (!HydraRender::cameraFrustum(stage, cameraPath, PXR_NS::UsdTimeCode(active->time.GetValue() + t), aspect, fit, &frustum, error)) {
+                return false;
+            }
+            setup->request.cameraMotion.push_back(std::make_pair(t, frustum));
+        }
+        std::vector<std::pair<double, PXR_NS::GfFrustum>>& motion = setup->request.cameraMotion;
+        // The delegate moves the camera it is given by how these differ from the frame's, so the
+        // frame's is among them even when the shutter misses the frame.
+        if ((shutter[0] > 0.) || (shutter[1] < 0.)) {
+            motion.insert((shutter[0] > 0.) ? motion.begin() : motion.end(), std::make_pair(0., setup->request.frustum));
+        }
+        if (std::all_of(motion.begin(), motion.end(), [&motion](const std::pair<double, PXR_NS::GfFrustum>& s) { return s.second == motion.front().second; })) {
+            motion.clear();
         }
     }
 
@@ -1455,47 +1818,19 @@ USDRender::readRenderSetup(double time,
     setup->request.showProxy = proxyPurposeKnob && proxyPurposeKnob->getValue();
     setup->request.showGuides = guidePurposeKnob && guidePurposeKnob->getValue();
     setup->request.renderer = active.renderer;
+    setup->cameraPath = cameraPath;
+    setup->cameraAspect = (format.width() * par) / format.height();
+    setup->fit = fit;
+    setup->settingsPrimPath = active.prim ? active.prim.GetPath() : PXR_NS::SdfPath();
     if (cameraPath.IsEmpty()) {
         setup->request.frustum = PXR_NS::GfFrustum();
 
         return true;
     }
-    RenderSettingsPrim::addDomeLightCameraVisibility(stage, RenderSettingsPrim::domeLights(stage), active.time, &setup->request.settings);
-    const double aspect = (format.width() * par) / format.height();
-    if (!HydraRender::cameraFrustum(stage, cameraPath, active.time, aspect, fit, &setup->request.frustum, error)) {
-        return false;
-    }
-    const PXR_NS::UsdGeomCamera camera(stage->GetPrimAtPath(cameraPath));
-    double shutterOpen = 0.;
-    double shutterClose = 0.;
-    (void)camera.GetShutterOpenAttr().Get(&shutterOpen, active.time);
-    (void)camera.GetShutterCloseAttr().Get(&shutterClose, active.time);
-    setup->request.shutterOpen = shutterOpen;
-    setup->request.shutterClose = shutterClose;
-    if (!active.time.IsDefault() && HydraRender::cameraMotionBlur(setup->request)) {
-        // Between these the delegate interpolates the camera, so a few follow a curved move closely.
-        const int kCameraMotionSamples = 9;
-        const PXR_NS::GfVec2d shutter = HydraRender::shutterInterval(setup->request);
-        for (int i = 0; i < kCameraMotionSamples; ++i) {
-            const double t = shutter[0] + (shutter[1] - shutter[0]) * i / (kCameraMotionSamples - 1);
-            PXR_NS::GfFrustum frustum;
-            if (!HydraRender::cameraFrustum(stage, cameraPath, PXR_NS::UsdTimeCode(active.time.GetValue() + t), aspect, fit, &frustum, error)) {
-                return false;
-            }
-            setup->request.cameraMotion.push_back(std::make_pair(t, frustum));
-        }
-        std::vector<std::pair<double, PXR_NS::GfFrustum>>& motion = setup->request.cameraMotion;
-        // The delegate moves the camera it is given by how these differ from the frame's, so the
-        // frame's is among them even when the shutter misses the frame.
-        if ((shutter[0] > 0.) || (shutter[1] < 0.)) {
-            motion.insert((shutter[0] > 0.) ? motion.begin() : motion.end(), std::make_pair(0., setup->request.frustum));
-        }
-        if (std::all_of(motion.begin(), motion.end(), [&motion](const std::pair<double, PXR_NS::GfFrustum>& s) { return s.second == motion.front().second; })) {
-            motion.clear();
-        }
-    }
+    setup->domes = RenderSettingsPrim::domeLights(stage);
+    RenderSettingsPrim::addDomeLightCameraVisibility(stage, setup->domes, active.time, &setup->request.settings);
 
-    return true;
+    return readSetupCamera(&active, setup, error);
 } // USDRender::readRenderSetup
 
 StatusEnum

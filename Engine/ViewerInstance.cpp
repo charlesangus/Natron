@@ -4319,7 +4319,11 @@ ViewerInstance::prepareViewerRender(ViewIdx view,
         // Since we will most likely need to compute the RoD now, we MUST setup the thread local
         // storage otherwise functions like EffectInstance::aborted() would not work.
 
-        ViewerRenderRetCode retcode = getRoDAndLookupCache(false, viewerHash, rotoPaintNode, stats, &inArgs);
+        ViewerRenderRetCode retcode;
+        {
+            const utilityProfile::Span lookup("rod_lookup");
+            retcode = getRoDAndLookupCache(false, viewerHash, rotoPaintNode, stats, &inArgs);
+        }
         if (retcode != eViewerRenderRetCodeRender) {
             return retcode;
         }
@@ -4394,7 +4398,11 @@ ViewerInstance::prepareViewerRender(ViewIdx view,
         const RectD canonicalRoi = roi.toCanonical(inArgs.params->mipmapLevel, inArgs.params->pixelAspectRatio, inArgs.params->rod);
 
         requestPassData = std::make_shared<FrameRequestMap>();
-        StatusEnum stat = EffectInstance::computeRequestPass(inArgs.params->time, view, inArgs.params->mipmapLevel, canonicalRoi, getNode(), *requestPassData);
+        StatusEnum stat;
+        {
+            const utilityProfile::Span pass("request_pass");
+            stat = EffectInstance::computeRequestPass(inArgs.params->time, view, inArgs.params->mipmapLevel, canonicalRoi, getNode(), *requestPassData);
+        }
         if (stat == eStatusFailed) {
             return eViewerRenderRetCodeFail;
         }

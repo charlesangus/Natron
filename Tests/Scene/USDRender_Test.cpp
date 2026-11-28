@@ -78,6 +78,7 @@
 #include "Engine/Nodes/Scene/SceneOps.h"
 #include "Engine/Nodes/Scene/SceneQueryPool.h"
 #include "Engine/Nodes/Scene/SceneStage.h"
+#include "Engine/Nodes/Scene/USDEditTransform.h"
 #include "Engine/Nodes/Scene/USDRead.h"
 #include "Engine/Nodes/Scene/USDRender.h"
 #include "Engine/Nodes/Scene/USDRenderSettings.h"
@@ -867,6 +868,88 @@ TEST_F(USDRenderNodeTest, ARenderReusesItsSetupUntilAKnobOrTheTimeMoves)
     ASSERT_TRUE(render(2.)) << error;
     EXPECT_EQ(reads + 2, USDRender::renderSetupReadCount());
     EXPECT_EQ(reuses + 2, USDRender::renderSetupReuseCount());
+}
+
+// A transform of the camera alone moves no opinion the settings summary reads and none the render
+// setup reads but the camera's, so both are reused and only the camera is read again; an edit of
+// the settings prim reads both again.
+TEST_F(USDRenderNodeTest, ACameraEditReusesTheSettingsWhileASettingsEditReadsThemAgain)
+{
+    if (skipWithoutGL()) {
+        return;
+    }
+    NodePtr reader = createReader(kFixture);
+    NodePtr settings = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDERSETTINGS));
+    NodePtr transform = createNode(QString::fromUtf8(PLUGINID_NATRON_USDEDITTRANSFORM));
+    NodePtr node = createNode(QString::fromUtf8(PLUGINID_NATRON_USDRENDER));
+    ASSERT_TRUE(reader && settings && transform && node);
+    ASSERT_TRUE(RenderSettingsTestUtils::configure(settings, "/World/Cam", kWidth, kHeight));
+    KnobString* pattern = dynamic_cast<KnobString*>(transform->getKnobByName(kUSDEditTransformParamPrimPattern).get());
+    KnobDouble* translate = dynamic_cast<KnobDouble*>(transform->getKnobByName(kSceneParamTranslate).get());
+    KnobBool* disableMotionBlur = dynamic_cast<KnobBool*>(settings->getKnobByName(kUSDRenderSettingsParamDisableMotionBlur).get());
+    ASSERT_TRUE(pattern != nullptr);
+    ASSERT_TRUE(translate != nullptr);
+    ASSERT_TRUE(disableMotionBlur != nullptr);
+    pattern->setValue(std::string("/World/Cam"));
+    connectNodes(reader, settings, 0, true);
+    connectNodes(settings, transform, 0, true);
+    connectNodes(transform, node, 0, true);
+
+    const std::list<ImageLayerDesc> colour(1, ImageLayerDesc::getRGBAComponents());
+    std::vector<RenderedPlane> planes;
+    std::string error;
+    // Only the images are cleared, as in ARenderReusesItsSetupUntilAKnobOrTheTimeMoves.
+    auto render = [&]() {
+        planes.clear();
+        appPTR->clearNodeCache();
+        appPTR->clearDiskCache();
+
+        return renderNodePlanesDirect(node, 1., ViewIdx(0), 0, RectI(0, 0, kWidth, kHeight), colour, &planes, &error, false /*byPassCache*/);
+    };
+
+    ASSERT_FALSE(activeRendererOf(node, &error).empty()) << error;
+    ASSERT_TRUE(render()) << error;
+    const std::vector<float> before = planes[0].pixels;
+    std::uint64_t summaryReads = USDRender::settingsSummaryReadCount();
+    const std::uint64_t summaryReuses = USDRender::settingsSummaryReuseCount();
+    std::uint64_t setupReads = USDRender::renderSetupReadCount();
+    std::uint64_t cameraReads = USDRender::renderSetupCameraReadCount();
+
+    translate->setValue(0.5, ViewSpec::all(), 0);
+    ASSERT_FALSE(activeRendererOf(node, &error).empty()) << error;
+    EXPECT_EQ(summaryReads, USDRender::settingsSummaryReadCount());
+    EXPECT_LT(summaryReuses, USDRender::settingsSummaryReuseCount());
+    ASSERT_TRUE(render()) << error;
+    EXPECT_EQ(setupReads, USDRender::renderSetupReadCount());
+    EXPECT_EQ(cameraReads + 1, USDRender::renderSetupCameraReadCount());
+    const std::vector<float> moved = planes[0].pixels;
+    EXPECT_NE(before, moved);
+
+    // The setup read whole renders the moved camera as the reused one did.
+    appPTR->clearAllCaches();
+    ASSERT_TRUE(render()) << error;
+    EXPECT_EQ(setupReads + 1, USDRender::renderSetupReadCount());
+    EXPECT_EQ(moved, planes[0].pixels);
+
+    summaryReads = USDRender::settingsSummaryReadCount();
+    setupReads = USDRender::renderSetupReadCount();
+    cameraReads = USDRender::renderSetupCameraReadCount();
+    disableMotionBlur->setValue(!disableMotionBlur->getValue());
+    ASSERT_FALSE(activeRendererOf(node, &error).empty()) << error;
+    EXPECT_LT(summaryReads, USDRender::settingsSummaryReadCount());
+    ASSERT_TRUE(render()) << error;
+    EXPECT_EQ(setupReads + 1, USDRender::renderSetupReadCount());
+    EXPECT_EQ(cameraReads, USDRender::renderSetupCameraReadCount());
+
+    summaryReads = USDRender::settingsSummaryReadCount();
+    setupReads = USDRender::renderSetupReadCount();
+    ASSERT_TRUE(RenderSettingsTestUtils::configure(settings, "/World/Cam", kWidth, kHeight + 2));
+    ASSERT_FALSE(activeRendererOf(node, &error).empty()) << error;
+    EXPECT_LT(summaryReads, USDRender::settingsSummaryReadCount());
+    EXPECT_EQ((double)(kHeight + 2), rodOf(node).y2);
+    ASSERT_TRUE(render()) << error;
+    EXPECT_EQ(setupReads + 1, USDRender::renderSetupReadCount());
+    EXPECT_EQ(cameraReads, USDRender::renderSetupCameraReadCount());
 }
 
 TEST_F(USDRenderNodeTest, APrimCameraTheSceneLacksIsANodeErrorNamingIt)

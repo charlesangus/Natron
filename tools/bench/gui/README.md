@@ -404,9 +404,11 @@ $V run --upload Natron-x86_64.AppImage --upload tools/bench=tools/bench --upload
     'bash tools/bench/gui/run.sh --host --driver utility --appimage "$PWD/Natron-x86_64.AppImage" --out "$PWD/out"'
 ```
 
-One `frame` record per timed edit, one `summary` record per pass count. A summary's `median_ms`
-and `p95_ms` are of `last_ms`, the edit to the frame the viewer settles on; `meets_target` and
-`meets_stretch` compare the median with 50 ms and 33 ms. It also carries `first_median_ms`,
+One `frame` record per timed edit, one `summary` record per pass count. A summary's `headline`
+names what its `median_ms` and `p95_ms` are of: `first_ms` past one pass, the edit to the first
+pass an interactive edit waits for, else `last_ms`, the edit to the frame the viewer settles on;
+`last_median_ms` and `last_p95_ms` always hold `last_ms`'s. `meets_target` and `meets_stretch`
+compare the median with 50 ms and 33 ms. It also carries `first_median_ms`,
 `hydra_median_ms` and `hydra_mean_ms` (per HydraRender call kind and stage, `render.raster`, `device_window.map_aov` and so
 on), `rungs` (the viewer's hand-off rungs), `device_color_edits` (edits whose last frame reached
 the viewer as a device root), `fallback_edits` (a device root drawn from a download instead),
@@ -414,12 +416,29 @@ the viewer as a device root), `fallback_edits` (a device root drawn from a downl
 (USDRender tasks on the gpu and the cpu), and `segment_median_ms`: from the profile's `stamp` and
 `span` records, each step of an edit (`to_viewer_request`, `to_task_graph_build`, `to_prepare_render`,
 `to_hydra`, `to_viewer_frame`, `to_viewer_paint` and so on, each from the step before) and each span's
-total (`prepare_render_ms`, `task_graph_build_ms`, ...). The run ends with one `NOTE utility raster ...` line
-per pass count in `results.txt`. Knobs: `UTILITY_BENCH_PASSES`, `UTILITY_BENCH_EDITS` (30),
+total (`prepare_render_ms`, `task_graph_build_ms`, `settings_summary_ms`, `rod_lookup_ms`,
+`request_pass_ms`, `setup_read_ms`, `setup_camera_ms`, ...), and `segment_spans`: per step, the
+innermost span its end falls inside (`"inside viewer_prepare"`) or `"outside any span"`, which says
+where a step's time went when its name only says where it ended. With `nvidia-smi`, each `frame`
+record has `pstate` (the GPU's power state at the edit's last frame), `pstates` and `gpu_mhz` over
+the edit, and the summary counts the edits per power state in `pstates`.
+
+With `UTILITY_BENCH_DRAG_MS` set (33 for 30 fps), each pass count then drags: an edit every
+`UTILITY_BENCH_DRAG_MS` whatever the viewer shows, `UTILITY_BENCH_DRAG_EDITS` (90) of them, the first
+`UTILITY_BENCH_DRAG_WARMUPS` (15) untimed. A frame is taken to show the last edit made before the
+latest `task_graph_build` span that ended before it, and an edit's `latency_ms` runs to the first
+frame showing it or a later edit. Each timed edit has a `drag_edit` record; the drag's summary
+(`op` ending in `_drag`) has `median_ms` and `p95_ms` of the latency, `fps` (frames a second that
+showed a newer edit), `frame_rate` (every viewer frame) and `unshown_edits`. `UTILITY_BENCH_EDITS=0`
+runs the drag alone.
+
+The run ends with one `NOTE utility raster ...` line per pass count, and one per drag, in
+`results.txt`. Knobs: `UTILITY_BENCH_PASSES`, `UTILITY_BENCH_EDITS` (30),
 `UTILITY_BENCH_WARMUPS` (3), `UTILITY_BENCH_QUIET_MS` (400), `UTILITY_BENCH_NUDGE` (`camera` or
 `seed`), `UTILITY_BENCH_SIZE`, `UTILITY_BENCH_DEVICE`, `UTILITY_BENCH_TARGET_MS`,
-`UTILITY_BENCH_STRETCH_MS`. An edit that brings no viewer frame, or a Raster render that falls back
-to Ray, fails the run.
+`UTILITY_BENCH_STRETCH_MS`, `UTILITY_BENCH_DRAG_MS` (0), `UTILITY_BENCH_DRAG_EDITS`,
+`UTILITY_BENCH_DRAG_WARMUPS`. An edit that brings no viewer frame, a drag none of whose timed edits
+brings one, or a Raster render that falls back to Ray, fails the run.
 
 ## Comparing
 

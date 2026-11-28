@@ -70,6 +70,8 @@
 // Whether the running or last frame shows its passes as it draws them (kRenderDelegateUtilityProgressiveSetting):
 // utilitySamples then counts the passes published, which readers already see, rather than those drawn.
 #define kUtilityStatProgressive "utilityProgressive"
+// A bool: whether a frame is drawing on the delegate's thread now.
+#define kUtilityStatFrameRunning "utilityFrameRunning"
 // Why some motion does not blur, naming the prims, as a std::string; empty when all of it does.
 #define kUtilityStatMotionWarning "utilityMotionWarning"
 

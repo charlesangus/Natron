@@ -36,6 +36,7 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <tuple>
 #include <utility>
 
 #include "Engine/EngineFwd.h"
@@ -183,9 +184,17 @@ public:
     bool activeRenderer(double time, ViewIdx view, std::string* rendererId, std::string* error) const;
 
     // Of every render's setup, how many were read from the input's stage and how many reused one read
-    // before for the same input scene, time, view, level, renderer, knobs and project format.
+    // before for the same time, view, level, renderer, knobs and project format, and the same input
+    // scene or one that differs only in the opinions on the setup's camera.
     static std::uint64_t renderSetupReadCount();
     static std::uint64_t renderSetupReuseCount();
+    // Of those reuses, how many read the camera again because only its opinions moved.
+    static std::uint64_t renderSetupCameraReadCount();
+
+    // Of every settings summary read off the main thread, how many composed the settings prim and
+    // how many reused one read before from the same opinions on it.
+    static std::uint64_t settingsSummaryReadCount();
+    static std::uint64_t settingsSummaryReuseCount();
 
 private:
     virtual const NodeSpec* nodeSpec() const OVERRIDE FINAL WARN_UNUSED_RETURN;
@@ -247,6 +256,13 @@ private:
     // everything without one.
     bool evaluateInput(double time, ViewIdx view, U64 contextId, const std::shared_ptr<const SceneLoadSet>& loadSet, ActiveSettings* active, std::string* error) const;
 
+    // Sets active->scene to the input evaluated as eSettingsLoadSettingsPrim composes it, and
+    // active->loadSet to the load set to compose it on.
+    bool evaluateSettingsPrimScene(double time, ViewIdx view, ActiveSettings* active, std::string* error) const;
+
+    // A digest of everything a summary of active's settings prim reads, 0 when it cannot tell.
+    U64 settingsPrimDigest(const ActiveSettings& active) const;
+
     // What the output format and the renderer take from the active render settings prim.
     struct SettingsSummary {
         bool read = false;
@@ -302,12 +318,21 @@ private:
         std::string renderer;
         U64 knobs = 0;
         U64 project = 0;
+        // sceneHash with the opinions on the setup's camera left out of the layers that author
+        // nothing else; 0 when the setup has no camera.
+        U64 structure = 0;
 
         bool operator==(const RenderSetupKey& other) const;
+        // Equal but for the scene.
+        bool sameSettings(const RenderSetupKey& other) const;
     };
 
     // False when the setup cannot be kept, because a knob has an expression.
     bool renderSetupKey(double time, ViewIdx view, unsigned int level, const ActiveSettings& active, RenderSetupKey* key) const;
+
+    // setup's camera read again from active's stage, for a setup kept from a scene whose only
+    // change is to the camera's own opinions.
+    bool readSetupCamera(ActiveSettings* active, RenderSetup* setup, std::string* error) const;
 
     // prepareRender() past the evaluation of the input, which active holds.
     bool readRenderSetup(double time, ViewIdx view, unsigned int level, bool primIdPlane, ActiveSettings* active, RenderSetup* setup, std::string* error);
@@ -370,6 +395,8 @@ private:
     mutable U64 _settingsSummariesHash;
     mutable std::map<std::pair<double, int>, SettingsSummary> _settingsSummaries;
     mutable std::map<std::pair<double, int>, GivenSettingsSummary> _settingsSummariesGiven;
+    // The summaries read, by time, view and settingsPrimDigest(), whatever the node's hash.
+    mutable std::map<std::tuple<double, int, U64>, SettingsSummary> _settingsSummariesByContent;
     mutable bool _hasLastSettingsSummary;
     mutable SettingsSummary _lastSettingsSummary;
     mutable bool _settingsSummariesPosted;

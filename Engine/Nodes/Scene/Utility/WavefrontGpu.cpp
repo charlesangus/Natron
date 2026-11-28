@@ -297,6 +297,8 @@ struct BatchReadback {
     gpu::GpuBuffer instanceId;
 };
 
+constexpr std::size_t kShadeTableCount = 17;
+
 struct ShadeTableBuffers {
     std::uint64_t version = 0;
     bool valid = false;
@@ -323,7 +325,40 @@ struct ShadeTableBuffers {
     // Uploaded only when the images change, not with the rest.
     std::uint64_t texelVersion = 0;
     gpu::GpuBufferHandle texels;
+    // What each of the other tables held, in the order uploadTables() puts them, so one that did not change is
+    // kept rather than uploaded again.
+    std::array<std::uint64_t, kShadeTableCount> keys {};
 };
+
+std::uint64_t
+contentKey(const void* data,
+           std::size_t bytes)
+{
+    std::uint64_t key = 0x9E3779B97F4A7C15ULL ^ bytes;
+    const unsigned char* at = static_cast<const unsigned char*>(data);
+    const auto mix = [&key](std::uint64_t word) {
+        key = (key ^ word) * 0xFF51AFD7ED558CCDULL;
+        key ^= key >> 32;
+    };
+
+    for (std::size_t i = 0; i + sizeof(std::uint64_t) <= bytes; i += sizeof(std::uint64_t)) {
+        std::uint64_t word;
+
+        std::memcpy(&word, at + i, sizeof(word));
+        mix(word);
+    }
+
+    const std::size_t tail = bytes % sizeof(std::uint64_t);
+
+    if (tail) {
+        std::uint64_t word = 0;
+
+        std::memcpy(&word, at + (bytes - tail), tail);
+        mix(word);
+    }
+
+    return key;
+}
 
 bool
 sameAovs(const WavefrontAovs& a,
@@ -854,6 +889,9 @@ struct WavefrontGpu::Implementation {
     // The kernel threads a submission holds, learned from how long the frames' submissions take on this device.
     std::uint64_t submitWork = kMaxSubmitWork;
     std::size_t submissions = 0;
+    // Since the executor was made: the shading tables uploaded, and the times a new scene found none changed.
+    std::size_t shadeTablesUploaded = 0;
+    std::size_t shadeTableSetsKept = 0;
     std::shared_ptr<PassTimeline> passTimeline;
     VkQueryPool timestamps = VK_NULL_HANDLE;
     bool timestampsTried = false;
@@ -978,6 +1016,39 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version,
     if (stop.load(std::memory_order_relaxed)) {
         return stopped();
     }
+
+    const KernelShadeBuffers source = shadeTables.buffers();
+    const std::uint64_t texelVersion = shadeTables.texelVersion();
+    const std::uint64_t geometryData = shadeTables.geometryDataVersion();
+    // The per-geometry arrays are large and change only with the version that says so; the rest are hashed.
+    const auto geometryKey = [geometryData](std::size_t bytes) { return contentKey(&geometryData, sizeof(geometryData)) ^ bytes; };
+    const std::array<std::uint64_t, kShadeTableCount> keys = {
+        contentKey(source.geometries, source.geometryCount * sizeof(KernelGeometryRecord)),
+        geometryKey(source.colorCount * 4 * sizeof(float)),
+        geometryKey(source.triangleIndexCount * sizeof(std::int32_t)),
+        contentKey(source.instanceIds, source.instanceCount * sizeof(std::int32_t)),
+        contentKey(source.materials, source.materialCount * sizeof(KernelMaterialRecord)),
+        contentKey(source.textureBindings, source.textureBindingCount * sizeof(KernelTextureBinding)),
+        contentKey(source.images, source.imageCount * 4 * sizeof(std::uint32_t)),
+        contentKey(source.projections, source.projectionCount * sizeof(KernelProjectionRecord)),
+        geometryKey(source.pointCount * 4 * sizeof(float)),
+        contentKey(source.instanceTransforms, source.instanceTransformRowCount * 4 * sizeof(float)),
+        geometryKey(source.stCount * 2 * sizeof(float)),
+        geometryKey(source.normalCount * 4 * sizeof(float)),
+        contentKey(source.lights, source.lightCount * sizeof(KernelLightRecord)),
+        contentKey(source.lightData, source.lightDataCount * sizeof(float)),
+        contentKey(source.linkMasks, source.linkMaskCount * sizeof(std::uint32_t)),
+        contentKey(source.instanceMotion, source.instanceMotionCount * sizeof(std::uint32_t)),
+        contentKey(source.motionRows, source.motionRowCount * 4 * sizeof(float)),
+    };
+
+    // Nothing the passes left running read is replaced, so they need not be waited for.
+    if (tables.valid && tables.texels && tables.texelVersion == texelVersion && tables.keys == keys) {
+        tables.version = version;
+        ++shadeTableSetsKept;
+
+        return true;
+    }
     if (!settlePasses()) {
         return false;
     }
@@ -989,15 +1060,36 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version,
     }
     // The largest buffer the pool hands out that a binding still takes whole.
     const std::uint64_t bindLimit = ctx->maxScratchBytes() ? ctx->maxScratchBytes() : ctx->maxStorageBufferBytes();
-    const std::uint64_t texelVersion = shadeTables.texelVersion();
     gpu::GpuBufferHandle keptTexels;
 
     if (tables.texels && tables.texelVersion == texelVersion) {
         keptTexels = std::move(tables.texels);
     }
+
+    ShadeTableBuffers previous = tables.valid ? std::move(tables) : ShadeTableBuffers();
+
     tables = ShadeTableBuffers();
 
-    const KernelShadeBuffers source = shadeTables.buffers();
+    gpu::GpuBufferHandle* const previousHandles[kShadeTableCount] = {
+        &previous.geometries,
+        &previous.colors,
+        &previous.triangles,
+        &previous.instanceIds,
+        &previous.materials,
+        &previous.textureBindings,
+        &previous.images,
+        &previous.projections,
+        &previous.points,
+        &previous.instanceTransforms,
+        &previous.sts,
+        &previous.normals,
+        &previous.lights,
+        &previous.lightData,
+        &previous.linkMasks,
+        &previous.instanceMotion,
+        &previous.motionRows,
+    };
+
     // The tables the kernels bind rather than read through their addresses. They grow with the materials,
     // textures and lights rather than with the geometry, and one over the range sends the scene to the CPU.
     const std::pair<std::size_t, const char*> bound[] = {
@@ -1028,12 +1120,25 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version,
     // A table past one chunk goes up in submissions of its own, the stop flag looked at between them, so that a
     // stop never waits for a whole mesh's worth of copies; the rest share one submission.
     bool stoppedHere = false;
+    std::size_t slot = 0;
     const auto put = [&](const void* data, std::size_t bytes, const char* what, gpu::GpuBufferHandle& out) {
         if (stop.load(std::memory_order_relaxed)) {
             stoppedHere = true;
 
             return false;
         }
+
+        const std::size_t table = slot++;
+        // The buffer the table replaces goes back to the pool before its successor is asked for.
+        gpu::GpuBufferHandle kept = std::move(*previousHandles[table]);
+
+        if (kept && previous.keys[table] == keys[table]) {
+            out = std::move(kept);
+
+            return true;
+        }
+        kept = gpu::GpuBufferHandle();
+        ++shadeTablesUploaded;
         if (bytes > kUploadChunkBytes) {
             if (!uploadChunked(data, bytes, what, out, stop)) {
                 stoppedHere = outcome.status == Status::Stopped;
@@ -1104,6 +1209,7 @@ WavefrontGpu::Implementation::uploadTables(std::uint64_t version,
     }
     tables = std::move(next);
     tables.version = version;
+    tables.keys = keys;
     tables.valid = true;
 
     return true;
@@ -2743,6 +2849,18 @@ std::size_t
 WavefrontGpu::submissions() const
 {
     return _imp->submissions;
+}
+
+std::size_t
+WavefrontGpu::shadeTablesUploaded() const
+{
+    return _imp->shadeTablesUploaded;
+}
+
+std::size_t
+WavefrontGpu::shadeTableSetsKept() const
+{
+    return _imp->shadeTableSetsKept;
 }
 
 Tracer::Stats

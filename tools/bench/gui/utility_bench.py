@@ -20,6 +20,12 @@ from the knob change to the first and to the last viewer frame it brings (the vi
 of NATRON_UTILITY_PROFILE, stamped with the steady clock this script reads), the last one being
 the frame the viewer settles on; the next edit waits for UTILITY_BENCH_QUIET_MS without a new frame.
 
+With UTILITY_BENCH_DRAG_MS set, each pass count then drags: UTILITY_BENCH_DRAG_EDITS edits, one every
+UTILITY_BENCH_DRAG_MS whatever the viewer shows, as a held mouse would. The edit a viewer frame shows is
+taken as the last one made before the latest task_graph_build span ending before the frame began, and an
+edit's latency runs from it to the first frame showing it or a later edit. The first
+UTILITY_BENCH_DRAG_WARMUPS edits are left out, so the numbers are of the steady state.
+
 Configured by the environment:
     GUI_BENCH_OUT (default $NATRON_GUI_TEST_OUT/utility_bench.jsonl), GUI_BENCH_MODE,
     GUI_BENCH_BUILD_TYPE, GUI_BENCH_GIT_SHA, GUI_BENCH_APPIMAGE, GUI_BENCH_WATCHDOG_S,
@@ -32,6 +38,8 @@ Configured by the environment:
     UTILITY_BENCH_SIZE       "W,H" of the render (default 1920,1080)
     UTILITY_BENCH_DEVICE     Natron Utility Device (default GPU)
     UTILITY_BENCH_TARGET_MS  the per-frame target (default 50) and UTILITY_BENCH_STRETCH_MS (default 33)
+    UTILITY_BENCH_DRAG_MS    the ms between a drag's edits (default 0: no drag)
+    UTILITY_BENCH_DRAG_EDITS edits per drag (default 90), UTILITY_BENCH_DRAG_WARMUPS (default 15) of them untimed
     NATRON_UTILITY_PROFILE   required: the renderer's profile, read back for viewer_frame and hydra_profile
     NATRON_RENDER_PROFILE    optional: the scheduler's task log, read back for the USDRender's placement
 
@@ -50,10 +58,22 @@ Output: one host record, then per edit a "frame" record and per pass count one "
                         step before to that step's end (knob, viewer_request, task_graph_build, viewer_prepare,
                         usdrender_region_start, prepare_render, hydra, usdrender_region, viewer_complete,
                         viewer_frame, viewer_paint), <span>_ms each span's total in the edit
+    segment_spans       per to_<step>, the innermost span its end falls inside ("inside viewer_prepare"), or
+                        "outside any span"; (summary) the commonest over the edits
     segment_median_ms   (summary) the median of each segment over the edits
+    pstate, pstates, gpu_mhz  with nvidia-smi, the GPU's power state at the edit's last frame, every one it
+                        passed through during the edit and its graphics clock's range; (summary) pstates counts
+                        the edits per power state
     raster_fallback     the render warned that Raster fell back to Ray
+A drag adds a "drag_edit" record per timed edit (latency_ms, pstate) and a summary whose op ends in _drag:
+    median_ms, p95_ms   of latency_ms
+    fps                 viewer frames a second that showed a newer edit than the frame before
+    frame_rate          viewer frames a second, refining passes included
+    unshown_edits       timed edits no frame showed, nor any later edit
 With nvidia-smi on the PATH, nvidia_smi.csv beside the output holds the GPU's clocks and power state every 100 ms.
-The summary's median_ms and p95_ms are of last_ms, the headline compare.py diffs, against the target.
+The summary's headline field names what its median_ms and p95_ms are of, the figures compare.py diffs against
+the target: first_ms past one pass, where the first pass is what an interactive edit waits for, else last_ms.
+last_median_ms and last_p95_ms always hold last_ms's.
 Exit status is non-zero when any edit brought no viewer frame, did not converge, or Raster fell back to Ray.
 """
 import atexit
@@ -66,8 +86,10 @@ import shutil
 import socket
 import subprocess
 import sys
+import threading
 import time
 import traceback
+from bisect import bisect_right
 
 ROOT = os.environ.get("NATRON_GUI_TEST_ROOT", os.getcwd())
 sys.path.insert(0, os.path.join(ROOT, "Tests", "gui"))
@@ -93,6 +115,9 @@ SIZE = tuple(int(v) for v in env_list("UTILITY_BENCH_SIZE", "1920,1080"))
 DEVICE = os.environ.get("UTILITY_BENCH_DEVICE", "GPU")
 TARGET_MS = float(os.environ.get("UTILITY_BENCH_TARGET_MS", "50"))
 STRETCH_MS = float(os.environ.get("UTILITY_BENCH_STRETCH_MS", "33"))
+DRAG_MS = float(os.environ.get("UTILITY_BENCH_DRAG_MS", "0"))
+DRAG_EDITS = int(os.environ.get("UTILITY_BENCH_DRAG_EDITS", "90"))
+DRAG_WARMUPS = int(os.environ.get("UTILITY_BENCH_DRAG_WARMUPS", "15"))
 OP_TIMEOUT_S = float(os.environ.get("GUI_BENCH_OP_TIMEOUT_S", "30"))
 WATCHDOG_S = int(os.environ.get("GUI_BENCH_WATCHDOG_S", str(2 * 3600)))
 PROFILE = os.environ.get("NATRON_UTILITY_PROFILE", "")
@@ -185,6 +210,9 @@ try:
             "device": DEVICE,
             "target_ms": TARGET_MS,
             "stretch_ms": STRETCH_MS,
+            "drag_ms": DRAG_MS,
+            "drag_edits": DRAG_EDITS,
+            "drag_warmups": DRAG_WARMUPS,
             "render_profile": bool(RENDER_PROFILE),
             "utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
@@ -287,9 +315,11 @@ try:
 
     def segments_of(t0, seen, hydra, marks):
         """The edit's steps in ms, from the profile's stamps and spans: each step from the end of the one before
-        it to its own end, up to the last viewer frame and the paint that shows it, plus each span's total."""
+        it to its own end, up to the last viewer frame and the paint that shows it, plus each span's total; and
+        per step, the innermost span its end falls inside, which a step's own name does not say of the time
+        before it."""
         if not seen:
-            return {}
+            return {}, {}
         last_frame = seen[-1]["mono_ms"]
         spans = {}
         stamps = {}
@@ -326,9 +356,12 @@ try:
         if painted:
             points.append(("viewer_paint", min(painted)))
         points.sort(key=lambda p: p[1])
+        within = {}
         for (_, before), (name, at) in zip(points, points[1:]):
             out["to_" + name] = rounded(at - before)
-        return out
+            around = [(end - start, span) for span, items in spans.items() for start, end in items if start < at < end]
+            within["to_" + name] = ("inside " + min(around)[1]) if around else "outside any span"
+        return out, within
 
     def summary(passes, frames, placement, failures):
         last = [f["last_ms"] for f in frames if f["last_ms"] is not None]
@@ -346,7 +379,13 @@ try:
             for key, ms in f.get("segments", {}).items():
                 if ms is not None:
                     segments.setdefault(key, []).append(ms)
-        med = median(last)
+        spans_seen = {}
+        for f in frames:
+            for key, label in f.get("segment_spans", {}).items():
+                spans_seen.setdefault(key, {}).setdefault(label, 0)
+                spans_seen[key][label] += 1
+        head = first if passes > 1 else last
+        med = median(head)
         return {
             "type": "summary",
             "op": "utility_raster_%dp" % passes,
@@ -354,16 +393,20 @@ try:
             "n": passes,
             "passes": passes,
             "edits": len(frames),
-            "headline": "last_ms",
+            "headline": "first_ms" if passes > 1 else "last_ms",
             "median_ms": rounded(med),
-            "p95_ms": rounded(p95(last)),
-            "min_ms": rounded(min(last)) if last else None,
-            "max_ms": rounded(max(last)) if last else None,
+            "p95_ms": rounded(p95(head)),
+            "min_ms": rounded(min(head)) if head else None,
+            "max_ms": rounded(max(head)) if head else None,
             "first_median_ms": rounded(median(first)),
+            "last_median_ms": rounded(median(last)),
+            "last_p95_ms": rounded(p95(last)),
             "hydra_median_ms": rounded(median(hydra)),
             "hydra_mean_ms": dict((k, round(sum(v) / len(frames), 3)) for k, v in sorted(stages.items())),
             "gpu_mean_ms": dict((k, round(sum(v) / len(frames), 3)) for k, v in sorted(gpu_stages.items())),
             "segment_median_ms": dict((k, rounded(median(v))) for k, v in sorted(segments.items())),
+            "segment_spans": dict((k, max(v.items(), key=lambda item: (item[1], item[0]))[0]) for k, v in sorted(spans_seen.items())),
+            "pstates": pstate_counts(frames),
             "frames_per_edit": rounded(sum(f["frames"] for f in frames) / float(len(frames))) if frames else None,
             "rungs": sorted(set(f["rung"] for f in frames if f["rung"])),
             "device_color_edits": sum(1 for f in frames if f["device_color"]),
@@ -379,16 +422,42 @@ try:
             "failures": failures,
         }
 
+    # (mono_ms the line came in, pstate, graphics clock in MHz or None) per nvidia-smi sample.
+    gpu_samples = []
+    gpu_samples_lock = threading.Lock()
+
     def sample_gpu_clocks():
         """Samples the GPU's clocks and power state every 100 ms into nvidia_smi.csv beside the output, where
-        nvidia-smi exists: a frame time that moves with the clocks is the driver's, not the renderer's."""
+        nvidia-smi exists: a frame time that moves with the clocks is the driver's, not the renderer's. Each
+        sample is also kept with the time it came in, which line buffering makes the time it was taken."""
         smi = shutil.which("nvidia-smi")
         if not smi:
             return None
+        command = [smi, "--query-gpu=clocks.gr,clocks.mem,pstate", "--format=csv", "-lms", "100"]
+        stdbuf = shutil.which("stdbuf")
+        if stdbuf:
+            command = [stdbuf, "-oL"] + command
         csv = open(os.path.join(_out_dir, "nvidia_smi.csv"), "w")
-        sampler = subprocess.Popen([smi, "--query-gpu=clocks.gr,clocks.mem,pstate", "--format=csv", "-lms", "100"],
-                                   stdout=csv, stderr=subprocess.DEVNULL)
-        csv.close()
+        sampler = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, universal_newlines=True)
+
+        def pump():
+            for line in sampler.stdout:
+                at = mono_ms()
+                csv.write(line)
+                csv.flush()
+                fields = [v.strip() for v in line.split(",")]
+                if len(fields) != 3 or not fields[2].startswith("P"):
+                    continue
+                try:
+                    mhz = int(fields[0].split()[0])
+                except (IndexError, ValueError):
+                    mhz = None
+                with gpu_samples_lock:
+                    gpu_samples.append((at, fields[2], mhz))
+            csv.close()
+
+        reader = threading.Thread(target=pump, name="nvidia-smi", daemon=True)
+        reader.start()
 
         def stop():
             if sampler.poll() is None:
@@ -400,6 +469,31 @@ try:
 
         atexit.register(stop)
         return stop
+
+    def gpu_during(start, end):
+        """The GPU's power state at end, those it was in from start to end and its graphics clock's range; the
+        sample before start stands for a window no sample fell in."""
+        with gpu_samples_lock:
+            samples = list(gpu_samples)
+        if not samples:
+            return {}
+        inside = [s for s in samples if start <= s[0] <= end]
+        if not inside:
+            before = [s for s in samples if s[0] <= end]
+            inside = before[-1:] or samples[:1]
+        clocks = [s[2] for s in inside if s[2] is not None]
+        return {
+            "pstate": inside[-1][1],
+            "pstates": sorted(set(s[1] for s in inside)),
+            "gpu_mhz": [min(clocks), max(clocks)] if clocks else None,
+        }
+
+    def pstate_counts(records):
+        counts = {}
+        for r in records:
+            if r.get("pstate"):
+                counts[r["pstate"]] = counts.get(r["pstate"], 0) + 1
+        return counts
 
     def steps():
         emit(host_record())
@@ -492,6 +586,8 @@ try:
             previous = state.get("counters")
             counters = (last.get("device_downloads", 0), last.get("pick_readbacks", 0)) if seen else previous
             state["counters"] = counters
+            segments, segment_spans = segments_of(t0, seen, hydra, marks)
+            gpu = gpu_during(t0, last["mono_ms"] if seen else mono_ms())
             return {
                 "first_ms": rounded(first["mono_ms"] - t0) if seen else None,
                 "last_ms": rounded(last["mono_ms"] - t0) if seen else None,
@@ -506,9 +602,116 @@ try:
                 "hydra_calls": dict((k, sum(1 for r in hydra if r.get("kind") == k)) for k in set(r.get("kind") for r in hydra)),
                 "hydra": dict((k, round(v, 3)) for k, v in stages.items()),
                 "gpu": dict((k, round(v, 3)) for k, v in gpu_stages.items()),
-                "segments": segments_of(t0, seen, hydra, marks),
+                "segments": segments,
+                "segment_spans": segment_spans,
+                "pstate": gpu.get("pstate"),
+                "pstates": gpu.get("pstates"),
+                "gpu_mhz": gpu.get("gpu_mhz"),
                 "raster_fallback": FALLBACK_TEXT in message,
                 "message": message,
+            }
+
+        def drag(passes):
+            """Steps of one drag: an edit every DRAG_MS, then the wait for the viewer to settle. Emits a
+            drag_edit record per timed edit and returns the drag's summary."""
+            utility.read_new()
+            start = mono_ms()
+            made = []
+            seen = []
+            builds = []
+
+            def drain():
+                for r in utility.read_new():
+                    if r.get("mono_ms", 0.0) < start:
+                        continue
+                    if r.get("record") == "viewer_frame":
+                        seen.append(r)
+                    elif r.get("record") == "span" and r.get("name") == "task_graph_build":
+                        builds.append((r["start_mono_ms"], r["mono_ms"]))
+
+            for i in range(DRAG_EDITS):
+                wait = start + i * DRAG_MS - mono_ms()
+                if wait >= 1.0:
+                    yield ("sleep", int(wait))
+                made.append(mono_ms())
+                nudge()
+                drain()
+            # The drag ends as an edit does: once the viewer settles on a converged frame.
+            while True:
+                count = len(seen)
+                quiet_until = mono_ms() + QUIET_MS
+
+                def more_or_quiet():
+                    drain()
+                    return len(seen) > count or mono_ms() >= quiet_until
+
+                yield ("until", more_or_quiet, QUIET_MS / 1000.0 + 1.0)
+                refining = bool(seen and seen[-1].get("refining"))
+                if len(seen) == count and (not refining or mono_ms() - made[-1] >= OP_TIMEOUT_S * 1000.0):
+                    break
+            ends = sorted(end for _, end in builds)
+            starts_by_end = [s for s, _ in sorted(builds, key=lambda b: b[1])]
+            shown = []
+            for f in seen:
+                at = f["mono_ms"]
+                ended = bisect_right(ends, at)
+                began = max(starts_by_end[:ended]) if ended else at
+                source = bisect_right(made, began) - 1
+                if source >= 0:
+                    shown.append((at, source, bool(f.get("refining"))))
+            timed = range(min(DRAG_WARMUPS, len(made)), len(made))
+            latencies = []
+            unshown = 0
+            records = []
+            for i in timed:
+                at = next((t for t, source, _ in shown if source >= i and t >= made[i]), None)
+                latency = None if at is None else at - made[i]
+                if latency is None:
+                    unshown += 1
+                else:
+                    latencies.append(latency)
+                gpu = gpu_during(made[i], at if at is not None else made[i] + DRAG_MS)
+                records.append({"type": "drag_edit", "passes": passes, "edit": i, "size": list(SIZE), "interval_ms": DRAG_MS,
+                                "latency_ms": rounded(latency), "pstate": gpu.get("pstate"), "pstates": gpu.get("pstates"),
+                                "gpu_mhz": gpu.get("gpu_mhz")})
+                emit(records[-1])
+            window_start = made[timed[0]] if len(timed) else start
+            window_end = made[-1] + DRAG_MS if made else start
+            steady = [(t, source) for t, source, _ in shown if window_start <= t <= window_end]
+            newer = 0
+            latest = -1
+            for _, source in sorted(steady):
+                if source > latest:
+                    newer += 1
+                    latest = source
+            seconds = max(1e-3, (window_end - window_start) / 1000.0)
+            failures = []
+            if not steady:
+                failures.append("no viewer frame came during the drag's timed edits")
+            if seen and seen[-1].get("refining"):
+                failures.append("the drag's last frame did not converge within %g s" % OP_TIMEOUT_S)
+            return {
+                "type": "summary",
+                "op": "utility_raster_%dp_drag" % passes,
+                "topology": "utility-%dx%d" % SIZE,
+                "n": passes,
+                "passes": passes,
+                "edits": len(timed),
+                "interval_ms": DRAG_MS,
+                "headline": "latency_ms",
+                "median_ms": rounded(median(latencies)),
+                "p95_ms": rounded(p95(latencies)),
+                "min_ms": rounded(min(latencies)) if latencies else None,
+                "max_ms": rounded(max(latencies)) if latencies else None,
+                "fps": rounded(newer / seconds),
+                "frame_rate": rounded(len(steady) / seconds),
+                "unshown_edits": unshown,
+                "pstates": pstate_counts(records),
+                "target_ms": TARGET_MS,
+                "stretch_ms": STRETCH_MS,
+                "meets_target": bool(latencies) and median(latencies) <= TARGET_MS,
+                "meets_stretch": bool(latencies) and median(latencies) <= STRETCH_MS,
+                "failures": failures,
             }
 
         require(viewer.connectInput(0, render), "connect the Viewer to the USDRender")
@@ -540,16 +743,28 @@ try:
                 for t in tasks.read_new():
                     if t.get("node") in (label, str(render.getLabel())):
                         placement[t.get("device", "cpu")] = placement.get(t.get("device", "cpu"), 0) + 1
-            record = summary(passes, frames, placement, failures)
-            emit(record)
-            report("NOTE utility raster %d passes at %dx%d: median %s ms, p95 %s ms (target %g, stretch %g), "
-                   "first frame median %s ms, hydra median %s ms, rungs %s, device colour %d/%d, fallback %d, "
-                   "downloads %d, placement %s" % (
-                       passes, SIZE[0], SIZE[1], record["median_ms"], record["p95_ms"], TARGET_MS, STRETCH_MS,
-                       record["first_median_ms"], record["hydra_median_ms"], ",".join(record["rungs"]) or "-",
-                       record["device_color_edits"], len(frames), record["fallback_edits"], record["downloads"],
-                       placement))
-            check(not failures, "every edit at %d passes brought a Raster viewer frame (%s)" % (passes, "; ".join(failures[:3])))
+            if EDITS > 0:
+                record = summary(passes, frames, placement, failures)
+                emit(record)
+                report("NOTE utility raster %d passes at %dx%d: median %s %s ms, p95 %s ms (target %g, stretch %g), "
+                       "first frame median %s ms, last frame median %s ms, hydra median %s ms, rungs %s, "
+                       "device colour %d/%d, fallback %d, downloads %d, pstates %s, placement %s" % (
+                           passes, SIZE[0], SIZE[1], record["headline"], record["median_ms"], record["p95_ms"],
+                           TARGET_MS, STRETCH_MS, record["first_median_ms"], record["last_median_ms"],
+                           record["hydra_median_ms"], ",".join(record["rungs"]) or "-", record["device_color_edits"],
+                           len(frames), record["fallback_edits"], record["downloads"], record["pstates"] or "-",
+                           placement))
+                check(not failures, "every edit at %d passes brought a Raster viewer frame (%s)" % (passes, "; ".join(failures[:3])))
+            if DRAG_MS > 0 and DRAG_EDITS > 0:
+                yield ("sleep", SETTLE_MS)
+                record = yield from drag(passes)
+                emit(record)
+                report("NOTE utility raster %d passes at %dx%d dragged every %g ms: latency median %s ms, p95 %s ms "
+                       "(target %g, stretch %g), %s fps (%s viewer frames/s), %d of %d edits unshown, pstates %s" % (
+                           passes, SIZE[0], SIZE[1], DRAG_MS, record["median_ms"], record["p95_ms"], TARGET_MS,
+                           STRETCH_MS, record["fps"], record["frame_rate"], record["unshown_edits"], record["edits"],
+                           record["pstates"] or "-"))
+                check(not record["failures"], "the drag at %d passes showed its edits (%s)" % (passes, "; ".join(record["failures"][:3])))
         viewer.disconnectInput(0)
         if stop_sampling:
             stop_sampling()

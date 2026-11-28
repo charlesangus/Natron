@@ -1470,12 +1470,13 @@ private:
     // Lets a barrier write that is waiting for the running job through, then carries on: called by
     // a long render between its passes, when it is not reading the scene's layers. Parks there too,
     // unless the job is the main thread's, which a write waiting on the parking would wait for.
-    void yieldToBarrier()
+    // Returns whether it let a write through, which may have changed the stage the job renders.
+    bool yieldToBarrier()
     {
         std::unique_lock<std::mutex> l(_mutex);
         const bool parks = _parkAsked && !_runningMainJob;
         if (!_paused && !parks) {
-            return;
+            return false;
         }
         _busy = false;
         if (parks) {
@@ -1490,6 +1491,8 @@ private:
         _idle.notify_all();
         _wake.wait(l, [this]() { return !_paused && (!_parkAsked || _runningMainJob); });
         _busy = true;
+
+        return true;
     }
 
     // The barrier's park: at once when no job runs, else at the job's end or its next yield.
@@ -2212,15 +2215,45 @@ RenderThread::renderEngine(const HydraRender::Request& request,
                     passRan = false;
                     continue;
                 }
-                yieldToBarrier();
                 if (waitsForConverged) {
-                    UtilityRenderBuffer::waitForConverged(convergedBefore, kConvergencePoll);
-                    // A frame that converged on its own thread is in its buffers already: another pass would only sync
-                    // the stage again to be told so. A failed frame never converges, and the next pass throws it.
-                    if (restartWatch.converged() && engine->IsConverged() && !(cancel && cancel->requested())) {
+                    // The frame draws on the delegate's thread, which says when it converges or shows a pass: another
+                    // pass would only sync the stage again to be told so. One is needed only once the frame stops
+                    // short, to begin the frame a cancelled one held back or to throw a failed one, or once a write
+                    // let through may have changed the stage.
+                    std::uint64_t seen = convergedBefore;
+                    bool done = false;
+                    while (!yieldToBarrier()) {
+                        UtilityRenderBuffer::waitForConverged(seen, kConvergencePoll);
+                        seen = UtilityRenderBuffer::convergedCount();
+                        if (cancel && cancel->requested()) {
+                            cancelled = true;
+                            done = true;
+                            break;
+                        }
+                        if (restartWatch.converged() && engine->IsConverged()) {
+                            done = true;
+                            break;
+                        }
+                        const VtDictionary waited = engine->GetRenderStats();
+                        if (refines) {
+                            const UtilityShownPasses progress = utilityShownPasses(waited);
+                            if (progress.progressive && (progress.passes > 0) && (progress.passes < progress.wanted) && ((progress.frame != base.frame) || (progress.passes > base.passes))) {
+                                shown = progress;
+                                partial = true;
+                                done = true;
+                                break;
+                            }
+                        }
+                        const VtDictionary::const_iterator running = waited.find(kUtilityStatFrameRunning);
+                        if ((running == waited.end()) || !running->second.IsHolding<bool>() || !running->second.UncheckedGet<bool>()) {
+                            break;
+                        }
+                    }
+                    if (done) {
                         break;
                     }
                 } else {
+                    yieldToBarrier();
                     std::this_thread::sleep_for(kConvergencePoll);
                 }
             }

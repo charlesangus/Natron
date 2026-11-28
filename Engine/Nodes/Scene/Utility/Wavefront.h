@@ -471,6 +471,9 @@ public:
     KernelShadeBuffers buffers() const;
     // Changes whenever the texels do, so a device copy of them can be kept otherwise.
     std::uint64_t texelVersion() const;
+    // Changes whenever the colours, triangles, points, coordinates or normals do, so device copies of them can be
+    // kept otherwise.
+    std::uint64_t geometryDataVersion() const;
     std::uint32_t lightCount() const;
     // Whether a dome light shows where camera rays miss.
     bool hasBackground() const;
@@ -521,6 +524,7 @@ private:
     std::vector<PXR_NS::GfVec4f> _texels;
     std::vector<UtilityTextureAssetConstPtr> _textureAssets;
     std::uint64_t _texelVersion = 0;
+    std::uint64_t _geometryDataVersion = 0;
     // False while a stopped buildTexels() left the texels short of _textureAssets.
     bool _texelsComplete = false;
     std::vector<PXR_NS::GfVec4f> _points;

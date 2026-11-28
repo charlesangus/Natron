@@ -879,6 +879,7 @@ WavefrontShadeTables::update(const UtilityScene::Snapshot& snapshot,
             stTotal += geometry.st.size();
             normalTotal += geometry.normals.size() * std::max<std::size_t>(1, geometry.normalSteps.size());
         }
+        ++_geometryDataVersion;
         _colors.clear();
         _triangles.clear();
         _points.clear();
@@ -1101,6 +1102,12 @@ std::uint64_t
 WavefrontShadeTables::texelVersion() const
 {
     return _texelVersion;
+}
+
+std::uint64_t
+WavefrontShadeTables::geometryDataVersion() const
+{
+    return _geometryDataVersion;
 }
 
 std::uint32_t

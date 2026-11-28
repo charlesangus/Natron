@@ -40,6 +40,7 @@ CLANG_DIAG_OFF(uninitialized)
 #include <QHBoxLayout>
 #include <QHeaderView>
 #include <QLayout>
+#include <QMenu>
 #include <QMetaObject>
 #include <QMouseEvent>
 #include <QPainter>
@@ -73,6 +74,7 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/ComboBox.h"
 #include "Gui/CurveGui.h"
 #include "Gui/DockablePanel.h"
+#include "Gui/FocusChain.h"
 #include "Gui/GroupBoxLabel.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiApplicationManager.h"
@@ -229,6 +231,9 @@ repolishTree(QWidget* root)
 
     widgets.prepend(root);
     for (QWidget* w : widgets) {
+        if (!w->testAttribute(Qt::WA_WState_Polished)) {
+            continue;
+        }
         w->style()->unpolish(w);
         w->style()->polish(w);
         w->update();
@@ -471,6 +476,7 @@ KnobGuiColor::KnobGuiColor(KnobIPtr knob,
     , _globalModeButton(0)
     , _lastColor()
     , _useSimplifiedUI(true)
+    , _adjustPanelHost()
     , _adjustPanel()
     , _rowContainer()
     , _editSession()
@@ -513,25 +519,33 @@ KnobGuiColor::~KnobGuiColor()
 bool
 KnobGuiColor::wantsTopAlignedLabel() const
 {
-    return !_adjustPanel.isNull();
+    return hasAdjustPanel();
+}
+
+bool
+KnobGuiColor::hasAdjustPanel() const
+{
+    // The conditions createBelowRowWidget() is called and builds the host under, so an unbuilt row
+    // answers as it will once built.
+    return !_useSimplifiedUI && !_knob.expired() && (getKnobsCountOnSameLine() <= 1);
 }
 
 ColorAdjustPanel*
 KnobGuiColor::getAdjustPanel() const
 {
-    return _adjustPanel.data();
+    return const_cast<KnobGuiColor*>(this)->ensureAdjustPanel();
 }
 
 bool
 KnobGuiColor::isAdjustPanelExpanded() const
 {
-    return _adjustPanel && _colorSelectorButton && _colorSelectorButton->isChecked();
+    return hasAdjustPanel() && _colorSelectorButton && _colorSelectorButton->isChecked();
 }
 
 void
 KnobGuiColor::setAdjustPanelExpanded(bool expanded)
 {
-    if (!_adjustPanel || !_colorSelectorButton) {
+    if (!hasAdjustPanel() || !_colorSelectorButton) {
         return;
     }
     _colorSelectorButton->setChecked(expanded);
@@ -621,7 +635,7 @@ KnobGuiColor::engageGlobalMode()
     Gui* gui = getGui();
     ColorTrackballGlobalMode* mode = gui ? ColorTrackballGlobalMode::instanceFor(gui) : 0;
 
-    if (!mode || !_adjustPanel) {
+    if (!mode || !hasAdjustPanel()) {
         return;
     }
     mode->engage(std::dynamic_pointer_cast<KnobGuiColor>(shared_from_this()));
@@ -637,7 +651,7 @@ KnobGuiColor::setGlobalModeHighlighted(bool highlighted)
         return;
     }
     _globalModeHighlighted = highlighted;
-    if (_adjustPanel) {
+    if (hasAdjustPanel()) {
         refreshOpenBackdrop();
     }
 }
@@ -671,9 +685,31 @@ KnobGuiColor::createBelowRowWidget(QWidget* parent)
         return 0;
     }
 
+    // The panel itself is built the first time it is opened or asked for: most colour rows are never opened.
+    _adjustPanelHost = new QWidget(parent);
+    _adjustPanelHost->setProperty(colorKnobTouchTagPropertyName(), touchTagFor(this));
+    QVBoxLayout* hostLayout = new QVBoxLayout(_adjustPanelHost.data());
+    hostLayout->setContentsMargins(0, 0, 0, 0);
+    hostLayout->setSpacing(0);
+
+    return _adjustPanelHost.data();
+}
+
+ColorAdjustPanel*
+KnobGuiColor::ensureAdjustPanel()
+{
+    if (_adjustPanel || !_adjustPanelHost) {
+        return _adjustPanel.data();
+    }
+    KnobColorPtr knob = _knob.lock();
+    if (!knob) {
+        return 0;
+    }
+
     ProjectColorManagementPtr colorManagement = getColorManagement();
 
-    _adjustPanel = new ColorAdjustPanel(parent);
+    QPointer<QWidget> focusMark = FocusChain::end(_adjustPanelHost.data());
+    _adjustPanel = new ColorAdjustPanel(_adjustPanelHost.data());
     _adjustPanel->setObjectName(QString::fromUtf8("ColorAdjustPanel"));
     _adjustPanel->setProperty(colorKnobTouchTagPropertyName(), touchTagFor(this));
     _adjustPanel->setKnobValue(ColorKnobEditSession::readKnobValue(knob),
@@ -698,6 +734,21 @@ KnobGuiColor::createBelowRowWidget(QWidget* parent)
         });
         _configCallbackOwner = colorManagement;
     }
+
+    _adjustPanelHost->layout()->addWidget(_adjustPanel.data());
+    // Made after the row, the panel would otherwise follow in the focus chain whatever the window gained
+    // last, which Tab and the focus hand-off when the panel is hidden would then reach.
+    if (focusMark) {
+        QWidget* after = getFocusChainAnchor();
+        if (!after) {
+            after = FocusChain::focusableAtOrBefore(_adjustPanelHost.data());
+        }
+        if (QWidget* last = FocusChain::placeAfter(after, focusMark.data(), _adjustPanelHost.data())) {
+            setLastFocusable(last);
+        }
+    }
+    refreshAdjustPanelState();
+    KnobGui::showWidget(_adjustPanel.data());
 
     return _adjustPanel.data();
 }
@@ -772,12 +823,12 @@ KnobGuiColor::refreshWheelFraction()
 void
 KnobGuiColor::onAdjustPanelToggled(bool expanded)
 {
-    if (!_adjustPanel) {
+    if (!_adjustPanelHost || (expanded && !ensureAdjustPanel())) {
         return;
     }
 
     QWidget* topWidget = getContainer() ? getContainer()->getContainerWidget() : 0;
-    QWidget* columnWidget = _adjustPanel->parentWidget();
+    QWidget* columnWidget = _adjustPanelHost->parentWidget();
 
     {
         // Everything in here is one update: the panel's visibility, the channel lines' fold
@@ -791,9 +842,9 @@ KnobGuiColor::onAdjustPanelToggled(bool expanded)
                 _adjustPanel->setKnobValue(ColorKnobEditSession::readKnobValue(knob));
             }
             setDimensionsFolded(false);
-            _adjustPanel->setVisible(true);
+            _adjustPanelHost->setVisible(true);
         } else {
-            _adjustPanel->setVisible(false);
+            _adjustPanelHost->setVisible(false);
         }
         refreshOpenBackdrop();
 
@@ -802,7 +853,7 @@ KnobGuiColor::onAdjustPanelToggled(bool expanded)
         }
         // Shown at its settled width, the panel sizes its wheel from that width, which can
         // change the panel's height.
-        if (expanded) {
+        if (expanded && _adjustPanel) {
             activateLayoutsUpToInclusive(_adjustPanel->getEditArea(), topWidget);
         }
     }
@@ -839,7 +890,7 @@ KnobGuiColor::refreshOpenBackdrop()
 
     const int fieldIndex = (grid && field) ? grid->indexOf(field) : -1;
     const int fullIndex = grid ? grid->indexOf(fullWidthRow) : -1;
-    const bool open = isAdjustPanelExpanded() && !_adjustPanel->isHidden() && fullWidthRow && !fullWidthRow->isHidden() && (fieldIndex >= 0) && (fullIndex >= 0);
+    const bool open = isAdjustPanelExpanded() && !_adjustPanelHost->isHidden() && fullWidthRow && !fullWidthRow->isHidden() && (fieldIndex >= 0) && (fullIndex >= 0);
     // Engaged with the panel closed, the block still marks the knob, around its row alone.
     const bool rowOnly = !open && _globalModeHighlighted && (fieldIndex >= 0) && !field->isHidden() && _colorSelectorButton && !_colorSelectorButton->isHidden();
 
@@ -1046,8 +1097,7 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
     // for the broken-out spinboxes (this spacer is then the only stretchable item).
     containerLayout->addStretch(0);
     containerLayout->addSpacing( TO_DPIX(10) );
-    KnobColorPtr knob = _knob.lock();
-    if (_adjustPanel) {
+    if (hasAdjustPanel()) {
         // Tags the row so ColorKnobTouchTracker's app-wide filter can find this knob from a
         // press, wheel or focus-in on any of its spinboxes, not only from a gesture session.
         QWidget* row = containerLayout->parentWidget();
@@ -1085,7 +1135,7 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
     _colorSelectorButton->setObjectName(QString::fromUtf8("ColorSelectorButton"));
     _colorSelectorButton->setFixedSize(medSize);
 
-    if (_adjustPanel) {
+    if (hasAdjustPanel()) {
         QIcon dropdownIcon;
         appPTR->getIcon(NATRON_PIXMAP_COLOR_ADJUST_DROPDOWN, NATRON_MEDIUM_BUTTON_ICON_SIZE, &dropdownIcon);
         _colorSelectorButton->setIcon(dropdownIcon);
@@ -1098,7 +1148,7 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
         QObject::connect(_colorSelectorButton, &QToolButton::toggled, this, &KnobGuiColor::onAdjustPanelToggled);
         // The panel starts collapsed with nothing to undo, so the full toggle and its layout
         // flush are not needed here, once per colour knob, while the panel is being built.
-        _adjustPanel->setVisible(false);
+        _adjustPanelHost->setVisible(false);
         refreshAdjustPanelToolTip(false);
         containerLayout->addWidget(_colorSelectorButton);
 
@@ -1135,25 +1185,42 @@ KnobGuiColor::addExtraWidgets(QHBoxLayout* containerLayout)
     _colorSelectorButton->setToolTip( NATRON_NAMESPACE::convertFromPlainText(tr("Open Color Selector"), NATRON_NAMESPACE::WhiteSpaceNormal) );
     _colorSelectorButton->setFocusPolicy(Qt::NoFocus);
 
-    ProjectColorManagementPtr colorManagement;
-    if (!_useSimplifiedUI && knob->getHolder() && knob->getHolder()->getApp()) {
-        colorManagement = knob->getHolder()->getApp()->getProject()->getColorManagement();
-    }
-    _colorSelector = new ColorSelectorWidget(knob->getDimension() == 4, colorManagement, containerLayout->widget());
-    QObject::connect( _colorSelector, SIGNAL( colorChanged(float, float, float, float) ),
-                      this, SLOT( onColorSelectorChanged(float, float, float, float) ) );
-    QObject::connect( _colorSelector, SIGNAL( updateColor() ),
-                      this, SLOT( updateColorSelector() ) );
-
-    QWidgetAction *colorPopupAction = new QWidgetAction( containerLayout->widget() );
-    colorPopupAction->setDefaultWidget(_colorSelector);
-    _colorSelectorButton->addAction(colorPopupAction);
+    // The selector is built when its popup first opens.
+    QMenu* colorPopup = new QMenu(_colorSelectorButton);
+    _colorSelectorButton->setMenu(colorPopup);
+    QObject::connect(colorPopup, &QMenu::aboutToShow, this, &KnobGuiColor::ensureColorSelector);
     containerLayout->addWidget(_colorSelectorButton);
 
     if (_useSimplifiedUI) {
         KnobGuiValue::_hide();
         enableRightClickMenu(_colorLabel, -1);
     }
+}
+
+void
+KnobGuiColor::ensureColorSelector()
+{
+    KnobColorPtr knob = _knob.lock();
+    QMenu* colorPopup = _colorSelectorButton ? _colorSelectorButton->menu() : 0;
+
+    if (_colorSelector || !knob || !colorPopup) {
+        return;
+    }
+
+    ProjectColorManagementPtr colorManagement;
+    if (!_useSimplifiedUI && knob->getHolder() && knob->getHolder()->getApp()) {
+        colorManagement = knob->getHolder()->getApp()->getProject()->getColorManagement();
+    }
+    _colorSelector = new ColorSelectorWidget(knob->getDimension() == 4, colorManagement, colorPopup);
+    QObject::connect( _colorSelector, SIGNAL( colorChanged(float, float, float, float) ),
+                      this, SLOT( onColorSelectorChanged(float, float, float, float) ) );
+    QObject::connect( _colorSelector, SIGNAL( updateColor() ),
+                      this, SLOT( updateColorSelector() ) );
+
+    QWidgetAction* colorPopupAction = new QWidgetAction(colorPopup);
+    colorPopupAction->setDefaultWidget(_colorSelector);
+    colorPopup->addAction(colorPopupAction);
+    updateColorSelector();
 }
 
 void
@@ -1252,8 +1319,8 @@ KnobGuiColor::_hide()
     if (_globalModeButton) {
         _globalModeButton->hide();
     }
-    if (_adjustPanel) {
-        _adjustPanel->hide();
+    if (_adjustPanelHost) {
+        _adjustPanelHost->hide();
         refreshOpenBackdrop();
     }
 }
@@ -1264,15 +1331,15 @@ KnobGuiColor::_show()
     if (!_useSimplifiedUI) {
         KnobGuiValue::_show();
     }
-    _colorLabel->show();
-    _colorSelectorButton->show();
+    KnobGui::showWidget(_colorLabel);
+    KnobGui::showWidget(_colorSelectorButton);
     if (_globalModeButton) {
-        _globalModeButton->show();
+        KnobGui::showWidget(_globalModeButton);
     }
     if (isAdjustPanelExpanded()) {
-        _adjustPanel->show();
+        KnobGui::showWidget(_adjustPanelHost);
         refreshOpenBackdrop();
-    } else if (_globalModeHighlighted && _adjustPanel) {
+    } else if (_globalModeHighlighted && hasAdjustPanel()) {
         refreshOpenBackdrop();
     }
 }
@@ -1297,7 +1364,7 @@ KnobGuiColor::updateExtraGui(const std::vector<double>& values)
     updateLabel(r, g, b, a);
 
     // A collapsed panel is brought up to date when it is expanded, so it is not redrawn here.
-    if (_adjustPanel && !_adjustPanel->isHidden()) {
+    if (_adjustPanel && !_adjustPanelHost->isHidden()) {
         _adjustPanel->setKnobValue(colorValueFromVector(values));
     }
 }
@@ -1316,8 +1383,10 @@ KnobGuiColor::onDimensionsFolded()
     for (int i = 0; i < nDims; ++i) {
         SpinBox* sb = 0;
         getSpinBox(i, &sb);
-        assert(sb);
-        sb->setUseLineColor(false, Qt::red);
+        // A folded row builds its other fields on first unfold, without the line colour.
+        if (sb) {
+            sb->setUseLineColor(false, Qt::red);
+        }
         ScaleSliderQWidget* slider = getDimensionSlider(i);
         if (slider) {
             slider->setUseLineColor(false, Qt::red);
@@ -1348,8 +1417,9 @@ KnobGuiColor::onDimensionsExpanded()
         SpinBox* sb = 0;
         Label* label = 0;
         getSpinBox(i, &sb, &label);
-        assert(sb);
-        sb->setUseLineColor(true, colors[i]);
+        if (sb) {
+            sb->setUseLineColor(true, colors[i]);
+        }
         ScaleSliderQWidget* slider = getDimensionSlider(i);
         if (slider) {
             slider->setUseLineColor(true, colors[i]);
@@ -1362,7 +1432,7 @@ void
 KnobGuiColor::setEnabledExtraGui(bool enabled)
 {
     _colorLabel->setEnabledMode(enabled);
-    if (!_adjustPanel) {
+    if (!hasAdjustPanel()) {
         _colorSelectorButton->setEnabled(enabled);
     }
     refreshAdjustPanelState();
@@ -1430,7 +1500,7 @@ KnobGuiColor::wantsPerDimensionSliders() const
 {
     KnobColorPtr knob = _knob.lock();
 
-    return knob && _adjustPanel && (knob->getDimension() > 1);
+    return knob && hasAdjustPanel() && (knob->getDimension() > 1);
 }
 
 NATRON_NAMESPACE_EXIT

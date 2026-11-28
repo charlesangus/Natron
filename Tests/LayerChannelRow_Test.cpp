@@ -528,7 +528,8 @@ TEST(LayerChannelRow, ChoosingLayerRebuildsCheckedColouredButtonsAndEmitsOnce)
         QColor expected;
         ASSERT_TRUE(getChannelColorFromName(names[i], &expected));
         EXPECT_EQ(expected, b->property("channelColor").value<QColor>());
-        EXPECT_FALSE(b->styleSheet().isEmpty());
+        EXPECT_EQ(QString::fromUtf8(names[i]).toLower(), b->property(kChannelButtonProperty).toString());
+        EXPECT_TRUE(b->styleSheet().isEmpty());
     }
 
     row.getComboBox()->setCurrentIndex(comboIndexOf(row, "depth"));
@@ -538,6 +539,7 @@ TEST(LayerChannelRow, ChoosingLayerRebuildsCheckedColouredButtonsAndEmitsOnce)
     ASSERT_TRUE(z);
     EXPECT_TRUE(z->isChecked());
     EXPECT_FALSE(z->property("channelColor").isValid());
+    EXPECT_FALSE(z->property(kChannelButtonProperty).isValid());
     EXPECT_TRUE(z->styleSheet().isEmpty());
 }
 

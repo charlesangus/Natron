@@ -171,6 +171,7 @@ public:
     virtual void updateProjectLoadStatus(const QString& str) OVERRIDE FINAL;
     virtual void closeLoadProjectSplashScreen() OVERRIDE FINAL;
     virtual void showStatusMessage(const QString& message) OVERRIDE FINAL;
+    virtual void setNodeGraphSelection(const NodesList& nodes) OVERRIDE FINAL;
     virtual void renderAllViewers(bool canAbort) OVERRIDE FINAL;
     virtual void refreshAllPreviews() OVERRIDE FINAL;
     virtual void abortAllViewers() OVERRIDE FINAL;

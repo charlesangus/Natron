@@ -114,7 +114,10 @@ Node::load(const CreateNodeArgs& args)
         /*
            We are creating a built-in plug-in
          */
-        _imp->effect.reset( func.second(thisShared) );
+        {
+            NodeCreationStageLog::Scope stage("pluginInstance");
+            _imp->effect.reset(func.second(thisShared));
+        }
         assert(_imp->effect);
         _imp->hostedEffect.store(_imp->effect.get(), std::memory_order_release);
 
@@ -137,6 +140,7 @@ Node::load(const CreateNodeArgs& args)
         setValuesFromSerialization(args);
     } else {
         // ofx plugin
+        NodeCreationStageLog::Scope stage("pluginInstanceOfx");
         _imp->effect = appPTR->createOFXEffect(thisShared, args);
         assert(_imp->effect);
         _imp->hostedEffect.store(_imp->effect.get(), std::memory_order_release);
@@ -184,7 +188,10 @@ Node::load(const CreateNodeArgs& args)
      }*/
     restoreSublabel();
 
-    declarePythonFields();
+    {
+        NodeCreationStageLog::Scope stage("declarePythonFields");
+        declarePythonFields();
+    }
     if (getCurveContext()) {
         declareRotoPythonField();
     }
@@ -213,9 +220,13 @@ Node::load(const CreateNodeArgs& args)
     // created before the effect reports on its loaded state.
     _imp->nodeCreated = true;
 
-    _imp->effect->onEffectCreated(canOpenFileDialog, args);
+    {
+        NodeCreationStageLog::Scope stage("onEffectCreated");
+        _imp->effect->onEffectCreated(canOpenFileDialog, args);
+    }
 
     if ( !getApp()->isCreatingNodeTree() ) {
+        NodeCreationStageLog::Scope stage("inputRelatedData");
         refreshAllInputRelatedData(!serialization);
     }
 
@@ -234,6 +245,7 @@ Node::load(const CreateNodeArgs& args)
     // Expressions written before this node existed may name it. A loading project rechecks
     // them all once it is loaded.
     if (!getApp()->getProject()->isLoadingProject()) {
+        NodeCreationStageLog::Scope stage("recheckExpressions");
         std::set<std::string> names;
         names.insert(getScriptName_mt_safe());
         getApp()->recheckInvalidExpressionsReferencing(names);

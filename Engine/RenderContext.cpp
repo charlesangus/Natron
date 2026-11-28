@@ -205,6 +205,28 @@ RenderContextName::udimTile()
     return RenderContextName("udim", "tile");
 }
 
+RenderContextName
+RenderContextName::oneUse(const std::string& owner,
+                          const std::string& name)
+{
+    return RenderContextName("oneUse." + owner, name);
+}
+
+bool
+renderContextHasOneUseVariables(const RenderContextPtr& context)
+{
+    if (!context) {
+        return false;
+    }
+    for (const RenderContext::Entry& entry : context->entries()) {
+        if (entry.first.ns.compare(0, 7, "oneUse.") == 0) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 namespace {
 U64
 bindingIdentity(const KnobIPtr& knob,

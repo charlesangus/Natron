@@ -494,6 +494,11 @@ public:
 
     virtual void toggleAutoHideGraphInputs() {}
 
+    /**
+     * @brief Makes nodes the selection of the node graph showing them. Nothing to do without a GUI.
+     **/
+    virtual void setNodeGraphSelection(const NodesList& /*nodes*/) { }
+
     bool isCreatingPythonGroup() const;
 
     bool isCreatingNodeTree() const;

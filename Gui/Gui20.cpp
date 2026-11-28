@@ -52,6 +52,7 @@
 #include "Engine/ViewerInstance.h"
 
 #include "Gui/ActionShortcuts.h"
+#include "Gui/ChannelColor.h"
 #include "Gui/CurveEditor.h"
 #include "Gui/FloatingWidget.h"
 #include "Gui/GuiAppInstance.h"
@@ -226,6 +227,7 @@ Gui::loadStyleSheet()
                       .arg(qcolor_to_qstring(lightSelCol)) // %11 = mouse over selection color
                       .arg(qcolor_to_qstring(disabledTxtCol)) // %12 = disabled text colour
                       .arg(qcolor_to_qstring(linkCol)); // %13 = link colour, for linked parameter names
+        content += getChannelButtonStyleRules();
         // Every GUI instance reloads on a theme change, and applying a stylesheet repolishes
         // every widget even when nothing in it changed.
         if (qApp->styleSheet() != content) {

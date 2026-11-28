@@ -59,6 +59,12 @@ Local patches:
   set_weights_file() repoints the weights.
   A host whose get_items() builds a new list per call refreshes on every
   open, as before.
+- patches/0006-close-popup-before-invoke.patch — tabtabtab_nuke_core.py's
+  create() always closes the popup before invoking the choice, and 0004's
+  invoke_opens_window(thing) hook is removed. Hiding first lets the window
+  system expose what the popup covered while the choice runs, so the host
+  can repaint it in the same frame as the choice's result rather than in a
+  frame of its own.
 - tests/test_host_hooks.py is a new test file, added by Natron (not from
   upstream), covering set_main_window_finder(), _find_main_window(),
   set_row_metrics(), _row_height() and _visible_rows().

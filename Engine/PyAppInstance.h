@@ -466,7 +466,8 @@ public:
      * @brief Writes the template import templateKey as its next version, <name>_v<NNN>.ntpz in
      * its publish folder, and returns the written path. Raises RuntimeError, writing nothing,
      * when the folder is missing or not writable, when that version or a newer one is already
-     * there, and when called from a thread other than the main one.
+     * there, when a file of another template has the same name, and when called from a thread
+     * other than the main one. Like a save, it is not an undo step.
      **/
     QString publishTemplate(const QString& templateKey);
 

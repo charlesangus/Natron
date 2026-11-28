@@ -25,6 +25,7 @@
 #include <list>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "Serialization/NodeSerialization.h"
 
@@ -36,7 +37,6 @@ inline constexpr const char* kTemplateParamKey = "templateKey";
 inline constexpr const char* kTemplateParamName = "templateName";
 inline constexpr const char* kTemplateParamId = "templateId";
 inline constexpr const char* kTemplateParamVersion = "version";
-inline constexpr const char* kTemplateParamImportedVersion = "importedVersion";
 inline constexpr const char* kTemplateParamPublishDir = "publishDir";
 inline constexpr const char* kTemplateParamNewerVersion = "newerVersion";
 
@@ -49,7 +49,6 @@ struct TemplateNodeState {
     std::string templateId;
     std::string name;
     int version = 0;
-    int importedVersion = 0;
     std::string publishDir;
 };
 
@@ -68,6 +67,11 @@ void writeTemplateNode(const TemplateNodeState& state,
  * @brief The first template node among nodes, not looking inside groups, or null.
  **/
 const NodeSerialization* findTemplateNode(const std::list<NodeSerializationPtr>& nodes);
+
+/**
+ * @brief Every template node among nodes and in the groups they hold, in file order.
+ **/
+std::vector<const NodeSerialization*> findTemplateNodes(const std::list<NodeSerializationPtr>& nodes);
 
 /**
  * @brief Removes every template node from nodes and from the groups they hold.

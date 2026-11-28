@@ -42,6 +42,7 @@
 #include <QtCore/QFileInfo>
 #include <QtCore/QStringList>
 #include <QtCore/QThread>
+#include <QtCore/QThreadPool>
 
 #include "Engine/GraphOpApply.h"
 #include "Engine/Knob.h"
@@ -617,11 +618,21 @@ updateFromTemplate(const ProjectPtr& project,
     }
     theirs.templates.clear();
     theirs.mergeConflicts.clear();
+    // The file is a version of the template when any of its template nodes stands for it; the
+    // first one names the file's template otherwise.
     std::optional<Serialization::TemplateNodeState> theirsState;
-    if (const Serialization::NodeSerialization* templateNode = Serialization::findTemplateNode(theirs.nodes.nodes)) {
-        theirsState = Serialization::readTemplateNode(*templateNode);
+    bool sameTemplate = false;
+    for (const Serialization::NodeSerialization* templateNode : Serialization::findTemplateNodes(theirs.nodes.nodes)) {
+        const Serialization::TemplateNodeState state = Serialization::readTemplateNode(*templateNode);
+        if (!entry.templateId.empty() && (state.templateId == entry.templateId)) {
+            theirsState = state;
+            sameTemplate = true;
+            break;
+        }
+        if (!theirsState) {
+            theirsState = state;
+        }
     }
-    const bool sameTemplate = theirsState && !entry.templateId.empty() && (theirsState->templateId == entry.templateId);
     if (!sameTemplate) {
         result.status = UpdateStatus::eTemplateMismatch;
         result.error = theirsState
@@ -709,14 +720,10 @@ updateFromTemplate(const ProjectPtr& project,
     return result;
 }
 
-std::optional<TemplateVersion>
-findLatestVersion(const QString& dir,
-                  const std::string& templateId)
+std::vector<PublishedFile>
+listPublishedFiles(const QString& dir)
 {
-    std::optional<TemplateVersion> latest;
-    if (templateId.empty()) {
-        return latest;
-    }
+    std::vector<PublishedFile> files;
     const QDir folder(dir);
     const QStringList names = folder.entryList(QStringList() << QString::fromUtf8("*.ntpz"), QDir::Files, QDir::Name);
     for (const QString& name : names) {
@@ -730,15 +737,44 @@ findLatestVersion(const QString& dir,
                 continue;
             }
             const Serialization::TemplateNodeState state = Serialization::readTemplateNode(*templateNode);
-            if ((state.templateId == templateId) && (!latest || (state.version > latest->version))) {
-                latest = TemplateVersion { path, state.version };
-            }
+            files.push_back(PublishedFile { path, state.templateId, state.version });
         } catch (const std::exception&) {
             continue;
         }
     }
 
+    return files;
+}
+
+std::optional<TemplateVersion>
+findLatestVersion(const QString& dir,
+                  const std::string& templateId)
+{
+    std::optional<TemplateVersion> latest;
+    if (templateId.empty()) {
+        return latest;
+    }
+    for (const PublishedFile& file : listPublishedFiles(dir)) {
+        if ((file.templateId == templateId) && (!latest || (file.version > latest->version))) {
+            latest = TemplateVersion { file.path, file.version };
+        }
+    }
+
     return latest;
+}
+
+QThreadPool*
+folderScanPool()
+{
+    assert(QThread::currentThread() == qApp->thread());
+    static QThreadPool* pool = nullptr;
+    if (!pool) {
+        pool = new QThreadPool(qApp);
+        pool->setMaxThreadCount(1);
+        pool->setThreadPriority(QThread::LowPriority);
+    }
+
+    return pool;
 }
 
 ChangeSummary

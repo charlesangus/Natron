@@ -29,8 +29,11 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <iterator>
 #include <limits>
+#include <list>
 #include <map>
+#include <set>
 #include <stdexcept>
 #include <unordered_map>
 #include <unordered_set>
@@ -58,12 +61,14 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
 #include "Gui/GuiApplicationManager.h"
+#include "Gui/LoopBlockOverlay.h"
 #include "Gui/Menu.h"
 #include "Gui/NodeGraphStacking.h"
 #include "Gui/NodeGui.h"
 #include "Gui/SequenceFileDialog.h"
 
 #include "Global/QtCompat.h"
+#include "Serialization/ProjectSerialization.h"
 
 NATRON_NAMESPACE_ENTER
 const NodesGuiList &
@@ -652,35 +657,90 @@ NodeGraph::showMenu(const QPoint & pos)
     QObject::connect( frameAllNodes, SIGNAL(triggered()), this, SLOT(centerOnAllNodes()) );
     viewMenu->addAction(frameAllNodes);
 
-    // The template actions apply when the selection names one template, through its template
-    // node or its members' origins; the selected nodes without an origin are the ones to add.
+    // The template actions apply when the selected nodes that belong to a template, as its hull
+    // counts them, all belong to the same one. The selected members are the ones to remove and
+    // the selected nodes that belong to no template the ones to add.
+    std::map<std::string, std::set<Node*>> hullMembers;
+    {
+        NodesList graphNodes;
+        const NodesGuiList& all = getAllActiveNodes();
+        for (NodesGuiList::const_iterator it = all.begin(); it != all.end(); ++it) {
+            if (NodePtr node = (*it)->getNode()) {
+                graphNodes.push_back(node);
+            }
+        }
+        const std::list<Serialization::TemplateImportSerialization> imports = getGui()->getApp()->getProject()->getTemplateImports();
+        for (const NodePtr& node : graphNodes) {
+            TemplateNode* isTemplate = dynamic_cast<TemplateNode*>(node->getEffectInstance().get());
+            const std::string key = isTemplate ? isTemplate->getTemplateKey() : std::string();
+            if (key.empty()) {
+                continue;
+            }
+            std::set<std::string> excluded;
+            for (const Serialization::TemplateImportSerialization& entry : imports) {
+                if (entry.key == key) {
+                    excluded = entry.excluded;
+                    break;
+                }
+            }
+            std::set<Node*>& members = hullMembers[key];
+            for (const NodePtr& member : LoopBlockOverlay::templateMembers(graphNodes, key, excluded)) {
+                members.insert(member.get());
+            }
+        }
+    }
     std::string templateKey;
-    bool oneTemplate = true;
-    NodesList toAdd;
-    NodesList toRemove;
+    std::set<std::string> candidates;
+    bool anyMember = false;
+    NodesList unowned;
+    NodesList owned;
     for (const NodeGuiPtr& gui : selectedNodes) {
         const NodePtr node = gui->getNode();
         if (!node) {
             continue;
         }
         TemplateNode* isTemplate = dynamic_cast<TemplateNode*>(node->getEffectInstance().get());
-        const std::string key = isTemplate ? isTemplate->getTemplateKey() : node->getOriginTemplate();
-        if (!isTemplate) {
-            if (key.empty()) {
-                toAdd.push_back(node);
+        std::set<std::string> keys;
+        if (isTemplate) {
+            if (!isTemplate->getTemplateKey().empty()) {
+                keys.insert(isTemplate->getTemplateKey());
             }
-            toRemove.push_back(node);
+        } else {
+            if (!node->getOriginTemplate().empty()) {
+                keys.insert(node->getOriginTemplate());
+            }
+            for (const std::pair<const std::string, std::set<Node*>>& hull : hullMembers) {
+                if (hull.second.count(node.get())) {
+                    keys.insert(hull.first);
+                }
+            }
         }
-        if (key.empty()) {
+        if (keys.empty()) {
+            if (!isTemplate) {
+                unowned.push_back(node);
+            }
             continue;
         }
-        if (!templateKey.empty() && (templateKey != key)) {
-            oneTemplate = false;
+        if (!anyMember) {
+            candidates = keys;
+            anyMember = true;
+        } else {
+            std::set<std::string> common;
+            std::set_intersection(candidates.begin(), candidates.end(), keys.begin(), keys.end(), std::inserter(common, common.end()));
+            candidates.swap(common);
         }
-        templateKey = key;
+        if (!isTemplate) {
+            owned.push_back(node);
+        }
     }
-    if (!oneTemplate || !getGui()->getApp()->getProject()->hasTemplateImport(templateKey)) {
-        templateKey.clear();
+    if ((candidates.size() == 1) && getGui()->getApp()->getProject()->hasTemplateImport(*candidates.begin())) {
+        templateKey = *candidates.begin();
+    }
+    NodesList toAdd;
+    NodesList toRemove;
+    if (!templateKey.empty()) {
+        toAdd = unowned;
+        toRemove = owned;
     }
     QAction* updateToLatestAction = 0;
     QAction* updateFromFileAction = 0;

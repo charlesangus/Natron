@@ -68,6 +68,7 @@ public:
 
 private:
     void restore(const std::list<Serialization::TemplateImportSerialization>& imports,
+                 const std::list<Serialization::TemplateImportSerialization>& reference,
                  const std::vector<Serialization::MergeConflict>& conflicts);
 
     ProjectWPtr _project;
@@ -112,17 +113,6 @@ bool runTemplateEdit(Gui* gui,
                      NodeGraph* graph,
                      const QString& text,
                      const std::function<bool(TemplateEdit*)>& edit);
-
-/**
- * @brief Deletes nodes and detaches the template imports templateKeys, whose template nodes are
- * deleted with them, as one undo step on graph. Returns false with error naming the first
- * template that could not be detached.
- **/
-bool deleteNodesAndTemplates(Gui* gui,
-                             NodeGraph* graph,
-                             const std::vector<std::string>& templateKeys,
-                             const NodesGuiList& nodes,
-                             QString* error);
 
 /**
  * @brief Gives each conflict at indices, in the project's list, the state side had, and removes

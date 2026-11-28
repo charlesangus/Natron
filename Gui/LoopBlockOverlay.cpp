@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <set>
 
@@ -420,12 +421,36 @@ LoopBlockOverlay::templateMembers(const NodesList& graphNodes,
     return members;
 }
 
+namespace {
+
+double
+distanceToOutline(const QPolygonF& outline,
+                  const QPointF& p)
+{
+    double best = std::numeric_limits<double>::max();
+    for (int i = 0; i < outline.size(); ++i) {
+        const QPointF a = outline[i];
+        const QPointF b = outline[(i + 1) % outline.size()];
+        const QPointF ab = b - a;
+        const double lengthSquared = QPointF::dotProduct(ab, ab);
+        const double t = (lengthSquared > 0.) ? std::clamp(QPointF::dotProduct(p - a, ab) / lengthSquared, 0., 1.) : 0.;
+        const QPointF closest = a + t * ab;
+        best = std::min(best, std::hypot(p.x() - closest.x(), p.y() - closest.y()));
+    }
+
+    return best;
+}
+
+} // namespace
+
 std::vector<NodePtr>
 LoopBlockOverlay::templateNodesAt(const QPointF& scenePos) const
 {
     std::vector<NodePtr> nodes;
     for (const TemplateHit& hit : _templateHits) {
-        if (!hit.hull.contains(scenePos)) {
+        // Only the band the padding makes round the nodes: deeper in, a press selects and
+        // rubber-bands as anywhere else.
+        if (!hit.hull.contains(scenePos) || (distanceToOutline(hit.outline, scenePos) > kHullPadding)) {
             continue;
         }
         for (const NodeWPtr& weak : hit.nodes) {
@@ -555,6 +580,7 @@ LoopBlockOverlay::refresh()
         hit.nodes.push_back(templateNode);
         shape.hull = paddedHull(rects);
         hit.hull = shape.hull;
+        hit.outline = shape.hull.toFillPolygon();
         shapes.push_back(shape);
         _templateHits.push_back(hit);
     }

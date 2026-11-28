@@ -28,7 +28,6 @@
 
 #include <cmath> // abs, ceil, floor
 #include <stdexcept>
-#include <string>
 #include <unordered_set>
 #include <vector>
 
@@ -48,7 +47,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Engine/CreateNodeArgs.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
-#include "Engine/TemplateNode.h"
 #include "Engine/ViewerInstance.h"
 
 #include "Gui/CurveWidget.h"
@@ -59,7 +57,6 @@ CLANG_DIAG_ON(uninitialized)
 #include "Gui/GuiDefines.h"
 #include "Gui/GuiMacros.h"
 #include "Gui/Histogram.h"
-#include "Gui/MergeConflictResolve.h"
 #include "Gui/NodeGraphDeleteLinks.h"
 #include "Gui/NodeGraphUndoRedo.h"
 #include "Gui/NodeGui.h"
@@ -519,27 +516,8 @@ NodeGraph::deleteSelection()
             (*it)->setUserSelected(false);
         }
 
-        // Deleting a template node detaches its template, which deletes the template node itself.
-        std::vector<std::string> templateKeys;
-        NodesGuiList others;
-        for (NodesGuiList::const_iterator it = nodesToRemove.begin(); it != nodesToRemove.end(); ++it) {
-            const NodePtr node = (*it)->getNode();
-            TemplateNode* isTemplate = node ? dynamic_cast<TemplateNode*>(node->getEffectInstance().get()) : 0;
-            if (isTemplate && !isTemplate->getTemplateKey().empty()) {
-                templateKeys.push_back(isTemplate->getTemplateKey());
-            } else {
-                others.push_back(*it);
-            }
-        }
+        pushUndoCommand(new RemoveMultipleNodesCommand(this, nodesToRemove), nodesToRemove);
         _imp->_selection.clear();
-        if (templateKeys.empty()) {
-            pushUndoCommand(new RemoveMultipleNodesCommand(this, nodesToRemove), nodesToRemove);
-        } else {
-            QString error;
-            if (!MergeConflictResolve::deleteNodesAndTemplates(getGui(), this, templateKeys, others, &error)) {
-                getGui()->getApp()->showStatusMessage(error);
-            }
-        }
     }
 } // deleteSelection
 

@@ -31,9 +31,13 @@
 #include <vector>
 
 #include <QAction>
+#include <QCoreApplication>
 #include <QFileInfo>
 #include <QMessageBox>
+#include <QMetaObject>
+#include <QPointer>
 #include <QPushButton>
+#include <QThreadPool>
 
 #include "Engine/Node.h"
 #include "Engine/Project.h"
@@ -137,16 +141,11 @@ Gui::defineTemplate()
 void
 Gui::publishTemplate(const std::string& templateKey)
 {
-    QString path;
+    // Not an undo step: like a save, it writes a file that an undo would not take back.
+    TemplateEdit edit;
     QString error;
-    MergeConflictResolve::runTemplateEdit(this, 0, tr("Publish Template"), [&](TemplateEdit* edit) {
-        if (!getApp()->getProject()->publishTemplate(templateKey, &error, edit)) {
-            return false;
-        }
-        path = edit->path;
-
-        return true;
-    });
+    const bool published = getApp()->getProject()->publishTemplate(templateKey, &error, &edit);
+    const QString path = published ? edit.path : QString();
     if (path.isEmpty()) {
         getApp()->showStatusMessage(tr("Publish Template: %1").arg(error));
     } else {
@@ -164,13 +163,29 @@ Gui::updateTemplateToLatest(const std::string& templateKey)
         return;
     }
     const QString dir = QString::fromStdString(entry->publishDir);
-    const std::optional<ProjectMerge::TemplateVersion> latest = ProjectMerge::findLatestVersion(dir, entry->templateId);
-    if (!latest) {
-        getApp()->showStatusMessage(tr("No version of the template %1 is published in \"%2\"").arg(QString::fromStdString(entry->name)).arg(dir));
+    const std::string templateId = entry->templateId;
+    const QString name = QString::fromStdString(entry->name);
+    getApp()->showStatusMessage(tr("Looking for the latest version of %1 in \"%2\"").arg(name).arg(dir));
+    // Reading every file in the folder may be slow on a network share.
+    QPointer<Gui> self(this);
+    ProjectMerge::folderScanPool()->start([self, templateKey, templateId, name, dir]() {
+        const std::optional<ProjectMerge::TemplateVersion> latest = ProjectMerge::findLatestVersion(dir, templateId);
+        QMetaObject::invokeMethod(qApp, [self, templateKey, templateId, name, dir, latest]() {
+            if (!self) {
+                return;
+            }
+            // The import may have gone or been replaced while the folder was read.
+            const std::optional<Serialization::TemplateImportSerialization> now = findImport(self->getApp()->getProject(), templateKey);
+            if (!now || (now->templateId != templateId)) {
+                return;
+            }
+            if (!latest) {
+                self->getApp()->showStatusMessage(tr("No version of the template %1 is published in \"%2\"").arg(name).arg(dir));
 
-        return;
-    }
-    updateTemplateFromPath(templateKey, latest->path);
+                return;
+            }
+            self->updateTemplateFromPath(templateKey, latest->path); }, Qt::QueuedConnection);
+    });
 }
 
 void
@@ -225,7 +240,7 @@ Gui::updateTemplateFromPath(const std::string& templateKey,
         getApp()->showStatusMessage(result.error);
         break;
     case ProjectMerge::UpdateStatus::eError:
-        errorDialog(title.toStdString(), result.error.toStdString(), false);
+        getApp()->showStatusMessage(tr("%1: %2").arg(title).arg(result.error));
         break;
     }
 }
@@ -310,7 +325,7 @@ Gui::compareWithTemplateBase(const std::string& templateKey)
     ProjectMerge::ChangeSummary summary;
     QString error;
     if (!ProjectMerge::compareWithTemplateBase(getApp()->getProject(), templateKey, &summary, &error)) {
-        errorDialog(tr("Compare with Template Base").toStdString(), error.toStdString(), false);
+        getApp()->showStatusMessage(tr("Compare with Template Base: %1").arg(error));
 
         return;
     }

@@ -29,6 +29,8 @@
 
 #include <QString>
 
+class QThreadPool;
+
 #include "Engine/EngineFwd.h"
 #include "Serialization/Merge/MergeConflict.h"
 #include "Serialization/Ops/GraphOp.h"
@@ -100,6 +102,26 @@ struct TemplateVersion {
     QString path;
     int version = 0;
 };
+
+// A template file and the template identity and version its template node holds.
+struct PublishedFile {
+    QString path;
+    std::string templateId;
+    int version = 0;
+};
+
+/**
+ * @brief Every template file (*.ntpz) in dir with a template node, in file-name order. Only each
+ * file's project.yaml is read, never its payloads; files that cannot be read are skipped. Safe to
+ * call from any thread.
+ **/
+std::vector<PublishedFile> listPublishedFiles(const QString& dir);
+
+/**
+ * @brief The single low-priority thread that publish folders are scanned on, apart from the render
+ * threads, which a slow network share must not hold. Main thread only.
+ **/
+QThreadPool* folderScanPool();
 
 /**
  * @brief The newest version of the template templateId among the template files (*.ntpz) in dir,

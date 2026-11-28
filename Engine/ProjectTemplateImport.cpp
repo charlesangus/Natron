@@ -44,6 +44,7 @@
 #include "Engine/NodeGroup.h"
 #include "Engine/ProjectPrivate.h"
 #include "Engine/ProjectTemplate.h"
+#include "Engine/TemplateNode.h"
 
 #include "Serialization/Bundle/ProjectBundle.h"
 #include "Serialization/Merge/NodeReferences.h"
@@ -118,11 +119,20 @@ keyStem(const QString& name)
 
 std::string
 uniqueTemplateKey(const std::string& stem,
-                  const std::list<Serialization::TemplateImportSerialization>& existing)
+                  const Project& project)
 {
     std::set<std::string> taken;
-    for (const Serialization::TemplateImportSerialization& entry : existing) {
+    for (const Serialization::TemplateImportSerialization& entry : project.getTemplateImports()) {
         taken.insert(entry.key);
+        taken.insert(keyStem(QString::fromStdString(entry.name)));
+    }
+    // A removed template node keeps its key until its removal can no longer be undone.
+    NodesList nodes;
+    project.getNodes_recursive(nodes, false);
+    for (const NodePtr& node : nodes) {
+        if (TemplateNode* isTemplate = dynamic_cast<TemplateNode*>(node->getEffectInstance().get())) {
+            taken.insert(isTemplate->getTemplateKey());
+        }
     }
     if (taken.find(stem) == taken.end()) {
         return stem;
@@ -296,7 +306,7 @@ Project::importTemplate(const QString& filePath,
     }
     // A template's own imports are its business: only its nodes are the merge base here.
     imported.templates.clear();
-    entry.key = ProjectTemplateDetail::uniqueTemplateKey(ProjectTemplateDetail::keyStem(fileStem(filePath)), getTemplateImports());
+    entry.key = ProjectTemplateDetail::uniqueTemplateKey(ProjectTemplateDetail::keyStem(fileStem(filePath)), *this);
     entry.path = QFileInfo(filePath).absoluteFilePath().toStdString();
     entry.publishDir = QFileInfo(filePath).absolutePath().toStdString();
     entry.importedAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODate).toStdString();
@@ -353,7 +363,6 @@ Project::importTemplate(const QString& filePath,
     state.templateId = entry.templateId;
     state.name = entry.name;
     state.version = entry.version;
-    state.importedVersion = entry.version;
     state.publishDir = entry.publishDir;
     double x = 0.;
     double y = 0.;

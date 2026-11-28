@@ -91,10 +91,35 @@ public:
 
     /**
      * @brief Looks for a newer published version than the version knob's in the publish folder,
-     * off the main thread, and sets the newer-version indicator from what it finds. Does nothing
-     * without a GUI.
+     * off the main thread, and sets the newer-version indicator from what it finds. Calls made in
+     * quick succession make one scan, and only the result of the last scan started is shown. Does
+     * nothing without a GUI.
      **/
     void checkForNewerVersion();
+
+    /**
+     * @brief The newer published version the last scan found, or an empty string when it found
+     * none or no scan finished yet.
+     **/
+    std::string getNewerVersion() const;
+
+    /**
+     * @brief Called by Node::deactivate() once the node is inactive, however it was removed. When
+     * no other active template node stands for its import, the import is detached as Detach does:
+     * the members' origins are cleared and the entry and its saved conflicts are removed. What was
+     * removed is kept with the node so that onNodeActivated() puts it back when the removal is
+     * undone. Does nothing while the project loads or closes.
+     **/
+    void onNodeDeactivated();
+    void onNodeActivated();
+
+    /**
+     * @brief Puts back the entry the last deactivation removed when the project has no entry for
+     * the key, so that a template node cut and pasted keeps its template. The saved conflicts stay
+     * out: they name the removed nodes, which the pasted copies are not. False when there is
+     * nothing to put back.
+     **/
+    bool restoreDetachedEntry();
 
 public Q_SLOTS:
 

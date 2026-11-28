@@ -1,9 +1,9 @@
 """Template versions, end to end in the real application.
 
-The supervisor selects Blur1 -> Blur2, chooses File > Define Template..., names it grade, sets its
+The supervisor selects Blur1 -> Blur2, chooses File > Define Template, names it grade, sets its
 publish folder and presses Publish: grade_v001.ntpz is written. The artist imports version 1 into a
 second project: the Template node is there at version 1, and clicking inside its hull selects the
-members and the Template node. The artist sets Blur2's size to 2. In a third project, version 1 is
+members and the Template node, while a click deep inside the hull does not. The artist sets Blur2's size to 2. In a third project, version 1 is
 imported again, Blur1's size set to 4, Blur3 added below Blur2 and put in the template with the
 context menu's Add to Template, and Publish writes grade_v002.ntpz. Another template, other, is
 defined and published from Python in its own folder.
@@ -12,9 +12,11 @@ Reopening the artist's project, the Template node shows version 2 as newer. Upda
 Blur1's size and Blur3 from version 2, keeps the artist's Blur2 size and raises no conflict; running
 it again says the template is up to date. Update from File... with other's file warns that it is
 another template, and Cancel leaves the graph as it was. Remove from Template takes Blur3 out of the
-hull, and Add to Template puts it back. Deleting the Template node detaches the template: the hull
+hull, and Add to Template puts it back. Mid, put between Blur1 and Blur2, is in the hull without an
+origin, and Remove from Template on it alone takes it out. Deleting the Template node detaches the template: the hull
 and the template actions are gone and the members stay. One undo brings the Template node, the hull
-and the template actions back.
+and the template actions back. Copying and pasting the Template node and its members makes a
+second template with its own key; undoing the paste leaves the original as it was.
 
 Usage: Tests/gui/run-gui-test.sh Tests/gui/m646_template_versions.py
 """
@@ -260,10 +262,27 @@ try:
         button.trigger()
         QApplication.processEvents()
 
-    def send_key(widget, key):
-        QApplication.sendEvent(widget, QKeyEvent(QEvent.KeyPress, key, Qt.NoModifier))
-        QApplication.sendEvent(widget, QKeyEvent(QEvent.KeyRelease, key, Qt.NoModifier))
+    def send_key(widget, key, modifiers=Qt.NoModifier):
+        QApplication.sendEvent(widget, QKeyEvent(QEvent.KeyPress, key, modifiers))
+        QApplication.sendEvent(widget, QKeyEvent(QEvent.KeyRelease, key, modifiers))
         QApplication.processEvents()
+
+    def deep_click_selection(label):
+        """Left-clicks inside the hull between Blur1 and Blur2, right of the edge joining them and
+        further than the hull's padding from its outline, with Blur2 selected first."""
+        view = graph_view()
+        require(view is not None, label + ": the node graph is up")
+        blur1 = app.getNode("Blur1")
+        blur2 = app.getNode("Blur2")
+        x, y = blur1.getPosition()
+        w, h = blur1.getSize()
+        _, y2 = blur2.getPosition()
+        app.setSelection([blur2])
+        QApplication.processEvents()
+        scene_click(view, QPointF(x + 0.75 * w, (y + h + y2) / 2.0), Qt.LeftButton)
+        QApplication.processEvents()
+        yield ("sleep", SETTLE_MS)
+        return selected_names()
 
     def save_and_reset(path, label):
         require(app.saveProjectAs(path), "save " + label)
@@ -283,7 +302,7 @@ try:
         artist = os.path.join(gt.OUT, "m646_artist.ntpz")
         for folder in (publish_dir, other_dir):
             os.makedirs(folder, exist_ok=True)
-        # Publish never overwrites, so versions left by an earlier run would be numbered past.
+        # Publish refuses to write over or below the versions an earlier run left in the folder.
         for path in (v1, v2, other_v1):
             if os.path.exists(path):
                 os.remove(path)
@@ -293,20 +312,25 @@ try:
         blur("Blur2", 0, 200, first)
         app.setSelection([app.getNode("Blur1"), app.getNode("Blur2")])
         action = file_action("actionDefineTemplate")
-        require(action is not None and action.isEnabled(), "the File menu has an enabled Define Template...")
+        require(action is not None and action.isEnabled(), "the File menu has an enabled Define Template")
         action.trigger()
         ok = yield ("until", lambda: template_node() is not None, POLL_TIMEOUT_S)
-        require(ok, "File > Define Template... makes a Template node")
+        require(ok, "File > Define Template makes a Template node")
         check(modal_class() is None, "Define Template opens no dialog (modal is %r)" % modal_class())
         tpl = template_node()
         check(tpl.getParam("version").getValue() == 0, "the defined template is unpublished (%r)" % tpl.getParam("version").getValue())
         tpl.getParam("templateName").setValue("grade")
         tpl.getParam("publishDir").setValue(publish_dir)
+        undo_before = edit_menu_action("undo")
+        undo_before = (undo_before.text(), undo_before.isEnabled()) if undo_before is not None else None
         press("publish", "Publish")
         ok = yield ("until", lambda: os.path.exists(v1), POLL_TIMEOUT_S)
         require(ok, "Publish writes grade_v001.ntpz", "status %r" % status_message())
         check(modal_class() is None, "Publish opens no dialog")
         check("grade_v001.ntpz" in status_message(), "the status bar names the published file (%r)" % status_message())
+        undo_after = edit_menu_action("undo")
+        undo_after = (undo_after.text(), undo_after.isEnabled()) if undo_after is not None else None
+        check(undo_after == undo_before, "Publish is not an undo step (%r, was %r)" % (undo_after, undo_before))
         save_and_reset(os.path.join(gt.OUT, "m646_supervisor.ntpz"), "the supervisor's script")
         yield ("sleep", SETTLE_MS)
 
@@ -322,6 +346,8 @@ try:
         members = sorted(["Blur1", "Blur2", tpl_name])
         got = yield from hull_selection("the artist's hull")
         check(got == members, "clicking the hull selects the members and the Template node (%r)" % got)
+        got = yield from deep_click_selection("deep inside the artist's hull")
+        check(tpl_name not in got and got != members, "a click deep inside the hull does not select the template (%r)" % got)
         app.getNode("Blur2").getParam(SIZE).set(ARTIST_SIZE, ARTIST_SIZE)
         save_and_reset(artist, "the artist's project")
         yield ("sleep", SETTLE_MS)
@@ -406,6 +432,14 @@ try:
         yield from graph_menu("Blur3", "actionGraphAddToTemplate", "Add to Template", select=False)
         got = yield from hull_selection("the hull after Add to Template")
         check(got == sorted(members + ["Blur3"]), "Add to Template puts Blur3 back in the hull (%r)" % got)
+        mid = blur("Mid", 0, 100, app.getNode("Blur1"))
+        require(app.getNode("Blur2").connectInput(0, mid), "connect Mid to Blur2")
+        yield ("sleep", SETTLE_MS)
+        got = yield from hull_selection("the hull with Mid between members")
+        check(got == sorted(members + ["Blur3", "Mid"]), "the hull goes round Mid, which has no origin (%r)" % got)
+        yield from graph_menu("Mid", "actionGraphRemoveFromTemplate", "Remove from Template on Mid")
+        got = yield from hull_selection("the hull after removing Mid")
+        check(got == sorted(members + ["Blur3"]), "Remove from Template takes Mid, and only Mid, out (%r)" % got)
 
         gt.section("delete the template node")
         view = graph_view()
@@ -429,6 +463,28 @@ try:
             got = yield from hull_selection("the restored hull")
             check(got == sorted(members + ["Blur3"]), "one undo restores the hull (%r)" % got)
             check(template_node().getParam("version").getValue() == 2, "one undo restores the import's version")
+
+        gt.section("copy and paste the template")
+        original = template_node()
+        require(original is not None, "one Template node to copy")
+        original_key = original.getParam("templateKey").getValue()
+        view = graph_view()
+        require(view is not None, "the node graph is up to copy in")
+        app.setSelection([original, app.getNode("Blur1"), app.getNode("Blur2")])
+        QApplication.processEvents()
+        send_key(view, Qt.Key_C, Qt.ControlModifier)
+        send_key(view, Qt.Key_V, Qt.ControlModifier)
+        ok = yield ("until", lambda: len(template_nodes()) == 2, POLL_TIMEOUT_S)
+        require(ok, "pasting the copied Template node adds a second one")
+        keys = sorted(n.getParam("templateKey").getValue() for n in template_nodes())
+        check(len(set(keys)) == 2 and original_key in keys, "the pasted Template node has a key of its own (%r)" % keys)
+        check(original.getParam("version").getValue() == 2, "the original template stays at version 2")
+        if undo("the paste"):
+            ok = yield ("until", lambda: len(template_nodes()) == 1, POLL_TIMEOUT_S)
+            check(ok, "one undo removes the pasted Template node")
+            yield ("sleep", SETTLE_MS)
+            got = yield from hull_selection("the hull after undoing the paste")
+            check(got == sorted(members + ["Blur3"]), "undoing the paste leaves the original hull (%r)" % got)
         gt.shot("m646_template_versions.png")
 
     gt.run(steps())

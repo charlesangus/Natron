@@ -102,7 +102,6 @@ readTemplateNode(const NodeSerialization& node)
     state.templateId = stringOf(node, kTemplateParamId);
     state.name = stringOf(node, kTemplateParamName);
     state.version = intOf(node, kTemplateParamVersion);
-    state.importedVersion = intOf(node, kTemplateParamImportedVersion);
     state.publishDir = stringOf(node, kTemplateParamPublishDir);
 
     return state;
@@ -118,7 +117,6 @@ writeTemplateNode(const TemplateNodeState& state,
     setKnob(node, kTemplateParamName, "String", state.name, noText, true, false);
     setKnob(node, kTemplateParamId, "String", state.templateId, noText, false, false);
     setKnob(node, kTemplateParamVersion, "Int", state.version, zero, false, false);
-    setKnob(node, kTemplateParamImportedVersion, "Int", state.importedVersion, zero, false, false);
     setKnob(node, kTemplateParamPublishDir, "Path", state.publishDir, noText, true, false);
 }
 
@@ -132,6 +130,24 @@ findTemplateNode(const std::list<NodeSerializationPtr>& nodes)
     }
 
     return nullptr;
+}
+
+std::vector<const NodeSerialization*>
+findTemplateNodes(const std::list<NodeSerializationPtr>& nodes)
+{
+    std::vector<const NodeSerialization*> found;
+    for (const NodeSerializationPtr& node : nodes) {
+        if (!node) {
+            continue;
+        }
+        if (node->pluginID == kTemplateNodePluginId) {
+            found.push_back(node.get());
+        }
+        const std::vector<const NodeSerialization*> inner = findTemplateNodes(node->children);
+        found.insert(found.end(), inner.begin(), inner.end());
+    }
+
+    return found;
 }
 
 void

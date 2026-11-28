@@ -44,6 +44,7 @@
 #include "Global/GitVersion.h"
 
 #include "Engine/Node.h"
+#include "Engine/ProjectMerge.h"
 #include "Engine/ProjectTemplate.h"
 
 #include "Serialization/Bundle/ProjectBundle.h"
@@ -158,21 +159,33 @@ Project::publishTemplate(const std::string& key,
 
     const QString stem = QString::fromStdString(ProjectTemplateDetail::keyStem(QString::fromStdString(entry.name)));
     const int next = entry.version + 1;
-    const QRegularExpression pattern(QString::fromUtf8("^%1_v(\\d+)\\.ntpz$").arg(QRegularExpression::escape(stem)), QRegularExpression::CaseInsensitiveOption);
-    int newest = 0;
-    QString newestName;
-    for (const QString& name : QDir(dirPath).entryList(QDir::Files)) {
-        const QRegularExpressionMatch match = pattern.match(name);
-        if (match.hasMatch() && (match.captured(1).toInt() > newest)) {
-            newest = match.captured(1).toInt();
-            newestName = name;
+    const QString versionName = QString::fromUtf8("%1_v%2").arg(stem).arg(next, 3, 10, QLatin1Char('0'));
+    const QString fileName = versionName + QString::fromUtf8(".ntpz");
+    const QString filePath = QDir(dirPath).absoluteFilePath(fileName);
+
+    // Versions are numbered by template ID, whatever their files are named, so a renamed template
+    // keeps counting from its last version. A file name is never shared with another template.
+    const QRegularExpression pattern(QString::fromUtf8("^%1_v\\d+\\.ntpz$").arg(QRegularExpression::escape(stem)), QRegularExpression::CaseInsensitiveOption);
+    std::optional<ProjectMerge::PublishedFile> newest;
+    std::optional<ProjectMerge::PublishedFile> clash;
+    for (const ProjectMerge::PublishedFile& file : ProjectMerge::listPublishedFiles(dirPath)) {
+        if (file.templateId == entry.templateId) {
+            if (!newest || (file.version > newest->version)) {
+                newest = file;
+            }
+        } else if (!clash && pattern.match(QFileInfo(file.path).fileName()).hasMatch()) {
+            clash = file;
         }
     }
-    if (newest >= next) {
-        return fail(tr("%1 is already published in \"%2\": update to it before publishing").arg(newestName).arg(dirPath));
+    if (newest && (newest->version >= next)) {
+        return fail(tr("%1 is already published in \"%2\": update to it before publishing").arg(QFileInfo(newest->path).fileName()).arg(dirPath));
     }
-    const QString versionName = QString::fromUtf8("%1_v%2").arg(stem).arg(next, 3, 10, QLatin1Char('0'));
-    const QString filePath = QDir(dirPath).absoluteFilePath(versionName + QString::fromUtf8(".ntpz"));
+    if (clash) {
+        return fail(tr("%1 in \"%2\" belongs to another template that is also named %3: rename this template or publish it to another folder").arg(QFileInfo(clash->path).fileName()).arg(dirPath).arg(QString::fromStdString(entry.name)));
+    }
+    if (QFileInfo::exists(filePath)) {
+        return fail(tr("%1 in \"%2\" is in the way and is not a version of the template %3: rename this template or publish it to another folder").arg(fileName).arg(dirPath).arg(QString::fromStdString(entry.name)));
+    }
 
     Serialization::ProjectSerialization mine;
     toSerialization(&mine);
@@ -202,7 +215,6 @@ Project::publishTemplate(const std::string& key,
     state.templateId = entry.templateId;
     state.name = entry.name;
     state.version = next;
-    state.importedVersion = next;
     state.publishDir = entry.publishDir;
     Serialization::NodeSerializationPtr templateNode;
     if (NodePtr live = findTemplateNode(key)) {

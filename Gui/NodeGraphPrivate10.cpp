@@ -166,6 +166,7 @@ NodeGraphPrivate::pasteNodesInternal(const NodeClipBoard & clipboard,
             // node of the same name is another node, so there they link only to each other.
             const bool sameProject = _publicInterface->getGui()->getApp()->getProject()->isProjectId(clipboard.sourceProject);
             KnobHelper::restoreLinkGroups(pastedNodes, sameProject);
+            _publicInterface->getGui()->getApp()->getProject()->adoptPastedTemplateNodes(newNodesMap);
         }
 
         if (newNodesList.size() > 1) {

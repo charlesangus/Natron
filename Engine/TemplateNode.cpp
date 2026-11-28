@@ -25,12 +25,17 @@
 
 #include "TemplateNode.h"
 
+#include <algorithm>
 #include <list>
 #include <optional>
+#include <utility>
+#include <vector>
 
 #include <QCoreApplication>
 #include <QMetaObject>
+#include <QThread>
 #include <QThreadPool>
+#include <QTimer>
 
 #include "Engine/AppInstance.h"
 #include "Engine/KnobFile.h"
@@ -39,6 +44,7 @@
 #include "Engine/Project.h"
 #include "Engine/ProjectMerge.h"
 
+#include "Serialization/Merge/MergeConflict.h"
 #include "Serialization/ProjectSerialization.h"
 #include "Serialization/TemplateNodeSerialization.h"
 
@@ -49,7 +55,6 @@ struct TemplateNodePrivate {
     KnobStringWPtr name;
     KnobStringWPtr templateId;
     KnobIntWPtr version;
-    KnobIntWPtr importedVersion;
     KnobPathWPtr publishDir;
     KnobStringWPtr newerVersion;
     KnobButtonWPtr publish;
@@ -59,6 +64,18 @@ struct TemplateNodePrivate {
     KnobButtonWPtr detach;
     // Set while the knobs are being set from the entry, whose own values must not go back to it.
     bool refreshing = false;
+
+    // The last newer-version check asked for; a scan or result of an earlier one is dropped.
+    // Main thread only.
+    unsigned checkSequence = 0;
+
+    // What the last deactivation detached, until the node is active again.
+    struct Detached {
+        Serialization::TemplateImportSerialization entry;
+        std::vector<Serialization::MergeConflict> conflicts;
+        std::list<std::pair<NodeWPtr, std::string>> origins;
+    };
+    std::optional<Detached> detached;
 };
 
 TemplateNode::TemplateNode(NodePtr node)
@@ -159,9 +176,7 @@ TemplateNode::initializeKnobs()
     _imp->templateId = readOnlyString(this, page, tr("Template ID"), Serialization::kTemplateParamId,
                                       tr("The identity every version of the template shares. Update to Latest only takes files with this ID."));
     _imp->version = readOnlyInt(this, page, tr("Version"), Serialization::kTemplateParamVersion,
-                                tr("The version of the template the graph was last merged with, 0 for a template that was never published."));
-    _imp->importedVersion = readOnlyInt(this, page, tr("Imported Version"), Serialization::kTemplateParamImportedVersion,
-                                        tr("The version whose snapshot is the base of the next update."));
+                                tr("The version of the template the graph was last merged with or published as, 0 for a template that was never published. Its snapshot is the base of the next update."));
 
     KnobPathPtr publishDir = AppManager::createKnob<KnobPath>(this, tr("Publish Dir"));
     publishDir->setName(Serialization::kTemplateParamPublishDir);
@@ -198,7 +213,7 @@ void
 TemplateNode::onKnobsLoaded()
 {
     // A saved knob restores its enabled state, and these must stay read only.
-    for (const KnobIPtr& knob : { KnobIPtr(_imp->templateId.lock()), KnobIPtr(_imp->version.lock()), KnobIPtr(_imp->importedVersion.lock()), KnobIPtr(_imp->newerVersion.lock()) }) {
+    for (const KnobIPtr& knob : { KnobIPtr(_imp->templateId.lock()), KnobIPtr(_imp->version.lock()), KnobIPtr(_imp->newerVersion.lock()) }) {
         if (knob) {
             knob->setAllDimensionsEnabled(false);
         }
@@ -240,7 +255,6 @@ TemplateNode::refreshFromEntry()
         _imp->templateId.lock()->setValue(entry.templateId);
         _imp->name.lock()->setValue(entry.name);
         _imp->version.lock()->setValue(entry.version);
-        _imp->importedVersion.lock()->setValue(entry.version);
         _imp->publishDir.lock()->setValue(entry.publishDir);
         _imp->refreshing = false;
         break;
@@ -254,42 +268,170 @@ TemplateNode::onSettingsPanelOpened()
     checkForNewerVersion();
 }
 
+std::string
+TemplateNode::getNewerVersion() const
+{
+    KnobStringPtr newer = _imp->newerVersion.lock();
+
+    return newer ? newer->getValue() : std::string();
+}
+
+namespace {
+
+TemplateNode*
+templateNodeOf(const NodeWPtr& weakNode)
+{
+    const NodePtr node = weakNode.lock();
+
+    return node ? dynamic_cast<TemplateNode*>(node->getEffectInstance().get()) : 0;
+}
+
+// Several template edits in a row make one scan.
+constexpr int kVersionCheckDelayMs = 300;
+
+} // namespace
+
 void
 TemplateNode::checkForNewerVersion()
 {
     AppInstancePtr app = getApp();
-    KnobPathPtr publishDir = _imp->publishDir.lock();
-    KnobStringPtr templateId = _imp->templateId.lock();
-    if (!app || app->isBackground() || !publishDir || !templateId) {
+    if (!app || app->isBackground() || (QThread::currentThread() != qApp->thread())) {
         return;
     }
-    const QString dir = QString::fromStdString(publishDir->getValue());
-    const std::string id = templateId->getValue();
-    if (dir.isEmpty() || id.empty()) {
-        setNewerVersion(std::string());
-
-        return;
-    }
+    const unsigned sequence = ++_imp->checkSequence;
     const NodeWPtr weakNode = getNode();
-    // Reading the candidate bundles may be slow on a network share.
-    QThreadPool::globalInstance()->start([dir, id, weakNode]() {
-        const std::optional<ProjectMerge::TemplateVersion> latest = ProjectMerge::findLatestVersion(dir, id);
-        QMetaObject::invokeMethod(qApp, [dir, id, weakNode, latest]() {
-            const NodePtr node = weakNode.lock();
-            TemplateNode* self = node ? dynamic_cast<TemplateNode*>(node->getEffectInstance().get()) : 0;
-            if (!self) {
-                return;
-            }
-            KnobPathPtr currentDir = self->_imp->publishDir.lock();
-            KnobStringPtr currentId = self->_imp->templateId.lock();
-            KnobIntPtr version = self->_imp->version.lock();
-            // A check started after the knobs changed will set the indicator.
-            if (!currentDir || !currentId || !version || (QString::fromStdString(currentDir->getValue()) != dir) || (currentId->getValue() != id)) {
-                return;
-            }
-            const bool newer = latest && (latest->version > version->getValue());
-            self->setNewerVersion(newer ? latest->path.toStdString() : std::string()); }, Qt::QueuedConnection);
+    QTimer::singleShot(kVersionCheckDelayMs, qApp, [weakNode, sequence]() {
+        TemplateNode* self = templateNodeOf(weakNode);
+        if (!self || (self->_imp->checkSequence != sequence)) {
+            return;
+        }
+        KnobPathPtr publishDir = self->_imp->publishDir.lock();
+        KnobStringPtr templateId = self->_imp->templateId.lock();
+        if (!publishDir || !templateId) {
+            return;
+        }
+        const QString dir = QString::fromStdString(publishDir->getValue());
+        const std::string id = templateId->getValue();
+        if (dir.isEmpty() || id.empty()) {
+            self->setNewerVersion(std::string());
+
+            return;
+        }
+        ProjectMerge::folderScanPool()->start([dir, id, weakNode, sequence]() {
+            const std::optional<ProjectMerge::TemplateVersion> latest = ProjectMerge::findLatestVersion(dir, id);
+            QMetaObject::invokeMethod(qApp, [weakNode, sequence, latest]() {
+                TemplateNode* self = templateNodeOf(weakNode);
+                if (!self || (self->_imp->checkSequence != sequence)) {
+                    return;
+                }
+                KnobIntPtr version = self->_imp->version.lock();
+                const bool newer = version && latest && (latest->version > version->getValue());
+                self->setNewerVersion(newer ? latest->path.toStdString() : std::string()); }, Qt::QueuedConnection);
+        });
     });
+}
+
+namespace {
+
+// The project, when removing a template node may detach its import: not while the project loads or
+// closes, when nodes come and go with their entries, and not off the main thread.
+ProjectPtr
+projectForDetach(const AppInstancePtr& app)
+{
+    ProjectPtr project = app ? app->getProject() : ProjectPtr();
+    if (!project || project->isProjectClosing() || project->isLoadingProject() || (QThread::currentThread() != qApp->thread())) {
+        return ProjectPtr();
+    }
+
+    return project;
+}
+
+} // namespace
+
+void
+TemplateNode::onNodeDeactivated()
+{
+    const ProjectPtr project = projectForDetach(getApp());
+    const std::string key = getTemplateKey();
+    if (!project || key.empty() || project->findTemplateNode(key)) {
+        return;
+    }
+    std::list<Serialization::TemplateImportSerialization> imports = project->getTemplateImports();
+    std::list<Serialization::TemplateImportSerialization>::iterator found = std::find_if(imports.begin(), imports.end(), [&key](const Serialization::TemplateImportSerialization& entry) {
+        return entry.key == key;
+    });
+    if (found == imports.end()) {
+        return;
+    }
+    TemplateNodePrivate::Detached detached;
+    detached.entry = *found;
+    imports.erase(found);
+
+    std::vector<Serialization::MergeConflict> kept;
+    for (const Serialization::MergeConflict& conflict : project->getMergeConflicts()) {
+        if (conflict.templateKey == key) {
+            detached.conflicts.push_back(conflict);
+        } else {
+            kept.push_back(conflict);
+        }
+    }
+
+    // Inactive nodes too: a member deleted before is one again if its removal is undone.
+    NodesList nodes;
+    project->getNodes_recursive(nodes, false);
+    for (const NodePtr& node : nodes) {
+        if (node->getOriginTemplate() == key) {
+            detached.origins.push_back(std::make_pair(NodeWPtr(node), node->getOriginNode()));
+            node->setOrigin(std::string(), std::string());
+        }
+    }
+    project->setTemplateImports(imports);
+    if (!detached.conflicts.empty()) {
+        project->setMergeConflicts(kept);
+    }
+    _imp->detached = std::move(detached);
+}
+
+void
+TemplateNode::onNodeActivated()
+{
+    if (!_imp->detached) {
+        return;
+    }
+    const ProjectPtr project = projectForDetach(getApp());
+    if (!project) {
+        return;
+    }
+    const TemplateNodePrivate::Detached detached = std::move(*_imp->detached);
+    _imp->detached.reset();
+    // A paste of the node's cut copy took the entry back already.
+    if (project->hasTemplateImport(detached.entry.key)) {
+        return;
+    }
+    for (const std::pair<NodeWPtr, std::string>& origin : detached.origins) {
+        const NodePtr node = origin.first.lock();
+        if (node && node->getOriginTemplate().empty()) {
+            node->setOrigin(detached.entry.key, origin.second);
+        }
+    }
+    project->setTemplateImport(detached.entry);
+    if (!detached.conflicts.empty()) {
+        std::vector<Serialization::MergeConflict> conflicts = project->getMergeConflicts();
+        conflicts.insert(conflicts.end(), detached.conflicts.begin(), detached.conflicts.end());
+        project->setMergeConflicts(conflicts);
+    }
+}
+
+bool
+TemplateNode::restoreDetachedEntry()
+{
+    const ProjectPtr project = projectForDetach(getApp());
+    if (!project || !_imp->detached || project->hasTemplateImport(_imp->detached->entry.key)) {
+        return false;
+    }
+    project->setTemplateImport(_imp->detached->entry);
+
+    return true;
 }
 
 void

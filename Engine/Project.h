@@ -231,11 +231,22 @@ public:
      * @brief Writes the template import key as its next version, <name>_v<NNN>.ntpz in its publish
      * folder: its members, each with the ID of the template node it stands for (its own for a node
      * the template did not have, which becomes its origin), and a template node with the new
-     * version. The entry's base and version become the written ones. Returns false with error set,
-     * writing nothing, when the folder is missing or not writable or that version or a newer one
-     * is already there.
+     * version. The entry's base and version become the written ones. The newest version is
+     * looked for by template ID, whatever the files are named. Returns false with error set,
+     * writing nothing, when the folder is missing or not writable, when that version or a newer
+     * one is already there, and when a file of another template has the same name.
      **/
     bool publishTemplate(const std::string& key, QString* error, TemplateEdit* edit = nullptr);
+
+    /**
+     * @brief Gives the template nodes among pasted, the nodes a paste or a duplicate made, each with
+     * the serialization it was made from, a template of their own. A template node whose cut
+     * original removed its entry takes that entry back, so a cut and paste moves the template. A
+     * copy of a template node another one still stands for, or one from another project, becomes a
+     * new template, as Define Template makes, of the pasted nodes that came from the copied one;
+     * the original is left as it was. Main thread only.
+     **/
+    void adoptPastedTemplateNodes(const std::list<std::pair<Serialization::NodeSerializationPtr, NodePtr>>& pasted);
 
     /**
      * @brief The active template node standing for the template import key, at any depth, or null.

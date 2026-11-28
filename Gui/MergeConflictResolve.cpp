@@ -61,6 +61,41 @@ sameImports(const std::list<Serialization::TemplateImportSerialization>& a,
                           return (x.key == y.key) && (x.templateId == y.templateId) && (x.name == y.name) && (x.version == y.version) && (x.publishDir == y.publishDir) && (x.path == y.path) && (x.contentHash == y.contentHash) && (x.importedAt == y.importedAt) && (x.excluded == y.excluded) && (x.base == y.base);
                       });
 }
+
+const Serialization::TemplateImportSerialization*
+findEntry(const std::list<Serialization::TemplateImportSerialization>& imports,
+          const std::string& key)
+{
+    for (const Serialization::TemplateImportSerialization& entry : imports) {
+        if (entry.key == key) {
+            return &entry;
+        }
+    }
+
+    return nullptr;
+}
+
+// A publish is not undoable: an import a publish moved past reference, the state this step left or
+// started from, keeps the published version, file and base when the step is undone or redone.
+std::list<Serialization::TemplateImportSerialization>
+keepPublished(std::list<Serialization::TemplateImportSerialization> target,
+              const std::list<Serialization::TemplateImportSerialization>& reference,
+              const std::list<Serialization::TemplateImportSerialization>& current)
+{
+    for (Serialization::TemplateImportSerialization& entry : target) {
+        const Serialization::TemplateImportSerialization* before = findEntry(reference, entry.key);
+        const Serialization::TemplateImportSerialization* now = findEntry(current, entry.key);
+        if (now && (now->templateId == entry.templateId) && (!before || (now->version > before->version)) && (now->version > entry.version)) {
+            entry.version = now->version;
+            entry.path = now->path;
+            entry.contentHash = now->contentHash;
+            entry.importedAt = now->importedAt;
+            entry.base = now->base;
+        }
+    }
+
+    return target;
+}
 } // anon namespace
 
 MergeStateCommand::MergeStateCommand(const ProjectPtr& project,
@@ -93,13 +128,14 @@ MergeStateCommand::hasEffect() const
 
 void
 MergeStateCommand::restore(const std::list<Serialization::TemplateImportSerialization>& imports,
+                           const std::list<Serialization::TemplateImportSerialization>& reference,
                            const std::vector<Serialization::MergeConflict>& conflicts)
 {
     ProjectPtr project = _project.lock();
     if (!project) {
         return;
     }
-    project->setTemplateImports(imports);
+    project->setTemplateImports(keepPublished(imports, reference, project->getTemplateImports()));
     project->setMergeConflicts(conflicts);
 }
 
@@ -109,14 +145,14 @@ void
 MergeStateCommand::undo()
 {
     QUndoCommand::undo();
-    restore(_importsBefore, _conflictsBefore);
+    restore(_importsBefore, _importsAfter, _conflictsBefore);
 }
 
 void
 MergeStateCommand::redo()
 {
     QUndoCommand::redo();
-    restore(_importsAfter, _conflictsAfter);
+    restore(_importsAfter, _importsBefore, _conflictsAfter);
 }
 
 namespace MergeConflictResolve {
@@ -214,42 +250,6 @@ runTemplateEdit(Gui* gui,
     }
     if (raisedConflicts) {
         gui->ensureMergeConflictPanelVisible();
-    }
-
-    return ok;
-}
-
-bool
-deleteNodesAndTemplates(Gui* gui,
-                        NodeGraph* graph,
-                        const std::vector<std::string>& templateKeys,
-                        const NodesGuiList& nodes,
-                        QString* error)
-{
-    const ProjectPtr project = gui->getApp()->getProject();
-    MergeStateCommand* command = new MergeStateCommand(project, QCoreApplication::translate("MergeConflictResolve", "Delete"));
-    const QString text = command->text();
-    bool ok = true;
-    error->clear();
-    for (const std::string& key : templateKeys) {
-        TemplateEdit edit;
-        edit.applier = [graph, project, text, command](const std::vector<Serialization::GraphOp>& ops) {
-            return ApplyGraphOpsCommand::applyAndRecord(graph, project, ops, text, command);
-        };
-        if (!project->detachTemplate(key, &edit) && ok) {
-            ok = false;
-            *error = edit.error;
-        }
-    }
-    command->captureAfter();
-    // A child, so the push removes the nodes after the detaches the command already holds.
-    if (!nodes.empty()) {
-        new RemoveMultipleNodesCommand(graph, nodes, command);
-    }
-    if (command->hasEffect()) {
-        graph->pushUndoCommand(command, UndoScope());
-    } else {
-        delete command;
     }
 
     return ok;

@@ -60,6 +60,7 @@
 #include "Serialization/Merge/NodeMatcher.h"
 #include "Serialization/Merge/ThreeWayMerge.h"
 #include "Serialization/Sha256.h"
+#include "Serialization/TemplateNodeSerialization.h"
 #include "Serialization/Yaml/BlobSink.h"
 #include "Serialization/Yaml/ProjectYaml.h"
 
@@ -467,6 +468,62 @@ TEST(NatronMerge, ATemplateMergeIgnoresTheTemplatesOwnImportsAndConflicts)
     ASSERT_EQ(merged.templates.size(), 1u);
     EXPECT_EQ(merged.templates.front().key, "grade_tpl");
     EXPECT_TRUE(merged.mergeConflicts.empty());
+}
+
+// A template node as a published version or a shot holds one.
+static Serialization::NodeSerializationPtr
+templateNode(const std::string& id,
+             const std::string& scriptName,
+             int version)
+{
+    Serialization::NodeSerializationPtr node = std::make_shared<Serialization::NodeSerialization>();
+    node->pluginID = std::string(Serialization::kTemplateNodePluginId);
+    node->scriptName = scriptName;
+    node->id = id;
+    Serialization::TemplateNodeState state;
+    state.key = "grade_tpl";
+    state.templateId = "00112233445566778899aabbccddeeff";
+    state.name = "grade";
+    state.version = version;
+    Serialization::writeTemplateNode(state, node.get());
+
+    return node;
+}
+
+TEST(NatronMerge, ATemplateMergeLeavesOutThePublishedTemplateNodes)
+{
+    ScratchDir dir;
+    Serialization::ProjectSerialization base = plainProject();
+    base.nodes.nodes.push_back(templateNode("p:Template1", "Template1", 1));
+    writeBundle(base, dir.file("base.ntpz"));
+    Serialization::ProjectSerialization theirs = plainProject([](SimGraph* g) { g->set("Blur1", "size", { 4., 4. }); });
+    theirs.nodes.nodes.push_back(templateNode("p:Template1", "Template1", 2));
+    writeBundle(theirs, dir.file("theirs.ntpz"));
+
+    Serialization::ProjectSerialization mine = plainProject();
+    mine.nodes.nodes.push_back(templateNode("m:Template7", "Template7", 1));
+    Serialization::TemplateImportSerialization entry;
+    entry.key = "grade_tpl";
+    entry.templateId = "00112233445566778899aabbccddeeff";
+    entry.version = 1;
+    entry.path = dir.file("base.ntpz");
+    entry.base = std::make_shared<Serialization::ProjectSerialization>(plainProject());
+    mine.templates.push_back(entry);
+    writeBundle(mine, dir.file("mine.ntpz"));
+    const std::string out = dir.file("out.ntpz");
+
+    const RunResult run = runNatronMerge({ "merge", "--scope", "template:grade_tpl", dir.file("base.ntpz"), dir.file("mine.ntpz"), dir.file("theirs.ntpz"), "-o", out });
+    EXPECT_EQ(run.status, 0) << run.out;
+    ASSERT_TRUE(fs::exists(out));
+    const Serialization::ProjectSerialization merged = readBundle(out);
+    const std::vector<const Serialization::NodeSerialization*> templates = Serialization::findTemplateNodes(merged.nodes.nodes);
+    ASSERT_EQ(templates.size(), 1u);
+    EXPECT_EQ(templates.front()->id, "m:Template7");
+    EXPECT_EQ(templates.front()->scriptName, "Template7");
+    EXPECT_EQ(Serialization::readTemplateNode(*templates.front()).version, 1);
+    const Serialization::NodeSerializationPtr blur = nodeAt(merged, "Blur1");
+    ASSERT_TRUE(blur != nullptr);
+    EXPECT_EQ(valuesOf(*blur, "size"), (std::vector<double> { 4., 4. }));
 }
 
 TEST(NatronMerge, TheGitDriverMergesIntoTheCurrentFile)

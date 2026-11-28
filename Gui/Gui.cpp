@@ -745,7 +745,7 @@ Gui::createMenuActions()
         importTemplateAction->setObjectName(QString::fromUtf8("actionImportTemplate"));
         QObject::connect(importTemplateAction, SIGNAL(triggered()), this, SLOT(importTemplate()));
 
-        QAction* defineTemplateAction = new QAction(tr("Define Template..."), this);
+        QAction* defineTemplateAction = new QAction(tr("Define Template"), this);
         defineTemplateAction->setObjectName(QString::fromUtf8("actionDefineTemplate"));
         QObject::connect(defineTemplateAction, SIGNAL(triggered()), this, SLOT(defineTemplate()));
         _imp->menuFile->addAction(defineTemplateAction);

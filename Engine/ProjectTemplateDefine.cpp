@@ -36,6 +36,7 @@
 #include <QThread>
 
 #include "Engine/EffectInstance.h"
+#include "Engine/KnobTypes.h"
 #include "Engine/Node.h"
 #include "Engine/NodeGroup.h"
 #include "Engine/ProjectTemplate.h"
@@ -180,8 +181,10 @@ Project::defineTemplate(const NodesList& nodes,
 
     const std::list<Serialization::TemplateImportSerialization> before = getTemplateImports();
     Serialization::TemplateImportSerialization entry;
-    entry.name = name.empty() ? std::string("template") : name;
-    entry.key = ProjectTemplateDetail::uniqueTemplateKey(ProjectTemplateDetail::keyStem(QString::fromStdString(entry.name)), before);
+    // Without a name, the template is named after its key, so that its files are not named like
+    // another template's.
+    entry.key = ProjectTemplateDetail::uniqueTemplateKey(ProjectTemplateDetail::keyStem(QString::fromStdString(name.empty() ? std::string("template") : name)), *this);
+    entry.name = name.empty() ? entry.key : name;
     entry.templateId = ProjectTemplateDetail::newId();
     entry.version = 0;
     entry.publishDir = getProjectPath().toStdString();
@@ -349,27 +352,157 @@ Project::detachTemplate(const std::string& key,
         }
     }
     out.ops.insert(out.ops.end(), deletes.begin(), deletes.end());
-    if (!ProjectTemplateDetail::applyOps(shared_from_this(), &out)) {
-        return false;
-    }
 
-    std::list<Serialization::TemplateImportSerialization> imports = getTemplateImports();
+    // The entry goes first, so that deleting its template node finds nothing left to detach.
+    const std::list<Serialization::TemplateImportSerialization> importsBefore = getTemplateImports();
+    const std::vector<Serialization::MergeConflict> conflictsBefore = getMergeConflicts();
+    std::list<Serialization::TemplateImportSerialization> imports = importsBefore;
     imports.remove_if([&key](const Serialization::TemplateImportSerialization& entry) {
         return entry.key == key;
     });
-    setTemplateImports(imports);
-    std::vector<Serialization::MergeConflict> conflicts = getMergeConflicts();
     std::vector<Serialization::MergeConflict> kept;
-    for (const Serialization::MergeConflict& conflict : conflicts) {
+    for (const Serialization::MergeConflict& conflict : conflictsBefore) {
         if (conflict.templateKey != key) {
             kept.push_back(conflict);
         }
     }
-    if (kept.size() != conflicts.size()) {
+    setTemplateImports(imports);
+    if (kept.size() != conflictsBefore.size()) {
         setMergeConflicts(kept);
+    }
+    if (!ProjectTemplateDetail::applyOps(shared_from_this(), &out)) {
+        setTemplateImports(importsBefore);
+        if (kept.size() != conflictsBefore.size()) {
+            setMergeConflicts(conflictsBefore);
+        }
+
+        return false;
     }
 
     return true;
+}
+
+namespace {
+
+// pasted and, inside the groups among them, their children, each with the serialization it was
+// made from. A group's children keep their script names, which pair them.
+void
+flattenPasted(const Serialization::NodeSerializationPtr& serialization,
+              const NodePtr& node,
+              std::list<std::pair<Serialization::NodeSerializationPtr, NodePtr>>* flat)
+{
+    if (!serialization || !node) {
+        return;
+    }
+    flat->push_back(std::make_pair(serialization, node));
+    NodeGroupPtr group = std::dynamic_pointer_cast<NodeGroup>(node->getEffectInstance());
+    if (!group) {
+        return;
+    }
+    const NodesList children = group->getNodes();
+    for (const Serialization::NodeSerializationPtr& child : serialization->children) {
+        for (const NodePtr& candidate : children) {
+            if (candidate && child && (candidate->getScriptName_mt_safe() == child->scriptName)) {
+                flattenPasted(child, candidate, flat);
+                break;
+            }
+        }
+    }
+}
+
+std::string
+knobText(const NodePtr& node,
+         const char* name)
+{
+    KnobStringBasePtr knob = std::dynamic_pointer_cast<KnobStringBase>(node->getKnobByName(name));
+
+    return knob ? knob->getValue() : std::string();
+}
+
+} // namespace
+
+void
+Project::adoptPastedTemplateNodes(const std::list<std::pair<Serialization::NodeSerializationPtr, NodePtr>>& pasted)
+{
+    assert(QThread::currentThread() == qApp->thread());
+    std::list<std::pair<Serialization::NodeSerializationPtr, NodePtr>> flat;
+    for (const std::pair<Serialization::NodeSerializationPtr, NodePtr>& it : pasted) {
+        flattenPasted(it.first, it.second, &flat);
+    }
+    for (const std::pair<Serialization::NodeSerializationPtr, NodePtr>& it : flat) {
+        TemplateNode* pastedTemplate = dynamic_cast<TemplateNode*>(it.second->getEffectInstance().get());
+        const std::string key = pastedTemplate ? pastedTemplate->getTemplateKey() : std::string();
+        if (key.empty()) {
+            continue;
+        }
+        NodePtr holder;
+        NodesList nodes;
+        getNodes_recursive(nodes, false);
+        for (const NodePtr& node : nodes) {
+            TemplateNode* other = dynamic_cast<TemplateNode*>(node->getEffectInstance().get());
+            if (!other || (node == it.second) || (other->getTemplateKey() != key)) {
+                continue;
+            }
+            if (node->isActivated()) {
+                holder = node;
+                break;
+            }
+            // A cut and paste moves the template: the cut removed its entry, the paste takes it back.
+            if (!hasTemplateImport(key) && other->restoreDetachedEntry()) {
+                break;
+            }
+        }
+        if (!holder && hasTemplateImport(key)) {
+            continue;
+        }
+
+        // A copy, or a template node from another project: a new template of the pasted nodes that
+        // came from the copied one.
+        NodesList members;
+        std::set<NodePtr> memberSet;
+        for (const std::pair<Serialization::NodeSerializationPtr, NodePtr>& candidate : flat) {
+            if ((candidate.first->origin.templateKey == key) && !isTemplateNode(candidate.second)) {
+                members.push_back(candidate.second);
+                memberSet.insert(candidate.second);
+            }
+        }
+        Serialization::TemplateImportSerialization entry;
+        const std::string name = knobText(it.second, Serialization::kTemplateParamName);
+        entry.key = ProjectTemplateDetail::uniqueTemplateKey(ProjectTemplateDetail::keyStem(QString::fromStdString(name.empty() ? std::string("template") : name)), *this);
+        entry.name = entry.key;
+        entry.templateId = ProjectTemplateDetail::newId();
+        entry.version = 0;
+        entry.publishDir = knobText(it.second, Serialization::kTemplateParamPublishDir);
+        if (entry.publishDir.empty()) {
+            entry.publishDir = getProjectPath().toStdString();
+        }
+        entry.importedAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODate).toStdString();
+        std::shared_ptr<Serialization::ProjectSerialization> base = std::make_shared<Serialization::ProjectSerialization>();
+        NodesList roots;
+        for (const NodePtr& member : members) {
+            NodeGroupPtr parent = std::dynamic_pointer_cast<NodeGroup>(member->getGroup());
+            if (parent && memberSet.count(parent->getNode())) {
+                continue;
+            }
+            roots.push_back(member);
+            Serialization::NodeSerializationPtr snapshot = std::make_shared<Serialization::NodeSerialization>();
+            member->toSerialization(snapshot.get());
+            clearOrigins(snapshot.get());
+            base->nodes.nodes.push_back(snapshot);
+        }
+        entry.base = base;
+        setTemplateImport(entry);
+        for (const NodePtr& root : roots) {
+            NodesList subtree;
+            collectSubtree(root, &subtree);
+            for (const NodePtr& node : subtree) {
+                node->setOrigin(entry.key, node->getNodeId());
+            }
+        }
+        if (KnobStringPtr keyKnob = std::dynamic_pointer_cast<KnobString>(it.second->getKnobByName(Serialization::kTemplateParamKey))) {
+            keyKnob->setValue(entry.key);
+        }
+    }
 }
 
 namespace ProjectTemplateDetail {

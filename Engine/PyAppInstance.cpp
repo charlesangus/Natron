@@ -731,17 +731,13 @@ App::publishTemplateChecked(const QString& templateKey,
     }
     AppInstancePtr app = getInternalApp();
     const ProjectPtr project = app->getProject();
-    QString path;
-    app->runTemplateEdit(QString::fromUtf8("Publish Template"), [&](TemplateEdit* edit) {
-        if (!project->publishTemplate(templateKey.toStdString(), error, edit)) {
-            return false;
-        }
-        path = edit->path;
+    // Not an undo step: like a save, it writes a file that an undo would not take back.
+    TemplateEdit edit;
+    if (!project->publishTemplate(templateKey.toStdString(), error, &edit)) {
+        return QString();
+    }
 
-        return true;
-    });
-
-    return path;
+    return edit.path;
 }
 
 QString

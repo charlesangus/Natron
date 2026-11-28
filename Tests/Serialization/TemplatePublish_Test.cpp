@@ -36,6 +36,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QString>
+#include <QStringList>
 #include <QTemporaryDir>
 
 #include "BaseTest.h"
@@ -258,6 +259,65 @@ TEST_F(TemplatePublishTest, APublishIsRefusedWhenTheNextVersionExistsOrTheFolder
     EXPECT_FALSE(project()->publishTemplate(key, &error));
     EXPECT_FALSE(error.isEmpty());
     EXPECT_FALSE(project()->publishTemplate("no_such_template", &error));
+}
+
+TEST_F(TemplatePublishTest, VersionsAreNumberedByTemplateIdAcrossARename)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string key = defineInto(dir);
+    ASSERT_FALSE(key.empty());
+    QString error;
+    TemplateEdit edit;
+    ASSERT_TRUE(project()->publishTemplate(key, &error, &edit)) << error.toStdString();
+    EXPECT_EQ(QFileInfo(edit.path).fileName(), QString::fromUtf8("tpl_v001.ntpz"));
+
+    Serialization::TemplateImportSerialization renamed = entry(key);
+    renamed.name = "renamed";
+    project()->setTemplateImport(renamed);
+    ASSERT_TRUE(project()->publishTemplate(key, &error, &edit)) << error.toStdString();
+    EXPECT_EQ(QFileInfo(edit.path).fileName(), QString::fromUtf8("renamed_v002.ntpz"));
+    EXPECT_EQ(entry(key).version, 2);
+
+    // A shot still at version 1 must update before it publishes, whatever the files are named.
+    Serialization::TemplateImportSerialization behind = entry(key);
+    behind.version = 1;
+    behind.name = "tpl";
+    project()->setTemplateImport(behind);
+    error.clear();
+    EXPECT_FALSE(project()->publishTemplate(key, &error));
+    EXPECT_TRUE(error.contains(QString::fromUtf8("renamed_v002.ntpz"))) << error.toStdString();
+    EXPECT_EQ(entry(key).version, 1);
+    EXPECT_EQ(QDir(dir.path()).entryList(QStringList(QString::fromUtf8("*.ntpz")), QDir::Files).size(), 2);
+}
+
+TEST_F(TemplatePublishTest, APublishIsRefusedWhenAnotherTemplateHasTheSameName)
+{
+    QTemporaryDir dir;
+    ASSERT_TRUE(dir.isValid());
+    const std::string key = defineInto(dir);
+    ASSERT_FALSE(key.empty());
+    QString error;
+    ASSERT_TRUE(project()->publishTemplate(key, &error)) << error.toStdString();
+    const QString firstPath = dir.path() + QString::fromUtf8("/tpl_v001.ntpz");
+    const std::string firstId = Serialization::readTemplateNode(*Serialization::findTemplateNode(readFile(firstPath).nodes.nodes)).templateId;
+
+    NodePtr other = createBlur("Other");
+    ASSERT_NE(other, nullptr);
+    TemplateEdit edit;
+    ASSERT_TRUE(project()->defineTemplate({ other }, "tpl", NodeCollectionPtr(), &edit)) << edit.error.toStdString();
+    EXPECT_NE(edit.key, key);
+    Serialization::TemplateImportSerialization second = entry(edit.key);
+    EXPECT_EQ(second.name, "tpl");
+    EXPECT_NE(second.templateId, firstId);
+    second.publishDir = dir.path().toStdString();
+    project()->setTemplateImport(second);
+
+    error.clear();
+    EXPECT_FALSE(project()->publishTemplate(edit.key, &error));
+    EXPECT_TRUE(error.contains(QString::fromUtf8("tpl_v001.ntpz"))) << error.toStdString();
+    EXPECT_EQ(entry(edit.key).version, 0);
+    EXPECT_EQ(Serialization::readTemplateNode(*Serialization::findTemplateNode(readFile(firstPath).nodes.nodes)).templateId, firstId);
 }
 
 TEST_F(TemplatePublishTest, PublishingFromAnImportKeepsTheTemplateIds)

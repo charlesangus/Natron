@@ -71,8 +71,12 @@ namespace ProjectTemplateDetail {
  **/
 std::string keyStem(const QString& name);
 
+/**
+ * @brief stem, or stem with a higher trailing number, so that it is neither the key nor the name of
+ * an import of project, nor the key of one of its template nodes, removed ones included.
+ **/
 std::string uniqueTemplateKey(const std::string& stem,
-                              const std::list<Serialization::TemplateImportSerialization>& existing);
+                              const Project& project);
 
 /**
  * @brief name, or name with a higher trailing number, so that it is free in group and not in picked.

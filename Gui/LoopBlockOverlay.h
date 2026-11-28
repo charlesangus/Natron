@@ -120,8 +120,9 @@ public:
     static std::vector<NodePtr> bodyNodes(const NodePtr& end);
 
     /**
-     * @brief The members of the template hull under scenePos followed by its template node, or
-     * nothing when no template hull is there. The innermost hull wins where hulls overlap.
+     * @brief The members of the template hull whose padding band, along its outline, is under
+     * scenePos, followed by its template node, or nothing when no hull's band is there. The
+     * innermost hull wins where bands overlap.
      **/
     std::vector<NodePtr> templateNodesAt(const QPointF& scenePos) const;
 
@@ -159,6 +160,7 @@ private:
 
     struct TemplateHit {
         QPainterPath hull;
+        QPolygonF outline;
         std::vector<NodeWPtr> nodes;
     };
 

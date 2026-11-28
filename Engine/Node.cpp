@@ -6095,6 +6095,9 @@ Node::deactivate(const std::list<NodePtr> & outputsToDisconnect,
     }
     LoopEnd::onGraphChanged();
     emitLinksChanged(NodesList());
+    if (TemplateNode* isTemplate = dynamic_cast<TemplateNode*>(_imp->effect.get())) {
+        isTemplate->onNodeDeactivated();
+    }
 
     ///If the node is a group, deactivate all nodes within the group
     NodeGroup* isGrp = dynamic_cast<NodeGroup*>( _imp->effect.get() );
@@ -6344,6 +6347,9 @@ Node::activate(const std::list<NodePtr> & outputsToRestore,
     }
     Q_EMIT activated(triggerRender);
     emitLinksChanged(NodesList());
+    if (TemplateNode* isTemplate = dynamic_cast<TemplateNode*>(_imp->effect.get())) {
+        isTemplate->onNodeActivated();
+    }
 
     const bool batchingPython = pythonDeclarationBatchDepth > 0;
     if (batchingPython) {

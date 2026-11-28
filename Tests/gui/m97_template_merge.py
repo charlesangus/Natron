@@ -335,7 +335,7 @@ try:
         conflict_v1 = os.path.join(conflict_dir, "conflict_v001.ntpz")
         clean_after = os.path.join(gt.OUT, "m97_clean_after.ntpz")
         shot = os.path.join(gt.OUT, "m97_shot.ntpz")
-        # Publish never overwrites, so versions left by an earlier run would be numbered past.
+        # Publish refuses to write over or below the versions an earlier run left in the folder.
         for name, folder in (("clean", clean_dir), ("conflict", conflict_dir)):
             for version in ("_v001.ntpz", "_v002.ntpz"):
                 path = os.path.join(folder, name + version)

@@ -1636,3 +1636,62 @@ TEST_F(NativeLoopBlockTest, EditingTheBodyMidRenderAbortsTheLoopsRender)
         EXPECT_NEAR(2., rendered, 1e-5);
     }
 }
+
+// An edit made while the render holds the edited node applies only once the render ends, so no
+// hash moves meanwhile. Whether of the body or of the LoopEnd, it still aborts the loop's render
+// before another iteration is folded, under either scheduler.
+TEST_F(NativeLoopBlockTest, AnEditHeldBackByTheRenderAbortsTheLoopsRender)
+{
+    const int iterations = 8;
+    const int pauseAt = 3;
+    struct QueueWritesScope {
+        QueueWritesScope() { EffectInstance::setQueuesWritesDuringBackgroundRendersForTesting(true); }
+        ~QueueWritesScope() { EffectInstance::setQueuesWritesDuringBackgroundRendersForTesting(false); }
+    };
+
+    for (int editBody = 0; editBody < 2; ++editBody) {
+        for (int throughScheduler = 0; throughScheduler < 2; ++throughScheduler) {
+            SCOPED_TRACE(editBody ? "body" : "loop end");
+            SCOPED_TRACE(throughScheduler ? "task graph" : "legacy");
+            getApp()->getProject()->reset(false, true);
+            NodePtr constant = createConstant(1.);
+            NodePtr begin = createLoopBegin();
+            NodePtr body = createDrivenCounter();
+            NodePtr end = createLoopEnd(iterations, kLoopEndParamOperationMean);
+            ASSERT_TRUE(constant && begin && body && end);
+            ASSERT_TRUE(begin->connectInput(constant, 0));
+            ASSERT_TRUE(body->connectInput(begin, 0));
+            ASSERT_TRUE(end->connectInput(body, 0));
+            KnobIntPtr delay = std::dynamic_pointer_cast<KnobInt>(body->getKnobByName("delayMs"));
+            KnobIntPtr count = std::dynamic_pointer_cast<KnobInt>(end->getKnobByName(kLoopEndParamIterations));
+            ASSERT_TRUE(bool(delay));
+            ASSERT_TRUE(bool(count));
+
+            CountingTestRegistry::reset();
+            const QueueWritesScope queueWrites;
+            AbortableRenderInfoPtr abortInfo = AbortableRenderInfo::create(true, 0);
+            std::unique_ptr<RenderingFlagSetter> rendering;
+            bool heldBack = false;
+            const std::function<void()> edit = [&]() {
+                rendering.reset(new RenderingFlagSetter(end));
+                if (editBody) {
+                    delay->setValue(1);
+                    heldBack = (delay->getRawValue(0) == 0);
+                } else {
+                    count->setValue(iterations - 1);
+                    heldBack = (count->getRawValue(0) == iterations);
+                }
+            };
+            bool edited = false;
+            const EffectInstance::RenderRoIRetCode code = renderAbortablyWhileEditing(end, body, throughScheduler != 0, abortInfo, pauseAt, edit, &edited);
+            rendering.reset();
+            ASSERT_TRUE(edited) << "no body render paused for the edit";
+            EXPECT_TRUE(heldBack) << "the edit applied while the loop rendered";
+            EXPECT_EQ(EffectInstance::eRenderRoIRetCodeAborted, code);
+            EXPECT_TRUE(abortInfo->isAborted());
+            if (!throughScheduler) {
+                EXPECT_EQ(pauseAt, CountingTestRegistry::renders(body));
+            }
+        }
+    }
+}

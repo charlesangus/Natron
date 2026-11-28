@@ -351,6 +351,15 @@ public:
                        int majorVersion = -1,
                        Group* group = 0,
                        const NodeCreationPropertyMap& props = NodeCreationPropertyMap()) const;
+    /**
+     * @brief Creates a loop's begin and end nodes together, the end fed by the begin and placed
+     * below it, both selected, as one undo step. kind is one of "GeoForEach", "GeoSolver" and
+     * "Loop". Returns [begin, end], or an empty list when kind names no loop pair or a node could
+     * not be created. group is as for createNode().
+     **/
+    std::list<Effect*> createLoopPair(const QString& kind,
+                                      Group* group = 0) const;
+
     Effect* createReader(const QString& filename,
                          Group* group = 0,
                          const NodeCreationPropertyMap& props = NodeCreationPropertyMap()) const;

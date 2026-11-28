@@ -66,6 +66,10 @@ struct RenderContextName {
     // Set by a loop's end on its own output, never seen by the loop body.
     static RenderContextName loopFold(const std::string& name);
     static RenderContextName choiceLabels(const std::string& name);
+    // A variable each value of which stands for a state only one render step reads, such as the
+    // result a solver substep starts from; see renderContextHasOneUseVariables().
+    static RenderContextName oneUse(const std::string& owner,
+                                    const std::string& name);
 
     bool operator<(const RenderContextName& other) const
     {
@@ -343,6 +347,12 @@ U64 mixRenderContextKey(U64 hash,
  * rendered under one is a single iteration or fold step, which the image cache would only fill.
  **/
 bool renderContextHasLoopVariables(const RenderContextPtr& context);
+
+/**
+ * @brief Whether context sets a RenderContextName::oneUse() variable: an output rendered under
+ * one is never asked for again, which the geometry cache would only fill.
+ **/
+bool renderContextHasOneUseVariables(const RenderContextPtr& context);
 
 NATRON_NAMESPACE_EXIT
 

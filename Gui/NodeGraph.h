@@ -191,6 +191,18 @@ public:
      **/
     void pushUndoCommand(QUndoCommand* command, const NodesGuiList& touchedNodes);
 
+    /**
+     * @brief Whether Make I-Node applies to the selection: one node with an exact I-variant, or a
+     * selection a loop can wrap. reason, when given, receives why not.
+     **/
+    bool canMakeINodeFromSelection(QString* reason) const WARN_UNUSED_RETURN;
+
+    /**
+     * @brief Whether Make Base Node applies to the selection: one I-variant whose base node is
+     * installed. reason, when given, receives why not.
+     **/
+    bool canMakeBaseNodeFromSelection(QString* reason) const WARN_UNUSED_RETURN;
+
     void deleteNodePermanantly(const NodeGuiPtr& n);
 
     NodesGuiList getNodesWithinBackdrop(const NodeGuiPtr& node) const;
@@ -407,6 +419,18 @@ public Q_SLOTS:
     void createGroupFromSelection();
 
     void expandSelectedGroups();
+
+    /**
+     * @brief Replaces the single selected node by its exact I-variant, or else wraps the selection
+     * in a Map Blend loop and opens the LoopEnd's panel. Undoable.
+     **/
+    void makeINodeFromSelection();
+
+    /**
+     * @brief Replaces the single selected I-variant by its base node, after a confirmation when
+     * that drops a Map connection. Undoable.
+     **/
+    void makeBaseNodeFromSelection();
 
     ///All these actions also work for backdrops
     /////////////////////////////////////////////

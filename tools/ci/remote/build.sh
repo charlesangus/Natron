@@ -5,7 +5,7 @@
 # build/remote/<preset>/. The remote twin of tools/ci/local/build.sh.
 #
 # Usage:
-#   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--record-goldens]
+#   tools/ci/remote/build.sh <fast|release|debug> [--tests] [--ctest-regex <re>] [--record-goldens]
 #                            [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N> [--repeat-parallel <P>] [--repeat-timeout <S>]] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui "<script> ..."]
 #   tools/ci/remote/build.sh <fast|release> --from-run <run-id> --gui "<script> ..."
 #   tools/ci/remote/build.sh --mode
@@ -16,6 +16,12 @@
 #                        the -DDEBUG traps, so it takes neither --appimage nor --gui.
 #   --tests           -> also run the ctest suite and smoke tests remotely; the
 #                        ctest logs are downloaded even when the run fails.
+#   --ctest-regex <re> -> implies --tests; the ctest job runs only the ctest
+#                        entries matching <re> (`ctest -R`; one entry per gtest
+#                        suite, e.g. '^NativeBlurTest$'), and a regex matching
+#                        none fails the job. The smoke test still runs. For
+#                        intermediate fix builds only: a milestone's
+#                        verification gate must run the full suite without it.
 #   --record-goldens  -> implies --tests; also records the native, Cycles and MoonRay golden
 #                        renders (NativeGoldenTest, NativeIDistortAmountTest,
 #                        NativeIWarpTest, USDRenderCyclesTest,
@@ -72,8 +78,9 @@
 #                        the workflow as one space-separated input, so an arg
 #                        containing whitespace is rejected.
 #   --gui "<script> ..." -> after the build, run each Tests/gui/<name>.py script
-#                        (space-separated) under Xvfb against the AppImage, one
-#                        job per script in parallel, and download each one's
+#                        (space-separated) under Xvfb against the AppImage, in up
+#                        to 4 parallel jobs that each run a group of the scripts
+#                        one after another, and download each one's
 #                        screenshots, results.txt and natron.log into
 #                        build/remote/<preset>/gui/<name>/. Prints a PASS/FAIL
 #                        line per script and fails if any script failed. Implies
@@ -111,7 +118,7 @@ for interval_var in FIND_INTERVAL_SECS WATCH_INTERVAL_SECS; do
 done
 
 usage() {
-    echo "usage: build.sh <fast|release|debug> [--tests] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N> [--repeat-parallel <P>] [--repeat-timeout <S>]] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
+    echo "usage: build.sh <fast|release|debug> [--tests] [--ctest-regex <re>] [--record-goldens] [--shuffle-seeds <n,n,...>] [--repeat-test <name>:<N> [--repeat-parallel <P>] [--repeat-timeout <S>]] [--appimage] [--no-remote-ccache] [--debug-symbols] [--cmake-arg <arg>]... [--gui \"<script> ...\"]" >&2
     echo "       build.sh <fast|release> --from-run <run-id> [--gui-ref <ref>] --gui \"<script> ...\"" >&2
     echo "       build.sh --mode" >&2
 }
@@ -154,6 +161,7 @@ SHUFFLE_SEEDS=""
 REPEAT_TEST=""
 REPEAT_PARALLEL=""
 REPEAT_TIMEOUT=""
+CTEST_REGEX=""
 CMAKE_ARGS=""
 GUI_SCRIPTS=""
 FROM_RUN=""
@@ -188,6 +196,17 @@ while [[ $# -gt 0 ]]; do
             ;;
         --record-goldens)
             RECORD_GOLDENS=true
+            RUN_TESTS=true
+            BUILD_OPTION=true
+            ;;
+        --ctest-regex)
+            if [[ $# -eq 0 || -z "$1" || "$1" == --* ]]; then
+                echo "build.sh: --ctest-regex needs a ctest -R regex, got '${1:-}'" >&2
+                usage
+                exit 1
+            fi
+            CTEST_REGEX="$1"
+            shift
             RUN_TESTS=true
             BUILD_OPTION=true
             ;;
@@ -447,6 +466,9 @@ fi
 if [[ "${DEBUG_SYMBOLS}" == "true" ]]; then
     REPEAT_ARGS+=(-f "debug_symbols=true")
 fi
+if [[ -n "${CTEST_REGEX}" ]]; then
+    REPEAT_ARGS+=(-f "ctest_regex=${CTEST_REGEX}")
+fi
 
 # Sent only when switched off, so a ref whose workflow predates the input still dispatches.
 REMOTE_CCACHE_ARGS=()
@@ -680,7 +702,9 @@ if [[ "${RECORD_GOLDENS}" == "true" ]]; then
 fi
 
 # The artifacts carry the tested commit's sha, which for --from-run is the other run's, so
-# they are looked up by prefix. A script passes only when its job succeeded.
+# they are looked up by prefix. A GUI job runs a group of scripts, so a script's result is the
+# exit-status file in its artifact; a branch whose workflow still runs one job per script has
+# none, and there the script passes only when its job succeeded.
 GUI_FAILED=0
 GUI_LINES=()
 if [[ -n "${GUI_SCRIPTS}" ]]; then
@@ -697,7 +721,16 @@ if [[ -n "${GUI_SCRIPTS}" ]]; then
         else
             echo "build.sh: run ${RUN_ID} uploaded no output for ${script}" >&2
         fi
-        conclusion="$(awk -F'\t' -v job="GUI · ${name}" '$1 == job { print $2; exit }' <<<"${JOB_CONCLUSIONS}")"
+        if [[ -f "${dir}/exit-status" ]]; then
+            status="$(tr -d '[:space:]' <"${dir}/exit-status")"
+            if [[ "${status}" == 0 ]]; then
+                conclusion=success
+            else
+                conclusion="exit ${status:-unknown}"
+            fi
+        else
+            conclusion="$(awk -F'\t' -v job="GUI · ${name}" '$1 == job { print $2; exit }' <<<"${JOB_CONCLUSIONS}")"
+        fi
         detail=""
         if [[ -f "${dir}/results.txt" ]]; then
             detail="$(grep -c '^PASS' "${dir}/results.txt" || true) passed, $(grep -c '^FAIL' "${dir}/results.txt" || true) failed"
@@ -707,7 +740,7 @@ if [[ -n "${GUI_SCRIPTS}" ]]; then
         if [[ "${conclusion}" == "success" ]]; then
             GUI_LINES+=("PASS ${script} (${detail}): ${dir}")
         else
-            GUI_LINES+=("FAIL ${script} (job ${conclusion:-missing}, ${detail}): ${dir}")
+            GUI_LINES+=("FAIL ${script} (${conclusion:-no result}, ${detail}): ${dir}")
             GUI_FAILED=1
         fi
     done

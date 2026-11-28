@@ -12,7 +12,7 @@
 # Usage:
 #   tools/ci/local/test.sh <ctest|smoke|startup> [debug|release|fast] [--gdb]
 #   [NATRON_REPEAT_TIMEOUT=<s>] tools/ci/local/test.sh repeat <ctest-name-or-regex> <N> [--parallel P] [--timeout S] [--gdb] [debug|release|fast]
-#   [NATRON_CTEST_JOBS=<n>] tools/ci/local/test.sh ctest ...
+#   [NATRON_CTEST_JOBS=<n>] [NATRON_CTEST_REGEX=<re>] tools/ci/local/test.sh ctest ...
 #   [GTEST_SHUFFLE=1] [GTEST_RANDOM_SEED=<n>] [GTEST_REPEAT=<n>] tools/ci/local/test.sh ctest ...
 #
 #   NATRON_CTEST_JOBS       -> ctest only: how many cases run at once, all as
@@ -30,6 +30,11 @@
 #                              -V` so their complete output is in the log; the
 #                              exit status stays the parallel run's.
 #                              Forwarded into the container when set.
+#   NATRON_CTEST_REGEX      -> ctest only: run just the ctest entries matching
+#                              this regex (`ctest -R`, one entry per gtest
+#                              suite, e.g. '^NativeBlurTest$'); a regex that
+#                              matches nothing fails the run instead of passing
+#                              it empty. Forwarded into the container when set.
 #   GTEST_SHUFFLE,
 #   GTEST_RANDOM_SEED,
 #   GTEST_REPEAT            -> ctest only: gtest reads these itself, and ctest
@@ -214,7 +219,7 @@ if ! in_container; then
     # long-lived container, so variables that steer the run are re-applied
     # through env(1) on the container side.
     forwarded_env=()
-    for var in NATRON_CTEST_JOBS GTEST_SHUFFLE GTEST_RANDOM_SEED GTEST_REPEAT; do
+    for var in NATRON_CTEST_JOBS NATRON_CTEST_REGEX GTEST_SHUFFLE GTEST_RANDOM_SEED GTEST_REPEAT; do
         if [[ -n "${!var:-}" ]]; then
             forwarded_env+=("${var}=${!var}")
         fi
@@ -284,16 +289,20 @@ case "${SUBCOMMAND}" in
         # Only a default: every discovered gtest suite carries its own TIMEOUT property, which
         # wins; this bounds the tests registered without one.
         CTEST_TIMEOUT_SECONDS=300
+        CTEST_FILTER=()
+        if [[ -n "${NATRON_CTEST_REGEX:-}" ]]; then
+            CTEST_FILTER=(-R "${NATRON_CTEST_REGEX}" --no-tests=error)
+        fi
         cd "${BUILD_DIR}"
         echo "+ cd ${BUILD_DIR}"
         if [[ "${CTEST_JOBS}" -eq 1 ]]; then
             echo "== test.sh: ctest -V (${BUILD_TYPE}) =="
-            echo "+ OFX_PLUGIN_PATH=${OFX_PLUGIN_PATH} xvfb-run --auto-servernum ctest -V --timeout ${CTEST_TIMEOUT_SECONDS}"
-            exec xvfb-run --auto-servernum ctest -V --timeout "${CTEST_TIMEOUT_SECONDS}"
+            echo "+ OFX_PLUGIN_PATH=${OFX_PLUGIN_PATH} xvfb-run --auto-servernum ctest -V --timeout ${CTEST_TIMEOUT_SECONDS}${CTEST_FILTER[*]:+ ${CTEST_FILTER[*]}}"
+            exec xvfb-run --auto-servernum ctest -V --timeout "${CTEST_TIMEOUT_SECONDS}" ${CTEST_FILTER[@]+"${CTEST_FILTER[@]}"}
         fi
 
         echo "== test.sh: ctest -j ${CTEST_JOBS} (${BUILD_TYPE}) =="
-        echo "+ OFX_PLUGIN_PATH=${OFX_PLUGIN_PATH} xvfb-run --auto-servernum ctest -j ${CTEST_JOBS} --timeout ${CTEST_TIMEOUT_SECONDS} --output-on-failure"
+        echo "+ OFX_PLUGIN_PATH=${OFX_PLUGIN_PATH} xvfb-run --auto-servernum ctest -j ${CTEST_JOBS} --timeout ${CTEST_TIMEOUT_SECONDS} --output-on-failure${CTEST_FILTER[*]:+ ${CTEST_FILTER[*]}}"
         FAILED_LIST="${BUILD_DIR}/Testing/Temporary/LastTestsFailed.log"
         # ctest only rewrites this list when it gets as far as running cases, so
         # a leftover from an earlier run must not trigger a re-run.
@@ -302,7 +311,7 @@ case "${SUBCOMMAND}" in
         mkdir -p "$(dirname "${CTEST_STDOUT}")"
         # The capture feeds ctest-summary.sh; rc must stay ctest's own status, not tee's.
         set +e
-        xvfb-run --auto-servernum ctest -j "${CTEST_JOBS}" --timeout "${CTEST_TIMEOUT_SECONDS}" --output-on-failure 2>&1 | tee "${CTEST_STDOUT}"
+        xvfb-run --auto-servernum ctest -j "${CTEST_JOBS}" --timeout "${CTEST_TIMEOUT_SECONDS}" --output-on-failure ${CTEST_FILTER[@]+"${CTEST_FILTER[@]}"} 2>&1 | tee "${CTEST_STDOUT}"
         pipe_status=("${PIPESTATUS[@]}")
         rc=${pipe_status[0]}
         tee_rc=${pipe_status[1]:-0}

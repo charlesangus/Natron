@@ -360,7 +360,9 @@ struct Member {
     // others are read from input inputSlotInput[k] at inputSlotTime[k] in inputSlotLayer[k]: the layers
     // getGpuExtraInputLayers() names at the member's time, and the inputs at the other times its query lists; then
     // one per output the task requests under a context, in the request's order, inputSlotInput[k] being
-    // kContextRequestInputNb, inputSlotTime[k] the member's time and the slot -1 for one the member does not read.
+    // kContextRequestInputNb, inputSlotTime[k] the member's time and the slot -1 for one the member does not read; then,
+    // for the member whose render continuation ran, one per output it requested, in the request's order,
+    // inputSlotInput[k] being kGpuContinuationInputNb.
     int nInputs = 0;
     std::vector<int> inputSlots;
     std::vector<int> inputSlotInput;
@@ -419,6 +421,16 @@ public:
         , _failure()
         , _failureKind(FailureKind::None)
     {
+        if (report && (report->continuationMember >= 0)) {
+            _continuationMember = report->continuationMember;
+            for (const RenderScheduler::ContinuationInput& input : report->continuationInputs) {
+                FrameGraph::Task task;
+                task.key = input.key;
+                task.renderedRoI = input.renderedRoI;
+                task.components = input.components;
+                _continuationTasks.push_back(std::move(task));
+            }
+        }
     }
 
     ~RegionRun()
@@ -599,7 +611,16 @@ private:
               const std::string& reason,
               FailureKind kind = FailureKind::Refused)
     {
-        return fail((memberTask >= 0) ? _graph.tasks[memberTask].key.node : NodePtr(), reason, kind);
+        return fail((memberTask >= 0) ? taskAt(memberTask).key.node : NodePtr(), reason, kind);
+    }
+
+    // The graph's tasks, then the outputs the continuation member's requests named, which the region reads as it reads
+    // the external inputs.
+    const FrameGraph::Task& taskAt(int index) const
+    {
+        const int graphTasks = (int)_graph.tasks.size();
+
+        return (index < graphTasks) ? _graph.tasks[index] : _continuationTasks[index - graphTasks];
     }
 
     bool failGpu(int memberTask,
@@ -1083,6 +1104,35 @@ private:
             member->inputSlotTime.push_back(task.key.time);
         }
 
+        if ((_continuationMember >= 0) && (_position[member->task] == _continuationMember)) {
+            const int graphTasks = (int)_graph.tasks.size();
+            for (std::size_t c = 0; c < _continuationTasks.size(); ++c) {
+                const FrameGraph::Task& input = _continuationTasks[c];
+                if (input.components.empty() || input.renderedRoI.isNull()) {
+                    return fail(member->task, "an output its render continuation requested renders an empty window");
+                }
+                ImageLayerDesc layer;
+                if (!effect->getGpuInputLayer(kGpuContinuationInputNb, member->plane, task.key.time, task.key.view, &layer)) {
+                    return fail(member->task, "the node cannot read an output its render continuation requested on the GPU");
+                }
+                const bool requested = std::any_of(input.components.begin(), input.components.end(), [&layer](const ImageLayerDesc& comp) {
+                    return sameLayer(comp, layer);
+                });
+                if (!requested) {
+                    return fail(member->task, "an output its render continuation requested is not in the layer the node reads");
+                }
+                // Requests for disjoint regions of one output share its root, so they read one upload of it.
+                std::size_t first = 0;
+                while (!(_continuationTasks[first].key == input.key)) {
+                    ++first;
+                }
+                member->inputSlots.push_back(externalSlot(graphTasks + (int)first, layer, input.renderedRoI));
+                member->inputSlotInput.push_back(kGpuContinuationInputNb);
+                member->inputSlotLayer.push_back(layer);
+                member->inputSlotTime.push_back(input.key.time);
+            }
+        }
+
         return true;
     } // planInputs
 
@@ -1399,7 +1449,7 @@ private:
             if (slot.externalTask < 0) {
                 continue;
             }
-            const FrameGraph::Task& input = _graph.tasks[slot.externalTask];
+            const FrameGraph::Task& input = taskAt(slot.externalTask);
             RectI pixelRoI = slot.neededRoI.intersect(input.renderedRoI);
             if (pixelRoI.isNull()) {
                 pixelRoI = input.renderedRoI;
@@ -1495,7 +1545,7 @@ private:
             const RectI bounds = image->getBounds();
             const unsigned char* data = access->pixelAt(bounds.x1, bounds.y1);
             if (!data) {
-                return fail(_graph.tasks[slot.externalTask].key.node, "its image has no pixels");
+                return fail(taskAt(slot.externalTask).key.node, "its image has no pixels");
             }
             gpu::StreamOptions options;
             options.handoff = gpu::ComputeHandoff::Record;
@@ -2065,7 +2115,7 @@ private:
     // The device image of another region goes through the store, which keeps the RAM copy for its other consumers.
     bool downloadPinned(Slot& slot)
     {
-        const FrameGraph::Task& input = _graph.tasks[slot.externalTask];
+        const FrameGraph::Task& input = taskAt(slot.externalTask);
         GpuDeviceImagePtr image = slot.pinned;
 
         slot.pinned.reset();
@@ -2093,7 +2143,25 @@ private:
         args->layerInputs.clear();
         args->contextInputs.clear();
         args->timedInputs.clear();
+        args->continuationInputs.clear();
         for (std::size_t k = 0; k < member.inputSlots.size(); ++k) {
+            if (((int)k >= member.nInputs) && (member.inputSlotInput[k] == kGpuContinuationInputNb)) {
+                const std::size_t c = args->continuationInputs.size();
+                if (!_report || (c >= _report->continuationInputs.size())) {
+                    return false;
+                }
+                const EffectInstance::RenderContinuationRequest& request = _report->continuationInputs[c].request;
+                GpuContinuationInput input;
+                input.context = request.context;
+                input.time = request.time;
+                input.layer = member.inputSlotLayer[k];
+                input.view = _slots[member.inputSlots[k]].view;
+                if (!input.view.buffer) {
+                    return false;
+                }
+                args->continuationInputs.push_back(input);
+                continue;
+            }
             const bool contextInput = ((int)k >= member.nInputs) && (member.inputSlotInput[k] == FrameViewRequest::TaskEdge::kContextRequestInputNb);
             if (contextInput) {
                 GpuContextInput input;
@@ -3020,7 +3088,7 @@ private:
             if (!data) {
                 drainUploads(uploads);
 
-                return fail(_graph.tasks[slot.externalTask].key.node, "its image has no pixels");
+                return fail(taskAt(slot.externalTask).key.node, "its image has no pixels");
             }
             gpu::StreamOptions options;
             options.handoff = flight ? gpu::ComputeHandoff::Record : gpu::ComputeHandoff::Submit;
@@ -3666,7 +3734,7 @@ private:
     bool findAliasedImage(const Member& member,
                           ImagePtr* image) const
     {
-        const FrameGraph::Task& input = _graph.tasks[member.externalTask];
+        const FrameGraph::Task& input = taskAt(member.externalTask);
         RectI pixelRoI = _graph.tasks[member.task].renderedRoI.intersect(input.renderedRoI);
         if (pixelRoI.isNull()) {
             pixelRoI = input.renderedRoI;
@@ -3946,6 +4014,11 @@ private:
 
     const FrameRenderContextPtr& _context;
     const FrameGraph& _graph;
+
+    // The outputs the render continuation of the member at position _continuationMember of _region.members requested,
+    // one per request, indexed after the graph's tasks by taskAt(); _continuationMember is -1 for none.
+    std::vector<FrameGraph::Task> _continuationTasks;
+    int _continuationMember = -1;
     const FrameGraph::Region& _region;
     gpu::GpuRuntime& _runtime;
     FrameStore& _store;
@@ -4226,10 +4299,15 @@ runGpuRegion(const FrameRenderContextPtr& context,
         }
         for (;;) {
             const bool recordTransfers = report->recordTransfers;
+            const int continuationMember = report->continuationMember;
+            std::vector<RenderScheduler::ContinuationInput> continuationInputs;
+            continuationInputs.swap(report->continuationInputs);
             std::vector<char> ranOnDevice;
             ranOnDevice.swap(report->memberRanOnDevice);
             *report = RenderScheduler::RegionReport();
             report->recordTransfers = recordTransfers;
+            report->continuationMember = continuationMember;
+            report->continuationInputs.swap(continuationInputs);
             report->memberRanOnDevice.swap(ranOnDevice);
             RegionRun::FailureKind kind;
             int rows = 0;

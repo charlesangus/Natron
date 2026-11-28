@@ -54,3 +54,4 @@ Today (origin/main): the model is lazy (`canFetchMore`/`fetchMore`, `Gui/SceneGr
 - 2026-11-23 — Expand To <kind> leaves the kind's rows visible and collapsed (user), matching Houdini's Expand To Components.
 - 2026-11-23 — Triggers: row menu, Shift-click arrow, `*`, toolbar buttons on M556's scope combo, editable shortcuts (user).
 - 2026-11-26 — Round 1's 10 findings were fixed in a73c685ea4 (replies posted). Gate9 on it failed two tests, both test bugs: CollapseAllBelow started before the root's rows were fetched, and scene_graph_expand's Esc walk rescanned every widget per row and hit the 900 s timeout. Fixed in a47c30469c.
+- 2026-11-28 — **Names (user):** Expand/Collapse commands are renamed **Unfold / Fold** (Unfold All Below, Unfold To <kind>, Fold All Below); the draw state Expand is now Pass Through.

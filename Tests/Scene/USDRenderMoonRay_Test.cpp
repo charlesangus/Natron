@@ -1293,6 +1293,15 @@ TEST_F(USDRenderMoonRayTest, RenderVarSettingsReachTheDelegateAndItsStatsTheLaye
     NodePtr reader;
     NodePtr node = createGraph(path.c_str(), &reader);
     ASSERT_TRUE(node && reader);
+    // A USDRead's hash is a placeholder until an evaluation walks the file it now names. The
+    // settings worker walks it off the main thread at a time of its own: one landing after the
+    // render took its hash keys the render's metadata under a hash the node no longer has.
+    auto settleReader = [&reader]() {
+        ScenePayload scene;
+        std::string error;
+        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, reader->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &scene, &error)) << error;
+    };
+    settleReader();
     std::vector<RenderedPlane> planes;
     ASSERT_TRUE(renderAll(node, &planes, true));
 
@@ -1333,12 +1342,6 @@ TEST_F(USDRenderMoonRayTest, RenderVarSettingsReachTheDelegateAndItsStatsTheLaye
     // Back on a hash whose frame is cached, the frame keeps its render's metadata.
     KnobFile* file = knob<KnobFile>(reader, kUSDReadParamFile);
     ASSERT_TRUE(file != nullptr);
-    // A USDRead's hash is a placeholder until an evaluation walks the file it now names.
-    auto settleReader = [&reader]() {
-        ScenePayload scene;
-        std::string error;
-        EXPECT_EQ(EffectInstance::eRenderRoIRetCodeOk, reader->getEffectInstance()->evaluateScene(EffectInstance::EvaluateSceneArgs(1., ViewIdx(0)), &scene, &error)) << error;
-    };
     const U64 renderedHash = node->getHashValue();
     file->setValue(otherFile);
     settleReader();

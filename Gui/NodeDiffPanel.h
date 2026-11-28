@@ -28,10 +28,14 @@
 
 #include "Global/Macros.h"
 
+#include <functional>
 #include <memory>
 
 #include <QStringList>
 #include <QWidget>
+
+class QListWidgetItem;
+class QPushButton;
 
 #include "Engine/EngineFwd.h"
 #include "Engine/ProjectMerge.h"
@@ -43,7 +47,8 @@ NATRON_NAMESPACE_ENTER
 /**
  * @brief While the Gui holds a graph comparison, lists what differs on the nodes selected in the
  * last node graph whose selection changed: each changed knob as base → current, the key counts
- * and key times of curves, and the sources of inputs.
+ * and key times of curves, and the sources of inputs. A changed node's heading offers Revert Node
+ * and each changed knob Take, as the merge popover does.
  **/
 class NodeDiffPanel
     : public QWidget,
@@ -79,6 +84,15 @@ protected:
     void mousePressEvent(QMouseEvent* e) override;
 
 private:
+    // Shows a button at the right of item's row and returns it.
+    QPushButton* addPickRow(QListWidgetItem* item,
+                            const QString& objectName,
+                            const QString& text,
+                            const QString& toolTip);
+
+    // Runs pick on the graph whose selection the panel lists, once the click has returned.
+    void runPick(const std::function<bool(NodeGraph*, QString*)>& pick);
+
     struct Implementation;
     std::unique_ptr<Implementation> _imp;
 };

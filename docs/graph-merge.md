@@ -174,6 +174,11 @@ one undo step. While a comparison shows a node as changed, click the change mark
 to open the same popover with a **Changes** section: **Take** beside each changed parameter
 gives it the other version's value, and **Revert Node** does what Revert to Other does.
 
+The **Node Diff** panel, which lists what differs on the selected nodes, offers the same two
+picks: **Revert Node** on the heading of each changed node, and **Take** on the first row of each
+changed parameter. They are the same undo steps as in the popover. Revert Node is disabled on a
+node that only moved; use Restore Position for that.
+
 The popover is not modal. It refreshes after every choice, and closes on Escape, on a click
 elsewhere, or once nothing on the node is left to choose.
 

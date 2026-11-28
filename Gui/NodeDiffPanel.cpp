@@ -34,7 +34,9 @@
 #include <variant>
 #include <vector>
 
+#include <QBrush>
 #include <QFont>
+#include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QListWidget>
@@ -47,7 +49,9 @@
 #include "Engine/Project.h"
 #include "Gui/Gui.h"
 #include "Gui/GuiAppInstance.h"
+#include "Gui/MergePicks.h"
 #include "Gui/NodeGraph.h"
+#include "Gui/NodeGraphDiffOverlay.h"
 #include "Gui/NodeGui.h"
 #include "Serialization/CurveSerialization.h"
 #include "Serialization/KnobSerialization.h"
@@ -302,6 +306,65 @@ sourceText(const std::string& source)
     return source.empty() ? NodeDiffPanel::tr("none") : QString::fromStdString(source);
 }
 
+/**
+ * @brief The rows NodeDiffPanel::describe() lists for change. When knobOfRow is given, it gets one
+ * entry per row: the name of the changed knob on the first row of that knob, empty otherwise.
+ **/
+QStringList
+describeRows(const ProjectMerge::NodeChange& change,
+             std::vector<std::string>* knobOfRow)
+{
+    QStringList rows;
+    switch (change.kind) {
+    case ProjectMerge::NodeChange::eAdded:
+        rows << NodeDiffPanel::tr("Added");
+        break;
+    case ProjectMerge::NodeChange::eRemoved:
+        rows << NodeDiffPanel::tr("Removed");
+        break;
+    case ProjectMerge::NodeChange::eChanged:
+        if (change.renamed) {
+            rows << changeRow(NodeDiffPanel::tr("Renamed"), QString::fromStdString(change.previousScriptName), QString::fromStdString(change.scriptName));
+        }
+        for (const ProjectMerge::NodeChange::KnobChange& knob : change.knobChanges) {
+            const auto first = rows.size();
+            knobRows(knob, &rows);
+            if (knobOfRow && (rows.size() > first)) {
+                knobOfRow->resize(rows.size());
+                (*knobOfRow)[first] = knob.name;
+            }
+        }
+        for (const ProjectMerge::NodeChange::InputChange& input : change.inputChanges) {
+            const QString name = input.label.empty() ? NodeDiffPanel::tr("Input") : NodeDiffPanel::tr("Input %1").arg(QString::fromStdString(input.label));
+            rows << changeRow(name, sourceText(input.before), sourceText(input.after));
+        }
+        if (change.moved) {
+            rows << NodeDiffPanel::tr("Moved");
+        }
+        if (change.appearance) {
+            rows << NodeDiffPanel::tr("Appearance changed");
+        }
+        if (change.userKnobs) {
+            rows << NodeDiffPanel::tr("User knobs changed");
+        }
+        if (change.roto) {
+            rows << NodeDiffPanel::tr("Roto shapes changed");
+        }
+        if (change.tracker) {
+            rows << NodeDiffPanel::tr("Tracks changed");
+        }
+        if (change.recreated) {
+            rows << NodeDiffPanel::tr("Plug-in or group changed");
+        }
+        break;
+    }
+    if (knobOfRow) {
+        knobOfRow->resize(rows.size());
+    }
+
+    return rows;
+} // describeRows
+
 } // namespace
 
 struct NodeDiffPanel::Implementation {
@@ -309,6 +372,7 @@ struct NodeDiffPanel::Implementation {
     QLabel* summary = nullptr;
     QListWidget* list = nullptr;
     QPushButton* clear = nullptr;
+    QLabel* error = nullptr;
     QPointer<NodeGraph> graph;
     bool pending = false;
 
@@ -338,8 +402,14 @@ NodeDiffPanel::NodeDiffPanel(Gui* gui)
     _imp->list = new QListWidget(this);
     _imp->list->setObjectName(QString::fromUtf8("nodeDiffList"));
     _imp->list->setSelectionMode(QAbstractItemView::NoSelection);
-    _imp->list->setUniformItemSizes(true);
     layout->addWidget(_imp->list, 1);
+
+    _imp->error = new QLabel(this);
+    _imp->error->setObjectName(QString::fromUtf8("nodeDiffError"));
+    _imp->error->setWordWrap(true);
+    _imp->error->setStyleSheet(QString::fromUtf8("color: rgb(230, 90, 80);"));
+    _imp->error->hide();
+    layout->addWidget(_imp->error);
 
     _imp->clear = new QPushButton(tr("Clear Comparison"), this);
     _imp->clear->setObjectName(QString::fromUtf8("nodeDiffClear"));
@@ -387,49 +457,7 @@ NodeDiffPanel::getRows() const
 QStringList
 NodeDiffPanel::describe(const ProjectMerge::NodeChange& change)
 {
-    QStringList rows;
-    switch (change.kind) {
-    case ProjectMerge::NodeChange::eAdded:
-        rows << tr("Added");
-
-        return rows;
-    case ProjectMerge::NodeChange::eRemoved:
-        rows << tr("Removed");
-
-        return rows;
-    case ProjectMerge::NodeChange::eChanged:
-        break;
-    }
-    if (change.renamed) {
-        rows << changeRow(tr("Renamed"), QString::fromStdString(change.previousScriptName), QString::fromStdString(change.scriptName));
-    }
-    for (const ProjectMerge::NodeChange::KnobChange& knob : change.knobChanges) {
-        knobRows(knob, &rows);
-    }
-    for (const ProjectMerge::NodeChange::InputChange& input : change.inputChanges) {
-        const QString name = input.label.empty() ? tr("Input") : tr("Input %1").arg(QString::fromStdString(input.label));
-        rows << changeRow(name, sourceText(input.before), sourceText(input.after));
-    }
-    if (change.moved) {
-        rows << tr("Moved");
-    }
-    if (change.appearance) {
-        rows << tr("Appearance changed");
-    }
-    if (change.userKnobs) {
-        rows << tr("User knobs changed");
-    }
-    if (change.roto) {
-        rows << tr("Roto shapes changed");
-    }
-    if (change.tracker) {
-        rows << tr("Tracks changed");
-    }
-    if (change.recreated) {
-        rows << tr("Plug-in or group changed");
-    }
-
-    return rows;
+    return describeRows(change, nullptr);
 }
 
 void
@@ -440,6 +468,7 @@ NodeDiffPanel::refresh()
     const ProjectMerge::ChangeSummary* summary = _imp->gui->getGraphComparison();
     _imp->clear->setEnabled(summary != nullptr);
     if (!summary) {
+        _imp->error->hide();
         _imp->summary->setText(tr("No comparison. File > Compare with File, or Compare with Template Base on a template node, shows one here."));
 
         return;
@@ -473,10 +502,41 @@ NodeDiffPanel::refresh()
             if (!found) {
                 continue;
             }
-            QListWidgetItem* title = new QListWidgetItem(QString::fromStdString(node->getScriptName()), _imp->list);
+            const QString scriptName = QString::fromStdString(node->getScriptName());
+            QListWidgetItem* title = new QListWidgetItem(scriptName, _imp->list);
             title->setFont(heading);
-            for (const QString& row : describe(*found)) {
-                new QListWidgetItem(row, _imp->list);
+            const std::string nodeId = node->getNodeId();
+            const bool changedNode = (found->kind == ProjectMerge::NodeChange::eChanged);
+            if (changedNode) {
+                QPushButton* revert = addPickRow(title, QString::fromUtf8("nodeDiffRevertNode_%1").arg(scriptName), tr("Revert Node"),
+                                                 tr("Give the node the state the compared version has."));
+                // Revert Node acts on what the popover lists, which a node that only moved has none of.
+                revert->setEnabled(!NodeGraphDiffOverlay::isOnlyMoved(*found));
+                QObject::connect(revert, &QPushButton::clicked, this, [this, nodeId]() {
+                    runPick([nodeId](NodeGraph* g, QString* error) {
+                        return MergePicks::revert(g, std::vector<std::string>(1, nodeId), error);
+                    });
+                });
+            }
+            std::vector<std::string> knobOfRow;
+            const QStringList rows = describeRows(*found, &knobOfRow);
+            const ProjectPtr project = _imp->gui->getApp()->getProject();
+            for (int i = 0; i < rows.size(); ++i) {
+                QListWidgetItem* item = new QListWidgetItem(rows[i], _imp->list);
+                const std::string& knobName = knobOfRow[i];
+                if (!changedNode || knobName.empty()) {
+                    continue;
+                }
+                const QString knob = QString::fromStdString(knobName);
+                QPushButton* take = addPickRow(item, QString::fromUtf8("nodeDiffTake_%1_%2").arg(scriptName, knob), tr("Take"),
+                                               tr("Give %1 the value the compared version has.").arg(knob));
+                std::vector<Serialization::GraphOp> ops;
+                take->setEnabled(ProjectMerge::takeKnobOperations(project, *summary, nodeId, knobName, &ops));
+                QObject::connect(take, &QPushButton::clicked, this, [this, nodeId, knobName]() {
+                    runPick([nodeId, knobName](NodeGraph* g, QString* error) {
+                        return MergePicks::takeKnob(g, nodeId, knobName, error);
+                    });
+                });
             }
         }
     }
@@ -485,6 +545,50 @@ NodeDiffPanel::refresh()
     }
     _imp->summary->setText(text);
 } // NodeDiffPanel::refresh
+
+QPushButton*
+NodeDiffPanel::addPickRow(QListWidgetItem* item,
+                          const QString& objectName,
+                          const QString& text,
+                          const QString& toolTip)
+{
+    QWidget* row = new QWidget;
+    QHBoxLayout* box = new QHBoxLayout(row);
+    box->setContentsMargins(2, 0, 2, 0);
+    box->setSpacing(4);
+    // The label draws the row; the item keeps its text, for getRows(), but no longer paints it.
+    QLabel* label = new QLabel(item->text(), row);
+    label->setFont(item->font());
+    box->addWidget(label);
+    box->addStretch();
+    QPushButton* button = new QPushButton(text, row);
+    button->setObjectName(objectName);
+    button->setToolTip(toolTip);
+    button->setFocusPolicy(Qt::NoFocus);
+    box->addWidget(button);
+    item->setForeground(QBrush(Qt::transparent));
+    item->setSizeHint(row->sizeHint());
+    _imp->list->setItemWidget(item, row);
+
+    return button;
+}
+
+void
+NodeDiffPanel::runPick(const std::function<bool(NodeGraph*, QString*)>& pick)
+{
+    // Queued: the pick changes the comparison, whose refresh deletes the button that was clicked.
+    QPointer<NodeGraph> graph = _imp->graph ? _imp->graph : QPointer<NodeGraph>(_imp->gui->getNodeGraph());
+    const auto run = [this, graph, pick]() {
+        if (!graph) {
+            return;
+        }
+        QString error;
+        const bool done = pick(graph.data(), &error);
+        _imp->error->setText(done ? QString() : error);
+        _imp->error->setVisible(!done && !error.isEmpty());
+    };
+    QMetaObject::invokeMethod(this, run, Qt::QueuedConnection);
+}
 
 void
 NodeDiffPanel::onComparisonChanged()

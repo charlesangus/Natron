@@ -22,9 +22,10 @@ natronSceneBoxes lists the budget boxes drawn while natronSceneRecordBoxes is se
     instance masked, and clearing the rows gives back the first image exactly;
   - on a third scene of many payloads, Load All under a Polygon Limit the first chunk reaches
     stops loading, says so on the HUD, and a limit high enough loads the rest;
-  - on a fourth scene of twelve load chunks under a low Polygon Limit, Load All, framing the scene
-    and a Hidden row set and cleared each end with nothing held back, budget boxes that went out at
-    most once, and no budget applied nor Storm frame rendered once settled.
+  - on a fourth scene of twelve load chunks, counting the whole scene under a low Polygon Limit,
+    Load All ends with part of the scene drawn as budget boxes, and Load All, framing the scene and a
+    Hidden row set and cleared each end with nothing held back, budget boxes that went out at most
+    once, and no budget applied nor Storm frame rendered once settled.
 
 Screenshots for sign-off: scene-budget-none, scene-budget-boxes-box-wire,
 scene-budget-boxes-box-shaded, scene-budget-boxes-marker, scene-budget-boxes-off,
@@ -882,7 +883,11 @@ try:
                                        after["drops"] - before["drops"]))
             return after
 
-        viewer.getParam("polygonLimit").setValue(HOUSE_FACES * 24)
+        # The camera is left over from the town and sees only part of the city, so the whole scene is
+        # counted, and the limit keeps fewer houses than the camera sees for some boxes to be in view.
+        CITY_LIMIT = HOUSE_FACES * 4
+        viewer.getParam("countWholeScene").setValue(True)
+        viewer.getParam("polygonLimit").setValue(CITY_LIMIT)
         usd.getParam("filename").setValue(city_scene_path)
         yield settle()
         ok = yield ("until", scene_drawn, POLL_TIMEOUT_S)
@@ -892,7 +897,7 @@ try:
         after = yield from settles("Load All on the city", before)
         check(loaded_faces() == CITY_HOUSES * HOUSE_FACES,
               "Load All loads the whole city (%d of %d faces)" % (loaded_faces(), CITY_HOUSES * HOUSE_FACES))
-        check(int(budget().get("demoted", 0)) > 0 and int(budget().get("drawn", 0)) <= HOUSE_FACES * 24,
+        check(int(budget().get("demoted", 0)) > 0 and int(budget().get("drawn", 0)) <= CITY_LIMIT,
               "the budget demotes part of the city (%r demoted, %r drawn)" % (budget().get("demoted"), budget().get("drawn")))
         check(after["boxFrames"] > before["boxFrames"] and budget_boxes() != [],
               "the demoted houses are drawn as budget boxes (%d boxes)" % len(budget_boxes()))
@@ -915,6 +920,7 @@ try:
         yield from settles("clearing the house", before)
 
         viewer.getParam("polygonLimit").setValue(DEFAULT_LIMIT)
+        viewer.getParam("countWholeScene").setValue(False)
 
     run(steps())
 except Exception:
